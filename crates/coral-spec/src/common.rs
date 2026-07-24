@@ -193,6 +193,8 @@ pub struct TableCommon {
     pub name: String,
     pub description: String,
     pub guide: String,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub require_guide_read: bool,
     pub filters: Vec<FilterSpec>,
     pub fetch_limit_default: Option<usize>,
     pub search_limits: Option<SearchLimitsSpec>,
@@ -209,6 +211,7 @@ impl TableCommon {
         name: String,
         description: String,
         guide: String,
+        require_guide_read: bool,
         filters: Vec<FilterSpec>,
         fetch_limit_default: Option<usize>,
         search_limits: Option<SearchLimitsSpec>,
@@ -219,6 +222,7 @@ impl TableCommon {
             name,
             description,
             guide,
+            require_guide_read,
             filters,
             fetch_limit_default,
             search_limits,
@@ -377,6 +381,8 @@ pub struct SourceTableFunctionSpec {
     pub description: String,
     #[serde(default)]
     pub guide: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub require_guide_read: bool,
     #[serde(default)]
     pub fetch_limit_default: Option<usize>,
     #[serde(default)]

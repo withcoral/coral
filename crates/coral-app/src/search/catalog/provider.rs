@@ -1042,6 +1042,7 @@ mod tests {
                 table_name: "payments".to_string(),
                 description: "Payments".to_string(),
                 guide: String::new(),
+                require_guide_read: false,
                 columns: (0..column_count)
                     .map(|index| ColumnInfo {
                         name: format!("alpha_{index}"),

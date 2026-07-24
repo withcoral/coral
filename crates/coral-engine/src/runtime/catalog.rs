@@ -28,6 +28,7 @@ pub(crate) struct CatalogTableFunction {
     pub(crate) function_name: String,
     pub(crate) description: String,
     pub(crate) guide: String,
+    pub(crate) require_guide_read: bool,
     pub(crate) arguments: Vec<CatalogTableFunctionArgument>,
     pub(crate) result_columns: Vec<CatalogTableFunctionResultColumn>,
     pub(crate) kind: SourceTableFunctionKind,
@@ -102,6 +103,7 @@ fn build_table_functions_table(
         Field::new("kind", DataType::Utf8, false),
         Field::new("search_limits_json", DataType::Utf8, true),
         Field::new("guide", DataType::Utf8, false),
+        Field::new("require_guide_read", DataType::Boolean, false),
     ]));
 
     let rows = catalog_table_functions(active_sources, catalog_only_table_functions);
@@ -130,6 +132,11 @@ fn build_table_functions_table(
             utf8_column(rows.iter().map(|row| Some(row.kind.as_str()))),
             utf8_column(search_limits_json.iter().map(|value| value.as_deref())),
             utf8_column(rows.iter().map(|row| Some(row.guide.as_str()))),
+            Arc::new(
+                rows.iter()
+                    .map(|row| Some(row.require_guide_read))
+                    .collect::<BooleanArray>(),
+            ),
         ],
     )
     .map_err(|error| DataFusionError::ArrowError(Box::new(error), None))?;
@@ -243,6 +250,12 @@ const TABLES_COLUMNS: &[SystemColumnDefinition] = &[
         data_type: "Utf8",
         nullable: false,
         description: "Query guidance for the table.",
+    },
+    SystemColumnDefinition {
+        name: "require_guide_read",
+        data_type: "Boolean",
+        nullable: false,
+        description: "Whether MCP SQL surfaces the guide before first use in a task.",
     },
     SystemColumnDefinition {
         name: "required_filters",
@@ -466,6 +479,12 @@ const TABLE_FUNCTIONS_COLUMNS: &[SystemColumnDefinition] = &[
         nullable: false,
         description: "User-facing query guidance for the table function.",
     },
+    SystemColumnDefinition {
+        name: "require_guide_read",
+        data_type: "Boolean",
+        nullable: false,
+        description: "Whether MCP SQL surfaces the guide before first use in a task.",
+    },
 ];
 
 const SYSTEM_TABLE_DEFINITIONS: &[SystemTableDefinition] = &[
@@ -509,6 +528,7 @@ fn system_table_infos() -> Vec<TableInfo> {
             table_name: table.table_name.to_string(),
             description: table.description.to_string(),
             guide: table.guide.to_string(),
+            require_guide_read: false,
             columns: table
                 .columns
                 .iter()
@@ -538,6 +558,7 @@ pub(crate) fn collect_tables(active_sources: &[RegisteredSource]) -> Vec<TableIn
             table_name: table.table_name.clone(),
             description: table.description.clone(),
             guide: table.guide.clone(),
+            require_guide_read: table.require_guide_read,
             columns: table
                 .columns
                 .iter()
@@ -574,6 +595,7 @@ pub(crate) fn collect_table_functions(
             function_name: function.function_name,
             description: function.description,
             guide: function.guide,
+            require_guide_read: function.require_guide_read,
             arguments: function
                 .arguments
                 .into_iter()
@@ -614,6 +636,7 @@ fn catalog_table_functions(
                     function_name: function.function_name.clone(),
                     description: function.description.clone(),
                     guide: function.guide.clone(),
+                    require_guide_read: function.require_guide_read,
                     arguments: function
                         .arguments
                         .iter()
@@ -650,6 +673,7 @@ struct CatalogTable {
     table_name: String,
     description: String,
     guide: String,
+    require_guide_read: bool,
     required_filters: String,
     search_limits: Option<SearchLimitsSpec>,
 }
@@ -660,6 +684,7 @@ fn build_tables_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
         Field::new("table_name", DataType::Utf8, false),
         Field::new("description", DataType::Utf8, false),
         Field::new("guide", DataType::Utf8, false),
+        Field::new("require_guide_read", DataType::Boolean, false),
         Field::new("required_filters", DataType::Utf8, false),
         Field::new("search_limits_json", DataType::Utf8, true),
     ]));
@@ -671,6 +696,7 @@ fn build_tables_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
             table_name: table.table_name.to_string(),
             description: table.description.to_string(),
             guide: table.guide.to_string(),
+            require_guide_read: false,
             required_filters: String::new(),
             search_limits: None,
         })
@@ -680,6 +706,7 @@ fn build_tables_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
                 table_name: table.table_name.clone(),
                 description: table.description.clone(),
                 guide: table.guide.clone(),
+                require_guide_read: table.require_guide_read,
                 required_filters: table.required_filters.join(","),
                 search_limits: table.search_limits.clone(),
             })
@@ -702,6 +729,11 @@ fn build_tables_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
             utf8_column(rows.iter().map(|row| Some(row.table_name.as_str()))),
             utf8_column(rows.iter().map(|row| Some(row.description.as_str()))),
             utf8_column(rows.iter().map(|row| Some(row.guide.as_str()))),
+            Arc::new(
+                rows.iter()
+                    .map(|row| Some(row.require_guide_read))
+                    .collect::<BooleanArray>(),
+            ),
             utf8_column(rows.iter().map(|row| Some(row.required_filters.as_str()))),
             utf8_column(search_limits_json.iter().map(|value| value.as_deref())),
         ],
@@ -1054,6 +1086,7 @@ mod tests {
                     kind: coral_spec::SourceTableFunctionKind::Search,
                     description: String::new(),
                     guide: "Prefer this function for lookup.".to_string(),
+                    require_guide_read: true,
                     arguments: Vec::new(),
                     result_columns: Vec::new(),
                     search_limits: None,

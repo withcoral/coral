@@ -598,6 +598,7 @@ mod tests {
             table_name: "Pull.Requests".to_string(),
             description: "Pull request table".to_string(),
             guide: "Query pull requests.".to_string(),
+            require_guide_read: false,
             columns: Vec::new(),
             required_filters,
         }

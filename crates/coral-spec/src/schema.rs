@@ -192,6 +192,37 @@ functions:
     }
 
     #[test]
+    fn validate_manifest_schema_accepts_required_guide_read() {
+        let manifest = manifest_json(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+base_url: https://example.com
+tables:
+  - name: messages
+    description: Demo messages
+    guide: Use search_messages for lookup queries.
+    require_guide_read: true
+    request:
+      method: GET
+      path: /messages
+functions:
+  - name: search_messages
+    guide: Use this function for message lookup.
+    require_guide_read: true
+    request:
+      method: GET
+      path: /messages/search
+",
+        );
+
+        validate_manifest_schema(&manifest)
+            .expect("required guide-read fields should pass schema validation");
+    }
+
+    #[test]
     fn validate_identity_manifest_schema_uses_identity_error_prefix() {
         let manifest = json!({
             "kind": "source",

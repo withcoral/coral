@@ -384,6 +384,7 @@ pub(crate) fn table_to_proto(
         columns,
         required_filters: table.required_filters,
         guide: table.guide,
+        require_guide_read: table.require_guide_read,
     }
 }
 
@@ -398,6 +399,7 @@ pub(crate) fn table_summary_to_proto(
         description: table.description,
         required_filters: table.required_filters,
         guide: table.guide,
+        require_guide_read: table.require_guide_read,
     }
 }
 
@@ -469,6 +471,7 @@ pub(crate) fn table_function_to_proto(
         kind: table_function_kind_to_proto(function.kind) as i32,
         search_limits: function.search_limits.as_ref().map(search_limits_to_proto),
         guide: function.guide,
+        require_guide_read: function.require_guide_read,
     }
 }
 
@@ -909,6 +912,7 @@ mod tests {
             table_name: "users".to_string(),
             description: "User records".to_string(),
             guide: "Filter by org_id.".to_string(),
+            require_guide_read: true,
             columns: vec![ColumnInfo {
                 name: "id".to_string(),
                 data_type: "Int64".to_string(),
@@ -928,6 +932,7 @@ mod tests {
         assert_eq!(proto.name, "users");
         assert_eq!(proto.description, "User records");
         assert_eq!(proto.guide, "Filter by org_id.");
+        assert!(proto.require_guide_read);
         assert_eq!(proto.columns.len(), 1);
         assert_eq!(proto.columns[0].name, "id");
         assert_eq!(proto.columns[0].data_type, "Int64");
@@ -947,6 +952,7 @@ mod tests {
             table_name: "users".to_string(),
             description: "User records".to_string(),
             guide: "Filter by org_id.".to_string(),
+            require_guide_read: true,
             columns: vec![ColumnInfo {
                 name: "id".to_string(),
                 data_type: "Int64".to_string(),
@@ -966,6 +972,7 @@ mod tests {
         assert_eq!(proto.name, "users");
         assert_eq!(proto.description, "User records");
         assert_eq!(proto.guide, "Filter by org_id.");
+        assert!(proto.require_guide_read);
         assert_eq!(proto.required_filters, vec!["org_id"]);
     }
 
@@ -977,6 +984,7 @@ mod tests {
             function_name: "search".to_string(),
             description: "Search demo records".to_string(),
             guide: "Prefer search for record lookup.".to_string(),
+            require_guide_read: true,
             arguments: vec![coral_engine::TableFunctionArgumentInfo {
                 name: "payload".to_string(),
                 required: true,
@@ -994,6 +1002,7 @@ mod tests {
         assert_eq!(proto.name, "search");
         assert_eq!(proto.description, "Search demo records");
         assert_eq!(proto.guide, "Prefer search for record lookup.");
+        assert!(proto.require_guide_read);
         assert_eq!(proto.arguments.len(), 1);
         assert_eq!(proto.arguments[0].name, "payload");
         assert!(proto.arguments[0].required);

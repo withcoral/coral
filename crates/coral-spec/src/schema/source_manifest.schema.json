@@ -378,6 +378,7 @@
         "name": { "type": "string", "minLength": 1 },
         "description": { "type": "string", "minLength": 1 },
         "guide": { "type": "string" },
+        "require_guide_read": { "type": "boolean" },
         "filters": {
           "type": "array",
           "items": { "$ref": "#/$defs/filter" }
@@ -460,6 +461,7 @@
         "name": { "type": "string", "minLength": 1 },
         "description": { "type": "string", "minLength": 1 },
         "guide": { "type": "string" },
+        "require_guide_read": { "type": "boolean" },
         "format": {
           "type": "string",
           "enum": ["parquet", "jsonl", "json", "csv"]
@@ -653,6 +655,7 @@
         "kind": { "type": "string", "enum": ["table", "search"] },
         "description": { "type": "string" },
         "guide": { "type": "string" },
+        "require_guide_read": { "type": "boolean" },
         "fetch_limit_default": { "type": "integer", "minimum": 1 },
         "search_limits": { "$ref": "#/$defs/search_limits" },
         "detail_hints": {
@@ -681,6 +684,7 @@
         "tool": { "type": "string", "minLength": 1 },
         "description": { "type": "string" },
         "guide": { "type": "string" },
+        "require_guide_read": { "type": "boolean" },
         "fetch_limit_default": { "type": "integer", "minimum": 1 },
         "args": {
           "type": "array",
@@ -703,6 +707,7 @@
         "tool": { "type": "string", "minLength": 1 },
         "description": { "type": "string" },
         "guide": { "type": "string" },
+        "require_guide_read": { "type": "boolean" },
         "fetch_limit_default": { "type": "integer", "minimum": 1 },
         "tool_args": {
           "type": "object",

@@ -163,6 +163,7 @@ fn catalog_table_function(
         kind: coral_spec::SourceTableFunctionKind::Table,
         description: publish_description(&publish.description, &udf.description),
         guide: publish.guide.clone(),
+        require_guide_read: false,
         arguments: udf
             .arguments
             .iter()

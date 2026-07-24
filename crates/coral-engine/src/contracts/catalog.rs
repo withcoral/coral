@@ -32,6 +32,8 @@ pub struct TableInfo {
     pub description: String,
     /// User-facing query guidance.
     pub guide: String,
+    /// Whether MCP SQL must surface the guide before first use in a task.
+    pub require_guide_read: bool,
     /// Exposed columns for the table.
     pub columns: Vec<ColumnInfo>,
     /// Required filter names for the table.
@@ -91,6 +93,8 @@ pub struct TableFunctionInfo {
     pub description: String,
     /// User-facing query guidance.
     pub guide: String,
+    /// Whether MCP SQL must surface the guide before first use in a task.
+    pub require_guide_read: bool,
     /// Accepted function arguments.
     pub arguments: Vec<TableFunctionArgumentInfo>,
     /// Columns returned by the function.

@@ -16,7 +16,8 @@ use std::time::Duration;
 use std::{fs, io};
 
 use coral_api::v1::{
-    ExecuteSqlRequest, ImportSourceRequest, ListSourcesResponse, Source, SourceCredentialStorage,
+    ExecuteSqlRequest, ImportSourceRequest, ListSourcesResponse, QueryGuideRequirement,
+    QueryResourceKind, ResolveSqlGuideRequirementsResponse, Source, SourceCredentialStorage,
     SourceOrigin, Workspace, import_source_response,
 };
 use coral_app::{ServerBuilder, shutdown_tracing};
@@ -1629,6 +1630,69 @@ async fn mcp_stdio_sql_batch_records_each_execute_sql_request()
             .iter()
             .any(|request| request.sql == "SELECT 'second' AS label")
     );
+
+    client.cancel().await?;
+    server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_stdio_required_guide_blocks_every_query_before_backend_dispatch()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start_with_config(
+        MockServerConfig::default().with_resolve_sql_guide_requirements(
+            ResolveSqlGuideRequirementsResponse {
+                required_guides: vec![QueryGuideRequirement {
+                    schema_name: "local_messages".to_string(),
+                    resource_name: "events".to_string(),
+                    kind: QueryResourceKind::Table as i32,
+                    guide: "Use messages for ordinary lookup.".to_string(),
+                }],
+            },
+        ),
+    )
+    .await;
+    let client = start_mcp_client(&server).await?;
+    let task_id = start_test_task(&client).await?;
+    let queries = json!({
+        "queries": [
+            "SELECT 'first' AS label",
+            "SELECT 'second' AS label"
+        ]
+    });
+
+    let blocked = structured_tool_content(
+        &client,
+        CallToolRequestParams::new("sql").with_arguments(task_arguments(&task_id, &queries)),
+    )
+    .await?;
+    assert_eq!(blocked["status"], "guide_required");
+    assert_eq!(blocked["executed"], false);
+    assert_eq!(blocked["guides"][0]["resource"], "events");
+    assert!(
+        server.execute_sql_requests().is_empty(),
+        "no query in a blocked batch may reach ExecuteSql"
+    );
+    let preflights = server.resolve_sql_guide_requirements_requests();
+    assert_eq!(preflights.len(), 2);
+    assert!(
+        preflights
+            .iter()
+            .any(|request| request.sql == "SELECT 'first' AS label")
+    );
+    assert!(
+        preflights
+            .iter()
+            .any(|request| request.sql == "SELECT 'second' AS label")
+    );
+
+    let retry = structured_tool_content(
+        &client,
+        CallToolRequestParams::new("sql").with_arguments(task_arguments(&task_id, &queries)),
+    )
+    .await?;
+    assert_eq!(retry["success_count"], 2);
+    assert_eq!(server.execute_sql_requests().len(), 2);
 
     client.cancel().await?;
     server.shutdown().await;

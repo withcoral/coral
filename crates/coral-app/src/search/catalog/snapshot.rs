@@ -431,6 +431,14 @@ fn catalog_snapshot_fingerprint(
         update_hash(&mut hasher, &table.table_name);
         update_hash(&mut hasher, &table.description);
         update_hash(&mut hasher, &table.guide);
+        update_hash(
+            &mut hasher,
+            if table.require_guide_read {
+                "require_guide_read"
+            } else {
+                ""
+            },
+        );
         let mut columns = table.columns.iter().collect::<Vec<_>>();
         columns.sort_by(|left, right| {
             (left.ordinal_position, left.name.as_str())
@@ -458,6 +466,14 @@ fn catalog_snapshot_fingerprint(
         update_hash(&mut hasher, &function.function_name);
         update_hash(&mut hasher, &function.description);
         update_hash(&mut hasher, &function.guide);
+        update_hash(
+            &mut hasher,
+            if function.require_guide_read {
+                "require_guide_read"
+            } else {
+                ""
+            },
+        );
         update_hash(&mut hasher, function.kind.as_str());
         let search_limits_json = function
             .search_limits
@@ -578,6 +594,7 @@ mod tests {
                 table_name: table_name.to_string(),
                 description: format!("Fixture {table_name}"),
                 guide: String::new(),
+                require_guide_read: false,
                 columns: vec![coral_engine::ColumnInfo {
                     name: "title".to_string(),
                     data_type: "Utf8".to_string(),

@@ -281,6 +281,7 @@ mod tests {
             description: format!("{name} description"),
             required_filters: Vec::new(),
             guide: format!("Query {name}."),
+            require_guide_read: false,
         }
     }
 

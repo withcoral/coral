@@ -37,10 +37,11 @@ use coral_api::v1::{
     ListColumnsResponse, ListFunctionsRequest, ListFunctionsResponse, ListSourcesRequest,
     ListSourcesResponse, ListWorkspacesRequest, ListWorkspacesResponse, ObservedDrainResult,
     ObservedRebuildResult, PaginationRequest, PaginationResponse, QueryPlan,
-    RebuildSearchIndexRequest, RebuildSearchIndexResponse, SearchCatalogRequest,
-    SearchCatalogResponse, SearchFieldRole, SearchMaintenanceResult, SearchMaintenanceState,
-    SearchProvider, SearchProviderCoverage, SearchProviderState, SearchRequest, SearchResponse,
-    SearchResult, SearchResultTruncation, SearchStorageCleanupResult, SearchSurfaceKind,
+    RebuildSearchIndexRequest, RebuildSearchIndexResponse, ResolveSqlGuideRequirementsRequest,
+    ResolveSqlGuideRequirementsResponse, SearchCatalogRequest, SearchCatalogResponse,
+    SearchFieldRole, SearchMaintenanceResult, SearchMaintenanceState, SearchProvider,
+    SearchProviderCoverage, SearchProviderState, SearchRequest, SearchResponse, SearchResult,
+    SearchResultTruncation, SearchStorageCleanupResult, SearchSurfaceKind,
     SearchTableColumnPreview, SearchTableColumnPreviewColumn, Source, SourceCredentialStorage,
     SourceInfo, SourceInputSpec, SourceOrigin, SourceSecretInput, StartTaskRequest,
     StartTaskResponse, Table, TableFunction, TableSummary, Task as ProtoTask,
@@ -98,6 +99,7 @@ fn mock_table(schema_name: &str, name: &str) -> Table {
         name: name.to_string(),
         description: String::new(),
         guide: String::new(),
+        require_guide_read: false,
         columns: Vec::new(),
         required_filters: Vec::new(),
     }
@@ -110,6 +112,7 @@ fn mock_visible_table() -> Table {
         name: "messages".to_string(),
         description: "Fixture messages".to_string(),
         guide: "Query fixture messages.".to_string(),
+        require_guide_read: false,
         columns: vec![
             Column {
                 name: "owner".to_string(),
@@ -164,6 +167,7 @@ fn table_summary(table: &Table) -> TableSummary {
         description: table.description.clone(),
         required_filters: table.required_filters.clone(),
         guide: table.guide.clone(),
+        require_guide_read: table.require_guide_read,
     }
 }
 
@@ -365,6 +369,7 @@ fn mock_validate_response() -> ValidateSourceResponse {
             name: "search_issues".to_string(),
             description: "Search issues".to_string(),
             guide: "Prefer this function for issue lookup.".to_string(),
+            require_guide_read: false,
             arguments: Vec::new(),
             result_columns: Vec::new(),
             kind: 0,
@@ -686,6 +691,7 @@ impl<T> MockResult<T> {
 #[derive(Clone)]
 pub(crate) struct MockServerConfig {
     execute_sql_override: Option<MockResult<ExecuteSqlResponse>>,
+    resolve_sql_guide_requirements: MockResult<ResolveSqlGuideRequirementsResponse>,
     search: MockResult<SearchResponse>,
     rebuild_search_index: MockResult<RebuildSearchIndexResponse>,
     drain_search_queue: MockResult<DrainSearchQueueResponse>,
@@ -704,6 +710,9 @@ impl Default for MockServerConfig {
     fn default() -> Self {
         Self {
             execute_sql_override: None,
+            resolve_sql_guide_requirements: MockResult::ok(ResolveSqlGuideRequirementsResponse {
+                required_guides: Vec::new(),
+            }),
             search: MockResult::ok(mock_search_response()),
             rebuild_search_index: MockResult::ok(mock_rebuild_search_index_response()),
             drain_search_queue: MockResult::ok(mock_drain_search_queue_response()),
@@ -771,6 +780,14 @@ impl MockServerConfig {
 
     pub(crate) fn with_execute_sql(mut self, response: ExecuteSqlResponse) -> Self {
         self.execute_sql_override = Some(MockResult::ok(response));
+        self
+    }
+
+    pub(crate) fn with_resolve_sql_guide_requirements(
+        mut self,
+        response: ResolveSqlGuideRequirementsResponse,
+    ) -> Self {
+        self.resolve_sql_guide_requirements = MockResult::ok(response);
         self
     }
 
@@ -865,6 +882,7 @@ fn list_catalog_response(request: &ListCatalogRequest) -> ListCatalogResponse {
 #[derive(Default)]
 struct Captured {
     execute_sql: Mutex<Vec<ExecuteSqlRequest>>,
+    resolve_sql_guide_requirements: Mutex<Vec<ResolveSqlGuideRequirementsRequest>>,
     search: Mutex<Vec<SearchRequest>>,
     execute_sql_task_ids: Mutex<Vec<Option<String>>>,
     rebuild_search_index: Mutex<Vec<RebuildSearchIndexRequest>>,
@@ -1032,6 +1050,23 @@ impl QueryService for MockQueryService {
                 physical_plan: "PhysicalPlan".to_string(),
             }),
         }))
+    }
+
+    async fn resolve_sql_guide_requirements(
+        &self,
+        request: Request<ResolveSqlGuideRequirementsRequest>,
+    ) -> Result<Response<ResolveSqlGuideRequirementsResponse>, Status> {
+        self.captured
+            .resolve_sql_guide_requirements
+            .lock()
+            .expect("resolve_sql_guide_requirements capture")
+            .push(request.into_inner());
+        Ok(Response::new(
+            self.config
+                .resolve_sql_guide_requirements
+                .clone()
+                .into_tonic_result()?,
+        ))
     }
 }
 
@@ -1645,6 +1680,16 @@ impl MockServer {
             .execute_sql
             .lock()
             .expect("execute_sql capture")
+            .clone()
+    }
+
+    pub(crate) fn resolve_sql_guide_requirements_requests(
+        &self,
+    ) -> Vec<ResolveSqlGuideRequirementsRequest> {
+        self.captured
+            .resolve_sql_guide_requirements
+            .lock()
+            .expect("resolve_sql_guide_requirements capture")
             .clone()
     }
 

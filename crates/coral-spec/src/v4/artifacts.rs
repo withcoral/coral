@@ -102,6 +102,11 @@ pub fn validate_materialized_source_structure(
                 projection.name
             )));
         }
+        crate::validate_required_guide(
+            &format!("DSL v4 projection '{}'", projection.name),
+            &projection.guide,
+            projection.require_guide_read,
+        )?;
     }
     Ok(())
 }
@@ -208,6 +213,7 @@ surface:
             kind: ProjectionKind::Table,
             description: String::new(),
             guide: String::new(),
+            require_guide_read: false,
             operation_id: "items/list".to_string(),
             visibility: ProjectionVisibility::Published,
             inputs: Vec::new(),

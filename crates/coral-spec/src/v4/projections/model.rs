@@ -20,6 +20,8 @@ pub struct Projection {
     pub kind: ProjectionKind,
     pub description: String,
     pub guide: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub require_guide_read: bool,
     pub operation_id: String,
     pub visibility: ProjectionVisibility,
     pub inputs: Vec<ProjectionInput>,
@@ -104,6 +106,7 @@ mod tests {
                 },
                 description: String::new(),
                 guide: String::new(),
+                require_guide_read: false,
                 operation_id: "issues/search".to_string(),
                 visibility: ProjectionVisibility::Published,
                 inputs: Vec::new(),
@@ -147,6 +150,10 @@ mod tests {
             yaml.contains("do_not_index: true"),
             "projection catalog should serialize explicit indexing policy: {yaml}"
         );
+        assert!(
+            !yaml.contains("require_guide_read:"),
+            "default guide-read policy should stay implicit: {yaml}"
+        );
         assert!(!yaml.contains("surface_id:"), "surface ID leaked: {yaml}");
 
         let decoded = serde_yaml::from_str::<ProjectionCatalog>(&yaml)
@@ -161,6 +168,42 @@ mod tests {
                 .expect("column")
                 .do_not_index,
             "projection column policy should survive round-trip"
+        );
+    }
+
+    #[test]
+    fn projection_catalog_deserializes_required_guide_read() {
+        let raw = format!(
+            r"
+artifact_schema_version: {V4_ARTIFACT_SCHEMA_VERSION}
+source_name: demo
+projections:
+  - name: items
+    kind:
+      type: table
+    description: Items
+    guide: Use search_items for lookups.
+    require_guide_read: true
+    operation_id: items/list
+    visibility: published
+    inputs: []
+    columns: []
+    search_limits: null
+    detail_hints: []
+    diagnostics: []
+diagnostics: []
+"
+        );
+
+        let catalog: ProjectionCatalog =
+            serde_yaml::from_str(&raw).expect("projection override catalog should deserialize");
+
+        assert!(
+            catalog
+                .projections
+                .first()
+                .expect("projection")
+                .require_guide_read
         );
     }
 

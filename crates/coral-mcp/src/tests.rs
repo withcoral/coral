@@ -52,6 +52,8 @@ backend: file
 tables:
   - name: events
     description: Fixture events
+    guide: Use messages for ordinary text lookup.
+    require_guide_read: true
     format: jsonl
     source:
       location: file://{}/
@@ -111,9 +113,18 @@ base_url: https://example.com
 tables:
   - name: placeholder
     description: Placeholder table
+    guide: Supply an id filter before using this table.
+    require_guide_read: true
+    filters:
+      - name: lookup_id
+        required: true
     request:
       method: GET
       path: /placeholder
+      query:
+        - name: lookup_id
+          from: filter
+          key: lookup_id
     columns:
       - name: id
         type: Utf8
@@ -121,6 +132,7 @@ functions:
   - name: lookup_issue
     description: Lookup issue
     guide: Use this function for exact issue lookup.
+    require_guide_read: true
     args:
       - name: number
         required: true
@@ -1007,8 +1019,9 @@ async fn mcp_catalog_helpers_expose_coral_system_tables_from_sql_catalog() {
         .expect("list system columns")
         .structured_content
         .expect("structured columns");
-    assert_eq!(columns["total"], 6);
+    assert_eq!(columns["total"], 7);
     assert_eq!(columns["rows"][0][0], "schema_name");
+    assert_eq!(columns["rows"][4][0], "require_guide_read");
 
     session.shutdown().await;
 }
@@ -1619,6 +1632,10 @@ async fn list_catalog_surfaces_table_functions() {
         "Use this function for exact issue lookup."
     );
     assert_eq!(
+        catalog["items"][0]["table_function"]["require_guide_read"],
+        true
+    );
+    assert_eq!(
         catalog["items"][0]["table_function"]["arguments"][0]["name"],
         "number"
     );
@@ -1682,6 +1699,45 @@ async fn list_catalog_surfaces_table_functions() {
         "Use this function for exact issue lookup."
     );
     assert_matches_output_schema(search_tool, &search);
+
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn mcp_sql_logical_preflight_finds_required_table_and_function_guides() {
+    let temp = TempDir::new().expect("temp dir");
+    let manifest_path = write_function_fixture_manifest(temp.path());
+    let manifest_yaml = fs::read_to_string(&manifest_path).expect("read manifest");
+    let mut session = start_session(&temp).await;
+    add_demo_source(&mut session.source_client, manifest_yaml).await;
+    let client = &session.client;
+    let task_id = start_test_task(client).await;
+
+    let blocked = client
+        .call_tool(
+            CallToolRequestParams::new("sql").with_arguments(task_arguments(
+                &task_id,
+                &json!({
+                    "queries": [
+                        "SELECT * FROM searchy.lookup_issue(number => '1') LIMIT 0",
+                        "SELECT id FROM searchy.placeholder"
+                    ]
+                }),
+            )),
+        )
+        .await
+        .expect("gated table and table function")
+        .structured_content
+        .expect("structured guide block");
+    assert_eq!(blocked["status"], "guide_required");
+    let guides = blocked["guides"].as_array().expect("required guides");
+    assert_eq!(guides.len(), 2);
+    assert_eq!(guides[0]["schema"], "searchy");
+    assert_eq!(guides[0]["resource"], "lookup_issue");
+    assert_eq!(guides[0]["kind"], "table_function");
+    assert_eq!(guides[1]["schema"], "searchy");
+    assert_eq!(guides[1]["resource"], "placeholder");
+    assert_eq!(guides[1]["kind"], "table");
 
     session.shutdown().await;
 }
@@ -1998,6 +2054,75 @@ async fn mcp_sql_executes_successful_batch_in_input_order() {
     assert_eq!(sql["results"][1]["index"], 1);
     assert_eq!(sql["results"][1]["status"], "success");
     assert_eq!(sql["results"][1]["rows"][0]["text"], "hello");
+
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn mcp_sql_surfaces_required_table_guide_once_per_task_before_executing_batch() {
+    let temp = TempDir::new().expect("temp dir");
+    let manifest_path = write_fixture_manifest(temp.path());
+    let manifest_yaml = fs::read_to_string(&manifest_path).expect("read manifest");
+    let mut session = start_session(&temp).await;
+    add_demo_source(&mut session.source_client, manifest_yaml).await;
+    let client = &session.client;
+    let task_id = start_test_task(client).await;
+    let tools = client.list_all_tools().await.expect("tools");
+    let sql_tool = tool_by_name(&tools, "sql");
+    let queries = json!({
+        "queries": [
+            "SELECT text FROM local_messages.events WHERE text = 'hello'",
+            "SELECT 42 AS answer"
+        ]
+    });
+
+    let blocked = client
+        .call_tool(
+            CallToolRequestParams::new("sql").with_arguments(task_arguments(&task_id, &queries)),
+        )
+        .await
+        .expect("first gated SQL call");
+    assert_eq!(blocked.is_error, Some(false));
+    let blocked = blocked.structured_content.expect("structured guide block");
+    assert_matches_output_schema(sql_tool, &blocked);
+    assert_eq!(blocked["status"], "guide_required");
+    assert_eq!(blocked["executed"], false);
+    assert_eq!(
+        blocked["message"],
+        "Coral blocked this SQL call because one or more referenced resources have require_guide_read enabled. No queries in this call were executed. Read the guidance below. These guide versions are now unblocked for the remainder of this task. Retry the SQL unchanged if it follows the guidance, or revise it before trying again."
+    );
+    assert_eq!(blocked["guides"][0]["schema"], "local_messages");
+    assert_eq!(blocked["guides"][0]["resource"], "events");
+    assert_eq!(blocked["guides"][0]["kind"], "table");
+    assert_eq!(
+        blocked["guides"][0]["guide"],
+        "Use messages for ordinary text lookup."
+    );
+
+    let retry = client
+        .call_tool(
+            CallToolRequestParams::new("sql").with_arguments(task_arguments(&task_id, &queries)),
+        )
+        .await
+        .expect("same-task SQL retry");
+    assert_eq!(retry.is_error, Some(false));
+    let retry = retry.structured_content.expect("structured SQL retry");
+    assert_eq!(retry["success_count"], 2);
+    assert_eq!(retry["results"][0]["rows"][0]["text"], "hello");
+    assert_eq!(retry["results"][1]["rows"][0]["answer"], "42");
+
+    let next_task_id = start_test_task(client).await;
+    let next_task = client
+        .call_tool(
+            CallToolRequestParams::new("sql")
+                .with_arguments(task_arguments(&next_task_id, &queries)),
+        )
+        .await
+        .expect("next task gated SQL call");
+    assert_eq!(
+        next_task.structured_content.expect("next task guide block")["status"],
+        "guide_required"
+    );
 
     session.shutdown().await;
 }

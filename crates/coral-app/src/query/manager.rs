@@ -47,6 +47,20 @@ pub(crate) enum QueryManagerError {
     Core(CoreError),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum QueryGuideResourceKind {
+    Table,
+    TableFunction,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RequiredQueryGuide {
+    pub(crate) schema_name: String,
+    pub(crate) resource_name: String,
+    pub(crate) kind: QueryGuideResourceKind,
+    pub(crate) guide: String,
+}
+
 pub(crate) struct ValidatedSource {
     pub(crate) source: InstalledSource,
     pub(crate) report: SourceValidationReport,
@@ -433,6 +447,46 @@ impl QueryManager {
                     .explain_sql(sql)
                     .await
                     .map_err(QueryManagerError::Core)
+            },
+            |_| None,
+            |_, _| {},
+        )
+        .await
+    }
+
+    pub(crate) async fn resolve_sql_guide_requirements(
+        &self,
+        workspace_name: &WorkspaceName,
+        sql: &str,
+        attribution: &QueryAttribution,
+    ) -> Result<Vec<RequiredQueryGuide>, QueryManagerError> {
+        run_query_operation(
+            QueryOperation::ResolveSqlGuideRequirements,
+            workspace_name,
+            sql,
+            attribution.task_id.as_ref(),
+            async {
+                let (source_load, config) = self
+                    .load_query_sources(workspace_name)
+                    .await
+                    .map_err(QueryManagerError::App)?;
+                let runtime = self
+                    .prepared_runtime_with_udfs(
+                        workspace_name,
+                        &source_load.loaded,
+                        &config,
+                        CredentialResolutionMode::Refreshing,
+                        SourceObservationMode::Disabled,
+                    )
+                    .await?;
+                let provenance = runtime
+                    .analyze_sql(sql)
+                    .await
+                    .map_err(QueryManagerError::Core)?;
+                Ok(required_query_guides(
+                    &runtime.list_catalog(None),
+                    &provenance,
+                ))
             },
             |_| None,
             |_, _| {},
@@ -915,6 +969,41 @@ impl QueryManager {
     }
 }
 
+fn required_query_guides(
+    catalog: &CatalogInfo,
+    provenance: &QueryExecutionProvenance,
+) -> Vec<RequiredQueryGuide> {
+    let mut guides = Vec::new();
+    for usage in provenance.tables() {
+        if let Some(table) = catalog.tables.iter().find(|table| {
+            table.schema_name == usage.schema_name() && table.table_name == usage.table_name()
+        }) && table.require_guide_read
+        {
+            guides.push(RequiredQueryGuide {
+                schema_name: table.schema_name.clone(),
+                resource_name: table.table_name.clone(),
+                kind: QueryGuideResourceKind::Table,
+                guide: table.guide.clone(),
+            });
+        }
+    }
+    for usage in provenance.table_functions() {
+        if let Some(function) = catalog.table_functions.iter().find(|function| {
+            function.schema_name == usage.schema_name()
+                && function.function_name == usage.function_name()
+        }) && function.require_guide_read
+        {
+            guides.push(RequiredQueryGuide {
+                schema_name: function.schema_name.clone(),
+                resource_name: function.function_name.clone(),
+                kind: QueryGuideResourceKind::TableFunction,
+                guide: function.guide.clone(),
+            });
+        }
+    }
+    guides
+}
+
 fn query_sources_from_loaded(loaded_sources: &[LoadedQuerySource]) -> Vec<QuerySource> {
     loaded_sources
         .iter()
@@ -926,6 +1015,7 @@ fn query_sources_from_loaded(loaded_sources: &[LoadedQuerySource]) -> Vec<QueryS
 enum QueryOperation {
     ExecuteSql,
     ExplainSql,
+    ResolveSqlGuideRequirements,
     ListTables,
     ListCatalog,
     DescribeTable,
@@ -942,6 +1032,7 @@ impl QueryOperation {
         match self {
             Self::ExecuteSql => "execute_sql",
             Self::ExplainSql => "explain_sql",
+            Self::ResolveSqlGuideRequirements => "resolve_sql_guide_requirements",
             Self::ListTables => "list_tables",
             Self::ListCatalog => "list_catalog",
             Self::DescribeTable => "describe_table",

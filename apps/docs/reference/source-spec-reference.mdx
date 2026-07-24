@@ -505,6 +505,32 @@ In this minimal example:
 - `auth` declares how stored values are used to authenticate outgoing HTTP requests
 - `{{input.API_TOKEN}}` is resolved from the secret store because `API_TOKEN` is declared as `kind: secret`
 
+### Table guidance
+
+Tables support an optional `guide` field for query advice that does not belong
+in the short `description`, such as when to prefer another resource or which
+query pattern avoids a provider limit.
+
+Set `require_guide_read: true` when an MCP agent must see that guide before it
+first uses the table in a task:
+
+```yaml
+tables:
+  - name: channels
+    description: Slack channels
+    guide: |
+      Do not use this table for lookup by name or ID.
+      Use user_channels for lookup queries.
+    require_guide_read: true
+```
+
+Coral blocks the first MCP `sql` call in the task that references the table,
+returns the guide without executing any query in that call, and unblocks that
+guide version for the rest of the task. If the guide changes, Coral blocks the
+next MCP `sql` call for that table and returns the updated guide. The agent can
+retry unchanged after following the guide or submit a revised query. A required
+guide must not be empty. Non-MCP SQL clients are unchanged.
+
 ### Table filters
 
 HTTP tables can declare `filters` that Coral binds from SQL `WHERE` predicates into provider requests. MCP tables use the same SQL-facing filter fields and add a required `tool_arg` field to bind the filter to an MCP tool argument.
@@ -596,9 +622,11 @@ functions:
         type: Float64
 ```
 
-Table functions support the same optional `guide` field as tables. Keep
-`description` short and use `guide` for usage advice, such as when to prefer
-the function, how to prepare its arguments, or provider-specific query syntax.
+Table functions support the same optional `guide` and
+`require_guide_read` fields as tables, with the same per-task MCP behavior.
+Keep `description` short and use `guide` for usage advice, such as when to
+prefer the function, how to prepare its arguments, or provider-specific query
+syntax.
 
 Use `bind.arg` when a SQL argument should populate a differently named request
 argument. Function request values can then reference those bound arguments with

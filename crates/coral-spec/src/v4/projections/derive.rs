@@ -137,6 +137,7 @@ fn generate_projection(
         kind,
         description: operation.description.clone(),
         guide,
+        require_guide_read: false,
         operation_id: operation.id.clone(),
         visibility,
         inputs,

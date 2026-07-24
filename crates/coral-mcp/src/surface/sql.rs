@@ -37,6 +37,38 @@ pub(crate) struct SqlBatchValue {
     results: Vec<SqlQueryResultValue>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum SqlGuideResourceKind {
+    Table,
+    TableFunction,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub(crate) struct SqlRequiredGuideValue {
+    schema: String,
+    resource: String,
+    kind: SqlGuideResourceKind,
+    guide: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum SqlGuideRequiredStatus {
+    GuideRequired,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub(crate) struct SqlGuideRequiredValue {
+    status: SqlGuideRequiredStatus,
+    executed: bool,
+    message: &'static str,
+    #[schemars(length(min = 1))]
+    guides: Vec<SqlRequiredGuideValue>,
+}
+
 #[derive(Serialize, JsonSchema)]
 #[serde(tag = "status")]
 pub(crate) enum SqlQueryResultValue {
@@ -65,6 +97,34 @@ pub(crate) enum SqlQueryResultValue {
 enum SqlToolOutputSchema {
     Success(SqlBatchValue),
     PartialFailure(ToolErrorWithData<SqlBatchValue>),
+    GuideRequired(SqlGuideRequiredValue),
+}
+
+impl SqlRequiredGuideValue {
+    pub(crate) fn new(
+        schema: String,
+        resource: String,
+        kind: SqlGuideResourceKind,
+        guide: String,
+    ) -> Self {
+        Self {
+            schema,
+            resource,
+            kind,
+            guide,
+        }
+    }
+}
+
+impl SqlGuideRequiredValue {
+    pub(crate) fn new(guides: Vec<SqlRequiredGuideValue>) -> Self {
+        Self {
+            status: SqlGuideRequiredStatus::GuideRequired,
+            executed: false,
+            message: "Coral blocked this SQL call because one or more referenced resources have require_guide_read enabled. No queries in this call were executed. Read the guidance below. These guide versions are now unblocked for the remainder of this task. Retry the SQL unchanged if it follows the guidance, or revise it before trying again.",
+            guides,
+        }
+    }
 }
 
 impl SqlBatchValue {

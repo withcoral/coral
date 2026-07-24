@@ -209,6 +209,20 @@ impl PreparedQueryRuntime {
         }
         self.inner.explain_sql(sql, &params).await
     }
+
+    /// Resolves the source resources referenced by one `SQL` statement without
+    /// physical planning or execution.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if the SQL is empty, parameter binding fails, or
+    /// the statement cannot be logically planned.
+    pub async fn analyze_sql(&self, sql: &str) -> Result<QueryExecutionProvenance, CoreError> {
+        if sql.trim().is_empty() {
+            return Err(CoreError::InvalidInput("SQL must not be empty".to_string()));
+        }
+        self.inner.analyze_sql(sql, &QueryParameters::new()).await
+    }
 }
 
 impl CoralQuery {

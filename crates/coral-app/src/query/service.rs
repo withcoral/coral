@@ -6,13 +6,14 @@ use arrow::record_batch::RecordBatch;
 use coral_api::v1::query_service_server::QueryService as QueryServiceApi;
 use coral_api::v1::{
     ExecuteSqlRequest, ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse,
-    QueryPlan as QueryPlanProto,
+    QueryGuideRequirement, QueryPlan as QueryPlanProto, QueryResourceKind,
+    ResolveSqlGuideRequirementsRequest, ResolveSqlGuideRequirementsResponse,
 };
 use tonic::{Request, Response, Status};
 
 use crate::bootstrap::core_status;
 use crate::query::QueryAttribution;
-use crate::query::manager::QueryManager;
+use crate::query::manager::{QueryGuideResourceKind, QueryManager, RequiredQueryGuide};
 use crate::task::manager::TaskManager;
 use crate::task::service::task_manager_status;
 use crate::transport::{
@@ -98,6 +99,37 @@ impl QueryServiceApi for QueryService {
         }))
         .await
     }
+
+    async fn resolve_sql_guide_requirements(
+        &self,
+        request: Request<ResolveSqlGuideRequirementsRequest>,
+    ) -> Result<Response<ResolveSqlGuideRequirementsResponse>, Status> {
+        let span = grpc_span(&request);
+        let queries = self.queries.clone();
+        let tasks = self.tasks.clone();
+        let request_context = request_context(&request)?.clone();
+        Box::pin(instrument_grpc(span, async move {
+            let inner = request.into_inner();
+            let workspace_name = workspace_name_from_proto(inner.workspace.as_ref())?;
+            let attribution = QueryAttribution::new(
+                tasks
+                    .validate_attribution(&workspace_name, request_context.task_id())
+                    .await
+                    .map_err(task_manager_status)?,
+            );
+            let required_guides = queries
+                .resolve_sql_guide_requirements(&workspace_name, &inner.sql, &attribution)
+                .await
+                .map_err(query_status)?;
+            Ok(Response::new(ResolveSqlGuideRequirementsResponse {
+                required_guides: required_guides
+                    .into_iter()
+                    .map(required_query_guide_to_proto)
+                    .collect(),
+            }))
+        }))
+        .await
+    }
 }
 
 fn query_plan_to_proto(plan: &coral_engine::QueryPlan) -> QueryPlanProto {
@@ -105,6 +137,18 @@ fn query_plan_to_proto(plan: &coral_engine::QueryPlan) -> QueryPlanProto {
         unoptimized_logical_plan: plan.unoptimized_logical_plan().to_string(),
         optimized_logical_plan: plan.optimized_logical_plan().to_string(),
         physical_plan: plan.physical_plan().to_string(),
+    }
+}
+
+fn required_query_guide_to_proto(guide: RequiredQueryGuide) -> QueryGuideRequirement {
+    QueryGuideRequirement {
+        schema_name: guide.schema_name,
+        resource_name: guide.resource_name,
+        kind: match guide.kind {
+            QueryGuideResourceKind::Table => QueryResourceKind::Table,
+            QueryGuideResourceKind::TableFunction => QueryResourceKind::TableFunction,
+        } as i32,
+        guide: guide.guide,
     }
 }
 

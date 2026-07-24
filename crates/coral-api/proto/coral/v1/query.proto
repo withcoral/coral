@@ -29,6 +29,15 @@ message ExplainSqlRequest {
   string sql = 2;
 }
 
+// Resolves guide-read requirements for one SQL statement without physically
+// planning or executing it.
+message ResolveSqlGuideRequirementsRequest {
+  // Workspace that scopes the queryable source set.
+  Workspace workspace = 1;
+  // One read-only SQL statement.
+  string sql = 2;
+}
+
 // Query-engine plan renderings for one SQL statement.
 message QueryPlan {
   // Parsed logical plan before logical optimization.
@@ -37,6 +46,34 @@ message QueryPlan {
   string optimized_logical_plan = 2;
   // Physical execution plan after physical optimization.
   string physical_plan = 3;
+}
+
+// Kind of query resource protected by a required guide.
+enum QueryResourceKind {
+  // Resource kind was not provided.
+  QUERY_RESOURCE_KIND_UNSPECIFIED = 0;
+  // A query-visible table.
+  QUERY_RESOURCE_KIND_TABLE = 1;
+  // A query-visible table function.
+  QUERY_RESOURCE_KIND_TABLE_FUNCTION = 2;
+}
+
+// Guide metadata for one referenced query resource.
+message QueryGuideRequirement {
+  // SQL schema containing the resource.
+  string schema_name = 1;
+  // Table or table function name within the schema.
+  string resource_name = 2;
+  // Resource kind.
+  QueryResourceKind kind = 3;
+  // Guidance that MCP SQL must surface.
+  string guide = 4;
+}
+
+// Guide-read requirements resolved before SQL execution.
+message ResolveSqlGuideRequirementsResponse {
+  // Referenced resources whose guide must be surfaced by MCP SQL.
+  repeated QueryGuideRequirement required_guides = 1;
 }
 
 // SQL explanation response.
@@ -51,4 +88,8 @@ service QueryService {
   rpc ExecuteSql(ExecuteSqlRequest) returns (ExecuteSqlResponse);
   // Explains one read-only SQL statement without executing it.
   rpc ExplainSql(ExplainSqlRequest) returns (ExplainSqlResponse);
+  // Resolves guide-read requirements without physically planning or executing
+  // the statement.
+  rpc ResolveSqlGuideRequirements(ResolveSqlGuideRequirementsRequest)
+      returns (ResolveSqlGuideRequirementsResponse);
 }

@@ -21,7 +21,7 @@ const TOOL_INTENT_ARGUMENT_DESCRIPTION: &str =
 const TOOL_INTENT_JSON_SCHEMA_PATTERN: &str = r".*\S.*";
 const TASK_ID_LEN: usize = 36;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize)]
 #[serde(transparent)]
 pub(crate) struct TaskId(uuid::Uuid);
 

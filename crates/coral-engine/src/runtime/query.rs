@@ -940,6 +940,23 @@ impl QueryRuntimeAdapter {
         ))
     }
 
+    pub(crate) async fn analyze_sql(
+        &self,
+        sql: &str,
+        params: &QueryParameters,
+    ) -> Result<QueryExecutionProvenance, CoreError> {
+        let df = self.sql_dataframe(sql, params).await?;
+        self.query_provenance(sql, df.logical_plan())
+            .map_err(|error| {
+                datafusion_to_core_with_sql_and_table_functions(
+                    &error,
+                    &self.tables,
+                    &self.table_functions,
+                    Some(sql),
+                )
+            })
+    }
+
     async fn sql_dataframe(
         &self,
         sql: &str,
@@ -1300,6 +1317,7 @@ fn table_metadata_without_columns(table: &TableInfo) -> TableInfo {
         table_name: table.table_name.clone(),
         description: table.description.clone(),
         guide: table.guide.clone(),
+        require_guide_read: table.require_guide_read,
         columns: Vec::new(),
         required_filters: table.required_filters.clone(),
     }
@@ -1345,6 +1363,7 @@ mod tests {
                 table_name: "events".to_string(),
                 description: "Event rows".to_string(),
                 guide: "Query event rows.".to_string(),
+                require_guide_read: false,
                 columns: vec![ColumnInfo {
                     name: "event_id".to_string(),
                     data_type: "Utf8".to_string(),
