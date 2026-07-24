@@ -20,22 +20,22 @@ export const banner = recipe({
     variant: {
       error: {
         background: theme.pill.red.background,
-        borderColor: theme.pill.red.color,
+        borderColor: theme.pill.red.stroke,
         color: theme.pill.red.color,
       },
       info: {
         background: theme.pill.blue.background,
-        borderColor: theme.pill.blue.color,
+        borderColor: theme.pill.blue.stroke,
         color: theme.pill.blue.color,
       },
       success: {
         background: theme.pill.green.background,
-        borderColor: theme.pill.green.color,
+        borderColor: theme.pill.green.stroke,
         color: theme.pill.green.color,
       },
       warning: {
         background: theme.pill.amber.background,
-        borderColor: theme.pill.amber.color,
+        borderColor: theme.pill.amber.stroke,
         color: theme.pill.amber.color,
       },
     },

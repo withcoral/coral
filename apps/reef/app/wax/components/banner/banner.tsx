@@ -35,7 +35,7 @@ export function Banner({
     <div
       {...props}
       className={classNames(styles.banner({ variant }), className)}
-      role={role ?? (variant === 'error' ? 'alert' : 'note')}
+      role={role ?? (variant === 'error' ? 'alert' : 'status')}
     >
       <Icon className={styles.icon} color="inherit" name={ICONS[variant]} size="18" />
       <div className={styles.content}>
