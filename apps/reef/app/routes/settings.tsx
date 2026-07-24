@@ -1,4 +1,5 @@
-import type { Route } from './+types/settings'
+import { useRouteLoaderData } from 'react-router'
+import type { loader as appShellLoader } from './app-shell'
 
 import { McpClientsSettings, useDesktopMcpClients } from '@/components/mcp-clients-settings'
 import { isCoralDesktopBuild } from '@/lib/coral-desktop'
@@ -6,10 +7,10 @@ import { Typography } from '@/wax/components'
 
 import * as styles from './settings.css'
 
-export default function SettingsRoute({ matches }: Pick<Route.ComponentProps, 'matches'>) {
+export default function SettingsRoute() {
   const desktop = isCoralDesktopBuild()
   const mcpClients = useDesktopMcpClients(desktop)
-  const workspaces = matches[1].loaderData.workspaces
+  const workspaces = useRouteLoaderData<typeof appShellLoader>('routes/app-shell')?.workspaces ?? []
 
   return (
     <main className={styles.page}>
