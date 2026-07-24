@@ -12,6 +12,8 @@ pub(super) struct RawFunctionFrontmatter {
     pub(super) schema: String,
     #[serde(default)]
     pub(super) description: String,
+    #[serde(default)]
+    pub(super) guide: String,
 }
 
 #[derive(Debug)]
@@ -78,6 +80,7 @@ mod tests {
 name: github_review_queue
 schema: functions
 description: GitHub PR review queue
+guide: Use this function for review queue lookups.
 */
 
 select title, html_url
@@ -116,6 +119,10 @@ from github.pulls(owner => $owner, repo => $repo)
 
         assert_eq!(function.name(), "github_review_queue");
         assert_eq!(function.schema(), "functions");
+        assert_eq!(
+            function.guide(),
+            "Use this function for review queue lookups."
+        );
         assert!(
             function
                 .implementation()
@@ -123,6 +130,16 @@ from github.pulls(owner => $owner, repo => $repo)
                 .query
                 .contains("github.pulls")
         );
+    }
+
+    #[test]
+    fn parse_function_sql_defaults_omitted_guide() {
+        let artifact =
+            function_with(&[("guide: Use this function for review queue lookups.\n", "")]);
+
+        let function = parse_function_sql(&artifact).expect("function should parse");
+
+        assert!(function.guide().is_empty());
     }
 
     #[test]

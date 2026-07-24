@@ -202,6 +202,7 @@ fn udf_publish(name: &str) -> UdfRuntimePublish {
             schema: "udfs".to_string(),
             name: name.to_string(),
             description: String::new(),
+            guide: String::new(),
         },
     }
 }
@@ -284,6 +285,7 @@ fn mixed_case_published_min_id_udf(source_name: &str) -> UdfRuntimeDefinition {
             schema: "Udfs".to_string(),
             name: "Min_Id_Events".to_string(),
             description: String::new(),
+            guide: String::new(),
         },
     };
     udf
@@ -363,6 +365,7 @@ fn review_queue_udf_published_at(
             schema: schema.to_string(),
             name: name.to_string(),
             description: String::new(),
+            guide: String::new(),
         },
     };
     udf
@@ -994,7 +997,9 @@ async fn udf_table_function_cannot_replace_source_table_function() {
 async fn published_udf_table_function_is_cataloged() {
     let server = MockServer::start().await;
     let source = search_source(&server, "catalog_udf_search");
-    let runtime = test_runtime().with_udfs(vec![published_review_queue_udf("catalog_udf_search")]);
+    let mut udf = published_review_queue_udf("catalog_udf_search");
+    udf.publish.table_function.guide = "Use this function for review queue lookups.".to_string();
+    let runtime = test_runtime().with_udfs(vec![udf]);
 
     let catalog = CoralQuery::list_catalog(&[source], runtime, Some("udfs"))
         .await
@@ -1005,6 +1010,10 @@ async fn published_udf_table_function_is_cataloged() {
     let function = catalog.table_functions.first().expect("udf table function");
     assert_eq!(function.schema_name, "udfs");
     assert_eq!(function.function_name, "review_queue");
+    assert_eq!(
+        function.guide,
+        "Use this function for review queue lookups."
+    );
     let [_min_score, _mode, payload, _query, _since] = function.arguments.as_slice() else {
         panic!("expected five review queue arguments");
     };

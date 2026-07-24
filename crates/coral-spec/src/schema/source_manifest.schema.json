@@ -652,6 +652,7 @@
         "name": { "$ref": "#/$defs/table_function_identifier" },
         "kind": { "type": "string", "enum": ["table", "search"] },
         "description": { "type": "string" },
+        "guide": { "type": "string" },
         "fetch_limit_default": { "type": "integer", "minimum": 1 },
         "search_limits": { "$ref": "#/$defs/search_limits" },
         "detail_hints": {
@@ -679,6 +680,7 @@
         "name": { "$ref": "#/$defs/table_function_identifier" },
         "tool": { "type": "string", "minLength": 1 },
         "description": { "type": "string" },
+        "guide": { "type": "string" },
         "fetch_limit_default": { "type": "integer", "minimum": 1 },
         "args": {
           "type": "array",

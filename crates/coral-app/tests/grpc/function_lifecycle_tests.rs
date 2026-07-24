@@ -19,6 +19,7 @@ fn function_sql(body: &str) -> String {
 name: echo_value
 schema: functions
 description: Echo one value
+guide: Use this function to echo a typed value.
 */
 
 {body}
@@ -51,7 +52,13 @@ async fn function_lifecycle_is_scoped_to_the_selected_workspace() {
         .expect("added function");
     assert_eq!(added.name, "echo_value");
     assert_eq!(added.workspace.as_ref(), Some(&work));
-    assert!(matches!(added.runtime, Some(function::Runtime::Ready(_))));
+    let Some(function::Runtime::Ready(ready)) = added.runtime else {
+        panic!("expected runtime-ready function");
+    };
+    assert_eq!(
+        ready.table_function.expect("table function").guide,
+        "Use this function to echo a typed value."
+    );
 
     let default_functions = harness
         .function_client()

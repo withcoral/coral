@@ -93,4 +93,6 @@ pub struct UdfRuntimeTableFunctionPublish {
     pub name: String,
     /// Optional publish-target-specific description.
     pub description: String,
+    /// Query guidance for the published table function.
+    pub guide: String,
 }

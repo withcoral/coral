@@ -123,6 +123,8 @@ struct RawMcpTableFunctionSpec {
     #[serde(default)]
     description: String,
     #[serde(default)]
+    guide: String,
+    #[serde(default)]
     fetch_limit_default: Option<usize>,
     #[serde(default)]
     args: Vec<TableFunctionArgSpec>,
@@ -332,6 +334,7 @@ impl RawMcpTableFunctionSpec {
                 name: self.name,
                 kind: SourceTableFunctionKind::default(),
                 description: self.description,
+                guide: self.guide,
                 fetch_limit_default: self.fetch_limit_default,
                 search_limits: None,
                 detail_hints: Vec::new(),

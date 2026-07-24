@@ -59,6 +59,7 @@ impl FunctionValidator {
             name: frontmatter.name,
             schema: frontmatter.schema,
             description: frontmatter.description,
+            guide: frontmatter.guide,
             implementation: self.raw.implementation,
         }
     }

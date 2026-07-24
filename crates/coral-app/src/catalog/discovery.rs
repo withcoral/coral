@@ -483,6 +483,7 @@ fn table_function_matched_fields(
             CatalogMetadataField::Description,
             function.description.as_str(),
         ),
+        (CatalogMetadataField::Guide, function.guide.as_str()),
     ];
     let mut matches = candidates
         .into_iter()

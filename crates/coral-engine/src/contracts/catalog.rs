@@ -89,6 +89,8 @@ pub struct TableFunctionInfo {
     pub function_name: String,
     /// User-facing table function description.
     pub description: String,
+    /// User-facing query guidance.
+    pub guide: String,
     /// Accepted function arguments.
     pub arguments: Vec<TableFunctionArgumentInfo>,
     /// Columns returned by the function.

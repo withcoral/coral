@@ -22,6 +22,8 @@ message FunctionTableFunctionPublish {
   string name = 2;
   // User-facing description.
   string description = 3;
+  // Query guidance for the published table function.
+  string guide = 4;
 }
 
 // Runtime metadata for an installed function that currently plans and executes.

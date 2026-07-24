@@ -120,6 +120,7 @@ tables:
 functions:
   - name: lookup_issue
     description: Lookup issue
+    guide: Use this function for exact issue lookup.
     args:
       - name: number
         required: true
@@ -1552,6 +1553,10 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "End-to-end table-function discovery coverage keeps catalog pagination, search metadata, and output schemas in one fixture session."
+)]
 async fn list_catalog_surfaces_table_functions() {
     let temp = TempDir::new().expect("temp dir");
     let manifest_path = write_function_fixture_manifest(temp.path());
@@ -1597,6 +1602,10 @@ async fn list_catalog_surfaces_table_functions() {
         "searchy.lookup_issue(number => '<value>')"
     );
     assert_eq!(
+        catalog["items"][0]["table_function"]["guide"],
+        "Use this function for exact issue lookup."
+    );
+    assert_eq!(
         catalog["items"][0]["table_function"]["arguments"][0]["name"],
         "number"
     );
@@ -1633,6 +1642,33 @@ async fn list_catalog_surfaces_table_functions() {
         "searchy.search_issues(q => '<value>')"
     );
     assert_matches_output_schema(catalog_tool, &functions);
+
+    let search_tool = tool_by_name(&tools, "search");
+    let search = client
+        .call_tool(
+            CallToolRequestParams::new("search").with_arguments(task_arguments(
+                &task_id,
+                &json!({
+                    "query": "exact",
+                    "limit": 5
+                }),
+            )),
+        )
+        .await
+        .expect("search table function guide")
+        .structured_content
+        .expect("structured search");
+    let function = search["results"]
+        .as_array()
+        .expect("search results")
+        .iter()
+        .find(|result| result["catalog_metadata"]["item"]["name"] == "searchy.lookup_issue")
+        .expect("table function guide match");
+    assert_eq!(
+        function["catalog_metadata"]["item"]["table_function"]["guide"],
+        "Use this function for exact issue lookup."
+    );
+    assert_matches_output_schema(search_tool, &search);
 
     session.shutdown().await;
 }

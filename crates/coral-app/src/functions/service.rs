@@ -152,6 +152,7 @@ fn function_table_function_publish_to_proto(
         schema_name: publish.schema,
         name: publish.name,
         description: publish.description,
+        guide: publish.guide,
     }
 }
 

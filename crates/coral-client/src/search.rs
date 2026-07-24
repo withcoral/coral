@@ -210,6 +210,7 @@ impl<'a> From<&'a TableFunction> for TableFunctionValue<'a> {
 struct TableFunctionDetailsValue<'a> {
     function_name: &'a str,
     function_kind: &'static str,
+    guide: &'a str,
     arguments: Vec<TableFunctionArgumentValue<'a>>,
     result_columns: Vec<TableFunctionResultColumnValue<'a>>,
     search_limits: Option<SearchLimitsValue>,
@@ -220,6 +221,7 @@ impl<'a> From<&'a TableFunction> for TableFunctionDetailsValue<'a> {
         Self {
             function_name: &function.name,
             function_kind: table_function_kind_name(function.kind),
+            guide: &function.guide,
             arguments: function
                 .arguments
                 .iter()
@@ -575,17 +577,23 @@ fn catalog_metadata_text_lines(
                 format_schema_table_equivalent(&table.schema_name, &table.name)
             ),
         ],
-        Some(catalog_item::Item::TableFunction(function)) => vec![
-            format!(
-                "{index}. [{provider}] table function {}.{}",
-                function.schema_name, function.name
-            ),
-            format!(
-                "   SQL reference: {}",
-                format_schema_table_equivalent(&function.schema_name, &function.name)
-            ),
-            format!("   Call: {}", minimal_table_function_call_example(function)),
-        ],
+        Some(catalog_item::Item::TableFunction(function)) => {
+            let mut lines = vec![
+                format!(
+                    "{index}. [{provider}] table function {}.{}",
+                    function.schema_name, function.name
+                ),
+                format!(
+                    "   SQL reference: {}",
+                    format_schema_table_equivalent(&function.schema_name, &function.name)
+                ),
+                format!("   Call: {}", minimal_table_function_call_example(function)),
+            ];
+            if !function.guide.is_empty() {
+                lines.push(format!("   Guide: {}", function.guide));
+            }
+            lines
+        }
         None => vec![format!("{index}. [{provider}] catalog metadata")],
     };
     push_optional_fields_line(&mut lines, "   matched", &metadata.matched_fields);
@@ -792,6 +800,35 @@ fn table_function_kind_name(kind: i32) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_output_renders_table_function_guide() {
+        let response = SearchResponse {
+            results: vec![SearchResult {
+                provider: SearchProvider::CatalogMetadata as i32,
+                payload: Some(search_result::Payload::CatalogMetadata(CatalogMetadata {
+                    item: Some(CatalogItem {
+                        item: Some(catalog_item::Item::TableFunction(TableFunction {
+                            schema_name: "github".to_string(),
+                            name: "search_issues".to_string(),
+                            guide: "Use this function for issue lookup.".to_string(),
+                            ..Default::default()
+                        })),
+                    }),
+                    ..Default::default()
+                })),
+            }],
+            provider_statuses: Vec::new(),
+            truncation: None,
+        };
+
+        let text = format_search_response_text(&response);
+
+        assert!(
+            text.contains("Guide: Use this function for issue lookup."),
+            "table-function text should include its guide: {text}"
+        );
+    }
 
     #[test]
     fn text_output_renders_observed_field_path() {

@@ -468,6 +468,7 @@ pub(crate) fn table_function_to_proto(
             .collect(),
         kind: table_function_kind_to_proto(function.kind) as i32,
         search_limits: function.search_limits.as_ref().map(search_limits_to_proto),
+        guide: function.guide,
     }
 }
 
@@ -975,6 +976,7 @@ mod tests {
             schema_name: "demo".to_string(),
             function_name: "search".to_string(),
             description: "Search demo records".to_string(),
+            guide: "Prefer search for record lookup.".to_string(),
             arguments: vec![coral_engine::TableFunctionArgumentInfo {
                 name: "payload".to_string(),
                 required: true,
@@ -991,6 +993,7 @@ mod tests {
         assert_eq!(proto.schema_name, "demo");
         assert_eq!(proto.name, "search");
         assert_eq!(proto.description, "Search demo records");
+        assert_eq!(proto.guide, "Prefer search for record lookup.");
         assert_eq!(proto.arguments.len(), 1);
         assert_eq!(proto.arguments[0].name, "payload");
         assert!(proto.arguments[0].required);

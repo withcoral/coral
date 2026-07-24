@@ -364,6 +364,7 @@ fn mock_validate_response() -> ValidateSourceResponse {
             schema_name: "github".to_string(),
             name: "search_issues".to_string(),
             description: "Search issues".to_string(),
+            guide: "Prefer this function for issue lookup.".to_string(),
             arguments: Vec::new(),
             result_columns: Vec::new(),
             kind: 0,

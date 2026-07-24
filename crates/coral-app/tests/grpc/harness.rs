@@ -408,6 +408,7 @@ pub(crate) fn fixture_manifest_with_functions_yaml() -> String {
             {
                 "name": "lookup_issue",
                 "description": "Lookup issue",
+                "guide": "Use this function for exact issue lookup.",
                 "args": [
                     {
                         "name": "number",

@@ -7,6 +7,7 @@ pub struct FunctionSpec {
     pub(super) name: String,
     pub(super) schema: String,
     pub(super) description: String,
+    pub(super) guide: String,
     pub(super) implementation: FunctionImplementationSpec,
 }
 
@@ -43,6 +44,12 @@ impl FunctionSpec {
     #[must_use]
     pub fn description(&self) -> &str {
         &self.description
+    }
+
+    /// Returns query guidance for the published table function.
+    #[must_use]
+    pub fn guide(&self) -> &str {
+        &self.guide
     }
 
     /// Returns the executable function implementation.

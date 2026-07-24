@@ -376,6 +376,8 @@ pub struct SourceTableFunctionSpec {
     #[serde(default)]
     pub description: String,
     #[serde(default)]
+    pub guide: String,
+    #[serde(default)]
     pub fetch_limit_default: Option<usize>,
     #[serde(default)]
     pub search_limits: Option<SearchLimitsSpec>,

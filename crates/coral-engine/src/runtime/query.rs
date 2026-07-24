@@ -1509,6 +1509,7 @@ mod tests {
                         schema: "functions".to_string(),
                         name: "constant_value".to_string(),
                         description: "Returns one value".to_string(),
+                        guide: String::new(),
                     },
                 },
                 result_columns: vec![UdfRuntimeResultColumn {

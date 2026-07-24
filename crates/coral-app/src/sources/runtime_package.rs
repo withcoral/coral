@@ -265,6 +265,7 @@ fn http_manifest_for_surface(
                     name: projection.name.clone(),
                     kind: *function_kind,
                     description: projection.description.clone(),
+                    guide: projection.guide.clone(),
                     fetch_limit_default: None,
                     search_limits: projection.search_limits.clone(),
                     detail_hints: projection.detail_hints.clone(),
@@ -424,6 +425,7 @@ fn mcp_table_function_spec(
             name: projection.name.clone(),
             kind: function_kind,
             description: projection.description.clone(),
+            guide: projection.guide.clone(),
             fetch_limit_default: None,
             search_limits: projection.search_limits.clone(),
             detail_hints: projection.detail_hints.clone(),
@@ -524,7 +526,9 @@ mod tests {
         SurfaceRuntimeConfig, SurfaceType, V4_ARTIFACT_SCHEMA_VERSION, V4MaterializedSource,
         V4SourceCommon, V4SourceManifest, V4Surface, ValidatedSurfacePlan,
     };
-    use coral_spec::{PageSizeSpec, PaginationMode, PaginationSpec, ResponseSpec};
+    use coral_spec::{
+        PageSizeSpec, PaginationMode, PaginationSpec, ResponseSpec, SourceTableFunctionKind,
+    };
 
     use crate::bootstrap::AppError;
 
@@ -802,6 +806,28 @@ mod tests {
         }
     }
 
+    fn published_function_projection(operation_id: &str) -> Projection {
+        Projection {
+            name: "search_issues".to_string(),
+            kind: ProjectionKind::TableFunction {
+                function_kind: SourceTableFunctionKind::Search,
+            },
+            description: "Search issues".to_string(),
+            guide: "Prefer this function for issue lookup.".to_string(),
+            operation_id: operation_id.to_string(),
+            visibility: ProjectionVisibility::Published,
+            inputs: Vec::new(),
+            columns: Vec::new(),
+            search_limits: Some(coral_spec::SearchLimitsSpec {
+                default_top_k: 10,
+                max_top_k: 100,
+                max_calls_per_query: 1,
+            }),
+            detail_hints: Vec::new(),
+            diagnostics: Vec::new(),
+        }
+    }
+
     fn fingerprint(surface_type: SurfaceType, source_name: &str) -> Fingerprint {
         Fingerprint {
             artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
@@ -1035,6 +1061,48 @@ mod tests {
     }
 
     #[test]
+    fn rest_runtime_component_keeps_table_function_guide() {
+        let manifest = V4SourceManifest {
+            common: V4SourceCommon {
+                dsl_version: 4,
+                name: "github_v4".to_string(),
+                description: String::new(),
+                test_queries: Vec::new(),
+            },
+            identity_requirements: None,
+            declared_inputs: Vec::new(),
+            surface: openapi_surface(),
+        };
+        let materialized = V4MaterializedSource {
+            fingerprint: Some(fingerprint(SurfaceType::OpenApi, "github_v4")),
+            surface: rest_materialized_surface_with_pagination(
+                "rest_search_issues",
+                PaginationSpec::default(),
+            ),
+            projections: ProjectionCatalog {
+                artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
+                source_name: "github_v4".to_string(),
+                generator_version: Some(PROJECTION_GENERATOR_VERSION.to_string()),
+                projections: vec![published_function_projection("rest_search_issues")],
+                diagnostics: Vec::new(),
+            },
+            diagnostics: Vec::new(),
+        };
+
+        let component = runtime_component_for_v4_source(&manifest, &materialized)
+            .expect("runtime component")
+            .expect("published component");
+        let coral_engine::RuntimeSourceComponent::Http(http) = component else {
+            panic!("expected HTTP component");
+        };
+
+        assert_eq!(
+            http.functions.first().expect("http function").guide,
+            "Prefer this function for issue lookup."
+        );
+    }
+
+    #[test]
     fn mcp_runtime_component_keeps_operation_pagination() {
         let surface = mcp_surface();
         let manifest = V4SourceManifest {
@@ -1079,6 +1147,45 @@ mod tests {
         assert_eq!(
             mcp.tables.first().expect("mcp table").pagination.as_ref(),
             Some(&pagination)
+        );
+    }
+
+    #[test]
+    fn mcp_runtime_component_keeps_table_function_guide() {
+        let manifest = V4SourceManifest {
+            common: V4SourceCommon {
+                dsl_version: 4,
+                name: "github_v4".to_string(),
+                description: String::new(),
+                test_queries: Vec::new(),
+            },
+            identity_requirements: None,
+            declared_inputs: Vec::new(),
+            surface: mcp_surface(),
+        };
+        let materialized = V4MaterializedSource {
+            fingerprint: Some(fingerprint(SurfaceType::Mcp, "github_v4")),
+            surface: mcp_materialized_surface_with_pagination("mcp_search_issues", None),
+            projections: ProjectionCatalog {
+                artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
+                source_name: "github_v4".to_string(),
+                generator_version: Some(PROJECTION_GENERATOR_VERSION.to_string()),
+                projections: vec![published_function_projection("mcp_search_issues")],
+                diagnostics: Vec::new(),
+            },
+            diagnostics: Vec::new(),
+        };
+
+        let component = runtime_component_for_v4_source(&manifest, &materialized)
+            .expect("runtime component")
+            .expect("published component");
+        let coral_engine::RuntimeSourceComponent::Mcp(mcp) = component else {
+            panic!("expected MCP component");
+        };
+
+        assert_eq!(
+            mcp.functions.first().expect("mcp function").common.guide,
+            "Prefer this function for issue lookup."
         );
     }
 

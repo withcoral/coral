@@ -566,6 +566,7 @@ impl<'a> From<&'a ProtoTableFunction> for CatalogTableFunctionItemValue<'a> {
             description: &function.description,
             table_function: CatalogTableFunctionValue {
                 function_name: &function.name,
+                guide: &function.guide,
                 arguments: function
                     .arguments
                     .iter()
@@ -591,6 +592,7 @@ enum CatalogTableFunctionKind {
 #[schemars(deny_unknown_fields)]
 struct CatalogTableFunctionValue<'a> {
     function_name: &'a str,
+    guide: &'a str,
     arguments: Vec<TableFunctionArgumentValue<'a>>,
     result_columns: Vec<TableFunctionResultColumnValue<'a>>,
 }

@@ -162,6 +162,7 @@ fn catalog_table_function(
         function_name: key.function.clone(),
         kind: coral_spec::SourceTableFunctionKind::Table,
         description: publish_description(&publish.description, &udf.description),
+        guide: publish.guide.clone(),
         arguments: udf
             .arguments
             .iter()
@@ -498,6 +499,7 @@ mod tests {
                     schema: "udfs".to_string(),
                     name: "open_pull_requests".to_string(),
                     description: String::new(),
+                    guide: String::new(),
                 },
             },
             result_columns: Vec::new(),

@@ -378,6 +378,7 @@ fn http_manifest_with_function() -> Value {
             "name": "search_issues",
             "kind": "search",
             "description": "Search issues",
+            "guide": "Prefer this function for issue lookup.",
             "search_limits": {
                 "default_top_k": 5,
                 "max_top_k": 100,
@@ -482,7 +483,7 @@ async fn coral_table_functions_lists_source_functions() {
         &CoralQuery::execute_sql(
             &sources,
             test_runtime(),
-            "SELECT schema_name, function_name, kind, description, arguments_json, result_columns_json, search_limits_json \
+            "SELECT schema_name, function_name, kind, description, arguments_json, result_columns_json, search_limits_json, guide \
              FROM coral.table_functions WHERE schema_name = 'searchy'",
         )
         .await
@@ -495,6 +496,7 @@ async fn coral_table_functions_lists_source_functions() {
     assert_eq!(row["function_name"], "search_issues");
     assert_eq!(row["kind"], "search");
     assert_eq!(row["description"], "Search issues");
+    assert_eq!(row["guide"], "Prefer this function for issue lookup.");
     assert_eq!(
         serde_json::from_str::<Value>(row["arguments_json"].as_str().unwrap()).unwrap(),
         json!([
@@ -631,6 +633,7 @@ async fn coral_search_metadata_appends_columns_without_shifting_existing_ordinal
             "result_columns_json",
             "kind",
             "search_limits_json",
+            "guide",
         ]
     );
 
@@ -759,6 +762,7 @@ async fn list_catalog_matches_table_function_metadata() {
     assert_eq!(function.schema_name, "searchy");
     assert_eq!(function.function_name, "search_issues");
     assert_eq!(function.description, "Search issues");
+    assert_eq!(function.guide, "Prefer this function for issue lookup.");
     assert_eq!(function.arguments.len(), 4);
     assert_eq!(function.arguments[0].name, "q");
     assert!(function.arguments[0].required);

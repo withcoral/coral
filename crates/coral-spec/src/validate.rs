@@ -1123,6 +1123,7 @@ mod tests {
             name: "search".to_string(),
             kind: SourceTableFunctionKind::Table,
             description: String::new(),
+            guide: String::new(),
             fetch_limit_default: None,
             search_limits: None,
             detail_hints: Vec::new(),

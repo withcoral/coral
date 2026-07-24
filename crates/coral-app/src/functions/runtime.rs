@@ -108,6 +108,7 @@ fn runtime_publish(spec: &FunctionSpec) -> UdfRuntimePublish {
             schema: spec.schema().to_string(),
             name: spec.name().to_string(),
             description: String::new(),
+            guide: spec.guide().to_string(),
         },
     }
 }

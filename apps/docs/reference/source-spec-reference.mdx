@@ -542,6 +542,9 @@ functions:
   - name: search_issues
     kind: search
     description: Search GitHub issues
+    guide: |
+      Use this function to find issues by keywords or qualifiers.
+      Prefer it over scanning the issues table for lookup queries.
     search_limits:
       default_top_k: 10
       max_top_k: 100
@@ -592,6 +595,10 @@ functions:
       - name: score
         type: Float64
 ```
+
+Table functions support the same optional `guide` field as tables. Keep
+`description` short and use `guide` for usage advice, such as when to prefer
+the function, how to prepare its arguments, or provider-specific query syntax.
 
 Use `bind.arg` when a SQL argument should populate a differently named request
 argument. Function request values can then reference those bound arguments with
