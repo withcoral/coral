@@ -1,11 +1,10 @@
 use std::collections::HashMap;
 use std::fmt;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
-use base64::engine::general_purpose::{STANDARD as BASE64_STANDARD, URL_SAFE_NO_PAD};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use jsonwebtoken::jwk::{
     AlgorithmParameters, EllipticCurve, Jwk, JwkSet, KeyAlgorithm, PublicKeyUse, ThumbprintHash,
 };
@@ -14,12 +13,8 @@ use jsonwebtoken::{
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use zeroize::Zeroizing;
-
-use crate::state::AppStateLayout;
 
 const DEFAULT_ISSUER: &str = "coral";
-const DEFAULT_SIGNING_KEY_ENV: &str = "CORAL_SESSION_SIGNING_KEY";
 const DEFAULT_TOKEN_TTL: Duration = Duration::from_hours(720);
 const CLOCK_SKEW: Duration = Duration::from_mins(1);
 const SESSION_TOKEN_ALGORITHM: Algorithm = Algorithm::ES256;
@@ -98,42 +93,6 @@ impl SessionTokenIssuer {
             verifier,
             access_token_ttl,
         })
-    }
-
-    pub(crate) fn load(layout: &AppStateLayout) -> Result<Option<Self>, SessionTokenError> {
-        Self::load_with(layout, &|name| {
-            crate::bootstrap::env_var(name).map_err(|error| signing_key_env_error(&error))
-        })
-    }
-
-    fn load_with(
-        layout: &AppStateLayout,
-        get_var: &impl Fn(&str) -> Result<Option<String>, String>,
-    ) -> Result<Option<Self>, SessionTokenError> {
-        let config_path = layout.config_file();
-        match std::fs::symlink_metadata(config_path) {
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(file_error("inspect config file", config_path, &error)),
-        }
-        let raw = std::fs::read_to_string(config_path)
-            .map_err(|error| file_error("read config file", config_path, &error))?;
-        let raw = Zeroizing::new(raw);
-        let file: ConfigFile =
-            toml::from_str(&raw).map_err(|error| config_error(error.message()))?;
-        let Some(session) = file.auth.and_then(|auth| auth.session) else {
-            return Ok(None);
-        };
-        let key = session.load_signing_key(config_path, get_var)?;
-        let ttl = session
-            .access_token_ttl_seconds
-            .unwrap_or(DEFAULT_TOKEN_TTL.as_secs());
-        Self::new(
-            session.issuer.as_deref(),
-            key.as_slice(),
-            Duration::from_secs(ttl),
-        )
-        .map(Some)
     }
 
     pub(crate) fn issue_access_token(
@@ -415,66 +374,6 @@ struct SessionTokenClaims {
     provider: String,
 }
 
-#[derive(Deserialize)]
-struct ConfigFile {
-    auth: Option<AuthConfigFile>,
-}
-
-#[derive(Deserialize)]
-struct AuthConfigFile {
-    session: Option<SessionConfigFile>,
-}
-
-#[derive(Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-struct SessionConfigFile {
-    issuer: Option<String>,
-    signing_key_env: Option<String>,
-    signing_key_file: Option<PathBuf>,
-    access_token_ttl_seconds: Option<u64>,
-}
-
-impl SessionConfigFile {
-    fn load_signing_key(
-        &self,
-        config_path: &Path,
-        get_var: &impl Fn(&str) -> Result<Option<String>, String>,
-    ) -> Result<Zeroizing<Vec<u8>>, SessionTokenError> {
-        match (&self.signing_key_env, &self.signing_key_file) {
-            (Some(_), Some(_)) => Err(config_error(
-                "configure only one of signing_key_env or signing_key_file",
-            )),
-            (None, Some(path)) => {
-                let path = config_path.parent().unwrap_or(Path::new(".")).join(path);
-                std::fs::read(&path)
-                    .map(Zeroizing::new)
-                    .map_err(|error| file_error("read signing_key_file", &path, &error))
-            }
-            (env_name, None) => {
-                let env_name = env_name
-                    .as_deref()
-                    .unwrap_or(DEFAULT_SIGNING_KEY_ENV)
-                    .trim();
-                if env_name.is_empty() {
-                    return Err(config_error("signing_key_env must not be empty"));
-                }
-                let value = get_var(env_name)
-                    .map_err(|error| config_error(format!("failed to read `{env_name}`: {error}")))?
-                    .ok_or_else(|| config_error(format!("env var `{env_name}` is not set")))?;
-                let value = Zeroizing::new(value);
-                BASE64_STANDARD
-                    .decode(value.trim())
-                    .map(Zeroizing::new)
-                    .map_err(|_error| {
-                        config_error(format!(
-                            "env var `{env_name}` must contain a base64-encoded PKCS#8 P-256 private key"
-                        ))
-                    })
-            }
-        }
-    }
-}
-
 fn normalized_or_default<'a>(value: Option<&'a str>, default: &'a str) -> &'a str {
     value
         .map(str::trim)
@@ -490,17 +389,6 @@ fn invalid_token(message: impl Into<String>) -> SessionTokenError {
     format!("invalid Coral access token: {}", message.into())
 }
 
-fn file_error(action: &str, path: &Path, error: &std::io::Error) -> SessionTokenError {
-    config_error(format!("failed to {action} {}: {error}", path.display()))
-}
-
-fn signing_key_env_error(error: &std::env::VarError) -> String {
-    match error {
-        std::env::VarError::NotPresent => "environment variable is not present".to_string(),
-        std::env::VarError::NotUnicode(_) => "environment value is not valid UTF-8".to_string(),
-    }
-}
-
 fn unix_timestamp() -> Result<u64, SessionTokenError> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -510,11 +398,8 @@ fn unix_timestamp() -> Result<u64, SessionTokenError> {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
-
     use ring::rand::SystemRandom;
     use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair};
-    use tempfile::TempDir;
 
     use super::*;
 
@@ -592,26 +477,6 @@ mod tests {
             .and_then(serde_json::Value::as_str)
             .unwrap_or_else(|| panic!("`{name}` claim should be a string"))
     }
-
-    fn test_layout() -> (TempDir, AppStateLayout) {
-        let temp = TempDir::new().expect("temp dir");
-        let layout = AppStateLayout::discover(Some(temp.path().join("config"))).expect("layout");
-        layout.ensure().expect("config dir");
-        (temp, layout)
-    }
-
-    fn write_config(layout: &AppStateLayout, contents: &str) {
-        fs::write(layout.config_file(), contents).expect("config file");
-    }
-
-    fn load(layout: &AppStateLayout) -> Result<Option<SessionTokenIssuer>, SessionTokenError> {
-        SessionTokenIssuer::load_with(layout, &|_| Ok(None))
-    }
-
-    fn assert_path(error: &str, path: &Path) {
-        assert!(error.contains(&path.display().to_string()));
-    }
-
     fn only_jwk(jwks: &JwkSet) -> &Jwk {
         jwks.keys.first().expect("one verification key")
     }
@@ -907,78 +772,5 @@ mod tests {
         parameters.curve = EllipticCurve::P384;
         SessionTokenVerifier::new(Some(ISSUER), wrong_curve, Duration::from_hours(1))
             .expect_err("wrong curve");
-    }
-
-    #[test]
-    fn key_sources_fail_closed_without_leaking_secrets() {
-        let (temp, layout) = test_layout();
-        let key = signing_key();
-        let encoded_key = BASE64_STANDARD.encode(&key);
-        assert!(load(&layout).unwrap().is_none());
-        write_config(
-            &layout,
-            "[credentials]\nencryption_key_env = 'IGNORED_KEK'\n[auth.session]\nissuer = 'issuer'\n",
-        );
-        let loaded = SessionTokenIssuer::load_with(&layout, &|name| {
-            Ok((name == DEFAULT_SIGNING_KEY_ENV).then(|| encoded_key.clone()))
-        });
-        assert!(loaded.expect("env config").is_some());
-        fs::write(temp.path().join("config/session.key"), &key).expect("key file");
-        write_config(
-            &layout,
-            "[auth.session]\nsigning_key_file = 'session.key'\n",
-        );
-        assert!(load(&layout).unwrap().is_some());
-        for config in [
-            "[auth.session]\nsigning_key_env = 'MISSING'\nsigning_key_file = 'key'\n",
-            "[auth.session]\nsigning_key_env = 'MISSING'\n",
-            "[auth.session]\naudience = 'removed'\n",
-            "[auth.session]\nsigning_key_file = 'missing-key'\n",
-        ] {
-            write_config(&layout, config);
-            load(&layout).expect_err("invalid key source");
-        }
-        assert_path(
-            &load(&layout).expect_err("missing key"),
-            &layout.config_file().parent().unwrap().join("missing-key"),
-        );
-        write_config(&layout, "[auth.session]\nsigning_key = 'visible-secret'\n");
-        let error = load(&layout).expect_err("inline key is rejected");
-        assert!(!error.contains("visible-secret"));
-
-        write_config(
-            &layout,
-            "[auth.session]\nsigning_key_env = 'INVALID_BASE64'\n",
-        );
-        let error =
-            SessionTokenIssuer::load_with(&layout, &|_| Ok(Some("visible-secret".to_string())))
-                .expect_err("invalid base64");
-        assert!(!error.contains("visible-secret"));
-
-        write_config(
-            &layout,
-            "[auth.session]\nsigning_key_file = 'session.key'\nverification_jwks_file = 'unsupported.jwks'\n",
-        );
-        load(&layout).expect_err("unsupported verification JWKS config");
-
-        #[cfg(unix)]
-        {
-            use std::ffi::OsString;
-            use std::os::unix::ffi::OsStringExt as _;
-
-            let (_temp, dangling) = test_layout();
-            std::os::unix::fs::symlink("missing-config-mount", dangling.config_file())
-                .expect("symlink");
-            let error = load(&dangling).expect_err("dangling config mount");
-            assert_path(&error, dangling.config_file());
-            let secret = b"visible-secret-\xff-tail".to_vec();
-            let os = OsString::from_vec(secret.clone());
-            let error = signing_key_env_error(&std::env::VarError::NotUnicode(os));
-            let bytes = error.as_bytes();
-            let leaked = bytes.windows(secret.len()).any(|bytes| bytes == secret);
-            assert!(!leaked);
-            assert!(!error.contains("visible-secret"));
-            assert_eq!(error, "environment value is not valid UTF-8");
-        }
     }
 }
