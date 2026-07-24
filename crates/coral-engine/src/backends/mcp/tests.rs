@@ -70,13 +70,6 @@ impl McpToolCaller for SchemaValidatingMcpCaller {
                  {include_archived}: {error}"
             ))
         })?;
-        if let Some(filter) = arguments.get("workflow_runs_filter") {
-            serde_json::from_value::<JsonObject>(filter.clone()).map_err(|error| {
-                DataFusionError::Plan(format!(
-                    "MCP tool expected object argument workflow_runs_filter, got {filter}: {error}"
-                ))
-            })?;
-        }
         Ok(json!({ "items": [] }))
     }
 }
@@ -513,12 +506,12 @@ async fn mcp_table_function_coerces_compatible_string_to_declared_boolean() {
 #[tokio::test]
 async fn mcp_table_function_parses_declared_json_object_argument() {
     let ctx = SessionContext::new();
+    let caller = Arc::new(FakeMcpCaller {
+        calls: Mutex::new(Vec::new()),
+    });
     register_test_sources(
         &ctx,
-        compile_sources(
-            mcp_typed_args_manifest(),
-            Arc::new(SchemaValidatingMcpCaller),
-        ),
+        compile_sources(mcp_typed_args_manifest(), caller.clone()),
     );
 
     ctx.sql(
@@ -534,6 +527,13 @@ async fn mcp_table_function_parses_declared_json_object_argument() {
     .collect()
     .await
     .expect("MCP tool should receive workflow_runs_filter as a JSON object");
+
+    let calls = caller.calls.lock().expect("calls lock");
+    let call = calls.first().expect("one MCP call should be recorded");
+    assert_eq!(
+        call.1.get("workflow_runs_filter"),
+        Some(&json!({ "status": "completed" }))
+    );
 }
 
 #[tokio::test]

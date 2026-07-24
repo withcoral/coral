@@ -334,7 +334,7 @@ fn bind_function_arg(
     if value.is_null() {
         return Ok(None);
     }
-    let source_text = literal_to_string(expr);
+    let source_text = function_arg_source_text(expr);
 
     if argument.data_type == ManifestDataType::Json {
         let Some(value) = value.try_as_str().flatten() else {
@@ -426,6 +426,13 @@ fn bind_function_arg(
         value
     };
     Ok(Some(BoundSourceFunctionValue { value, source_text }))
+}
+
+fn function_arg_source_text(expr: &Expr) -> Option<String> {
+    match expr {
+        Expr::Negative(value) => literal_to_string(value).map(|value| format!("-{value}")),
+        _ => literal_to_string(expr),
+    }
 }
 
 fn bound_value_to_json(
@@ -615,6 +622,17 @@ mod tests {
         )
         .expect_err("UInt64 overflow should be rejected");
         assert!(error.to_string().contains("expected Int64"));
+    }
+
+    #[test]
+    fn utf8_binding_preserves_negative_zero_source_text() {
+        let expr = Expr::Negative(Box::new(Expr::Literal(ScalarValue::Int64(Some(0)), None)));
+        let value = bind_function_arg("test.function", &argument(ManifestDataType::Utf8), &expr)
+            .expect("negative zero should bind")
+            .expect("negative zero should not bind as NULL");
+
+        assert_eq!(value.source_text, "-0");
+        assert_eq!(value.value, serde_json::json!("-0"));
     }
 
     #[test]

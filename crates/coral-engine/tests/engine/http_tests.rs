@@ -1181,7 +1181,7 @@ async fn source_scoped_table_function_builds_http_search_request() {
 }
 
 #[tokio::test]
-async fn source_scoped_table_function_preserves_float_spelling_for_default_utf8_argument() {
+async fn source_scoped_table_function_normalizes_integral_float_for_default_utf8_argument() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/api/search/issues"))
@@ -1207,7 +1207,7 @@ async fn source_scoped_table_function_preserves_float_spelling_for_default_utf8_
             "SELECT title FROM default_utf8_argument.search_issues(q => 1.0)",
         )
         .await
-        .expect("default Utf8 arguments should preserve scalar stringification"),
+        .expect("default Utf8 arguments should normalize scalar stringification"),
     );
 
     assert_eq!(rows, vec![json!({ "title": "Integral float" })]);
