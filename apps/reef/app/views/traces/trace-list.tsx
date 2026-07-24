@@ -1,10 +1,11 @@
 import classNames from 'classnames'
+import { NavLink, useLocation } from 'react-router'
 
 import { Tooltip } from '@/wax/components/tooltip'
 import { Typography } from '@/wax/components/typography'
-import type { TraceSummary } from '@/generated/coral/v1/traces_pb'
+import { routePath } from '@/routing/routemap'
 
-import * as s from '../traces-page.css'
+import * as s from './traces.css'
 import { SqlCode } from './sql-code'
 import {
   durationClass,
@@ -13,30 +14,37 @@ import {
   startMs,
   statusTone,
   timeAgo,
+  type TraceSummaryData,
 } from './trace-utils'
 
 function TraceRow({
   active,
-  onSelect,
+  referenceTimeMs,
+  search,
   trace,
+  workspaceId,
 }: {
   active: boolean
-  onSelect: () => void
-  trace: TraceSummary
+  referenceTimeMs: number
+  search: string
+  trace: TraceSummaryData
+  workspaceId: string
 }) {
   return (
-    <button
+    <NavLink
       className={s.fullRow}
       data-active={active || undefined}
       data-trace-row-id={trace.traceId}
-      onClick={onSelect}
-      type="button"
+      to={{
+        pathname: routePath('workspaceTrace', { traceId: trace.traceId, workspaceId }),
+        search,
+      }}
     >
       <span className={s.statusDot} data-tone={statusTone(trace.status)} />
       <div className={classNames(s.cell, s.cellTimestamp)}>
         <Tooltip content={formatTimestamp(startMs(trace))} side="right">
           <Typography.Body as="span" variant="tertiary">
-            {timeAgo(startMs(trace))}
+            {timeAgo(startMs(trace), referenceTimeMs)}
           </Typography.Body>
         </Tooltip>
       </div>
@@ -52,27 +60,32 @@ function TraceRow({
       >
         <Typography.Body as="span">{formatDurationFromNanos(trace.durationNanos)}</Typography.Body>
       </div>
-    </button>
+    </NavLink>
   )
 }
 
 export function TraceList({
   activeTraceId,
+  referenceTimeMs,
   traces,
-  onSelect,
+  workspaceId,
 }: {
   activeTraceId?: string | null
-  traces: TraceSummary[]
-  onSelect: (traceId: string) => void
+  referenceTimeMs: number
+  traces: TraceSummaryData[]
+  workspaceId: string
 }) {
+  const location = useLocation()
   return (
     <div className={s.traceList}>
       {traces.map((trace) => (
         <TraceRow
           active={trace.traceId === activeTraceId}
           key={trace.traceId}
-          onSelect={() => onSelect(trace.traceId)}
+          referenceTimeMs={referenceTimeMs}
+          search={location.search}
           trace={trace}
+          workspaceId={workspaceId}
         />
       ))}
     </div>

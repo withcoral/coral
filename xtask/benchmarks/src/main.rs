@@ -1,0 +1,180 @@
+//! Representation-efficiency benchmarks for MCP results.
+
+#![allow(
+    clippy::print_stderr,
+    clippy::print_stdout,
+    reason = "benchmark binary intentionally writes results and errors"
+)]
+
+use std::env;
+use std::fs;
+use std::path::Path;
+use std::process::ExitCode;
+
+use anyhow::{Context, Result, ensure};
+use coral_api::v1::{ImportSourceRequest, import_source_response};
+use coral_client::{AppClient, default_workspace, local::ServerBuilder};
+use coral_mcp::{CoralMcpServerFactory, McpOptions};
+use rmcp::{
+    RoleClient, ServerHandler, ServiceExt, model::CallToolRequestParams, service::RunningService,
+};
+use serde_json::{Map, Value};
+use tempfile::TempDir;
+use tiktoken_rs::o200k_base_singleton;
+use tonic::Request;
+use url::Url;
+
+const SCHEMA: &str = "benchmark_columns";
+const TABLE: &str = "wide_table";
+const COLUMN_COUNT: usize = 50;
+
+fn main() -> ExitCode {
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("coral-benchmarks: {error:#}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run() -> Result<()> {
+    ensure!(
+        env::args().nth(1).as_deref() == Some("list-columns"),
+        "usage: coral-benchmarks list-columns"
+    );
+    tokio::runtime::Runtime::new()
+        .context("creating benchmark runtime")?
+        .block_on(run_benchmark())
+}
+
+async fn run_benchmark() -> Result<()> {
+    let fixture_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("fixtures/list-columns/data")
+        .canonicalize()
+        .context("resolving list_columns fixture directory")?;
+    let fixture_url = Url::from_directory_path(&fixture_dir)
+        .map_err(|()| anyhow::anyhow!("fixture path is not absolute: {}", fixture_dir.display()))?;
+    let manifest_yaml = include_str!("../fixtures/list-columns/manifest.yaml")
+        .replace("__FIXTURE_DATA_URL__", fixture_url.as_str());
+
+    let temp = TempDir::new().context("creating benchmark directory")?;
+    let config_dir = temp.path().join("coral-config");
+    fs::create_dir_all(&config_dir).context("creating benchmark config directory")?;
+
+    let app_server = ServerBuilder::new()
+        .with_config_dir(config_dir)
+        .with_noop_feedback_uploads()
+        .start()
+        .await
+        .context("starting benchmark Coral server")?;
+    let app = AppClient::connect(app_server.endpoint_uri())
+        .await
+        .context("connecting benchmark Coral client")?;
+    import_fixture(&app, manifest_yaml).await?;
+
+    let handler = CoralMcpServerFactory::new(
+        app,
+        McpOptions {
+            source_names: vec![SCHEMA.to_string()],
+            ..McpOptions::default()
+        },
+    )
+    .create();
+    let (client, mcp_task) = start_mcp_session(handler).await?;
+    let response = client
+        .call_tool(
+            CallToolRequestParams::new("list_columns").with_arguments(Map::from_iter([
+                ("schema".to_string(), Value::String(SCHEMA.to_string())),
+                ("table".to_string(), Value::String(TABLE.to_string())),
+                ("limit".to_string(), Value::from(COLUMN_COUNT)),
+            ])),
+        )
+        .await
+        .context("calling the real MCP list_columns tool")?;
+    let content = response
+        .structured_content
+        .as_ref()
+        .context("list_columns response has no structured content")?;
+    let total = content
+        .get("total")
+        .and_then(Value::as_u64)
+        .context("list_columns response has no total")?;
+    ensure!(
+        total == COLUMN_COUNT as u64,
+        "fixture exposed {total} columns instead of {COLUMN_COUNT}"
+    );
+    let returned_columns = ["columns", "rows"]
+        .iter()
+        .find_map(|field| content.get(field).and_then(Value::as_array))
+        .context("list_columns response has no columns or rows")?;
+    ensure!(
+        returned_columns.len() == COLUMN_COUNT,
+        "fixture returned {} columns instead of {COLUMN_COUNT}",
+        returned_columns.len()
+    );
+    ensure!(
+        content.get("has_more").and_then(Value::as_bool) == Some(false),
+        "fixture response is unexpectedly paginated"
+    );
+    let json = serde_json::to_string(&response).context("serializing MCP list_columns response")?;
+    let tokens = o200k_base_singleton().encode_ordinary(&json).len();
+    println!(
+        "list-columns/wide-table: {total} columns, {} bytes, {tokens} tokens (o200k_base)",
+        json.len()
+    );
+
+    client.cancel().await.context("stopping MCP client")?;
+    mcp_task.await.context("joining MCP server task")??;
+    app_server
+        .shutdown()
+        .await
+        .context("stopping benchmark Coral server")?;
+    Ok(())
+}
+
+async fn import_fixture(app: &AppClient, manifest_yaml: String) -> Result<()> {
+    let mut stream = app
+        .source_client()
+        .import_source(Request::new(ImportSourceRequest {
+            workspace: Some(default_workspace()),
+            manifest_yaml,
+            variables: Vec::new(),
+            secrets: Vec::new(),
+            oauth_credential_retrievals: Vec::new(),
+        }))
+        .await
+        .context("importing benchmark source")?
+        .into_inner();
+    while let Some(response) = stream
+        .message()
+        .await
+        .context("reading benchmark source import response")?
+    {
+        if matches!(
+            response.event,
+            Some(import_source_response::Event::Source(_))
+        ) {
+            return Ok(());
+        }
+    }
+    anyhow::bail!("benchmark source import ended without installing the source")
+}
+
+async fn start_mcp_session(
+    server: impl ServerHandler + Clone,
+) -> Result<(
+    RunningService<RoleClient, ()>,
+    tokio::task::JoinHandle<Result<()>>,
+)> {
+    let (server_transport, client_transport) = tokio::io::duplex(64 * 1024);
+    let task = tokio::spawn(async move {
+        let server = Box::pin(server.serve(server_transport))
+            .await
+            .context("starting MCP server")?;
+        server.waiting().await.context("running MCP server")?;
+        Ok(())
+    });
+    let client = ().serve(client_transport).await.context("starting MCP client")?;
+    Ok((client, task))
+}

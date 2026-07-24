@@ -122,6 +122,7 @@ async fn list_trace_ids(endpoint_uri: &str) -> Vec<String> {
         .list_traces(Request::new(ListTracesRequest {
             page_size: 10,
             page_token: String::new(),
+            workspace: None,
         }))
         .await
         .expect("list traces")

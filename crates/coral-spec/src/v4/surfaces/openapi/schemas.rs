@@ -61,7 +61,6 @@ impl OpenApiImporter<'_> {
                         diagnostics.push(Diagnostic::warning(
                             "OPENAPI_ALLOF_CONFLICT",
                             format!("allOf property '{property}' conflicts in operation '{operation_id}'"),
-                            self.surface.id.clone(),
                             Some(operation_id.to_string()),
                         ));
                         return None;
@@ -70,7 +69,6 @@ impl OpenApiImporter<'_> {
                         diagnostics.push(Diagnostic::warning(
                             "OPENAPI_ALLOF_CONFLICT",
                             format!("allOf schema exceeds maximum comparison depth in operation '{operation_id}'"),
-                            self.surface.id.clone(),
                             Some(operation_id.to_string()),
                         ));
                         return None;

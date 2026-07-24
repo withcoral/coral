@@ -14,7 +14,7 @@
       "sources/community/**/manifest.yaml"
     ],
     "./crates/coral-spec/src/schema/source_manifest_v4.schema.json": [
-      "sources/core-v4/**/manifest.yaml"
+      "sources/v4/**/manifest.yaml"
     ]
   }
 }

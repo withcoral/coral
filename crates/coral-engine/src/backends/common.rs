@@ -3,11 +3,15 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, OnceLock};
 
-use crate::{QueryRuntimeContext, QuerySource, RequestAuthenticator, SourceInputResolver};
+use crate::{
+    BoundRequestIdentityHttpAuthenticator, QueryRuntimeContext, QuerySource, RequestAuthenticator,
+    SourceInputResolver, SourceObservationPublisher,
+};
 use async_trait::async_trait;
 use coral_spec::{
-    ColumnSpec, FilterSpec, ManifestDataType, ManifestInputKind, ManifestInputSpec,
-    SearchLimitsSpec, SourceBackend, SourceTableFunctionKind, SourceTableFunctionSpec, TableCommon,
+    ColumnSpec, DO_NOT_INDEX_COLUMN_METADATA_KEY, FilterSpec, ManifestDataType, ManifestInputKind,
+    ManifestInputSpec, SearchLimitsSpec, SourceBackend, SourceTableFunctionKind,
+    SourceTableFunctionSpec, TableCommon,
 };
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::datasource::TableProvider;
@@ -127,6 +131,9 @@ pub(crate) struct BackendCompileRequest<'a> {
     pub(crate) source_variables: BTreeMap<String, String>,
     pub(crate) request_authenticators: &'a HashMap<String, Arc<dyn RequestAuthenticator>>,
     pub(crate) source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
+    pub(crate) source_observation_publishers: &'a [Arc<dyn SourceObservationPublisher>],
+    pub(crate) request_identity_http_authenticators:
+        &'a HashMap<String, BoundRequestIdentityHttpAuthenticator>,
 }
 
 /// Shared resources available while registering one batch of compiled sources.
@@ -137,14 +144,21 @@ pub(crate) struct BackendCompileRequest<'a> {
 #[derive(Default)]
 pub(crate) struct BackendRegistrationContext {
     default_http_client: OnceLock<Result<reqwest::Client, String>>,
+    credential_safe_http_client: OnceLock<Result<reqwest::Client, String>>,
 }
 
 impl BackendRegistrationContext {
     pub(crate) fn default_http_client(
         &self,
+        credential_safe: bool,
         build_client: impl FnOnce() -> Result<reqwest::Client, String>,
     ) -> Result<reqwest::Client, String> {
-        self.default_http_client
+        let cache = if credential_safe {
+            &self.credential_safe_http_client
+        } else {
+            &self.default_http_client
+        };
+        cache
             .get_or_init(build_client)
             .as_ref()
             .cloned()
@@ -365,7 +379,7 @@ pub(crate) fn build_registered_table_function(
 }
 
 pub(crate) fn arrow_type_for_column(column: &ColumnSpec) -> DataType {
-    crate::types::arrow_column_type(column.data_type)
+    crate::types::arrow_data_type(column.data_type)
 }
 
 pub(crate) fn schema_from_columns(
@@ -381,11 +395,14 @@ pub(crate) fn schema_from_columns(
 
     let mut fields = Vec::with_capacity(columns.len());
     for column in columns {
-        fields.push(Field::new(
-            &column.name,
-            arrow_type_for_column(column),
-            column.nullable,
-        ));
+        let mut field = Field::new(&column.name, arrow_type_for_column(column), column.nullable);
+        if column.do_not_index {
+            field = field.with_metadata(HashMap::from([(
+                DO_NOT_INDEX_COLUMN_METADATA_KEY.to_string(),
+                "true".to_string(),
+            )]));
+        }
+        fields.push(field);
     }
     Ok(Arc::new(Schema::new(fields)))
 }
@@ -431,15 +448,45 @@ mod tests {
     use super::*;
 
     #[test]
+    fn schema_marks_source_authored_do_not_index_columns() {
+        let schema = schema_from_columns(
+            &[
+                test_column("visible", false),
+                test_column("internal_note", true),
+            ],
+            "demo",
+            "items",
+        )
+        .expect("schema");
+
+        assert!(
+            !schema
+                .field_with_name("visible")
+                .expect("visible field")
+                .metadata()
+                .contains_key(DO_NOT_INDEX_COLUMN_METADATA_KEY)
+        );
+        assert_eq!(
+            schema
+                .field_with_name("internal_note")
+                .expect("excluded field")
+                .metadata()
+                .get(DO_NOT_INDEX_COLUMN_METADATA_KEY)
+                .map(String::as_str),
+            Some("true")
+        );
+    }
+
+    #[test]
     fn default_http_client_is_shared_only_within_registration_context() {
         let build_count = AtomicUsize::new(0);
         let first_context = BackendRegistrationContext::default();
 
         first_context
-            .default_http_client(|| build_counted_client(&build_count))
+            .default_http_client(false, || build_counted_client(&build_count))
             .expect("first context should build a client");
         first_context
-            .default_http_client(|| build_counted_client(&build_count))
+            .default_http_client(false, || build_counted_client(&build_count))
             .expect("first context should reuse its client");
 
         assert_eq!(
@@ -448,14 +495,27 @@ mod tests {
             "one registration context should build one default HTTP client"
         );
 
-        let second_context = BackendRegistrationContext::default();
-        second_context
-            .default_http_client(|| build_counted_client(&build_count))
-            .expect("new context should build its own client");
+        first_context
+            .default_http_client(true, || build_counted_client(&build_count))
+            .expect("credential-safe requests should build a separate client");
+        first_context
+            .default_http_client(true, || build_counted_client(&build_count))
+            .expect("credential-safe requests should reuse their client");
 
         assert_eq!(
             build_count.load(Ordering::SeqCst),
             2,
+            "default and credential-safe HTTP clients should use separate caches"
+        );
+
+        let second_context = BackendRegistrationContext::default();
+        second_context
+            .default_http_client(false, || build_counted_client(&build_count))
+            .expect("new context should build its own client");
+
+        assert_eq!(
+            build_count.load(Ordering::SeqCst),
+            3,
             "default HTTP clients should not be process-global"
         );
     }
@@ -465,5 +525,17 @@ mod tests {
         reqwest::Client::builder()
             .build()
             .map_err(|error| error.to_string())
+    }
+
+    fn test_column(name: &str, do_not_index: bool) -> ColumnSpec {
+        ColumnSpec {
+            name: name.to_string(),
+            data_type: ManifestDataType::Utf8,
+            nullable: true,
+            r#virtual: false,
+            description: String::new(),
+            expr: None,
+            do_not_index,
+        }
     }
 }

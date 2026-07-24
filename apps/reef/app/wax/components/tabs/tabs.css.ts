@@ -1,29 +1,38 @@
-import { globalStyle, style } from '@vanilla-extract/css'
+import { style } from '@vanilla-extract/css'
 
 import { breakpoints } from '@/styles/theme.css'
 import { theme, zIndex } from '@/wax/theme/theme.css'
+
+export const listRoot = style({
+  maxWidth: '100%',
+  minWidth: 0,
+  overflow: 'hidden',
+  position: 'relative',
+})
+
+export const listViewport = style({
+  '@media': {
+    [`screen and (max-width: ${breakpoints.mobile})`]: {
+      scrollPaddingInline: '16px',
+    },
+  },
+  scrollPaddingInline: '32px',
+  width: '100%',
+})
 
 export const list = style({
   '@media': {
     [`screen and (max-width: ${breakpoints.mobile})`]: {
       paddingInline: '16px',
-      scrollPaddingInline: '16px',
     },
   },
   boxShadow: `inset 0 -1px ${theme.stroke.primary}`,
   display: 'flex',
   gap: '4px',
-  overflowX: 'auto',
   paddingBlockEnd: '8px',
   paddingInline: '32px',
   position: 'relative',
-  scrollbarWidth: 'none',
-  scrollPaddingInline: '32px',
   zIndex: zIndex.base,
-})
-
-globalStyle(`${list}::-webkit-scrollbar`, {
-  display: 'none',
 })
 
 export const tab = style({

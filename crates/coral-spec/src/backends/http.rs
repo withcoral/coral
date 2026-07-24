@@ -90,7 +90,7 @@ pub struct RateLimitSpec {
 }
 
 /// Validated top-level manifest for an HTTP-backed source.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct HttpSourceManifest {
     pub common: SourceManifestCommon,
     pub base_url: ParsedTemplate,
@@ -99,6 +99,9 @@ pub struct HttpSourceManifest {
     pub rate_limit: RateLimitSpec,
     pub tables: Vec<HttpTableSpec>,
     pub functions: Vec<SourceTableFunctionSpec>,
+    /// Skipped when serializing: declared inputs come verbatim from the
+    /// authored manifest, which fingerprinting hashes separately.
+    #[serde(skip)]
     pub declared_inputs: Vec<ManifestInputSpec>,
 }
 
@@ -157,7 +160,7 @@ struct RawHttpTableSpec {
 }
 
 /// One validated HTTP table declaration.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct HttpTableSpec {
     pub common: TableCommon,
     pub request: RequestSpec,

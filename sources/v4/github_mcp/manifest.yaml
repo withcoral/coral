@@ -1,0 +1,51 @@
+name: github_mcp_v4
+dsl_version: 4
+inputs:
+  GITHUB_TOKEN:
+    kind: secret
+    hint: |
+      GitHub personal access token used as a bearer token for the live
+      GitHub MCP API. Set GITHUB_TOKEN when installing this preview
+      source.
+    credential:
+      methods:
+        - type: oauth
+          label: Connect with GitHub device code
+          description: Sign in to GitHub with a device code.
+          hint: |
+            Signs you in through GitHub, with no app setup or client
+            secret needed. Requests the `repo`, `read:org`, `read:user`,
+            and `user:email` scopes. To use your own GitHub app instead,
+            set GITHUB_OAUTH_CLIENT_ID to its Client ID and enable device
+            flow on the app.
+          oauth:
+            flow:
+              type: device_code
+            endpoints:
+              device_authorization_url: https://github.com/login/device/code
+              token_url: https://github.com/login/oauth/access_token
+            client:
+              id:
+                default: Iv23liJHis6Bs8NO1DAI
+                input: GITHUB_OAUTH_CLIENT_ID
+            scopes:
+              scope:
+                delimiter: space
+                values:
+                  - repo
+                  - read:org
+                  - read:user
+                  - user:email
+surface:
+  type: mcp
+  server:
+    transport: streamable_http
+    url: https://api.githubcopilot.com/mcp/x/all/readonly
+    auth:
+      type: bearer
+      from: input
+      key: GITHUB_TOKEN
+
+test_queries:
+  - SELECT result FROM github_mcp_v4.get_me LIMIT 1
+  - SELECT result, result_json FROM github_mcp_v4.list_pull_requests(owner => 'withcoral', repo => 'coral', state => 'open', per_page => 10) LIMIT 5

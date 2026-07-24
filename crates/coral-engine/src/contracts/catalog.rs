@@ -56,7 +56,7 @@ pub struct DescribeTableInfo {
     pub missing_context_tables: Vec<TableInfo>,
 }
 
-/// Describes one argument accepted by a source-scoped table function.
+/// Describes one argument accepted by a table function.
 #[derive(Debug, Clone)]
 pub struct TableFunctionArgumentInfo {
     /// Argument name as used in a named SQL function call.
@@ -67,7 +67,7 @@ pub struct TableFunctionArgumentInfo {
     pub values: Vec<String>,
 }
 
-/// Describes one result column returned by a source-scoped table function.
+/// Describes one result column returned by a table function.
 #[derive(Debug, Clone)]
 pub struct TableFunctionResultColumnInfo {
     /// Column name returned by the table function.
@@ -80,7 +80,7 @@ pub struct TableFunctionResultColumnInfo {
     pub description: String,
 }
 
-/// Describes one source-scoped table function.
+/// Describes one table function.
 #[derive(Debug, Clone)]
 pub struct TableFunctionInfo {
     /// `SQL` schema name.

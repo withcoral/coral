@@ -82,6 +82,7 @@ export const theme = createThemeContract({
   },
   content: {
     accentContent: {
+      iconFill: '',
       primary: '',
       primaryReverse: '',
       secondary: '',
@@ -93,6 +94,7 @@ export const theme = createThemeContract({
     },
     disabled: '',
     error: '',
+    errorBackground: '',
     info: '',
     link: '',
     linkHover: '',
@@ -101,8 +103,10 @@ export const theme = createThemeContract({
     secondary: '',
     selection: '',
     success: '',
+    successBackground: '',
     tertiary: '',
     warning: '',
+    warningBackground: '',
   },
   elevation: {
     e1: '',
@@ -113,10 +117,14 @@ export const theme = createThemeContract({
   gradient: {
     card: '',
   },
+  help: {
+    componentBackground: '',
+  },
   input: {
     stroke: {
       default: '',
       disabled: '',
+      error: '',
       focus: '',
       hover: '',
     },
@@ -138,6 +146,7 @@ export const theme = createThemeContract({
       selected: '',
     },
     buttonAccent: {
+      default: '',
       hover: '',
       selected: '',
     },
@@ -152,6 +161,7 @@ export const theme = createThemeContract({
   surface: {
     backdrop: '',
     card: '',
+    cardHover: '',
     floating: '',
     main: '',
     mainContent: '',

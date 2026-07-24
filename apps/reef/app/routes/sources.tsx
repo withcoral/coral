@@ -1,10 +1,10 @@
-import { Outlet, type ShouldRevalidateFunctionArgs } from 'react-router'
+import { matchPath, Outlet, type ShouldRevalidateFunctionArgs } from 'react-router'
 
 import type { Route } from './+types/sources'
 
 import { SourcesIndex } from '@/views/sources/sources-index'
+import { routePattern } from '@/routing/routemap'
 
-export { action } from './sources-action'
 export { loader } from './sources-loader'
 
 export function shouldRevalidate({
@@ -24,17 +24,26 @@ export function shouldRevalidate({
 }
 
 function isSourcesDetailNavigation(currentPath: string, nextPath: string) {
-  const sourcesPath = '/sources'
-  const sourceDetailPath = /^\/sources\/[^/]+$/
-  const currentIsSources = currentPath === sourcesPath || sourceDetailPath.test(currentPath)
-  const nextIsSources = nextPath === sourcesPath || sourceDetailPath.test(nextPath)
-  return currentIsSources && nextIsSources
+  const currentWorkspace = sourcesWorkspaceId(currentPath)
+  const nextWorkspace = sourcesWorkspaceId(nextPath)
+  return currentWorkspace !== undefined && currentWorkspace === nextWorkspace
 }
 
-export default function SourcesRoute({ loaderData }: Route.ComponentProps) {
+function sourcesWorkspaceId(pathname: string): string | undefined {
+  return (
+    matchPath(routePattern('workspaceSource'), pathname) ??
+    matchPath(routePattern('workspaceSources'), pathname)
+  )?.params.workspaceId
+}
+
+export default function SourcesRoute({ loaderData, params }: Route.ComponentProps) {
   return (
     <>
-      <SourcesIndex entries={loaderData.entries} loadError={loaderData.loadError} />
+      <SourcesIndex
+        entries={loaderData.entries}
+        loadError={loaderData.loadError}
+        workspaceId={params.workspaceId}
+      />
       <Outlet />
     </>
   )

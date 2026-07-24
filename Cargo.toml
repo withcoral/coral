@@ -1,12 +1,12 @@
 [workspace]
-members = ["crates/coral-*", "crates/auth/*", "xtask"]
+members = ["crates/coral-*", "crates/auth/*", "xtask", "xtask/benchmarks"]
 resolver = "2"
 
 [workspace.package]
 edition = "2024"
-version = "0.5.2" # x-release-please-version
+version = "0.7.1" # x-release-please-version
 license = "Apache-2.0"
-rust-version = "1.95"
+rust-version = "1.97"
 
 [workspace.lints.rust]
 missing_docs = "warn"
@@ -55,11 +55,11 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "serd
 clap = { version = "4.5", features = ["derive", "env"] }
 clap_complete = "4.5"
 crossterm = { version = "0.29", default-features = false, features = ["events", "windows"] }
-datafusion = "53"
-datafusion-datasource = "53"
-datafusion-datasource-json = "53"
-datafusion-functions-json = "0.53"
-datafusion-tracing = "53.0.2"
+datafusion = "54"
+datafusion-datasource = "54"
+datafusion-datasource-json = "54"
+datafusion-functions-json = "0.54"
+datafusion-tracing = "54"
 dialoguer = "0.12"
 etcetera = "0.11"
 fs2 = "0.4"
@@ -82,7 +82,8 @@ parquet = { version = "58.1.0", features = ["arrow"] }
 prost = "0.14.1"
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "charset", "form", "http2", "json", "query", "rustls", "system-proxy"] }
 regex = "1"
-rmcp = { version = "1.6.0", features = ["client", "reqwest", "transport-child-process", "transport-streamable-http-client-reqwest"] }
+ring = "0.17.14"
+rmcp = { version = "1.8.0", features = ["client", "reqwest", "transport-child-process", "transport-streamable-http-client-reqwest", "transport-streamable-http-server"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
 rust-embed = { version = "8", features = ["mime-guess"] }
 serde = { version = "1", features = ["derive"] }
@@ -100,7 +101,8 @@ tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
 toml = "0.9"
 toml_edit = "0.25.10"
-tonic = "0.14.2"
+tonic = { version = "0.14.2", features = ["tls-native-roots", "tls-ring"] }
+tonic-health = "0.14.2"
 tonic-prost = "0.14.2"
 tonic-types = "0.14.2"
 tonic-web = "0.14.5"
@@ -115,6 +117,7 @@ urlencoding = "2"
 uuid = { version = "1", features = ["serde", "v4"] }
 walkdir = "2"
 wiremock = "0.6"
+zeroize = "1.8"
 
 coral-api = { path = "crates/coral-api" }
 coral-app = { path = "crates/coral-app" }

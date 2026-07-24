@@ -5,6 +5,7 @@ use tracing::warn;
 
 use crate::bootstrap::AppError;
 use crate::credentials::{CredentialManager, CredentialSetId};
+use crate::sources::materialization::SourceDiagnosticReporter;
 use crate::state::ConfigStore;
 use crate::state::db::{CoralDb, DbRepos, now_unix_nanos_i64};
 use crate::storage::fs::DirectoryBackup;
@@ -21,6 +22,7 @@ pub(crate) struct WorkspaceManager {
     trace_store_dir: Option<PathBuf>,
     lifecycle_lock: WorkspaceLifecycleLock,
     db: Arc<CoralDb>,
+    diagnostic_reporter: SourceDiagnosticReporter,
 }
 
 impl WorkspaceManager {
@@ -39,6 +41,7 @@ impl WorkspaceManager {
             trace_store_dir,
             WorkspaceLifecycleLock::default(),
             db,
+            SourceDiagnosticReporter::default(),
         )
     }
 
@@ -49,6 +52,7 @@ impl WorkspaceManager {
         trace_store_dir: Option<PathBuf>,
         lifecycle_lock: WorkspaceLifecycleLock,
         db: Arc<CoralDb>,
+        diagnostic_reporter: SourceDiagnosticReporter,
     ) -> Self {
         Self {
             config_store,
@@ -57,6 +61,7 @@ impl WorkspaceManager {
             trace_store_dir,
             lifecycle_lock,
             db,
+            diagnostic_reporter,
         }
     }
 
@@ -91,6 +96,11 @@ impl WorkspaceManager {
         } else {
             Err(AppError::WorkspaceNotFound(workspace_name.to_string()))
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn lifecycle_lock(&self) -> WorkspaceLifecycleLock {
+        self.lifecycle_lock.clone()
     }
 
     pub(crate) async fn create_workspace(
@@ -132,6 +142,15 @@ impl WorkspaceManager {
             ));
         }
 
+        let deletion_marker = self
+            .lifecycle_lock
+            .mark_workspace_deleting(workspace_name)
+            .ok_or_else(|| {
+                AppError::FailedPrecondition(format!(
+                    "workspace '{workspace_name}' is already being deleted"
+                ))
+            })?;
+
         let (deleted, workspace_dir_backup) = {
             let mut tx = self.db.begin().await?;
             if tx
@@ -170,8 +189,11 @@ impl WorkspaceManager {
             let workspace_dir_backup = self.stage_deleted_workspace_dir(&deleted.workspace.name);
             (deleted, workspace_dir_backup)
         };
+        drop(deletion_marker);
 
         let deleted_workspace_name = deleted.workspace.name.clone();
+        self.diagnostic_reporter
+            .clear_workspace(&deleted_workspace_name);
         Self::commit_deleted_workspace_dir(&deleted_workspace_name, workspace_dir_backup);
         self.prune_deleted_workspace_traces(&deleted_workspace_name)
             .await;
@@ -275,6 +297,7 @@ mod tests {
     use super::WorkspaceManager;
     use crate::credentials::{CredentialManager, CredentialSetId, CredentialStore};
     use crate::sources::SourceName;
+    use crate::sources::materialization::{SourceDiagnosticReporter, SourceLoadDiagnosticStage};
     use crate::sources::model::{InstalledSource, SourceOrigin};
     use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig};
     use crate::state::{AppStateLayout, ConfigStore};
@@ -291,6 +314,7 @@ mod tests {
             variables: BTreeMap::new(),
             secrets: vec!["TOKEN".to_string()],
             credential_storage: None,
+            credential_revision: uuid::Uuid::default(),
             origin: SourceOrigin::Imported,
         }
     }
@@ -315,15 +339,19 @@ mod tests {
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
         let db = test_db(&layout).await;
-        let manager = WorkspaceManager::new_for_tests(
+        let diagnostic_reporter = SourceDiagnosticReporter::default();
+        let manager = WorkspaceManager::new(
             store.clone(),
             credential_manager.clone(),
             layout.clone(),
             None,
+            crate::workspaces::WorkspaceLifecycleLock::default(),
             Arc::clone(&db),
+            diagnostic_reporter.clone(),
         );
         let workspace_name = WorkspaceName::parse("work").expect("workspace");
         let source = installed_source("github");
+        let source_name = source.name.clone();
         let credential_set_id = CredentialSetId::for_source(&source.name);
 
         manager
@@ -333,6 +361,13 @@ mod tests {
         store
             .upsert_source(&workspace_name, source)
             .expect("upsert source");
+        diagnostic_reporter.report_source_load_failure(
+            SourceLoadDiagnosticStage::Query,
+            &workspace_name,
+            &source_name,
+            "SOURCE_LOAD_FAILED",
+            "test failure",
+        );
         credential_manager
             .replace_material(
                 &workspace_name,
@@ -375,5 +410,51 @@ mod tests {
             material.is_empty(),
             "credential material should be removed during best-effort cleanup"
         );
+        assert!(!diagnostic_reporter.tracks_diagnostic(
+            &workspace_name,
+            &source_name,
+            "query-source",
+            "SOURCE_LOAD_FAILED",
+        ));
+    }
+
+    #[tokio::test]
+    async fn failed_workspace_delete_keeps_diagnostic_state() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout = test_layout(&temp);
+        let store = ConfigStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(CredentialStore::new(layout.clone()));
+        let db = test_db(&layout).await;
+        let diagnostic_reporter = SourceDiagnosticReporter::default();
+        let manager = WorkspaceManager::new(
+            store,
+            credential_manager,
+            layout,
+            None,
+            crate::workspaces::WorkspaceLifecycleLock::default(),
+            db,
+            diagnostic_reporter.clone(),
+        );
+        let workspace_name = WorkspaceName::default();
+        let source_name = SourceName::parse("github").expect("source name");
+        diagnostic_reporter.report_source_load_failure(
+            SourceLoadDiagnosticStage::Query,
+            &workspace_name,
+            &source_name,
+            "SOURCE_LOAD_FAILED",
+            "test failure",
+        );
+
+        manager
+            .delete_workspace(&workspace_name)
+            .await
+            .expect_err("default workspace deletion should fail");
+
+        assert!(diagnostic_reporter.tracks_diagnostic(
+            &workspace_name,
+            &source_name,
+            "query-source",
+            "SOURCE_LOAD_FAILED",
+        ));
     }
 }

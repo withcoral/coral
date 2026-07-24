@@ -1,4 +1,3 @@
-use std::any::Any;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -17,10 +16,12 @@ use super::McpSourceInputs;
 use super::client::McpSourceClient;
 use super::error::McpProviderQueryError;
 use super::fetch::McpFetchPlan;
+use crate::SourceObservationSurfaceKind;
 use crate::backends::schema_from_columns;
 use crate::backends::shared::filter_expr::{classify_filter_pushdown, extract_filter_values};
 use crate::backends::shared::json_exec::JsonExec;
 use crate::backends::shared::mapping::convert_items;
+use crate::backends::shared::source_observation::SourceObservationPublishers;
 
 pub(super) struct McpTableProvider {
     backend: McpSourceClient,
@@ -28,6 +29,7 @@ pub(super) struct McpTableProvider {
     source_inputs: Arc<McpSourceInputs>,
     table: Arc<McpTableSpec>,
     schema: SchemaRef,
+    source_observation_publishers: SourceObservationPublishers,
 }
 
 impl std::fmt::Debug for McpTableProvider {
@@ -46,6 +48,7 @@ impl McpTableProvider {
         source_schema: String,
         source_inputs: Arc<McpSourceInputs>,
         table: McpTableSpec,
+        source_observation_publishers: SourceObservationPublishers,
     ) -> Result<Self> {
         let schema = schema_from_columns(table.columns(), &source_schema, table.name())?;
         Ok(Self {
@@ -54,16 +57,13 @@ impl McpTableProvider {
             source_inputs,
             table: Arc::new(table),
             schema,
+            source_observation_publishers,
         })
     }
 }
 
 #[async_trait]
 impl TableProvider for McpTableProvider {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
     }
@@ -170,7 +170,11 @@ impl TableProvider for McpTableProvider {
             fetcher,
             converter,
             projection.cloned(),
-        )?;
+        )?
+        .with_source_observation(
+            SourceObservationSurfaceKind::Table,
+            Arc::clone(&self.source_observation_publishers),
+        );
         Ok(Arc::new(exec))
     }
 }

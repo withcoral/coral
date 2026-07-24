@@ -1,14 +1,15 @@
 //! Query-time loading, validation, and execution over installed sources.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use coral_engine::{
-    CatalogInfo, CoralQuery, CoreError, DescribeTableInfo, QueryExecution,
+    CatalogInfo, CoralQuery, CoreError, DescribeTableInfo, PreparedQueryRuntime, QueryExecution,
     QueryExecutionProvenance, QueryPlan, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,
-    RuntimeSourcePackage, SourceInputResolver, SourceValidationReport, StatusCode, TableInfo,
+    SourceDecorator, SourceDecoratorError, SourceFailurePolicy, SourceInputResolver, SourceTables,
+    SourceValidationReport, StatusCode, TableInfo, UdfRuntimeDefinition,
 };
 use coral_spec::{ManifestInputKind, ManifestInputSpec};
 use opentelemetry::trace::Status as OtelStatus;
@@ -17,22 +18,28 @@ use tracing::Instrument as _;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
 use crate::bootstrap::AppError;
-use crate::credentials::{CredentialManager, CredentialSetId, CredentialsError};
+use crate::catalog::model::CatalogResolution;
+use crate::credentials::{CredentialManager, CredentialSetId};
+use crate::functions::manager::{FunctionListing, FunctionManager, ValidatedFunctionInstall};
 use crate::query::QueryAttribution;
 use crate::query::extensions::{EngineExtensionsProvider, engine_extensions_for_providers};
 use crate::query::input_resolver::{
     CredentialRefreshingInputResolver, SourceCredentialSnapshot, StoredCredentialInputResolver,
 };
+use crate::search::observed::{SearchObservationHandle, SearchObservationSource};
 use crate::sources::SourceName;
 use crate::sources::catalog::resolve_installed_manifest;
-use crate::sources::materialization::{
-    incompatible_materialization_error, load_v4_materialization,
-};
+use crate::sources::materialization::{SourceDiagnosticReporter, SourceLoadDiagnosticStage};
 use crate::sources::model::InstalledSource;
-use crate::sources::runtime_package::runtime_components_for_v4_source;
+use crate::sources::runtime_package::{
+    RuntimeContractFingerprint, query_source_from_installed_manifest,
+};
 use crate::state::{AppConfig, AppStateLayout, ConfigStore};
+use crate::task::id::TaskId;
 use crate::telemetry::WORKSPACE_SPAN_ATTRIBUTE;
-use crate::workspaces::{WorkspaceManager, WorkspaceName};
+use crate::workspaces::{
+    WorkspaceLifecycleLock, WorkspaceLifecycleRevision, WorkspaceManager, WorkspaceName,
+};
 
 #[derive(Debug)]
 pub(crate) enum QueryManagerError {
@@ -55,7 +62,80 @@ enum CredentialResolutionMode {
 struct LoadedQuerySource {
     source: InstalledSource,
     query_source: QuerySource,
+    runtime_schema_name: String,
+    runtime_contract_fingerprint: RuntimeContractFingerprint,
     credential_material: BTreeMap<String, String>,
+}
+
+struct QuerySourceLoad {
+    loaded: Vec<LoadedQuerySource>,
+    failed_source_names: BTreeSet<String>,
+}
+
+/// Maps each loaded runtime schema to its canonical installed source owner.
+fn runtime_schema_owners(
+    loaded_sources: &[LoadedQuerySource],
+) -> Result<BTreeMap<String, String>, AppError> {
+    let mut owners = BTreeMap::new();
+    for loaded in loaded_sources {
+        match owners.entry(loaded.runtime_schema_name.clone()) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(loaded.source.name.as_str().to_string());
+            }
+            std::collections::btree_map::Entry::Occupied(entry)
+                if entry.get().as_str() != loaded.source.name.as_str() =>
+            {
+                return Err(AppError::InvalidInput(format!(
+                    "catalog runtime schema '{}' is owned by both '{}' and '{}'",
+                    entry.key(),
+                    entry.get(),
+                    loaded.source.name
+                )));
+            }
+            std::collections::btree_map::Entry::Occupied(_) => {}
+        }
+    }
+    Ok(owners)
+}
+
+#[derive(Clone, Default)]
+struct CatalogFailureRecorder {
+    failed_source_names: Arc<Mutex<BTreeSet<String>>>,
+}
+
+impl CatalogFailureRecorder {
+    fn failed_source_names(&self) -> BTreeSet<String> {
+        self.failed_source_names
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+}
+
+impl SourceDecorator for CatalogFailureRecorder {
+    fn name(&self) -> &'static str {
+        "catalog_failure_recorder"
+    }
+
+    fn decorate_source(
+        &mut self,
+        _source: &QuerySource,
+        tables: SourceTables,
+    ) -> Result<SourceTables, SourceDecoratorError> {
+        Ok(tables)
+    }
+
+    fn source_failed(
+        &mut self,
+        source: &QuerySource,
+        _error: &CoreError,
+    ) -> Result<SourceFailurePolicy, SourceDecoratorError> {
+        self.failed_source_names
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(source.source_name().to_string());
+        Ok(SourceFailurePolicy::Ignore)
+    }
 }
 
 #[derive(Clone)]
@@ -63,13 +143,18 @@ pub(crate) struct QueryManager {
     config_store: ConfigStore,
     workspace_manager: Arc<WorkspaceManager>,
     credential_manager: CredentialManager,
+    function_manager: FunctionManager,
+    lifecycle_lock: WorkspaceLifecycleLock,
     runtime_context: QueryRuntimeContext,
     layout: AppStateLayout,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+    diagnostic_reporter: SourceDiagnosticReporter,
+    search_observations: Option<SearchObservationHandle>,
 }
 
 impl QueryManager {
-    pub(crate) fn new(
+    #[cfg(test)]
+    pub(crate) fn new_for_tests(
         config_store: ConfigStore,
         workspace_manager: WorkspaceManager,
         credential_manager: CredentialManager,
@@ -77,14 +162,75 @@ impl QueryManager {
         layout: AppStateLayout,
         engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
     ) -> Self {
+        Self::new(
+            config_store,
+            workspace_manager,
+            credential_manager,
+            runtime_context,
+            layout,
+            WorkspaceLifecycleLock::default(),
+            engine_extensions_providers,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new(
+        config_store: ConfigStore,
+        workspace_manager: WorkspaceManager,
+        credential_manager: CredentialManager,
+        runtime_context: QueryRuntimeContext,
+        layout: AppStateLayout,
+        lifecycle_lock: WorkspaceLifecycleLock,
+        engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+    ) -> Self {
+        Self::with_diagnostic_reporter(
+            config_store,
+            workspace_manager,
+            credential_manager,
+            runtime_context,
+            layout,
+            lifecycle_lock,
+            engine_extensions_providers,
+            SourceDiagnosticReporter::default(),
+        )
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the composition root passes shared lifecycle and diagnostic state explicitly"
+    )]
+    pub(crate) fn with_diagnostic_reporter(
+        config_store: ConfigStore,
+        workspace_manager: WorkspaceManager,
+        credential_manager: CredentialManager,
+        runtime_context: QueryRuntimeContext,
+        layout: AppStateLayout,
+        lifecycle_lock: WorkspaceLifecycleLock,
+        engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+        diagnostic_reporter: SourceDiagnosticReporter,
+    ) -> Self {
+        let function_manager =
+            FunctionManager::new(config_store.clone(), &layout, lifecycle_lock.clone());
         Self {
             config_store,
             workspace_manager: Arc::new(workspace_manager),
             credential_manager,
+            function_manager,
+            lifecycle_lock,
             runtime_context,
             layout,
             engine_extensions_providers,
+            diagnostic_reporter,
+            search_observations: None,
         }
+    }
+
+    pub(crate) fn with_search_observation_handle(
+        mut self,
+        search_observations: SearchObservationHandle,
+    ) -> Self {
+        self.search_observations = Some(search_observations);
+        self
     }
 
     pub(crate) async fn list_tables(
@@ -92,30 +238,29 @@ impl QueryManager {
         workspace_name: &WorkspaceName,
         schema_filter: Option<&str>,
         table_filter: Option<&str>,
-        _attribution: &QueryAttribution,
+        attribution: &QueryAttribution,
     ) -> Result<Vec<TableInfo>, QueryManagerError> {
         let trace_sql = list_tables_trace_sql(schema_filter, table_filter);
         run_query_operation(
             QueryOperation::ListTables,
             workspace_name,
             &trace_sql,
+            attribution.task_id.as_ref(),
             async {
-                let (loaded_sources, config) = self
+                let (source_load, config) = self
                     .load_query_sources(workspace_name)
                     .await
                     .map_err(QueryManagerError::App)?;
                 let runtime = self
-                    .runtime_config_with_credential_mode(
+                    .prepared_runtime_with_udfs(
                         workspace_name,
-                        &loaded_sources,
+                        &source_load.loaded,
                         &config,
                         CredentialResolutionMode::StoredOnly,
+                        SourceObservationMode::Disabled,
                     )
-                    .map_err(QueryManagerError::App)?;
-                let sources = query_sources_from_loaded(&loaded_sources);
-                CoralQuery::list_tables(&sources, runtime, schema_filter, table_filter)
-                    .await
-                    .map_err(QueryManagerError::Core)
+                    .await?;
+                Ok(runtime.list_tables(schema_filter, table_filter))
             },
             |tables| Some(u64::try_from(tables.len()).unwrap_or(u64::MAX)),
             |_, _| {},
@@ -127,38 +272,58 @@ impl QueryManager {
         &self,
         workspace_name: &WorkspaceName,
         schema_filter: Option<&str>,
-        _attribution: &QueryAttribution,
+        attribution: &QueryAttribution,
     ) -> Result<CatalogInfo, QueryManagerError> {
+        Ok(self
+            .resolve_catalog(workspace_name, schema_filter, attribution)
+            .await?
+            .catalog)
+    }
+
+    pub(crate) async fn resolve_catalog(
+        &self,
+        workspace_name: &WorkspaceName,
+        schema_filter: Option<&str>,
+        attribution: &QueryAttribution,
+    ) -> Result<CatalogResolution, QueryManagerError> {
         let trace_sql = list_catalog_trace_sql(schema_filter);
         run_query_operation(
             QueryOperation::ListCatalog,
             workspace_name,
             &trace_sql,
+            attribution.task_id.as_ref(),
             async {
-                let (loaded_sources, config) = self
+                let (source_load, config) = self
                     .load_query_sources(workspace_name)
                     .await
                     .map_err(QueryManagerError::App)?;
+                let failure_recorder = CatalogFailureRecorder::default();
                 let runtime = self
-                    .runtime_config_with_credential_mode(
+                    .prepared_catalog_runtime_with_udfs(
                         workspace_name,
-                        &loaded_sources,
+                        &source_load.loaded,
                         &config,
-                        CredentialResolutionMode::StoredOnly,
+                        failure_recorder.clone(),
                     )
-                    .map_err(QueryManagerError::App)?;
-                let sources = query_sources_from_loaded(&loaded_sources);
-                CoralQuery::list_catalog(&sources, runtime, schema_filter)
-                    .await
-                    .map_err(QueryManagerError::Core)
+                    .await?;
+                let mut failed_source_names = source_load.failed_source_names;
+                failed_source_names.extend(failure_recorder.failed_source_names());
+                let runtime_schema_owners =
+                    runtime_schema_owners(&source_load.loaded).map_err(QueryManagerError::App)?;
+                Ok(CatalogResolution {
+                    catalog: runtime.list_catalog(schema_filter),
+                    failed_source_names,
+                    runtime_schema_owners,
+                })
             },
-            |catalog| {
+            |resolution| {
                 Some(
                     u64::try_from(
-                        catalog
+                        resolution
+                            .catalog
                             .tables
                             .len()
-                            .saturating_add(catalog.table_functions.len()),
+                            .saturating_add(resolution.catalog.table_functions.len()),
                     )
                     .unwrap_or(u64::MAX),
                 )
@@ -173,25 +338,29 @@ impl QueryManager {
         workspace_name: &WorkspaceName,
         schema_name: &str,
         table_name: &str,
-        _attribution: &QueryAttribution,
+        attribution: &QueryAttribution,
     ) -> Result<DescribeTableInfo, QueryManagerError> {
         let trace_sql = describe_table_trace_sql(schema_name, table_name);
         run_query_operation(
             QueryOperation::DescribeTable,
             workspace_name,
             &trace_sql,
+            attribution.task_id.as_ref(),
             async {
-                let (loaded_sources, config) = self
+                let (source_load, config) = self
                     .load_query_sources(workspace_name)
                     .await
                     .map_err(QueryManagerError::App)?;
                 let runtime = self
-                    .runtime_config(workspace_name, &loaded_sources, &config)
-                    .map_err(QueryManagerError::App)?;
-                let sources = query_sources_from_loaded(&loaded_sources);
-                CoralQuery::describe_table(&sources, runtime, schema_name, table_name)
-                    .await
-                    .map_err(QueryManagerError::Core)
+                    .prepared_runtime_with_udfs(
+                        workspace_name,
+                        &source_load.loaded,
+                        &config,
+                        CredentialResolutionMode::Refreshing,
+                        SourceObservationMode::Disabled,
+                    )
+                    .await?;
+                Ok(runtime.describe_table(schema_name, table_name))
             },
             |_| None,
             |_, _| {},
@@ -203,22 +372,29 @@ impl QueryManager {
         &self,
         workspace_name: &WorkspaceName,
         sql: &str,
-        _attribution: &QueryAttribution,
+        attribution: &QueryAttribution,
     ) -> Result<QueryExecution, QueryManagerError> {
         run_query_operation(
             QueryOperation::ExecuteSql,
             workspace_name,
             sql,
+            attribution.task_id.as_ref(),
             async {
-                let (loaded_sources, config) = self
+                let (source_load, config) = self
                     .load_query_sources(workspace_name)
                     .await
                     .map_err(QueryManagerError::App)?;
                 let runtime = self
-                    .runtime_config(workspace_name, &loaded_sources, &config)
-                    .map_err(QueryManagerError::App)?;
-                let sources = query_sources_from_loaded(&loaded_sources);
-                CoralQuery::execute_sql(&sources, runtime, sql)
+                    .prepared_runtime_with_udfs(
+                        workspace_name,
+                        &source_load.loaded,
+                        &config,
+                        CredentialResolutionMode::Refreshing,
+                        SourceObservationMode::Enabled,
+                    )
+                    .await?;
+                runtime
+                    .execute_sql(sql)
                     .await
                     .map_err(QueryManagerError::Core)
             },
@@ -232,22 +408,29 @@ impl QueryManager {
         &self,
         workspace_name: &WorkspaceName,
         sql: &str,
-        _attribution: &QueryAttribution,
+        attribution: &QueryAttribution,
     ) -> Result<QueryPlan, QueryManagerError> {
         run_query_operation(
             QueryOperation::ExplainSql,
             workspace_name,
             sql,
+            attribution.task_id.as_ref(),
             async {
-                let (loaded_sources, config) = self
+                let (source_load, config) = self
                     .load_query_sources(workspace_name)
                     .await
                     .map_err(QueryManagerError::App)?;
                 let runtime = self
-                    .runtime_config(workspace_name, &loaded_sources, &config)
-                    .map_err(QueryManagerError::App)?;
-                let sources = query_sources_from_loaded(&loaded_sources);
-                CoralQuery::explain_sql(&sources, runtime, sql)
+                    .prepared_runtime_with_udfs(
+                        workspace_name,
+                        &source_load.loaded,
+                        &config,
+                        CredentialResolutionMode::Refreshing,
+                        SourceObservationMode::Disabled,
+                    )
+                    .await?;
+                runtime
+                    .explain_sql(sql)
                     .await
                     .map_err(QueryManagerError::Core)
             },
@@ -284,7 +467,7 @@ impl QueryManager {
             (source, loaded_source, version, config)
         };
         let runtime = self
-            .runtime_config(
+            .runtime_config_without_source_observations(
                 workspace_name,
                 std::slice::from_ref(&loaded_source),
                 &config,
@@ -306,11 +489,11 @@ impl QueryManager {
     async fn load_query_sources(
         &self,
         workspace_name: &WorkspaceName,
-    ) -> Result<(Vec<LoadedQuerySource>, AppConfig), AppError> {
+    ) -> Result<(QuerySourceLoad, AppConfig), AppError> {
         self.require_workspace(workspace_name).await?;
         let _state_lock = self.config_store.state_lock_shared()?;
         let config = self.config_store.load_config_unlocked()?;
-        let sources = self.load_query_sources_from_config(workspace_name, &config)?;
+        let sources = self.load_query_sources_from_config(workspace_name, &config);
         Ok((sources, config))
     }
 
@@ -324,7 +507,7 @@ impl QueryManager {
         &self,
         workspace_name: &WorkspaceName,
         config: &AppConfig,
-    ) -> Result<Vec<LoadedQuerySource>, AppError> {
+    ) -> QuerySourceLoad {
         let span = tracing::info_span!(
             "coral.app.query_sources.load",
             workspace = tracing::field::Empty,
@@ -333,27 +516,34 @@ impl QueryManager {
         span.record(WORKSPACE_SPAN_ATTRIBUTE, workspace_name.as_str());
         let _guard = span.enter();
         let mut loaded_sources = Vec::new();
+        let mut failed_source_names = BTreeSet::new();
         for source in config.workspace_sources(workspace_name) {
             match self.load_query_source(workspace_name, &source) {
-                Ok((loaded_source, _version)) => loaded_sources.push(loaded_source),
-                Err(
-                    error @ (AppError::Credentials(CredentialsError::Unavailable(_))
-                    | AppError::MissingOrIncompatibleV4Materialization { .. }
-                    | AppError::InvalidV4ProjectionOverride { .. }),
-                ) => {
-                    return Err(error);
+                Ok((loaded_source, _version)) => {
+                    self.diagnostic_reporter.clear_source_load_failure(
+                        SourceLoadDiagnosticStage::Query,
+                        workspace_name,
+                        &source.name,
+                    );
+                    loaded_sources.push(loaded_source);
                 }
                 Err(error) => {
-                    tracing::warn!(
-                        source = %source.name,
-                        detail = %error,
-                        "skipping source during query-source load"
+                    failed_source_names.insert(source.name.to_string());
+                    self.diagnostic_reporter.report_source_load_failure(
+                        SourceLoadDiagnosticStage::Query,
+                        workspace_name,
+                        &source.name,
+                        "SOURCE_LOAD_FAILED",
+                        &error.to_string(),
                     );
                 }
             }
         }
         span.record("source.count", loaded_sources.len());
-        Ok(loaded_sources)
+        QuerySourceLoad {
+            loaded: loaded_sources,
+            failed_source_names,
+        }
     }
 
     fn load_query_source(
@@ -362,26 +552,7 @@ impl QueryManager {
         source: &InstalledSource,
     ) -> Result<(LoadedQuerySource, Option<String>), AppError> {
         let installed = resolve_installed_manifest(workspace_name, source, &self.layout)?;
-        let source_spec = installed.source_spec;
-        let v4_runtime_components = if let Some(v4) = source_spec.as_v4() {
-            let materialized = load_v4_materialization(
-                &self.layout,
-                workspace_name,
-                &source.name,
-                &installed.manifest_yaml,
-                v4,
-            )?;
-            Some(
-                runtime_components_for_v4_source(v4, &materialized).map_err(|error| {
-                    incompatible_materialization_error(
-                        &source.name,
-                        format!("failed to assemble runtime package: {error}"),
-                    )
-                })?,
-            )
-        } else {
-            None
-        };
+        let source_spec = &installed.source_spec;
         validate_required_variables(source, source_spec.declared_inputs())?;
         let stored_secrets =
             if let Some(credential_storage) = source.credential_storage_for_material() {
@@ -406,43 +577,37 @@ impl QueryManager {
             } else {
                 format!("secret '{first}' and {} other(s)", rest.len())
             };
-            return Err(AppError::FailedPrecondition(format!(
-                "source '{}' is missing {detail}",
-                source.name
-            )));
+            return Err(AppError::MissingSourceInputs {
+                source_name: source.name.to_string(),
+                detail,
+            });
         }
         for secret_name in source_spec.declared_secret_names() {
             if let Some(value) = stored_secrets.get(&secret_name) {
                 resolved_secrets.insert(secret_name, value.clone());
             }
         }
-        let query_source = if let Some(components) = v4_runtime_components {
-            QuerySource::from_runtime_components(
-                RuntimeSourcePackage {
-                    source_name: source_spec.schema_name().to_string(),
-                    authored_version: source_spec.source_version().map(ToString::to_string),
-                    description: source_spec.description().to_string(),
-                    declared_inputs: source_spec.declared_inputs().to_vec(),
-                    test_queries: source_spec.test_queries().to_vec(),
-                    components,
-                },
-                source.variables.clone(),
-                resolved_secrets,
-            )
-            .map_err(|error| AppError::FailedPrecondition(error.to_string()))?
-        } else {
-            QuerySource::from_manifest(&source_spec, source.variables.clone(), resolved_secrets)
-        };
+        let loaded_runtime = query_source_from_installed_manifest(
+            &self.layout,
+            workspace_name,
+            source,
+            &installed,
+            &self.diagnostic_reporter,
+            resolved_secrets,
+        )?;
         Ok((
             LoadedQuerySource {
                 source: source.clone(),
-                query_source,
+                query_source: loaded_runtime.query_source,
+                runtime_schema_name: installed.source_spec.schema_name().to_string(),
+                runtime_contract_fingerprint: loaded_runtime.runtime_contract_fingerprint,
                 credential_material: stored_secrets,
             },
             installed.candidate.version,
         ))
     }
 
+    #[cfg(test)]
     fn runtime_config(
         &self,
         workspace_name: &WorkspaceName,
@@ -454,6 +619,22 @@ impl QueryManager {
             selected_sources,
             config,
             CredentialResolutionMode::Refreshing,
+            SourceObservationMode::Enabled,
+        )
+    }
+
+    fn runtime_config_without_source_observations(
+        &self,
+        workspace_name: &WorkspaceName,
+        selected_sources: &[LoadedQuerySource],
+        config: &AppConfig,
+    ) -> Result<QueryRuntimeConfig, AppError> {
+        self.runtime_config_with_credential_mode(
+            workspace_name,
+            selected_sources,
+            config,
+            CredentialResolutionMode::Refreshing,
+            SourceObservationMode::Disabled,
         )
     }
 
@@ -463,10 +644,30 @@ impl QueryManager {
         selected_sources: &[LoadedQuerySource],
         config: &AppConfig,
         credential_resolution_mode: CredentialResolutionMode,
+        source_observation_mode: SourceObservationMode,
     ) -> Result<QueryRuntimeConfig, AppError> {
         let query_sources = query_sources_from_loaded(selected_sources);
         let mut extensions =
             engine_extensions_for_providers(&self.engine_extensions_providers, &query_sources);
+        if matches!(source_observation_mode, SourceObservationMode::Enabled)
+            && let Some(search_observations) = &self.search_observations
+        {
+            let observation_sources = selected_sources
+                .iter()
+                .map(|source| {
+                    SearchObservationSource::new(
+                        &source.query_source,
+                        source.runtime_contract_fingerprint.as_str(),
+                        source.source.credential_revision,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let observed_extensions =
+                search_observations.extensions_for(workspace_name, &observation_sources);
+            extensions
+                .source_observation_publishers
+                .extend(observed_extensions.source_observation_publishers);
+        }
         let provider_input_resolver = extensions.source_input_resolver.take();
         let source_credentials = selected_sources
             .iter()
@@ -507,6 +708,212 @@ impl QueryManager {
         runtime.dependent_join = config.dependent_join_config(&selected_source_names)?;
         Ok(runtime)
     }
+
+    pub(crate) async fn list_functions(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<Vec<FunctionListing>, QueryManagerError> {
+        let (source_load, config) = self
+            .load_query_sources(workspace_name)
+            .await
+            .map_err(QueryManagerError::App)?;
+        let sources = query_sources_from_loaded(&source_load.loaded);
+        self.function_manager
+            .list_functions(workspace_name, &sources, || {
+                self.runtime_config_without_source_observations(
+                    workspace_name,
+                    &source_load.loaded,
+                    &config,
+                )
+            })
+            .await
+            .map_err(QueryManagerError::App)
+    }
+
+    pub(crate) fn function_manager(&self) -> FunctionManager {
+        self.function_manager.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn validate_udf_sql(
+        &self,
+        workspace_name: &WorkspaceName,
+        raw_sql: &str,
+    ) -> Result<UdfRuntimeDefinition, QueryManagerError> {
+        self.require_workspace(workspace_name)
+            .await
+            .map_err(QueryManagerError::App)?;
+        let _lifecycle_snapshot = self.lifecycle_lock.snapshot();
+        let (loaded_sources, config) = self.load_function_validation_sources(workspace_name)?;
+        self.validate_udf_sql_against_snapshot(workspace_name, raw_sql, &loaded_sources, &config)
+            .await
+    }
+
+    pub(crate) async fn add_user_function(
+        &self,
+        workspace_name: &WorkspaceName,
+        raw_sql: &str,
+    ) -> Result<UdfRuntimeDefinition, QueryManagerError> {
+        for _ in 0..2 {
+            let revision = self.lifecycle_lock.snapshot().revision();
+            self.require_workspace(workspace_name)
+                .await
+                .map_err(QueryManagerError::App)?;
+            let Some((loaded_sources, config)) =
+                self.function_validation_snapshot_if_unchanged(workspace_name, revision)?
+            else {
+                continue;
+            };
+            let runtime_function = self
+                .validate_udf_sql_against_snapshot(
+                    workspace_name,
+                    raw_sql,
+                    &loaded_sources,
+                    &config,
+                )
+                .await?;
+            match self
+                .function_manager
+                .install_validated_user_function_if_unchanged(
+                    workspace_name,
+                    raw_sql,
+                    &runtime_function,
+                    revision,
+                )
+                .map_err(QueryManagerError::App)?
+            {
+                ValidatedFunctionInstall::Installed => return Ok(runtime_function),
+                ValidatedFunctionInstall::WorkspaceChanged => {}
+            }
+        }
+        Err(QueryManagerError::App(AppError::FailedPrecondition(
+            "workspace changed repeatedly while the function was being validated; retry the add"
+                .to_string(),
+        )))
+    }
+
+    fn function_validation_snapshot_if_unchanged(
+        &self,
+        workspace_name: &WorkspaceName,
+        revision: WorkspaceLifecycleRevision,
+    ) -> Result<Option<(Vec<LoadedQuerySource>, AppConfig)>, QueryManagerError> {
+        let lifecycle_snapshot = self.lifecycle_lock.snapshot();
+        if lifecycle_snapshot.revision() != revision {
+            return Ok(None);
+        }
+        let (loaded_sources, config) = self.load_function_validation_sources(workspace_name)?;
+        Ok(Some((loaded_sources, config)))
+    }
+
+    fn load_function_validation_sources(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<(Vec<LoadedQuerySource>, AppConfig), QueryManagerError> {
+        let (loaded_sources, config) = {
+            let _state_lock = self
+                .config_store
+                .state_lock_shared()
+                .map_err(QueryManagerError::App)?;
+            let config = self
+                .config_store
+                .load_config_unlocked()
+                .map_err(QueryManagerError::App)?;
+            let source_load = self.load_query_sources_from_config(workspace_name, &config);
+            (source_load.loaded, config)
+        };
+        Ok((loaded_sources, config))
+    }
+
+    async fn validate_udf_sql_against_snapshot(
+        &self,
+        workspace_name: &WorkspaceName,
+        raw_sql: &str,
+        loaded_sources: &[LoadedQuerySource],
+        config: &AppConfig,
+    ) -> Result<UdfRuntimeDefinition, QueryManagerError> {
+        let sources = query_sources_from_loaded(loaded_sources);
+        self.function_manager
+            .validate_user_function_sql(
+                workspace_name,
+                &sources,
+                || {
+                    self.runtime_config_without_source_observations(
+                        workspace_name,
+                        loaded_sources,
+                        config,
+                    )
+                },
+                raw_sql,
+            )
+            .await
+            .map_err(QueryManagerError::App)
+    }
+
+    async fn prepared_runtime_with_udfs(
+        &self,
+        workspace_name: &WorkspaceName,
+        selected_sources: &[LoadedQuerySource],
+        config: &AppConfig,
+        credential_resolution_mode: CredentialResolutionMode,
+        source_observation_mode: SourceObservationMode,
+    ) -> Result<PreparedQueryRuntime, QueryManagerError> {
+        let runtime_config = self
+            .runtime_config_with_credential_mode(
+                workspace_name,
+                selected_sources,
+                config,
+                credential_resolution_mode,
+                source_observation_mode,
+            )
+            .map_err(QueryManagerError::App)?;
+        self.prepare_runtime_with_udfs(workspace_name, selected_sources, runtime_config)
+            .await
+    }
+
+    async fn prepared_catalog_runtime_with_udfs(
+        &self,
+        workspace_name: &WorkspaceName,
+        selected_sources: &[LoadedQuerySource],
+        config: &AppConfig,
+        failure_recorder: CatalogFailureRecorder,
+    ) -> Result<PreparedQueryRuntime, QueryManagerError> {
+        let mut runtime_config = self
+            .runtime_config_with_credential_mode(
+                workspace_name,
+                selected_sources,
+                config,
+                CredentialResolutionMode::StoredOnly,
+                SourceObservationMode::Disabled,
+            )
+            .map_err(QueryManagerError::App)?;
+        runtime_config
+            .extensions
+            .source_decorators
+            .insert(0, Box::new(failure_recorder));
+        self.prepare_runtime_with_udfs(workspace_name, selected_sources, runtime_config)
+            .await
+    }
+
+    async fn prepare_runtime_with_udfs(
+        &self,
+        workspace_name: &WorkspaceName,
+        selected_sources: &[LoadedQuerySource],
+        runtime_config: QueryRuntimeConfig,
+    ) -> Result<PreparedQueryRuntime, QueryManagerError> {
+        let query_sources = query_sources_from_loaded(selected_sources);
+        let runtime = CoralQuery::prepare(&query_sources, runtime_config)
+            .await
+            .map_err(QueryManagerError::Core)?;
+        let functions = self
+            .function_manager
+            .load_runtime_udfs(workspace_name, &query_sources, &runtime)
+            .await
+            .map_err(QueryManagerError::App)?;
+        runtime
+            .with_udfs(functions)
+            .await
+            .map_err(QueryManagerError::Core)
+    }
 }
 
 fn query_sources_from_loaded(loaded_sources: &[LoadedQuerySource]) -> Vec<QuerySource> {
@@ -523,6 +930,12 @@ enum QueryOperation {
     ListTables,
     ListCatalog,
     DescribeTable,
+}
+
+#[derive(Clone, Copy)]
+enum SourceObservationMode {
+    Enabled,
+    Disabled,
 }
 
 impl QueryOperation {
@@ -561,6 +974,7 @@ async fn run_query_operation<T, Fut, RowCount>(
     operation: QueryOperation,
     workspace_name: &WorkspaceName,
     sql: &str,
+    task_id: Option<&TaskId>,
     query: Fut,
     row_count: RowCount,
     record_success_fields: impl FnOnce(&tracing::Span, &T),
@@ -570,7 +984,7 @@ where
     RowCount: FnOnce(&T) -> Option<u64>,
 {
     let started_at = Instant::now();
-    let query_span = create_query_span(operation, workspace_name, sql);
+    let query_span = create_query_span(operation, workspace_name, sql, task_id);
     let result = query.instrument(query_span.clone()).await;
 
     let row_count = result.as_ref().ok().and_then(row_count);
@@ -608,6 +1022,7 @@ fn create_query_span(
     operation: QueryOperation,
     workspace_name: &WorkspaceName,
     sql: &str,
+    task_id: Option<&TaskId>,
 ) -> tracing::Span {
     let operation = operation.as_str();
     let span = tracing::info_span!(
@@ -616,6 +1031,7 @@ fn create_query_span(
         operation = operation,
         workspace = tracing::field::Empty,
         sql = %sql,
+        task.id = tracing::field::Empty,
         row_count = tracing::field::Empty,
         coral.query.sources = tracing::field::Empty,
         coral.query.tables = tracing::field::Empty,
@@ -625,6 +1041,9 @@ fn create_query_span(
         error.type = tracing::field::Empty,
         exception.message = tracing::field::Empty,
     );
+    if let Some(task_id) = task_id {
+        span.record("task.id", tracing::field::display(task_id));
+    }
     span.record(WORKSPACE_SPAN_ATTRIBUTE, workspace_name.as_str());
     span
 }
@@ -701,17 +1120,29 @@ fn query_error_message(error: &QueryManagerError) -> String {
 
 fn app_error_type(error: &AppError) -> &'static str {
     match error {
+        AppError::Unauthenticated(_) => "UNAUTHENTICATED",
         AppError::SourceNotFound(_) => "SOURCE_NOT_FOUND",
+        AppError::FunctionNotFound(_) => "FUNCTION_NOT_FOUND",
         AppError::WorkspaceNotFound(_) => "WORKSPACE_NOT_FOUND",
         AppError::WorkspaceAlreadyExists(_) => "WORKSPACE_ALREADY_EXISTS",
         AppError::InvalidInput(_) => "INVALID_INPUT",
         AppError::FailedPrecondition(_) => "FAILED_PRECONDITION",
+        AppError::MissingSourceInputs { .. } => "MISSING_SOURCE_INPUTS",
+        AppError::UnsupportedV4IdentityRequirements { .. } => {
+            "UNSUPPORTED_V4_IDENTITY_REQUIREMENTS"
+        }
         AppError::MissingOrIncompatibleV4Materialization { .. } => {
             "MISSING_OR_INCOMPATIBLE_V4_MATERIALIZATION"
         }
+        AppError::IncompatibleInstalledV4Manifest { .. } => "INCOMPATIBLE_INSTALLED_V4_MANIFEST",
         AppError::InvalidV4ProjectionOverride { .. } => "INVALID_V4_PROJECTION_OVERRIDE",
+        AppError::InvalidV4OperationMetadataOverride { .. } => {
+            "INVALID_V4_OPERATION_METADATA_OVERRIDE"
+        }
         AppError::CredentialRefresh(_) => "CREDENTIAL_REFRESH",
         AppError::Unavailable(_) => "UNAVAILABLE",
+        AppError::ResourceExhausted(_) => "RESOURCE_EXHAUSTED",
+        AppError::Internal(_) => "INTERNAL",
         AppError::Io(_) => "IO",
         AppError::Yaml(_) => "YAML",
         AppError::TomlDecode(_) | AppError::TomlEditDecode(_) => "TOML_DECODE",
@@ -761,10 +1192,10 @@ fn validate_required_variables(
         } else {
             format!("variable '{}' and {} other(s)", first.key, rest.len())
         };
-        return Err(AppError::FailedPrecondition(format!(
-            "source '{}' is missing {detail}",
-            source.name
-        )));
+        return Err(AppError::MissingSourceInputs {
+            source_name: source.name.to_string(),
+            detail,
+        });
     }
     Ok(())
 }
@@ -778,8 +1209,8 @@ mod tests {
 
     use coral_engine::{
         EngineExtensions, QueryExecution, QueryExecutionProvenance, QueryTableFunctionUsage,
-        QueryTableUsage, SourceInputResolutionContext, SourceInputResolver,
-        SourceInputResolverError,
+        QueryTableUsage, SourceDecorator, SourceDecoratorError, SourceInputResolutionContext,
+        SourceInputResolver, SourceInputResolverError, SourceTables,
     };
     use coral_spec::parse_source_manifest_yaml;
     use serde_json::{Value, json};
@@ -816,7 +1247,7 @@ mod tests {
             None,
             Arc::clone(&db),
         );
-        let manager = QueryManager::new(
+        let manager = QueryManager::new_for_tests(
             config_store,
             workspace_manager,
             credential_manager,
@@ -828,6 +1259,56 @@ mod tests {
             _temp: temp,
             manager,
         }
+    }
+
+    async fn query_manager_with_unavailable_keychain() -> QueryManagerFixture {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let db = test_db(&layout, &config_store).await;
+        let credential_store = CredentialStore::with_unavailable_keychain_for_test(
+            layout.clone(),
+            CredentialStoragePreference::Keychain,
+        );
+        let credential_manager = CredentialManager::new(credential_store);
+        let workspace_manager = WorkspaceManager::new_for_tests(
+            config_store.clone(),
+            credential_manager.clone(),
+            layout.clone(),
+            None,
+            Arc::clone(&db),
+        );
+        let manager = QueryManager::new_for_tests(
+            config_store,
+            workspace_manager,
+            credential_manager,
+            QueryRuntimeContext::default(),
+            layout,
+            Vec::new(),
+        );
+        QueryManagerFixture {
+            _temp: temp,
+            manager,
+        }
+    }
+
+    fn install_keychain_github_source(config_store: &ConfigStore, workspace_name: &WorkspaceName) {
+        config_store
+            .upsert_source(
+                workspace_name,
+                InstalledSource {
+                    name: SourceName::parse("github").expect("source name"),
+                    version: None,
+                    variables: BTreeMap::new(),
+                    secrets: vec!["GITHUB_TOKEN".to_string()],
+                    credential_storage: Some(CredentialStorageKind::Keychain),
+                    credential_revision: uuid::Uuid::default(),
+                    origin: SourceOrigin::Bundled,
+                },
+            )
+            .expect("persist source");
     }
 
     async fn test_db(layout: &AppStateLayout, config_store: &ConfigStore) -> Arc<CoralDb> {
@@ -857,11 +1338,9 @@ mod tests {
         let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
         let missing_workspace = WorkspaceName::parse("missing").expect("workspace");
 
-        let error = fixture
-            .manager
-            .load_query_sources(&missing_workspace)
-            .await
-            .expect_err("missing workspace should fail closed");
+        let Err(error) = fixture.manager.load_query_sources(&missing_workspace).await else {
+            panic!("missing workspace should fail closed");
+        };
 
         assert_workspace_not_found(error, &missing_workspace);
     }
@@ -890,6 +1369,90 @@ mod tests {
         }
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn execute_sql_stamps_task_id_on_query_span() {
+        use coral_api::v1::query_service_server::QueryService as QueryServiceApi;
+        use coral_api::v1::{ExecuteSqlRequest, Workspace};
+        use opentelemetry::trace::TracerProvider as _;
+        use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+        use tonic::Request;
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        use crate::query::service::QueryService;
+
+        // Capture finished spans into memory via a scoped subscriber so the
+        // assertion exercises the real metadata -> manager -> span path end to end.
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let tracer = provider.tracer("task-attribution-test");
+        let subscriber = tracing_subscriber::Registry::default()
+            .with(tracing_opentelemetry::layer().with_tracer(tracer));
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
+        let service = QueryService::new(fixture.manager.clone());
+
+        let mut request = Request::new(ExecuteSqlRequest {
+            workspace: Some(Workspace {
+                name: WorkspaceName::default().as_str().to_string(),
+            }),
+            sql: "SELECT 1".to_string(),
+        });
+        request.extensions_mut().insert(
+            crate::task::id::TaskId::parse("550e8400-e29b-41d4-a716-446655440000")
+                .expect("task id"),
+        );
+
+        // The query may fail (the fixture has no installed sources); the
+        // `coral.query` span is created and stamped before execution regardless.
+        let _result = service.execute_sql(request).await;
+
+        provider.force_flush().expect("flush spans");
+        let spans = exporter.get_finished_spans().expect("finished spans");
+        let query_span = spans
+            .iter()
+            .find(|span| span.name == "coral.query")
+            .expect("coral.query span recorded");
+        let task_attr = query_span
+            .attributes
+            .iter()
+            .find(|attribute| attribute.key.as_str() == "task.id")
+            .expect("task.id attribute present");
+        assert_eq!(
+            task_attr.value.as_str(),
+            "550e8400-e29b-41d4-a716-446655440000"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn catalog_service_stamps_task_id_on_query_spans() {
+        use opentelemetry::trace::TracerProvider as _;
+        use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        use crate::catalog::service::CatalogService;
+
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let tracer = provider.tracer("catalog-task-attribution-test");
+        let subscriber = tracing_subscriber::Registry::default()
+            .with(tracing_opentelemetry::layer().with_tracer(tracer));
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
+        let service = CatalogService::new(fixture.manager.clone());
+
+        call_catalog_tools_with_task(&service).await;
+
+        provider.force_flush().expect("flush spans");
+        let spans = exporter.get_finished_spans().expect("finished spans");
+        assert_catalog_task_spans(&spans);
+    }
+
     #[test]
     fn query_provenance_records_trace_attributes() {
         use opentelemetry::trace::TracerProvider as _;
@@ -909,6 +1472,7 @@ mod tests {
             QueryOperation::ExecuteSql,
             &WorkspaceName::default(),
             "SELECT title FROM github.issues",
+            None,
         );
         let provenance = QueryExecutionProvenance::new(
             "SELECT title FROM github.issues",
@@ -953,6 +1517,116 @@ mod tests {
         );
     }
 
+    async fn call_catalog_tools_with_task(service: &crate::catalog::service::CatalogService) {
+        use coral_api::v1::catalog_service_server::CatalogService as CatalogServiceApi;
+        use coral_api::v1::{
+            DescribeTableRequest, ListCatalogRequest, ListColumnsRequest, PaginationRequest,
+            SearchCatalogRequest,
+        };
+
+        let _list_catalog_result = service
+            .list_catalog(tagged_catalog_request(ListCatalogRequest {
+                workspace: Some(default_workspace_proto()),
+                schema_name: String::new(),
+                kind: 0,
+                pagination: Some(PaginationRequest {
+                    limit: 10,
+                    offset: 0,
+                }),
+            }))
+            .await;
+        let _search_catalog_result = service
+            .search_catalog(tagged_catalog_request(SearchCatalogRequest {
+                workspace: Some(default_workspace_proto()),
+                pattern: "tables".to_string(),
+                ignore_case: true,
+                schema_name: String::new(),
+                kind: 0,
+                pagination: Some(PaginationRequest {
+                    limit: 10,
+                    offset: 0,
+                }),
+            }))
+            .await;
+        let _describe_table_result = service
+            .describe_table(tagged_catalog_request(DescribeTableRequest {
+                workspace: Some(default_workspace_proto()),
+                schema_name: "coral".to_string(),
+                table_name: "tables".to_string(),
+            }))
+            .await;
+        let _list_columns_result = service
+            .list_columns(tagged_catalog_request(ListColumnsRequest {
+                workspace: Some(default_workspace_proto()),
+                schema_name: "coral".to_string(),
+                table_name: "tables".to_string(),
+                pattern: None,
+                ignore_case: true,
+                required_only: false,
+                pagination: Some(PaginationRequest {
+                    limit: 10,
+                    offset: 0,
+                }),
+            }))
+            .await;
+    }
+
+    fn default_workspace_proto() -> coral_api::v1::Workspace {
+        coral_api::v1::Workspace {
+            name: WorkspaceName::default().as_str().to_string(),
+        }
+    }
+
+    fn tagged_catalog_request<T>(message: T) -> tonic::Request<T> {
+        let mut request = tonic::Request::new(message);
+        request.extensions_mut().insert(
+            crate::task::id::TaskId::parse("650e8400-e29b-41d4-a716-446655440000")
+                .expect("task id"),
+        );
+        request
+    }
+
+    fn assert_catalog_task_spans(spans: &[opentelemetry_sdk::trace::SpanData]) {
+        let attributed_query_spans = spans
+            .iter()
+            .filter(|span| {
+                span.name == "coral.query"
+                    && span.attributes.iter().any(|attribute| {
+                        attribute.key.as_str() == "task.id"
+                            && attribute.value.as_str() == "650e8400-e29b-41d4-a716-446655440000"
+                    })
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            attributed_query_spans.len() >= 4,
+            "each catalog service call should stamp a backend query span: {spans:?}"
+        );
+        let operations = attributed_query_spans
+            .iter()
+            .flat_map(|span| {
+                span.attributes
+                    .iter()
+                    .filter(|attribute| attribute.key.as_str() == "operation")
+                    .map(|attribute| attribute.value.as_str().to_string())
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            operations
+                .iter()
+                .any(|operation| operation == "list_catalog")
+        );
+        assert!(
+            operations
+                .iter()
+                .any(|operation| operation == "describe_table")
+        );
+        assert!(
+            operations
+                .iter()
+                .any(|operation| operation == "list_tables")
+        );
+    }
+
     fn span_attr(span: &opentelemetry_sdk::trace::SpanData, name: &str) -> Option<String> {
         span.attributes
             .iter()
@@ -990,6 +1664,122 @@ mod tests {
             .body_capture_max_bytes
             .expect("body capture config");
         assert_eq!(config, 42);
+    }
+
+    #[tokio::test]
+    async fn metadata_runtime_config_skips_observed_values_publishers() {
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
+        let workspace_name = WorkspaceName::default();
+        let manager =
+            fixture
+                .manager
+                .clone()
+                .with_search_observation_handle(SearchObservationHandle::new(
+                    fixture.manager.layout.clone(),
+                ));
+        let loaded_source = observed_values_loaded_source();
+
+        let runtime = manager
+            .runtime_config_without_source_observations(
+                &workspace_name,
+                std::slice::from_ref(&loaded_source),
+                &AppConfig::default(),
+            )
+            .expect("metadata runtime config");
+
+        assert!(runtime.extensions.source_observation_publishers.is_empty());
+        assert!(
+            !manager.layout.search_sqlite_file(&workspace_name).exists(),
+            "metadata runtime config should not open the observed-values SQLite store"
+        );
+    }
+
+    #[tokio::test]
+    async fn execution_runtime_config_attaches_observed_values_publishers() {
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
+        let workspace_name = WorkspaceName::default();
+        let manager =
+            fixture
+                .manager
+                .clone()
+                .with_search_observation_handle(SearchObservationHandle::new(
+                    fixture.manager.layout.clone(),
+                ));
+        let loaded_source = observed_values_loaded_source();
+
+        let runtime = manager
+            .runtime_config(
+                &workspace_name,
+                std::slice::from_ref(&loaded_source),
+                &AppConfig::default(),
+            )
+            .expect("execution runtime config");
+
+        assert_eq!(runtime.extensions.source_observation_publishers.len(), 1);
+        assert!(
+            manager.layout.search_sqlite_file(&workspace_name).exists(),
+            "execution runtime config should open the observed-values SQLite store"
+        );
+    }
+
+    #[tokio::test]
+    async fn function_metadata_runtimes_do_not_open_observed_values_store() {
+        let fake_home = tempfile::tempdir().expect("fake home");
+        let fixture = query_manager_with(
+            QueryRuntimeContext {
+                home_dir: Some(fake_home.path().to_path_buf()),
+                ..QueryRuntimeContext::default()
+            },
+            Vec::new(),
+        )
+        .await;
+        let workspace_name = WorkspaceName::default();
+        install_function_demo_source(&fixture.manager, &workspace_name, fake_home.path());
+        let function_sql = r"/*
+name: demo_items
+schema: functions
+description: Returns demo messages
+*/
+
+select text from function_demo.messages
+";
+        let validated = fixture
+            .manager
+            .validate_udf_sql(&workspace_name, function_sql)
+            .await
+            .expect("validate function without observations");
+        fixture
+            .manager
+            .function_manager
+            .install_validated_user_function(&workspace_name, function_sql, &validated)
+            .expect("install function");
+
+        let manager =
+            fixture
+                .manager
+                .clone()
+                .with_search_observation_handle(SearchObservationHandle::new(
+                    fixture.manager.layout.clone(),
+                ));
+        let observed_values_path = manager.layout.search_sqlite_file(&workspace_name);
+        manager
+            .validate_udf_sql(&workspace_name, function_sql)
+            .await
+            .expect("validate function with observations enabled");
+        assert!(
+            !observed_values_path.exists(),
+            "function validation should not open the observed-values SQLite store"
+        );
+
+        let functions = manager
+            .list_functions(&workspace_name)
+            .await
+            .expect("list functions with observations enabled");
+        assert_eq!(functions.len(), 1);
+        assert!(
+            !observed_values_path.exists(),
+            "function listing should not open the observed-values SQLite store"
+        );
     }
 
     #[tokio::test]
@@ -1046,6 +1836,7 @@ tables:
             variables: BTreeMap::new(),
             secrets: vec!["API_KEY".to_string(), "OAUTH_TOKEN".to_string()],
             credential_storage: Some(CredentialStorageKind::File),
+            credential_revision: uuid::Uuid::default(),
             origin: SourceOrigin::Imported,
         };
         fixture
@@ -1133,8 +1924,7 @@ paths:
                         r"
 name: github_v4_query
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: {}
 ",
@@ -1151,7 +1941,7 @@ surfaces:
             .execute_sql(
                 &workspace_name,
                 "SELECT id, title FROM github_v4_query.issues",
-                &QueryAttribution,
+                &QueryAttribution::default(),
             )
             .await
             .expect("query executes");
@@ -1163,7 +1953,78 @@ surfaces:
     }
 
     #[tokio::test]
-    async fn installed_v4_source_uses_parameter_metadata_pagination_override() {
+    async fn load_query_source_preserves_unsupported_v4_identity_requirements_error() {
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
+        fixture.manager.layout.ensure().expect("ensure layout");
+        let source_manager = SourceManager::new_for_tests(
+            fixture.manager.config_store.clone(),
+            fixture.manager.credential_manager.clone(),
+            fixture.manager.layout.clone(),
+        );
+        let workspace_name = WorkspaceName::default();
+        let descriptor_temp = tempfile::tempdir().expect("descriptor temp dir");
+        let openapi_file = descriptor_temp.path().join("identity-guard-openapi.yaml");
+        std::fs::write(
+            &openapi_file,
+            r"
+openapi: 3.0.3
+info: {title: Identity Guard}
+paths:
+  /items:
+    get:
+      operationId: items/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: {type: integer}
+",
+        )
+        .expect("write OpenAPI fixture");
+        let source = source_manager
+            .import_source(
+                &workspace_name,
+                &ImportSourceCommand {
+                    manifest_yaml: format!(
+                        r"
+name: github_v4_identity_guard
+dsl_version: 4
+identity_requirements:
+  accepts:
+    - id: github_api
+      identity_specs: [github_oauth]
+surface:
+  type: openapi
+  file: {}
+",
+                        openapi_file.display()
+                    ),
+                    bindings: SourceBindings::default(),
+                },
+            )
+            .expect("import identity-gated v4 source");
+        std::fs::remove_file(&openapi_file).expect("remove authored descriptor after import");
+
+        let error = fixture
+            .manager
+            .load_query_source(&workspace_name, &source)
+            .expect_err("identity-gated source must fail closed");
+
+        assert!(matches!(
+            &error,
+            AppError::UnsupportedV4IdentityRequirements { source_name }
+                if source_name == "github_v4_identity_guard"
+        ));
+        assert!(!error.to_string().contains("Re-add"));
+    }
+
+    #[tokio::test]
+    async fn installed_v4_source_uses_operation_metadata_pagination_override() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/widgets"))
@@ -1208,8 +2069,7 @@ surfaces:
                         r"
 name: github_v4_pagination_override
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: {}
 ",
@@ -1221,7 +2081,7 @@ surfaces:
             .expect("import v4 source");
 
         let source_name = SourceName::parse("github_v4_pagination_override").expect("source name");
-        write_widgets_parameter_metadata_override(
+        write_widgets_operation_metadata_override(
             &fixture.manager.layout,
             &workspace_name,
             &source_name,
@@ -1232,7 +2092,7 @@ surfaces:
             .execute_sql(
                 &workspace_name,
                 "SELECT id FROM github_v4_pagination_override.widgets LIMIT 3",
-                &QueryAttribution,
+                &QueryAttribution::default(),
             )
             .await
             .expect("query executes");
@@ -1286,32 +2146,48 @@ paths:
         )
     }
 
-    fn write_widgets_parameter_metadata_override(
+    fn write_widgets_operation_metadata_override(
         layout: &AppStateLayout,
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
     ) {
-        let override_path =
-            layout.v4_parameter_metadata_override_file(workspace_name, source_name, "rest");
+        let generated_path = layout
+            .v4_materialized_dir(workspace_name, source_name)
+            .join(crate::sources::materialization::OPERATION_METADATA_FILENAME);
+        let mut metadata: coral_spec::v4::OperationMetadataCatalog = serde_yaml::from_slice(
+            &std::fs::read(&generated_path).expect("read generated operation metadata"),
+        )
+        .expect("parse generated operation metadata");
+        let operation = metadata
+            .operations
+            .values_mut()
+            .next()
+            .expect("operation metadata");
+        let coral_spec::v4::OperationMetadata::Rest { pagination, .. } = operation else {
+            panic!("expected REST operation metadata");
+        };
+        *pagination = coral_spec::PaginationSpec {
+            mode: coral_spec::PaginationMode::Page,
+            page_param: Some("page".to_string()),
+            page_start: 1,
+            page_size: Some(coral_spec::PageSizeSpec {
+                default: 2,
+                max: 2,
+                query_param: Some("per_page".to_string()),
+                body_path: Vec::new(),
+            }),
+            ..coral_spec::PaginationSpec::default()
+        };
+        let override_path = layout
+            .v4_override_dir(workspace_name, source_name)
+            .join(crate::sources::materialization::OPERATION_METADATA_FILENAME);
         std::fs::create_dir_all(override_path.parent().expect("override parent"))
             .expect("create override dir");
         std::fs::write(
             &override_path,
-            r"
-pagination:
-  - name: widgets_page
-    match:
-      operation_ids: [widgets/list]
-    mode: page
-    page_param: page
-    page_start: 1
-    page_size:
-      default: 2
-      max: 2
-      query_param: per_page
-",
+            serde_yaml::to_string(&metadata).expect("encode operation metadata override"),
         )
-        .expect("write parameter metadata override");
+        .expect("write operation metadata override");
     }
 
     fn request_query_values(requests: &[wiremock::Request], query_key: &str) -> Vec<String> {
@@ -1328,15 +2204,209 @@ pagination:
     }
 
     #[tokio::test]
-    async fn load_query_sources_fails_closed_for_missing_v4_materialization() {
-        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
-        fixture.manager.layout.ensure().expect("ensure layout");
+    async fn add_user_function_revalidates_when_source_changes_before_commit() {
+        let fake_home = tempfile::tempdir().expect("fake home");
+        let mut fixture = query_manager_with(
+            QueryRuntimeContext {
+                home_dir: Some(fake_home.path().to_path_buf()),
+                ..QueryRuntimeContext::default()
+            },
+            Vec::new(),
+        )
+        .await;
         let workspace_name = WorkspaceName::default();
-        let source_name = SourceName::parse("github_v4_missing_artifacts").expect("source name");
-        let manifest_path = fixture
+        install_function_demo_source(&fixture.manager, &workspace_name, fake_home.path());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let config_store = fixture.manager.config_store.clone();
+        let lifecycle_lock = fixture.manager.lifecycle_lock.clone();
+        let workspace = workspace_name.clone();
+        let source_name = SourceName::parse("function_demo").expect("source name");
+        fixture.manager.engine_extensions_providers.push(Arc::new(
+            PrepareCountingExtensionsProvider {
+                calls: Arc::clone(&calls),
+                on_first_prepare: Some(Arc::new(move || {
+                    let _lifecycle_guard = lifecycle_lock.lock();
+                    config_store
+                        .remove_source(&workspace, &source_name)
+                        .expect("remove source during function validation");
+                })),
+            },
+        ));
+        let function_sql = r"/*
+name: demo_items
+schema: functions
+description: Returns demo messages
+*/
+
+select text from function_demo.messages
+";
+
+        let error = fixture
             .manager
-            .layout
-            .manifest_file(&workspace_name, &source_name);
+            .add_user_function(&workspace_name, function_sql)
+            .await
+            .expect_err("source change should invalidate the original validation snapshot");
+
+        let detail = match error {
+            QueryManagerError::App(error) => error.to_string(),
+            QueryManagerError::Core(error) => error.to_string(),
+        };
+        assert!(
+            detail.contains("function_demo.messages"),
+            "unexpected error: {detail}"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert!(
+            fixture
+                .manager
+                .list_functions(&workspace_name)
+                .await
+                .expect("list functions")
+                .is_empty(),
+            "stale validation must not install the function"
+        );
+    }
+
+    #[tokio::test]
+    async fn user_function_publishes_table_function_and_executes_against_installed_source() {
+        let fake_home = tempfile::tempdir().expect("fake home");
+        let fixture = query_manager_with(
+            QueryRuntimeContext {
+                home_dir: Some(fake_home.path().to_path_buf()),
+                ..QueryRuntimeContext::default()
+            },
+            Vec::new(),
+        )
+        .await;
+        let workspace_name = WorkspaceName::default();
+        install_function_demo_source(&fixture.manager, &workspace_name, fake_home.path());
+        let function_sql = r"/*
+name: messages_by_type
+schema: functions
+description: Messages filtered by sender type
+*/
+
+select text
+from function_demo.messages
+where type = $kind
+";
+        let validated_function = fixture
+            .manager
+            .validate_udf_sql(&workspace_name, function_sql)
+            .await
+            .expect("validate function");
+        fixture
+            .manager
+            .function_manager
+            .install_validated_user_function(&workspace_name, function_sql, &validated_function)
+            .expect("install function");
+
+        let catalog = fixture
+            .manager
+            .list_catalog(
+                &workspace_name,
+                Some("functions"),
+                &QueryAttribution::default(),
+            )
+            .await
+            .expect("catalog");
+        let function_function = catalog.table_functions.first().expect("function function");
+        assert_eq!(function_function.function_name, "messages_by_type");
+        assert_eq!(
+            function_function
+                .result_columns
+                .first()
+                .expect("text result column")
+                .name,
+            "text"
+        );
+
+        let functions = fixture
+            .manager
+            .list_functions(&workspace_name)
+            .await
+            .expect("functions");
+        assert_eq!(functions.len(), 1);
+        let function = functions.first().expect("function");
+        let crate::functions::manager::FunctionRuntimeStatus::Ready(definition) = &function.runtime
+        else {
+            panic!("function should be runtime-ready");
+        };
+        let column = definition
+            .result_columns
+            .first()
+            .expect("text result column");
+        assert_eq!(column.name, "text");
+
+        let execution = fixture
+            .manager
+            .execute_sql(
+                &workspace_name,
+                "select text from functions.messages_by_type(kind => 'user')",
+                &QueryAttribution::default(),
+            )
+            .await
+            .expect("function query");
+        assert_eq!(
+            execution_to_rows(&execution),
+            vec![json!({"text": "hello"})]
+        );
+    }
+
+    fn install_function_demo_source(
+        manager: &QueryManager,
+        workspace_name: &WorkspaceName,
+        fake_home: &std::path::Path,
+    ) {
+        let data_dir = fake_home.join("fixture-data");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+        std::fs::write(
+            data_dir.join("messages.jsonl"),
+            r#"{"type":"user","text":"hello"}
+{"type":"assistant","text":"world"}
+"#,
+        )
+        .expect("write fixture");
+        let source_manager = SourceManager::new_for_tests(
+            manager.config_store.clone(),
+            manager.credential_manager.clone(),
+            manager.layout.clone(),
+        );
+        source_manager
+            .import_source(
+                workspace_name,
+                &ImportSourceCommand {
+                    manifest_yaml: r#"
+name: function_demo
+version: 0.1.0
+dsl_version: 3
+backend: file
+tables:
+  - name: messages
+    description: Fixture messages
+    format: jsonl
+    source:
+      location: file://~/fixture-data/
+      glob: "**/*.jsonl"
+    columns:
+      - name: type
+        type: Utf8
+      - name: text
+        type: Utf8
+"#
+                    .to_string(),
+                    bindings: SourceBindings::default(),
+                },
+            )
+            .expect("import source");
+    }
+
+    fn install_missing_v4_materialization_source(
+        manager: &QueryManager,
+        workspace_name: &WorkspaceName,
+    ) -> SourceName {
+        let source_name = SourceName::parse("github_v4_missing_artifacts").expect("source name");
+        let manifest_path = manager.layout.manifest_file(workspace_name, &source_name);
         std::fs::create_dir_all(manifest_path.parent().expect("manifest parent"))
             .expect("create source dir");
         std::fs::write(
@@ -1344,105 +2414,316 @@ pagination:
             r"
 name: github_v4_missing_artifacts
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     url: https://example.com/openapi.yaml
 ",
         )
         .expect("write manifest");
-        fixture
-            .manager
+        manager
             .config_store
             .upsert_source(
-                &workspace_name,
+                workspace_name,
                 InstalledSource {
                     name: source_name.clone(),
                     version: None,
                     variables: BTreeMap::new(),
                     secrets: Vec::new(),
                     credential_storage: None,
+                    credential_revision: uuid::Uuid::default(),
                     origin: SourceOrigin::Imported,
                 },
             )
             .expect("persist source");
+        source_name
+    }
 
-        let error = fixture
+    fn install_corrupt_parquet_source(
+        manager: &QueryManager,
+        workspace_name: &WorkspaceName,
+        fake_home: &std::path::Path,
+    ) -> SourceName {
+        let data_dir = fake_home.join("corrupt-parquet");
+        std::fs::create_dir_all(&data_dir).expect("create corrupt parquet dir");
+        std::fs::write(data_dir.join("events.parquet"), b"not a parquet file")
+            .expect("write corrupt parquet");
+
+        let source_name = SourceName::parse("corrupt_parquet").expect("source name");
+        let manifest_path = manager.layout.manifest_file(workspace_name, &source_name);
+        std::fs::create_dir_all(manifest_path.parent().expect("manifest parent"))
+            .expect("create source dir");
+        std::fs::write(
+            &manifest_path,
+            r#"
+name: corrupt_parquet
+version: 0.1.0
+dsl_version: 3
+backend: file
+tables:
+  - name: events
+    description: Corrupt parquet fixture
+    format: parquet
+    source:
+      location: file://~/corrupt-parquet/
+      glob: "**/*.parquet"
+    columns: []
+"#,
+        )
+        .expect("write manifest");
+        manager
+            .config_store
+            .upsert_source(
+                workspace_name,
+                InstalledSource {
+                    name: source_name.clone(),
+                    version: Some("0.1.0".to_string()),
+                    variables: BTreeMap::new(),
+                    secrets: Vec::new(),
+                    credential_storage: None,
+                    credential_revision: uuid::Uuid::default(),
+                    origin: SourceOrigin::Imported,
+                },
+            )
+            .expect("persist source");
+        source_name
+    }
+
+    #[tokio::test]
+    async fn load_query_sources_skips_missing_v4_materialization() {
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
+        fixture.manager.layout.ensure().expect("ensure layout");
+        let workspace_name = WorkspaceName::default();
+        let source_name =
+            install_missing_v4_materialization_source(&fixture.manager, &workspace_name);
+
+        let (source_load, _) = fixture
             .manager
             .load_query_sources(&workspace_name)
             .await
-            .expect_err("missing materialization should fail closed");
+            .expect("missing materialization should be isolated");
 
-        assert!(
-            matches!(
-                error,
-                AppError::MissingOrIncompatibleV4Materialization { .. }
-            ),
-            "unexpected error: {error:#}"
+        assert!(source_load.loaded.is_empty());
+        assert_eq!(
+            source_load.failed_source_names,
+            BTreeSet::from([source_name.to_string()])
         );
     }
 
     #[tokio::test]
-    async fn load_query_sources_fails_closed_for_unavailable_keychain_source() {
-        let temp = TempDir::new().expect("temp dir");
-        let layout =
-            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
-        layout.ensure().expect("ensure layout");
-        let config_store = ConfigStore::new(layout.clone());
-        let db = test_db(&layout, &config_store).await;
-        let workspace_name = WorkspaceName::default();
-        let source_name = SourceName::parse("github").expect("source name");
-        config_store
-            .upsert_source(
-                &workspace_name,
-                InstalledSource {
-                    name: source_name,
-                    version: None,
-                    variables: BTreeMap::new(),
-                    secrets: vec!["GITHUB_TOKEN".to_string()],
-                    credential_storage: Some(CredentialStorageKind::Keychain),
-                    origin: SourceOrigin::Bundled,
-                },
-            )
-            .expect("persist source");
-        let credential_store = CredentialStore::with_unavailable_keychain_for_test(
-            layout.clone(),
-            CredentialStoragePreference::Keychain,
-        );
-        let credential_manager = CredentialManager::new(credential_store);
-        let workspace_manager = WorkspaceManager::new_for_tests(
-            config_store.clone(),
-            credential_manager.clone(),
-            layout.clone(),
-            None,
-            Arc::clone(&db),
-        );
-        let manager = QueryManager::new(
-            config_store,
-            workspace_manager,
-            credential_manager,
-            QueryRuntimeContext::default(),
-            layout,
+    async fn resolve_catalog_reports_load_failure_and_keeps_healthy_metadata() {
+        let fake_home = tempfile::tempdir().expect("fake home");
+        let fixture = query_manager_with(
+            QueryRuntimeContext {
+                home_dir: Some(fake_home.path().to_path_buf()),
+                ..QueryRuntimeContext::default()
+            },
             Vec::new(),
+        )
+        .await;
+        let workspace_name = WorkspaceName::default();
+        install_function_demo_source(&fixture.manager, &workspace_name, fake_home.path());
+        let failed_source =
+            install_missing_v4_materialization_source(&fixture.manager, &workspace_name);
+
+        let resolution = fixture
+            .manager
+            .resolve_catalog(&workspace_name, None, &QueryAttribution::default())
+            .await
+            .expect("healthy catalog should survive one source load failure");
+
+        assert_eq!(
+            resolution.failed_source_names,
+            BTreeSet::from([failed_source.to_string()])
         );
-        let error = manager
+        assert!(resolution.catalog.tables.iter().any(|table| {
+            table.schema_name == "function_demo" && table.table_name == "messages"
+        }));
+    }
+
+    #[tokio::test]
+    async fn resolve_catalog_reports_registration_failure_and_keeps_healthy_metadata() {
+        let fake_home = tempfile::tempdir().expect("fake home");
+        let fixture = query_manager_with(
+            QueryRuntimeContext {
+                home_dir: Some(fake_home.path().to_path_buf()),
+                ..QueryRuntimeContext::default()
+            },
+            Vec::new(),
+        )
+        .await;
+        let workspace_name = WorkspaceName::default();
+        install_function_demo_source(&fixture.manager, &workspace_name, fake_home.path());
+        let failed_source =
+            install_corrupt_parquet_source(&fixture.manager, &workspace_name, fake_home.path());
+
+        let resolution = fixture
+            .manager
+            .resolve_catalog(&workspace_name, None, &QueryAttribution::default())
+            .await
+            .expect("healthy catalog should survive one registration failure");
+
+        assert_eq!(
+            resolution.failed_source_names,
+            BTreeSet::from([failed_source.to_string()])
+        );
+        assert!(resolution.catalog.tables.iter().any(|table| {
+            table.schema_name == "function_demo" && table.table_name == "messages"
+        }));
+        assert!(
+            resolution
+                .catalog
+                .tables
+                .iter()
+                .all(|table| table.schema_name != failed_source.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn load_query_sources_skips_unavailable_keychain_source() {
+        let fixture = query_manager_with_unavailable_keychain().await;
+        let workspace_name = WorkspaceName::default();
+        install_keychain_github_source(&fixture.manager.config_store, &workspace_name);
+
+        let (source_load, _) = fixture
+            .manager
             .load_query_sources(&workspace_name)
             .await
-            .expect_err("unavailable keychain should fail closed");
+            .expect("unavailable keychain source should be isolated");
+        assert!(source_load.loaded.is_empty());
+        assert_eq!(
+            source_load.failed_source_names,
+            BTreeSet::from(["github".to_string()])
+        );
+    }
 
-        assert!(
-            matches!(
-                error,
-                AppError::Credentials(CredentialsError::Unavailable(_))
-            ),
-            "unexpected error: {error:#}"
-        );
-        assert!(
-            error
-                .to_string()
-                .contains("configured for keychain storage"),
-            "keychain-routed query failure should name the routed backend: {error}"
-        );
+    #[tokio::test]
+    async fn list_functions_keeps_unrelated_function_ready_when_source_preparation_fails() {
+        let fixture = query_manager_with_unavailable_keychain().await;
+        let workspace_name = WorkspaceName::default();
+        let function_sql = r"/*
+name: constant_value
+schema: functions
+description: Returns a constant value
+*/
+
+select 1 as value
+";
+        let validated = fixture
+            .manager
+            .validate_udf_sql(&workspace_name, function_sql)
+            .await
+            .expect("validate constant function before source failure");
+        fixture
+            .manager
+            .function_manager
+            .install_validated_user_function(&workspace_name, function_sql, &validated)
+            .expect("install constant function");
+        install_keychain_github_source(&fixture.manager.config_store, &workspace_name);
+
+        let functions = fixture
+            .manager
+            .list_functions(&workspace_name)
+            .await
+            .expect("source preparation failure should not hide function inventory");
+
+        let function = functions
+            .first()
+            .expect("installed function remains visible");
+        assert_eq!(function.name.as_str(), "constant_value");
+        let crate::functions::manager::FunctionRuntimeStatus::Ready(_) = &function.runtime else {
+            panic!("unrelated function should remain ready when source preparation fails");
+        };
+    }
+
+    struct PrepareCountingDecorator {
+        calls: Arc<AtomicUsize>,
+        on_first_prepare: Option<Arc<dyn Fn() + Send + Sync>>,
+    }
+
+    impl SourceDecorator for PrepareCountingDecorator {
+        fn name(&self) -> &'static str {
+            "prepare-counter"
+        }
+
+        fn prepare(
+            &mut self,
+            _selected_sources: &[QuerySource],
+        ) -> Result<(), SourceDecoratorError> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 0
+                && let Some(on_first_prepare) = &self.on_first_prepare
+            {
+                on_first_prepare();
+            }
+            Ok(())
+        }
+
+        fn decorate_source(
+            &mut self,
+            _source: &QuerySource,
+            tables: SourceTables,
+        ) -> Result<SourceTables, SourceDecoratorError> {
+            Ok(tables)
+        }
+    }
+
+    struct PrepareCountingExtensionsProvider {
+        calls: Arc<AtomicUsize>,
+        on_first_prepare: Option<Arc<dyn Fn() + Send + Sync>>,
+    }
+
+    impl EngineExtensionsProvider for PrepareCountingExtensionsProvider {
+        fn extensions_for(&self, _selected_sources: &[QuerySource]) -> EngineExtensions {
+            let mut extensions = EngineExtensions::default();
+            extensions
+                .source_decorators
+                .push(Box::new(PrepareCountingDecorator {
+                    calls: Arc::clone(&self.calls),
+                    on_first_prepare: self.on_first_prepare.clone(),
+                }));
+            extensions
+        }
+    }
+
+    #[tokio::test]
+    async fn function_enabled_query_prepares_source_decorators_once() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let provider = Arc::new(PrepareCountingExtensionsProvider {
+            calls: Arc::clone(&calls),
+            on_first_prepare: None,
+        });
+        let fixture = query_manager_with(QueryRuntimeContext::default(), vec![provider]).await;
+        let workspace_name = WorkspaceName::default();
+        let function_sql = r"/*
+name: constant_value
+schema: functions
+description: Returns a constant value
+*/
+
+select 1 as value
+";
+        let validated = fixture
+            .manager
+            .validate_udf_sql(&workspace_name, function_sql)
+            .await
+            .expect("validate constant function");
+        fixture
+            .manager
+            .function_manager
+            .install_validated_user_function(&workspace_name, function_sql, &validated)
+            .expect("install constant function");
+        calls.store(0, Ordering::SeqCst);
+
+        fixture
+            .manager
+            .execute_sql(
+                &workspace_name,
+                "select value from functions.constant_value()",
+                &QueryAttribution::default(),
+            )
+            .await
+            .expect("execute constant function");
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[derive(Debug)]
@@ -1497,6 +2778,7 @@ surfaces:
             variables: BTreeMap::new(),
             secrets: vec!["API_TOKEN".to_string()],
             credential_storage: Some(CredentialStorageKind::File),
+            credential_revision: uuid::Uuid::default(),
             origin: SourceOrigin::Bundled,
         };
         fixture
@@ -1537,9 +2819,12 @@ tables:
 ",
         )
         .expect("parse source manifest");
+        let runtime_schema_name = source_spec.schema_name().to_string();
         let loaded_source = LoadedQuerySource {
             source: installed_source,
             query_source: QuerySource::new(source_spec, BTreeMap::new(), BTreeMap::new()),
+            runtime_schema_name,
+            runtime_contract_fingerprint: RuntimeContractFingerprint::for_test("contract"),
             credential_material: BTreeMap::from([(
                 "API_TOKEN".to_string(),
                 "snapshot-token".to_string(),
@@ -1578,6 +2863,92 @@ tables:
         assert_eq!(
             resolved_inputs.get("API_TOKEN").map(String::as_str),
             Some("snapshot-token")
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_contract_fingerprint_ignores_refreshed_credential_material() {
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
+        fixture.manager.layout.ensure().expect("ensure layout");
+        let workspace = WorkspaceName::default();
+        let source_name = SourceName::parse("secured_messages").expect("source name");
+        let credential_set_id = CredentialSetId::for_source(&source_name);
+        let installed_source = InstalledSource {
+            name: source_name.clone(),
+            version: Some("0.1.0".to_string()),
+            variables: BTreeMap::new(),
+            secrets: vec!["API_TOKEN".to_string()],
+            credential_storage: Some(CredentialStorageKind::File),
+            credential_revision: uuid::Uuid::new_v4(),
+            origin: SourceOrigin::Imported,
+        };
+        std::fs::create_dir_all(fixture.manager.layout.source_dir(&workspace, &source_name))
+            .expect("source directory");
+        std::fs::write(
+            fixture
+                .manager
+                .layout
+                .manifest_file(&workspace, &source_name),
+            r"
+name: secured_messages
+version: 0.1.0
+dsl_version: 3
+backend: http
+inputs:
+  API_TOKEN:
+    kind: secret
+base_url: https://example.com
+tables:
+  - name: messages
+    description: Secured messages
+    request:
+      path: /messages
+    columns:
+      - name: id
+        type: Utf8
+",
+        )
+        .expect("write manifest");
+        fixture
+            .manager
+            .config_store
+            .upsert_source(&workspace, installed_source.clone())
+            .expect("persist source");
+        fixture
+            .manager
+            .credential_manager
+            .replace_material(
+                &workspace,
+                &credential_set_id,
+                CredentialStorageKind::File,
+                &BTreeMap::from([("API_TOKEN".to_string(), "first-token".to_string())]),
+            )
+            .expect("first credential material");
+        let first = fixture
+            .manager
+            .load_query_source(&workspace, &installed_source)
+            .expect("first runtime")
+            .0;
+
+        fixture
+            .manager
+            .credential_manager
+            .replace_material(
+                &workspace,
+                &credential_set_id,
+                CredentialStorageKind::File,
+                &BTreeMap::from([("API_TOKEN".to_string(), "refreshed-token".to_string())]),
+            )
+            .expect("refreshed credential material");
+        let refreshed = fixture
+            .manager
+            .load_query_source(&workspace, &installed_source)
+            .expect("refreshed runtime")
+            .0;
+
+        assert_eq!(
+            first.runtime_contract_fingerprint,
+            refreshed.runtime_contract_fingerprint
         );
     }
 
@@ -1626,9 +2997,12 @@ tables:
                 variables: BTreeMap::new(),
                 secrets: vec!["API_TOKEN".to_string()],
                 credential_storage: None,
+                credential_revision: uuid::Uuid::default(),
                 origin: SourceOrigin::Bundled,
             },
-            query_source: QuerySource::new(source_spec, BTreeMap::new(), BTreeMap::new()),
+            runtime_schema_name: source_spec.schema_name().to_string(),
+            query_source: QuerySource::new(source_spec.clone(), BTreeMap::new(), BTreeMap::new()),
+            runtime_contract_fingerprint: RuntimeContractFingerprint::for_test("contract"),
             credential_material: BTreeMap::from([(
                 "API_TOKEN".to_string(),
                 "stored-token".to_string(),
@@ -1674,5 +3048,41 @@ tables:
                 .as_deref(),
             Some("stored-token")
         );
+    }
+
+    fn observed_values_loaded_source() -> LoadedQuerySource {
+        let source_spec = parse_source_manifest_yaml(
+            r"
+name: github
+version: 0.1.0
+dsl_version: 3
+backend: http
+base_url: https://api.github.com
+tables:
+  - name: issues
+    description: Issues
+    request:
+      path: /issues
+    columns:
+      - name: title
+        type: Utf8
+",
+        )
+        .expect("parse source manifest");
+        LoadedQuerySource {
+            source: InstalledSource {
+                name: SourceName::parse("github").expect("source name"),
+                version: None,
+                variables: BTreeMap::new(),
+                secrets: Vec::new(),
+                credential_storage: None,
+                credential_revision: uuid::Uuid::default(),
+                origin: SourceOrigin::Bundled,
+            },
+            runtime_schema_name: source_spec.schema_name().to_string(),
+            query_source: QuerySource::new(source_spec.clone(), BTreeMap::new(), BTreeMap::new()),
+            runtime_contract_fingerprint: RuntimeContractFingerprint::for_test("contract"),
+            credential_material: BTreeMap::new(),
+        }
     }
 }

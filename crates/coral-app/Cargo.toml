@@ -24,6 +24,7 @@ opentelemetry_sdk.workspace = true
 regex.workspace = true
 reqwest.workspace = true
 rusqlite.workspace = true
+ring.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
@@ -37,6 +38,7 @@ tokio-stream = { workspace = true, features = ["net"] }
 toml.workspace = true
 toml_edit.workspace = true
 tonic.workspace = true
+tonic-health.workspace = true
 tonic-types.workspace = true
 tonic-web.workspace = true
 tower.workspace = true
@@ -45,6 +47,7 @@ tracing-opentelemetry.workspace = true
 tracing-subscriber.workspace = true
 url.workspace = true
 uuid.workspace = true
+zeroize.workspace = true
 
 coral-api.workspace = true
 coral-auth-aws = { path = "../auth/aws" }

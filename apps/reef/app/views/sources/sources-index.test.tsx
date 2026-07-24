@@ -10,7 +10,7 @@ function renderSourcesIndex(entries: CatalogEntry[]) {
   const router = createMemoryRouter(
     [
       {
-        element: <SourcesIndex entries={entries} />,
+        element: <SourcesIndex entries={entries} workspaceId="team alpha" />,
         path: '/',
       },
     ],
@@ -21,6 +21,14 @@ function renderSourcesIndex(entries: CatalogEntry[]) {
 }
 
 describe('SourcesIndex', () => {
+  it('links source creation to the dedicated install route', async () => {
+    const screen = await renderSourcesIndex([])
+
+    await expect
+      .element(screen.getByRole('link', { name: 'Create source' }))
+      .toHaveAttribute('href', '/workspaces/team%20alpha/sources/install')
+  })
+
   it('routes installable sources through the source detail route', async () => {
     const screen = await renderSourcesIndex([
       {
@@ -34,7 +42,7 @@ describe('SourcesIndex', () => {
 
     await expect
       .element(screen.getByRole('link', { name: /github/i }))
-      .toHaveAttribute('href', '/sources/github')
+      .toHaveAttribute('href', '/workspaces/team%20alpha/sources/github')
   })
 
   it('encodes source names before routing through the source detail route', async () => {
@@ -50,6 +58,6 @@ describe('SourcesIndex', () => {
 
     await expect
       .element(screen.getByRole('link', { name: /foo\?bar/i }))
-      .toHaveAttribute('href', '/sources/foo%3Fbar')
+      .toHaveAttribute('href', '/workspaces/team%20alpha/sources/foo%3Fbar')
   })
 })

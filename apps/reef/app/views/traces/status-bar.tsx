@@ -1,17 +1,18 @@
 import { Typography } from '@/wax/components/typography'
 
-import * as s from '../traces-page.css'
+import * as s from './traces.css'
 
 export function StatusBar({
   connected,
   count,
+  endpointLabel,
   totalCount = count,
 }: {
   connected: boolean
   count: number
+  endpointLabel: string
   totalCount?: number
 }) {
-  const endpoint = typeof window === 'undefined' ? 'TraceService' : window.location.host
   return (
     <div className={s.statusBar}>
       <div className={s.statusLeft}>
@@ -21,7 +22,7 @@ export function StatusBar({
         </Typography.BodySmall>
         <span className={s.statusSep} />
         <Typography.BodySmall as="span" variant="tertiary">
-          {endpoint}
+          {endpointLabel}
         </Typography.BodySmall>
       </div>
       <div className={s.statusRight}>

@@ -1,6 +1,6 @@
 import { Typography } from '@/wax/components/typography'
 
-import * as s from '../traces-page.css'
+import * as s from './traces.css'
 
 export function PageHeader({
   children,

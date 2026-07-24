@@ -42,9 +42,13 @@ impl ValidatedSourceManifest {
     #[must_use]
     pub fn backend(&self) -> SourceBackend {
         match &self.inner {
-            ValidatedManifestKind::Http(_) | ValidatedManifestKind::V4(_) => SourceBackend::Http,
+            ValidatedManifestKind::Http(_) => SourceBackend::Http,
             ValidatedManifestKind::File(_) => SourceBackend::File,
             ValidatedManifestKind::Mcp(_) => SourceBackend::Mcp,
+            ValidatedManifestKind::V4(manifest) => match manifest.surface.surface_type {
+                crate::v4::SurfaceType::OpenApi => SourceBackend::Http,
+                crate::v4::SurfaceType::Mcp => SourceBackend::Mcp,
+            },
         }
     }
 
@@ -287,6 +291,41 @@ tables:
         .expect("manifest should parse");
 
         assert_eq!(manifest.test_queries(), &["SELECT 1", "SELECT 2"]);
+    }
+
+    #[test]
+    fn parse_source_manifest_preserves_do_not_index_policy() {
+        let manifest = parse_source_manifest_yaml(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: file
+tables:
+  - name: messages
+    description: Demo messages
+    format: jsonl
+    source:
+      location: file:///tmp/demo/
+    columns:
+      - name: title
+        type: Utf8
+      - name: internal_note
+        type: Utf8
+        do_not_index: true
+",
+        )
+        .expect("manifest should parse");
+        let columns = manifest
+            .as_file()
+            .expect("file manifest")
+            .tables
+            .first()
+            .expect("messages table")
+            .columns();
+
+        assert!(!columns.first().expect("title column").do_not_index);
+        assert!(columns.get(1).expect("internal note column").do_not_index);
     }
 
     #[test]

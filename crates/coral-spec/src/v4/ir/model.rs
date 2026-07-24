@@ -9,7 +9,6 @@ use crate::v4::manifest::SurfaceType;
 pub struct SemanticIr {
     pub artifact_schema_version: u32,
     pub source_name: String,
-    pub surface_id: String,
     pub surface_type: SurfaceType,
     pub importer_version: String,
     pub operations: Vec<IrOperation>,
@@ -49,15 +48,12 @@ pub struct IrOperationInput {
     pub data_type: IrScalarType,
     pub default_value: Option<String>,
     pub description: String,
-    #[serde(default)]
-    pub exclude_from_lookup_keys: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IrOperationOutput {
     pub cardinality: OutputCardinality,
     pub type_ref: String,
-    pub row_path: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -174,7 +170,6 @@ mod tests {
         IrOperationNaming, IrOperationOutput, IrScalarType, IrType, IrTypeShape, OutputCardinality,
         SemanticIr,
     };
-    use crate::PaginationSpec;
     use crate::v4::diagnostics::Diagnostic;
     use crate::v4::ir::mcp::McpExecutionAttachment;
     use crate::v4::ir::rest::{RestExecutionAttachment, RestResponseAttachment};
@@ -186,7 +181,6 @@ mod tests {
         let ir = SemanticIr {
             artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
             source_name: "demo".to_string(),
-            surface_id: "rest".to_string(),
             surface_type: SurfaceType::OpenApi,
             importer_version: OPENAPI_IMPORTER_VERSION.to_string(),
             operations: vec![IrOperation {
@@ -203,7 +197,6 @@ mod tests {
                 output: IrOperationOutput {
                     cardinality: OutputCardinality::List,
                     type_ref: "issue".to_string(),
-                    row_path: Vec::new(),
                 },
                 entity: None,
                 execution: IrExecutionAttachment::Rest(Box::new(RestExecutionAttachment {
@@ -216,7 +209,6 @@ mod tests {
                         media_type: "application/json".to_string(),
                         response: crate::ResponseSpec::default(),
                     },
-                    pagination: PaginationSpec::default(),
                 })),
                 diagnostics: Vec::new(),
             }],
@@ -234,12 +226,7 @@ mod tests {
                     description: String::new(),
                 },
             ],
-            diagnostics: vec![Diagnostic::warning(
-                "TEST",
-                "diagnostic",
-                "rest".to_string(),
-                None,
-            )],
+            diagnostics: vec![Diagnostic::warning("TEST", "diagnostic", None)],
         };
 
         let yaml = serde_yaml::to_string(&ir).expect("serialize semantic IR");
@@ -259,7 +246,6 @@ mod tests {
         let ir = SemanticIr {
             artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
             source_name: "demo".to_string(),
-            surface_id: "mcp".to_string(),
             surface_type: SurfaceType::Mcp,
             importer_version: MCP_IMPORTER_VERSION.to_string(),
             operations: vec![IrOperation {
@@ -276,18 +262,14 @@ mod tests {
                     data_type: IrScalarType::String,
                     default_value: None,
                     description: String::new(),
-                    exclude_from_lookup_keys: false,
                 }],
                 output: IrOperationOutput {
                     cardinality: OutputCardinality::List,
                     type_ref: "item".to_string(),
-                    row_path: Vec::new(),
                 },
                 entity: None,
                 execution: IrExecutionAttachment::Mcp(McpExecutionAttachment {
                     tool_name: "list_items".to_string(),
-                    pagination: None,
-                    offset_pagination: None,
                 }),
                 diagnostics: Vec::new(),
             }],
@@ -319,6 +301,7 @@ mod tests {
             yaml.contains("location: tool_arg"),
             "missing tool arg input: {yaml}"
         );
+        assert!(!yaml.contains("surface_id:"), "surface ID leaked: {yaml}");
 
         serde_yaml::from_str::<SemanticIr>(&yaml).expect("MCP semantic IR should round-trip");
     }
@@ -329,8 +312,7 @@ mod tests {
             r#"
 artifact_schema_version: {V4_ARTIFACT_SCHEMA_VERSION}
 source_name: demo
-surface_id: rest
-surface_type: openapi
+surface_type: open_api
 importer_version: {OPENAPI_IMPORTER_VERSION}
 operations: []
 types:
@@ -352,6 +334,28 @@ diagnostics: []
     }
 
     #[test]
+    fn semantic_ir_ignores_unknown_future_fields() {
+        let raw = format!(
+            r"
+artifact_schema_version: {V4_ARTIFACT_SCHEMA_VERSION}
+source_name: demo
+surface_type: open_api
+importer_version: {OPENAPI_IMPORTER_VERSION}
+operations: []
+types: []
+diagnostics: []
+future_generator_metadata:
+  revision: 2
+"
+        );
+
+        let ir: SemanticIr =
+            serde_yaml::from_str(&raw).expect("unknown future fields should be advisory");
+
+        assert_eq!(ir.source_name, "demo");
+    }
+
+    #[test]
     fn input_location_serialization_preserves_artifact_shape() {
         let input = IrOperationInput {
             name: "owner".to_string(),
@@ -360,7 +364,6 @@ diagnostics: []
             data_type: IrScalarType::String,
             default_value: None,
             description: String::new(),
-            exclude_from_lookup_keys: false,
         };
 
         let yaml = serde_yaml::to_string(&input).expect("serialize input");

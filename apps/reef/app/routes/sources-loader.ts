@@ -6,33 +6,40 @@ import {
   DiscoverSourcesRequestSchema,
   ListSourcesRequestSchema,
 } from '@/generated/coral/v1/sources_pb'
-import { WORKSPACE } from '@/lib/constants'
+import type { Workspace } from '@/generated/coral/v1/resources_pb'
 import { sourceClientForRequest } from '@/lib/coral-request.server'
 import { catalogEntries, type CatalogEntry } from '@/lib/sources'
 import { errorMessage } from '@/lib/utils'
+import { workspaceFromParams } from '@/lib/workspace-routing'
 
 export interface SourcesRouteData {
   entries: CatalogEntry[]
   loadError: string | null
 }
 
-export async function loader({ request }: Route.LoaderArgs): Promise<SourcesRouteData> {
-  return loadSourcesRouteData(request)
+export async function loader({ params, request }: Route.LoaderArgs): Promise<SourcesRouteData> {
+  return loadSourcesRouteData(request, workspaceFromParams(params))
 }
 
-export async function loadSourcesRouteData(request: Request): Promise<SourcesRouteData> {
+export async function loadSourcesRouteData(
+  request: Request,
+  workspace: Workspace,
+): Promise<SourcesRouteData> {
   try {
-    return { entries: await listCatalogForRequest(request), loadError: null }
+    return { entries: await listCatalogForRequest(request, workspace), loadError: null }
   } catch (error) {
     return { entries: [], loadError: errorMessage(error) }
   }
 }
 
-export async function listCatalogForRequest(request: Request): Promise<CatalogEntry[]> {
+export async function listCatalogForRequest(
+  request: Request,
+  workspace: Workspace,
+): Promise<CatalogEntry[]> {
   const sourceClient = sourceClientForRequest(request)
   const [discovered, installed] = await Promise.all([
-    sourceClient.discoverSources(create(DiscoverSourcesRequestSchema, { workspace: WORKSPACE })),
-    sourceClient.listSources(create(ListSourcesRequestSchema, { workspace: WORKSPACE })),
+    sourceClient.discoverSources(create(DiscoverSourcesRequestSchema, { workspace })),
+    sourceClient.listSources(create(ListSourcesRequestSchema, { workspace })),
   ])
   return catalogEntries(discovered.sources, installed.sources)
 }

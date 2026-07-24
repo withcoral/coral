@@ -1,17 +1,16 @@
 import { app, BrowserWindow, Menu, dialog, ipcMain, nativeTheme, shell } from 'electron'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import type { McpClientId, SidecarInfo } from '../shared/types'
-import { configureMcpClient, mcpClients } from './mcp-config'
+import type { McpClientId } from '../shared/types'
+import { configureMcpClient, getMcpLaunchConfig, mcpClients } from './mcp-config'
 import {
   APP_ENTRY_URL,
-  APP_GRPC_BASE,
   APP_ORIGIN,
-  GRPC_PATH_PREFIX,
   registerAppProtocol,
   registerAppSchemePrivileges,
 } from './app-renderer'
 import { killAllTrackedChildren, startCoralSidecar, type CoralSidecar } from './sidecar'
+import { checkForDesktopUpdates, desktopUpdatesSupported, installAutoUpdater } from './auto-update'
 
 const SHUTDOWN_TIMEOUT_MS = 6000
 
@@ -238,23 +237,11 @@ async function stopServices(): Promise<void> {
 }
 
 function registerIpcHandlers() {
-  ipcMain.handle('coral:await-initialization', async (): Promise<SidecarInfo> => {
-    // App-scheme renderer (no dev override) uses the same-origin proxy base. The
-    // proxy resolves the live sidecar per request, so don't block startup on the
-    // sidecar here — returning the constant keeps the app shell responsive.
-    if (rendererUrl() === null) {
-      return { grpcBaseUrl: APP_GRPC_BASE, packaged: app.isPackaged }
-    }
-    // Dev: the Vite server proxies the same-origin `/__coral__` prefix to the
-    // sidecar (see apps/reef/vite.config.ts), so the renderer stays same-origin
-    // and needs no CORS — mirroring the packaged app:// proxy. Still wait for the
-    // sidecar so the proxy target is live before the UI starts issuing requests.
-    const started = await ensureSidecar()
-    const devOrigin = new URL(rendererUrl()!).origin
-    return { grpcBaseUrl: `${devOrigin}${GRPC_PATH_PREFIX}`, packaged: started.packaged }
-  })
   ipcMain.handle('coral:list-mcp-clients', () => mcpClients())
-  ipcMain.handle('coral:configure-mcp', (_event, clientId: McpClientId) => configureMcpClient(clientId))
+  ipcMain.handle('coral:configure-mcp', (_event, clientId: McpClientId) =>
+    configureMcpClient(clientId),
+  )
+  ipcMain.handle('coral:get-mcp-launch-config', () => getMcpLaunchConfig())
 }
 
 function installMenu() {
@@ -286,6 +273,16 @@ function installMenu() {
           label: 'Configure MCP',
           submenu: mcpSubmenu,
         },
+        ...(desktopUpdatesSupported()
+          ? ([
+              {
+                label: 'Check for Updates...',
+                click: () => {
+                  void checkForDesktopUpdates({ interactive: true })
+                },
+              },
+            ] satisfies Electron.MenuItemConstructorOptions[])
+          : []),
         { type: 'separator' },
         { role: 'quit' },
       ],
@@ -299,6 +296,8 @@ function installMenu() {
         { role: 'cut' },
         { role: 'copy' },
         { role: 'paste' },
+        { type: 'separator' },
+        { role: 'selectAll' },
       ],
     },
     {
@@ -340,6 +339,7 @@ app.whenReady().then(() => {
   nativeTheme.on('updated', updatePlatformIcon)
   registerIpcHandlers()
   installMenu()
+  installAutoUpdater()
   registerAppProtocol(() => ensureSidecar().then((started) => started.url))
   void ensureSidecar().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error)

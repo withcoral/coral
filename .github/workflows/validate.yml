@@ -25,7 +25,7 @@ env:
 jobs:
   changes:
     name: Detect changes
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     permissions:
       contents: read
@@ -48,6 +48,16 @@ jobs:
       performance-regression: ${{ steps.filter.outputs.performance-regression }}
 
     steps:
+      # Release Please updates its candidate branch before this repository's
+      # generation steps add their final commit. Give those writes time to
+      # coalesce so concurrency cancellation stops obsolete runs before the
+      # expensive validation jobs fan out.
+      - name: Let release automation settle
+        if: >-
+          github.event_name == 'pull_request' &&
+          startsWith(github.head_ref, 'release-please--')
+        run: sleep 120
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
@@ -151,21 +161,26 @@ jobs:
 
   rust-checks:
     name: Rust checks
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changes
     if: ${{ needs.changes.outputs.rust_checks == 'true' }}
     steps:
+      - name: Free Linux runner disk space
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+        with:
+          # Rust comes from rustup; this job does not use the hosted language tool cache.
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          # Keep swap for the memory-intensive clippy, test, and docs phases.
+          swap-storage: false
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-
-      - name: Free Linux runner disk space
-        if: ${{ runner.os == 'Linux' }}
-        run: |
-          df -h
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
-          docker system prune -af || true
-          df -h
 
       - name: Install Rust toolchain
         run: rustup show
@@ -174,10 +189,6 @@ jobs:
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           shared-key: coral-validate-${{ runner.os }}
-          # This job runs clippy, all-target tests, and docs in one target dir.
-          # Restoring target artifacts spends disk before nextest's largest
-          # compile phase and can exhaust GitHub-hosted runners.
-          cache-targets: false
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
@@ -191,7 +202,7 @@ jobs:
 
   postgres-database-tests:
     name: Postgres database tests
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changes
     if: ${{ needs.changes.outputs.postgres_database_tests == 'true' }}
     services:
@@ -234,7 +245,7 @@ jobs:
 
   windows-rust-smoke:
     name: Windows Rust smoke
-    runs-on: windows-latest
+    runs-on: blacksmith-4vcpu-windows-2025
     needs: changes
     if: ${{ needs.changes.outputs.rust_checks == 'true' || needs.changes.outputs.release_workflow == 'true' }}
     steps:
@@ -342,7 +353,7 @@ jobs:
 
   ui-build:
     name: UI build
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changes
     if: ${{ needs.changes.outputs.ui-build == 'true' || needs.changes.outputs.rust_checks == 'true' }}
     steps:
@@ -352,14 +363,14 @@ jobs:
 
       - name: Set up Node
         if: ${{ github.event_name == 'pull_request' }}
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version-file: apps/ui/.node-version
           package-manager-cache: false
 
       - name: Set up Node with trusted npm cache
         if: ${{ github.event_name != 'pull_request' }}
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version-file: apps/ui/.node-version
           cache: npm
@@ -386,7 +397,7 @@ jobs:
 
   ui-tests:
     name: UI tests
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changes
     if: ${{ needs.changes.outputs.ui-tests == 'true' }}
     steps:
@@ -396,14 +407,14 @@ jobs:
 
       - name: Set up Node
         if: ${{ github.event_name == 'pull_request' }}
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version-file: apps/ui/.node-version
           package-manager-cache: false
 
       - name: Set up Node with trusted npm cache
         if: ${{ github.event_name != 'pull_request' }}
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version-file: apps/ui/.node-version
           cache: npm
@@ -433,7 +444,7 @@ jobs:
 
   reef-checks:
     name: Reef checks
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changes
     if: ${{ needs.changes.outputs.reef-checks == 'true' }}
     steps:
@@ -443,14 +454,14 @@ jobs:
 
       - name: Set up Node
         if: ${{ github.event_name == 'pull_request' }}
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version-file: apps/reef/.node-version
           package-manager-cache: false
 
       - name: Set up Node with trusted npm cache
         if: ${{ github.event_name != 'pull_request' }}
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version-file: apps/reef/.node-version
           cache: npm
@@ -476,7 +487,7 @@ jobs:
 
   desktop-checks:
     name: Desktop checks
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changes
     if: ${{ needs.changes.outputs.desktop-checks == 'true' }}
     steps:
@@ -486,14 +497,14 @@ jobs:
 
       - name: Set up Node
         if: ${{ github.event_name == 'pull_request' }}
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version-file: apps/desktop/.node-version
           package-manager-cache: false
 
       - name: Set up Node with trusted npm cache
         if: ${{ github.event_name != 'pull_request' }}
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version-file: apps/desktop/.node-version
           cache: npm
@@ -502,14 +513,17 @@ jobs:
       - name: Install desktop dependencies
         run: npm ci --prefix apps/desktop
 
-      # Type-check only; the full build stages the Rust binary + reef, which the
-      # rust/reef jobs already cover.
-      - name: Type-check desktop
+      # The full build stages the Rust binary + Reef, which their dedicated jobs
+      # already cover; this runs desktop type and packaging-config checks.
+      - name: Check desktop
         run: npm run check --prefix apps/desktop
+
+      - name: Test desktop
+        run: npm test --prefix apps/desktop
 
   proto-lint:
     name: Lint protobuf API
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changes
     if: ${{ needs.changes.outputs.proto-lint == 'true' }}
     steps:
@@ -527,7 +541,7 @@ jobs:
 
   gha-security-audit-pr:
     name: Github Actions security audit with zizmor (PR)
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changes
     if: ${{ needs.changes.outputs.github_actions == 'true' && github.event_name == 'pull_request' }}
     permissions:
@@ -548,7 +562,7 @@ jobs:
 
   gha-security-audit-sarif:
     name: Github Actions security audit with zizmor (SARIF)
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changes
     if: ${{ needs.changes.outputs.github_actions == 'true' && github.event_name != 'pull_request' }}
     permissions:
@@ -570,7 +584,7 @@ jobs:
 
   source-lint:
     name: Lint source manifests
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changes
     if: ${{ needs.changes.outputs.source-lint == 'true' }}
     steps:
@@ -596,7 +610,7 @@ jobs:
 
   docs-freshness:
     name: Docs freshness check
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changes
     if: ${{ needs.changes.outputs.docs-freshness == 'true' }}
     steps:
@@ -618,7 +632,7 @@ jobs:
         run: make docs-check
 
       - name: Set up Node for Mintlify validation
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version-file: apps/ui/.node-version
           package-manager-cache: false
@@ -633,7 +647,7 @@ jobs:
 
   schema-freshness:
     name: Schema freshness check
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changes
     if: ${{ needs.changes.outputs.schema-freshness == 'true' }}
     steps:
@@ -656,7 +670,7 @@ jobs:
 
   license-check:
     name: Dependency license scan
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changes
     if: ${{ needs.changes.outputs.license-check == 'true' }}
     steps:
@@ -684,7 +698,7 @@ jobs:
 
   performance-regression:
     name: Performance regression
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changes
     if: ${{ needs.changes.outputs.performance-regression == 'true' }}
     steps:
@@ -721,7 +735,7 @@ jobs:
             --max-mean-seconds 0.75
 
   validate:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs:
       [
         changes,

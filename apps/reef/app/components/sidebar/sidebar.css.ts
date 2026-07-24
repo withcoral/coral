@@ -1,7 +1,8 @@
 import { style } from '@vanilla-extract/css'
+import { recipe } from '@vanilla-extract/recipes'
 
 import { breakpoints } from '@/styles/theme.css'
-import { theme, zIndex } from '@/wax/theme/theme.css'
+import { animation, theme, zIndex } from '@/wax/theme/theme.css'
 
 const MAIN_CONTENT_PADDING = 12
 const SIDEBAR_COLLAPSED_WIDTH = 34
@@ -36,26 +37,22 @@ export const header = style({
   paddingBlockStart: '10px',
 })
 
-export const brandRow = style({
+export const workspaceSelectorRow = style({
   alignItems: 'center',
   display: 'flex',
   gap: '4px',
+  minHeight: '32px',
   minWidth: 0,
 })
 
-export const brandMark = style({
-  alignItems: 'center',
-  borderRadius: '8px',
-  backgroundColor: theme.surface.main,
-  color: theme.content.primary,
-  display: 'flex',
-  flexShrink: 0,
-  height: '32px',
-  justifyContent: 'center',
-  width: '32px',
+export const workspaceSelector = style({
+  flex: '1 1 auto',
+  justifyContent: 'flex-start',
+  minWidth: 0,
+  overflow: 'hidden',
 })
 
-export const brandLabel = style({
+export const workspaceSelectorLabel = style({
   '@media': {
     [`screen and (max-width: ${breakpoints.mobile})`]: {
       display: 'none',
@@ -66,6 +63,30 @@ export const brandLabel = style({
   overflow: 'hidden',
   textOverflow: 'ellipsis',
   whiteSpace: 'nowrap',
+})
+
+export const workspaceSelectorChevron = style({
+  display: 'flex',
+  flexShrink: 0,
+  marginInlineStart: 'auto',
+})
+
+export const workspaceSelectorMark = recipe({
+  base: {
+    alignItems: 'center',
+    borderRadius: '8px',
+    display: 'flex',
+    flexShrink: 0,
+    height: '20px',
+    justifyContent: 'center',
+    transition: animation.colorTransition,
+    width: '20px',
+  },
+  variants: {
+    color: {
+      ...theme.avatarFallback,
+    },
+  },
 })
 
 export const toggleButton = style({
@@ -85,12 +106,4 @@ export const nav = style({
   gap: '4px',
   marginBlockStart: '24px',
   minHeight: 0,
-})
-
-export const footer = style({
-  display: 'flex',
-  flexDirection: 'column',
-  flexShrink: 0,
-  gap: '4px',
-  marginTop: 'auto',
 })

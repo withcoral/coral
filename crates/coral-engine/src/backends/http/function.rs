@@ -7,7 +7,6 @@
 //! scanned later during execution, using the same `http_json_exec` path as
 //! manifest-backed tables.
 
-use std::any::Any;
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
@@ -19,12 +18,14 @@ use datafusion::error::{DataFusionError, Result};
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown, TableType};
 use datafusion::physical_plan::ExecutionPlan;
 
+use crate::SourceObservationSurfaceKind;
 use crate::backends::SourceFunctionProviderFactory;
 use crate::backends::http::HttpSourceClient;
 use crate::backends::http::provider::{HttpJsonExecRequest, http_json_exec};
 use crate::backends::http::target::HttpFetchTarget;
 use crate::backends::schema_from_columns;
 use crate::backends::shared::filter_expr::literal_to_string;
+use crate::backends::shared::source_observation::SourceObservationPublishers;
 
 struct FunctionCallContext<'a> {
     source_schema: &'a str,
@@ -39,6 +40,7 @@ struct HttpSourceFunctionState {
     function_name: String,
     target: Arc<HttpFetchTarget>,
     schema: SchemaRef,
+    source_observation_publishers: SourceObservationPublishers,
 }
 
 /// Table-valued function that turns manifest-declared function args into an
@@ -62,6 +64,7 @@ impl HttpSourceTableFunction {
         backend: HttpSourceClient,
         source_schema: String,
         function: SourceTableFunctionSpec,
+        source_observation_publishers: SourceObservationPublishers,
     ) -> Result<Self> {
         let schema = schema_from_columns(&function.columns, &source_schema, &function.name)?;
         let target = HttpFetchTarget::from_function(&function);
@@ -74,6 +77,7 @@ impl HttpSourceTableFunction {
                 function_name,
                 target: Arc::new(target),
                 schema,
+                source_observation_publishers,
             }),
         })
     }
@@ -112,10 +116,6 @@ impl fmt::Debug for HttpSourceFunctionCallTableProvider {
 
 #[async_trait::async_trait]
 impl TableProvider for HttpSourceFunctionCallTableProvider {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn schema(&self) -> SchemaRef {
         self.state.schema.clone()
     }
@@ -155,6 +155,8 @@ impl TableProvider for HttpSourceFunctionCallTableProvider {
             arg_values: self.arg_values.clone(),
             projection,
             limit,
+            surface_kind: SourceObservationSurfaceKind::Function,
+            source_observation_publishers: Arc::clone(&self.state.source_observation_publishers),
         })
     }
 }

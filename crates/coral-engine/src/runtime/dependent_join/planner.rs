@@ -8,6 +8,7 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_planner::{ExtensionPlanner, PhysicalPlanner};
 
 use crate::backends::http::HttpSourceTableProvider;
+use crate::backends::shared::source_observation::SourceObservationPublishers;
 use crate::runtime::dependent_join::exec::{DependentJoinExec, DependentJoinExecConfig};
 use crate::runtime::dependent_join::logical::DependentJoinNode;
 
@@ -49,6 +50,7 @@ impl ExtensionPlanner for DependentJoinExtensionPlanner {
             max_resolver_rows_per_binding: node.max_resolver_rows_per_binding,
             max_concurrency: node.max_concurrency,
             page_hint: node.page_hint,
+            source_observation_publishers: provider.source_observation_publishers,
             output_schema: Arc::new(node.schema.as_arrow().clone()),
         });
 
@@ -60,6 +62,7 @@ struct ResolvedHttpDependent {
     client: crate::backends::http::HttpSourceClient,
     source_schema: String,
     table: Arc<coral_spec::backends::http::HttpTableSpec>,
+    source_observation_publishers: SourceObservationPublishers,
 }
 
 async fn resolve_http_provider(
@@ -94,7 +97,6 @@ async fn resolve_http_provider(
         .ok_or_else(|| plan_datafusion_err!("dependent table '{}' is not registered", table_ref))?;
 
     let provider = provider
-        .as_any()
         .downcast_ref::<HttpSourceTableProvider>()
         .ok_or_else(|| {
             plan_datafusion_err!(
@@ -107,5 +109,6 @@ async fn resolve_http_provider(
         client: provider.client().clone(),
         source_schema: provider.source_schema().to_string(),
         table: Arc::clone(provider.table_spec()),
+        source_observation_publishers: Arc::clone(provider.source_observation_publishers()),
     })
 }

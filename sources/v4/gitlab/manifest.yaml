@@ -1,0 +1,53 @@
+dsl_version: 4
+name: gitlab_v4
+inputs:
+  GITLAB_API_BASE:
+    kind: variable
+    default: https://gitlab.com
+    hint: |
+      Base URL of your GitLab instance. Keep the default for
+      `gitlab.com`; for self-hosted GitLab, use your instance URL
+      (for example `https://gitlab.example.com`).
+  GITLAB_TOKEN:
+    kind: secret
+    hint: |
+      Connect with GitLab OAuth or paste a personal access token. Both
+      need the `read_api` scope; some admin tables require elevated scopes.
+    credential:
+      methods:
+        - type: oauth
+          label: Connect with GitLab.com OAuth
+          description: Use GitLab.com OAuth authorization code with PKCE.
+          hint: |
+            Sign in to GitLab.com in your browser. Requests the `read_api`
+            scope. To use your own GitLab OAuth application, set
+            GITLAB_OAUTH_CLIENT_ID to its Application ID.
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://127.0.0.1:53682/oauth/callback
+            redirect_uri_port_mode: fixed
+            endpoints:
+              authorization_url: https://gitlab.com/oauth/authorize
+              token_url: https://gitlab.com/oauth/token
+            client:
+              id:
+                default: b96d8711f4201c7c4ce86765e0c2a1a07db768c90a2934346859b64f066cc4f1
+                input: GITLAB_OAUTH_CLIENT_ID
+            scopes:
+              scope:
+                delimiter: space
+                values:
+                  - read_api
+        - type: source_config
+          label: Paste token
+          hint: |
+            Create a personal access token with the `read_api` scope; some
+            admin tables need elevated scopes. See
+            [GitLab PAT docs](https://docs.gitlab.com/user/profile/personal_access_tokens/).
+surface:
+  type: openapi
+  url: https://gitlab.com/gitlab-org/gitlab/-/raw/master/doc/api/openapi/openapi_v3.yaml
+  base_url: '{{input.GITLAB_API_BASE}}'
+test_queries: []

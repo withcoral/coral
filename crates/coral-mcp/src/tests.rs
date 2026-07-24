@@ -13,16 +13,23 @@ use coral_client::{
     local::{RunningServer, ServerBuilder},
 };
 use jsonschema::Validator;
+use opentelemetry::trace::{SpanKind, TracerProvider as _};
+use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
 use rmcp::{
-    RoleClient, ServiceExt,
+    RoleClient, ServerHandler, ServiceExt,
     model::{CallToolRequestParams, CallToolResult, ReadResourceRequestParams, Tool},
     service::RunningService,
 };
 use serde_json::{Map, Value, json};
 use tempfile::TempDir;
 use tonic::Request;
+use tracing_subscriber::Layer as _;
+use tracing_subscriber::filter::Targets;
+use tracing_subscriber::layer::SubscriberExt as _;
 
-use crate::{CoralMcpServer, McpOptions};
+use crate::{CoralMcpServerFactory, McpOptions};
+
+type McpServerTask = tokio::task::JoinHandle<Result<(), Box<dyn std::error::Error + Send + Sync>>>;
 
 fn write_fixture_manifest(root: &Path) -> PathBuf {
     let source_dir = root.join("fixture-source");
@@ -191,7 +198,7 @@ struct TestSession {
     source_client: SourceClient,
     client: RunningService<RoleClient, ()>,
     app_server: RunningServer,
-    mcp_server_task: tokio::task::JoinHandle<Result<(), Box<dyn std::error::Error + Send + Sync>>>,
+    mcp_server_task: McpServerTask,
 }
 
 impl TestSession {
@@ -202,11 +209,7 @@ impl TestSession {
             mcp_server_task,
             ..
         } = self;
-        client.cancel().await.expect("cancel client");
-        mcp_server_task
-            .await
-            .expect("join mcp task")
-            .expect("mcp server result");
+        shutdown_mcp_session(client, mcp_server_task).await;
         app_server.shutdown().await.expect("shutdown app server");
     }
 }
@@ -226,20 +229,35 @@ async fn start_session_with_options(temp: &TempDir, options: McpOptions) -> Test
         .await
         .expect("connect client");
     let source_client = app.source_client();
+    let factory = CoralMcpServerFactory::new(app, options);
+    let (client, mcp_server_task) = start_mcp_session(factory.create()).await;
 
-    let (server_transport, client_transport) = tokio::io::duplex(4096);
-    let mcp_server_task = tokio::spawn(async move {
-        let server = Box::pin(CoralMcpServer::new(&app, options).serve(server_transport)).await?;
-        server.waiting().await?;
-        Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
-    });
-    let client = ().serve(client_transport).await.expect("start rmcp client");
     TestSession {
         source_client,
         client,
         app_server: server,
         mcp_server_task,
     }
+}
+
+async fn start_mcp_session(
+    server: impl ServerHandler + Clone,
+) -> (RunningService<RoleClient, ()>, McpServerTask) {
+    let (server_transport, client_transport) = tokio::io::duplex(4096);
+    let mcp_server_task = tokio::spawn(async move {
+        let server = Box::pin(server.serve(server_transport)).await?;
+        server.waiting().await?;
+        Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+    });
+    let client = ().serve(client_transport).await.expect("start rmcp client");
+    (client, mcp_server_task)
+}
+
+async fn shutdown_mcp_session(client: RunningService<RoleClient, ()>, task: McpServerTask) {
+    client.cancel().await.expect("cancel client");
+    task.await
+        .expect("join mcp task")
+        .expect("mcp server result");
 }
 
 #[tokio::test]
@@ -279,6 +297,83 @@ async fn initialize_instructions_keep_workspace_name_to_a_single_line() {
     session.shutdown().await;
 }
 
+#[tokio::test]
+async fn observed_value_feature_controls_mcp_discovery_surfaces() {
+    let disabled = Box::pin(mcp_search_discovery_text(false)).await;
+    assert!(disabled.0.contains("filters in Coral's local catalog"));
+    assert!(!disabled.0.contains("observed"));
+    assert!(disabled.1.contains("Coral's local catalog"));
+    assert!(!disabled.1.contains("observed"));
+    assert!(disabled.2.contains("Coral catalog entries"));
+    assert!(!disabled.2.contains("observed"));
+    assert!(
+        disabled
+            .3
+            .contains("Search catalog metadata, inspect tables")
+    );
+    assert!(!disabled.3.contains("observed"));
+
+    let enabled = Box::pin(mcp_search_discovery_text(true)).await;
+    assert!(
+        enabled
+            .0
+            .contains("values Coral observed during earlier queries")
+    );
+    assert!(enabled.1.contains("locally observed values"));
+    assert!(enabled.2.contains("values observed during earlier queries"));
+    assert!(
+        enabled
+            .3
+            .contains("Search catalog metadata and local observations")
+    );
+}
+
+async fn mcp_search_discovery_text(
+    observed_values_search_enabled: bool,
+) -> (String, String, String, String) {
+    let temp = TempDir::new().expect("temp dir");
+    let session = start_session_with_options(
+        &temp,
+        McpOptions {
+            observed_values_search_enabled,
+            ..McpOptions::default()
+        },
+    )
+    .await;
+    let peer_info = session.client.peer_info().expect("initialize result");
+    let instructions = peer_info
+        .instructions
+        .as_deref()
+        .expect("initialize instructions")
+        .to_string();
+    let tools = session.client.list_all_tools().await.expect("tools");
+    let search_tool = tool_by_name(&tools, "search");
+    let search_description = search_tool
+        .description
+        .as_deref()
+        .expect("search description")
+        .to_string();
+    let query_description = search_tool
+        .input_schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .and_then(|properties| properties.get("query"))
+        .and_then(Value::as_object)
+        .and_then(|query| query.get("description"))
+        .and_then(Value::as_str)
+        .expect("query input description")
+        .to_string();
+    let guide = session
+        .client
+        .read_resource(ReadResourceRequestParams::new("coral://guide"))
+        .await
+        .expect("guide");
+    let guide = text_content(&guide).to_string();
+    session.shutdown().await;
+
+    (instructions, search_description, query_description, guide)
+}
+
 fn text_content(result: &rmcp::model::ReadResourceResult) -> &str {
     match &result.contents[0] {
         rmcp::model::ResourceContents::TextResourceContents { text, .. } => text,
@@ -293,6 +388,105 @@ fn tool_by_name<'a>(tools: &'a [Tool], name: &str) -> &'a Tool {
         .iter()
         .find(|tool| tool.name == name)
         .expect("tool should be listed")
+}
+
+fn tool_input_properties(tool: &Tool) -> &Map<String, Value> {
+    tool.input_schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .unwrap_or_else(|| panic!("tool '{}' should advertise input properties", tool.name))
+}
+
+fn assert_tool_advertises_task_context(tool: &Tool) {
+    let properties = tool_input_properties(tool);
+    let task_id_schema = properties
+        .get("task_id")
+        .unwrap_or_else(|| panic!("tool '{}' should advertise task_id", tool.name));
+    assert_task_id_schema(task_id_schema, tool.name.as_ref());
+    let intent_schema = properties
+        .get("intent")
+        .unwrap_or_else(|| panic!("tool '{}' should advertise intent", tool.name));
+    assert_intent_schema(intent_schema, tool.name.as_ref());
+    let required = tool
+        .input_schema
+        .get("required")
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("tool '{}' should advertise required fields", tool.name));
+    assert!(
+        required
+            .iter()
+            .any(|field| field.as_str() == Some("task_id")),
+        "tool '{}' should require task_id",
+        tool.name
+    );
+    assert!(
+        required
+            .iter()
+            .any(|field| field.as_str() == Some("intent")),
+        "tool '{}' should require intent",
+        tool.name
+    );
+}
+
+fn assert_task_id_schema(schema: &Value, label: &str) {
+    assert_eq!(
+        schema.get("format").and_then(Value::as_str),
+        Some("uuid"),
+        "{label} task id schema should advertise UUID format"
+    );
+    let compiled = jsonschema::validator_for(schema)
+        .unwrap_or_else(|error| panic!("{label} task id schema should compile: {error}"));
+    let valid = json!("550e8400-e29b-41d4-a716-446655440000");
+    let details = validation_error_details(&compiled, &valid);
+    assert!(
+        details.is_empty(),
+        "{label} task id schema rejected valid value {valid}: {details}"
+    );
+    for invalid in [
+        json!(null),
+        json!(""),
+        json!("task-1"),
+        json!("550e8400e29b41d4a716446655440000"),
+        json!("not-a-uuid"),
+    ] {
+        assert!(
+            !compiled.is_valid(&invalid),
+            "{label} task id schema accepted invalid value {invalid}"
+        );
+    }
+}
+
+fn assert_intent_schema(schema: &Value, label: &str) {
+    let compiled = jsonschema::validator_for(schema)
+        .unwrap_or_else(|error| panic!("{label} intent schema should compile: {error}"));
+    let valid = json!("Find relevant customer tables");
+    let details = validation_error_details(&compiled, &valid);
+    assert!(
+        details.is_empty(),
+        "{label} intent schema rejected valid value {valid}: {details}"
+    );
+    for invalid in [json!(null), json!(""), json!(" ")] {
+        assert!(
+            !compiled.is_valid(&invalid),
+            "{label} intent schema accepted invalid value {invalid}"
+        );
+    }
+}
+
+fn assert_tool_omits_task_id(tool: &Tool) {
+    assert!(
+        !tool_input_properties(tool).contains_key("task_id"),
+        "tool '{}' should not advertise task_id by default",
+        tool.name
+    );
+}
+
+fn assert_tool_omits_intent(tool: &Tool) {
+    assert!(
+        !tool_input_properties(tool).contains_key("intent"),
+        "tool '{}' should not advertise task intent by default",
+        tool.name
+    );
 }
 
 fn assert_matches_output_schema(tool: &Tool, value: &Value) {
@@ -342,6 +536,376 @@ fn assert_tool_error_text_contains(result: &CallToolResult, expected: &str) {
         text.contains(expected),
         "tool error text should contain {expected:?}, got {text:?}"
     );
+}
+
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "This end-to-end MCP task test verifies feature-gated tool advertisement, persistence, tagged follow-up calls, and validation together."
+)]
+async fn mcp_task_tools_persist_lifecycle_and_tag_follow_up_calls() {
+    let temp = TempDir::new().expect("temp dir");
+    let session = start_session_with_options(
+        &temp,
+        McpOptions {
+            tasks_enabled: true,
+            ..McpOptions::default()
+        },
+    )
+    .await;
+    let client = &session.client;
+
+    let tools = client.list_all_tools().await.expect("tools");
+    assert_eq!(
+        tools
+            .iter()
+            .map(|tool| tool.name.as_ref())
+            .collect::<Vec<_>>(),
+        vec![
+            "sql",
+            "search",
+            "list_catalog",
+            "describe_table",
+            "list_columns",
+            "start_task",
+            "end_task"
+        ]
+    );
+    for name in [
+        "sql",
+        "search",
+        "list_catalog",
+        "describe_table",
+        "list_columns",
+    ] {
+        assert_tool_advertises_task_context(tool_by_name(&tools, name));
+    }
+    let start_task_tool = tool_by_name(&tools, "start_task");
+    assert!(!tool_input_properties(start_task_tool).contains_key("task_id"));
+    assert!(
+        !tool_input_properties(start_task_tool).contains_key("initialize_session"),
+        "start_task should not accept initialize_session"
+    );
+    let start_annotations = start_task_tool
+        .annotations
+        .as_ref()
+        .expect("start task annotations");
+    assert_eq!(start_annotations.read_only_hint, Some(false));
+    assert_eq!(start_annotations.destructive_hint, Some(false));
+    assert_eq!(start_annotations.idempotent_hint, Some(false));
+    assert_eq!(start_annotations.open_world_hint, Some(false));
+    let end_task_tool = tool_by_name(&tools, "end_task");
+    assert!(tool_input_properties(end_task_tool).contains_key("task_id"));
+    assert!(!tool_input_properties(end_task_tool).contains_key("intent"));
+
+    let root = client
+        .call_tool(
+            CallToolRequestParams::new("start_task").with_arguments(json_object(&json!({
+                "intent": "Investigate customer renewal risk"
+            }))),
+        )
+        .await
+        .expect("start task");
+    assert_eq!(root.is_error, Some(false));
+    assert_structured_content_only(&root);
+    let root = root.structured_content.expect("root structured content");
+    assert_matches_output_schema(start_task_tool, &root);
+    let root_task_id = root["task_id"].as_str().expect("root task id").to_string();
+    uuid::Uuid::parse_str(&root_task_id).expect("task id is a UUID");
+    assert_eq!(root["message"], "Task started.");
+    assert!(
+        root["instructions"]
+            .as_str()
+            .expect("instructions")
+            .contains("end_task")
+    );
+
+    let sql = client
+        .call_tool(
+            CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
+                "queries": ["SELECT 1 AS ok"],
+                "intent": "Verify task-scoped SQL execution",
+                "task_id": root_task_id
+            }))),
+        )
+        .await
+        .expect("tagged sql");
+    assert_eq!(sql.is_error, Some(false));
+    assert_structured_content_only(&sql);
+    assert_eq!(
+        sql.structured_content.expect("sql structured")["results"][0]["rows"][0]["ok"],
+        "1"
+    );
+
+    let end = client
+        .call_tool(
+            CallToolRequestParams::new("end_task").with_arguments(json_object(&json!({
+                "task_id": root_task_id,
+                "task_status": "success"
+            }))),
+        )
+        .await
+        .expect("end task");
+    assert_eq!(end.is_error, Some(false));
+    assert_structured_content_only(&end);
+    let end = end.structured_content.expect("end structured content");
+    assert_matches_output_schema(end_task_tool, &end);
+    assert_eq!(end["success"], "Task ended.");
+    assert_eq!(end["task_status"], "success");
+
+    let invalid_task_id = client
+        .call_tool(
+            CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
+                "queries": ["SELECT 1"],
+                "intent": "Validate bad task id handling",
+                "task_id": "has space"
+            }))),
+        )
+        .await
+        .expect_err("invalid task_id should fail before query dispatch");
+    assert!(
+        invalid_task_id
+            .to_string()
+            .contains("argument 'task_id' must be a UUID")
+    );
+
+    let missing_task_id = client
+        .call_tool(
+            CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
+                "queries": ["SELECT 1"],
+                "intent": "Validate missing task id handling"
+            }))),
+        )
+        .await
+        .expect_err("missing task_id should fail before query dispatch");
+    assert!(
+        missing_task_id
+            .to_string()
+            .contains("missing string argument 'task_id'")
+    );
+
+    let missing_tool_intent = client
+        .call_tool(
+            CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
+                "queries": ["SELECT 1"],
+                "task_id": root_task_id
+            }))),
+        )
+        .await
+        .expect_err("missing intent should fail before query dispatch");
+    assert!(
+        missing_tool_intent
+            .to_string()
+            .contains("missing string argument 'intent'")
+    );
+
+    let invalid_initializer = client
+        .call_tool(
+            CallToolRequestParams::new("start_task").with_arguments(json_object(&json!({
+                "intent": "Open another task",
+                "initialize_session": true
+            }))),
+        )
+        .await
+        .expect_err("old initializer should fail before starting a task");
+    assert!(
+        invalid_initializer
+            .to_string()
+            .contains("unknown argument 'initialize_session'")
+    );
+
+    let tasks_path = temp
+        .path()
+        .join("coral-config/workspaces/default/tasks/tasks.jsonl");
+    let raw = fs::read_to_string(&tasks_path).expect("task file should exist");
+    let records = raw
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("task JSONL should parse"))
+        .collect::<Vec<_>>();
+    assert_eq!(records.len(), 2);
+    let root_record = records
+        .iter()
+        .find(|record| record["task_id"] == root_task_id.as_str())
+        .expect("root task record");
+    assert_eq!(root_record["workspace"], "default");
+    assert_eq!(root_record["intent"], "Investigate customer renewal risk");
+    let end_record = records
+        .iter()
+        .find(|record| record["task_id"] == root_task_id.as_str() && record["event"] == "end")
+        .expect("task end record");
+    assert_eq!(end_record["task_status"], "success");
+
+    let blank_intent = client
+        .call_tool(
+            CallToolRequestParams::new("start_task").with_arguments(json_object(&json!({
+                "intent": " "
+            }))),
+        )
+        .await
+        .expect_err("blank intent should fail before persistence");
+    assert!(
+        blank_intent
+            .to_string()
+            .contains("missing string argument 'intent'")
+    );
+    let raw_after_error = fs::read_to_string(&tasks_path).expect("task file should exist");
+    assert_eq!(raw_after_error.lines().count(), 2);
+
+    session.shutdown().await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn task_intent_is_persisted_but_not_exported_to_telemetry() {
+    let exporter = InMemorySpanExporter::default();
+    let provider = SdkTracerProvider::builder()
+        .with_simple_exporter(exporter.clone())
+        .build();
+    let tracer = provider.tracer("mcp-task-intent-privacy-test");
+    let trace_targets = "coral_mcp=trace,coral_client::grpc=trace,coral_app::transport=trace"
+        .parse::<Targets>()
+        .expect("MCP and gRPC trace filter");
+    let subscriber = tracing_subscriber::Registry::default().with(
+        tracing_opentelemetry::layer()
+            .with_tracer(tracer)
+            .with_filter(trace_targets),
+    );
+    let _guard = tracing::subscriber::set_default(subscriber);
+    let temp = TempDir::new().expect("temp dir");
+    let session = start_session_with_options(
+        &temp,
+        McpOptions {
+            tasks_enabled: true,
+            ..McpOptions::default()
+        },
+    )
+    .await;
+    let sentinel = "SENSITIVE_RAW_TASK_INTENT_TELEMETRY_MARKER";
+
+    let started = session
+        .client
+        .call_tool(
+            CallToolRequestParams::new("start_task").with_arguments(json_object(&json!({
+                "intent": sentinel
+            }))),
+        )
+        .await
+        .expect("start task");
+    assert_eq!(started.is_error, Some(false));
+    assert_structured_content_only(&started);
+    let task_id = started
+        .structured_content
+        .expect("start task structured content")["task_id"]
+        .as_str()
+        .expect("task id")
+        .to_string();
+    uuid::Uuid::parse_str(&task_id).expect("task id is a UUID");
+
+    let tasks_path = temp
+        .path()
+        .join("coral-config/workspaces/default/tasks/tasks.jsonl");
+    let persisted = fs::read_to_string(tasks_path).expect("task file should exist");
+    let start_record = persisted
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("task JSONL should parse"))
+        .find(|record| record["task_id"] == task_id && record["event"] == "start")
+        .expect("task start record");
+    assert_eq!(start_record["intent"], sentinel);
+
+    session.shutdown().await;
+    provider.force_flush().expect("flush spans");
+    let spans = exporter.get_finished_spans().expect("finished spans");
+    let tool_call = spans
+        .iter()
+        .find(|span| {
+            span.name == "coral.mcp.call_tool"
+                && span.attributes.iter().any(|attribute| {
+                    attribute.key.as_str() == "mcp.tool.name"
+                        && attribute.value.as_str() == "start_task"
+                })
+        })
+        .expect("start_task tool call span");
+    assert!(
+        tool_call
+            .attributes
+            .iter()
+            .all(|attribute| attribute.key.as_str() != "mcp.tool.intent")
+    );
+    assert!(
+        spans.iter().any(|span| {
+            span.name == "coral.v1.TaskService/StartTask" && span.span_kind == SpanKind::Client
+        }),
+        "start_task should export its client gRPC span"
+    );
+    assert!(
+        spans.iter().any(|span| {
+            span.name == "coral.v1.TaskService/StartTask" && span.span_kind == SpanKind::Server
+        }),
+        "start_task should export its server gRPC span"
+    );
+    let leaked = spans
+        .iter()
+        .filter(|span| format!("{span:?}").contains(sentinel))
+        .collect::<Vec<_>>();
+    assert!(
+        leaked.is_empty(),
+        "exported spans contained the raw intent: {leaked:#?}"
+    );
+
+    provider.shutdown().expect("provider shutdown");
+}
+
+#[tokio::test]
+async fn mcp_task_tools_are_disabled_by_default() {
+    let temp = TempDir::new().expect("temp dir");
+    let session = start_session(&temp).await;
+    let client = &session.client;
+
+    let tools = client.list_all_tools().await.expect("tools");
+    assert!(
+        tools
+            .iter()
+            .all(|tool| tool.name.as_ref() != "start_task" && tool.name.as_ref() != "end_task"),
+        "task tools should not be listed by default"
+    );
+    for tool in &tools {
+        assert_tool_omits_task_id(tool);
+        assert_tool_omits_intent(tool);
+    }
+
+    let start_task = client
+        .call_tool(
+            CallToolRequestParams::new("start_task").with_arguments(json_object(&json!({
+                "intent": "Investigate customer renewal risk"
+            }))),
+        )
+        .await
+        .expect_err("start_task should not be exposed by default");
+    assert!(
+        start_task
+            .to_string()
+            .contains("tool 'start_task' not found")
+    );
+    let open_episode = client
+        .call_tool(
+            CallToolRequestParams::new("open_episode").with_arguments(json_object(&json!({
+                "intent": "Investigate customer renewal risk"
+            }))),
+        )
+        .await
+        .expect_err("open_episode should not be exposed");
+    assert!(
+        open_episode
+            .to_string()
+            .contains("tool 'open_episode' not found")
+    );
+    assert!(
+        !temp
+            .path()
+            .join("coral-config/workspaces/default/tasks/tasks.jsonl")
+            .exists()
+    );
+
+    session.shutdown().await;
 }
 
 #[tokio::test]
@@ -988,6 +1552,63 @@ async fn list_catalog_surfaces_table_functions() {
 }
 
 #[tokio::test]
+async fn factory_shares_client_and_configured_tools_across_sessions() {
+    let temp = TempDir::new().expect("temp dir");
+    let app_server = ServerBuilder::new()
+        .with_config_dir(temp.path().join("coral-config"))
+        .with_noop_feedback_uploads()
+        .start()
+        .await
+        .expect("start server");
+    let app = AppClient::connect(app_server.endpoint_uri())
+        .await
+        .expect("connect client");
+    let factory = CoralMcpServerFactory::new(
+        app,
+        McpOptions {
+            feedback_enabled: true,
+            tasks_enabled: true,
+            ..McpOptions::default()
+        },
+    );
+
+    let (first_client, first_task) = start_mcp_session(factory.create()).await;
+    let (second_client, second_task) = start_mcp_session(factory.create()).await;
+
+    for client in [&first_client, &second_client] {
+        let tools = client.list_all_tools().await.expect("tools");
+        assert_eq!(
+            tools
+                .iter()
+                .map(|tool| tool.name.as_ref())
+                .collect::<Vec<_>>(),
+            vec![
+                "sql",
+                "search",
+                "list_catalog",
+                "describe_table",
+                "list_columns",
+                "start_task",
+                "end_task",
+                "feedback"
+            ]
+        );
+        let resources = client.list_all_resources().await.expect("resources");
+        assert_eq!(
+            resources
+                .iter()
+                .map(|resource| resource.uri.as_str())
+                .collect::<Vec<_>>(),
+            vec!["coral://guide", "coral://tables"]
+        );
+    }
+
+    shutdown_mcp_session(first_client, first_task).await;
+    shutdown_mcp_session(second_client, second_task).await;
+    app_server.shutdown().await.expect("shutdown app server");
+}
+
+#[tokio::test]
 async fn mcp_feedback_tool_persists_blocked_agent_report() {
     let temp = TempDir::new().expect("temp dir");
     let session = start_session_with_options(
@@ -1093,6 +1714,72 @@ async fn mcp_feedback_tool_persists_blocked_agent_report() {
     )
     .expect("feedback file should still exist");
     assert_eq!(raw_after_error.lines().count(), 1);
+
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn mcp_feedback_tool_accepts_task_id_when_tasks_enabled() {
+    let temp = TempDir::new().expect("temp dir");
+    let session = start_session_with_options(
+        &temp,
+        McpOptions {
+            tasks_enabled: true,
+            feedback_enabled: true,
+            ..McpOptions::default()
+        },
+    )
+    .await;
+    let client = &session.client;
+
+    let tools = client.list_all_tools().await.expect("tools");
+    assert_tool_advertises_task_context(tool_by_name(&tools, "feedback"));
+
+    let feedback = client
+        .call_tool(
+            CallToolRequestParams::new("feedback").with_arguments(json_object(&json!({
+                "trying_to_do": "Finish a task-scoped task",
+                "tried": "Started a task and inspected failing output",
+                "stuck": "The final step still needs user judgment",
+                "intent": "Record blocked final task step",
+                "task_id": "550e8400-e29b-41d4-a716-446655440000"
+            }))),
+        )
+        .await
+        .expect("task-tagged feedback");
+    assert_eq!(feedback.is_error, Some(false));
+    assert_eq!(
+        feedback.structured_content.expect("structured content")["message"],
+        "Feedback report stored."
+    );
+
+    let raw = fs::read_to_string(
+        temp.path()
+            .join("coral-config/workspaces/default/feedback/reports.jsonl"),
+    )
+    .expect("feedback file should exist");
+    let records = raw.lines().collect::<Vec<_>>();
+    assert_eq!(records.len(), 1);
+    let record: Value = serde_json::from_str(records[0]).expect("feedback JSONL should parse");
+    assert_eq!(record["task_id"], "550e8400-e29b-41d4-a716-446655440000");
+
+    let invalid_task_id = client
+        .call_tool(
+            CallToolRequestParams::new("feedback").with_arguments(json_object(&json!({
+                "trying_to_do": "Finish a task-scoped task",
+                "tried": "Started a task and inspected failing output",
+                "stuck": "The final step still needs user judgment",
+                "intent": "Validate bad feedback task id handling",
+                "task_id": "has space"
+            }))),
+        )
+        .await
+        .expect_err("invalid task_id should fail before feedback dispatch");
+    assert!(
+        invalid_task_id
+            .to_string()
+            .contains("argument 'task_id' must be a UUID")
+    );
 
     session.shutdown().await;
 }

@@ -11,9 +11,11 @@
       "package-name": "coral",
       "extra-files": [
         "Cargo.toml",
-        { "type": "json", "path": "apps/desktop/package.json", "jsonpath": "$.version" }
+        { "type": "json", "path": "apps/desktop/package.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "apps/desktop/package-lock.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "apps/desktop/package-lock.json", "jsonpath": "$.packages[\"\"].version" }
       ],
-      "exclude-paths": ["sources/community", "sources/core-v4"]
+      "exclude-paths": ["sources/community", "sources/core-v4", "sources/v4"]
     }
   },
   "bootstrap-sha": "51de7ec4e927d627e02ada30d258921eb258d8e8"

@@ -1,85 +1,34 @@
-import { create } from '@bufbuild/protobuf'
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import {
-  OAuthCredentialMethodSchema,
-  SourceCredentialMethodSchema,
-  SourceCredentialSchema,
-  SourceConfigCredentialMethodSchema,
-  SourceInfoSchema,
-  SourceInputSpecSchema,
-  SourceOrigin,
-  SourceSchema,
-  SourceSecretInputSchema,
-} from '@/generated/coral/v1/sources_pb'
+const { deleteSource } = vi.hoisted(() => ({ deleteSource: vi.fn() }))
 
-import { editBindingsFromForm } from './sources-action'
+vi.mock('@/lib/coral-request.server', () => ({
+  sourceClientForRequest: () => ({ deleteSource }),
+}))
 
-const source = create(SourceSchema, {
-  name: 'github',
-  origin: SourceOrigin.BUNDLED,
-  secrets: [{ key: 'token' }],
-})
+import { action } from './sources-action'
 
-const oauthMethod = create(SourceCredentialMethodSchema, {
-  label: 'OAuth',
-  method: {
-    case: 'oauth',
-    value: create(OAuthCredentialMethodSchema, {
-      redirectUri: 'http://127.0.0.1/callback',
-    }),
-  },
-})
-
-const sourceConfigMethod = create(SourceCredentialMethodSchema, {
-  label: 'Paste token',
-  method: {
-    case: 'sourceConfig',
-    value: create(SourceConfigCredentialMethodSchema),
-  },
-})
-
-const sourceInfo = create(SourceInfoSchema, {
-  inputs: [
-    create(SourceInputSpecSchema, {
-      key: 'token',
-      input: {
-        case: 'secret',
-        value: create(SourceSecretInputSchema, {
-          credential: create(SourceCredentialSchema, {
-            methods: [oauthMethod, sourceConfigMethod],
-          }),
-        }),
-      },
-    }),
-  ],
-})
-
-describe('editBindingsFromForm', () => {
-  it('keeps legacy edit secret submissions when no credential method is posted', () => {
-    const formData = new FormData()
-    formData.set('sec:token', 'new-secret')
-
-    expect(editBindingsFromForm(source, sourceInfo, formData)).toEqual([
-      { key: 'token', secret: true, value: 'new-secret' },
-    ])
+describe('sources action workspace routing', () => {
+  beforeEach(() => {
+    deleteSource.mockReset()
+    deleteSource.mockResolvedValue({})
   })
 
-  it('does not map an OAuth-selected edit secret field to a source secret binding', () => {
-    const formData = new FormData()
-    formData.set('method:token', '0')
-    formData.set('sec:token', 'should-not-submit')
+  it('deletes from and redirects back to the route workspace', async () => {
+    const request = new Request('http://localhost/workspaces/analytics/sources/github', {
+      body: new URLSearchParams({ _intent: 'delete', name: 'github' }),
+      method: 'POST',
+    })
 
-    expect(editBindingsFromForm(source, sourceInfo, formData)).toEqual([])
-  })
+    const response = await action({ params: { workspaceId: 'analytics' }, request })
 
-  it('still maps source-config-selected edit secrets to source secret bindings', () => {
-    const formData = new FormData()
-    formData.set('method:token', '1')
-    formData.set('sec:token', 'new-secret')
-
-    expect(editBindingsFromForm(source, sourceInfo, formData)).toEqual([
-      { key: 'token', secret: true, value: 'new-secret' },
-    ])
+    expect(deleteSource).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'github',
+        workspace: expect.objectContaining({ name: 'analytics' }),
+      }),
+    )
+    expect(response).toBeInstanceOf(Response)
+    expect((response as Response).headers.get('location')).toBe('/workspaces/analytics/sources')
   })
 })

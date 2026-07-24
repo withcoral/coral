@@ -18,6 +18,9 @@ mod query_error;
 mod source_ops;
 
 use std::borrow::Cow;
+use std::fmt::Write as _;
+use std::future::Future;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 #[cfg(feature = "embedded-ui")]
 use std::sync::Arc;
@@ -28,8 +31,11 @@ use clap::{
 };
 use clap_complete::{Shell, generate};
 use coral_api::v1::{
-    CreateWorkspaceRequest, DeleteWorkspaceRequest, ExecuteSqlRequest, ListWorkspacesRequest,
-    SearchRequest, Workspace,
+    AddFunctionRequest, ClearSearchDataRequest, CreateWorkspaceRequest, DeleteFunctionRequest,
+    DeleteWorkspaceRequest, DrainSearchQueueRequest, ExecuteSqlRequest, Function,
+    FunctionRuntimeReady, ListFunctionsRequest, ListWorkspacesRequest, RebuildSearchIndexRequest,
+    SearchClearTarget, SearchDataScope, SearchIndexProvider, SearchProvider, SearchRequest,
+    Workspace, function, search_clear_target, search_maintenance_result,
 };
 #[cfg(feature = "embedded-ui")]
 use coral_app::StaticAssetsProvider;
@@ -73,16 +79,23 @@ struct Cli {
 enum Command {
     /// Execute a SQL query
     Sql(SqlArgs),
-    /// Find relevant Coral tables, functions, columns, and filters
+    /// Search Coral's catalog and, when enabled, locally observed values
     Search(SearchArgs),
+    /// Manage Coral's local search indexes
+    SearchIndex(SearchIndexArgs),
     /// Manage data sources
     Source(SourceArgs),
     /// Manage workspaces
     Workspace(WorkspaceArgs),
+    /// Manage functions
+    #[command(name = "functions")]
+    Function(FunctionArgs),
     /// Interactive wizard to set up Coral and explore use cases
     Onboard,
     /// Start the MCP server over stdio
     McpStdio(McpStdioArgs),
+    /// Start the long-running gRPC server
+    Server,
     /// Inspect and manage experimental runtime features
     Features(FeaturesArgs),
     #[cfg(feature = "embedded-ui")]
@@ -129,7 +142,7 @@ struct SqlArgs {
 }
 
 #[derive(Debug, Args)]
-/// Find relevant Coral tables, functions, columns, and filters
+/// Search Coral's catalog and, when enabled, locally observed values
 struct SearchArgs {
     /// Render the shared machine-readable JSON response
     #[arg(long)]
@@ -141,15 +154,89 @@ struct SearchArgs {
         value_parser = clap::value_parser!(u32).range(MIN_SEARCH_LIMIT as i64..=MAX_SEARCH_LIMIT as i64)
     )]
     limit: u32,
-    /// Plain-language metadata search text
+    /// Natural language search text
     #[arg(value_name = "QUERY", num_args = 1.., required = true)]
     query: Vec<String>,
 }
 
 #[derive(Debug, Args)]
+/// Manage Coral's local search indexes
+struct SearchIndexArgs {
+    #[command(subcommand)]
+    command: SearchIndexCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum SearchIndexCommand {
+    /// Rebuild one or all local search indexes.
+    ///
+    /// Catalog rebuilds are skipped when already current unless you pass `--force`.
+    /// The observed-value projection is always rebuilt when selected.
+    Rebuild(SearchRebuildArgs),
+    /// Drain app-owned local search queues into queryable projections.
+    Drain(SearchDrainArgs),
+    /// Clear Coral's local search data for one workspace.
+    ///
+    /// Clear deletes local search data, so Coral requires both `--yes` and an
+    /// explicit `--workspace NAME`.
+    Clear(SearchClearArgs),
+}
+
+#[derive(Debug, Args)]
+struct SearchRebuildArgs {
+    /// Search index provider to rebuild
+    #[arg(long, value_enum, default_value = "all")]
+    provider: SearchRebuildProvider,
+    /// Rebuild the catalog projection even when its fingerprint is current
+    #[arg(long)]
+    force: bool,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum SearchRebuildProvider {
+    Catalog,
+    ObservedValues,
+    All,
+}
+
+#[derive(Debug, Args)]
+struct SearchDrainArgs {
+    /// Per-request drain budget in milliseconds. Zero applies the server default.
+    #[arg(long, default_value_t = 0)]
+    budget_ms: u32,
+}
+
+#[derive(Debug, Args)]
+struct SearchClearArgs {
+    /// Search data scope to clear
+    #[arg(long, value_enum)]
+    scope: SearchClearScope,
+    /// Installed source owner whose runtime schemas and surfaces should be cleared
+    #[arg(long, value_name = "SOURCE")]
+    source: Option<String>,
+    /// Set when an explicit global `--workspace NAME` selector is present.
+    #[arg(skip)]
+    explicit_workspace: bool,
+    /// Confirm destructive search-data deletion
+    #[arg(long, required = true, action = ArgAction::SetTrue)]
+    yes: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum SearchClearScope {
+    ObservedValues,
+    All,
+}
+
+#[derive(Debug, Args)]
 struct WorkspaceSelectionArgs {
     /// Workspace to target. Overrides `CORAL_WORKSPACE`.
-    #[arg(long = "workspace", value_name = "NAME", global = true)]
+    #[arg(
+        long = "workspace",
+        value_name = "NAME",
+        global = true,
+        value_parser = clap::builder::NonEmptyStringValueParser::new()
+    )]
     workspace: Option<String>,
 }
 
@@ -277,6 +364,30 @@ enum WorkspaceCommand {
 struct FeaturesArgs {
     #[command(subcommand)]
     command: FeaturesCommand,
+}
+
+#[derive(Debug, Args)]
+/// Manage functions
+struct FunctionArgs {
+    #[command(subcommand)]
+    command: FunctionCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum FunctionCommand {
+    /// List installed functions
+    List,
+    /// Add or replace a user function
+    Add {
+        /// Path to a function SQL artifact
+        #[arg(long)]
+        file: PathBuf,
+    },
+    /// Remove a user function
+    Remove {
+        /// Name of the function to remove
+        name: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -422,11 +533,15 @@ impl Command {
         match self {
             Command::Sql(_)
             | Command::Search(_)
+            | Command::SearchIndex(_)
             | Command::Source(_)
             | Command::Workspace(_)
+            | Command::Function(_)
             | Command::Onboard
             | Command::McpStdio(_) => RequiredRuntime::AppClient,
-            Command::Features(_) | Command::Completion(_) => RequiredRuntime::None,
+            Command::Features(_) | Command::Completion(_) | Command::Server => {
+                RequiredRuntime::None
+            }
             #[cfg(feature = "embedded-ui")]
             Command::Ui(_) => RequiredRuntime::None,
         }
@@ -441,10 +556,26 @@ impl Command {
             self,
             Command::Sql(_)
                 | Command::Search(_)
+                | Command::SearchIndex(_)
                 | Command::Source(_)
+                | Command::Function(_)
                 | Command::Onboard
                 | Command::McpStdio(_)
         )
+    }
+
+    fn apply_workspace_flag_presence(&mut self, present: bool) {
+        if let Command::SearchIndex(args) = self {
+            args.apply_workspace_flag_presence(present);
+        }
+    }
+}
+
+impl SearchIndexArgs {
+    fn apply_workspace_flag_presence(&mut self, present: bool) {
+        if let SearchIndexCommand::Clear(args) = &mut self.command {
+            args.explicit_workspace = present;
+        }
     }
 }
 
@@ -502,8 +633,10 @@ pub async fn run_from_env() -> Result<(), CliError> {
     let Cli {
         feature_overrides,
         workspace_selection,
-        command,
+        mut command,
     } = Cli::parse();
+    let workspace_flag_present = workspace_selection.workspace.is_some();
+    command.apply_workspace_flag_presence(workspace_flag_present);
     let feature_overrides = feature_overrides.into_overrides();
     let ctx = coral_app::RunContext {
         trace_parent: env::trace_parent(),
@@ -519,6 +652,7 @@ pub async fn run_from_env() -> Result<(), CliError> {
             let is_mcp_stdio = matches!(&command, Command::McpStdio(_));
             let bootstrap = bootstrap::bootstrap(bootstrap::BootstrapOptions {
                 enable_stderr_logs: command.enables_stderr_logs(),
+                feature_overrides: feature_overrides.clone(),
             })
             .await
             .map_err(anyhow::Error::from)?;
@@ -557,7 +691,6 @@ fn selected_workspace(cli_workspace: Option<String>) -> Workspace {
 
 fn selected_workspace_name(cli_workspace: Option<String>, env_workspace: Option<String>) -> String {
     cli_workspace
-        .filter(|value| !value.is_empty())
         .or_else(|| env_workspace.filter(|value| !value.is_empty()))
         .unwrap_or_else(|| DEFAULT_WORKSPACE_ID.to_string())
 }
@@ -580,8 +713,11 @@ pub fn open_url(url: &str) -> Result<(), std::io::Error> {
 }
 
 #[cfg(feature = "embedded-ui")]
-async fn run_ui(args: UiArgs) -> Result<(), anyhow::Error> {
-    let server = bootstrap::start_ui_server(args.port).await?;
+async fn run_ui(
+    args: UiArgs,
+    feature_overrides: coral_app::features::FeatureOverrides,
+) -> Result<(), anyhow::Error> {
+    let server = bootstrap::start_ui_server(args.port, feature_overrides).await?;
     let endpoint = server.endpoint_uri().to_string();
 
     println!("Coral UI listening on {endpoint}");
@@ -598,11 +734,77 @@ async fn run_ui(args: UiArgs) -> Result<(), anyhow::Error> {
     }
     println!("Press Ctrl-C to stop the UI.");
 
-    let signal = tokio::signal::ctrl_c().await;
+    run_until_server_stops(server, tokio::signal::ctrl_c()).await
+}
+
+async fn run_server(
+    feature_overrides: coral_app::features::FeatureOverrides,
+) -> Result<(), anyhow::Error> {
+    let server = bootstrap::start_standalone_server(feature_overrides).await?;
+    let endpoint = server.endpoint_uri().to_string();
+
+    if !server_endpoint_is_loopback(&endpoint) {
+        eprintln!(
+            "Warning: the native gRPC server at {endpoint} does not authenticate clients; \
+             any client that can reach the server can access Coral and its configured sources. \
+             Protect it with a trusted network boundary or authenticating proxy."
+        );
+    }
+    println!("Coral gRPC server listening on {endpoint}");
+    println!("Connect clients with CORAL_ENDPOINT={endpoint}");
+    println!("Press Ctrl-C to stop the server.");
+
+    run_until_server_stops(server, wait_for_server_shutdown_signal()).await
+}
+
+async fn run_until_server_stops(
+    server: coral_app::RunningServer,
+    shutdown_signal: impl Future<Output = Result<(), std::io::Error>>,
+) -> Result<(), anyhow::Error> {
+    let signal = tokio::select! {
+        result = shutdown_signal => Some(result),
+        () = server.wait_for_exit() => None,
+    };
     let shutdown = server.shutdown().await;
-    signal?;
+    if let Some(signal) = signal {
+        signal?;
+    }
     shutdown?;
     Ok(())
+}
+
+fn server_endpoint_is_loopback(endpoint: &str) -> bool {
+    endpoint
+        .strip_prefix("http://")
+        .and_then(|authority| authority.parse::<SocketAddr>().ok())
+        .is_some_and(|address| address.ip().is_loopback())
+}
+
+#[cfg(unix)]
+async fn wait_for_server_shutdown_signal() -> Result<(), std::io::Error> {
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    tokio::select! {
+        signal = tokio::signal::ctrl_c() => signal,
+        _ = sigterm.recv() => Ok(()),
+    }
+}
+
+#[cfg(windows)]
+async fn wait_for_server_shutdown_signal() -> Result<(), std::io::Error> {
+    let mut ctrl_break = tokio::signal::windows::ctrl_break()?;
+    let mut ctrl_close = tokio::signal::windows::ctrl_close()?;
+    let mut ctrl_shutdown = tokio::signal::windows::ctrl_shutdown()?;
+    tokio::select! {
+        signal = tokio::signal::ctrl_c() => signal,
+        _ = ctrl_break.recv() => Ok(()),
+        _ = ctrl_close.recv() => Ok(()),
+        _ = ctrl_shutdown.recv() => Ok(()),
+    }
+}
+
+#[cfg(all(not(unix), not(windows)))]
+async fn wait_for_server_shutdown_signal() -> Result<(), std::io::Error> {
+    tokio::signal::ctrl_c().await
 }
 
 async fn run_no_runtime_command(
@@ -617,12 +819,19 @@ async fn run_no_runtime_command(
             Ok(())
         }
         Command::Features(args) => run_features(args, feature_overrides).map_err(Into::into),
+        Command::Server => run_server(feature_overrides.clone())
+            .await
+            .map_err(Into::into),
         #[cfg(feature = "embedded-ui")]
-        Command::Ui(args) => run_ui(args).await.map_err(Into::into),
+        Command::Ui(args) => run_ui(args, feature_overrides.clone())
+            .await
+            .map_err(Into::into),
         Command::Sql(_)
         | Command::Search(_)
+        | Command::SearchIndex(_)
         | Command::Source(_)
         | Command::Workspace(_)
+        | Command::Function(_)
         | Command::Onboard
         | Command::McpStdio(_) => {
             unreachable!("app client commands are routed through app runtime startup")
@@ -660,8 +869,10 @@ async fn run_app_command(
             print_batches(result.batches(), args.format)?;
         }
         Command::Search(args) => run_search(&app, workspace, args).await?,
+        Command::SearchIndex(args) => run_search_index(&app, workspace, args).await?,
         Command::Source(args) => run_source(&app, workspace, args).await?,
         Command::Workspace(args) => run_workspace(&app, args).await?,
+        Command::Function(args) => run_function(&app, workspace, args).await?,
         Command::Onboard => {
             onboard::run(&app, workspace).await?;
         }
@@ -707,6 +918,9 @@ async fn run_app_command(
                 app,
                 coral_mcp::McpOptions {
                     feedback_enabled: features.enabled(coral_app::features::Feature::Feedback),
+                    observed_values_search_enabled: features
+                        .enabled(coral_app::features::Feature::ObservedValuesSearch),
+                    tasks_enabled: features.enabled(coral_app::features::Feature::Tasks),
                     trace_parent: ctx.and_then(|ctx| ctx.trace_parent.clone()),
                     source_names,
                     query_examples,
@@ -716,10 +930,7 @@ async fn run_app_command(
             .await
             .map_err(anyhow::Error::from)?;
         }
-        Command::Completion(_) => {
-            unreachable!("no-runtime commands are routed without an app client")
-        }
-        Command::Features(_) => {
+        Command::Completion(_) | Command::Features(_) | Command::Server => {
             unreachable!("no-runtime commands are routed without an app client")
         }
         #[cfg(feature = "embedded-ui")]
@@ -906,6 +1117,415 @@ async fn run_search(
     Ok(())
 }
 
+async fn run_function(
+    app: &AppClient,
+    workspace: &Workspace,
+    args: FunctionArgs,
+) -> Result<(), CliError> {
+    match args.command {
+        FunctionCommand::List => {
+            let mut client = app.function_client();
+            let functions = client
+                .list_functions(Request::new(ListFunctionsRequest {
+                    workspace: Some(workspace.clone()),
+                }))
+                .await
+                .map_err(anyhow::Error::from)?
+                .into_inner()
+                .functions;
+            if functions.is_empty() {
+                println!("No installed functions.");
+            } else {
+                let rows = functions.iter().map(|function| {
+                    [
+                        function.name.clone(),
+                        function_status_summary(function),
+                        function_arguments_summary(function),
+                        function_publish_summary(function),
+                        function_columns_summary(function),
+                    ]
+                });
+                print_text_table(
+                    ["Function", "Status", "Arguments", "Publish", "Columns"],
+                    rows,
+                );
+                print_function_invalid_details(&functions);
+            }
+        }
+        FunctionCommand::Add { file } => {
+            let sql = std::fs::read_to_string(&file).map_err(anyhow::Error::from)?;
+            let mut client = app.function_client();
+            let function = client
+                .add_function(Request::new(AddFunctionRequest {
+                    workspace: Some(workspace.clone()),
+                    sql,
+                }))
+                .await
+                .map_err(anyhow::Error::from)?
+                .into_inner();
+            let function = function.function.ok_or_else(|| {
+                anyhow::anyhow!("function service returned no function after add")
+            })?;
+            println!("Added function {}", function.name);
+        }
+        FunctionCommand::Remove { name } => {
+            let name = function_name_arg(&name)?;
+            let mut client = app.function_client();
+            client
+                .delete_function(Request::new(DeleteFunctionRequest {
+                    workspace: Some(workspace.clone()),
+                    name: name.clone(),
+                }))
+                .await
+                .map_err(anyhow::Error::from)?;
+            println!("Removed function {name}");
+        }
+    }
+    Ok(())
+}
+
+fn function_status_summary(function: &Function) -> String {
+    match function.runtime.as_ref() {
+        Some(function::Runtime::Ready(_)) => "ready".to_string(),
+        Some(function::Runtime::Invalid(_)) | None => "invalid".to_string(),
+    }
+}
+
+fn print_function_invalid_details(functions: &[Function]) {
+    let mut invalid_functions = functions.iter().filter_map(|function| {
+        function_invalid_reason(function).map(|reason| (function.name.as_str(), reason))
+    });
+    let Some((first_name, first_reason)) = invalid_functions.next() else {
+        return;
+    };
+
+    println!("\nInvalid functions:");
+    for (name, reason) in std::iter::once((first_name, first_reason)).chain(invalid_functions) {
+        println!("  {name}:");
+        for line in reason.lines() {
+            println!("    {line}");
+        }
+    }
+}
+
+fn function_invalid_reason(function: &Function) -> Option<&str> {
+    match function.runtime.as_ref() {
+        Some(function::Runtime::Ready(_)) => None,
+        Some(function::Runtime::Invalid(invalid)) => Some(invalid.reason.as_str()),
+        None => Some("runtime status unavailable"),
+    }
+}
+
+fn function_publish_summary(function: &Function) -> String {
+    let Some(ready) = function_runtime_ready(function) else {
+        return "-".to_string();
+    };
+    ready.table_function.as_ref().map_or_else(
+        || "-".to_string(),
+        |target| format!("sql: {}.{}", target.schema_name, target.name),
+    )
+}
+
+fn function_arguments_summary(function: &Function) -> String {
+    let Some(ready) = function_runtime_ready(function) else {
+        return "-".to_string();
+    };
+    if ready.arguments.is_empty() {
+        return "-".to_string();
+    }
+    ready
+        .arguments
+        .iter()
+        .map(|argument| format!("{}: {}", argument.name, argument.data_type))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn function_columns_summary(function: &Function) -> String {
+    let Some(ready) = function_runtime_ready(function) else {
+        return "-".to_string();
+    };
+    if ready.result_columns.is_empty() {
+        return "-".to_string();
+    }
+    let visible_columns = ready
+        .result_columns
+        .iter()
+        .map(|column| column.name.as_str())
+        .take(4)
+        .collect::<Vec<_>>();
+    let hidden_count = ready
+        .result_columns
+        .len()
+        .saturating_sub(visible_columns.len());
+    let mut summary = visible_columns.join(", ");
+    if hidden_count > 0 {
+        write!(summary, ", +{hidden_count}").expect("writing to String should not fail");
+    }
+    summary
+}
+
+fn function_runtime_ready(function: &Function) -> Option<&FunctionRuntimeReady> {
+    match function.runtime.as_ref() {
+        Some(function::Runtime::Ready(ready)) => Some(ready),
+        Some(function::Runtime::Invalid(_)) | None => None,
+    }
+}
+
+fn function_name_arg(name: &str) -> Result<String, anyhow::Error> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err(anyhow::anyhow!("missing function name"));
+    }
+    if trimmed.contains('/') || trimmed.contains('\\') {
+        return Err(anyhow::anyhow!(
+            "function name must not contain '/' or '\\\\'"
+        ));
+    }
+    if trimmed == "." || trimmed == ".." {
+        return Err(anyhow::anyhow!("function name must not be '.' or '..'"));
+    }
+    Ok(trimmed.to_string())
+}
+
+async fn run_search_index(
+    app: &AppClient,
+    workspace: &Workspace,
+    args: SearchIndexArgs,
+) -> Result<(), CliError> {
+    match args.command {
+        SearchIndexCommand::Rebuild(args) => {
+            let response = app
+                .search_client()
+                .rebuild_search_index(Request::new(RebuildSearchIndexRequest {
+                    workspace: Some(workspace.clone()),
+                    provider: search_rebuild_provider_to_proto(args.provider) as i32,
+                    force: args.force,
+                }))
+                .await
+                .map_err(anyhow::Error::from)?
+                .into_inner();
+            print_search_rebuild_response(&response);
+        }
+        SearchIndexCommand::Drain(args) => {
+            let response = app
+                .search_client()
+                .drain_search_queue(Request::new(DrainSearchQueueRequest {
+                    workspace: Some(workspace.clone()),
+                    budget_ms: args.budget_ms,
+                }))
+                .await
+                .map_err(anyhow::Error::from)?
+                .into_inner();
+            print_search_drain_response(&response);
+        }
+        SearchIndexCommand::Clear(args) => {
+            validate_search_clear_args(&args)?;
+            let target = match args.source {
+                Some(source) => search_clear_target::Target::SourceName(source),
+                None => search_clear_target::Target::Workspace(true),
+            };
+            let response = app
+                .search_client()
+                .clear_search_data(Request::new(ClearSearchDataRequest {
+                    workspace: Some(workspace.clone()),
+                    scope: search_clear_scope_to_proto(args.scope) as i32,
+                    target: Some(SearchClearTarget {
+                        target: Some(target),
+                    }),
+                }))
+                .await
+                .map_err(anyhow::Error::from)?
+                .into_inner();
+            print_search_clear_response(&response);
+        }
+    }
+    Ok(())
+}
+
+fn validate_search_clear_args(args: &SearchClearArgs) -> Result<(), CliError> {
+    if !args.explicit_workspace || !args.yes {
+        return Err(anyhow::anyhow!(
+            "`coral search-index clear --scope {}` requires an explicit `--workspace NAME` and `--yes`",
+            search_clear_scope_label(args.scope)
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn search_rebuild_provider_to_proto(provider: SearchRebuildProvider) -> SearchIndexProvider {
+    match provider {
+        SearchRebuildProvider::Catalog => SearchIndexProvider::Catalog,
+        SearchRebuildProvider::ObservedValues => SearchIndexProvider::ObservedValues,
+        SearchRebuildProvider::All => SearchIndexProvider::All,
+    }
+}
+
+fn search_clear_scope_to_proto(scope: SearchClearScope) -> SearchDataScope {
+    match scope {
+        SearchClearScope::ObservedValues => SearchDataScope::ObservedValues,
+        SearchClearScope::All => SearchDataScope::All,
+    }
+}
+
+fn search_clear_scope_label(scope: SearchClearScope) -> &'static str {
+    match scope {
+        SearchClearScope::ObservedValues => "observed-values",
+        SearchClearScope::All => "all",
+    }
+}
+
+fn print_search_rebuild_response(response: &coral_api::v1::RebuildSearchIndexResponse) {
+    for result in &response.results {
+        match result.detail.as_ref() {
+            Some(search_maintenance_result::Detail::CatalogRebuild(detail)) => {
+                if detail.rebuild_performed {
+                    println!(
+                        "Rebuilt {} search index: old documents {}, new documents {}, projection changed {}.",
+                        search_provider_label(result.provider),
+                        detail.old_document_count,
+                        detail.new_document_count,
+                        yes_no(detail.projection_changed)
+                    );
+                } else {
+                    println!(
+                        "Skipped rebuilding {} search index: projection already current with {} documents.",
+                        search_provider_label(result.provider),
+                        detail.new_document_count
+                    );
+                }
+            }
+            Some(search_maintenance_result::Detail::ObservedDrain(detail)) => {
+                println!(
+                    "Drained {} search queue before rebuild: processed {}, stale {}, failed {}, dropped {}, remaining {}, budget exhausted {}, purged {}, evicted {}, storage limit reached {}.",
+                    search_provider_label(result.provider),
+                    detail.queue_jobs_processed,
+                    detail.stale_jobs_skipped,
+                    detail.failed_jobs,
+                    detail.storage_jobs_dropped,
+                    detail.remaining_queue_depth,
+                    yes_no(detail.budget_exhausted),
+                    detail.stale_rows_purged,
+                    detail.evicted_rows,
+                    yes_no(detail.storage_limit_reached)
+                );
+            }
+            Some(search_maintenance_result::Detail::ObservedRebuild(detail)) => {
+                println!(
+                    "Rebuilt {} search index: scanned {} observed values, rebuilt {} FTS rows.",
+                    search_provider_label(result.provider),
+                    detail.canonical_rows_scanned,
+                    detail.fts_rows_rebuilt
+                );
+                if let Some(drain) = detail.drain.as_ref() {
+                    println!(
+                        "Pre-rebuild queue: processed {}, upserted {}, wrote {} FTS rows, stale {}, failed {}, dropped {}, remaining {}, budget exhausted {}, purged {}, evicted {}, storage limit reached {}.",
+                        drain.queue_jobs_processed,
+                        drain.canonical_rows_upserted,
+                        drain.fts_rows_written,
+                        drain.stale_jobs_skipped,
+                        drain.failed_jobs,
+                        drain.storage_jobs_dropped,
+                        drain.remaining_queue_depth,
+                        yes_no(drain.budget_exhausted),
+                        drain.stale_rows_purged,
+                        drain.evicted_rows,
+                        yes_no(drain.storage_limit_reached)
+                    );
+                }
+                if !result.note.is_empty() {
+                    println!("{}", result.note);
+                }
+            }
+            _ => {
+                println!(
+                    "{} search index maintenance: {}",
+                    search_provider_label(result.provider),
+                    result.note
+                );
+            }
+        }
+    }
+}
+
+fn print_search_drain_response(response: &coral_api::v1::DrainSearchQueueResponse) {
+    for result in &response.results {
+        match result.detail.as_ref() {
+            Some(search_maintenance_result::Detail::ObservedDrain(detail)) => {
+                println!(
+                    "Drained {} search queue: processed {}, upserted {}, wrote {} FTS rows, stale {}, failed {}, dropped {}, remaining {}, budget exhausted {}, purged {}, evicted {}, storage limit reached {}.",
+                    search_provider_label(result.provider),
+                    detail.queue_jobs_processed,
+                    detail.canonical_rows_upserted,
+                    detail.fts_rows_written,
+                    detail.stale_jobs_skipped,
+                    detail.failed_jobs,
+                    detail.storage_jobs_dropped,
+                    detail.remaining_queue_depth,
+                    yes_no(detail.budget_exhausted),
+                    detail.stale_rows_purged,
+                    detail.evicted_rows,
+                    yes_no(detail.storage_limit_reached)
+                );
+            }
+            _ => {
+                println!(
+                    "{} search queue maintenance: {}",
+                    search_provider_label(result.provider),
+                    result.note
+                );
+            }
+        }
+    }
+}
+
+fn print_search_clear_response(response: &coral_api::v1::ClearSearchDataResponse) {
+    for result in &response.results {
+        match result.detail.as_ref() {
+            Some(search_maintenance_result::Detail::CatalogClear(detail)) => {
+                println!(
+                    "Cleared {} search data: deleted {} documents.",
+                    search_provider_label(result.provider),
+                    detail.deleted_document_count
+                );
+            }
+            Some(search_maintenance_result::Detail::ObservedClear(detail)) => {
+                println!(
+                    "Cleared {} search data: deleted {} observed values, {} FTS rows, {} queue jobs.",
+                    search_provider_label(result.provider),
+                    detail.deleted_value_count,
+                    detail.deleted_fts_count,
+                    detail.deleted_queue_job_count
+                );
+            }
+            _ => {
+                println!(
+                    "{} search data maintenance: {}",
+                    search_provider_label(result.provider),
+                    result.note
+                );
+            }
+        }
+    }
+    if let Some(storage_cleanup) = response.storage_cleanup.as_ref() {
+        println!("Storage cleanup: {}.", storage_cleanup.note);
+    }
+}
+
+fn search_provider_label(provider: i32) -> &'static str {
+    match SearchProvider::try_from(provider).ok() {
+        Some(SearchProvider::CatalogMetadata) => "catalog",
+        Some(SearchProvider::ObservedValues) => "observed-values",
+        Some(SearchProvider::NativeFanout) => "native-fanout",
+        Some(SearchProvider::Unspecified) | None => "unknown",
+    }
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value { "yes" } else { "no" }
+}
+
 fn print_batches(
     batches: &[arrow::record_batch::RecordBatch],
     format: OutputFormat,
@@ -1077,18 +1697,51 @@ async fn run_source_add(
 #[cfg(test)]
 mod tests {
     use clap::{CommandFactory, Parser};
+    use coral_api::v1::{
+        Function, FunctionRuntimeInvalid, FunctionRuntimeReady, TableFunctionResultColumn, function,
+    };
 
-    use super::{Cli, RequiredRuntime, command_enables_stderr_logs};
+    use super::{
+        Cli, RequiredRuntime, command_enables_stderr_logs, function_columns_summary,
+        function_status_summary, server_endpoint_is_loopback,
+    };
 
     #[test]
-    fn server_command_is_not_available() {
-        let error = Cli::try_parse_from(["coral", "server", "--help"])
-            .expect_err("dev server command should not be exposed");
+    fn server_command_requires_no_app_client_runtime() {
+        let cli = Cli::try_parse_from(["coral", "server"]).expect("server should parse");
 
-        assert!(
-            error.to_string().contains("unrecognized subcommand"),
-            "unexpected parse error: {error}"
-        );
+        assert_eq!(cli.command.required_runtime(), RequiredRuntime::None);
+        assert!(matches!(cli.command, super::Command::Server));
+    }
+
+    #[test]
+    fn server_command_rejects_command_line_bind_overrides() {
+        for args in [
+            ["coral", "server", "--bind", "127.0.0.1"],
+            ["coral", "server", "--port", "14555"],
+        ] {
+            Cli::try_parse_from(args).expect_err("server bind overrides should be rejected");
+        }
+    }
+
+    #[test]
+    fn server_security_warning_targets_non_loopback_endpoints() {
+        for endpoint in ["http://127.0.0.1:14555", "http://[::1]:14555"] {
+            assert!(
+                server_endpoint_is_loopback(endpoint),
+                "endpoint: {endpoint}"
+            );
+        }
+        for endpoint in [
+            "http://0.0.0.0:14555",
+            "http://[::]:14555",
+            "http://192.168.1.10:14555",
+        ] {
+            assert!(
+                !server_endpoint_is_loopback(endpoint),
+                "endpoint: {endpoint}"
+            );
+        }
     }
 
     #[cfg(feature = "embedded-ui")]
@@ -1126,6 +1779,55 @@ mod tests {
         let cli = Cli::try_parse_from(["coral", "source", "list"]).expect("source list parses");
 
         assert_eq!(cli.command.required_runtime(), RequiredRuntime::AppClient);
+
+        let cli =
+            Cli::try_parse_from(["coral", "functions", "list"]).expect("functions list parses");
+
+        assert_eq!(cli.command.required_runtime(), RequiredRuntime::AppClient);
+    }
+
+    #[test]
+    fn function_columns_summary_shows_hidden_column_count() {
+        let mut function = Function {
+            runtime: Some(function::Runtime::Ready(FunctionRuntimeReady {
+                result_columns: [
+                    "number",
+                    "title",
+                    "html_url",
+                    "state",
+                    "author",
+                    "updated_at",
+                ]
+                .into_iter()
+                .map(|name| TableFunctionResultColumn {
+                    name: name.to_string(),
+                    ..TableFunctionResultColumn::default()
+                })
+                .collect(),
+                ..FunctionRuntimeReady::default()
+            })),
+            ..Function::default()
+        };
+
+        assert_eq!(
+            function_columns_summary(&function),
+            "number, title, html_url, state, +2"
+        );
+
+        match function.runtime.as_mut() {
+            Some(function::Runtime::Ready(ready)) => ready.result_columns.truncate(4),
+            Some(function::Runtime::Invalid(_)) | None => panic!("ready function"),
+        }
+        assert_eq!(
+            function_columns_summary(&function),
+            "number, title, html_url, state"
+        );
+
+        match function.runtime.as_mut() {
+            Some(function::Runtime::Ready(ready)) => ready.result_columns.clear(),
+            Some(function::Runtime::Invalid(_)) | None => panic!("ready function"),
+        }
+        assert_eq!(function_columns_summary(&function), "-");
     }
 
     #[test]
@@ -1134,6 +1836,105 @@ mod tests {
             Cli::try_parse_from(["coral", "search", "github", "issues"]).expect("search parses");
 
         assert_eq!(cli.command.required_runtime(), RequiredRuntime::AppClient);
+    }
+
+    #[test]
+    fn search_rebuild_parses_as_free_text_query() {
+        let cli = Cli::try_parse_from(["coral", "search", "rebuild"])
+            .expect("search rebuild should parse as query text");
+
+        let super::Command::Search(args) = cli.command else {
+            panic!("expected search command");
+        };
+        assert_eq!(args.query, vec!["rebuild".to_string()]);
+    }
+
+    #[test]
+    fn workspace_flag_requires_a_non_empty_name() {
+        Cli::try_parse_from([
+            "coral",
+            "search-index",
+            "clear",
+            "--scope",
+            "all",
+            "--workspace",
+            "--yes",
+        ])
+        .expect_err("bare workspace flag must be rejected");
+        Cli::try_parse_from([
+            "coral",
+            "search-index",
+            "clear",
+            "--scope",
+            "all",
+            "--workspace",
+            "",
+            "--yes",
+        ])
+        .expect_err("empty workspace name must be rejected");
+    }
+
+    #[test]
+    fn former_workspace_confirmation_marker_is_a_regular_name() {
+        let cli = Cli::try_parse_from([
+            "coral",
+            "search-index",
+            "clear",
+            "--scope",
+            "all",
+            "--workspace",
+            "__coral_current_workspace_confirmation__",
+            "--yes",
+        ])
+        .expect("former confirmation marker should parse as a workspace name");
+
+        assert_eq!(
+            cli.workspace_selection.workspace.as_deref(),
+            Some("__coral_current_workspace_confirmation__")
+        );
+    }
+
+    #[test]
+    fn observed_values_clear_scope_matches_rebuild_provider_name() {
+        let cli = Cli::try_parse_from([
+            "coral",
+            "search-index",
+            "clear",
+            "--scope",
+            "observed-values",
+            "--workspace",
+            "work",
+            "--yes",
+        ])
+        .expect("observed-values clear scope should parse");
+
+        let super::Command::SearchIndex(search_index) = cli.command else {
+            panic!("expected search-index command");
+        };
+        let super::SearchIndexCommand::Clear(args) = search_index.command else {
+            panic!("expected search-index clear command");
+        };
+        assert_eq!(args.scope, super::SearchClearScope::ObservedValues);
+    }
+
+    #[test]
+    fn source_scoped_search_index_clear_requires_workspace_confirmation() {
+        let args = super::SearchClearArgs {
+            scope: super::SearchClearScope::ObservedValues,
+            source: Some("github".to_string()),
+            explicit_workspace: false,
+            yes: true,
+        };
+
+        let error = super::validate_search_clear_args(&args)
+            .expect_err("source clear without workspace must fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("requires an explicit `--workspace NAME` and `--yes`"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
@@ -1147,6 +1948,23 @@ mod tests {
     }
 
     #[test]
+    fn function_status_summary_stays_on_one_line() {
+        let function = Function {
+            runtime: Some(function::Runtime::Invalid(FunctionRuntimeInvalid {
+                reason: "source 'github' is not installed".to_string(),
+            })),
+            ..Function::default()
+        };
+
+        assert_eq!(function_status_summary(&function), "invalid");
+        let ready = Function {
+            runtime: Some(function::Runtime::Ready(FunctionRuntimeReady::default())),
+            ..Function::default()
+        };
+        assert_eq!(function_status_summary(&ready), "ready");
+    }
+
+    #[test]
     fn selected_workspace_preserves_raw_name_for_app_validation() {
         let workspace = super::selected_workspace(Some(" ../bad ".to_string()));
 
@@ -1154,10 +1972,13 @@ mod tests {
     }
 
     #[test]
-    fn selected_workspace_treats_empty_cli_value_as_unset() {
-        let workspace = super::selected_workspace_name(Some(String::new()), None);
+    fn selected_workspace_preserves_former_confirmation_marker() {
+        let workspace = super::selected_workspace_name(
+            Some("__coral_current_workspace_confirmation__".to_string()),
+            None,
+        );
 
-        assert_eq!(workspace, super::DEFAULT_WORKSPACE_ID);
+        assert_eq!(workspace, "__coral_current_workspace_confirmation__");
     }
 
     #[test]
@@ -1173,6 +1994,8 @@ mod tests {
         let search =
             Cli::try_parse_from(["coral", "search", "github", "issues"]).expect("search parses");
         let source = Cli::try_parse_from(["coral", "source", "list"]).expect("source parses");
+        let functions =
+            Cli::try_parse_from(["coral", "functions", "list"]).expect("functions parses");
         let onboard = Cli::try_parse_from(["coral", "onboard"]).expect("onboard parses");
         let workspace =
             Cli::try_parse_from(["coral", "workspace", "list"]).expect("workspace parses");
@@ -1181,6 +2004,7 @@ mod tests {
         assert!(sql.command.uses_selected_workspace());
         assert!(search.command.uses_selected_workspace());
         assert!(source.command.uses_selected_workspace());
+        assert!(functions.command.uses_selected_workspace());
         assert!(onboard.command.uses_selected_workspace());
         assert!(mcp.command.uses_selected_workspace());
         assert!(!workspace.command.uses_selected_workspace());

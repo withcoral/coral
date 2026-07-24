@@ -7,6 +7,7 @@ import { Container } from './container'
 import { Icon } from './icon'
 
 interface CopyButtonProps {
+  ariaLabel?: string
   children?: ReactNode
   className?: string
   disabled?: boolean
@@ -21,6 +22,7 @@ interface CopyButtonProps {
  * A button that copies text to the clipboard and shows feedback.
  */
 export function CopyButton({
+  ariaLabel = 'Copy to clipboard',
   children,
   className,
   disabled = false,
@@ -45,6 +47,7 @@ export function CopyButton({
 
   return (
     <Container
+      ariaLabel={ariaLabel}
       className={className}
       disabled={disabled}
       onClick={handleCopy}

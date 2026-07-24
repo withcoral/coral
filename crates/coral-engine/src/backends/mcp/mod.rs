@@ -26,6 +26,9 @@ use self::client::{McpSourceClient, McpToolCaller};
 use self::function::McpSourceTableFunction;
 use self::provider::McpTableProvider;
 use self::transport::{StdioMcpToolCaller, StreamableHttpMcpToolCaller};
+use crate::backends::shared::source_observation::{
+    SourceObservationPublishers, source_observation_publishers,
+};
 use crate::backends::{
     BackendCompileRequest, BackendRegistration, BackendRegistrationContext,
     BackendSchemaRegistration, CompiledBackendSource, RegisteredSource,
@@ -38,12 +41,13 @@ use crate::{
     CoreError, SourceInputResolutionContext, SourceInputResolver, SourceInputResolverError,
 };
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct McpCompiledSource {
     manifest: McpSourceManifest,
     source_input_resolution: SourceInputResolutionContext,
     source_inputs: Arc<McpSourceInputs>,
     caller: McpSourceClient,
+    source_observation_publishers: SourceObservationPublishers,
 }
 
 #[derive(Debug, Clone)]
@@ -125,6 +129,7 @@ pub(crate) fn compile_manifest(
         source_input_resolution,
         source_inputs,
         caller,
+        source_observation_publishers(request.source_observation_publishers),
     )
 }
 
@@ -160,12 +165,14 @@ fn compile_source_with_caller(
     source_input_resolution: SourceInputResolutionContext,
     source_inputs: Arc<McpSourceInputs>,
     caller: Arc<dyn McpToolCaller>,
+    source_observation_publishers: SourceObservationPublishers,
 ) -> Box<dyn CompiledBackendSource> {
     Box::new(McpCompiledSource {
         manifest,
         source_input_resolution,
         source_inputs,
         caller: McpSourceClient::new(caller),
+        source_observation_publishers,
     })
 }
 
@@ -204,6 +211,7 @@ impl CompiledBackendSource for McpCompiledSource {
                     self.caller.clone(),
                     self.manifest.common.name.clone(),
                     function.clone(),
+                    Arc::clone(&self.source_observation_publishers),
                 )?);
             table_function_infos.push(build_registered_table_function(
                 &self.manifest.common.name,
@@ -220,6 +228,7 @@ impl CompiledBackendSource for McpCompiledSource {
                 self.manifest.common.name.clone(),
                 Arc::clone(&self.source_inputs),
                 table.clone(),
+                Arc::clone(&self.source_observation_publishers),
             )?);
             tables.insert(table.name().to_string(), provider);
             let required_filters = required_filter_names(table.filters());

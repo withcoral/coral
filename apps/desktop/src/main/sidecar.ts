@@ -8,8 +8,6 @@ import { app } from 'electron'
 export interface CoralSidecar {
   url: string
   child: ChildProcess
-  commandPath: string
-  packaged: boolean
   stop(): Promise<void>
 }
 
@@ -61,10 +59,10 @@ export async function externalCoralPath(): Promise<string> {
   throw new Error('No Coral binary is available yet. Run `npm run stage:coral --prefix apps/desktop` first.')
 }
 
-// Dev binds a known port (default 8778, overridable) so the Vite dev server can
-// proxy the same-origin `/__coral__` prefix to it — the port must be fixed
-// because Vite's config loads before the sidecar exists. Packaged builds keep
-// `--port 0` (dynamic) since they proxy via the app:// scheme, not Vite.
+// Dev binds a known port (default 8778, overridable) because the Reef React
+// Router server receives CORAL_ENDPOINT before the Electron sidecar exists.
+// Packaged builds keep `--port 0` (dynamic) because the app protocol resolves
+// the live endpoint before each React Router request.
 function devSidecarPort(): string {
   // `||` (not `??`) so an empty CORAL_DEV_SIDECAR_PORT also falls back — an empty
   // string would otherwise become `--port ""` and the sidecar would fail to start.
@@ -165,8 +163,6 @@ export function startCoralSidecar(): Promise<CoralSidecar> {
       resolveStart({
         url,
         child,
-        commandPath: command.command,
-        packaged: app.isPackaged,
         stop: () => stopChild(child),
       })
     }

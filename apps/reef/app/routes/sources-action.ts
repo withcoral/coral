@@ -6,16 +6,34 @@ import {
   DeleteSourceRequestSchema,
   GetSourceInfoRequestSchema,
   GetSourceRequestSchema,
-  type Source,
-  type SourceInfo,
-  type SourceInputSpec,
+  ImportSourceRequestSchema,
 } from '@/generated/coral/v1/sources_pb'
+import type { Workspace } from '@/generated/coral/v1/resources_pb'
 import { sourceClientForRequest } from '@/lib/coral-request.server'
-import { WORKSPACE } from '@/lib/constants'
+import {
+  editBindingsFromForm,
+  firstMissingRequiredInput,
+  firstOAuthMethodInput,
+  formValue,
+  installBindingsFromForm,
+  splitInstallBindings,
+  type InstallInput,
+} from '@/lib/source-install-form'
 import { originLabel } from '@/lib/sources'
 import { errorMessage } from '@/lib/utils'
+import { workspaceFromParams } from '@/lib/workspace-routing'
+import { routePath } from '@/routing/routemap'
 
-export type SourceActionIntent = 'delete' | 'edit' | 'install'
+export {
+  editBindingsFromForm,
+  firstMissingRequiredInput,
+  firstOAuthMethodInput,
+  installBindingsFromForm,
+  oauthCredentialRetrievalsFromForm,
+  type InstallInput,
+} from '@/lib/source-install-form'
+
+export type SourceActionIntent = 'delete' | 'edit' | 'import' | 'install'
 
 export type SourcesActionData =
   | {
@@ -24,19 +42,35 @@ export type SourcesActionData =
       name: string
       status: 'error'
     }
+  | {
+      intent: SourceActionIntent
+      name: string
+      status: 'success'
+    }
   | undefined
 
-interface InstallInput {
-  key: string
-  value: string
-  secret: boolean
+interface SourcesActionArgs {
+  params: { workspaceId?: string }
+  request: Request
 }
 
 export async function action({
+  params,
   request,
-}: {
-  request: Request
-}): Promise<SourcesActionData | Response> {
+}: SourcesActionArgs): Promise<SourcesActionData | Response> {
+  const workspace = workspaceFromParams(params)
+  const result = await runSourcesAction(request, workspace)
+  return result.status === 'success'
+    ? redirect(routePath('workspaceSources', { workspaceId: workspace.name }))
+    : result
+}
+
+type SourceActionResult = Exclude<SourcesActionData, undefined>
+
+export async function runSourcesAction(
+  request: Request,
+  workspace: Workspace,
+): Promise<SourceActionResult> {
   const formData = await request.formData()
   const intent = formValue(formData, '_intent')
   const name = formValue(formData, 'name')
@@ -45,7 +79,7 @@ export async function action({
   const sourceClient = sourceClientForRequest(request)
   try {
     if (intent === 'install') {
-      const info = await getSourceInfo(sourceClient, name)
+      const info = await getSourceInfo(sourceClient, workspace, name)
       if (info.installed && originLabel(info.origin) !== 'bundled') {
         return actionError('install', name, "Imported sources can't be installed here yet")
       }
@@ -54,132 +88,60 @@ export async function action({
       }
       const missing = firstMissingRequiredInput(info, formData)
       if (missing) return actionError('install', name, `${missing} is required`)
-      await createBundledSource(sourceClient, name, installBindingsFromForm(info, formData))
-      return redirect('/sources')
+      await createBundledSource(
+        sourceClient,
+        workspace,
+        name,
+        installBindingsFromForm(info, formData),
+      )
+      return actionSuccess('install', name)
     }
     if (intent === 'edit') {
-      const source = await getInstalledSource(sourceClient, name)
+      const source = await getInstalledSource(sourceClient, workspace, name)
       if (originLabel(source.origin) !== 'bundled') {
         return actionError('edit', name, "Imported sources can't be edited here yet")
       }
-      const info = await getSourceInfo(sourceClient, name).catch(() => null)
-      await createBundledSource(sourceClient, name, editBindingsFromForm(source, info, formData))
-      return redirect('/sources')
+      const info = await getSourceInfo(sourceClient, workspace, name).catch(() => null)
+      await createBundledSource(
+        sourceClient,
+        workspace,
+        name,
+        editBindingsFromForm(source, info, formData),
+      )
+      return actionSuccess('edit', name)
     }
     if (intent === 'delete') {
-      await sourceClient.deleteSource(
-        create(DeleteSourceRequestSchema, { name, workspace: WORKSPACE }),
-      )
-      return redirect('/sources')
+      await sourceClient.deleteSource(create(DeleteSourceRequestSchema, { name, workspace }))
+      return actionSuccess('delete', name)
+    }
+    if (intent === 'import') {
+      const manifestYaml = formData.get('manifest_yaml')
+      if (typeof manifestYaml !== 'string' || manifestYaml.trim().length === 0) {
+        return actionError('import', name, 'Missing source manifest')
+      }
+      const secretKey = formValue(formData, 'secret_key')
+      const secretValue = formValue(formData, 'secret_value')
+      const secrets = secretKey && secretValue ? [{ key: secretKey, value: secretValue }] : []
+      await importSourceManifest(sourceClient, workspace, manifestYaml, secrets)
+      return actionSuccess('import', name)
     }
     return actionError('install', name, 'Unknown source action')
   } catch (error) {
     return actionError(
-      intent === 'edit' || intent === 'delete' ? intent : 'install',
+      intent === 'edit' || intent === 'delete' || intent === 'import' ? intent : 'install',
       name,
       errorMessage(error),
     )
   }
 }
 
-export function installBindingsFromForm(info: SourceInfo, formData: FormData): InstallInput[] {
-  const bindings: InstallInput[] = []
-  for (const input of info.inputs) {
-    if (input.input.case === 'variable') {
-      const value = formValue(formData, `var:${input.key}`, input.input.value.defaultValue)
-      if (value.length > 0) bindings.push({ key: input.key, secret: false, value })
-      continue
-    }
-    if (input.input.case !== 'secret') continue
-    const methodIndex = Number(formValue(formData, `method:${input.key}`, '0'))
-    const method = input.input.value.credential?.methods[methodIndex]
-    if (method?.method.case === 'oauth') continue
-    const value = formValue(formData, `sec:${input.key}`)
-    if (value.length > 0) bindings.push({ key: input.key, secret: true, value })
-  }
-  return bindings
-}
-
-export function editBindingsFromForm(
-  source: Source,
-  info: SourceInfo | null,
-  formData: FormData,
-): InstallInput[] {
-  if (!info) return bindingsFromInstalledSource(source, formData)
-  const bindings: InstallInput[] = []
-  const variables = new Map(source.variables.map((variable) => [variable.key, variable.value]))
-  for (const input of info.inputs) {
-    if (input.input.case === 'variable') {
-      const existingValue = variables.get(input.key) ?? input.input.value.defaultValue
-      const value = formValue(formData, `var:${input.key}`, existingValue)
-      if (value.length > 0) bindings.push({ key: input.key, secret: false, value })
-      continue
-    }
-    if (input.input.case !== 'secret') continue
-    const method = submittedCredentialMethod(input, formData)
-    if (method?.method.case === 'oauth') continue
-    const value = formValue(formData, `sec:${input.key}`)
-    if (value.length > 0) bindings.push({ key: input.key, secret: true, value })
-  }
-  return bindings
-}
-
-export function firstMissingRequiredInput(info: SourceInfo, formData: FormData): string | null {
-  for (const input of info.inputs) {
-    if (!input.required) continue
-    if (input.input.case === 'variable') {
-      const value = formValue(formData, `var:${input.key}`, input.input.value.defaultValue)
-      if (value.length === 0) return input.key
-      continue
-    }
-    if (input.input.case !== 'secret') continue
-    const methodIndex = Number(formValue(formData, `method:${input.key}`, '0'))
-    const method = input.input.value.credential?.methods[methodIndex]
-    if (!method || method.method.case === 'sourceConfig') {
-      if (formValue(formData, `sec:${input.key}`).length === 0) return input.key
-    }
-  }
-  return null
-}
-
-export function firstOAuthMethodInput(info: SourceInfo, formData: FormData): string | null {
-  for (const input of info.inputs) {
-    if (input.input.case !== 'secret') continue
-    const methodIndex = Number(formValue(formData, `method:${input.key}`, '0'))
-    const method = input.input.value.credential?.methods[methodIndex]
-    if (method?.method.case === 'oauth') return input.key
-  }
-  return null
-}
-
-function bindingsFromInstalledSource(source: Source, formData: FormData): InstallInput[] {
-  const bindings: InstallInput[] = source.variables.map((variable) => ({
-    key: variable.key,
-    secret: false,
-    value: formValue(formData, `var:${variable.key}`, variable.value),
-  }))
-  for (const secret of source.secrets) {
-    const value = formValue(formData, `sec:${secret.key}`)
-    if (value.length > 0) bindings.push({ key: secret.key, secret: true, value })
-  }
-  return bindings
-}
-
-function submittedCredentialMethod(input: SourceInputSpec, formData: FormData) {
-  if (input.input.case !== 'secret') return undefined
-  const submittedMethod = formData.get(`method:${input.key}`)
-  if (typeof submittedMethod !== 'string') return undefined
-  const methodIndex = Number(submittedMethod)
-  if (!Number.isInteger(methodIndex) || methodIndex < 0) return undefined
-  return input.input.value.credential?.methods[methodIndex]
-}
-
 async function getSourceInfo(
   sourceClient: ReturnType<typeof sourceClientForRequest>,
+  workspace: Workspace,
   name: string,
 ) {
   const response = await sourceClient.getSourceInfo(
-    create(GetSourceInfoRequestSchema, { name, workspace: WORKSPACE }),
+    create(GetSourceInfoRequestSchema, { name, workspace }),
   )
   if (!response.sourceInfo) throw new Error(`Source info for ${name} was not found`)
   return response.sourceInfo
@@ -187,42 +149,58 @@ async function getSourceInfo(
 
 async function getInstalledSource(
   sourceClient: ReturnType<typeof sourceClientForRequest>,
+  workspace: Workspace,
   name: string,
 ) {
-  const response = await sourceClient.getSource(
-    create(GetSourceRequestSchema, { name, workspace: WORKSPACE }),
-  )
+  const response = await sourceClient.getSource(create(GetSourceRequestSchema, { name, workspace }))
   if (!response.source) throw new Error(`Source ${name} was not found`)
   return response.source
 }
 
 async function createBundledSource(
   sourceClient: ReturnType<typeof sourceClientForRequest>,
+  workspace: Workspace,
   name: string,
   bindings: InstallInput[],
 ) {
+  const { secrets, variables } = splitInstallBindings(bindings)
   const response = await sourceClient.createBundledSource(
     create(CreateBundledSourceRequestSchema, {
       name,
-      workspace: WORKSPACE,
-      variables: bindings
-        .filter((binding) => !binding.secret)
-        .map((binding) => ({ key: binding.key, value: binding.value })),
-      secrets: bindings
-        .filter((binding) => binding.secret)
-        .map((binding) => ({ key: binding.key, value: binding.value })),
+      workspace,
+      variables,
+      secrets,
     }),
   )
   if (!response.source) throw new Error(`Coral did not return installed source ${name}`)
   return response.source
 }
 
-function actionError(intent: SourceActionIntent, name: string, message: string): SourcesActionData {
+async function importSourceManifest(
+  sourceClient: ReturnType<typeof sourceClientForRequest>,
+  workspace: Workspace,
+  manifestYaml: string,
+  secrets: { key: string; value: string }[],
+) {
+  const stream = sourceClient.importSource(
+    create(ImportSourceRequestSchema, { manifestYaml, secrets, workspace }),
+  )
+  // The import wizard has no OAuth inputs, so the stream only carries the
+  // terminal source event.
+  for await (const response of stream) {
+    if (response.event.case === 'source') return response.event.value
+  }
+  throw new Error('Coral did not return the imported source')
+}
+
+function actionError(
+  intent: SourceActionIntent,
+  name: string,
+  message: string,
+): SourceActionResult {
   return { intent, message, name, status: 'error' }
 }
 
-function formValue(formData: FormData, key: string, defaultValue = ''): string {
-  const value = formData.get(key)
-  if (typeof value !== 'string') return defaultValue.trim()
-  return value.trim()
+function actionSuccess(intent: SourceActionIntent, name: string): SourceActionResult {
+  return { intent, name, status: 'success' }
 }

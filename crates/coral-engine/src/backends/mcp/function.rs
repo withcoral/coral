@@ -1,4 +1,3 @@
-use std::any::Any;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
@@ -16,10 +15,13 @@ use serde_json::Value;
 use super::client::McpSourceClient;
 use super::error::McpProviderQueryError;
 use super::fetch::McpFetchPlan;
+use crate::SourceObservationSurfaceKind;
 use crate::backends::SourceFunctionProviderFactory;
 use crate::backends::schema_from_columns;
 use crate::backends::shared::json_exec::JsonExec;
 use crate::backends::shared::mapping::convert_items;
+use crate::backends::shared::scalar::timestamp_to_rfc3339;
+use crate::backends::shared::source_observation::SourceObservationPublishers;
 
 #[derive(Clone)]
 pub(super) struct McpSourceTableFunction {
@@ -38,6 +40,7 @@ struct McpFunctionState {
     offset_pagination: Option<McpOffsetPaginationSpec>,
     columns: Arc<[coral_spec::ColumnSpec]>,
     fetch_limit_default: Option<usize>,
+    source_observation_publishers: SourceObservationPublishers,
 }
 
 impl std::fmt::Debug for McpSourceTableFunction {
@@ -65,6 +68,7 @@ impl McpSourceTableFunction {
         backend: McpSourceClient,
         source_schema: String,
         function: McpTableFunctionSpec,
+        source_observation_publishers: SourceObservationPublishers,
     ) -> Result<Self> {
         let schema = schema_from_columns(function.columns(), &source_schema, function.name())?;
         let function_name = function.name().to_string();
@@ -87,6 +91,7 @@ impl McpSourceTableFunction {
                 offset_pagination,
                 columns: Arc::from(columns),
                 fetch_limit_default,
+                source_observation_publishers,
             }),
         })
     }
@@ -123,10 +128,6 @@ impl std::fmt::Debug for McpFunctionCallTableProvider {
 
 #[async_trait]
 impl TableProvider for McpFunctionCallTableProvider {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn schema(&self) -> SchemaRef {
         self.state.schema.clone()
     }
@@ -187,7 +188,11 @@ impl TableProvider for McpFunctionCallTableProvider {
             fetcher,
             converter,
             projection.cloned(),
-        )?;
+        )?
+        .with_source_observation(
+            SourceObservationSurfaceKind::Function,
+            Arc::clone(&self.state.source_observation_publishers),
+        );
         Ok(Arc::new(exec))
     }
 }
@@ -325,7 +330,7 @@ fn scalar_value_to_json(value: &ScalarValue) -> Option<Value> {
         ScalarValue::Float64(Some(value)) => {
             serde_json::Number::from_f64(*value).map(Value::Number)
         }
-        _ => None,
+        value => timestamp_to_rfc3339(value).map(Value::String),
     }
 }
 
@@ -355,5 +360,21 @@ fn value_for_allowed_value_check(value: &Value) -> String {
     match value {
         Value::String(value) => value.clone(),
         other => other.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn timestamp_scalar_serializes_as_json_string() {
+        let timestamp =
+            ScalarValue::TimestampMicrosecond(Some(1_704_067_200_000_000), Some("+00:00".into()));
+
+        assert_eq!(
+            scalar_value_to_json(&timestamp),
+            Some(Value::String("2024-01-01T00:00:00Z".to_string()))
+        );
     }
 }

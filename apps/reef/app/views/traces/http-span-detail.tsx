@@ -4,9 +4,8 @@ import classNames from 'classnames'
 import { Button, ScrollArea } from '@/wax/components'
 import { KeyboardShortcut } from '@/wax/components/keyboard-shortcut'
 import { Typography } from '@/wax/components/typography'
-import type { TraceSpan } from '@/generated/coral/v1/traces_pb'
 
-import * as s from '../traces-page.css'
+import * as s from './traces.css'
 import {
   formatDuration,
   formatDurationFromNanos,
@@ -16,6 +15,7 @@ import {
   spanRequestOperation,
   spanUrl,
 } from './trace-utils'
+import type { TraceSpanData } from './trace-utils'
 
 type JsonValue = Record<string, unknown> | unknown[] | string | number | boolean | null
 type BodyKind = 'request' | 'response'
@@ -342,7 +342,7 @@ function attrText(value: unknown): string | undefined {
 }
 
 function bodySpanAttributes(
-  bodySpans: TraceSpan[],
+  bodySpans: TraceSpanData[],
   parentSpanId: string,
   kind: BodyKind,
 ): Record<string, unknown> | undefined {
@@ -420,11 +420,11 @@ export function HttpSpanDetail({
 }: {
   canSelectNextSpan: boolean
   canSelectPreviousSpan: boolean
-  bodySpans?: TraceSpan[]
+  bodySpans?: TraceSpanData[]
   onClose: () => void
   onSelectNextSpan: () => void
   onSelectPreviousSpan: () => void
-  span: TraceSpan
+  span: TraceSpanData
   traceStart: bigint
 }) {
   const [activeTab, setActiveTab] = useState<HttpDetailTab>(TAB_IDS[0])

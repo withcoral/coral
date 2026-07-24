@@ -1,24 +1,25 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import classNames from 'classnames'
+import { useLocation, useNavigate, useOutletContext } from 'react-router'
 
 import { Button, ScrollArea } from '@/wax/components'
 import { Icon } from '@/wax/components/icon'
 import { KeyboardShortcut } from '@/wax/components/keyboard-shortcut'
 import { Typography } from '@/wax/components/typography'
 import { EmptyPage } from '@/components/empty-page'
-import { getTrace } from '@/lib/coral-traces-client'
-import { TraceStatus, type GetTraceResponse, type TraceSpan } from '@/generated/coral/v1/traces_pb'
+import { QueryDetailSummary } from '@/components/query-detail'
+import { TraceStatus } from '@/generated/coral/v1/traces_pb'
 
-import * as s from '../traces-page.css'
+import * as s from './traces.css'
 import { HttpSpanDetail } from './http-span-detail'
-import { PageHeader } from './page-header'
-import { SqlCode } from './sql-code'
+import { traceLocation } from './trace-location'
+import type { TracesOutletContext } from './traces-index'
+import { routePath } from '@/routing/routemap'
 import { useTimelineTree, type TimelineRow } from './use-timeline-tree'
 import {
   formatDuration,
   formatDurationFromNanos,
   formatRows,
-  formatTraceError,
   isHttpSpan,
   nanosToMs,
   spanDisplayLabel,
@@ -26,6 +27,9 @@ import {
   sourceNames,
   statusLabel,
   statusTone,
+  type TraceDetailData,
+  type TraceSpanData,
+  type TraceSummaryData,
 } from './trace-utils'
 
 export type DetailTab = 'timeline' | 'api'
@@ -60,65 +64,8 @@ export interface ExtraDetailTab {
   show?: boolean
 }
 
-function useTraceDetail(traceId: string | null) {
-  const [detail, setDetail] = useState<GetTraceResponse | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    if (!traceId) {
-      setDetail(null)
-      setError(null)
-      return
-    }
-    let stale = false
-    setLoading(true)
-    setError(null)
-    getTrace(traceId)
-      .then((response) => {
-        if (stale) return
-        setDetail(response)
-      })
-      .catch((err) => {
-        if (stale) return
-        setDetail(null)
-        setError(formatTraceError(err instanceof Error ? err.message : String(err)))
-      })
-      .finally(() => {
-        if (!stale) setLoading(false)
-      })
-    return () => {
-      stale = true
-    }
-  }, [traceId])
-
-  return { detail, error, loading }
-}
-
 function useProMode() {
-  const [proMode, setProMode] = useState(false)
-
-  useEffect(() => {
-    const readProMode = () => setProMode(new URLSearchParams(window.location.search).has('pro'))
-    readProMode()
-    window.addEventListener('popstate', readProMode)
-    window.addEventListener('hashchange', readProMode)
-    return () => {
-      window.removeEventListener('popstate', readProMode)
-      window.removeEventListener('hashchange', readProMode)
-    }
-  }, [])
-
-  return proMode
-}
-
-function StatCard({ label, value }: { label: string; value: React.ReactNode }) {
-  return (
-    <div className={s.statCard}>
-      <Typography.Body variant="tertiary">{label}</Typography.Body>
-      <Typography.BodyLargeStrong>{value}</Typography.BodyLargeStrong>
-    </div>
-  )
+  return new URLSearchParams(useLocation().search).has('pro')
 }
 
 function WaterfallBar({
@@ -163,7 +110,7 @@ function WaterfallBar({
   )
 }
 
-function spanTiming(span: TraceSpan, traceStart: bigint, durationMs: number) {
+function spanTiming(span: TraceSpanData, traceStart: bigint, durationMs: number) {
   const offsetMs = Number((BigInt(span.startTimeUnixNanos || 0) - traceStart) / 1_000_000n)
   return {
     left: (Math.max(0, offsetMs) / durationMs) * 100,
@@ -177,7 +124,7 @@ function SpanTimingBar({
   traceStart,
 }: {
   durationMs: number
-  span: TraceSpan
+  span: TraceSpanData
   traceStart: bigint
 }) {
   const timing = spanTiming(span, traceStart, durationMs)
@@ -220,7 +167,7 @@ function WaterfallTickRow({ durationMs }: { durationMs: number }) {
   )
 }
 
-function spanTone(span: TraceSpan): WaterfallTone {
+function spanTone(span: TraceSpanData): WaterfallTone {
   if (span.status === TraceStatus.ERROR) return 'error'
   if (isHttpSpan(span)) return 'http'
   if (span.name === 'coral.query') return 'query'
@@ -418,8 +365,8 @@ function TimelineWaterfall({
     spanId: string | null | ((current: string | null) => string | null),
   ) => void
   onNavigableSpanIdsChange: (spanIds: string[]) => void
-  spans: TraceSpan[]
-  summary?: GetTraceResponse['summary']
+  spans: TraceSpanData[]
+  summary?: TraceSummaryData
 }) {
   const proMode = useProMode()
   const timelineSpans = useMemo(
@@ -704,28 +651,34 @@ function DetailTabs({
   )
 }
 
-export function TraceDetail({
+function TraceDetailContent({
+  detail,
   extraTabs,
   initialSummary,
+  loadError,
   newerTraceId,
   olderTraceId,
   onClose,
   onSelectTrace,
   traceId,
 }: {
-  extraTabs?: (detail: GetTraceResponse) => ExtraDetailTab[]
-  initialSummary?: GetTraceResponse['summary']
+  detail: TraceDetailData | null
+  extraTabs?: (detail: TraceDetailData) => ExtraDetailTab[]
+  initialSummary?: TraceSummaryData
+  loadError: string | null
   newerTraceId?: string | null
   olderTraceId?: string | null
   onClose: () => void
   onSelectTrace?: (traceId: string) => void
   traceId: string
 }) {
-  const { detail, error, loading } = useTraceDetail(traceId)
   const [activeTab, setActiveTab] = useState<string>('timeline')
   const [expandedHttpSpanId, setExpandedHttpSpanId] = useState<string | null>(null)
   const [navigableSpanIds, setNavigableSpanIds] = useState<string[]>([])
-  useEffect(() => setActiveTab('timeline'), [traceId])
+  useEffect(() => {
+    setActiveTab('timeline')
+    setExpandedHttpSpanId(null)
+  }, [traceId])
 
   const selectAdjacentSpan = useCallback(
     (direction: -1 | 1) => {
@@ -808,10 +761,6 @@ export function TraceDetail({
     () => handleSpanArrowShortcut(1),
     [handleSpanArrowShortcut],
   )
-  // `detail` here can briefly be the previous trace's response when navigating to a neighbor
-  // (the new fetch is in flight and we don't blank it out). For a frame or two the header/spans
-  // shown are stale. Local fetches resolve in tens of ms, so we accept the flash in exchange for
-  // avoiding a loading spinner on every navigation.
   const summary = detail?.summary ?? initialSummary
   const httpSpans = useMemo(() => detail?.spans.filter(isHttpSpan) ?? [], [detail?.spans])
   const sources = useMemo(() => sourceNames(detail?.spans ?? []), [detail?.spans])
@@ -820,27 +769,28 @@ export function TraceDetail({
     [detail, extraTabs],
   )
 
-  if (loading && !detail && !summary)
+  if (loadError)
     return (
       <div className={s.detailEmpty}>
-        <Icon name="Loader" className={s.spinner} color="tertiary" />
-        <Typography.Body>Loading trace…</Typography.Body>
-      </div>
-    )
-  if (error)
-    return (
-      <div className={s.detailEmpty}>
-        <EmptyPage description={error} iconName="CircleAlert" title="Tracing unavailable" />
+        <KeyboardShortcut handler={handleEscapeShortcut} shortcut="Escape" />
+        <EmptyPage description={loadError} iconName="CircleAlert" title="Tracing unavailable" />
+        <Button.TextButton onClick={onClose} variant="secondary">
+          Back to query stream
+        </Button.TextButton>
       </div>
     )
   if (!summary) {
     return (
       <div className={s.detailEmpty}>
+        <KeyboardShortcut handler={handleEscapeShortcut} shortcut="Escape" />
         <EmptyPage
           title="No spans for this trace"
           description="This trace did not include a query summary or spans to display."
           iconName="Activity"
         />
+        <Button.TextButton onClick={onClose} variant="secondary">
+          Back to query stream
+        </Button.TextButton>
       </div>
     )
   }
@@ -848,30 +798,9 @@ export function TraceDetail({
   const activeExtraTab = resolvedExtraTabs.find((tab) => tab.id === activeTab)
 
   return (
-    <div className={s.detailRoot}>
-      <KeyboardShortcut handler={handlePreviousSpanShortcut} shortcut="ArrowUp" />
-      <KeyboardShortcut handler={handleNextSpanShortcut} shortcut="ArrowDown" />
-      <PageHeader
-        title={
-          <>
-            <Button.TextButton onClick={onClose} size="22" variant="linkSubtle">
-              <Typography.BodyStrong as="span" variant="tertiary">
-                Query stream
-              </Typography.BodyStrong>
-            </Button.TextButton>
-            <Typography.BodyStrong as="span" variant="tertiary">
-              /
-            </Typography.BodyStrong>
-            <Typography.BodyStrong as="span" variant="secondary">
-              Query details
-            </Typography.BodyStrong>
-          </>
-        }
-      >
-        <div className={s.detailHeaderActions}>
-          <span className={s.statusBadge} data-tone={statusTone(summary.status)}>
-            {statusLabel(summary.status)}
-          </span>
+    <QueryDetailSummary
+      actions={
+        <>
           <KeyboardShortcut
             handler={handleNewerTraceShortcut}
             shortcut="$mod+ArrowUp"
@@ -916,41 +845,99 @@ export function TraceDetail({
               variant="bare"
             />
           </KeyboardShortcut>
-        </div>
-      </PageHeader>
-      <div className={s.scrollBody}>
-        <div className={s.content}>
-          <div className={s.sqlBlock}>
-            <pre>
-              <SqlCode sql={summary.query || 'No SQL recorded for this trace.'} />
-            </pre>
-          </div>
-          <div className={s.statGrid}>
-            <StatCard label="Duration" value={formatDurationFromNanos(summary.durationNanos)} />
-            <StatCard label="Rows" value={formatRows(summary)} />
-            <StatCard label="Table scans" value={detail ? sources.length : '—'} />
-            <StatCard label="API requests" value={detail ? httpSpans.length : '—'} />
-          </div>
-          <DetailTabs activeTab={activeTab} extraTabs={resolvedExtraTabs} onTab={setActiveTab} />
-          <div className={s.tabContent}>
-            {activeTab === 'timeline' &&
-              (detail ? (
-                <TimelineWaterfall
-                  expandedHttpSpanId={expandedHttpSpanId}
-                  onExpandedHttpSpanIdChange={setExpandedHttpSpanId}
-                  onNavigableSpanIdsChange={setNavigableSpanIds}
-                  spans={detail.spans}
-                  summary={summary}
-                />
-              ) : (
-                <div className={s.detailEmpty}>
-                  <Icon name="Loader" className={s.spinner} color="tertiary" />
-                </div>
-              ))}
-            {activeExtraTab?.content}
-          </div>
-        </div>
+        </>
+      }
+      shortcuts={
+        <>
+          <KeyboardShortcut handler={handlePreviousSpanShortcut} shortcut="ArrowUp" />
+          <KeyboardShortcut handler={handleNextSpanShortcut} shortcut="ArrowDown" />
+        </>
+      }
+      sql={summary.query || 'No SQL recorded for this trace.'}
+      stats={[
+        { label: 'Duration', value: formatDurationFromNanos(summary.durationNanos) },
+        { label: 'Rows', value: formatRows(summary) },
+        { label: 'Table scans', value: detail ? sources.length : '—' },
+        { label: 'API requests', value: detail ? httpSpans.length : '—' },
+      ]}
+      statusLabel={statusLabel(summary.status)}
+      statusTone={statusTone(summary.status)}
+      title={
+        <>
+          <Button.TextButton onClick={onClose} size="22" variant="linkSubtle">
+            <Typography.BodyStrong as="span" variant="tertiary">
+              Query stream
+            </Typography.BodyStrong>
+          </Button.TextButton>
+          <Typography.BodyStrong as="span" variant="tertiary">
+            /
+          </Typography.BodyStrong>
+          <Typography.BodyStrong as="span" variant="secondary">
+            Query details
+          </Typography.BodyStrong>
+        </>
+      }
+    >
+      <DetailTabs activeTab={activeTab} extraTabs={resolvedExtraTabs} onTab={setActiveTab} />
+      <div className={s.tabContent}>
+        {activeTab === 'timeline' &&
+          (detail ? (
+            <TimelineWaterfall
+              expandedHttpSpanId={expandedHttpSpanId}
+              onExpandedHttpSpanIdChange={setExpandedHttpSpanId}
+              onNavigableSpanIdsChange={setNavigableSpanIds}
+              spans={detail.spans}
+              summary={summary}
+            />
+          ) : null)}
+        {activeExtraTab?.content}
       </div>
+    </QueryDetailSummary>
+  )
+}
+
+export function TraceDetail({
+  detail,
+  extraTabs,
+  loadError,
+  traceId,
+}: {
+  detail: TraceDetailData | null
+  extraTabs?: (detail: TraceDetailData) => ExtraDetailTab[]
+  loadError: string | null
+  traceId: string
+}) {
+  const { traces, workspaceId } = useOutletContext<TracesOutletContext>()
+  const location = useLocation()
+  const navigate = useNavigate()
+  const selectedIndex = traces.findIndex((trace) => trace.traceId === traceId)
+  const newerTraceId = selectedIndex > 0 ? traces[selectedIndex - 1].traceId : null
+  const olderTraceId =
+    selectedIndex >= 0 && selectedIndex < traces.length - 1
+      ? traces[selectedIndex + 1].traceId
+      : null
+  const initialSummary = selectedIndex >= 0 ? traces[selectedIndex] : detail?.summary
+
+  return (
+    <div className={s.detailOverlay}>
+      <TraceDetailContent
+        detail={detail}
+        extraTabs={extraTabs}
+        initialSummary={initialSummary}
+        loadError={loadError}
+        newerTraceId={newerTraceId}
+        olderTraceId={olderTraceId}
+        onClose={() =>
+          navigate({
+            pathname: routePath('workspaceTraces', { workspaceId }),
+            search: location.search,
+          })
+        }
+        onSelectTrace={(nextTraceId) =>
+          navigate(traceLocation(workspaceId, nextTraceId, location.search))
+        }
+        traceId={traceId}
+      />
     </div>
   )
 }

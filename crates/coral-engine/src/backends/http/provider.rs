@@ -1,6 +1,5 @@
 //! `DataFusion` table provider for manifest-driven HTTP-backed tables.
 
-use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -14,6 +13,7 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::empty::EmptyExec;
 use serde_json::Value;
 
+use crate::SourceObservationSurfaceKind;
 use crate::backends::http::HttpSourceClient;
 use crate::backends::http::ProviderQueryError;
 use crate::backends::http::target::HttpFetchTarget;
@@ -24,6 +24,7 @@ use crate::backends::shared::filter_expr::{
 };
 use crate::backends::shared::json_exec::{JsonExec, RowFetcher};
 use crate::backends::shared::mapping::{convert_items, filter_items_by_column_values};
+use crate::backends::shared::source_observation::SourceObservationPublishers;
 use coral_spec::backends::http::HttpTableSpec;
 
 /// Table provider that exposes one manifest-defined HTTP table to `DataFusion`.
@@ -33,6 +34,7 @@ pub(crate) struct HttpSourceTableProvider {
     table: Arc<HttpTableSpec>,
     target: HttpFetchTarget,
     schema: SchemaRef,
+    source_observation_publishers: SourceObservationPublishers,
 }
 
 impl std::fmt::Debug for HttpSourceTableProvider {
@@ -55,6 +57,7 @@ impl HttpSourceTableProvider {
         backend: HttpSourceClient,
         source_schema: String,
         table: HttpTableSpec,
+        source_observation_publishers: SourceObservationPublishers,
     ) -> Result<Self> {
         let schema = schema_from_columns(table.columns(), &source_schema, table.name())?;
         let target = HttpFetchTarget::from_resolved_table_request(&table, table.request.clone());
@@ -64,6 +67,7 @@ impl HttpSourceTableProvider {
             table: Arc::new(table),
             target,
             schema,
+            source_observation_publishers,
         })
     }
 
@@ -77,6 +81,10 @@ impl HttpSourceTableProvider {
 
     pub(crate) fn table_spec(&self) -> &Arc<HttpTableSpec> {
         &self.table
+    }
+
+    pub(crate) fn source_observation_publishers(&self) -> &SourceObservationPublishers {
+        &self.source_observation_publishers
     }
 }
 
@@ -102,6 +110,8 @@ pub(crate) struct HttpJsonExecRequest<'a> {
     pub(crate) arg_values: HashMap<String, String>,
     pub(crate) projection: Option<&'a Vec<usize>>,
     pub(crate) limit: Option<usize>,
+    pub(crate) surface_kind: SourceObservationSurfaceKind,
+    pub(crate) source_observation_publishers: SourceObservationPublishers,
 }
 
 #[async_trait]
@@ -131,6 +141,18 @@ impl RowFetcher for HttpFetchPlan {
     }
 }
 
+fn merge_filter_values(
+    mut values: HashMap<String, String>,
+    extra_values: &HashMap<String, String>,
+) -> HashMap<String, String> {
+    values.extend(
+        extra_values
+            .iter()
+            .map(|(filter, value)| (filter.clone(), value.clone())),
+    );
+    values
+}
+
 pub(crate) fn http_json_exec(request: HttpJsonExecRequest<'_>) -> Result<Arc<dyn ExecutionPlan>> {
     let HttpJsonExecRequest {
         backend,
@@ -144,14 +166,16 @@ pub(crate) fn http_json_exec(request: HttpJsonExecRequest<'_>) -> Result<Arc<dyn
         arg_values,
         projection,
         limit,
+        surface_kind,
+        source_observation_publishers,
     } = request;
     let target = Arc::new(target);
-    let mut conversion_filter_values = request_filter_values.clone();
-    conversion_filter_values.extend(
-        local_filter_values
-            .iter()
-            .map(|(filter, value)| (filter.clone(), value.clone())),
-    );
+    let conversion_filter_values =
+        merge_filter_values(request_filter_values.clone(), &local_filter_values);
+    let observation_filter_values = Arc::new(merge_filter_values(
+        request_filter_values.clone(),
+        &local_filter_values,
+    ));
     let request_filter_values = Arc::new(request_filter_values);
     let local_filter_values = Arc::new(local_filter_values);
     let active_filter_values = Arc::new(active_filter_values);
@@ -203,6 +227,15 @@ pub(crate) fn http_json_exec(request: HttpJsonExecRequest<'_>) -> Result<Arc<dyn
             )
         })
     };
+    let observation_converter = {
+        let target = target.clone();
+        let schema = schema.clone();
+        let filters = Arc::clone(&observation_filter_values);
+        let args = Arc::clone(&arg_values);
+        Arc::new(move |items: &[Value]| {
+            convert_items(target.columns(), schema.clone(), &filters, &args, items)
+        })
+    };
 
     let exec = JsonExec::new(
         source_schema,
@@ -211,17 +244,18 @@ pub(crate) fn http_json_exec(request: HttpJsonExecRequest<'_>) -> Result<Arc<dyn
         fetcher,
         converter,
         projection.cloned(),
-    )?;
+    )?
+    .with_source_observation_converter(
+        surface_kind,
+        source_observation_publishers,
+        observation_converter,
+    );
 
     Ok(Arc::new(exec))
 }
 
 #[async_trait]
 impl TableProvider for HttpSourceTableProvider {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
     }
@@ -315,6 +349,8 @@ impl TableProvider for HttpSourceTableProvider {
             arg_values: HashMap::new(),
             projection,
             limit,
+            surface_kind: SourceObservationSurfaceKind::Table,
+            source_observation_publishers: Arc::clone(&self.source_observation_publishers),
         })
     }
 }

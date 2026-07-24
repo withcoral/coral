@@ -9,9 +9,9 @@ import {
   type Source,
   type SourceInfo,
 } from '@/generated/coral/v1/sources_pb'
+import type { Workspace } from '@/generated/coral/v1/resources_pb'
 import { SourceDetailView } from '@/views/sources/source-detail'
 import { sourceClientForRequest } from '@/lib/coral-request.server'
-import { WORKSPACE } from '@/lib/constants'
 import {
   originLabel,
   toCatalogSource,
@@ -19,6 +19,8 @@ import {
   type CatalogEntry,
 } from '@/lib/sources'
 import { errorMessage } from '@/lib/utils'
+import { workspaceFromParams } from '@/lib/workspace-routing'
+import { routePath } from '@/routing/routemap'
 
 interface SourceDetailRouteData {
   entry: CatalogEntry
@@ -30,6 +32,7 @@ export async function loader({
   request,
 }: Route.LoaderArgs): Promise<SourceDetailRouteData> {
   const name = params.sourceName
+  const workspace = workspaceFromParams(params)
   if (!name) {
     return {
       entry: sourceDetailEntry('', null, null),
@@ -39,8 +42,8 @@ export async function loader({
 
   const sourceClient = sourceClientForRequest(request)
   const [sourceResult, infoResult] = await Promise.allSettled([
-    getInstalledSource(sourceClient, name),
-    getSourceInfo(sourceClient, name),
+    getInstalledSource(sourceClient, workspace, name),
+    getSourceInfo(sourceClient, workspace, name),
   ])
   const info = infoResult.status === 'fulfilled' ? infoResult.value : null
 
@@ -60,16 +63,28 @@ export async function action(args: Route.ActionArgs): Promise<SourcesActionData 
   return sourcesAction(args)
 }
 
-export default function SourceDetailRoute({ actionData, loaderData }: Route.ComponentProps) {
-  return <SourceDetailView actionData={actionData} loaderData={loaderData} />
+export default function SourceDetailRoute({
+  actionData,
+  loaderData,
+  params,
+}: Route.ComponentProps) {
+  return (
+    <SourceDetailView
+      actionData={actionData}
+      loaderData={loaderData}
+      sourcesPath={routePath('workspaceSources', { workspaceId: params.workspaceId })}
+      workspaceId={params.workspaceId}
+    />
+  )
 }
 
 async function getSourceInfo(
   sourceClient: ReturnType<typeof sourceClientForRequest>,
+  workspace: Workspace,
   name: string,
 ): Promise<SourceInfo> {
   const response = await sourceClient.getSourceInfo(
-    create(GetSourceInfoRequestSchema, { name, workspace: WORKSPACE }),
+    create(GetSourceInfoRequestSchema, { name, workspace }),
   )
   if (!response.sourceInfo) throw new Error(`Source info for ${name} was not found`)
   return response.sourceInfo
@@ -77,11 +92,10 @@ async function getSourceInfo(
 
 async function getInstalledSource(
   sourceClient: ReturnType<typeof sourceClientForRequest>,
+  workspace: Workspace,
   name: string,
 ): Promise<Source> {
-  const response = await sourceClient.getSource(
-    create(GetSourceRequestSchema, { name, workspace: WORKSPACE }),
-  )
+  const response = await sourceClient.getSource(create(GetSourceRequestSchema, { name, workspace }))
   if (!response.source) throw new Error(`Source ${name} was not found`)
   return response.source
 }

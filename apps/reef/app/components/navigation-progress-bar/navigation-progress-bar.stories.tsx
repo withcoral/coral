@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
-import { useEffect, useMemo } from 'react'
-import { createMemoryRouter, RouterProvider, useNavigate } from 'react-router'
+import { useEffect } from 'react'
+import { createRoutesStub, useNavigate } from 'react-router'
 
 import { Typography } from '@/wax/components/typography'
 import { theme } from '@/wax/theme/theme.css'
@@ -52,27 +52,20 @@ function DemoRoute() {
   )
 }
 
-function NavigationProgressBarStory() {
-  const router = useMemo(
-    () =>
-      createMemoryRouter(
-        [
-          {
-            element: <DemoRoute />,
-            path: '/',
-          },
-          {
-            element: <DemoRoute />,
-            loader: createPendingLoader,
-            path: PENDING_ROUTE,
-          },
-        ],
-        { initialEntries: ['/'] },
-      ),
-    [],
-  )
+const NavigationProgressBarRoutesStub = createRoutesStub([
+  {
+    Component: DemoRoute,
+    path: '/',
+  },
+  {
+    Component: DemoRoute,
+    loader: createPendingLoader,
+    path: PENDING_ROUTE,
+  },
+])
 
-  return <RouterProvider router={router} />
+function NavigationProgressBarStory() {
+  return <NavigationProgressBarRoutesStub initialEntries={['/']} />
 }
 
 const meta = {

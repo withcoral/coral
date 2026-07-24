@@ -21,8 +21,12 @@ use crate::{ManifestError, ParsedTemplate, Result};
 
 const RESERVED_SOURCE_SCHEMA_NAMES: &[&str] = &["coral", "coral_admin", "public"];
 
+/// Arrow field metadata key marking a source-authored column as excluded from
+/// observed-value indexing.
+pub const DO_NOT_INDEX_COLUMN_METADATA_KEY: &str = "coral.do_not_index";
+
 /// Common top-level source metadata shared by every backend source spec.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct SourceManifestCommon {
     pub dsl_version: u32,
     pub name: String,
@@ -184,7 +188,7 @@ pub struct HeaderSpec {
 }
 
 /// Shared table metadata used by all backend-specific table specs.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct TableCommon {
     pub name: String,
     pub description: String,
@@ -364,7 +368,7 @@ pub struct DetailHintSpec {
 }
 
 /// Declarative source-scoped table-valued function.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SourceTableFunctionSpec {
     pub name: String,
     #[serde(default)]
@@ -390,7 +394,7 @@ pub struct SourceTableFunctionSpec {
 }
 
 /// One argument accepted by a source-scoped table-valued function.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TableFunctionArgSpec {
     pub name: String,
     #[serde(rename = "type", default = "default_table_function_arg_data_type")]
@@ -407,7 +411,7 @@ fn default_table_function_arg_data_type() -> ManifestDataType {
 }
 
 /// How a table function argument contributes to the provider request.
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct FunctionArgBinding {
     pub arg: String,
 }
@@ -989,6 +993,9 @@ pub struct ColumnSpec {
     pub description: String,
     #[serde(default)]
     pub expr: Option<ExprSpec>,
+    /// Excludes this column from observed-value indexing when true.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub do_not_index: bool,
 }
 
 impl ColumnSpec {

@@ -240,12 +240,7 @@ async fn parquet_provider_reads_local_files_with_partitions() {
         .await
         .expect("table lookup should succeed")
         .expect("table should exist");
-    assert!(
-        provider
-            .as_any()
-            .downcast_ref::<FileTableProvider>()
-            .is_some()
-    );
+    assert!(provider.downcast_ref::<FileTableProvider>().is_some());
 
     let batches = ctx
         .sql("SELECT metric, value, date FROM otel.metrics ORDER BY metric")
@@ -275,7 +270,7 @@ async fn parquet_provider_exposes_inferred_schema_in_coral_columns() {
 
     let active_sources = register_sources_blocking(&ctx, compile_sources(vec![manifest]))
         .expect("file source should register");
-    catalog::register(&ctx, &active_sources.active_sources)
+    catalog::register(&ctx, &active_sources.active_sources, &[])
         .expect("metadata tables should register");
 
     let batches = ctx
@@ -449,10 +444,7 @@ async fn file_provider_reads_jsonl_with_listing_table() {
         .expect("table lookup should succeed")
         .expect("table should exist");
     assert!(
-        provider
-            .as_any()
-            .downcast_ref::<FileTableProvider>()
-            .is_some(),
+        provider.downcast_ref::<FileTableProvider>().is_some(),
         "plain JSONL should use DataFusion's native listing-table provider"
     );
 

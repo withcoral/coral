@@ -1,8 +1,10 @@
 //! Concrete `DataFusion` runtime assembly for the data plane.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
+use arrow::datatypes::{DataType, Field, FieldRef};
+use coral_spec::ManifestDataType;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::common::{ScalarValue, TableReference};
 use datafusion::dataframe::DataFrame;
@@ -10,14 +12,15 @@ use datafusion::error::DataFusionError;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::logical_expr::{Expr, LogicalPlan};
-use datafusion::physical_plan::displayable;
+use datafusion::optimizer::Analyzer as DataFusionAnalyzer;
+use datafusion::physical_plan::{collect, displayable};
 use datafusion::prelude::{SQLOptions, SessionConfig, SessionContext};
 use datafusion_tracing::{InstrumentationOptions, RuleInstrumentationOptions};
 use tokio::sync::OnceCell;
 use tracing::{Instrument as _, info_span};
 
-use crate::backends::compile_query_source;
 use crate::backends::http::ProviderQueryError;
+use crate::backends::{RegisteredSource, compile_query_source};
 use crate::runtime::catalog;
 use crate::runtime::dependent_join::error::resolver_rows_exceeded;
 use crate::runtime::dependent_join::optimizer;
@@ -32,21 +35,33 @@ use crate::runtime::query_planner::CoralQueryPlanner;
 use crate::runtime::registry::{
     CompiledQuerySource, SourceRegistrationCandidate, SourceRegistrationFailure, register_sources,
 };
+use crate::runtime::scoped_table_functions::ScopedTableFunctionName;
 use crate::runtime::source_functions::{
     SOURCE_FUNCTION_NODE_NAME, SourceFunctionNode, SourceFunctionRegistry,
 };
+use crate::runtime::udf_calls::{
+    UDF_CALL_NODE_NAME, UdfCallAnalyzerRule, UdfCallNode, UdfCallRegistry,
+};
+use crate::runtime::udfs::published_table_functions;
 use crate::{
-    CatalogInfo, CoreError, DependentJoinConfig, DescribeTableInfo, MemorySize, QueryExecution,
-    QueryExecutionProvenance, QueryMemoryConfig, QueryParameterValue, QueryParameters, QueryPlan,
-    QueryResultObserver, QueryResultObserverError, QueryRuntimeConfig, QueryRuntimeContext,
-    QuerySource, QueryTableFunctionUsage, QueryTableUsage, RequestAuthenticator, SourceDecorator,
-    SourceInputResolver, TableFunctionInfo, TableInfo,
+    BoundRequestIdentityHttpAuthenticator, CatalogInfo, CoreError, DependentJoinConfig,
+    DescribeTableInfo, MemorySize, QueryExecution, QueryExecutionProvenance, QueryMemoryConfig,
+    QueryParameterValue, QueryParameters, QueryPlan, QueryResultObserver, QueryResultObserverError,
+    QueryRuntimeConfig, QueryRuntimeContext, QuerySource, QueryTableFunctionUsage, QueryTableUsage,
+    RequestAuthenticator, RequestIdentityHttpAuthenticatorError,
+    RequestIdentityHttpAuthenticatorFactory, RequestIdentitySelectionContext,
+    RequestIdentitySelectionError, RequestIdentitySelector, SelectedRequestIdentity,
+    SourceDecorator, SourceInputResolver, SourceObservationPublisher, TableFunctionInfo, TableInfo,
+    UdfRuntimeDefinition,
 };
 
 pub(crate) struct QueryRuntimeAdapter {
     ctx: Arc<SessionContext>,
     fallback_runtime: Option<FallbackRuntime>,
     memory: QueryMemoryConfig,
+    active_sources: Vec<RegisteredSource>,
+    source_function_names: HashSet<ScopedTableFunctionName>,
+    udfs_installed: bool,
     tables: Vec<TableInfo>,
     table_functions: Vec<TableFunctionInfo>,
     failures: Vec<SourceRegistrationFailure>,
@@ -54,9 +69,25 @@ pub(crate) struct QueryRuntimeAdapter {
     query_result_observers: Vec<Arc<dyn QueryResultObserver>>,
 }
 
+pub(crate) struct InferredSqlSignature {
+    pub(crate) parameter_fields: HashMap<String, Option<FieldRef>>,
+    pub(crate) declared_parameter_types: HashMap<String, ManifestDataType>,
+    pub(crate) planned_schema: Arc<arrow::datatypes::Schema>,
+}
+
+type BoundRequestIdentityHttpAuthenticators =
+    HashMap<String, BoundRequestIdentityHttpAuthenticator>;
+
 struct FallbackRuntime {
     config: FallbackRuntimeConfig,
     runtime: OnceCell<RegisteredRuntime>,
+}
+
+#[derive(Clone)]
+struct RuntimeExtensionHooks {
+    request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
+    source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
+    source_observation_publishers: Vec<Arc<dyn SourceObservationPublisher>>,
 }
 
 #[derive(Clone)]
@@ -65,15 +96,29 @@ struct FallbackRuntimeConfig {
     runtime_context: QueryRuntimeContext,
     dependent_join: DependentJoinConfig,
     memory: QueryMemoryConfig,
-    request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
-    source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
+    udfs: Vec<UdfRuntimeDefinition>,
+    extension_hooks: RuntimeExtensionHooks,
+    request_identity_http_authenticators: BoundRequestIdentityHttpAuthenticators,
 }
 
 struct RegisteredRuntime {
     ctx: Arc<SessionContext>,
+    active_sources: Vec<RegisteredSource>,
+    source_function_names: HashSet<ScopedTableFunctionName>,
     tables: Vec<TableInfo>,
     table_functions: Vec<TableFunctionInfo>,
     failures: Vec<SourceRegistrationFailure>,
+}
+
+struct RuntimeBuildInputs<'a> {
+    sources: &'a [QuerySource],
+    runtime_context: &'a QueryRuntimeContext,
+    extension_hooks: &'a RuntimeExtensionHooks,
+    request_identity_http_authenticators: &'a BoundRequestIdentityHttpAuthenticators,
+    source_decorators: &'a mut [Box<dyn SourceDecorator>],
+    dependent_join: &'a DependentJoinConfig,
+    memory: &'a QueryMemoryConfig,
+    udfs: &'a [UdfRuntimeDefinition],
 }
 
 enum SqlExecutionFailure {
@@ -99,9 +144,22 @@ async fn build_runtime_inner(
         memory,
         dependent_join,
         mut extensions,
+        udfs,
+        request_identity_selector,
+        request_identity_http_authenticator_factory,
     } = runtime;
-    let request_authenticators = extensions.request_authenticators.clone();
-    let source_input_resolver = extensions.source_input_resolver.clone();
+    let extension_hooks = RuntimeExtensionHooks {
+        request_authenticators: extensions.request_authenticators.clone(),
+        source_input_resolver: extensions.source_input_resolver.clone(),
+        source_observation_publishers: extensions.source_observation_publishers.clone(),
+    };
+    let udfs_installed = !udfs.is_empty();
+    let request_identity_http_authenticators = bind_request_identity_http_authenticators(
+        sources,
+        request_identity_selector,
+        request_identity_http_authenticator_factory,
+    )
+    .await?;
     // Resolver-row overflow can retry without the dependent-join optimizer only
     // when runtime registration is replayable. Source decorators are mutable
     // one-shot registration hooks today, so decorated runtimes keep resolver-row
@@ -115,26 +173,31 @@ async fn build_runtime_inner(
             runtime_context: runtime_context.clone(),
             dependent_join: dependent_join.clone(),
             memory: memory.clone(),
-            request_authenticators: request_authenticators.clone(),
-            source_input_resolver: source_input_resolver.clone(),
+            udfs: udfs.clone(),
+            extension_hooks: extension_hooks.clone(),
+            request_identity_http_authenticators: request_identity_http_authenticators.clone(),
         })
     });
 
-    let primary = build_registered_runtime(
+    let primary = build_registered_runtime(RuntimeBuildInputs {
         sources,
-        &runtime_context,
-        &request_authenticators,
-        source_input_resolver,
-        extensions.source_decorators.as_mut_slice(),
-        &dependent_join,
-        &memory,
-    )
+        runtime_context: &runtime_context,
+        extension_hooks: &extension_hooks,
+        request_identity_http_authenticators: &request_identity_http_authenticators,
+        source_decorators: extensions.source_decorators.as_mut_slice(),
+        dependent_join: &dependent_join,
+        memory: &memory,
+        udfs: &udfs,
+    })
     .await?;
 
     Ok(QueryRuntimeAdapter {
         ctx: primary.ctx,
         fallback_runtime,
         memory,
+        active_sources: primary.active_sources,
+        source_function_names: primary.source_function_names,
+        udfs_installed,
         tables: primary.tables,
         table_functions: primary.table_functions,
         failures: primary.failures,
@@ -143,40 +206,139 @@ async fn build_runtime_inner(
     })
 }
 
-async fn build_registered_runtime(
+async fn bind_request_identity_http_authenticators(
     sources: &[QuerySource],
-    runtime_context: &QueryRuntimeContext,
-    request_authenticators: &HashMap<String, Arc<dyn RequestAuthenticator>>,
-    source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
-    source_decorators: &mut [Box<dyn SourceDecorator>],
-    dependent_join: &DependentJoinConfig,
-    memory: &QueryMemoryConfig,
+    request_identity_selector: Option<Arc<dyn RequestIdentitySelector>>,
+    request_identity_http_authenticator_factory: Option<RequestIdentityHttpAuthenticatorFactory>,
+) -> Result<BoundRequestIdentityHttpAuthenticators, CoreError> {
+    let mut identity_contexts = Vec::new();
+    let mut seen_source_names = HashSet::new();
+    for source in sources {
+        let Some(context) = source.identity_selection_context() else {
+            continue;
+        };
+        let source_name = context.source_name().to_string();
+        if !seen_source_names.insert(source_name.clone()) {
+            return Err(CoreError::FailedPrecondition(format!(
+                "source '{source_name}' appears more than once with identity_requirements"
+            )));
+        }
+        identity_contexts.push((source_name, context));
+    }
+
+    let mut authenticators = HashMap::with_capacity(identity_contexts.len());
+    for (source_name, context) in identity_contexts {
+        let selector = request_identity_selector.as_ref().ok_or_else(|| {
+            CoreError::FailedPrecondition(format!(
+                "source '{}' declares identity_requirements but no request identity selector is installed",
+                context.source_name()
+            ))
+        })?;
+        let factory = request_identity_http_authenticator_factory
+            .as_ref()
+            .ok_or_else(|| {
+                CoreError::FailedPrecondition(format!(
+                    "source '{}' declares identity_requirements but no request identity HTTP authenticator factory is installed",
+                    context.source_name()
+                ))
+            })?;
+        let selected = selector
+            .select_identity(&context)
+            .await
+            .map_err(|error| request_identity_selection_error(&context, &error))?;
+        validate_selected_identity(&context, &selected)?;
+        let authenticator = factory(selected.clone()).map_err(|error| {
+            request_identity_http_authenticator_factory_error(&context, &selected, &error)
+        })?;
+        authenticators.insert(source_name, authenticator);
+    }
+    Ok(authenticators)
+}
+
+fn validate_selected_identity(
+    context: &RequestIdentitySelectionContext,
+    selected: &SelectedRequestIdentity,
+) -> Result<(), CoreError> {
+    if context.accepts_identity(selected.identity_spec_id(), selected.audience()) {
+        return Ok(());
+    }
+    Err(CoreError::FailedPrecondition(format!(
+        "request identity selector selected identity '{}' with spec '{}' that does not satisfy identity_requirements for source '{}'",
+        selected.identity_id(),
+        selected.identity_spec_id(),
+        context.source_name()
+    )))
+}
+
+fn request_identity_selection_error(
+    context: &RequestIdentitySelectionContext,
+    error: &RequestIdentitySelectionError,
+) -> CoreError {
+    let detail = format!(
+        "request identity selector failed for source '{}': {error}",
+        context.source_name()
+    );
+    match error {
+        RequestIdentitySelectionError::InvalidInput(_) => CoreError::InvalidInput(detail),
+        RequestIdentitySelectionError::FailedPrecondition(_) => {
+            CoreError::FailedPrecondition(detail)
+        }
+    }
+}
+
+fn request_identity_http_authenticator_factory_error(
+    context: &RequestIdentitySelectionContext,
+    selected: &SelectedRequestIdentity,
+    error: &RequestIdentityHttpAuthenticatorError,
+) -> CoreError {
+    let detail = format!(
+        "request identity HTTP authenticator factory failed for selected identity '{}' on source '{}': {error}",
+        selected.identity_id(),
+        context.source_name()
+    );
+    match error {
+        RequestIdentityHttpAuthenticatorError::InvalidInput(_) => CoreError::InvalidInput(detail),
+        RequestIdentityHttpAuthenticatorError::FailedPrecondition(_) => {
+            CoreError::FailedPrecondition(detail)
+        }
+    }
+}
+
+async fn build_registered_runtime(
+    config: RuntimeBuildInputs<'_>,
 ) -> Result<RegisteredRuntime, CoreError> {
-    let ctx = build_session_context(dependent_join, memory)?;
+    let ctx = build_session_context(config.dependent_join, config.memory)?;
     let registration = register_runtime_sources(
         &ctx,
-        sources,
-        runtime_context,
-        request_authenticators,
-        source_input_resolver,
-        source_decorators,
+        config.sources,
+        config.runtime_context,
+        config.extension_hooks,
+        config.request_identity_http_authenticators,
+        config.source_decorators,
     )
     .await?;
-    catalog::register(&ctx, &registration.active_sources)
-        .map_err(|err| datafusion_to_core(&err, &[]))?;
-    let tables = catalog::collect_tables(&registration.active_sources);
-    let table_functions = catalog::collect_table_functions(&registration.active_sources);
     let source_functions = SourceFunctionRegistry::new(
         registration
             .active_sources
             .iter()
             .flat_map(|source| source.table_functions.iter()),
     );
-    if !source_functions.is_empty() {
-        source_functions
-            .install(&ctx)
-            .map_err(|err| datafusion_to_core(&err, &tables))?;
-    }
+    let source_function_names = source_functions.names();
+    let udf_table_functions = published_table_functions(config.udfs, &source_function_names)
+        .map_err(|err| datafusion_to_core(&err, &[]))?;
+    catalog::register(&ctx, &registration.active_sources, &udf_table_functions)
+        .map_err(|err| datafusion_to_core(&err, &[]))?;
+    let tables = catalog::collect_tables(&registration.active_sources);
+    let table_functions =
+        catalog::collect_table_functions(&registration.active_sources, &udf_table_functions);
+    install_table_function_call_planners(
+        &ctx,
+        source_functions,
+        source_function_names.clone(),
+        config.udfs,
+        &tables,
+    )
+    .await?;
     for failure in &registration.failures {
         tracing::warn!(
             source = %failure.schema_name,
@@ -187,10 +349,54 @@ async fn build_registered_runtime(
 
     Ok(RegisteredRuntime {
         ctx,
+        active_sources: registration.active_sources,
+        source_function_names,
         tables,
         table_functions,
         failures: registration.failures,
     })
+}
+
+async fn install_table_function_call_planners(
+    ctx: &SessionContext,
+    source_functions: SourceFunctionRegistry,
+    source_table_function_names: HashSet<ScopedTableFunctionName>,
+    udfs: &[UdfRuntimeDefinition],
+    tables: &[TableInfo],
+) -> Result<(), CoreError> {
+    match (!source_functions.is_empty(), !udfs.is_empty()) {
+        (false, false) => Ok(()),
+        (true, false) => source_functions
+            .install(ctx)
+            .map_err(|err| datafusion_to_core(&err, tables)),
+        (false, true) => {
+            install_udf_call_planner(ctx, udfs, source_table_function_names, tables).await
+        }
+        (true, true) => {
+            // UDF expansion can reveal source-function calls inside the UDF body.
+            // Install source planning first, then run the source analyzer after UDF expansion.
+            source_functions
+                .install_relation_planner(ctx)
+                .map_err(|err| datafusion_to_core(&err, tables))?;
+            install_udf_call_planner(ctx, udfs, source_table_function_names, tables).await?;
+            SourceFunctionRegistry::install_analyzer(ctx);
+            Ok(())
+        }
+    }
+}
+
+async fn install_udf_call_planner(
+    ctx: &SessionContext,
+    udfs: &[UdfRuntimeDefinition],
+    source_table_function_names: HashSet<ScopedTableFunctionName>,
+    tables: &[TableInfo],
+) -> Result<(), CoreError> {
+    let udf_calls = Box::pin(UdfCallRegistry::new(ctx, udfs, source_table_function_names))
+        .await
+        .map_err(|err| datafusion_to_core(&err, tables))?;
+    udf_calls
+        .install(ctx)
+        .map_err(|err| datafusion_to_core(&err, tables))
 }
 
 fn build_session_context(
@@ -217,9 +423,12 @@ fn build_session_context(
         target: "coral_engine::datafusion",
         options: exec_options
     );
+    let mut analyzer_rules = DataFusionAnalyzer::new().rules;
+    analyzer_rules.insert(0, Arc::new(UdfCallAnalyzerRule));
     let mut builder = SessionStateBuilder::new()
         .with_config(session_config)
         .with_runtime_env(runtime_env)
+        .with_analyzer_rules(analyzer_rules)
         .with_default_features();
     if dependent_join.optimizer_enabled() {
         builder = builder.with_optimizer_rule(Arc::new(optimizer::rule(dependent_join.clone())));
@@ -245,8 +454,8 @@ async fn register_runtime_sources(
     ctx: &SessionContext,
     sources: &[QuerySource],
     runtime_context: &QueryRuntimeContext,
-    request_authenticators: &HashMap<String, Arc<dyn RequestAuthenticator>>,
-    source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
+    extension_hooks: &RuntimeExtensionHooks,
+    request_identity_http_authenticators: &BoundRequestIdentityHttpAuthenticators,
     source_decorators: &mut [Box<dyn SourceDecorator>],
 ) -> Result<crate::runtime::registry::SourceRegistrationResult, CoreError> {
     let mut source_candidates = Vec::new();
@@ -254,8 +463,10 @@ async fn register_runtime_sources(
         match compile_query_source(
             source,
             runtime_context,
-            request_authenticators,
-            source_input_resolver.clone(),
+            &extension_hooks.request_authenticators,
+            extension_hooks.source_input_resolver.clone(),
+            &extension_hooks.source_observation_publishers,
+            request_identity_http_authenticators,
         ) {
             Ok(compiled) => {
                 source_candidates.push(SourceRegistrationCandidate::Compiled(
@@ -275,6 +486,53 @@ async fn register_runtime_sources(
 }
 
 impl QueryRuntimeAdapter {
+    pub(crate) async fn install_udfs(
+        &mut self,
+        udfs: Vec<UdfRuntimeDefinition>,
+    ) -> Result<(), CoreError> {
+        if udfs.is_empty() {
+            return Ok(());
+        }
+        if self.udfs_installed {
+            return Err(CoreError::FailedPrecondition(
+                "query runtime already has installed UDFs".to_string(),
+            ));
+        }
+        if self
+            .fallback_runtime
+            .as_ref()
+            .is_some_and(FallbackRuntime::is_built)
+        {
+            return Err(CoreError::FailedPrecondition(
+                "cannot install UDFs after query execution has initialized the fallback runtime"
+                    .to_string(),
+            ));
+        }
+
+        let udf_table_functions = published_table_functions(&udfs, &self.source_function_names)
+            .map_err(|err| datafusion_to_core(&err, &self.tables))?;
+        let udf_calls = Box::pin(UdfCallRegistry::new(
+            &self.ctx,
+            &udfs,
+            self.source_function_names.clone(),
+        ))
+        .await
+        .map_err(|err| datafusion_to_core(&err, &self.tables))?;
+        catalog::register(&self.ctx, &self.active_sources, &udf_table_functions)
+            .map_err(|err| datafusion_to_core(&err, &self.tables))?;
+        udf_calls
+            .install(&self.ctx)
+            .map_err(|err| datafusion_to_core(&err, &self.tables))?;
+
+        self.table_functions =
+            catalog::collect_table_functions(&self.active_sources, &udf_table_functions);
+        if let Some(fallback_runtime) = &mut self.fallback_runtime {
+            fallback_runtime.config.udfs = udfs;
+        }
+        self.udfs_installed = true;
+        Ok(())
+    }
+
     pub(crate) fn list_tables(
         &self,
         source_filter: Option<&str>,
@@ -415,6 +673,44 @@ impl QueryRuntimeAdapter {
         }
     }
 
+    pub(crate) async fn infer_sql_signature(
+        &self,
+        sql: &str,
+    ) -> Result<InferredSqlSignature, CoreError> {
+        let plan_error = |err| {
+            datafusion_to_core_with_sql_and_table_functions(
+                &err,
+                &self.tables,
+                &self.table_functions,
+                Some(sql),
+            )
+        };
+        let df = self
+            .ctx
+            .sql_with_options(sql, read_only_sql_options())
+            .await
+            .map_err(plan_error)?;
+        let mut parameter_fields = df
+            .logical_plan()
+            .get_parameter_fields()
+            .map_err(plan_error)?;
+        infer_cast_parameter_fields(df.logical_plan(), &mut parameter_fields)
+            .map_err(plan_error)?;
+        let mut declared_parameter_types = HashMap::new();
+        infer_source_function_parameter_fields(
+            df.logical_plan(),
+            &mut parameter_fields,
+            &mut declared_parameter_types,
+        )
+        .map_err(plan_error)?;
+
+        Ok(InferredSqlSignature {
+            parameter_fields,
+            declared_parameter_types,
+            planned_schema: Arc::new(df.logical_plan().schema().as_arrow().clone()),
+        })
+    }
+
     async fn execute_sql_once(
         &self,
         ctx: &SessionContext,
@@ -426,12 +722,16 @@ impl QueryRuntimeAdapter {
             .await
             .map_err(SqlExecutionFailure::Planning)?;
         let df = apply_query_parameters(df, params).map_err(SqlExecutionFailure::Planning)?;
-        let arrow_schema = Arc::new(df.schema().as_arrow().clone());
         let provenance = self
             .query_provenance(sql, df.logical_plan())
             .map_err(SqlExecutionFailure::Planning)?;
-        let batches = df
-            .collect()
+        let task_ctx = Arc::new(df.task_ctx());
+        let physical_plan = df
+            .create_physical_plan()
+            .await
+            .map_err(SqlExecutionFailure::Collection)?;
+        let arrow_schema = physical_plan.schema();
+        let batches = collect(physical_plan, task_ctx)
             .await
             .map_err(SqlExecutionFailure::Collection)?;
         let execution = QueryExecution::new(arrow_schema, batches, provenance);
@@ -491,31 +791,14 @@ impl QueryRuntimeAdapter {
     ) -> Result<QueryExecutionProvenance, DataFusionError> {
         let mut tables = BTreeSet::new();
         let mut table_functions = BTreeSet::new();
-        plan.apply_with_subqueries(|node| {
-            match node {
-                LogicalPlan::TableScan(scan) => {
-                    self.collect_table_scan_usage(&scan.table_name, &mut tables);
-                }
-                LogicalPlan::Extension(extension) => {
-                    if let Some(function) =
-                        extension.node.as_any().downcast_ref::<SourceFunctionNode>()
-                    {
-                        self.collect_table_function_usage(
-                            function.table_reference(),
-                            &mut table_functions,
-                        );
-                    }
-                }
-                _ => {}
-            }
-            Ok(TreeNodeRecursion::Continue)
-        })?;
+        self.collect_plan_provenance(plan, &mut tables, &mut table_functions)?;
 
         let mut sources = BTreeSet::new();
         sources.extend(tables.iter().map(|usage| usage.source_name().to_string()));
         sources.extend(
             table_functions
                 .iter()
+                .filter(|usage| self.schema_to_source.contains_key(usage.schema_name()))
                 .map(|usage| usage.source_name().to_string()),
         );
 
@@ -525,6 +808,46 @@ impl QueryRuntimeAdapter {
             tables.into_iter().collect(),
             table_functions.into_iter().collect(),
         ))
+    }
+
+    fn collect_plan_provenance(
+        &self,
+        plan: &LogicalPlan,
+        tables: &mut BTreeSet<QueryTableUsage>,
+        table_functions: &mut BTreeSet<QueryTableFunctionUsage>,
+    ) -> Result<(), DataFusionError> {
+        plan.apply_with_subqueries(|node| {
+            match node {
+                LogicalPlan::TableScan(scan) => {
+                    self.collect_table_scan_usage(&scan.table_name, tables);
+                }
+                LogicalPlan::Extension(extension) => {
+                    if let Some(function) =
+                        extension.node.as_any().downcast_ref::<SourceFunctionNode>()
+                    {
+                        self.collect_table_function_usage(
+                            function.table_reference(),
+                            table_functions,
+                        );
+                    } else if let Some(function) =
+                        extension.node.as_any().downcast_ref::<UdfCallNode>()
+                    {
+                        self.record_table_function_usage(
+                            function.table_reference(),
+                            table_functions,
+                        );
+                        self.collect_plan_provenance(
+                            function.body_plan(),
+                            tables,
+                            table_functions,
+                        )?;
+                    }
+                }
+                _ => {}
+            }
+            Ok(TreeNodeRecursion::Continue)
+        })?;
+        Ok(())
     }
 
     fn collect_table_scan_usage(
@@ -559,14 +882,25 @@ impl QueryRuntimeAdapter {
         if self.table_functions.iter().any(|function| {
             function.schema_name == schema_name && function.function_name == function_name
         }) {
-            table_functions.insert(QueryTableFunctionUsage::new(
-                self.source_name_for_schema(schema_name),
-                schema_name,
-                function_name,
-            ));
-            return true;
+            return self.record_table_function_usage(table_reference, table_functions);
         }
         false
+    }
+
+    fn record_table_function_usage(
+        &self,
+        table_reference: &TableReference,
+        table_functions: &mut BTreeSet<QueryTableFunctionUsage>,
+    ) -> bool {
+        let Some((schema_name, function_name)) = relation_parts(table_reference) else {
+            return false;
+        };
+        table_functions.insert(QueryTableFunctionUsage::new(
+            self.source_name_for_schema(schema_name),
+            schema_name,
+            function_name,
+        ));
+        true
     }
 
     fn source_name_for_schema(&self, schema_name: &str) -> String {
@@ -634,6 +968,125 @@ impl QueryRuntimeAdapter {
     }
 }
 
+fn infer_cast_parameter_fields(
+    plan: &LogicalPlan,
+    parameter_fields: &mut HashMap<String, Option<FieldRef>>,
+) -> Result<(), DataFusionError> {
+    plan.apply_with_subqueries(|node| {
+        node.apply_expressions(|expr| {
+            expr.apply(|expr| {
+                let (cast_expr, data_type) = match expr {
+                    Expr::Cast(cast) => (cast.expr.as_ref(), cast.field.data_type().clone()),
+                    Expr::TryCast(cast) => (cast.expr.as_ref(), cast.field.data_type().clone()),
+                    _ => return Ok(TreeNodeRecursion::Continue),
+                };
+                let Expr::Placeholder(placeholder) = cast_expr else {
+                    return Ok(TreeNodeRecursion::Continue);
+                };
+                set_parameter_field(
+                    parameter_fields,
+                    &placeholder.id,
+                    Arc::new(Field::new("", data_type, true)),
+                )?;
+                Ok(TreeNodeRecursion::Continue)
+            })
+        })
+    })?;
+    Ok(())
+}
+
+fn infer_source_function_parameter_fields(
+    plan: &LogicalPlan,
+    parameter_fields: &mut HashMap<String, Option<FieldRef>>,
+    declared_parameter_types: &mut HashMap<String, ManifestDataType>,
+) -> Result<(), DataFusionError> {
+    plan.apply_with_subqueries(|node| {
+        let LogicalPlan::Extension(extension) = node else {
+            return Ok(TreeNodeRecursion::Continue);
+        };
+        let Some(function) = extension.node.as_any().downcast_ref::<SourceFunctionNode>() else {
+            return Ok(TreeNodeRecursion::Continue);
+        };
+        for (argument, expr) in function.declared_args_with_call_exprs() {
+            let Expr::Placeholder(placeholder) = expr else {
+                continue;
+            };
+            set_parameter_field(
+                parameter_fields,
+                &placeholder.id,
+                Arc::new(Field::new(
+                    "",
+                    crate::types::arrow_data_type(argument.data_type),
+                    true,
+                )),
+            )?;
+            set_declared_parameter_type(
+                declared_parameter_types,
+                &placeholder.id,
+                argument.data_type,
+            )?;
+        }
+        Ok(TreeNodeRecursion::Continue)
+    })?;
+    Ok(())
+}
+
+fn set_declared_parameter_type(
+    declared_parameter_types: &mut HashMap<String, ManifestDataType>,
+    parameter: &str,
+    data_type: ManifestDataType,
+) -> Result<(), DataFusionError> {
+    match declared_parameter_types.get(parameter) {
+        Some(existing) if *existing != data_type => Err(DataFusionError::Plan(format!(
+            "conflicting types for parameter {parameter}: {} and {}; use explicit casts so every use has one type",
+            existing.as_manifest_str(),
+            data_type.as_manifest_str()
+        ))),
+        Some(_) => Ok(()),
+        None => {
+            declared_parameter_types.insert(parameter.to_string(), data_type);
+            Ok(())
+        }
+    }
+}
+
+fn set_parameter_field(
+    parameter_fields: &mut HashMap<String, Option<FieldRef>>,
+    parameter: &str,
+    field: FieldRef,
+) -> Result<(), DataFusionError> {
+    match parameter_fields.get(parameter) {
+        Some(Some(existing))
+            if !parameter_types_are_compatible(existing.data_type(), field.data_type()) =>
+        {
+            Err(DataFusionError::Plan(format!(
+                "conflicting types for parameter {parameter}: {} and {}; use explicit casts so every use has one type",
+                existing.data_type(),
+                field.data_type()
+            )))
+        }
+        Some(Some(_)) => Ok(()),
+        _ => {
+            parameter_fields.insert(parameter.to_string(), Some(field));
+            Ok(())
+        }
+    }
+}
+
+fn parameter_types_are_compatible(left: &DataType, right: &DataType) -> bool {
+    if left == right {
+        return true;
+    }
+
+    match (
+        crate::types::manifest_data_type_for_arrow(left),
+        crate::types::manifest_data_type_for_arrow(right),
+    ) {
+        (Some(left), Some(right)) => left == right,
+        _ => false,
+    }
+}
+
 /// Binds named query parameter values into a planned statement.
 ///
 /// Rejects parameters the statement never references, then substitutes the
@@ -671,7 +1124,7 @@ fn reject_unbound_sql_parameters(plan: &LogicalPlan) -> Result<(), DataFusionErr
 fn ordinary_sql_placeholders(plan: &LogicalPlan) -> Result<BTreeSet<String>, DataFusionError> {
     let mut placeholders = BTreeSet::new();
     plan.apply_with_subqueries(|node| {
-        if is_parameterized_source_function_call(node) {
+        if is_parameterized_table_function_call(node) {
             return Ok(TreeNodeRecursion::Jump);
         }
         node.apply_expressions(|expr| {
@@ -687,23 +1140,29 @@ fn ordinary_sql_placeholders(plan: &LogicalPlan) -> Result<BTreeSet<String>, Dat
     Ok(placeholders)
 }
 
-fn is_parameterized_source_function_call(plan: &LogicalPlan) -> bool {
+fn is_parameterized_table_function_call(plan: &LogicalPlan) -> bool {
     let LogicalPlan::Extension(extension) = plan else {
         return false;
     };
-    extension.node.name() == SOURCE_FUNCTION_NODE_NAME
+    matches!(
+        extension.node.name(),
+        SOURCE_FUNCTION_NODE_NAME | UDF_CALL_NODE_NAME
+    )
 }
 
-fn query_parameter_scalar_value(value: &QueryParameterValue) -> ScalarValue {
+pub(crate) fn query_parameter_scalar_value(value: &QueryParameterValue) -> ScalarValue {
     match value {
         QueryParameterValue::String(value) => ScalarValue::Utf8(value.clone()),
         QueryParameterValue::Integer(value) => ScalarValue::Int64(*value),
         QueryParameterValue::Float(value) => ScalarValue::Float64(*value),
         QueryParameterValue::Boolean(value) => ScalarValue::Boolean(*value),
+        QueryParameterValue::Timestamp(value) => {
+            ScalarValue::TimestampMicrosecond(*value, Some("+00:00".into()))
+        }
     }
 }
 
-fn reject_unknown_parameters(
+pub(crate) fn reject_unknown_parameters(
     plan: &LogicalPlan,
     params: &QueryParameters,
 ) -> Result<(), DataFusionError> {
@@ -776,15 +1235,17 @@ fn format_memory_limit(limit: MemorySize) -> String {
 impl FallbackRuntimeConfig {
     async fn build_without_dependent_join(&self) -> Result<RegisteredRuntime, CoreError> {
         let mut source_decorators = Vec::new();
-        build_registered_runtime(
-            &self.sources,
-            &self.runtime_context,
-            &self.request_authenticators,
-            self.source_input_resolver.clone(),
-            source_decorators.as_mut_slice(),
-            &self.dependent_join.without_rewrites(),
-            &self.memory,
-        )
+        let dependent_join = self.dependent_join.without_rewrites();
+        build_registered_runtime(RuntimeBuildInputs {
+            sources: &self.sources,
+            runtime_context: &self.runtime_context,
+            extension_hooks: &self.extension_hooks,
+            request_identity_http_authenticators: &self.request_identity_http_authenticators,
+            source_decorators: source_decorators.as_mut_slice(),
+            dependent_join: &dependent_join,
+            memory: &self.memory,
+            udfs: &self.udfs,
+        })
         .await
     }
 }
@@ -802,9 +1263,13 @@ impl FallbackRuntime {
             .get_or_try_init(|| async { self.config.build_without_dependent_join().await })
             .await
     }
+
+    fn is_built(&self) -> bool {
+        self.runtime.get().is_some()
+    }
 }
 
-fn read_only_sql_options() -> SQLOptions {
+pub(crate) fn read_only_sql_options() -> SQLOptions {
     SQLOptions::new()
         .with_allow_ddl(false)
         .with_allow_dml(false)
@@ -854,14 +1319,17 @@ fn query_result_observer_error(name: &str, error: &QueryResultObserverError) -> 
 }
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::{BTreeMap, HashMap};
     use std::str::FromStr as _;
 
+    use coral_spec::v4::IdentityRequirements;
     use datafusion::execution::memory_pool::MemoryConsumer;
 
     use super::*;
     use crate::{
         ColumnInfo, DependentJoinConfig, MemorySize, QueryMemoryConfig, QueryRuntimeContext,
+        UdfRuntimeImplementation, UdfRuntimePublish, UdfRuntimeResultColumn,
+        UdfRuntimeTableFunctionPublish,
     };
 
     fn adapter_with_table() -> QueryRuntimeAdapter {
@@ -869,6 +1337,9 @@ mod tests {
             ctx: Arc::new(SessionContext::new()),
             fallback_runtime: None,
             memory: QueryMemoryConfig::default(),
+            active_sources: Vec::new(),
+            source_function_names: HashSet::new(),
+            udfs_installed: false,
             tables: vec![TableInfo {
                 schema_name: "demo".to_string(),
                 table_name: "events".to_string(),
@@ -916,6 +1387,48 @@ mod tests {
     }
 
     #[test]
+    fn request_identity_extension_errors_preserve_status_class() {
+        let context = RequestIdentitySelectionContext::new(
+            "github_v4",
+            IdentityRequirements {
+                accepts: Vec::new(),
+            },
+        );
+        let selected = SelectedRequestIdentity::new("identity-1", "github_oauth", BTreeMap::new());
+
+        assert!(matches!(
+            request_identity_selection_error(
+                &context,
+                &RequestIdentitySelectionError::invalid_input("selector failure")
+            ),
+            CoreError::InvalidInput(detail) if detail.contains("source 'github_v4': selector failure")
+        ));
+        assert!(matches!(
+            request_identity_selection_error(
+                &context,
+                &RequestIdentitySelectionError::failed_precondition("selector failure")
+            ),
+            CoreError::FailedPrecondition(detail) if detail.contains("source 'github_v4': selector failure")
+        ));
+        assert!(matches!(
+            request_identity_http_authenticator_factory_error(
+                &context,
+                &selected,
+                &RequestIdentityHttpAuthenticatorError::invalid_input("factory failure")
+            ),
+            CoreError::InvalidInput(detail) if detail.contains("selected identity 'identity-1'")
+        ));
+        assert!(matches!(
+            request_identity_http_authenticator_factory_error(
+                &context,
+                &selected,
+                &RequestIdentityHttpAuthenticatorError::failed_precondition("factory failure")
+            ),
+            CoreError::FailedPrecondition(detail) if detail.contains("selected identity 'identity-1'")
+        ));
+    }
+
+    #[test]
     fn build_session_context_applies_memory_limit() {
         let ctx = build_session_context(
             &DependentJoinConfig::default(),
@@ -949,8 +1462,13 @@ mod tests {
             memory: QueryMemoryConfig {
                 limit: Some(MemorySize::from_str("1Ki").unwrap()),
             },
-            request_authenticators: HashMap::new(),
-            source_input_resolver: None,
+            udfs: Vec::new(),
+            extension_hooks: RuntimeExtensionHooks {
+                request_authenticators: HashMap::new(),
+                source_input_resolver: None,
+                source_observation_publishers: Vec::new(),
+            },
+            request_identity_http_authenticators: HashMap::new(),
         };
 
         let runtime = fallback
@@ -970,6 +1488,60 @@ mod tests {
         assert!(
             error.to_string().contains("Resources exhausted"),
             "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn late_udf_install_is_retained_by_fallback_runtime() {
+        let mut runtime = build_runtime(&[], QueryRuntimeConfig::default())
+            .await
+            .expect("primary runtime");
+        runtime
+            .install_udfs(vec![UdfRuntimeDefinition {
+                name: "constant_value".to_string(),
+                description: "Returns one value".to_string(),
+                arguments: Vec::new(),
+                implementation: UdfRuntimeImplementation::CoralSql {
+                    query: "select 1 as value".to_string(),
+                },
+                publish: UdfRuntimePublish {
+                    table_function: UdfRuntimeTableFunctionPublish {
+                        schema: "functions".to_string(),
+                        name: "constant_value".to_string(),
+                        description: "Returns one value".to_string(),
+                    },
+                },
+                result_columns: vec![UdfRuntimeResultColumn {
+                    name: "value".to_string(),
+                    data_type: DataType::Int64,
+                    nullable: false,
+                }],
+            }])
+            .await
+            .expect("late UDF install");
+
+        let fallback = runtime
+            .fallback_runtime
+            .as_ref()
+            .expect("dependent join fallback")
+            .get_or_build_without_dependent_join()
+            .await
+            .expect("fallback runtime");
+        let batches = fallback
+            .ctx
+            .sql("select value from functions.constant_value()")
+            .await
+            .expect("plan fallback UDF query")
+            .collect()
+            .await
+            .expect("execute fallback UDF query");
+
+        assert_eq!(
+            batches
+                .iter()
+                .map(arrow::array::RecordBatch::num_rows)
+                .sum::<usize>(),
+            1
         );
     }
 }

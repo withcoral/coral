@@ -46,27 +46,6 @@ export const section = style({
   gap: '16px',
 })
 
-export const sectionHead = style({
-  alignItems: 'baseline',
-  display: 'flex',
-  gap: '8px',
-})
-
-export const sectionCount = style({
-  alignItems: 'center',
-  background: theme.surface.onMainContent,
-  border: `1px solid ${theme.stroke.secondary}`,
-  borderRadius: '999px',
-  color: theme.content.secondary,
-  display: 'inline-flex',
-  fontSize: '11px',
-  fontWeight: 600,
-  height: '18px',
-  justifyContent: 'center',
-  minWidth: '22px',
-  paddingInline: '6px',
-})
-
 export const cardGrid = style({
   display: 'grid',
   gap: '16px',

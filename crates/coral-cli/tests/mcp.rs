@@ -231,10 +231,6 @@ fn text_content(result: &rmcp::model::ReadResourceResult) -> &str {
     }
 }
 
-#[expect(
-    dead_code,
-    reason = "Episode removal leaves this schema helper unused until task feature tests reintroduce schema assertions later in the stack."
-)]
 fn tool_input_properties(tool: &rmcp::model::Tool) -> &Map<String, Value> {
     tool.input_schema
         .get("properties")
@@ -809,6 +805,155 @@ async fn mcp_stdio_enable_feedback_flag_lists_feedback_tool()
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn mcp_stdio_observed_value_flag_controls_discovery_surfaces()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+
+    let disabled_client = start_mcp_client(&server).await?;
+    assert_observed_value_discovery_surface(&disabled_client, false).await?;
+    disabled_client.cancel().await?;
+
+    let enabled_client =
+        start_mcp_client_with_args(&server, &["--enable-observed-values-search"]).await?;
+    assert_observed_value_discovery_surface(&enabled_client, true).await?;
+    enabled_client.cancel().await?;
+
+    server.shutdown().await;
+    Ok(())
+}
+
+async fn assert_observed_value_discovery_surface(
+    client: &RunningService<RoleClient, ()>,
+    enabled: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let instructions = client
+        .peer_info()
+        .expect("initialize result")
+        .instructions
+        .as_deref()
+        .expect("initialize instructions")
+        .to_string();
+    let tools = client.list_all_tools().await?;
+    let search_tool = tools
+        .iter()
+        .find(|tool| tool.name.as_ref() == "search")
+        .expect("search tool");
+    let search_description = search_tool
+        .description
+        .as_deref()
+        .expect("search description");
+    let query_description = tool_input_properties(search_tool)["query"]["description"]
+        .as_str()
+        .expect("query input description");
+    let guide = client
+        .read_resource(ReadResourceRequestParams::new("coral://guide"))
+        .await?;
+    let guide = text_content(&guide);
+
+    if enabled {
+        assert!(instructions.contains("values Coral observed during earlier queries"));
+        assert!(search_description.contains("locally observed values"));
+        assert!(query_description.contains("values observed during earlier queries"));
+        assert!(guide.contains("Search catalog metadata and local observations"));
+    } else {
+        assert!(instructions.contains("filters in Coral's local catalog"));
+        assert!(!instructions.contains("observed"));
+        assert!(search_description.contains("Coral's local catalog"));
+        assert!(!search_description.contains("observed"));
+        assert!(query_description.contains("Coral catalog entries"));
+        assert!(!query_description.contains("observed"));
+        assert!(guide.contains("Search catalog metadata, inspect tables"));
+        assert!(!guide.contains("observed"));
+    }
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_stdio_enable_tasks_flag_lists_task_tools() -> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    let client = start_mcp_client_with_args(&server, &["--enable-tasks"]).await?;
+
+    let tools = client.list_all_tools().await?;
+    assert_eq!(
+        tools
+            .iter()
+            .map(|tool| tool.name.as_ref())
+            .collect::<Vec<_>>(),
+        vec![
+            "sql",
+            "search",
+            "list_catalog",
+            "describe_table",
+            "list_columns",
+            "start_task",
+            "end_task"
+        ]
+    );
+    for tool in tools
+        .iter()
+        .filter(|tool| !matches!(tool.name.as_ref(), "start_task" | "end_task"))
+    {
+        let required = tool
+            .input_schema
+            .get("required")
+            .and_then(Value::as_array)
+            .unwrap_or_else(|| panic!("tool '{}' should advertise required fields", tool.name));
+        assert!(
+            tool_input_properties(tool).contains_key("task_id"),
+            "tool '{}' should advertise task_id",
+            tool.name
+        );
+        assert!(
+            tool_input_properties(tool).contains_key("intent"),
+            "tool '{}' should advertise intent",
+            tool.name
+        );
+        assert!(
+            required
+                .iter()
+                .any(|field| field.as_str() == Some("task_id")),
+            "tool '{}' should require task_id",
+            tool.name
+        );
+        assert!(
+            required
+                .iter()
+                .any(|field| field.as_str() == Some("intent")),
+            "tool '{}' should require intent",
+            tool.name
+        );
+    }
+    let start_task = tools
+        .iter()
+        .find(|tool| tool.name.as_ref() == "start_task")
+        .expect("start_task tool should be listed");
+    assert!(
+        tool_input_properties(start_task).contains_key("intent"),
+        "start_task should accept intent"
+    );
+    assert!(
+        !tool_input_properties(start_task).contains_key("initialize_session"),
+        "start_task should not accept initialize_session"
+    );
+    let end_task = tools
+        .iter()
+        .find(|tool| tool.name.as_ref() == "end_task")
+        .expect("end_task tool should be listed");
+    assert!(tool_input_properties(end_task).contains_key("task_id"));
+    assert!(!tool_input_properties(end_task).contains_key("intent"));
+    assert!(tool_input_properties(end_task).contains_key("task_status"));
+    assert!(
+        tools.iter().any(|tool| tool.name.as_ref() == "end_task"),
+        "end_task tool should be listed"
+    );
+
+    client.cancel().await?;
+    server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn mcp_stdio_feature_config_enables_feedback_tool() -> Result<(), Box<dyn std::error::Error>>
 {
     let server = MockServer::start().await;
@@ -825,6 +970,33 @@ feedback = true
     assert!(
         tools.iter().any(|tool| tool.name.as_ref() == "feedback"),
         "feedback tool should be listed when [features].feedback is true"
+    );
+
+    client.cancel().await?;
+    server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_stdio_feature_config_enables_task_tools() -> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    write_config(
+        &server,
+        r"
+[features]
+tasks = true
+",
+    )?;
+    let client = start_mcp_client(&server).await?;
+
+    let tools = client.list_all_tools().await?;
+    assert!(
+        tools.iter().any(|tool| tool.name.as_ref() == "start_task"),
+        "start_task tool should be listed when [features].tasks is true"
+    );
+    assert!(
+        tools.iter().any(|tool| tool.name.as_ref() == "end_task"),
+        "end_task tool should be listed when [features].tasks is true"
     );
 
     client.cancel().await?;
@@ -1322,6 +1494,41 @@ async fn mcp_stdio_sql_batch_records_each_execute_sql_request()
         requests
             .iter()
             .any(|request| request.sql == "SELECT 'second' AS label")
+    );
+
+    client.cancel().await?;
+    server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_stdio_sql_batch_propagates_task_id_to_each_query()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    let client = start_mcp_client_with_args(&server, &["--enable-tasks"]).await?;
+
+    let sql = structured_tool_content(
+        &client,
+        CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
+            "queries": [
+                "SELECT 'first' AS label",
+                "SELECT 'second' AS label"
+            ],
+            "intent": "Run a task-scoped SQL batch",
+            "task_id": "550e8400-e29b-41d4-a716-446655440000"
+        }))),
+    )
+    .await?;
+    assert_eq!(sql["total_count"], 2);
+    assert_eq!(sql["success_count"], 2);
+
+    let task_ids = server.execute_sql_task_ids();
+    assert_eq!(task_ids.len(), 2);
+    assert!(
+        task_ids
+            .iter()
+            .all(|task_id| task_id.as_deref() == Some("550e8400-e29b-41d4-a716-446655440000")),
+        "expected every batch query to carry coral-task-id, got {task_ids:?}"
     );
 
     client.cancel().await?;

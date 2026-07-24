@@ -7,6 +7,8 @@ use datafusion::scalar::ScalarValue;
 
 use coral_spec::{FilterMode, FilterSpec};
 
+use super::scalar::timestamp_to_rfc3339;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum FilterExtraction {
     Values(HashMap<String, String>),
@@ -408,6 +410,7 @@ pub(crate) fn literal_to_string(expr: &Expr) -> Option<String> {
         Expr::Literal(ScalarValue::Float64(Some(v)), _) => Some(v.to_string()),
         Expr::Literal(ScalarValue::Float32(Some(v)), _) => Some(v.to_string()),
         Expr::Literal(ScalarValue::Boolean(Some(v)), _) => Some(v.to_string()),
+        Expr::Literal(value, _) => timestamp_to_rfc3339(value),
         Expr::Cast(cast) => literal_to_string(cast.expr.as_ref()),
         Expr::TryCast(cast) => literal_to_string(cast.expr.as_ref()),
         _ => None,

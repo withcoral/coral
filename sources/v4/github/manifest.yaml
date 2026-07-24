@@ -1,0 +1,61 @@
+name: github_v4
+dsl_version: 4
+inputs:
+  GITHUB_TOKEN:
+    kind: secret
+    hint: |
+      GitHub personal access token used as a bearer token for the live
+      GitHub REST API. Set GITHUB_TOKEN when installing this preview
+      source.
+    credential:
+      methods:
+        - type: oauth
+          label: Connect with GitHub device code
+          description: Sign in to GitHub with a device code.
+          hint: |
+            Signs you in through GitHub, with no app setup or client
+            secret needed. Requests the `repo`, `read:org`, `read:user`,
+            and `user:email` scopes. To use your own GitHub app instead,
+            set GITHUB_OAUTH_CLIENT_ID to its Client ID and enable device
+            flow on the app.
+          oauth:
+            flow:
+              type: device_code
+            endpoints:
+              device_authorization_url: https://github.com/login/device/code
+              token_url: https://github.com/login/oauth/access_token
+            client:
+              id:
+                default: Iv23liJHis6Bs8NO1DAI
+                input: GITHUB_OAUTH_CLIENT_ID
+            scopes:
+              scope:
+                delimiter: space
+                values:
+                  - repo
+                  - read:org
+                  - read:user
+                  - user:email
+surface:
+  type: openapi
+  url: https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.yaml
+  auth:
+    type: HeaderAuth
+    headers:
+      - name: Authorization
+        from: template
+        template: Bearer {{input.GITHUB_TOKEN}}
+  request_headers:
+    - name: X-GitHub-Api-Version
+      from: literal
+      value: "2022-11-28"
+    - name: User-Agent
+      from: literal
+      value: coral-dsl-v4
+test_queries:
+  - >-
+    SELECT total_count, incomplete_results, search_type
+    FROM github_v4.search_issues_and_pull_requests(q => 'repo:octocat/Hello-World is:issue')
+    LIMIT 1
+  - SELECT id, number, title, state FROM github_v4.issues_list_for_repo(owner => 'octocat', repo => 'Hello-World') LIMIT 5
+  - SELECT id, number, title FROM github_v4.issues_get(owner => 'octocat', repo => 'Hello-World', issue_number => 1)

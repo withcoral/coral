@@ -35,13 +35,16 @@ use crate::backends::{
     RegisteredTableFunction, RegisteredTableFunctionArgument, SourceFunctionProviderFactory,
 };
 use crate::runtime::scoped_table_functions::{
-    ScopedTableFunctionCall, ScopedTableFunctionName, ScopedTableFunctionSignature, call_parts,
-    find_placeholder, lower_named_args_to_positional_exprs, original_relation, qualified_name,
-    reject_settings, reject_unsupported_modifiers,
+    ScopedTableFunctionCall, ScopedTableFunctionName, ScopedTableFunctionSignature,
+    available_functions_hint, call_parts, find_placeholder, lower_named_args_to_positional_exprs,
+    original_relation, qualified_name, reject_settings,
+    reject_unbound_parameters as reject_unbound_table_function_parameters,
+    reject_unsupported_modifiers,
 };
 use coral_spec::ManifestDataType;
 
 pub(crate) const SOURCE_FUNCTION_NODE_NAME: &str = "CoralSourceFunction";
+const SOURCE_FUNCTION_ANALYZER_RULE_NAME: &str = "coral_source_functions";
 
 #[derive(Debug)]
 pub(crate) struct SourceFunctionRegistry {
@@ -72,13 +75,44 @@ impl SourceFunctionRegistry {
         self.functions.is_empty()
     }
 
-    /// Installs this relation planner together with the analyzer rule that
-    /// resolves the nodes it parks. The two are a pair: any session that can
-    /// plan source-function calls must also be able to bind them.
+    pub(crate) fn names(&self) -> HashSet<ScopedTableFunctionName> {
+        self.functions.keys().cloned().collect()
+    }
+
+    /// Installs source-function planning and binding for one session.
+    ///
+    /// The two hooks are a pair: any session that can plan source-function
+    /// calls must also be able to bind parked [`SourceFunctionNode`] plans.
     pub(crate) fn install(self, ctx: &SessionContext) -> Result<()> {
-        ctx.register_relation_planner(Arc::new(self))?;
-        ctx.add_analyzer_rule(Arc::new(SourceFunctionAnalyzerRule));
+        self.install_relation_planner(ctx)?;
+        Self::install_analyzer(ctx);
         Ok(())
+    }
+
+    /// Installs only the relation planner that parks source-function calls.
+    ///
+    /// Use this only when the caller installs the analyzer separately for the
+    /// same session.
+    pub(crate) fn install_relation_planner(self, ctx: &SessionContext) -> Result<()> {
+        ctx.register_relation_planner(Arc::new(self))
+    }
+
+    /// Installs the analyzer that resolves parked source-function calls.
+    ///
+    /// `DataFusion` appends analyzer rules, so keep this idempotent for callers
+    /// that share one session across source-function and UDF planning hooks.
+    pub(crate) fn install_analyzer(ctx: &SessionContext) {
+        let state_ref = ctx.state_ref();
+        let mut state = state_ref.write();
+        if state
+            .analyzer()
+            .rules
+            .iter()
+            .any(|rule| rule.name() == SOURCE_FUNCTION_ANALYZER_RULE_NAME)
+        {
+            return;
+        }
+        state.add_analyzer_rule(Arc::new(SourceFunctionAnalyzerRule));
     }
 
     fn find(&self, call: &ScopedTableFunctionCall) -> Option<&SourceFunction> {
@@ -90,20 +124,12 @@ impl SourceFunctionRegistry {
     }
 
     fn available_functions_hint(&self, schema: &str) -> String {
-        let mut names: Vec<&str> = self
-            .functions
-            .iter()
-            .filter_map(|(key, function)| {
-                (key.schema == schema).then_some(function.display_name.as_str())
-            })
-            .collect();
-        names.sort_unstable();
-
-        if names.is_empty() {
-            String::new()
-        } else {
-            format!("; available functions: {}", names.join(", "))
-        }
+        available_functions_hint(
+            schema,
+            self.functions
+                .iter()
+                .map(|(key, function)| (key, function.display_name.as_str())),
+        )
     }
 }
 
@@ -174,10 +200,6 @@ impl SourceFunction {
             factory: Arc::clone(&function.factory),
         }
     }
-
-    fn contains(&self, name: &str) -> bool {
-        self.arguments.iter().any(|argument| argument.name == name)
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -208,10 +230,6 @@ impl ScopedTableFunctionSignature for SourceFunction {
         self.arguments
             .get(index)
             .map(|argument| argument.name.as_str())
-    }
-
-    fn contains(&self, name: &str) -> bool {
-        self.contains(name)
     }
 }
 
@@ -270,16 +288,11 @@ impl SourceFunctionNode {
     }
 
     fn reject_unbound_parameters(&self) -> Result<()> {
-        for (declared_arg, call_expr) in self.declared_args_with_call_exprs() {
-            if let Some(placeholder) = find_placeholder(call_expr) {
-                return Err(DataFusionError::Plan(format!(
-                    "{} argument '{}' is bound to parameter {placeholder}, \
-                     but no value was provided for it",
-                    self.display_name, declared_arg.name
-                )));
-            }
-        }
-        Ok(())
+        reject_unbound_table_function_parameters(
+            &self.display_name,
+            self.declared_args_with_call_exprs()
+                .map(|(argument, arg)| (argument.name.as_str(), arg)),
+        )
     }
 
     fn to_provider_scan(&self) -> Result<LogicalPlan> {
@@ -400,6 +413,28 @@ impl AnalyzerRule for SourceFunctionAnalyzerRule {
     }
 
     fn name(&self) -> &'static str {
-        "coral_source_functions"
+        SOURCE_FUNCTION_ANALYZER_RULE_NAME
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn install_analyzer_is_idempotent() {
+        let ctx = SessionContext::new();
+
+        SourceFunctionRegistry::install_analyzer(&ctx);
+        SourceFunctionRegistry::install_analyzer(&ctx);
+
+        let count = ctx
+            .state()
+            .analyzer()
+            .rules
+            .iter()
+            .filter(|rule| rule.name() == SOURCE_FUNCTION_ANALYZER_RULE_NAME)
+            .count();
+        assert_eq!(count, 1);
     }
 }

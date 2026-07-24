@@ -1,9 +1,18 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use coral_engine::{CoralQuery, QuerySource, RuntimeSourceComponent, RuntimeSourcePackage};
-use coral_spec::backends::http::HttpSourceManifest;
+use async_trait::async_trait;
+use coral_engine::{
+    BoundRequestIdentityHttpAuthenticator, CoralQuery, QueryRuntimeConfig, QuerySource,
+    RequestIdentityHttpAuthenticatorError, RequestIdentityHttpAuthenticatorFactory,
+    RequestIdentitySelectionContext, RequestIdentitySelectionError, RequestIdentitySelector,
+    RuntimeSourceComponent, RuntimeSourcePackage, SelectedRequestIdentity,
+};
 use coral_spec::parse_source_manifest_yaml;
+use coral_spec::v4::{AcceptedIdentityRequirement, IdentityRequirements};
 use coral_spec::{FilterMode, FilterSpec, ManifestDataType};
+use reqwest::header::{HeaderName, HeaderValue};
 use serde_json::json;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -37,6 +46,7 @@ async fn multi_component_source_executes_across_component_tables() {
             description: "Composite GitHub runtime package".to_string(),
             declared_inputs: Vec::new(),
             test_queries: Vec::new(),
+            identity_requirements: None,
             components: vec![
                 RuntimeSourceComponent::Http(issues),
                 RuntimeSourceComponent::Http(pulls),
@@ -75,6 +85,7 @@ async fn composite_source_rejects_unsupported_lookup_key_component_backend() {
             description: "Composite runtime package".to_string(),
             declared_inputs: Vec::new(),
             test_queries: Vec::new(),
+            identity_requirements: None,
             components: vec![RuntimeSourceComponent::File(
                 file_component_with_lookup_key_filter(),
             )],
@@ -123,6 +134,7 @@ async fn multi_component_source_can_register_multiple_schemas() {
             description: "Composite GitHub runtime package".to_string(),
             declared_inputs: Vec::new(),
             test_queries: Vec::new(),
+            identity_requirements: None,
             components: vec![
                 RuntimeSourceComponent::Http(issues),
                 RuntimeSourceComponent::Http(pulls),
@@ -162,6 +174,7 @@ async fn selected_sources_reject_runtime_schema_collisions() {
             description: "Composite GitHub runtime package".to_string(),
             declared_inputs: Vec::new(),
             test_queries: Vec::new(),
+            identity_requirements: None,
             components: vec![RuntimeSourceComponent::Http(http_component(
                 &server.uri(),
                 "github_v4_rest",
@@ -180,6 +193,7 @@ async fn selected_sources_reject_runtime_schema_collisions() {
             description: "Conflicting runtime package".to_string(),
             declared_inputs: Vec::new(),
             test_queries: Vec::new(),
+            identity_requirements: None,
             components: vec![RuntimeSourceComponent::Http(http_component(
                 &server.uri(),
                 "github_v4_rest",
@@ -216,6 +230,7 @@ async fn validate_source_reports_only_component_schemas_for_multi_schema_source(
             description: "Composite GitHub runtime package".to_string(),
             declared_inputs: Vec::new(),
             test_queries: Vec::new(),
+            identity_requirements: None,
             components: vec![
                 RuntimeSourceComponent::Http(issues),
                 RuntimeSourceComponent::Http(pulls),
@@ -241,12 +256,169 @@ async fn validate_source_reports_only_component_schemas_for_multi_schema_source(
     assert!(report.table_functions.is_empty());
 }
 
+#[tokio::test]
+async fn identity_gated_source_requires_request_identity_selector() {
+    let source = identity_runtime_source(identity_http_component());
+
+    let error = CoralQuery::list_catalog(&[source], test_runtime(), None)
+        .await
+        .expect_err("identity-gated source should require a selector");
+
+    assert!(
+        error.to_string().contains(
+            "source 'github_v4' declares identity_requirements but no request identity selector is installed"
+        ),
+        "{error}"
+    );
+}
+
+#[tokio::test]
+async fn identity_gated_source_requires_request_identity_authenticator_factory() {
+    let source = identity_runtime_source(identity_http_component());
+    let runtime =
+        test_runtime().with_request_identity_selector(Some(Arc::new(UnexpectedIdentitySelector)));
+
+    let error = CoralQuery::list_catalog(&[source], runtime, None)
+        .await
+        .expect_err("identity-gated source should require an authenticator factory");
+
+    assert!(
+        error.to_string().contains(
+            "source 'github_v4' declares identity_requirements but no request identity HTTP authenticator factory is installed"
+        ),
+        "{error}"
+    );
+}
+
+#[tokio::test]
+async fn identity_gated_sources_reject_duplicate_source_names_before_binding() {
+    let sources = [
+        identity_runtime_source(identity_http_component()),
+        identity_runtime_source(identity_http_component()),
+    ];
+    let factory_called = Arc::new(AtomicBool::new(false));
+    let runtime = test_runtime()
+        .with_request_identity_selector(Some(Arc::new(UnexpectedIdentitySelector)))
+        .with_request_identity_http_authenticator_factory(Some(identity_factory(Arc::clone(
+            &factory_called,
+        ))));
+
+    let error = CoralQuery::list_catalog(&sources, runtime, None)
+        .await
+        .expect_err("duplicate gated source names should fail before identity binding");
+
+    assert!(
+        error
+            .to_string()
+            .contains("source 'github_v4' appears more than once with identity_requirements"),
+        "{error}"
+    );
+    assert!(!factory_called.load(Ordering::Relaxed));
+}
+
+#[tokio::test]
+async fn identity_gated_source_binds_identity_once_for_all_http_components() {
+    let first = identity_http_component();
+    let mut second = identity_http_component();
+    second.common.name = "github_v4_graphql".to_string();
+    let source = identity_runtime_source_with_components(vec![first, second]);
+    let factory_called = Arc::new(AtomicBool::new(false));
+    let runtime = identity_runtime(
+        SelectedRequestIdentity::new(
+            "identity-1",
+            "github_oauth",
+            BTreeMap::from([
+                ("host".to_string(), json!("api.github.com")),
+                ("port".to_string(), json!(443)),
+            ]),
+        ),
+        Arc::clone(&factory_called),
+    );
+
+    let catalog = CoralQuery::list_catalog(&[source], runtime, None)
+        .await
+        .expect("one source identity should authenticate every HTTP component");
+
+    assert!(
+        catalog
+            .tables
+            .iter()
+            .any(|table| table.schema_name == "github_v4_rest")
+    );
+    assert!(
+        catalog
+            .tables
+            .iter()
+            .any(|table| table.schema_name == "github_v4_graphql")
+    );
+    assert!(factory_called.load(Ordering::Relaxed));
+}
+
+#[tokio::test]
+async fn identity_gated_source_rejects_selected_identity_type_mismatch() {
+    let source = identity_runtime_source(identity_http_component());
+    let factory_called = Arc::new(AtomicBool::new(false));
+    let runtime = identity_runtime(
+        SelectedRequestIdentity::new(
+            "identity-1",
+            "github_oauth",
+            BTreeMap::from([
+                ("host".to_string(), json!("api.github.com")),
+                ("port".to_string(), json!(443.0)),
+            ]),
+        ),
+        Arc::clone(&factory_called),
+    );
+
+    let error = CoralQuery::list_catalog(&[source], runtime, None)
+        .await
+        .expect_err("JSON type mismatch should reject selected identity");
+
+    assert!(
+        error.to_string().contains(
+            "selected identity 'identity-1' with spec 'github_oauth' that does not satisfy identity_requirements"
+        ),
+        "{error}"
+    );
+    assert!(!factory_called.load(Ordering::Relaxed));
+}
+
+#[tokio::test]
+async fn identity_gated_source_accepts_spec_id_and_audience_subset() {
+    let source = identity_runtime_source(identity_http_component());
+    let factory_called = Arc::new(AtomicBool::new(false));
+    let runtime = identity_runtime(
+        SelectedRequestIdentity::new(
+            "identity-1",
+            "github_oauth",
+            BTreeMap::from([
+                ("host".to_string(), json!("api.github.com")),
+                ("port".to_string(), json!(443)),
+                ("tenant".to_string(), json!("acme")),
+            ]),
+        ),
+        Arc::clone(&factory_called),
+    );
+
+    let catalog = CoralQuery::list_catalog(&[source], runtime, None)
+        .await
+        .expect("matching identity should build runtime");
+
+    assert!(
+        catalog
+            .tables
+            .iter()
+            .any(|table| { table.schema_name == "github_v4_rest" && table.table_name == "issues" })
+    );
+    assert!(factory_called.load(Ordering::Relaxed));
+}
+
 fn http_component(
     base_url: &str,
     schema_name: &str,
     table_name: &str,
     path: &str,
-) -> HttpSourceManifest {
+) -> coral_spec::backends::http::HttpSourceManifest {
     let manifest = parse_source_manifest_yaml(&format!(
         r"
 name: {schema_name}
@@ -270,6 +442,113 @@ tables:
     ))
     .expect("manifest");
     manifest.as_http().expect("http manifest").clone()
+}
+
+fn identity_http_component() -> coral_spec::backends::http::HttpSourceManifest {
+    let mut manifest = http_component(
+        "https://api.example.com",
+        "github_v4_rest",
+        "issues",
+        "/issues",
+    );
+    manifest.common.dsl_version = 4;
+    manifest
+}
+
+fn identity_runtime_source(
+    component: coral_spec::backends::http::HttpSourceManifest,
+) -> QuerySource {
+    identity_runtime_source_with_components(vec![component])
+}
+
+fn identity_runtime_source_with_components(
+    components: Vec<coral_spec::backends::http::HttpSourceManifest>,
+) -> QuerySource {
+    QuerySource::from_runtime_components(
+        RuntimeSourcePackage {
+            source_name: "github_v4".to_string(),
+            authored_version: None,
+            description: "GitHub v4 runtime package".to_string(),
+            declared_inputs: Vec::new(),
+            test_queries: Vec::new(),
+            identity_requirements: Some(identity_requirements()),
+            components: components
+                .into_iter()
+                .map(RuntimeSourceComponent::Http)
+                .collect(),
+        },
+        BTreeMap::new(),
+        BTreeMap::new(),
+    )
+    .expect("identity runtime package")
+}
+
+fn identity_requirements() -> IdentityRequirements {
+    IdentityRequirements {
+        accepts: vec![AcceptedIdentityRequirement {
+            id: "github_rest_read".to_string(),
+            identity_specs: vec!["github_oauth".to_string()],
+            audience: BTreeMap::from([
+                ("host".to_string(), json!("api.github.com")),
+                ("port".to_string(), json!(443)),
+            ]),
+        }],
+    }
+}
+
+fn identity_runtime(
+    identity: SelectedRequestIdentity,
+    factory_called: Arc<AtomicBool>,
+) -> QueryRuntimeConfig {
+    QueryRuntimeConfig::default()
+        .with_request_identity_selector(Some(Arc::new(FixedIdentitySelector { identity })))
+        .with_request_identity_http_authenticator_factory(Some(identity_factory(factory_called)))
+}
+
+fn identity_factory(factory_called: Arc<AtomicBool>) -> RequestIdentityHttpAuthenticatorFactory {
+    Arc::new(move |_identity| {
+        assert!(
+            !factory_called.swap(true, Ordering::Relaxed),
+            "identity authenticator factory should run once per source"
+        );
+        Ok(empty_identity_authenticator())
+    })
+}
+
+fn empty_identity_authenticator() -> BoundRequestIdentityHttpAuthenticator {
+    Arc::new(|_request, _resolved_inputs| {
+        Box::pin(async {
+            Ok::<Vec<(HeaderName, HeaderValue)>, RequestIdentityHttpAuthenticatorError>(Vec::new())
+        })
+    })
+}
+
+#[derive(Debug)]
+struct FixedIdentitySelector {
+    identity: SelectedRequestIdentity,
+}
+
+#[async_trait]
+impl RequestIdentitySelector for FixedIdentitySelector {
+    async fn select_identity(
+        &self,
+        _identity: &RequestIdentitySelectionContext,
+    ) -> Result<SelectedRequestIdentity, RequestIdentitySelectionError> {
+        Ok(self.identity.clone())
+    }
+}
+
+#[derive(Debug)]
+struct UnexpectedIdentitySelector;
+
+#[async_trait]
+impl RequestIdentitySelector for UnexpectedIdentitySelector {
+    async fn select_identity(
+        &self,
+        _identity: &RequestIdentitySelectionContext,
+    ) -> Result<SelectedRequestIdentity, RequestIdentitySelectionError> {
+        panic!("identity selection should not run")
+    }
 }
 
 fn file_component_with_lookup_key_filter() -> coral_spec::backends::file::FileSourceManifest {

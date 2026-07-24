@@ -1,4 +1,4 @@
-//! Thin local transport bootstrap and shared query-result helpers for Coral.
+//! Thin transport bootstrap and shared query-result helpers for Coral.
 //!
 //! `coral-client` intentionally stays narrow today. It owns:
 //!
@@ -41,10 +41,11 @@ use coral_api::v1::ExecuteSqlResponse;
 use serde_json::Value;
 
 pub use client::{
-    AppClient, CatalogClient, DEFAULT_WORKSPACE_ID, FeedbackClient, QueryClient, SearchClient,
-    SourceClient, WorkspaceClient, default_workspace, workspace,
+    AppClient, CatalogClient, DEFAULT_WORKSPACE_ID, FeedbackClient, FunctionClient, QueryClient,
+    SearchClient, SourceClient, TaskClient, WorkspaceClient, default_workspace, workspace,
 };
 pub use error::{ClientError, QueryResultError};
+pub use propagation::{BearerToken, with_task_metadata};
 pub use search::{
     SearchResponseValue, format_schema_table_equivalent, format_search_response_json,
     format_search_response_text, format_sql_identifier, minimal_table_function_call_example,

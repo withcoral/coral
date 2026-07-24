@@ -3290,6 +3290,64 @@ async fn source_scoped_table_function_binds_query_parameters() {
 }
 
 #[tokio::test]
+async fn source_scoped_table_function_serializes_timestamp_query_parameter() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/search/issues"))
+        .and(query_param("q", "flaky"))
+        .and(query_param("since", "2024-01-01T00:00:00Z"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [{
+                "title": "Flaky workspace cleanup",
+                "score": 9.5
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut manifest = search_function_manifest("timestamp_param_search", &server.uri());
+    manifest["functions"][0]["args"]
+        .as_array_mut()
+        .expect("function args are an array")
+        .push(json!({
+            "name": "since",
+            "type": "Timestamp",
+            "bind": { "arg": "since" }
+        }));
+    manifest["functions"][0]["request"]["query"]
+        .as_array_mut()
+        .expect("request query bindings are an array")
+        .push(json!({ "name": "since", "from": "arg", "key": "since" }));
+
+    let source = build_source(manifest);
+    let params = QueryParameters::from([(
+        "since".to_string(),
+        QueryParameterValue::timestamp_micros(1_704_067_200_000_000),
+    )]);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql_with_params(
+            &[source],
+            test_runtime(),
+            "SELECT title, score FROM timestamp_param_search.search_issues(\
+             q => 'flaky', since => $since)",
+            params,
+        )
+        .await
+        .expect("timestamp query parameter should bind and execute"),
+    );
+
+    assert_eq!(
+        rows,
+        vec![json!({
+            "title": "Flaky workspace cleanup",
+            "score": 9.5
+        })]
+    );
+}
+
+#[tokio::test]
 async fn explain_sql_binds_query_parameters() {
     let server = MockServer::start().await;
     let source = build_source(search_function_manifest(
@@ -3462,13 +3520,18 @@ async fn query_parameters_bind_typed_scalar_values() {
         ("count".to_string(), QueryParameterValue::integer(7)),
         ("score".to_string(), QueryParameterValue::float(9.5)),
         ("enabled".to_string(), QueryParameterValue::boolean(true)),
+        (
+            "created_at".to_string(),
+            QueryParameterValue::timestamp_micros(1_704_067_200_000_000),
+        ),
     ]);
 
     let rows = execution_to_rows(
         &CoralQuery::execute_sql_with_params(
             &[],
             test_runtime(),
-            "SELECT $count AS count, $score AS score, $enabled AS enabled \
+            "SELECT $count AS count, $score AS score, $enabled AS enabled, \
+             date_part('year', $created_at) AS created_year \
              WHERE $count = 7 AND $score > 9.0 AND $enabled",
             params,
         )
@@ -3481,27 +3544,37 @@ async fn query_parameters_bind_typed_scalar_values() {
         vec![json!({
             "count": 7,
             "score": 9.5,
-            "enabled": true
+            "enabled": true,
+            "created_year": 2024
         })]
     );
 }
 
 #[tokio::test]
 async fn query_parameters_bind_typed_null_values() {
-    let params = QueryParameters::from([("value".to_string(), QueryParameterValue::null_string())]);
+    let params = QueryParameters::from([
+        ("value".to_string(), QueryParameterValue::null_string()),
+        (
+            "timestamp".to_string(),
+            QueryParameterValue::null_timestamp(),
+        ),
+    ]);
 
     let rows = execution_to_rows(
         &CoralQuery::execute_sql_with_params(
             &[],
             test_runtime(),
-            "SELECT $value IS NULL AS is_null",
+            "SELECT $value IS NULL AS is_null, $timestamp IS NULL AS timestamp_is_null",
             params,
         )
         .await
         .expect("typed null parameters should bind"),
     );
 
-    assert_eq!(rows, vec![json!({ "is_null": true })]);
+    assert_eq!(
+        rows,
+        vec![json!({ "is_null": true, "timestamp_is_null": true })]
+    );
 }
 
 #[tokio::test]

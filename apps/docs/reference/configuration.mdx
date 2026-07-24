@@ -71,6 +71,20 @@ Source specs imported from files and source credential material remain scoped
 to the source installation in a workspace. Reusable global source specs and
 reusable credential references are not config objects today.
 
+## Server
+
+The long-running `coral server` command reads its native gRPC bind address from
+`[server]`:
+
+```toml
+[server]
+bind_addr = "127.0.0.1:14555"
+```
+
+<Warning>
+  The native gRPC server does not authenticate clients. A non-loopback bind exposes Coral and its configured sources to any client that can reach the port. Protect access with a trusted network boundary or authenticating proxy.
+</Warning>
+
 ## Runtime features
 
 Experimental runtime features are configured under `[features]`.
@@ -98,6 +112,7 @@ Feature values must be booleans. Unknown feature keys are preserved in `config.t
 | Feature | Default | Description |
 | ------- | ------- | ----------- |
 | `feedback` | `false` | Experimental. Exposes the MCP feedback tool when enabled. Feedback reports are stored locally and anonymous copies may be uploaded to Coral. |
+| `observed_values_search` | `false` | Experimental. Collects, indexes, retrieves, and maintains values observed during earlier queries. |
 
 ## OpenTelemetry
 

@@ -1,10 +1,15 @@
 use super::*;
+use crate::backends::shared::source_observation::{
+    source_observation_publishers, test_support::RecordingSourceObservationPublisher,
+};
 use crate::runtime::catalog;
 use crate::runtime::registry::{CompiledQuerySource, register_sources_blocking};
 use crate::runtime::source_functions::SourceFunctionRegistry;
 use crate::{
     QuerySource, SourceInputResolutionContext, SourceInputResolver, SourceInputResolverError,
+    SourceObservationPublisher, SourceObservationSurfaceKind,
 };
+use datafusion::arrow::array::StringArray;
 use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::error::DataFusionError;
 use datafusion::prelude::SessionContext;
@@ -300,9 +305,28 @@ fn compile_sources_with_mcp_manifest(
         source_input_resolution.variables(),
     ));
     let source_inputs = Arc::new(McpSourceInputs::static_inputs(resolved_inputs));
-    let compiled =
-        compile_source_with_caller(mcp_manifest, source_input_resolution, source_inputs, caller);
+    let compiled = compile_source_with_caller(
+        mcp_manifest,
+        source_input_resolution,
+        source_inputs,
+        caller,
+        source_observation_publishers(&[]),
+    );
     vec![CompiledQuerySource { source, compiled }]
+}
+
+fn compile_sources_with_observation_publishers(
+    manifest: coral_spec::ValidatedSourceManifest,
+    caller: Arc<dyn McpToolCaller>,
+    publishers: &[Arc<dyn SourceObservationPublisher>],
+) -> Vec<CompiledQuerySource> {
+    compile_sources_with_inputs_and_observation_publishers(
+        manifest,
+        caller,
+        BTreeMap::new(),
+        None,
+        publishers,
+    )
 }
 
 fn compile_sources_with_inputs(
@@ -310,6 +334,22 @@ fn compile_sources_with_inputs(
     caller: Arc<dyn McpToolCaller>,
     secrets: BTreeMap<String, String>,
     source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
+) -> Vec<CompiledQuerySource> {
+    compile_sources_with_inputs_and_observation_publishers(
+        manifest,
+        caller,
+        secrets,
+        source_input_resolver,
+        &[],
+    )
+}
+
+fn compile_sources_with_inputs_and_observation_publishers(
+    manifest: coral_spec::ValidatedSourceManifest,
+    caller: Arc<dyn McpToolCaller>,
+    secrets: BTreeMap<String, String>,
+    source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
+    publishers: &[Arc<dyn SourceObservationPublisher>],
 ) -> Vec<CompiledQuerySource> {
     let mcp_manifest = manifest.as_mcp().expect("mcp manifest").clone();
     let variables = BTreeMap::new();
@@ -328,8 +368,13 @@ fn compile_sources_with_inputs(
         )),
         None => Arc::new(McpSourceInputs::static_inputs(resolved_inputs)),
     };
-    let compiled =
-        compile_source_with_caller(mcp_manifest, source_input_resolution, source_inputs, caller);
+    let compiled = compile_source_with_caller(
+        mcp_manifest,
+        source_input_resolution,
+        source_inputs,
+        caller,
+        source_observation_publishers(publishers),
+    );
     vec![CompiledQuerySource { source, compiled }]
 }
 
@@ -439,7 +484,7 @@ fn register_test_sources(ctx: &SessionContext, sources: Vec<CompiledQuerySource>
 
 fn register_test_sources_with_catalog(ctx: &SessionContext, sources: Vec<CompiledQuerySource>) {
     let registration = register_sources_blocking(ctx, sources).expect("mcp source should register");
-    catalog::register(ctx, &registration.active_sources).expect("catalog should register");
+    catalog::register(ctx, &registration.active_sources, &[]).expect("catalog should register");
     let source_functions = SourceFunctionRegistry::new(
         registration
             .active_sources
@@ -748,6 +793,72 @@ async fn applies_projection_and_limit_to_mcp_table_scan() {
     let schema = batches.first().expect("at least one batch").schema();
     assert_eq!(schema.fields().len(), 1);
     assert_eq!(schema.field(0).name(), "title");
+}
+
+#[tokio::test]
+async fn source_scan_observation_sees_full_mcp_batch_before_projection() {
+    let ctx = SessionContext::new();
+    let caller = Arc::new(FakeMcpTableCaller {
+        calls: Mutex::new(Vec::new()),
+    });
+    let publisher = Arc::new(RecordingSourceObservationPublisher::default());
+    register_test_sources(
+        &ctx,
+        compile_sources_with_observation_publishers(
+            mcp_table_manifest(),
+            caller,
+            &[publisher.clone() as Arc<dyn SourceObservationPublisher>],
+        ),
+    );
+
+    let batches = ctx
+        .sql("SELECT title FROM test_mcp.issues WHERE id = '2'")
+        .await
+        .expect("query should plan")
+        .collect()
+        .await
+        .expect("query should execute");
+
+    let rendered = pretty_format_batches(&batches)
+        .expect("batches should render")
+        .to_string();
+    assert!(rendered.contains("| Bug B"));
+    assert!(!rendered.contains("| Bug A"));
+    assert!(!rendered.contains("| Bug C"));
+    assert_eq!(
+        batches
+            .first()
+            .expect("projected result batch")
+            .schema()
+            .fields()
+            .iter()
+            .map(|field| field.name().as_str())
+            .collect::<Vec<_>>(),
+        ["title"]
+    );
+
+    let observations = publisher.observations();
+    let issue_scan = observations
+        .iter()
+        .find(|observation| {
+            observation.source_name == "test_mcp" && observation.surface_name == "issues"
+        })
+        .expect("issues scan should be observed");
+
+    assert_eq!(issue_scan.surface_kind, SourceObservationSurfaceKind::Table);
+    assert_eq!(issue_scan.column_names, ["id", "title", "state"]);
+    assert_eq!(issue_scan.row_count, 3);
+
+    let observed_ids = issue_scan
+        .batch
+        .column_by_name("id")
+        .expect("id column")
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("id string array")
+        .iter()
+        .collect::<Vec<_>>();
+    assert_eq!(observed_ids, [Some("1"), Some("2"), Some("3")]);
 }
 
 /// Returns the ClickHouse-style success/error union and records each MCP

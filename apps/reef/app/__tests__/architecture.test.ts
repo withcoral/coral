@@ -44,6 +44,9 @@ const COMPONENTS_DIR = path.join(APP_SRC, 'components')
 const ROUTE_CONFIG_FILE = path.join(APP_SRC, 'routes.ts')
 const ROUTES_DIR = path.join(APP_SRC, 'routes')
 const WAX_COMPONENTS_DIR = path.join(APP_SRC, 'wax', 'components')
+const REEF_ROOT = path.resolve(APP_SRC, '..')
+const DESKTOP_SRC_DIR = path.resolve(REEF_ROOT, '..', 'desktop', 'src')
+const DESKTOP_MAIN_DIR = path.join(DESKTOP_SRC_DIR, 'main')
 
 // Rules that apply to both the wax design system and app-level components.
 const ALL_COMPONENT_DIRS = [WAX_COMPONENTS_DIR, COMPONENTS_DIR]
@@ -281,6 +284,14 @@ function getFilesRecursively(dir: string, pattern: RegExp): string[] {
   return files
 }
 
+function sourceSection(content: string, startMarker: string, endMarker: string): string {
+  const start = content.indexOf(startMarker)
+  const end = content.indexOf(endMarker, start)
+  expect(start, `Missing source marker: ${startMarker}`).toBeGreaterThanOrEqual(0)
+  expect(end, `Missing source marker: ${endMarker}`).toBeGreaterThan(start)
+  return content.slice(start, end).replace(/\s/g, '')
+}
+
 describe('Architectural Tests', () => {
   describe('1. Component Isolation', () => {
     it('components should not import directly from routes (separation of concerns)', () => {
@@ -337,18 +348,38 @@ describe('Architectural Tests', () => {
     it('app shell should wrap only top-level app routes', () => {
       const routeConfig = fs.readFileSync(ROUTE_CONFIG_FILE, 'utf-8')
 
+      expect(routeConfig).toContain(
+        "route(`${routePattern('workspaceSource')}/oauth-install`, 'routes/source-oauth-install.ts')",
+      )
+      // Onboarding is a hidden, manually visited flow outside the normal app chrome.
+      expect(routeConfig).toContain("route('onboarding', 'routes/onboarding.tsx')")
       expect(routeConfig).toContain("layout('routes/app-shell.tsx', [")
       expect(routeConfig).toContain("index('routes/index.tsx')")
-      expect(routeConfig).toContain("route('sources', 'routes/sources.tsx', [")
+      expect(routeConfig).toContain(
+        "route(routePattern('workspaces'), 'routes/workspaces-action.ts')",
+      )
+      expect(routeConfig).toContain(
+        "route(routePattern('workspaceSources'), 'routes/sources.tsx', [",
+      )
+      expect(routeConfig).toContain("route('install', 'routes/source-install.tsx')")
       expect(routeConfig).toContain("route(':sourceName', 'routes/source-detail.tsx')")
-      expect(routeConfig).toContain("route('traces', 'routes/traces.tsx')")
-      // Settings is gated to the desktop build, but the route entry is still present.
-      expect(routeConfig).toContain("route('settings', 'routes/settings.tsx')")
+      // Schema is a layout with nested table-detail routes.
+      expect(routeConfig).toContain("route(routePattern('workspaceSchema'), 'routes/schema.tsx', [")
+      expect(routeConfig).toContain("index('routes/schema-empty.tsx')")
+      expect(routeConfig).toContain("route(':schemaName/:tableName', 'routes/schema-table.tsx')")
+      expect(routeConfig).toContain(
+        "route(':schemaName/functions/:functionName', 'routes/schema-table-function.tsx')",
+      )
+      expect(routeConfig).toContain("route(routePattern('workspaceTraces'), 'routes/traces.tsx', [")
+      expect(routeConfig).toContain("route(':traceId', 'routes/trace-detail.tsx')")
+      // Settings stays in the shared app shell; desktop-only sections are gated in the route.
+      expect(routeConfig).toContain("route(routePattern('settings'), 'routes/settings.tsx')")
 
-      // Structural check: every route is nested inside the layout, and settings
-      // keeps its desktop-only conditional spread.
+      // Structural check: the same-origin resource route and onboarding stay
+      // outside the app shell, while canonical workspace routes and settings
+      // stay inside it.
       expect(routeConfig).toMatch(
-        /layout\(\s*'routes\/app-shell\.tsx',\s*\[\s*index\('routes\/index\.tsx'\),\s*route\('sources', 'routes\/sources\.tsx',\s*\[\s*route\(':sourceName', 'routes\/source-detail\.tsx'\),?\s*\]\),\s*route\('traces', 'routes\/traces\.tsx'\),\s*\.\.\.\(\s*isDesktopApp\s*\?\s*\[route\('settings', 'routes\/settings\.tsx'\)\]\s*:\s*\[\]\),?\s*\]\s*\)/,
+        /export default \[\s*(?:\/\/[^\n]*\n\s*)*route\(`\$\{routePattern\('workspaceSource'\)\}\/oauth-install`, 'routes\/source-oauth-install\.ts'\),\s*route\('onboarding', 'routes\/onboarding\.tsx'\),\s*layout\(\s*'routes\/app-shell\.tsx',\s*\[[\s\S]*\]\s*\),?\s*\] satisfies RouteConfig/,
       )
     })
 
@@ -532,6 +563,133 @@ describe('Architectural Tests', () => {
             `Please update BASELINES.storybookCoverageComponents to ${violations.length} in this file.`,
         )
       }
+    })
+  })
+
+  describe('5. Coral Transport Boundaries', () => {
+    it('keeps Connect transport construction out of browser application source', () => {
+      const browserSourceFiles = getFilesRecursively(APP_SRC, /\.tsx?$/).filter(
+        (file) =>
+          !file.includes('.server.') &&
+          !file.includes('.test.') &&
+          !file.includes('.stories.') &&
+          !file.includes(`${path.sep}__tests__${path.sep}`),
+      )
+      const violations = browserSourceFiles
+        .filter((file) => {
+          const content = fs.readFileSync(file, 'utf-8')
+          return (
+            extractImports(content).includes('@connectrpc/connect-web') ||
+            /\bcreateGrpcWebTransport\s*\(/.test(content)
+          )
+        })
+        .map((file) => path.relative(APP_SRC, file))
+
+      expect(violations).toEqual([])
+    })
+
+    it('keeps Source and Trace clients behind the request-scoped server boundary', () => {
+      const requestClient = fs.readFileSync(
+        path.join(APP_SRC, 'lib', 'coral-request.server.ts'),
+        'utf-8',
+      )
+
+      expect(extractImports(requestClient)).toContain('@connectrpc/connect-web')
+      expect(requestClient).toMatch(/export function sourceClientForRequest\s*\(/)
+      expect(requestClient).toMatch(/export function traceClientForRequest\s*\(/)
+    })
+
+    it('retains root sidebar hydration without warming a browser Coral runtime', () => {
+      const root = fs.readFileSync(path.join(APP_SRC, 'root.tsx'), 'utf-8')
+
+      expect(root).not.toMatch(/ensureCoralRuntime|coral-runtime/)
+      expect(root).toMatch(/readSidebarCollapsedCookieValue\(document\.cookie\)/)
+      expect(root).toMatch(/clientLoader\.hydrate\s*=\s*true as const/)
+    })
+
+    it('keeps Desktop main responsible for sidecar readiness', () => {
+      const desktopIndex = fs.readFileSync(path.join(DESKTOP_MAIN_DIR, 'index.ts'), 'utf-8')
+      const appRenderer = fs.readFileSync(path.join(DESKTOP_MAIN_DIR, 'app-renderer.ts'), 'utf-8')
+      const devEntry = sourceSection(
+        desktopIndex,
+        'async function rendererEntryUrl()',
+        'function urlOrigin',
+      )
+      const readyHandler = sourceSection(
+        desktopIndex,
+        'app.whenReady().then',
+        "app.on('before-quit'",
+      )
+      const responseHandler = sourceSection(
+        appRenderer,
+        'async function reactRouterResponse',
+        'async function secureDocumentResponse',
+      )
+      const endpointRefresh = sourceSection(
+        appRenderer,
+        'async function refreshServerSidecarEndpoint',
+        'async function reactRouterResponse',
+      )
+      const refreshIndex = responseHandler.indexOf(
+        'awaitrefreshServerSidecarEndpoint(resolveSidecarBaseUrl)',
+      )
+      const handlerIndex = responseHandler.indexOf('awaitloadReactRouterHandler()')
+
+      expect(devEntry).toContain('awaitensureSidecar()')
+      expect(readyHandler).toContain(
+        'registerAppProtocol(()=>ensureSidecar().then((started)=>started.url))',
+      )
+      expect(readyHandler).toContain('voidensureSidecar().catch(')
+      expect(endpointRefresh).toContain('process.env.CORAL_ENDPOINT=awaitresolveSidecarBaseUrl()')
+      expect(refreshIndex).toBeGreaterThanOrEqual(0)
+      expect(handlerIndex).toBeGreaterThanOrEqual(0)
+      expect(refreshIndex).toBeLessThan(handlerIndex)
+    })
+
+    it('derives shared-render and browser Desktop behavior from one build marker', () => {
+      const desktopRoot = path.resolve(DESKTOP_SRC_DIR, '..')
+      const viteConfig = fs.readFileSync(path.join(REEF_ROOT, 'vite.config.ts'), 'utf-8')
+      const desktopHelper = fs.readFileSync(path.join(APP_SRC, 'lib', 'coral-desktop.ts'), 'utf-8')
+      const devScript = fs.readFileSync(path.join(desktopRoot, 'scripts', 'dev.mjs'), 'utf-8')
+      const stageScript = fs.readFileSync(
+        path.join(desktopRoot, 'scripts', 'stage-coral.mjs'),
+        'utf-8',
+      )
+      const desktopBuildSources = [viteConfig, desktopHelper, devScript, stageScript]
+
+      for (const source of desktopBuildSources) {
+        expect(source).not.toContain('VITE_CORAL_DESKTOP_APP')
+      }
+      expect(viteConfig).toMatch(
+        /'import\.meta\.env\.CORAL_DESKTOP_APP':\s*JSON\.stringify\(\s*process\.env\.CORAL_DESKTOP_APP === '1',?\s*\)/,
+      )
+      expect(desktopHelper).toMatch(/return import\.meta\.env\.CORAL_DESKTOP_APP/)
+      expect(devScript.match(/CORAL_DESKTOP_APP:\s*'1'/g)).toHaveLength(1)
+      expect(stageScript.match(/CORAL_DESKTOP_APP:\s*'1'/g)).toHaveLength(1)
+    })
+
+    it('does not expose Coral transport through the renderer or Desktop preload', () => {
+      const appRenderer = fs.readFileSync(path.join(DESKTOP_MAIN_DIR, 'app-renderer.ts'), 'utf-8')
+      const desktopIndex = fs.readFileSync(path.join(DESKTOP_MAIN_DIR, 'index.ts'), 'utf-8')
+      const preload = fs.readFileSync(path.join(DESKTOP_SRC_DIR, 'preload', 'index.ts'), 'utf-8')
+      const sharedTypes = fs.readFileSync(path.join(DESKTOP_SRC_DIR, 'shared', 'types.ts'), 'utf-8')
+      const viteConfig = fs.readFileSync(path.join(REEF_ROOT, 'vite.config.ts'), 'utf-8')
+      const transportSurfaces = [appRenderer, desktopIndex, preload, sharedTypes, viteConfig]
+
+      for (const source of transportSurfaces) {
+        expect(source).not.toMatch(
+          /\/__coral__|GRPC_PATH_PREFIX|APP_GRPC_BASE|grpcBaseUrl|awaitInitialization|coral:await-initialization|proxyToSidecar/,
+        )
+      }
+      expect(viteConfig).toContain("'/coral.v1'")
+      expect(preload).toContain("contextBridge.exposeInMainWorld('coralDesktop', api)")
+      expect(preload).toContain('listMcpClients:')
+      expect(preload).toContain('configureMcp:')
+      expect(preload).toContain('getMcpLaunchConfig:')
+      expect(desktopIndex).toContain("'coral:get-mcp-launch-config'")
+      expect(sharedTypes).toMatch(/interface CoralDesktopApi[\s\S]*listMcpClients\(\)/)
+      expect(sharedTypes).toMatch(/interface CoralDesktopApi[\s\S]*configureMcp\(/)
+      expect(sharedTypes).toMatch(/interface CoralDesktopApi[\s\S]*getMcpLaunchConfig\(\)/)
     })
   })
 })

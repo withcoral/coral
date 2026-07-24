@@ -1,7 +1,25 @@
 use std::collections::BTreeMap;
 
 use super::*;
-use crate::{PaginationMode, SourceTableFunctionKind, parse_source_manifest_yaml};
+use crate::{
+    ManifestDataType, PaginationMode, PaginationSpec, SourceTableFunctionKind,
+    parse_source_manifest_yaml,
+};
+
+fn imported_rest_pagination<'a>(
+    surface: &'a ImportedSurface,
+    operation_id: &str,
+) -> &'a PaginationSpec {
+    match surface
+        .operation_metadata
+        .operations
+        .get(operation_id)
+        .expect("operation metadata")
+    {
+        OperationMetadata::Rest { pagination, .. } => pagination,
+        OperationMetadata::Mcp { .. } => panic!("expected REST metadata"),
+    }
+}
 
 #[test]
 fn extracts_openapi_document_metadata() {
@@ -50,6 +68,114 @@ paths: {}
 }
 
 #[test]
+fn importer_warns_and_skips_external_openapi_operation_refs() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: digitalocean_ref_test
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = &v4.surface;
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /account:
+    get:
+      $ref: resources/account/account_get.yml
+"
+        .as_bytes(),
+    )
+    .expect("operation ref import should emit diagnostics");
+
+    assert!(
+        ir.operations.is_empty(),
+        "unsupported operation refs should not import empty operations: {:?}",
+        ir.operations
+    );
+    let diagnostic = ir
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code == "OPENAPI_EXTERNAL_REF_UNSUPPORTED")
+        .expect("unsupported operation ref diagnostic");
+    assert!(diagnostic.operation_id.is_none());
+    assert!(
+        diagnostic
+            .message
+            .contains("resources/account/account_get.yml"),
+        "{}",
+        diagnostic.message
+    );
+    assert!(
+        diagnostic
+            .message
+            .contains("dereferenced or bundled OpenAPI documents"),
+        "{}",
+        diagnostic.message
+    );
+}
+
+#[test]
+fn importer_resolves_local_openapi_operation_refs() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: local_ref_test
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = &v4.surface;
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /items:
+    get:
+      $ref: '#/x-operations/listItems'
+x-operations:
+  listItems:
+    operationId: items/list
+    responses:
+      '200':
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                type: object
+                properties:
+                  id: {type: string}
+"
+        .as_bytes(),
+    )
+    .expect("local operation ref import");
+
+    let operation = ir.operations.first().expect("operation");
+    assert_eq!(operation.id, "items_list");
+    assert_eq!(operation.output.cardinality, OutputCardinality::List);
+    assert!(
+        ir.diagnostics.is_empty(),
+        "local operation ref should not produce diagnostics: {:?}",
+        ir.diagnostics
+    );
+}
+
+#[test]
 #[expect(
     clippy::too_many_lines,
     reason = "The OpenAPI fixture keeps related naming metadata cases together."
@@ -59,8 +185,7 @@ fn importer_preserves_openapi_operation_naming_metadata() {
         r"
 name: github
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: /tmp/openapi.yaml
     base_url: https://api.github.com
@@ -68,7 +193,7 @@ surfaces:
     )
     .expect("manifest");
     let v4 = manifest.as_v4().expect("v4");
-    let surface = v4.surfaces.first().expect("one surface");
+    let surface = &v4.surface;
     let ir = import_openapi_surface(
         v4,
         surface,
@@ -171,7 +296,8 @@ components:
     assert_eq!(fallback.group.as_deref(), Some("misc"));
     assert_eq!(fallback.operation.as_deref(), Some("get_fallback"));
 
-    let catalog = generate_projection_catalog(v4, &[ir]).expect("catalog");
+    let catalog =
+        generate_projection_catalog(v4, &ir.validated_plan().expect("plan")).expect("catalog");
     let quotes_projection = catalog
         .projections
         .iter()
@@ -182,13 +308,12 @@ components:
 }
 
 #[test]
-fn importer_recognizes_common_wrapped_list_response_fields() {
+fn importer_keeps_common_envelope_objects_as_singletons() {
     let manifest = parse_source_manifest_yaml(
         r"
 name: statusgator
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: /tmp/openapi.yaml
     base_url: https://api.example.com
@@ -196,7 +321,7 @@ surfaces:
     )
     .expect("manifest");
     let v4 = manifest.as_v4().expect("v4");
-    let surface = v4.surfaces.first().expect("one surface");
+    let surface = &v4.surface;
     let ir = import_openapi_surface(
         v4,
         surface,
@@ -233,16 +358,23 @@ components:
     )
     .expect("import");
     let operation = ir.operations.first().expect("operation");
-    assert_eq!(operation.output.cardinality, OutputCardinality::WrappedList);
-    assert_eq!(operation.output.row_path, vec!["data".to_string()]);
+    assert_eq!(operation.output.cardinality, OutputCardinality::Singleton);
 
-    let catalog = generate_projection_catalog(v4, &[ir]).expect("catalog");
+    let catalog =
+        generate_projection_catalog(v4, &ir.validated_plan().expect("plan")).expect("catalog");
     let projection = catalog
         .projections
         .iter()
         .find(|projection| projection.operation_id == "listincidents")
         .expect("projection");
-    assert_eq!(projection.name, "incident");
+    let columns = projection
+        .columns
+        .iter()
+        .map(|column| (column.name.as_str(), column.data_type))
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(columns.get("success"), Some(&ManifestDataType::Boolean));
+    assert_eq!(columns.get("data"), Some(&ManifestDataType::Json));
+    assert_eq!(columns.get("pagination"), Some(&ManifestDataType::Json));
     assert!(matches!(
         projection.kind,
         ProjectionKind::TableFunction {
@@ -252,13 +384,12 @@ components:
 }
 
 #[test]
-fn importer_recognizes_single_array_payload_wrappers() {
+fn importer_keeps_single_array_payload_objects_as_singletons() {
     let manifest = parse_source_manifest_yaml(
         r"
 name: github
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: /tmp/openapi.yaml
     base_url: https://api.github.com
@@ -266,7 +397,7 @@ surfaces:
     )
     .expect("manifest");
     let v4 = manifest.as_v4().expect("v4");
-    let surface = v4.surfaces.first().expect("one surface");
+    let surface = &v4.surface;
     let ir = import_openapi_surface(
         v4,
         surface,
@@ -301,12 +432,18 @@ components:
     )
     .expect("import");
     let operation = ir.operations.first().expect("operation");
-    assert_eq!(operation.output.cardinality, OutputCardinality::WrappedList);
-    assert_eq!(operation.output.row_path, vec!["repositories".to_string()]);
+    assert_eq!(operation.output.cardinality, OutputCardinality::Singleton);
 
-    let catalog = generate_projection_catalog(v4, &[ir]).expect("catalog");
+    let catalog =
+        generate_projection_catalog(v4, &ir.validated_plan().expect("plan")).expect("catalog");
     let projection = catalog.projections.first().expect("projection");
-    assert_eq!(projection.name, "repository");
+    let columns = projection
+        .columns
+        .iter()
+        .map(|column| (column.name.as_str(), column.data_type))
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(columns.get("total_count"), Some(&ManifestDataType::Int64));
+    assert_eq!(columns.get("repositories"), Some(&ManifestDataType::Json));
     assert!(matches!(
         projection.kind,
         ProjectionKind::TableFunction {
@@ -316,13 +453,229 @@ components:
 }
 
 #[test]
-fn importer_handles_recursive_schema_refs() {
+fn importer_keeps_search_result_objects_as_singletons() {
     let manifest = parse_source_manifest_yaml(
         r"
-name: trees
+name: github
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.github.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = &v4.surface;
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /search/issues:
+    get:
+      operationId: search/issues-and-pull-requests
+      parameters:
+        - {name: q, in: query, required: true, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [total_count, incomplete_results, items, search_type]
+                properties:
+                  total_count: {type: integer}
+                  incomplete_results: {type: boolean}
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: {type: integer}
+                        number: {type: integer}
+                        title: {type: string}
+                        state: {type: string}
+                  search_type:
+                    type: string
+                    enum: [lexical, semantic, hybrid]
+                  lexical_fallback_reason:
+                    type: array
+                    items:
+                      type: string
+                      enum: [no_text_terms, quoted_text]
+"
+        .as_bytes(),
+    )
+    .expect("import");
+
+    let operation = ir.operations.first().expect("operation");
+    assert_eq!(operation.output.cardinality, OutputCardinality::Singleton);
+
+    let catalog =
+        generate_projection_catalog(v4, &ir.validated_plan().expect("plan")).expect("catalog");
+    let projection = catalog.projections.first().expect("projection");
+    let columns = projection
+        .columns
+        .iter()
+        .map(|column| (column.name.as_str(), column.data_type))
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(columns.get("total_count"), Some(&ManifestDataType::Int64));
+    assert_eq!(
+        columns.get("incomplete_results"),
+        Some(&ManifestDataType::Boolean)
+    );
+    assert_eq!(columns.get("items"), Some(&ManifestDataType::Json));
+    assert_eq!(columns.get("search_type"), Some(&ManifestDataType::Utf8));
+    assert_eq!(
+        columns.get("lexical_fallback_reason"),
+        Some(&ManifestDataType::Json)
+    );
+    assert!(!columns.contains_key("id"));
+    assert!(!columns.contains_key("number"));
+    assert!(!columns.contains_key("title"));
+    assert!(!columns.contains_key("state"));
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "The fixture mirrors the resource object shape that regressed."
+)]
+fn importer_keeps_resource_objects_with_array_fields_as_singletons() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: github
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.github.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = &v4.surface;
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /orgs/{org}/projectsV2/{project_number}/items/{item_id}:
+    get:
+      operationId: projects/get-org-item
+      parameters:
+        - {name: org, in: path, required: true, schema: {type: string}}
+        - {name: project_number, in: path, required: true, schema: {type: integer}}
+        - {name: item_id, in: path, required: true, schema: {type: integer}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ProjectItemWithContent'}
+components:
+  schemas:
+    ProjectItemWithContent:
+      type: object
+      properties:
+        id:
+          type: number
+          description: The unique identifier of the project item.
+        node_id:
+          type: string
+          description: The node ID of the project item.
+        project_url:
+          type: string
+          format: uri
+          description: The API URL of the project that contains this item.
+        content_type:
+          type: string
+          enum: [Issue, PullRequest, DraftIssue, Redacted]
+          description: The type of content tracked in a project item.
+        content:
+          type: object
+          additionalProperties: true
+          nullable: true
+          description: The content of the item, which varies by content type.
+        creator:
+          type: object
+          properties:
+            login: {type: string}
+          description: A GitHub user.
+        created_at:
+          type: string
+          format: date-time
+          description: The time when the item was created.
+        updated_at:
+          type: string
+          format: date-time
+          description: The time when the item was last updated.
+        archived_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: The time when the item was archived.
+        item_url:
+          type: string
+          format: uri
+          nullable: true
+          description: The API URL of this item.
+        fields:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+          description: The fields and values associated with this item.
+      required: [id, content_type, created_at, updated_at, archived_at]
+"
+        .as_bytes(),
+    )
+    .expect("import");
+
+    let operation = ir.operations.first().expect("operation");
+    assert_eq!(operation.output.cardinality, OutputCardinality::Singleton);
+
+    let row_type = ir
+        .types
+        .iter()
+        .find(|ty| ty.id == operation.output.type_ref)
+        .expect("row type");
+    let IrTypeShape::Object { fields } = &row_type.shape else {
+        panic!("row type imported as {:?}", row_type.shape);
+    };
+    assert_eq!(fields.len(), 11);
+    assert!(fields.iter().any(|field| field.name == "fields"));
+
+    let catalog =
+        generate_projection_catalog(v4, &ir.validated_plan().expect("plan")).expect("catalog");
+    let projection = catalog.projections.first().expect("projection");
+    let column_types = projection
+        .columns
+        .iter()
+        .map(|column| (column.name.as_str(), column.data_type))
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(projection.columns.len(), 11);
+    assert_eq!(column_types.get("id"), Some(&ManifestDataType::Float64));
+    assert_eq!(
+        column_types.get("content_type"),
+        Some(&ManifestDataType::Utf8)
+    );
+    assert_eq!(
+        column_types.get("created_at"),
+        Some(&ManifestDataType::Timestamp)
+    );
+    assert_eq!(column_types.get("fields"), Some(&ManifestDataType::Json));
+}
+
+#[test]
+fn importer_keeps_named_array_fields_on_resource_objects_as_singletons() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: resources
+dsl_version: 4
+surface:
     type: openapi
     file: /tmp/openapi.yaml
     base_url: https://api.example.com
@@ -330,7 +683,56 @@ surfaces:
     )
     .expect("manifest");
     let v4 = manifest.as_v4().expect("v4");
-    let surface = v4.surfaces.first().expect("one surface");
+    let surface = &v4.surface;
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /bundles/{bundle_id}:
+    get:
+      operationId: bundles/get
+      parameters:
+        - {name: bundle_id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: {type: string}
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: {type: string}
+"
+        .as_bytes(),
+    )
+    .expect("import");
+
+    let operation = ir.operations.first().expect("operation");
+    assert_eq!(operation.output.cardinality, OutputCardinality::Singleton);
+}
+
+#[test]
+fn importer_handles_recursive_schema_refs() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: trees
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = &v4.surface;
     let ir = import_openapi_surface(
         v4,
         surface,
@@ -361,14 +763,16 @@ components:
     )
     .expect("recursive schema imports");
     let operation = ir.operations.first().expect("operation");
-    assert_eq!(operation.output.type_ref, "tree");
+    assert_eq!(operation.output.cardinality, OutputCardinality::Singleton);
 
     let types = ir
         .types
         .iter()
         .map(|ty| (ty.id.as_str(), ty))
         .collect::<BTreeMap<_, _>>();
-    let tree = types.get("tree").expect("tree type");
+    let tree = types
+        .get(operation.output.type_ref.as_str())
+        .expect("tree row type");
     let IrTypeShape::Object { fields } = &tree.shape else {
         panic!("tree should import as an object: {:?}", tree.shape);
     };
@@ -378,7 +782,6 @@ components:
         .collect::<BTreeMap<_, _>>();
 
     let id = fields.get("id").expect("id field");
-    assert_eq!(id.type_ref, "tree_id");
     assert!(matches!(
         types.get(id.type_ref.as_str()).expect("id type").shape,
         IrTypeShape::Scalar(IrScalarType::String)
@@ -403,8 +806,7 @@ fn importer_preserves_ref_backed_property_descriptions() {
         r"
 name: property_descriptions
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: /tmp/openapi.yaml
     base_url: https://api.example.com
@@ -412,7 +814,7 @@ surfaces:
     )
     .expect("manifest");
     let v4 = manifest.as_v4().expect("v4");
-    let surface = v4.surfaces.first().expect("one surface");
+    let surface = &v4.surface;
     let ir = import_openapi_surface(
         v4,
         surface,
@@ -463,8 +865,7 @@ fn importer_resolves_referenced_response_objects() {
         r"
 name: referenced_responses
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: /tmp/openapi.yaml
     base_url: https://api.example.com
@@ -472,7 +873,7 @@ surfaces:
     )
     .expect("manifest");
     let v4 = manifest.as_v4().expect("v4");
-    let surface = v4.surfaces.first().expect("one surface");
+    let surface = &v4.surface;
     let ir = import_openapi_surface(
         v4,
         surface,
@@ -514,7 +915,8 @@ components:
         operation.diagnostics
     );
 
-    let catalog = generate_projection_catalog(v4, &[ir]).expect("catalog");
+    let catalog =
+        generate_projection_catalog(v4, &ir.validated_plan().expect("plan")).expect("catalog");
     let projection = catalog
         .projections
         .iter()
@@ -536,8 +938,7 @@ fn importer_handles_2xx_response_range_success_codes() {
         r"
 name: response_ranges
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: /tmp/openapi.yaml
     base_url: https://api.example.com
@@ -545,7 +946,7 @@ surfaces:
     )
     .expect("manifest");
     let v4 = manifest.as_v4().expect("v4");
-    let surface = v4.surfaces.first().expect("one surface");
+    let surface = &v4.surface;
     let ir = import_openapi_surface(
         v4,
         surface,
@@ -616,8 +1017,7 @@ fn importer_preserves_non_string_schema_enum_values() {
         r"
 name: enum_values
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: /tmp/openapi.yaml
     base_url: https://api.example.com
@@ -625,7 +1025,7 @@ surfaces:
     )
     .expect("manifest");
     let v4 = manifest.as_v4().expect("v4");
-    let surface = v4.surfaces.first().expect("one surface");
+    let surface = &v4.surface;
     let ir = import_openapi_surface(
         v4,
         surface,
@@ -667,8 +1067,7 @@ fn importer_respects_additional_properties_false() {
         r"
 name: additional_properties
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: /tmp/openapi.yaml
     base_url: https://api.example.com
@@ -676,7 +1075,7 @@ surfaces:
     )
     .expect("manifest");
     let v4 = manifest.as_v4().expect("v4");
-    let surface = v4.surfaces.first().expect("one surface");
+    let surface = &v4.surface;
     let ir = import_openapi_surface(
         v4,
         surface,
@@ -761,8 +1160,7 @@ fn importer_warns_for_unresolved_response_object_refs() {
         r"
 name: broken_responses
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: /tmp/openapi.yaml
     base_url: https://api.example.com
@@ -770,7 +1168,7 @@ surfaces:
     )
     .expect("manifest");
     let v4 = manifest.as_v4().expect("v4");
-    let surface = v4.surfaces.first().expect("one surface");
+    let surface = &v4.surface;
     let ir = import_openapi_surface(
         v4,
         surface,
@@ -815,8 +1213,7 @@ fn importer_warns_for_openapi_all_of_property_conflicts() {
         r"
 name: conflicting_all_of
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: /tmp/openapi.yaml
     base_url: https://api.example.com
@@ -824,7 +1221,7 @@ surfaces:
     )
     .expect("manifest");
     let v4 = manifest.as_v4().expect("v4");
-    let surface = v4.surfaces.first().expect("one surface");
+    let surface = &v4.surface;
     let ir = import_openapi_surface(
         v4,
         surface,
@@ -870,8 +1267,7 @@ fn importer_preserves_non_string_parameter_defaults() {
         r"
 name: defaults
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: /tmp/openapi.yaml
     base_url: https://api.example.com
@@ -879,7 +1275,7 @@ surfaces:
     )
     .expect("manifest");
     let v4 = manifest.as_v4().expect("v4");
-    let surface = v4.surfaces.first().expect("one surface");
+    let surface = &v4.surface;
     let ir = import_openapi_surface(
         v4,
         surface,
@@ -917,13 +1313,16 @@ paths:
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "The OpenAPI fixture keeps common pagination aliases together."
+)]
 fn importer_infers_common_query_pagination_modes() {
     let manifest = parse_source_manifest_yaml(
         r"
 name: pagination
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: /tmp/openapi.yaml
     base_url: https://api.example.com
@@ -931,7 +1330,7 @@ surfaces:
     )
     .expect("manifest");
     let v4 = manifest.as_v4().expect("v4");
-    let surface = v4.surfaces.first().expect("one surface");
+    let surface = &v4.surface;
     let ir = import_openapi_surface(
         v4,
         surface,
@@ -970,17 +1369,59 @@ paths:
                   type: object
                   properties:
                     id: {type: string}
+  /skip-take:
+    get:
+      operationId: skip-take/list
+      parameters:
+        - {name: skip, in: query, schema: {type: integer, default: 5}}
+        - {name: take, in: query, schema: {type: integer, default: 50}}
+      responses:
+        '200': {content: {application/json: {schema: {type: array, items: {type: object}}}}}
+  /odata:
+    get:
+      operationId: odata/list
+      parameters:
+        - {name: $skip, in: query, schema: {type: integer, default: 10}}
+        - {name: $top, in: query, schema: {type: integer, default: 25}}
+      responses:
+        '200': {content: {application/json: {schema: {type: array, items: {type: object}}}}}
+  /current-page:
+    get:
+      operationId: current-page/list
+      parameters:
+        - {name: current_page, in: query, schema: {type: integer, default: 2}}
+        - {name: items_per_page, in: query, schema: {type: integer, default: 30}}
+      responses:
+        '200': {content: {application/json: {schema: {type: array, items: {type: object}}}}}
+  /page-index:
+    get:
+      operationId: page-index/list
+      parameters:
+        - {name: pageIndex, in: query, schema: {type: integer, default: 3}}
+        - {name: size, in: query, schema: {type: integer, default: 40}}
+      responses:
+        '200': {content: {application/json: {schema: {type: array, items: {type: object}}}}}
+  /dotted-offset:
+    get:
+      operationId: dotted-offset/list
+      parameters:
+        - {name: page.offset, in: query, schema: {type: integer, default: 15}}
+        - {name: page.limit, in: query, schema: {type: integer, default: 60}}
+      responses:
+        '200': {content: {application/json: {schema: {type: array, items: {type: object}}}}}
+  /offset-count:
+    get:
+      operationId: offset-count/list
+      parameters:
+        - {name: offsetIndex, in: query, schema: {type: integer, default: 20}}
+        - {name: count, in: query, schema: {type: integer, default: 70}}
+      responses:
+        '200': {content: {application/json: {schema: {type: array, items: {type: object}}}}}
 "
         .as_bytes(),
     )
     .expect("pagination import");
-    let operations = ir
-        .operations
-        .iter()
-        .map(|operation| (operation.id.as_str(), operation))
-        .collect::<BTreeMap<_, _>>();
-
-    let page = &rest_execution(operations.get("paged_list").expect("paged")).pagination;
+    let page = imported_rest_pagination(&ir, "paged_list");
     assert_eq!(page.mode, PaginationMode::Page);
     assert_eq!(page.page_param.as_deref(), Some("pageNumber"));
     assert_eq!(page.page_start, 2);
@@ -989,7 +1430,7 @@ paths:
     assert_eq!(page_size.max, 100);
     assert_eq!(page_size.query_param.as_deref(), Some("pageSize"));
 
-    let offset = &rest_execution(operations.get("offset_list").expect("offset")).pagination;
+    let offset = imported_rest_pagination(&ir, "offset_list");
     assert_eq!(offset.mode, PaginationMode::Offset);
     assert_eq!(offset.offset_param.as_deref(), Some("offset"));
     assert_eq!(offset.offset_start, 5);
@@ -998,20 +1439,50 @@ paths:
     assert_eq!(page_size.default, 50);
     assert_eq!(page_size.max, 100);
     assert_eq!(page_size.query_param.as_deref(), Some("limit"));
+
+    for (operation_id, offset_param, size_param, start) in [
+        ("skip_take_list", "skip", "take", 5),
+        ("odata_list", "$skip", "$top", 10),
+        ("dotted_offset_list", "page.offset", "page.limit", 15),
+        ("offset_count_list", "offsetIndex", "count", 20),
+    ] {
+        let pagination = imported_rest_pagination(&ir, operation_id);
+        assert_eq!(pagination.mode, PaginationMode::Offset);
+        assert_eq!(pagination.offset_param.as_deref(), Some(offset_param));
+        assert_eq!(pagination.offset_start, start);
+        assert_eq!(
+            pagination
+                .page_size
+                .as_ref()
+                .and_then(|page_size| page_size.query_param.as_deref()),
+            Some(size_param)
+        );
+    }
+    for (operation_id, page_param, size_param, start) in [
+        ("current_page_list", "current_page", "items_per_page", 2),
+        ("page_index_list", "pageIndex", "size", 3),
+    ] {
+        let pagination = imported_rest_pagination(&ir, operation_id);
+        assert_eq!(pagination.mode, PaginationMode::Page);
+        assert_eq!(pagination.page_param.as_deref(), Some(page_param));
+        assert_eq!(pagination.page_start, start);
+        assert_eq!(
+            pagination
+                .page_size
+                .as_ref()
+                .and_then(|page_size| page_size.query_param.as_deref()),
+            Some(size_param)
+        );
+    }
 }
 
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "The OpenAPI fixture keeps related response-driven pagination cases together."
-)]
-fn importer_infers_response_driven_pagination_modes() {
+fn importer_skips_pagination_params_with_non_numeric_types() {
     let manifest = parse_source_manifest_yaml(
         r"
-name: response_pagination
+name: string_pagination
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: /tmp/openapi.yaml
     base_url: https://api.example.com
@@ -1019,7 +1490,91 @@ surfaces:
     )
     .expect("manifest");
     let v4 = manifest.as_v4().expect("v4");
-    let surface = v4.surfaces.first().expect("one surface");
+    let surface = &v4.surface;
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /string-page:
+    get:
+      operationId: string-page/list
+      parameters:
+        - {name: page, in: query, schema: {type: string, default: '1'}}
+        - {name: per_page, in: query, schema: {type: integer, default: 30}}
+      responses:
+        '200': {content: {application/json: {schema: {type: array, items: {type: object}}}}}
+  /string-offset:
+    get:
+      operationId: string-offset/list
+      parameters:
+        - {name: offset, in: query, schema: {type: string}}
+        - {name: limit, in: query, schema: {type: integer, default: 50}}
+      responses:
+        '200': {content: {application/json: {schema: {type: array, items: {type: object}}}}}
+  /string-limit:
+    get:
+      operationId: string-limit/list
+      parameters:
+        - {name: page, in: query, schema: {type: integer, default: 1}}
+        - {name: limit, in: query, schema: {type: string}}
+      responses:
+        '200': {content: {application/json: {schema: {type: array, items: {type: object}}}}}
+  /string-page-link:
+    get:
+      operationId: string-page-link/list
+      parameters:
+        - {name: page, in: query, schema: {type: string, default: '1'}}
+      responses:
+        '200':
+          headers:
+            Link:
+              schema: {type: string}
+          content:
+            application/json:
+              schema: {type: array, items: {type: object}}
+"
+        .as_bytes(),
+    )
+    .expect("string pagination import");
+    for operation_id in [
+        "string_page_list",
+        "string_offset_list",
+        "string_limit_list",
+    ] {
+        assert_eq!(
+            imported_rest_pagination(&ir, operation_id).mode,
+            PaginationMode::None,
+            "operation {operation_id} must not infer pagination from non-numeric inputs"
+        );
+    }
+    let link = imported_rest_pagination(&ir, "string_page_link_list");
+    assert_eq!(link.mode, PaginationMode::LinkHeader);
+    assert_eq!(link.page_param, None);
+    ir.validated_plan()
+        .expect("inferred pagination must satisfy operation metadata validation");
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "The OpenAPI fixture keeps related pagination cardinality cases together."
+)]
+fn importer_infers_response_pagination_only_for_list_responses() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: response_pagination
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = &v4.surface;
     let ir = import_openapi_surface(
         v4,
         surface,
@@ -1091,6 +1646,59 @@ paths:
                   type: object
                   properties:
                     id: {type: string}
+  /iterator:
+    get:
+      operationId: iterator/list
+      parameters:
+        - {name: after, in: query, schema: {type: string, format: date-time}}
+        - {name: iterator, in: query, schema: {type: string}}
+        - {name: limit, in: query, schema: {type: integer, default: 20}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: {type: array, items: {type: object}}
+                  paging:
+                    type: object
+                    properties:
+                      iterator: {type: string}
+  /start-cursor:
+    get:
+      operationId: start-cursor/list
+      parameters:
+        - {name: start_cursor, in: query, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results: {type: array, items: {type: object}}
+                  continuationToken: {type: string}
+  /nested-next:
+    get:
+      operationId: nested-next/list
+      parameters:
+        - {name: cursor, in: query, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results: {type: array, items: {type: object}}
+                  meta:
+                    type: object
+                    properties:
+                      cursor:
+                        type: object
+                        properties:
+                          next: {type: string}
   /singleton:
     get:
       operationId: singleton/get
@@ -1198,42 +1806,31 @@ paths:
         .map(|operation| (operation.id.as_str(), operation))
         .collect::<BTreeMap<_, _>>();
 
-    let cursor = &rest_execution(operations.get("cursor_list").expect("cursor")).pagination;
-    assert_eq!(cursor.mode, PaginationMode::CursorQuery);
-    assert_eq!(cursor.cursor_param.as_deref(), Some("cursor"));
-    assert_eq!(cursor.response_cursor_path, ["meta", "nextCursor"]);
-    assert_eq!(
-        cursor
-            .page_size
-            .as_ref()
-            .and_then(|page_size| page_size.query_param.as_deref()),
-        Some("limit")
-    );
+    for operation_id in [
+        "cursor_list",
+        "pagination_token_list",
+        "iterator_list",
+        "start_cursor_list",
+        "nested_next_list",
+        "singleton_get",
+        "cursor_header_list",
+        "cursor_page_list",
+        "numeric_page_list",
+    ] {
+        let operation = operations.get(operation_id).expect("operation");
+        assert_eq!(
+            operation.output.cardinality,
+            OutputCardinality::Singleton,
+            "{operation_id}"
+        );
+        assert_eq!(
+            imported_rest_pagination(&ir, operation_id).mode,
+            PaginationMode::None,
+            "{operation_id}"
+        );
+    }
 
-    let pagination_token = &rest_execution(
-        operations
-            .get("pagination_token_list")
-            .expect("pagination token"),
-    )
-    .pagination;
-    assert_eq!(pagination_token.mode, PaginationMode::CursorQuery);
-    assert_eq!(
-        pagination_token.cursor_param.as_deref(),
-        Some("pagination_token")
-    );
-    assert_eq!(
-        pagination_token.response_cursor_path,
-        ["meta", "next_token"]
-    );
-    assert_eq!(
-        pagination_token
-            .page_size
-            .as_ref()
-            .and_then(|page_size| page_size.query_param.as_deref()),
-        Some("max_results")
-    );
-
-    let link = &rest_execution(operations.get("link_list").expect("link")).pagination;
+    let link = imported_rest_pagination(&ir, "link_list");
     assert_eq!(link.mode, PaginationMode::LinkHeader);
     assert_eq!(link.page_param.as_deref(), Some("page"));
     assert_eq!(link.page_start, 1);
@@ -1244,43 +1841,7 @@ paths:
         Some("per_page")
     );
 
-    let singleton = &rest_execution(operations.get("singleton_get").expect("singleton")).pagination;
-    assert_eq!(singleton.mode, PaginationMode::None);
-
-    let cursor_header =
-        &rest_execution(operations.get("cursor_header_list").expect("cursor header")).pagination;
-    assert_eq!(cursor_header.mode, PaginationMode::CursorQuery);
-    assert_eq!(cursor_header.cursor_param.as_deref(), Some("pageToken"));
-    assert_eq!(
-        cursor_header.response_cursor_header.as_deref(),
-        Some("X-Next-Cursor")
-    );
-    assert!(cursor_header.response_cursor_path.is_empty());
-
-    let cursor_page =
-        &rest_execution(operations.get("cursor_page_list").expect("cursor page")).pagination;
-    assert_eq!(cursor_page.mode, PaginationMode::CursorQuery);
-    assert_eq!(cursor_page.cursor_param.as_deref(), Some("page"));
-    assert_eq!(cursor_page.response_cursor_path, ["next_page"]);
-    assert_eq!(
-        cursor_page
-            .page_size
-            .as_ref()
-            .and_then(|page_size| page_size.query_param.as_deref()),
-        Some("limit")
-    );
-
-    let numeric_page =
-        &rest_execution(operations.get("numeric_page_list").expect("numeric page")).pagination;
-    assert_eq!(numeric_page.mode, PaginationMode::Page);
-    assert_eq!(numeric_page.page_param.as_deref(), Some("page"));
-
-    let next_url = &rest_execution(
-        operations
-            .get("next_url_header_list")
-            .expect("next URL header"),
-    )
-    .pagination;
+    let next_url = imported_rest_pagination(&ir, "next_url_header_list");
     assert_eq!(next_url.mode, PaginationMode::LinkHeader);
     assert_eq!(next_url.next_url_header.as_deref(), Some("X-Next-Page-Url"));
     assert_eq!(
@@ -1298,8 +1859,7 @@ fn importer_keeps_opaque_link_header_page_token_public() {
         r"
 name: link_page_token
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: /tmp/openapi.yaml
     base_url: https://api.example.com
@@ -1307,7 +1867,7 @@ surfaces:
     )
     .expect("manifest");
     let v4 = manifest.as_v4().expect("v4");
-    let surface = v4.surfaces.first().expect("one surface");
+    let surface = &v4.surface;
     let ir = import_openapi_surface(
         v4,
         surface,
@@ -1338,8 +1898,7 @@ paths:
     )
     .expect("import");
 
-    let operation = ir.operations.first().expect("operation");
-    let pagination = &rest_execution(operation).pagination;
+    let pagination = imported_rest_pagination(&ir, "items_list");
     assert_eq!(pagination.mode, PaginationMode::LinkHeader);
     assert_eq!(pagination.page_param, None);
     assert_eq!(
@@ -1357,8 +1916,7 @@ fn importer_treats_path_parameters_as_required_when_required_is_omitted() {
         r"
 name: omitted_path_required
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: /tmp/openapi.yaml
     base_url: https://api.example.com
@@ -1366,7 +1924,7 @@ surfaces:
     )
     .expect("manifest");
     let v4 = manifest.as_v4().expect("v4");
-    let surface = v4.surfaces.first().expect("one surface");
+    let surface = &v4.surface;
     let ir = import_openapi_surface(
         v4,
         surface,
@@ -1403,21 +1961,13 @@ paths:
     assert_eq!(required.get("include_archived"), Some(&false));
 }
 
-fn rest_execution(operation: &IrOperation) -> &RestExecutionAttachment {
-    let IrExecutionAttachment::Rest(rest) = &operation.execution else {
-        panic!("operation should be REST");
-    };
-    rest
-}
-
 #[test]
 fn importer_warns_for_invalid_parameters_and_unresolved_responses() {
     let manifest = parse_source_manifest_yaml(
         r"
 name: broken
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: /tmp/openapi.yaml
     base_url: https://api.example.com
@@ -1425,7 +1975,7 @@ surfaces:
     )
     .expect("manifest");
     let v4 = manifest.as_v4().expect("v4");
-    let surface = v4.surfaces.first().expect("one surface");
+    let surface = &v4.surface;
     let ir = import_openapi_surface(
         v4,
         surface,

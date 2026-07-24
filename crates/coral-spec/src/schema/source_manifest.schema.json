@@ -1306,7 +1306,8 @@
         "nullable": { "type": "boolean" },
         "virtual": { "type": "boolean" },
         "description": { "type": "string" },
-        "expr": { "$ref": "#/$defs/expr" }
+        "expr": { "$ref": "#/$defs/expr" },
+        "do_not_index": { "type": "boolean" }
       }
     },
     "expr": {

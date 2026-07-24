@@ -11,11 +11,15 @@ use arrow::record_batch::RecordBatch;
 use coral_spec::backends::file::FileSourceManifest;
 use coral_spec::backends::http::HttpSourceManifest;
 use coral_spec::backends::mcp::McpSourceManifest;
+use coral_spec::v4::IdentityRequirements;
 use coral_spec::{ManifestInputSpec, ValidatedSourceManifest};
 use opentelemetry::Context as OtelContext;
 
 use super::ColumnInfo;
-use crate::EngineExtensions;
+use crate::{
+    EngineExtensions, RequestIdentityHttpAuthenticatorFactory, RequestIdentitySelectionContext,
+    RequestIdentitySelector,
+};
 
 /// One managed source selected into the current query runtime.
 #[derive(Debug, Clone)]
@@ -25,6 +29,7 @@ pub struct QuerySource {
     description: String,
     declared_inputs: Vec<ManifestInputSpec>,
     test_queries: Vec<String>,
+    identity_requirements: Option<IdentityRequirements>,
     components: Vec<RuntimeSourceComponent>,
     variables: BTreeMap<String, String>,
     secrets: BTreeMap<String, String>,
@@ -43,6 +48,8 @@ pub struct RuntimeSourcePackage {
     pub declared_inputs: Vec<ManifestInputSpec>,
     /// Source-level validation queries in authored order.
     pub test_queries: Vec<String>,
+    /// Source-level request identity requirements, when declared.
+    pub identity_requirements: Option<IdentityRequirements>,
     /// Backend-ready runtime components that make up the logical source.
     pub components: Vec<RuntimeSourceComponent>,
 }
@@ -88,6 +95,7 @@ impl QuerySource {
             description: source_spec.description().to_string(),
             declared_inputs: source_spec.declared_inputs().to_vec(),
             test_queries: source_spec.test_queries().to_vec(),
+            identity_requirements: None,
             components,
             variables,
             secrets,
@@ -118,12 +126,14 @@ impl QuerySource {
                 )));
             }
         }
+        validate_runtime_source_identity_requirements(&package)?;
         Ok(Self {
             source_name: package.source_name,
             authored_version: package.authored_version,
             description: package.description,
             declared_inputs: package.declared_inputs,
             test_queries: package.test_queries,
+            identity_requirements: package.identity_requirements,
             components: package.components,
             variables,
             secrets,
@@ -158,6 +168,20 @@ impl QuerySource {
     /// Returns the source-level validation queries in authored order.
     pub fn test_queries(&self) -> &[String] {
         &self.test_queries
+    }
+
+    #[must_use]
+    /// Returns the source-level request identity requirements, when declared.
+    pub fn identity_requirements(&self) -> Option<&IdentityRequirements> {
+        self.identity_requirements.as_ref()
+    }
+
+    #[must_use]
+    /// Builds the identity-selection context for this source, when gated.
+    pub fn identity_selection_context(&self) -> Option<RequestIdentitySelectionContext> {
+        self.identity_requirements.as_ref().map(|requirements| {
+            RequestIdentitySelectionContext::new(self.source_name.clone(), requirements.clone())
+        })
     }
 
     #[must_use]
@@ -205,6 +229,30 @@ impl RuntimeSourceComponent {
             Self::Mcp(manifest) => &manifest.common.name,
         }
     }
+}
+
+fn validate_runtime_source_identity_requirements(
+    package: &RuntimeSourcePackage,
+) -> Result<(), crate::CoreError> {
+    if package.identity_requirements.is_none() {
+        return Ok(());
+    }
+
+    for component in &package.components {
+        let RuntimeSourceComponent::Http(manifest) = component else {
+            return Err(crate::CoreError::InvalidInput(format!(
+                "runtime source package '{}' declares identity_requirements, but identity_requirements require every runtime component to be a DSL v4 HTTP component",
+                package.source_name
+            )));
+        };
+        if manifest.common.dsl_version != 4 {
+            return Err(crate::CoreError::InvalidInput(format!(
+                "runtime source package '{}' declares identity_requirements, but component '{}' uses DSL v{} HTTP instead of DSL v4 HTTP",
+                package.source_name, manifest.common.name, manifest.common.dsl_version
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn components_from_manifest(source_spec: &ValidatedSourceManifest) -> Vec<RuntimeSourceComponent> {
@@ -401,6 +449,12 @@ impl QueryParameters {
         self.values.insert(name.into(), value)
     }
 
+    /// Returns one parameter value by name.
+    #[must_use]
+    pub fn get(&self, name: &str) -> Option<&QueryParameterValue> {
+        self.values.get(name)
+    }
+
     /// Iterates over parameter names and values in deterministic order.
     pub fn iter(&self) -> impl Iterator<Item = (&String, &QueryParameterValue)> {
         self.values.iter()
@@ -446,6 +500,8 @@ pub enum QueryParameterValue {
     Float(Option<f64>),
     /// Boolean value, or a typed boolean NULL.
     Boolean(Option<bool>),
+    /// UTC timestamp as microseconds since the Unix epoch, or a typed timestamp NULL.
+    Timestamp(Option<i64>),
 }
 
 impl QueryParameterValue {
@@ -496,6 +552,18 @@ impl QueryParameterValue {
     pub fn null_boolean() -> Self {
         Self::Boolean(None)
     }
+
+    /// Builds a non-null UTC timestamp from microseconds since the Unix epoch.
+    #[must_use]
+    pub fn timestamp_micros(value: i64) -> Self {
+        Self::Timestamp(Some(value))
+    }
+
+    /// Builds a typed timestamp NULL.
+    #[must_use]
+    pub fn null_timestamp() -> Self {
+        Self::Timestamp(None)
+    }
 }
 
 /// Owned runtime-build inputs needed while compiling and registering sources.
@@ -507,8 +575,15 @@ pub struct QueryRuntimeConfig {
     pub extensions: EngineExtensions,
     /// Engine-wide query memory policy.
     pub memory: QueryMemoryConfig,
+    /// Runtime-build selector for app-owned request identities.
+    pub request_identity_selector: Option<Arc<dyn RequestIdentitySelector>>,
+    /// Factory that binds selected identities to request-time HTTP authenticators.
+    pub request_identity_http_authenticator_factory:
+        Option<RequestIdentityHttpAuthenticatorFactory>,
     /// Runtime policy for dependent predicate pushdown.
     pub dependent_join: DependentJoinConfig,
+    /// Validated UDFs available in this runtime build.
+    pub udfs: Vec<super::UdfRuntimeDefinition>,
 }
 
 impl QueryRuntimeConfig {
@@ -519,8 +594,38 @@ impl QueryRuntimeConfig {
             context,
             extensions,
             memory: QueryMemoryConfig::default(),
+            request_identity_selector: None,
+            request_identity_http_authenticator_factory: None,
             dependent_join: DependentJoinConfig::default(),
+            udfs: Vec::new(),
         }
+    }
+
+    /// Attaches validated UDFs to this runtime config.
+    #[must_use]
+    pub fn with_udfs(mut self, udfs: Vec<super::UdfRuntimeDefinition>) -> Self {
+        self.udfs = udfs;
+        self
+    }
+
+    /// Installs the request identity selector for this runtime build.
+    #[must_use]
+    pub fn with_request_identity_selector(
+        mut self,
+        selector: Option<Arc<dyn RequestIdentitySelector>>,
+    ) -> Self {
+        self.request_identity_selector = selector;
+        self
+    }
+
+    /// Installs the request identity HTTP-authenticator factory.
+    #[must_use]
+    pub fn with_request_identity_http_authenticator_factory(
+        mut self,
+        factory: Option<RequestIdentityHttpAuthenticatorFactory>,
+    ) -> Self {
+        self.request_identity_http_authenticator_factory = factory;
+        self
     }
 }
 
@@ -1028,9 +1133,14 @@ impl QueryTableFunctionUsage {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::str::FromStr as _;
 
-    use super::MemorySize;
+    use coral_spec::parse_source_manifest_value;
+    use coral_spec::v4::{AcceptedIdentityRequirement, IdentityRequirements};
+    use serde_json::json;
+
+    use super::{MemorySize, QuerySource, RuntimeSourceComponent, RuntimeSourcePackage};
 
     #[test]
     fn memory_size_parses_binary_units() {
@@ -1056,6 +1166,111 @@ mod tests {
                 MemorySize::from_str(raw).is_err(),
                 "{raw:?} should be rejected"
             );
+        }
+    }
+
+    #[test]
+    fn runtime_source_package_rejects_identity_requirements_on_non_v4_http_component() {
+        let error = QuerySource::from_runtime_components(
+            RuntimeSourcePackage {
+                source_name: "github".to_string(),
+                authored_version: None,
+                description: String::new(),
+                declared_inputs: Vec::new(),
+                test_queries: Vec::new(),
+                identity_requirements: Some(identity_requirements()),
+                components: vec![RuntimeSourceComponent::Http(http_manifest())],
+            },
+            BTreeMap::new(),
+            BTreeMap::new(),
+        )
+        .expect_err("v3 HTTP component should not accept identity requirements");
+
+        assert!(
+            error.to_string().contains(
+                "declares identity_requirements, but component 'github' uses DSL v3 HTTP instead of DSL v4 HTTP"
+            ),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn runtime_source_package_preserves_source_identity_requirements() {
+        let mut manifest = http_manifest();
+        manifest.common.dsl_version = 4;
+        let requirements = identity_requirements();
+
+        let source = QuerySource::from_runtime_components(
+            RuntimeSourcePackage {
+                source_name: "github_v4".to_string(),
+                authored_version: None,
+                description: String::new(),
+                declared_inputs: Vec::new(),
+                test_queries: Vec::new(),
+                identity_requirements: Some(requirements.clone()),
+                components: vec![RuntimeSourceComponent::Http(manifest)],
+            },
+            BTreeMap::new(),
+            BTreeMap::new(),
+        )
+        .expect("v4 source identity requirements");
+
+        assert_eq!(source.identity_requirements(), Some(&requirements));
+        let context = source
+            .identity_selection_context()
+            .expect("identity selection context");
+        assert_eq!(context.source_name(), "github_v4");
+        assert_eq!(context.identity_requirements(), &requirements);
+    }
+
+    #[test]
+    fn v3_manifest_query_source_is_ungated() {
+        let manifest = source_manifest();
+        let source = QuerySource::from_manifest(&manifest, BTreeMap::new(), BTreeMap::new());
+
+        assert!(source.identity_requirements().is_none());
+        assert!(source.identity_selection_context().is_none());
+        assert!(matches!(
+            source.components(),
+            [RuntimeSourceComponent::Http(http)] if http.common.dsl_version == 3
+        ));
+    }
+
+    fn http_manifest() -> coral_spec::backends::http::HttpSourceManifest {
+        source_manifest().as_http().expect("http manifest").clone()
+    }
+
+    fn source_manifest() -> coral_spec::ValidatedSourceManifest {
+        parse_source_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "github",
+            "version": "1.0.0",
+            "backend": "http",
+            "base_url": "https://api.example.com",
+            "tables": [{
+                "name": "issues",
+                "description": "Issues",
+                "request": {
+                    "method": "GET",
+                    "path": "/issues"
+                },
+                "response": {},
+                "columns": [{
+                    "name": "id",
+                    "type": "Utf8"
+                }]
+            }]
+        }))
+        .expect("manifest")
+    }
+
+    fn identity_requirements() -> IdentityRequirements {
+        IdentityRequirements {
+            accepts: vec![AcceptedIdentityRequirement {
+                id: "github_rest_read".to_string(),
+                identity_specs: vec!["github_oauth".to_string()],
+                audience: BTreeMap::new(),
+            }],
         }
     }
 }

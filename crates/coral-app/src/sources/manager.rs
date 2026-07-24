@@ -15,15 +15,17 @@ use crate::credentials::{
     CORAL_INTERNAL_KEY_PREFIX, CredentialManager, CredentialMaterialGuard,
     CredentialMaterialSnapshot, CredentialSetId, CredentialStorageKind, CredentialsError,
 };
+use crate::search::observed::SearchObservationHandle;
 use crate::search::sqlite_store::SqliteSearchStore;
 use crate::sources::SourceName;
 use crate::sources::catalog::{
     describe_manifest, list_bundled_sources, load_bundled_source, resolve_installed_manifest,
 };
 use crate::sources::materialization::{
-    MaterializationBuild, MaterializationInputs, build_v4_materialization_tmp,
-    canonicalize_file_descriptor, cleanup_materialization_backup, cleanup_materialization_tmp,
-    new_materialization_suffix, replace_v4_materialization, restore_materialization_backup,
+    MaterializationBuild, MaterializationInputs, SourceDiagnosticReporter,
+    build_v4_materialization_tmp, canonicalize_file_descriptor, cleanup_materialization_backup,
+    cleanup_materialization_tmp, new_materialization_suffix, replace_v4_materialization,
+    restore_materialization_backup,
 };
 use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
 use crate::state::{AppStateLayout, ConfigStore};
@@ -33,6 +35,7 @@ use coral_spec::{ManifestCredentialMethodKind, ManifestInputKind, ManifestOAuthC
 use coral_spec::{ValidatedSourceManifest, parse_source_manifest_yaml};
 use tokio::sync::{mpsc, oneshot};
 use tracing::warn;
+use uuid::Uuid;
 
 #[derive(Clone)]
 pub(crate) struct SourceManager {
@@ -41,6 +44,8 @@ pub(crate) struct SourceManager {
     oauth_credential_service: OAuthCredentialService,
     layout: AppStateLayout,
     lifecycle_lock: WorkspaceLifecycleLock,
+    diagnostic_reporter: SourceDiagnosticReporter,
+    search_observations: Option<SearchObservationHandle>,
 }
 
 pub(crate) struct CreateBundledSourceCommand {
@@ -186,11 +191,28 @@ impl SourceManager {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn new(
         config_store: ConfigStore,
         credential_manager: CredentialManager,
         layout: AppStateLayout,
         lifecycle_lock: WorkspaceLifecycleLock,
+    ) -> Self {
+        Self::with_diagnostic_reporter(
+            config_store,
+            credential_manager,
+            layout,
+            lifecycle_lock,
+            SourceDiagnosticReporter::default(),
+        )
+    }
+
+    pub(crate) fn with_diagnostic_reporter(
+        config_store: ConfigStore,
+        credential_manager: CredentialManager,
+        layout: AppStateLayout,
+        lifecycle_lock: WorkspaceLifecycleLock,
+        diagnostic_reporter: SourceDiagnosticReporter,
     ) -> Self {
         Self {
             config_store,
@@ -198,7 +220,17 @@ impl SourceManager {
             oauth_credential_service: OAuthCredentialService::new(),
             layout,
             lifecycle_lock,
+            diagnostic_reporter,
+            search_observations: None,
         }
+    }
+
+    pub(crate) fn with_search_observation_handle(
+        mut self,
+        search_observations: SearchObservationHandle,
+    ) -> Self {
+        self.search_observations = Some(search_observations);
+        self
     }
 
     pub(crate) fn list_workspace_sources(
@@ -573,7 +605,9 @@ impl SourceManager {
             self.layout.workspace_dir(workspace_name).parent(),
         );
         drop(state_lock);
-        self.clear_catalog_projection_for_source_lifecycle_best_effort(workspace_name, source_name);
+        self.diagnostic_reporter
+            .clear_source(workspace_name, source_name);
+        self.clear_source_lifecycle_search_state_best_effort(workspace_name, source_name);
         Ok(removed)
     }
 
@@ -615,6 +649,11 @@ impl SourceManager {
         };
         let previous =
             self.load_source_rollback_state(workspace_name, &source_name, &credential_guard)?;
+        let previous_credential_revision = previous
+            .as_ref()
+            .map(|state| state.source.credential_revision)
+            .unwrap_or_default();
+        let is_new_install = previous.is_none();
         if let Err(error) =
             self.persist_manifest_artifact(workspace_name, &source_name, request.manifest_yaml)
         {
@@ -715,6 +754,13 @@ impl SourceManager {
             variables,
             secrets: visible_secret_keys,
             credential_storage,
+            credential_revision: if credential_storage.is_none() {
+                Uuid::nil()
+            } else if is_new_install || !replaced_oauth_inputs.is_empty() {
+                Uuid::new_v4()
+            } else {
+                previous_credential_revision
+            },
             origin: request.origin,
         };
         if let Err(error) = self
@@ -745,11 +791,34 @@ impl SourceManager {
         let mut resolved = stored;
         resolved.version.clone_from(&request.candidate.version);
         drop(state_lock);
-        self.clear_catalog_projection_for_source_lifecycle_best_effort(
-            workspace_name,
-            &source_name,
-        );
+        self.clear_source_lifecycle_search_state_best_effort(workspace_name, &source_name);
         Ok(resolved)
+    }
+
+    fn clear_source_lifecycle_search_state_best_effort(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) {
+        self.clear_observed_values_for_source_lifecycle_best_effort(workspace_name, source_name);
+        self.clear_catalog_projection_for_source_lifecycle_best_effort(workspace_name, source_name);
+    }
+
+    fn clear_observed_values_for_source_lifecycle_best_effort(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) {
+        let Some(search_observations) = &self.search_observations else {
+            return;
+        };
+        if let Err(error) = search_observations.clear_source(workspace_name, source_name.as_str()) {
+            warn!(
+                workspace = %workspace_name,
+                source = %source_name,
+                "source lifecycle changed, but failed to clear observed-values state: {error}"
+            );
+        }
     }
 
     fn clear_catalog_projection_for_source_lifecycle_best_effort(
@@ -798,12 +867,10 @@ impl SourceManager {
             return Ok(None);
         };
         if matches!(origin, SourceOrigin::Bundled)
-            && v4.surfaces.iter().any(|surface| {
-                matches!(
-                    surface.descriptor,
-                    coral_spec::v4::SurfaceDescriptor::File { .. }
-                )
-            })
+            && matches!(
+                v4.surface.descriptor,
+                coral_spec::v4::SurfaceDescriptor::File { .. }
+            )
         {
             return Err(AppError::FailedPrecondition(format!(
                 "bundled source '{}' uses local DSL v4 file descriptors, which are development-only",
@@ -1496,13 +1563,6 @@ fn normalize_binding_key(label: &str, value: &str) -> Result<String, AppError> {
 }
 
 fn runtime_schema_names(manifest: &ValidatedSourceManifest) -> BTreeSet<String> {
-    if let Some(v4) = manifest.as_v4() {
-        return v4
-            .surfaces
-            .iter()
-            .map(|surface| surface.relation_namespace.clone())
-            .collect();
-    }
     BTreeSet::from([manifest.schema_name().to_string()])
 }
 
@@ -1513,44 +1573,23 @@ fn durable_import_manifest_yaml(
     let Some(v4) = manifest.as_v4() else {
         return Ok(manifest_yaml.to_string());
     };
-    let mut replacement_files = BTreeMap::new();
-    for surface in &v4.surfaces {
-        let SurfaceDescriptor::File { file } = &surface.descriptor else {
-            continue;
-        };
-        let canonical = canonicalize_file_descriptor(file)?;
-        if canonical != *file {
-            replacement_files.insert(surface.id.as_str(), canonical);
-        }
-    }
-    if replacement_files.is_empty() {
+    let SurfaceDescriptor::File { file } = &v4.surface.descriptor else {
+        return Ok(manifest_yaml.to_string());
+    };
+    let canonical = canonicalize_file_descriptor(file)?;
+    if canonical == *file {
         return Ok(manifest_yaml.to_string());
     }
 
     let mut value: YamlValue = serde_yaml::from_str(manifest_yaml)?;
-    let surfaces_key = YamlValue::String("surfaces".to_string());
-    let id_key = YamlValue::String("id".to_string());
+    let surface_key = YamlValue::String("surface".to_string());
     let file_key = YamlValue::String("file".to_string());
-    let surfaces = value
+    let surface = value
         .as_mapping_mut()
-        .and_then(|mapping| mapping.get_mut(&surfaces_key))
-        .and_then(YamlValue::as_sequence_mut)
-        .ok_or_else(|| AppError::InvalidInput("DSL v4 manifest is missing surfaces".to_string()))?;
-    for surface in surfaces {
-        let Some(mapping) = surface.as_mapping_mut() else {
-            continue;
-        };
-        let Some(surface_id) = mapping.get(&id_key).and_then(YamlValue::as_str) else {
-            continue;
-        };
-        let Some(file) = replacement_files.get(surface_id) else {
-            continue;
-        };
-        mapping.insert(
-            file_key.clone(),
-            YamlValue::String(file.display().to_string()),
-        );
-    }
+        .and_then(|mapping| mapping.get_mut(&surface_key))
+        .and_then(YamlValue::as_mapping_mut)
+        .ok_or_else(|| AppError::InvalidInput("DSL v4 manifest is missing surface".to_string()))?;
+    surface.insert(file_key, YamlValue::String(canonical.display().to_string()));
     serde_yaml::to_string(&value).map_err(AppError::from)
 }
 
@@ -1599,6 +1638,7 @@ mod tests {
         CredentialManager, CredentialSetId, CredentialStorageKind, CredentialStoragePreference,
         CredentialStore,
     };
+    use crate::search::observed::{SearchObservationHandle, SqliteObservedValuesStore};
     use crate::sources::SourceName;
     use crate::sources::catalog::describe_manifest;
     use crate::sources::materialization::{FINGERPRINT_FILENAME, PROJECTIONS_FILENAME};
@@ -1740,38 +1780,13 @@ components:
             r#"
 name: github_v4_test
 dsl_version: 4
-surfaces:
-  - id: rest
+inputs:
+  API_BASE:
+    kind: variable
+    default: http://127.0.0.1:1
+surface:
     type: openapi
     file: {}
-    inputs:
-      API_BASE:
-        kind: variable
-        default: http://127.0.0.1:1
-    base_url: "{{{{input.API_BASE}}}}"
-"#,
-            openapi_file.display()
-        )
-    }
-
-    fn manifest_v4_with_surface_namespace(
-        openapi_file: &std::path::Path,
-        source_name: &str,
-        namespace_suffix: &str,
-    ) -> String {
-        format!(
-            r#"
-name: {source_name}
-dsl_version: 4
-surfaces:
-  - id: rest
-    namespace_suffix: {namespace_suffix}
-    type: openapi
-    file: {}
-    inputs:
-      API_BASE:
-        kind: variable
-        default: http://127.0.0.1:1
     base_url: "{{{{input.API_BASE}}}}"
 "#,
             openapi_file.display()
@@ -1783,14 +1798,13 @@ surfaces:
             r"
 name: github_v4_test
 dsl_version: 4
-surfaces:
-  - id: rest
+inputs:
+  API_BASE:
+    kind: variable
+    default: https://api.example.com
+surface:
     type: openapi
     file: {}
-    inputs:
-      API_BASE:
-        kind: variable
-        default: https://api.example.com
 ",
             openapi_file.display()
         )
@@ -1801,8 +1815,7 @@ surfaces:
             r"
 name: github_v4_test
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: {}
 ",
@@ -2238,33 +2251,32 @@ tables:
             r#"
 name: secured_messages
 dsl_version: 4
-surfaces:
-  - id: rest
+inputs:
+  API_TOKEN:
+    kind: secret
+    credential:
+      methods:
+        - type: oauth
+          label: Connect
+          description: Use OAuth.
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://127.0.0.1:{redirect_port}/oauth/callback
+            endpoints:
+              authorization_url: https://provider.example.com/{{{{input.OUTLOOK_TENANT_ID}}}}/oauth/authorize
+              token_url: {token_url_template}
+            client:
+              id:
+                default: default-client
+  OUTLOOK_TENANT_ID:
+    kind: variable
+  API_BASE:
+    kind: variable
+surface:
     type: openapi
     file: {}
-    inputs:
-      API_TOKEN:
-        kind: secret
-        credential:
-          methods:
-            - type: oauth
-              label: Connect
-              description: Use OAuth.
-              oauth:
-                flow:
-                  type: authorization_code
-                  pkce: required
-                redirect_uri: http://127.0.0.1:{redirect_port}/oauth/callback
-                endpoints:
-                  authorization_url: https://provider.example.com/{{{{input.OUTLOOK_TENANT_ID}}}}/oauth/authorize
-                  token_url: {token_url_template}
-                client:
-                  id:
-                    default: default-client
-      OUTLOOK_TENANT_ID:
-        kind: variable
-      API_BASE:
-        kind: variable
     base_url: "{{{{input.API_BASE}}}}"
     auth:
       type: HeaderAuth
@@ -2369,6 +2381,7 @@ surfaces:
                     variables: BTreeMap::new(),
                     secrets: vec!["OTHER_TOKEN".to_string()],
                     credential_storage: Some(CredentialStorageKind::Keychain),
+                    credential_revision: uuid::Uuid::default(),
                     origin: SourceOrigin::Imported,
                 },
             )
@@ -2399,6 +2412,34 @@ surfaces:
         .expect("stored material check");
 
         assert!(needs_stored);
+    }
+
+    #[test]
+    fn observed_cleanup_advances_source_epoch_when_sqlite_file_is_absent() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_store = CredentialStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(credential_store);
+        let search_observations = SearchObservationHandle::new(layout.clone());
+        let manager =
+            SourceManager::new_for_tests(config_store, credential_manager, layout.clone())
+                .with_search_observation_handle(search_observations.clone());
+        let workspace_name = default_workspace();
+        let source_name = SourceName::parse("github").expect("source name");
+
+        assert!(!layout.search_sqlite_file(&workspace_name).exists());
+        manager
+            .clear_observed_values_for_source_lifecycle_best_effort(&workspace_name, &source_name);
+
+        assert!(layout.search_sqlite_file(&workspace_name).exists());
+        let epoch = SqliteObservedValuesStore::new(layout)
+            .capture_epoch(&workspace_name, source_name.as_str())
+            .expect("observed-values epoch");
+        assert_eq!(epoch.source_generation, 1);
+        search_observations.shutdown().expect("shutdown writer");
     }
 
     #[test]
@@ -2453,76 +2494,12 @@ surfaces:
         let materialized = layout.v4_materialized_dir(&default_workspace(), &source_name);
         assert!(materialized.join(FINGERPRINT_FILENAME).exists());
         assert!(materialized.join(PROJECTIONS_FILENAME).exists());
-        assert!(
-            materialized
-                .join("surfaces")
-                .join("rest")
-                .join("semantic-ir.yaml")
-                .exists()
-        );
+        assert!(materialized.join("semantic-ir.yaml").exists());
 
         let info = manager
             .get_source_info(&default_workspace(), &source_name)
             .expect("installed v4 source should be usable");
         assert_eq!(info.name.as_str(), "github_v4_test");
-    }
-
-    #[test]
-    fn import_v4_source_rejects_runtime_schema_collision_before_persistence() {
-        let temp = TempDir::new().expect("temp dir");
-        let descriptor_temp = TempDir::new().expect("descriptor temp dir");
-        let layout =
-            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
-        layout.ensure().expect("ensure layout");
-        let openapi_file = descriptor_temp.path().join("github-openapi.yaml");
-        std::fs::write(&openapi_file, v4_openapi_fixture()).expect("write fixture");
-        let manager = SourceManager::new_for_tests(
-            ConfigStore::new(layout.clone()),
-            CredentialManager::new(CredentialStore::new(layout.clone())),
-            layout.clone(),
-        );
-
-        manager
-            .import_source(
-                &default_workspace(),
-                &ImportSourceCommand {
-                    manifest_yaml: manifest_without_secrets()
-                        .replace("public_messages", "github_v4_rest"),
-                    bindings: SourceBindings::default(),
-                },
-            )
-            .expect("install existing source");
-
-        let error = manager
-            .import_source(
-                &default_workspace(),
-                &ImportSourceCommand {
-                    manifest_yaml: manifest_v4_with_surface_namespace(
-                        &openapi_file,
-                        "github_v4",
-                        "rest",
-                    ),
-                    bindings: SourceBindings::default(),
-                },
-            )
-            .expect_err("surface namespace should collide with installed source schema");
-
-        let message = error.to_string();
-        assert!(message.contains("runtime schema name 'github_v4_rest'"));
-        assert!(message.contains("conflicts with installed source 'github_v4_rest'"));
-        let rejected_source = SourceName::parse("github_v4").expect("source");
-        assert!(
-            manager
-                .get_source(&default_workspace(), &rejected_source)
-                .is_err(),
-            "rejected source should not be persisted"
-        );
-        assert!(
-            !layout
-                .v4_materialized_dir(&default_workspace(), &rejected_source)
-                .exists(),
-            "rejected source should not materialize artifacts"
-        );
     }
 
     #[test]
@@ -2975,6 +2952,64 @@ surfaces:
     }
 
     #[test]
+    fn credential_revision_rotates_only_when_credential_material_is_replaced() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(CredentialStore::new(layout.clone()));
+        let manager =
+            SourceManager::new_for_tests(config_store, credential_manager, layout.clone());
+        let workspace = default_workspace();
+
+        let first = manager
+            .import_source(
+                &workspace,
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_with_secret(),
+                    bindings: SourceBindings {
+                        variables: Vec::new(),
+                        secrets: vec![SourceBinding {
+                            key: "API_TOKEN".to_string(),
+                            value: "first-token".to_string(),
+                        }],
+                    },
+                },
+            )
+            .expect("initial import");
+        assert!(!first.credential_revision.is_nil());
+
+        let unchanged = manager
+            .import_source(
+                &workspace,
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_with_secret(),
+                    bindings: SourceBindings::default(),
+                },
+            )
+            .expect("reimport with stored credential material");
+        assert_eq!(unchanged.credential_revision, first.credential_revision);
+
+        let replaced = manager
+            .import_source(
+                &workspace,
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_with_secret(),
+                    bindings: SourceBindings {
+                        variables: Vec::new(),
+                        secrets: vec![SourceBinding {
+                            key: "API_TOKEN".to_string(),
+                            value: "second-token".to_string(),
+                        }],
+                    },
+                },
+            )
+            .expect("credential replacement");
+        assert_ne!(replaced.credential_revision, first.credential_revision);
+    }
+
+    #[test]
     fn delete_removes_source_with_malformed_credential_material() {
         let temp = TempDir::new().expect("temp dir");
         let layout =
@@ -3380,13 +3415,11 @@ surfaces:
             redirect_port,
         );
         assert!(
-            manifest_yaml
-                .find("      API_TOKEN:")
-                .expect("API_TOKEN input")
+            manifest_yaml.find("  API_TOKEN:").expect("API_TOKEN input")
                 < manifest_yaml
-                    .find("      OUTLOOK_TENANT_ID:")
+                    .find("  OUTLOOK_TENANT_ID:")
                     .expect("tenant input"),
-            "tenant variable should exercise v4 surface input order after the OAuth secret"
+            "tenant variable should exercise v4 top-level input order after the OAuth secret"
         );
         let (event_tx, mut event_rx) = import_event_channel();
         let workspace_name = default_workspace();

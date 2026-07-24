@@ -1,13 +1,5 @@
 //! `SQLite` catalog metadata projection and retrieval primitives.
 
-#![cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "SQLite catalog index is wired by follow-up catalog provider PR"
-    )
-)]
-
 use std::collections::BTreeMap;
 
 use rusqlite::{
@@ -52,6 +44,20 @@ impl SqliteCatalogIndex {
         clippy::unused_self,
         reason = "kept as an instance method so catalog provider can own index capability consistently"
     )]
+    pub(crate) fn rebuild(
+        &self,
+        connection: &mut Connection,
+        workspace_name: &WorkspaceName,
+        snapshot: &CatalogIndexSnapshot,
+        force: bool,
+    ) -> Result<CatalogRebuildResult, SqliteSearchError> {
+        rebuild_catalog_documents(connection, workspace_name, snapshot, force)
+    }
+
+    #[expect(
+        clippy::unused_self,
+        reason = "kept as an instance method so catalog provider can own index capability consistently"
+    )]
     pub(crate) fn projection_is_current(
         &self,
         connection: &Connection,
@@ -83,6 +89,19 @@ impl SqliteCatalogIndex {
         workspace_name: &WorkspaceName,
     ) -> Result<CatalogClearResult, SqliteSearchError> {
         clear_catalog_workspace_documents(connection, workspace_name)
+    }
+
+    #[expect(
+        clippy::unused_self,
+        reason = "kept as an instance method so catalog provider can own index capability consistently"
+    )]
+    pub(crate) fn clear_source(
+        &self,
+        connection: &mut Connection,
+        workspace_name: &WorkspaceName,
+        source_name: &str,
+    ) -> Result<CatalogClearResult, SqliteSearchError> {
+        clear_catalog_source_documents(connection, workspace_name, source_name)
     }
 
     #[expect(
@@ -159,6 +178,36 @@ fn refresh_catalog_documents_after_stale_check(
     })
 }
 
+fn rebuild_catalog_documents(
+    connection: &mut Connection,
+    workspace_name: &WorkspaceName,
+    snapshot: &CatalogIndexSnapshot,
+    force: bool,
+) -> Result<CatalogRebuildResult, SqliteSearchError> {
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let current_fingerprint = catalog_fingerprint(&transaction, workspace_name)?;
+    let old_document_count = catalog_document_count(&transaction, workspace_name)?;
+    let projection_changed = current_fingerprint.as_deref() != Some(snapshot.fingerprint.as_str());
+    let rebuild_performed = force || projection_changed;
+
+    if rebuild_performed {
+        replace_catalog_documents(&transaction, workspace_name, snapshot)?;
+    }
+
+    let new_document_count = if rebuild_performed {
+        catalog_document_count(&transaction, workspace_name)?
+    } else {
+        old_document_count
+    };
+    transaction.commit()?;
+    Ok(CatalogRebuildResult {
+        old_document_count,
+        new_document_count,
+        projection_changed,
+        rebuild_performed,
+    })
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct CatalogIndexSnapshot {
     pub(crate) documents: Vec<CatalogIndexDocument>,
@@ -169,6 +218,7 @@ pub(crate) struct CatalogIndexSnapshot {
 pub(crate) struct CatalogIndexDocument {
     pub(crate) doc_id: String,
     pub(crate) doc_kind: CatalogIndexDocumentKind,
+    pub(crate) owner_source_name: String,
     pub(crate) source_name: String,
     pub(crate) surface_kind: String,
     pub(crate) surface_name: String,
@@ -214,6 +264,14 @@ pub(crate) struct CatalogRefreshResult {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CatalogRebuildResult {
+    pub(crate) old_document_count: u32,
+    pub(crate) new_document_count: u32,
+    pub(crate) projection_changed: bool,
+    pub(crate) rebuild_performed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CatalogClearResult {
     pub(crate) deleted_document_count: u32,
 }
@@ -244,6 +302,17 @@ fn replace_catalog_documents(
     workspace_name: &WorkspaceName,
     snapshot: &CatalogIndexSnapshot,
 ) -> Result<(), SqliteSearchError> {
+    delete_catalog_projection_rows(transaction, workspace_name)?;
+    insert_catalog_source_owners(transaction, workspace_name, snapshot)?;
+    insert_catalog_snapshot_documents(transaction, workspace_name, snapshot)?;
+    set_catalog_fingerprint(transaction, workspace_name, &snapshot.fingerprint)?;
+    Ok(())
+}
+
+fn delete_catalog_projection_rows(
+    transaction: &Transaction<'_>,
+    workspace_name: &WorkspaceName,
+) -> Result<(), SqliteSearchError> {
     transaction.execute(
         "DELETE FROM catalog_documents_fts WHERE workspace = ?1",
         params![workspace_name.as_str()],
@@ -252,72 +321,111 @@ fn replace_catalog_documents(
         "DELETE FROM catalog_documents WHERE workspace = ?1",
         params![workspace_name.as_str()],
     )?;
+    transaction.execute(
+        "DELETE FROM catalog_source_owners WHERE workspace = ?1",
+        params![workspace_name.as_str()],
+    )?;
+    Ok(())
+}
 
-    {
-        let mut document_insert = transaction.prepare(
-            "
-            INSERT INTO catalog_documents (
-                workspace,
-                doc_id,
-                doc_kind,
-                source_name,
-                surface_kind,
-                surface_name,
-                field_name,
-                field_role,
-                qualified_name,
-                title,
-                description,
-                payload_json,
-                snapshot_fingerprint,
-                updated_at
-            )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-            ",
-        )?;
-        let mut fts_insert = transaction.prepare(
-            "
-            INSERT INTO catalog_documents_fts (
-                workspace,
-                doc_id,
-                title,
-                qualified_name,
-                description,
-                searchable_text
-            )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-            ",
-        )?;
-
-        for document in &snapshot.documents {
-            let searchable_text = fts_searchable_text(document);
-            document_insert.execute(params![
-                workspace_name.as_str(),
-                &document.doc_id,
-                document.doc_kind.as_str(),
-                &document.source_name,
-                &document.surface_kind,
-                &document.surface_name,
-                &document.field_name,
-                &document.field_role,
-                &document.qualified_name,
-                &document.title,
-                &document.description,
-                &document.payload_json,
-                &snapshot.fingerprint,
-            ])?;
-            fts_insert.execute(params![
-                workspace_name.as_str(),
-                &document.doc_id,
-                &document.title,
-                &document.qualified_name,
-                &document.description,
-                &searchable_text,
-            ])?;
-        }
+fn insert_catalog_source_owners(
+    transaction: &Transaction<'_>,
+    workspace_name: &WorkspaceName,
+    snapshot: &CatalogIndexSnapshot,
+) -> Result<(), SqliteSearchError> {
+    let mut insert = transaction.prepare(
+        "
+        INSERT INTO catalog_source_owners (
+            workspace,
+            source_name,
+            owner_source_name,
+            snapshot_fingerprint,
+            updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        ON CONFLICT(workspace, source_name) DO UPDATE SET
+            owner_source_name = excluded.owner_source_name,
+            snapshot_fingerprint = excluded.snapshot_fingerprint,
+            updated_at = excluded.updated_at
+        ",
+    )?;
+    let mut source_owners = BTreeMap::new();
+    for document in &snapshot.documents {
+        source_owners.insert(
+            document.source_name.as_str(),
+            document.owner_source_name.as_str(),
+        );
     }
+    for (source_name, owner_source_name) in source_owners {
+        insert.execute(params![
+            workspace_name.as_str(),
+            source_name,
+            owner_source_name,
+            &snapshot.fingerprint,
+        ])?;
+    }
+    Ok(())
+}
 
+fn insert_catalog_snapshot_documents(
+    transaction: &Transaction<'_>,
+    workspace_name: &WorkspaceName,
+    snapshot: &CatalogIndexSnapshot,
+) -> Result<(), SqliteSearchError> {
+    let mut document_insert = transaction.prepare(
+        "
+        INSERT INTO catalog_documents (
+            workspace, doc_id, doc_kind, source_name, surface_kind, surface_name,
+            field_name, field_role, qualified_name, title, description, payload_json,
+            snapshot_fingerprint, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+            strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        ",
+    )?;
+    let mut fts_insert = transaction.prepare(
+        "
+        INSERT INTO catalog_documents_fts (
+            workspace, doc_id, title, qualified_name, description, searchable_text
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        ",
+    )?;
+
+    for document in &snapshot.documents {
+        let searchable_text = fts_searchable_text(document);
+        document_insert.execute(params![
+            workspace_name.as_str(),
+            &document.doc_id,
+            document.doc_kind.as_str(),
+            &document.source_name,
+            &document.surface_kind,
+            &document.surface_name,
+            &document.field_name,
+            &document.field_role,
+            &document.qualified_name,
+            &document.title,
+            &document.description,
+            &document.payload_json,
+            &snapshot.fingerprint,
+        ])?;
+        fts_insert.execute(params![
+            workspace_name.as_str(),
+            &document.doc_id,
+            &document.title,
+            &document.qualified_name,
+            &document.description,
+            &searchable_text,
+        ])?;
+    }
+    Ok(())
+}
+
+fn set_catalog_fingerprint(
+    transaction: &Transaction<'_>,
+    workspace_name: &WorkspaceName,
+    fingerprint: &str,
+) -> Result<(), SqliteSearchError> {
     transaction.execute(
         "
         INSERT INTO search_meta (key, value, updated_at)
@@ -326,10 +434,7 @@ fn replace_catalog_documents(
             value = excluded.value,
             updated_at = excluded.updated_at
         ",
-        params![
-            catalog_fingerprint_key(workspace_name),
-            snapshot.fingerprint.as_str()
-        ],
+        params![catalog_fingerprint_key(workspace_name), fingerprint],
     )?;
     Ok(())
 }
@@ -339,6 +444,15 @@ fn clear_catalog_workspace_documents(
     workspace_name: &WorkspaceName,
 ) -> Result<CatalogClearResult, SqliteSearchError> {
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let result = clear_catalog_workspace_documents_in_transaction(&transaction, workspace_name)?;
+    transaction.commit()?;
+    Ok(result)
+}
+
+pub(crate) fn clear_catalog_workspace_documents_in_transaction(
+    transaction: &Transaction<'_>,
+    workspace_name: &WorkspaceName,
+) -> Result<CatalogClearResult, SqliteSearchError> {
     transaction.execute(
         "DELETE FROM catalog_documents_fts WHERE workspace = ?1",
         params![workspace_name.as_str()],
@@ -347,8 +461,69 @@ fn clear_catalog_workspace_documents(
         "DELETE FROM catalog_documents WHERE workspace = ?1",
         params![workspace_name.as_str()],
     )?;
-    clear_catalog_fingerprint(&transaction, workspace_name)?;
+    transaction.execute(
+        "DELETE FROM catalog_source_owners WHERE workspace = ?1",
+        params![workspace_name.as_str()],
+    )?;
+    clear_catalog_fingerprint(transaction, workspace_name)?;
+    Ok(CatalogClearResult {
+        deleted_document_count: u32::try_from(deleted_document_count).unwrap_or(u32::MAX),
+    })
+}
+
+fn clear_catalog_source_documents(
+    connection: &mut Connection,
+    workspace_name: &WorkspaceName,
+    source_name: &str,
+) -> Result<CatalogClearResult, SqliteSearchError> {
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let result =
+        clear_catalog_source_documents_in_transaction(&transaction, workspace_name, source_name)?;
     transaction.commit()?;
+    Ok(result)
+}
+
+pub(crate) fn clear_catalog_source_documents_in_transaction(
+    transaction: &Transaction<'_>,
+    workspace_name: &WorkspaceName,
+    owner_source_name: &str,
+) -> Result<CatalogClearResult, SqliteSearchError> {
+    transaction.execute(
+        "
+        DELETE FROM catalog_documents_fts
+        WHERE workspace = ?1
+          AND doc_id IN (
+              SELECT documents.doc_id
+              FROM catalog_documents AS documents
+              INNER JOIN catalog_source_owners AS owners
+                  ON owners.workspace = documents.workspace
+                 AND owners.source_name = documents.source_name
+              WHERE documents.workspace = ?1
+                AND owners.owner_source_name = ?2
+          )
+        ",
+        params![workspace_name.as_str(), owner_source_name],
+    )?;
+    let deleted_document_count = transaction.execute(
+        "
+        DELETE FROM catalog_documents
+        WHERE workspace = ?1
+          AND source_name IN (
+              SELECT source_name
+              FROM catalog_source_owners
+              WHERE workspace = ?1 AND owner_source_name = ?2
+          )
+        ",
+        params![workspace_name.as_str(), owner_source_name],
+    )?;
+    transaction.execute(
+        "
+        DELETE FROM catalog_source_owners
+        WHERE workspace = ?1 AND owner_source_name = ?2
+        ",
+        params![workspace_name.as_str(), owner_source_name],
+    )?;
+    clear_catalog_fingerprint(transaction, workspace_name)?;
     Ok(CatalogClearResult {
         deleted_document_count: u32::try_from(deleted_document_count).unwrap_or(u32::MAX),
     })
@@ -369,13 +544,46 @@ fn catalog_fingerprint(
     connection: &Connection,
     workspace_name: &WorkspaceName,
 ) -> Result<Option<String>, SqliteSearchError> {
-    Ok(connection
+    let fingerprint = connection
         .query_row(
             "SELECT value FROM search_meta WHERE key = ?1",
             params![catalog_fingerprint_key(workspace_name)],
             |row| row.get::<_, String>(0),
         )
-        .optional()?)
+        .optional()?;
+    let Some(fingerprint) = fingerprint else {
+        return Ok(None);
+    };
+    let ownership_is_incomplete: bool = connection.query_row(
+        "
+        SELECT
+            EXISTS (
+                SELECT 1
+                FROM catalog_documents AS documents
+                LEFT JOIN catalog_source_owners AS owners
+                    ON owners.workspace = documents.workspace
+                   AND owners.source_name = documents.source_name
+                WHERE documents.workspace = ?1
+                  AND (
+                      owners.source_name IS NULL
+                      OR documents.snapshot_fingerprint <> ?2
+                      OR owners.snapshot_fingerprint <> ?2
+                  )
+            )
+            OR EXISTS (
+                SELECT 1
+                FROM catalog_source_owners
+                WHERE workspace = ?1 AND snapshot_fingerprint <> ?2
+            )
+        ",
+        params![workspace_name.as_str(), &fingerprint],
+        |row| row.get(0),
+    )?;
+    if ownership_is_incomplete {
+        Ok(None)
+    } else {
+        Ok(Some(fingerprint))
+    }
 }
 
 fn catalog_fingerprint_key(workspace_name: &WorkspaceName) -> String {

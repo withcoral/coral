@@ -1,4 +1,4 @@
-//! Build script for bundled source manifests.
+//! Build script for bundled source packages.
 
 #![allow(
     clippy::disallowed_methods,

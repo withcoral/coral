@@ -1,9 +1,12 @@
 //! Shared gRPC transport helpers for app-owned services.
 
 use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::time::Duration;
 
 use coral_api::{
-    CORAL_ERROR_DOMAIN, grpc_response_status_code,
+    CORAL_ERROR_DOMAIN, CORAL_TASK_ID_METADATA_KEY, grpc_response_status_code,
     v1::{
         CatalogItem as ProtoCatalogItem, CatalogSearchResult as ProtoCatalogSearchResult, Column,
         ColumnSearchResult as ProtoColumnSearchResult,
@@ -14,23 +17,36 @@ use coral_api::{
     },
 };
 use coral_spec::{SearchLimitsSpec, SourceTableFunctionKind};
+use coral_telemetry::{GRPC_REQUEST_ERROR_MESSAGE, record_failure};
 use opentelemetry::propagation::Extractor;
 use opentelemetry::trace::Status as OtelStatus;
 use tonic::codegen::{Service, http};
+use tonic::metadata::MetadataMap;
 use tonic::{Code, Request, Status};
 use tonic_types::{ErrorDetail, StatusExt as _};
-use tracing::{Instrument as _, field};
+use tower::Layer;
+use tracing::Instrument as _;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
-use crate::bootstrap::{AppError, app_status, core_status};
+use crate::bootstrap::{AppError, app_status, core_status, status_with_bounded_detail};
 use crate::catalog::discovery::{
     CatalogItem, CatalogMetadataField, CatalogSearchResult, ColumnMetadataField,
     ColumnSearchResult, DescribeTableResult,
 };
+use crate::identity::{
+    UserPrincipalProvider, UserPrincipalProviderError, UserPrincipalProviderErrorKind,
+};
 use crate::query::manager::QueryManagerError;
+use crate::request_context::RequestContext;
+use crate::task::id::TaskId;
 use crate::workspaces::WorkspaceName;
 
 struct MetadataExtractor<'a>(&'a tonic::metadata::MetadataMap);
+
+const USER_PRINCIPAL_PROVIDER_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[derive(Clone)]
+struct GrpcServerSpan(tracing::Span);
 
 impl Extractor for MetadataExtractor<'_> {
     fn get(&self, key: &str) -> Option<&str> {
@@ -49,31 +65,58 @@ impl Extractor for MetadataExtractor<'_> {
     }
 }
 
-/// Wraps a generated tonic service and stores inbound request context on the request.
+/// Tower layer that installs Coral request context for gRPC route trees.
 ///
 /// Tonic preserves `http::Request` extensions when it decodes the protobuf
 /// message into a `tonic::Request`, but generated server wrappers do not insert
 /// `tonic::GrpcMethod` the way generated clients do. This keeps the method
 /// data and Coral request metadata at the transport boundary and lets handlers
 /// read typed context from the request.
+///
+/// The wrapper also authenticates the inbound metadata once before dispatching
+/// to a service handler, so every application gRPC route in the layered tree is
+/// covered by the same principal-selection path.
 #[derive(Clone)]
-pub(crate) struct GrpcMethodAnnotatedService<S> {
-    inner: S,
+pub(crate) struct GrpcRequestContextLayer {
+    user_principal_provider: Arc<dyn UserPrincipalProvider>,
 }
 
-impl<S> GrpcMethodAnnotatedService<S> {
-    pub(crate) fn new(inner: S) -> Self {
-        Self { inner }
+impl GrpcRequestContextLayer {
+    pub(crate) fn new(user_principal_provider: Arc<dyn UserPrincipalProvider>) -> Self {
+        Self {
+            user_principal_provider,
+        }
     }
 }
 
-impl<S, B> Service<http::Request<B>> for GrpcMethodAnnotatedService<S>
+impl<S> Layer<S> for GrpcRequestContextLayer {
+    type Service = GrpcRequestContextService<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        GrpcRequestContextService {
+            inner,
+            user_principal_provider: Arc::clone(&self.user_principal_provider),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct GrpcRequestContextService<S> {
+    inner: S,
+    user_principal_provider: Arc<dyn UserPrincipalProvider>,
+}
+
+impl<S, B, ResBody> Service<http::Request<B>> for GrpcRequestContextService<S>
 where
-    S: Service<http::Request<B>>,
+    S: Service<http::Request<B>, Response = http::Response<ResBody>> + Clone + Send + 'static,
+    S::Future: Send + 'static,
+    S::Error: Send + 'static,
+    B: Send + 'static,
+    ResBody: Default + Send + 'static,
 {
     type Response = S::Response;
     type Error = S::Error;
-    type Future = S::Future;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
     fn poll_ready(
         &mut self,
@@ -84,11 +127,74 @@ where
 
     fn call(&mut self, mut request: http::Request<B>) -> Self::Future {
         annotate_request_context(&mut request);
-        self.inner.call(request)
+        let method_metadata = request.extensions().get::<GrpcServerMethod>().map_or_else(
+            || GrpcMethodMetadata::new("coral.v1.UnknownService", "Unknown"),
+            |method| GrpcMethodMetadata::new(method.service.as_str(), method.method.as_str()),
+        );
+        let request_metadata = MetadataMap::from_headers(request.headers().clone());
+        let user_principal_provider = Arc::clone(&self.user_principal_provider);
+        let span = grpc_span_for_metadata(&method_metadata, &request_metadata);
+        request
+            .extensions_mut()
+            .insert(GrpcServerSpan(span.clone()));
+
+        let mut inner = self.inner.clone();
+        std::mem::swap(&mut self.inner, &mut inner);
+
+        let instrumented_span = span.clone();
+        Box::pin(
+            async move {
+                match principal_for_request(
+                    user_principal_provider.as_ref(),
+                    &request_metadata,
+                    USER_PRINCIPAL_PROVIDER_TIMEOUT,
+                )
+                .await
+                {
+                    Ok(principal) => {
+                        request
+                            .extensions_mut()
+                            .insert(RequestContext::new(principal));
+                        inner.call(request).await
+                    }
+                    Err(error) => {
+                        let status = user_principal_provider_status(&error);
+                        record_grpc_status(&span, status.code(), Some(&status));
+                        Ok(status.into_http())
+                    }
+                }
+            }
+            .instrument(instrumented_span),
+        )
     }
 }
 
-impl<S> tonic::server::NamedService for GrpcMethodAnnotatedService<S>
+async fn principal_for_request(
+    provider: &dyn UserPrincipalProvider,
+    metadata: &MetadataMap,
+    timeout: Duration,
+) -> Result<crate::identity::UserPrincipal, UserPrincipalProviderError> {
+    tokio::time::timeout(timeout, provider.principal_for_metadata(metadata))
+        .await
+        .unwrap_or_else(|_| {
+            Err(UserPrincipalProviderError::unavailable(
+                "user principal provider timed out",
+            ))
+        })
+}
+
+fn user_principal_provider_status(error: &UserPrincipalProviderError) -> Status {
+    let (code, prefix) = match error.kind() {
+        UserPrincipalProviderErrorKind::Unauthenticated => {
+            (Code::Unauthenticated, "unauthenticated")
+        }
+        UserPrincipalProviderErrorKind::Unavailable => (Code::Unavailable, "unavailable"),
+        UserPrincipalProviderErrorKind::Internal => (Code::Internal, "internal"),
+    };
+    status_with_bounded_detail(code, format!("{prefix}: {}", error.client_message()))
+}
+
+impl<S> tonic::server::NamedService for GrpcRequestContextService<S>
 where
     S: tonic::server::NamedService,
 {
@@ -97,7 +203,17 @@ where
 
 /// Creates a span parented to the trace context extracted from a gRPC request.
 pub(crate) fn grpc_span<T>(request: &Request<T>) -> tracing::Span {
+    if let Some(span) = request.extensions().get::<GrpcServerSpan>() {
+        return span.0.clone();
+    }
     let metadata = grpc_method(request);
+    grpc_span_for_metadata(&metadata, request.metadata())
+}
+
+fn grpc_span_for_metadata(
+    metadata: &GrpcMethodMetadata,
+    request_metadata: &MetadataMap,
+) -> tracing::Span {
     let span_name = format!("{}/{}", metadata.service, metadata.method);
     let span = tracing::info_span!(
         "grpc",
@@ -115,7 +231,7 @@ pub(crate) fn grpc_span<T>(request: &Request<T>) -> tracing::Span {
         grpc.code = tracing::field::Empty,
         status = tracing::field::Empty,
     );
-    coral_telemetry::set_parent_from_extractor(&span, &MetadataExtractor(request.metadata()));
+    coral_telemetry::set_parent_from_extractor(&span, &MetadataExtractor(request_metadata));
     span
 }
 
@@ -168,6 +284,24 @@ fn annotate_request_context<B>(request: &mut http::Request<B>) {
     if let Some(method) = GrpcServerMethod::from_path(request.uri().path()) {
         request.extensions_mut().insert(method);
     }
+    if let Some(task_id) = request
+        .headers()
+        .get(CORAL_TASK_ID_METADATA_KEY)
+        .and_then(task_id_from_header_value)
+    {
+        request.extensions_mut().insert(task_id);
+    }
+}
+
+fn task_id_from_header_value(value: &http::HeaderValue) -> Option<TaskId> {
+    let value = value.to_str().ok()?;
+    match TaskId::parse(value) {
+        Ok(task_id) => Some(task_id),
+        Err(error) => {
+            tracing::debug!(%error, "ignoring malformed coral-task-id metadata");
+            None
+        }
+    }
 }
 
 pub(crate) async fn instrument_grpc<T, F>(span: tracing::Span, future: F) -> Result<T, Status>
@@ -191,41 +325,21 @@ fn record_grpc_status(span: &tracing::Span, code: Code, status: Option<&Status>)
         span.record("status", "ok");
         span.set_status(OtelStatus::Ok);
     } else {
-        let error = status.map_or_else(
-            || GrpcErrorTelemetry {
-                error_type: response_status_code.to_string(),
-                message: response_status_code.to_string(),
-            },
-            decode_grpc_error,
-        );
-        span.record("status", "error");
-        span.record("error.type", error.error_type.as_str());
-        span.record("exception.message", field::display(error.message.as_str()));
-        span.set_status(OtelStatus::error(error.message));
+        let error_type = status.map_or_else(|| response_status_code.to_string(), grpc_error_type);
+        record_failure(span, error_type.as_str(), GRPC_REQUEST_ERROR_MESSAGE);
     }
 }
 
-struct GrpcErrorTelemetry {
-    error_type: String,
-    message: String,
-}
-
-fn decode_grpc_error(status: &Status) -> GrpcErrorTelemetry {
+fn grpc_error_type(status: &Status) -> String {
     for detail in status.get_error_details_vec() {
         if let ErrorDetail::ErrorInfo(info) = detail
             && info.domain == CORAL_ERROR_DOMAIN
         {
-            return GrpcErrorTelemetry {
-                error_type: info.reason,
-                message: status.message().to_string(),
-            };
+            return info.reason;
         }
     }
 
-    GrpcErrorTelemetry {
-        error_type: grpc_response_status_code(status.code()).to_string(),
-        message: status.message().to_string(),
-    }
+    grpc_response_status_code(status.code()).to_string()
 }
 
 pub(crate) fn query_status(error: QueryManagerError) -> Status {
@@ -484,19 +598,31 @@ mod tests {
         reason = "proto shape assertions intentionally fail loudly in tests"
     )]
 
+    use std::collections::HashMap;
+
     use coral_api::{
+        CORAL_ERROR_DOMAIN, CORAL_ERROR_METADATA_SUMMARY, CORAL_TASK_ID_METADATA_KEY,
         grpc_response_status_code,
         v1::{QueryTestFailure, Workspace, query_test_result},
     };
-    use tonic::{Code, Request};
+    use opentelemetry::Value;
+    use opentelemetry::trace::{Status as OtelStatus, TracerProvider as _};
+    use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider, SpanData};
+    use tonic::{Code, Request, Status};
+    use tonic_types::{ErrorDetail, StatusExt as _};
+    use tracing_subscriber::layer::SubscriberExt as _;
 
     use super::{
-        GrpcMethodMetadata, GrpcServerMethod, grpc_method, query_status,
+        GRPC_REQUEST_ERROR_MESSAGE, GrpcMethodMetadata, GrpcServerMethod, annotate_request_context,
+        grpc_method, grpc_span_for_metadata, instrument_grpc, query_status,
         query_test_result_to_proto, table_function_to_proto, table_summary_to_proto,
-        table_to_proto, workspace_name_from_proto, workspace_to_proto,
+        table_to_proto, user_principal_provider_status, workspace_name_from_proto,
+        workspace_to_proto,
     };
     use crate::bootstrap::AppError;
+    use crate::identity::UserPrincipalProviderError;
     use crate::query::manager::QueryManagerError;
+    use crate::task::id::TaskId;
     use crate::workspaces::WorkspaceName;
     use coral_engine::{
         ColumnInfo, CoreError, QueryTestResult as EngineQueryTestResult, TableFunctionInfo,
@@ -532,6 +658,125 @@ mod tests {
             "INVALID_ARGUMENT"
         );
         assert_eq!(grpc_response_status_code(Code::Unavailable), "UNAVAILABLE");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn plain_grpc_status_message_is_not_exported() {
+        let sentinel = "SENSITIVE_SERVER_GRPC_ERROR_MARKER";
+        let status = Status::invalid_argument(format!("invalid input: {sentinel}"));
+
+        let (returned_status, span) = export_grpc_status(status).await;
+
+        assert!(returned_status.message().contains(sentinel));
+        assert_eq!(
+            string_attribute(&span, "error.type"),
+            Some("INVALID_ARGUMENT".to_string())
+        );
+        assert_eq!(
+            string_attribute(&span, "exception.message"),
+            Some(GRPC_REQUEST_ERROR_MESSAGE.to_string())
+        );
+        assert_eq!(span.status, OtelStatus::error(GRPC_REQUEST_ERROR_MESSAGE));
+        assert!(!format!("{span:?}").contains(sentinel));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn structured_grpc_status_keeps_only_its_categorical_reason() {
+        let sentinel = "SENSITIVE_SERVER_STRUCTURED_ERROR_MARKER";
+        let metadata = HashMap::from([(
+            CORAL_ERROR_METADATA_SUMMARY.to_string(),
+            format!("summary containing {sentinel}"),
+        )]);
+        let status = Status::with_error_details_vec(
+            Code::InvalidArgument,
+            format!("fallback containing {sentinel}"),
+            vec![ErrorDetail::ErrorInfo(tonic_types::ErrorInfo::new(
+                "INVALID_CATALOG_KIND",
+                CORAL_ERROR_DOMAIN,
+                metadata,
+            ))],
+        );
+
+        let (returned_status, span) = export_grpc_status(status).await;
+
+        assert!(returned_status.message().contains(sentinel));
+        assert_eq!(
+            string_attribute(&span, "error.type"),
+            Some("INVALID_CATALOG_KIND".to_string())
+        );
+        assert_eq!(
+            string_attribute(&span, "exception.message"),
+            Some(GRPC_REQUEST_ERROR_MESSAGE.to_string())
+        );
+        assert_eq!(span.status, OtelStatus::error(GRPC_REQUEST_ERROR_MESSAGE));
+        assert!(!format!("{span:?}").contains(sentinel));
+    }
+
+    async fn export_grpc_status(status: Status) -> (Status, SpanData) {
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let tracer = provider.tracer("coral-server-error-privacy-test");
+        let subscriber = tracing_subscriber::Registry::default()
+            .with(tracing_opentelemetry::layer().with_tracer(tracer));
+        let guard = tracing::subscriber::set_default(subscriber);
+        let span = grpc_span_for_metadata(
+            &GrpcMethodMetadata::new("coral.v1.QueryService", "ExecuteSql"),
+            &tonic::metadata::MetadataMap::new(),
+        );
+
+        let returned_status = instrument_grpc(span, async { Err::<(), Status>(status) })
+            .await
+            .expect_err("gRPC status should be returned to the caller");
+        drop(guard);
+
+        provider.force_flush().expect("spans should flush");
+        let span = exporter
+            .get_finished_spans()
+            .expect("finished spans should be readable")
+            .into_iter()
+            .find(|span| span.name == "coral.v1.QueryService/ExecuteSql")
+            .expect("server span should export");
+        (returned_status, span)
+    }
+
+    fn string_attribute(span: &SpanData, name: &str) -> Option<String> {
+        span.attributes.iter().find_map(|attribute| {
+            if attribute.key.as_str() == name
+                && let Value::String(value) = &attribute.value
+            {
+                Some(value.as_ref().to_string())
+            } else {
+                None
+            }
+        })
+    }
+
+    #[test]
+    fn user_principal_provider_status_preserves_failure_class() {
+        let cases = [
+            (
+                UserPrincipalProviderError::unauthenticated("bad token"),
+                Code::Unauthenticated,
+                "unauthenticated: bad token",
+            ),
+            (
+                UserPrincipalProviderError::unavailable("key service offline"),
+                Code::Unavailable,
+                "unavailable: key service offline",
+            ),
+            (
+                UserPrincipalProviderError::internal("invalid principal selection"),
+                Code::Internal,
+                "internal: invalid principal selection",
+            ),
+        ];
+        for (error, code, message) in cases {
+            let status = user_principal_provider_status(&error);
+            assert_eq!(status.code(), code);
+            assert_eq!(status.message(), message);
+        }
     }
 
     #[test]
@@ -581,6 +826,50 @@ mod tests {
             workspace_name_from_proto(Some(&workspace)).expect("workspace should parse");
 
         assert_eq!(workspace_name.as_str(), "default");
+    }
+
+    #[test]
+    fn annotate_request_context_extracts_valid_task_id() {
+        let mut request = tonic::codegen::http::Request::builder()
+            .uri("/coral.v1.QueryService/ExecuteSql")
+            .header(
+                CORAL_TASK_ID_METADATA_KEY,
+                "750e8400-e29b-41d4-a716-446655440000",
+            )
+            .body(())
+            .expect("request");
+
+        annotate_request_context(&mut request);
+
+        let task_id = request
+            .extensions()
+            .get::<TaskId>()
+            .expect("task id extension");
+        assert_eq!(task_id.to_string(), "750e8400-e29b-41d4-a716-446655440000");
+    }
+
+    #[test]
+    fn annotate_request_context_ignores_absent_and_malformed_task_id() {
+        let mut absent = tonic::codegen::http::Request::builder()
+            .uri("/coral.v1.QueryService/ExecuteSql")
+            .body(())
+            .expect("request");
+        annotate_request_context(&mut absent);
+        assert!(
+            absent.extensions().get::<TaskId>().is_none(),
+            "a missing coral-task-id yields no attribution"
+        );
+
+        let mut malformed = tonic::codegen::http::Request::builder()
+            .uri("/coral.v1.QueryService/ExecuteSql")
+            .header(CORAL_TASK_ID_METADATA_KEY, "has space")
+            .body(())
+            .expect("request");
+        annotate_request_context(&mut malformed);
+        assert!(
+            malformed.extensions().get::<TaskId>().is_none(),
+            "a malformed id is ignored, not surfaced"
+        );
     }
 
     #[test]

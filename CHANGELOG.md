@@ -1,5 +1,129 @@
 # Changelog
 
+## [0.7.1](https://github.com/withcoral/coral/compare/v0.7.0...v0.7.1) (2026-07-21)
+
+
+### Features
+
+* **app:** add server bind configuration ([#1623](https://github.com/withcoral/coral/issues/1623)) ([25323a6](https://github.com/withcoral/coral/commit/25323a66ca713cd49c3e51195a14cccbadc68352))
+* **app:** register gRPC health service ([#1620](https://github.com/withcoral/coral/issues/1620)) ([3129edb](https://github.com/withcoral/coral/commit/3129edb3b4cd8063aedcf16411bb5d4e876f7eea))
+* **cli:** add long-running server command ([#1628](https://github.com/withcoral/coral/issues/1628)) ([202d4d5](https://github.com/withcoral/coral/commit/202d4d5595b44aea5c1e1a92d14e83ae1144886b))
+* **client:** support authenticated remote connections ([#1624](https://github.com/withcoral/coral/issues/1624)) ([70e4a07](https://github.com/withcoral/coral/commit/70e4a0745af08c438d0e2a5e129208d13af9d72d))
+* **reef:** move settings into workspace menu ([#1870](https://github.com/withcoral/coral/issues/1870)) ([9d74f0d](https://github.com/withcoral/coral/commit/9d74f0dc0b28447d45d71d68a3b11408a5690848))
+
+
+### Bug Fixes
+
+* **app:** unify Universal Search with runtime catalog ([#1781](https://github.com/withcoral/coral/issues/1781)) ([915c18b](https://github.com/withcoral/coral/commit/915c18bcba3d330d28fb3e5eb8e5223c89edcfb1))
+* **desktop:** package Reef Arrow runtime ([#1881](https://github.com/withcoral/coral/issues/1881)) ([5960819](https://github.com/withcoral/coral/commit/5960819a03ee2c4da9a104bdc2134b65b71d9265))
+
+## [0.7.0](https://github.com/withcoral/coral/compare/v0.6.0...v0.7.0) (2026-07-20)
+
+
+### ⚠ BREAKING CHANGES
+
+* **spec:** make DSL v4 sources singular ([#1791](https://github.com/withcoral/coral/issues/1791))
+
+### Features
+
+* **api:** add function lifecycle contract ([#1531](https://github.com/withcoral/coral/issues/1531)) ([af76c34](https://github.com/withcoral/coral/commit/af76c3481942bf30a6b4d4dc63c351faaf01541f))
+* **api:** scope trace queries by workspace ([#1754](https://github.com/withcoral/coral/issues/1754)) ([a22e50b](https://github.com/withcoral/coral/commit/a22e50bcf9d46aee8759bade8c13cb17adc09c6e))
+* **app:** add credential encryption primitives ([#1451](https://github.com/withcoral/coral/issues/1451)) ([54fb513](https://github.com/withcoral/coral/commit/54fb51372c616ad4519ac19478dbbe78acc52427))
+* **app:** attribute queries to task ids ([#1558](https://github.com/withcoral/coral/issues/1558)) ([ebd8e51](https://github.com/withcoral/coral/commit/ebd8e5116e2039ae7dd862c8fa1d647078ae81a9))
+* **app:** expose function lifecycle service ([#1534](https://github.com/withcoral/coral/issues/1534)) ([10e9003](https://github.com/withcoral/coral/commit/10e9003280556a927a6ea5df8782732eaf246a7c))
+* **app:** load installed functions into query runtime ([#1533](https://github.com/withcoral/coral/issues/1533)) ([875737a](https://github.com/withcoral/coral/commit/875737a89321b66cdf6b28ab48c5d0810b2c8651))
+* **app:** persist installed function artifacts ([#1532](https://github.com/withcoral/coral/issues/1532)) ([1fd1d46](https://github.com/withcoral/coral/commit/1fd1d46adfc750f0341f311cda0146cc4863bda9))
+* **app:** serve task lifecycle rpc ([#1557](https://github.com/withcoral/coral/issues/1557)) ([d1a3ed9](https://github.com/withcoral/coral/commit/d1a3ed9306b0131fbf6f2ce9c81f93379f90ae23))
+* **cli:** add function lifecycle commands ([#1535](https://github.com/withcoral/coral/issues/1535)) ([b2906af](https://github.com/withcoral/coral/commit/b2906aff2ad53296feb60fc030e5dbb62685ebec))
+* **cli:** add tasks runtime feature ([#1561](https://github.com/withcoral/coral/issues/1561)) ([793abae](https://github.com/withcoral/coral/commit/793abae752d33716399222ce4d978b6f8b94a15b))
+* **client:** propagate task attribution ([#1559](https://github.com/withcoral/coral/issues/1559)) ([3885c10](https://github.com/withcoral/coral/commit/3885c10a84b787bc4d8d0db2bb3543da218ec120))
+* **desktop:** auto-update from GitHub Releases ([#1736](https://github.com/withcoral/coral/issues/1736)) ([f86d819](https://github.com/withcoral/coral/commit/f86d819a263d01ffc1338ff8ca8f224632914175))
+* **desktop:** mac signing and notarization config ([#1732](https://github.com/withcoral/coral/issues/1732)) ([6547274](https://github.com/withcoral/coral/commit/6547274881184ba4b2cef1f2789abafadd776c32))
+* **desktop:** publish mac app in the release workflow ([#1735](https://github.com/withcoral/coral/issues/1735)) ([205ee0d](https://github.com/withcoral/coral/commit/205ee0d24559a0c585062de9812672a76ae7bc36))
+* **desktop:** release-shaped universal mac packaging ([#1731](https://github.com/withcoral/coral/issues/1731)) ([bbeeba5](https://github.com/withcoral/coral/commit/bbeeba595ec918fde120ebe271fbd21a923100dc))
+* **engine:** bind UDF runtime arguments ([#1496](https://github.com/withcoral/coral/issues/1496)) ([1dcc26b](https://github.com/withcoral/coral/commit/1dcc26b090600ac210bea193abcc2012d33e996a))
+* **engine:** catalog UDF table functions ([#1530](https://github.com/withcoral/coral/issues/1530)) ([9dada2b](https://github.com/withcoral/coral/commit/9dada2b54d69ec895a5d167b0fb31e42c5d41969))
+* **engine:** execute UDF table functions ([#1501](https://github.com/withcoral/coral/issues/1501)) ([d09ebf9](https://github.com/withcoral/coral/commit/d09ebf9e0a0119e3fc23ec6acc9fb71aa6295bad))
+* **engine:** infer function SQL signatures ([#1482](https://github.com/withcoral/coral/issues/1482)) ([8815f7f](https://github.com/withcoral/coral/commit/8815f7f775aac0f817cd567445c9239223f2da15))
+* **mcp:** expose task lifecycle tools ([#1560](https://github.com/withcoral/coral/issues/1560)) ([ec8aa1c](https://github.com/withcoral/coral/commit/ec8aa1c5ca9b66a8f77e9c7571a0f3cebecea6ab))
+* **reef:** add onboarding flow ([#1747](https://github.com/withcoral/coral/issues/1747)) ([27e248a](https://github.com/withcoral/coral/commit/27e248a72e54619276ee0e2f86b187af385c10f1))
+* **reef:** add second onboarding step ([#1618](https://github.com/withcoral/coral/issues/1618)) ([c949540](https://github.com/withcoral/coral/commit/c9495409722d4fa59c261814f7cb6d2db927b443))
+* **reef:** add workspace creation to the active shell ([#1750](https://github.com/withcoral/coral/issues/1750)) ([068511b](https://github.com/withcoral/coral/commit/068511b0bdeefbbbc894585bf71ee9423cfb34e5))
+* **reef:** cleanup source keyboard interaction ([#1774](https://github.com/withcoral/coral/issues/1774)) ([bb1905a](https://github.com/withcoral/coral/commit/bb1905a8735d5e3de406a0ed2810a6c6a1958f19))
+* **reef:** forward ids through text inputs ([#1799](https://github.com/withcoral/coral/issues/1799)) ([11668c6](https://github.com/withcoral/coral/commit/11668c66c63e593d4528669023e343994b572975))
+* **reef:** polish  source setup dialogs ([#1780](https://github.com/withcoral/coral/issues/1780)) ([57e961c](https://github.com/withcoral/coral/commit/57e961cc4588e758bf806143b87f04f5c77f67ac))
+* **reef:** prevent workspace context loss across local data views ([#1726](https://github.com/withcoral/coral/issues/1726)) ([ab3f68f](https://github.com/withcoral/coral/commit/ab3f68f1e760d41c8ec51960844f79a249420704))
+* **reef:** unify source detail presentation ([#1782](https://github.com/withcoral/coral/issues/1782)) ([ac4550f](https://github.com/withcoral/coral/commit/ac4550f8aadcbe6048b86970f55c4f4242236273))
+* **reef:** workspace selector ([#1727](https://github.com/withcoral/coral/issues/1727)) ([da3e96a](https://github.com/withcoral/coral/commit/da3e96a3c43a541423ea61b330e947d0c3f77ad0))
+* **search:** add search maintenance controls ([#1573](https://github.com/withcoral/coral/issues/1573)) ([f2ad1de](https://github.com/withcoral/coral/commit/f2ad1deed318a5ea4becb4a43bab81994ae667ec))
+* **search:** add source scan observation hook ([#1470](https://github.com/withcoral/coral/issues/1470)) ([fd7f986](https://github.com/withcoral/coral/commit/fd7f986a85a45cb5ec41c4890beacd60824513b4))
+* **search:** bound observed values storage ([#1612](https://github.com/withcoral/coral/issues/1612)) ([c958754](https://github.com/withcoral/coral/commit/c958754b7a5ac475282fb8851ce4321ad6668597))
+* **search:** enable policy-aware observed retrieval ([#1593](https://github.com/withcoral/coral/issues/1593)) ([591a107](https://github.com/withcoral/coral/commit/591a107ba1c7f5f36865beb5a7db9440c8613f0c))
+* **search:** enqueue observed values in sqlite ([#1472](https://github.com/withcoral/coral/issues/1472)) ([c0369ca](https://github.com/withcoral/coral/commit/c0369caf8b919b8cc8a0766a849b161555c6b08e))
+* **search:** expose observed values maintenance ([#1594](https://github.com/withcoral/coral/issues/1594)) ([58e8837](https://github.com/withcoral/coral/commit/58e8837e9bdfcd7c8a779a23472992c26787764d))
+* **search:** honor source-authored do-not-index policy ([#1761](https://github.com/withcoral/coral/issues/1761)) ([34e2eff](https://github.com/withcoral/coral/commit/34e2eff6f557367592e9d31226b0495cfef59e36))
+* **search:** project observed values into sqlite ([#1591](https://github.com/withcoral/coral/issues/1591)) ([a3f554c](https://github.com/withcoral/coral/commit/a3f554c824196b07d88d97577238d00ca93eaf0c))
+* **search:** wire observed values into app lifecycle ([#1480](https://github.com/withcoral/coral/issues/1480)) ([4ba0985](https://github.com/withcoral/coral/commit/4ba098524611781c6b7fb8459337b2d416126afe))
+* **spec:** activate identity manifest schema validation ([#1510](https://github.com/withcoral/coral/issues/1510)) ([2f961c0](https://github.com/withcoral/coral/commit/2f961c0139fc475cfee21720e030d9d660668a5d))
+* **spec:** add DSL v4 identity manifest contracts ([#1508](https://github.com/withcoral/coral/issues/1508)) ([3120796](https://github.com/withcoral/coral/commit/31207963ba3e0e2704c96eb17d8b39b1b48a6459))
+* **spec:** add v4 surface identity requirements ([#1511](https://github.com/withcoral/coral/issues/1511)) ([8b8b136](https://github.com/withcoral/coral/commit/8b8b1362d369ec81a69b31ada1d05f621f70d794))
+* **spec:** define identity manifest JSON schema ([#1633](https://github.com/withcoral/coral/issues/1633)) ([29e8cc0](https://github.com/withcoral/coral/commit/29e8cc0837c508c2ae9966116767f91a5ab3da4f))
+* **spec:** make DSL v4 sources singular ([#1791](https://github.com/withcoral/coral/issues/1791)) ([0e8d91b](https://github.com/withcoral/coral/commit/0e8d91ba2a503f3fc7c52bd5ca7754304fc24d06))
+* **spec:** parse manifest bundles ([#1512](https://github.com/withcoral/coral/issues/1512)) ([1f622a2](https://github.com/withcoral/coral/commit/1f622a206b04044dc70f12c716c925e6053dff7c))
+
+
+### Bug Fixes
+
+* **app:** preserve compatible DSL v4 artifacts ([#1772](https://github.com/withcoral/coral/issues/1772)) ([0ddce39](https://github.com/withcoral/coral/commit/0ddce39e29381e47e56b952f6b5fe0352abc5f67))
+* **cli:** show table functions after source add ([#1862](https://github.com/withcoral/coral/issues/1862)) ([1d0e67d](https://github.com/withcoral/coral/commit/1d0e67d1fd7cc509f5430481401339e902de1c98))
+* **reef:** format source display names ([#1762](https://github.com/withcoral/coral/issues/1762)) ([1119463](https://github.com/withcoral/coral/commit/1119463c2ac32b2ee22c3bc541d2945ed9a3f627))
+* **reef:** pass workspace into trace loaders ([#1785](https://github.com/withcoral/coral/issues/1785)) ([834725f](https://github.com/withcoral/coral/commit/834725f97ddf57661fab239ef7db7d9ab37167a5))
+* **reef:** preserve workspace context after OAuth source installs ([#1784](https://github.com/withcoral/coral/issues/1784)) ([710decc](https://github.com/withcoral/coral/commit/710decc325922e3f4c4384cb28ca5334c667f7ba))
+* **reef:** prevent Storybook CI from missing protobuf bindings ([#1769](https://github.com/withcoral/coral/issues/1769)) ([1223e03](https://github.com/withcoral/coral/commit/1223e03dc338f6fbc0cb0cc90a79782abd06dd06))
+* **reef:** restore trace detail width after query detail extraction ([#1773](https://github.com/withcoral/coral/issues/1773)) ([1a9849a](https://github.com/withcoral/coral/commit/1a9849ad76a0242aacf3d27ee61d1c49623eb384))
+* **spec:** make allOf JSON schema comparison schema-aware ([#1599](https://github.com/withcoral/coral/issues/1599)) ([b51a6a9](https://github.com/withcoral/coral/commit/b51a6a913ba3cd52155bf3a29d12cfd6a5d64479)), closes [#1307](https://github.com/withcoral/coral/issues/1307)
+* **spec:** report unsupported OpenAPI operation refs ([#1603](https://github.com/withcoral/coral/issues/1603)) ([a2d3538](https://github.com/withcoral/coral/commit/a2d3538c9b512e9574337046efd4007316263ec5))
+* **v4:** keep OpenAPI object responses as rows ([#1494](https://github.com/withcoral/coral/issues/1494)) ([a83986a](https://github.com/withcoral/coral/commit/a83986a5373097db759a2585a4aef0c35f704aa6))
+
+## [0.6.0](https://github.com/withcoral/coral/compare/v0.5.2...v0.6.0) (2026-07-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* remove episode lifecycle surface ([#1569](https://github.com/withcoral/coral/issues/1569))
+
+### Features
+
+* **api:** add task lifecycle contract ([#1554](https://github.com/withcoral/coral/issues/1554)) ([3f98db4](https://github.com/withcoral/coral/commit/3f98db426fcd898e3bf4975b7e944ceddb942394))
+* **app:** add request principal boundary ([#1745](https://github.com/withcoral/coral/issues/1745)) ([aafb0b8](https://github.com/withcoral/coral/commit/aafb0b868df4bcbe88e71d791debb20535b6c45e))
+* **app:** add shadow workspace database import ([#1572](https://github.com/withcoral/coral/issues/1572)) ([2a42a05](https://github.com/withcoral/coral/commit/2a42a05d1860e63827cb10db2df434c629706d87))
+* **app:** add task domain id ([#1555](https://github.com/withcoral/coral/issues/1555)) ([e894a5c](https://github.com/withcoral/coral/commit/e894a5cfb2b501e79e9390e65806debd56a8a7cf))
+* **app:** bootstrap durable database ([#1429](https://github.com/withcoral/coral/issues/1429)) ([c87a2c0](https://github.com/withcoral/coral/commit/c87a2c054a30e456faee7c64fd3307b934287fb6))
+* **app:** persist task lifecycle events ([#1556](https://github.com/withcoral/coral/issues/1556)) ([e4d8db9](https://github.com/withcoral/coral/commit/e4d8db98db7cbbbf9ffccc34ff66484a65896c45))
+* **app:** read workspaces from database ([#1549](https://github.com/withcoral/coral/issues/1549)) ([3f7dc46](https://github.com/withcoral/coral/commit/3f7dc4629835f516e359dd92ca2c6f4a5b558c6e))
+* DSL V4 lookup key inference  ([#1592](https://github.com/withcoral/coral/issues/1592)) ([80ce082](https://github.com/withcoral/coral/commit/80ce0828f590c2863d137f77f9dd18ccdda632be))
+* **reef:** add schema explorer ([#1565](https://github.com/withcoral/coral/issues/1565)) ([00fb030](https://github.com/withcoral/coral/commit/00fb030b2e221c77f10f7ba6e2cde5d2ffbece90))
+* **reef:** add sources onboarding story ([#1602](https://github.com/withcoral/coral/issues/1602)) ([6f4ba76](https://github.com/withcoral/coral/commit/6f4ba762a96ddd520f39daacddf04984d9c55eb7))
+* **reef:** extract reusable source catalog components ([#1601](https://github.com/withcoral/coral/issues/1601)) ([a7d857b](https://github.com/withcoral/coral/commit/a7d857b21cd4ead1180e9fca74a587bfe64b41e6))
+* **reef:** navigation-progress-bar ([#1543](https://github.com/withcoral/coral/issues/1543)) ([2303301](https://github.com/withcoral/coral/commit/2303301c0a4d4efeadb578680a7fbc7f356d7fe0))
+* **reef:** stream OAuth source installs ([#1595](https://github.com/withcoral/coral/issues/1595)) ([3321b9a](https://github.com/withcoral/coral/commit/3321b9ab46a8149f4c6bbac7ee2c4e11cea2d9ad))
+* **reef:** use route data for sources page ([#1387](https://github.com/withcoral/coral/issues/1387)) ([9547491](https://github.com/withcoral/coral/commit/954749155501abcc64cd7503e4ddf5ddb6f527fe))
+* **reef:** wire sources route actions ([#1386](https://github.com/withcoral/coral/issues/1386)) ([b3ca3b2](https://github.com/withcoral/coral/commit/b3ca3b2881cf306bd1b005f07f94e3c60d1fad56))
+* remove episode lifecycle surface ([#1569](https://github.com/withcoral/coral/issues/1569)) ([b250a4a](https://github.com/withcoral/coral/commit/b250a4aae98e21610ac5c9a8f6522ec08f2ebc55))
+* **source:** show OAuth progress during source add ([#1589](https://github.com/withcoral/coral/issues/1589)) ([dd05347](https://github.com/withcoral/coral/commit/dd053476368bd243ed52c3cd13296777d4c19542))
+* SpinningButtonIcon ([#1611](https://github.com/withcoral/coral/issues/1611)) ([15b6813](https://github.com/withcoral/coral/commit/15b6813580c66688471ea144c1bed1af74df184e))
+* **xtask/openapi:** add standalone openapi tool ([#1606](https://github.com/withcoral/coral/issues/1606)) ([e0631ec](https://github.com/withcoral/coral/commit/e0631ec8e704491b24cb6e93bf59dbfbbfe16c5b))
+
+
+### Bug Fixes
+
+* **desktop:** run Reef without SPA mode ([#1568](https://github.com/withcoral/coral/issues/1568)) ([a5a235f](https://github.com/withcoral/coral/commit/a5a235f03a0042dc3120c64afac274574ed10ae6))
+* **reef:** centralize reduced-motion animations ([#1615](https://github.com/withcoral/coral/issues/1615)) ([aec4665](https://github.com/withcoral/coral/commit/aec4665b3aa94e6735e8e06ba65b8dc03da030bf))
+* **reef:** prebundle protobuf imports for Storybook ([#1551](https://github.com/withcoral/coral/issues/1551)) ([daff0b0](https://github.com/withcoral/coral/commit/daff0b035f13d6e552f88e9731e8fa6853216d31))
+* **spec:** allow projection overrides without generator version ([#1509](https://github.com/withcoral/coral/issues/1509)) ([a5bb50a](https://github.com/withcoral/coral/commit/a5bb50aac3a73988cb88db62387aa5da09f840d5))
+* **spec:** expand OpenAPI pagination aliases ([#1737](https://github.com/withcoral/coral/issues/1737)) ([c93d820](https://github.com/withcoral/coral/commit/c93d820a00848cadc3d95d8f969e8c8a3142a404))
+* **spec:** remove v4 fallback inflection ([#1598](https://github.com/withcoral/coral/issues/1598)) ([a362f3c](https://github.com/withcoral/coral/commit/a362f3cf11bd3f2be79b73b1b9ead96afc4ca1ec))
+
 ## [0.5.2](https://github.com/withcoral/coral/compare/v0.5.1...v0.5.2) (2026-07-09)
 
 

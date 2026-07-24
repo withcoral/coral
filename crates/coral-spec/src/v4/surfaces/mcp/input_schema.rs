@@ -27,7 +27,6 @@ impl McpImporter<'_> {
         let mut schema_complete = true;
         let shape = {
             let mut context = InputSchemaContext {
-                surface_id: &self.surface.id,
                 operation_id,
                 diagnostics,
                 schema_complete: &mut schema_complete,
@@ -66,7 +65,6 @@ impl McpImporter<'_> {
                     data_type,
                     default_value: property.get("default").map(json_schema_default_to_string),
                     description: schema_description(property),
-                    exclude_from_lookup_keys: false,
                 }
             })
             .collect();
@@ -217,7 +215,6 @@ fn merge_input_object_shape(
 }
 
 struct InputSchemaContext<'a, 'b> {
-    surface_id: &'a str,
     operation_id: &'a str,
     diagnostics: &'b mut Vec<Diagnostic>,
     schema_complete: &'b mut bool,
@@ -258,7 +255,6 @@ impl InputSchemaContext<'_, '_> {
         self.diagnostics.push(Diagnostic::warning(
             code,
             message,
-            self.surface_id.to_string(),
             Some(self.operation_id.to_string()),
         ));
     }

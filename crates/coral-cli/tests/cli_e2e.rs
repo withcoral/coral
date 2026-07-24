@@ -17,8 +17,12 @@ use arrow::record_batch::RecordBatch;
 #[cfg(feature = "embedded-ui")]
 use assert_cmd::Command;
 use coral_api::v1::{
-    DiscoverSourcesResponse, ExecuteSqlResponse, ListSourcesResponse, ListWorkspacesResponse,
-    Source, SourceCredentialStorage, SourceInfo, SourceOrigin, Workspace,
+    AddFunctionResponse, CatalogRebuildResult, DiscoverSourcesResponse, ExecuteSqlResponse,
+    Function, FunctionArgument, FunctionRuntimeInvalid, FunctionRuntimeReady,
+    ListFunctionsResponse, ListSourcesResponse, ListWorkspacesResponse, RebuildSearchIndexResponse,
+    SearchDataScope, SearchIndexProvider, SearchMaintenanceResult, SearchMaintenanceState,
+    SearchProvider, Source, SourceCredentialStorage, SourceInfo, SourceOrigin, Workspace, function,
+    search_clear_target, search_maintenance_result,
 };
 use tempfile::tempdir;
 use tonic::Code;
@@ -165,6 +169,146 @@ async fn source_list_accepts_workspace_flag_after_subcommand() {
     let requests = server.list_sources_requests();
     assert_eq!(requests.len(), 1, "expected one list_sources call");
     assert_workspace_name(requests[0].workspace.as_ref(), "work");
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn functions_list_uses_workspace_flag() {
+    let server = MockServer::start().await;
+
+    let assert = server
+        .cmd()
+        .args(["--workspace", "work", "functions", "list"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert_eq!(stdout.trim(), "No installed functions.");
+    let requests = server.list_functions_requests();
+    assert_eq!(requests.len(), 1, "expected one list_functions call");
+    assert_workspace_name(requests[0].workspace.as_ref(), "work");
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn functions_list_renders_runtime_details() {
+    let server = MockServer::start_with_config(MockServerConfig::default().with_list_functions(
+        ListFunctionsResponse {
+            functions: vec![
+                Function {
+                    name: "github_issues".to_string(),
+                    runtime: Some(function::Runtime::Ready(FunctionRuntimeReady {
+                        arguments: vec![
+                            FunctionArgument {
+                                name: "owner".to_string(),
+                                data_type: "Utf8".to_string(),
+                            },
+                            FunctionArgument {
+                                name: "repo".to_string(),
+                                data_type: "Utf8".to_string(),
+                            },
+                        ],
+                        ..FunctionRuntimeReady::default()
+                    })),
+                    ..Function::default()
+                },
+                Function {
+                    name: "broken_function".to_string(),
+                    runtime: Some(function::Runtime::Invalid(FunctionRuntimeInvalid {
+                        reason: "could not plan function\nsource is unavailable\nHint: reinstall the source"
+                            .to_string(),
+                    })),
+                    ..Function::default()
+                },
+            ],
+        },
+    ))
+    .await;
+
+    let assert = server.cmd().args(["functions", "list"]).assert().success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(
+        stdout.contains("Arguments"),
+        "missing arguments header: {stdout}"
+    );
+    assert!(
+        stdout.contains("owner: Utf8, repo: Utf8"),
+        "missing inferred arguments: {stdout}"
+    );
+    let invalid_row = stdout
+        .lines()
+        .find(|line| line.starts_with("broken_function"))
+        .expect("invalid function row");
+    assert!(invalid_row.contains("invalid"), "invalid status: {stdout}");
+    assert!(
+        !invalid_row.contains("could not plan function"),
+        "validation reason leaked into table: {stdout}"
+    );
+    assert!(
+        stdout.contains(
+            "Invalid functions:\n  broken_function:\n    could not plan function\n    source is unavailable\n    Hint: reinstall the source"
+        ),
+        "missing indented validation reason: {stdout}"
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn functions_add_sends_file_to_selected_workspace() {
+    let temp = tempdir().expect("temp dir");
+    let function_file = temp.path().join("echo_value.sql");
+    let sql = "/* name: echo_value */ select 1 as value\n";
+    std::fs::write(&function_file, sql).expect("write function");
+    let server = MockServer::start_with_config(MockServerConfig::default().with_add_function(
+        AddFunctionResponse {
+            function: Some(Function {
+                name: "echo_value".to_string(),
+                runtime: Some(function::Runtime::Ready(FunctionRuntimeReady::default())),
+                ..Function::default()
+            }),
+        },
+    ))
+    .await;
+
+    let assert = server
+        .cmd()
+        .args(["--workspace", "work", "functions", "add", "--file"])
+        .arg(&function_file)
+        .assert()
+        .success();
+    assert_eq!(
+        String::from_utf8_lossy(&assert.get_output().stdout).trim(),
+        "Added function echo_value"
+    );
+    let requests = server.add_function_requests();
+    assert_eq!(requests.len(), 1);
+    assert_workspace_name(requests[0].workspace.as_ref(), "work");
+    assert_eq!(requests[0].sql, sql);
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn functions_remove_uses_selected_workspace() {
+    let server = MockServer::start().await;
+
+    let assert = server
+        .cmd()
+        .args(["--workspace", "work", "functions", "remove", "echo_value"])
+        .assert()
+        .success();
+    assert_eq!(
+        String::from_utf8_lossy(&assert.get_output().stdout).trim(),
+        "Removed function echo_value"
+    );
+    let requests = server.delete_function_requests();
+    assert_eq!(requests.len(), 1);
+    assert_workspace_name(requests[0].workspace.as_ref(), "work");
+    assert_eq!(requests[0].name, "echo_value");
 
     server.shutdown().await;
 }
@@ -576,6 +720,18 @@ async fn source_test_renders_validation_summary() {
         stdout.contains("pull_requests"),
         "expected pull_requests table: {stdout}"
     );
+    assert!(
+        stdout.contains("github (1 table function)"),
+        "expected table-function schema summary: {stdout}"
+    );
+    assert!(
+        stdout.contains("search_issues"),
+        "expected table-function name: {stdout}"
+    );
+    assert!(
+        !stdout.contains("search_issues()"),
+        "table-function summary must not imply a zero-argument signature: {stdout}"
+    );
 
     let requests = server.validate_source_requests();
     assert_eq!(requests.len(), 1, "expected one validate_source call");
@@ -874,6 +1030,264 @@ async fn search_json_output_preserves_typed_payloads_and_statuses() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn search_rebuild_remains_free_text_query() {
+    let server = MockServer::start().await;
+
+    server.cmd().args(["search", "rebuild"]).assert().success();
+
+    let requests = server.search_requests();
+    assert_eq!(requests.len(), 1, "expected one search call");
+    assert_eq!(requests[0].query, "rebuild");
+    assert!(
+        server.rebuild_search_index_requests().is_empty(),
+        "plain search must not call maintenance"
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn search_index_rebuild_calls_app_maintenance_rpc() {
+    let server = MockServer::start().await;
+
+    let assert = server
+        .cmd()
+        .args(["search-index", "rebuild", "--force"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(
+        stdout.contains("Rebuilt catalog search index"),
+        "expected rebuild output: {stdout}"
+    );
+    assert!(
+        stdout.contains("Rebuilt observed-values search index")
+            && stdout.contains("Pre-rebuild queue: processed 2")
+            && stdout.contains("upserted 2")
+            && stdout.contains("wrote 2 FTS rows")
+            && stdout.contains("failed 1")
+            && stdout.contains("remaining 1"),
+        "expected structured observed pre-rebuild drain output: {stdout}"
+    );
+
+    assert!(
+        server.search_requests().is_empty(),
+        "maintenance command must not call Search"
+    );
+    let requests = server.rebuild_search_index_requests();
+    assert_eq!(requests.len(), 1, "expected one rebuild call");
+    assert_default_workspace(requests[0].workspace.as_ref());
+    assert_eq!(requests[0].provider, SearchIndexProvider::All as i32);
+    assert!(requests[0].force);
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn search_index_rebuild_reports_current_projection_as_skipped() {
+    let server = MockServer::start_with_config(
+        MockServerConfig::default().with_rebuild_search_index(RebuildSearchIndexResponse {
+            results: vec![SearchMaintenanceResult {
+                provider: SearchProvider::CatalogMetadata as i32,
+                state: SearchMaintenanceState::Noop as i32,
+                note: "catalog search projection already current".to_string(),
+                detail: Some(search_maintenance_result::Detail::CatalogRebuild(
+                    CatalogRebuildResult {
+                        old_document_count: 3,
+                        new_document_count: 3,
+                        projection_changed: false,
+                        rebuild_performed: false,
+                    },
+                )),
+            }],
+        }),
+    )
+    .await;
+
+    let assert = server
+        .cmd()
+        .args(["search-index", "rebuild"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+
+    assert!(
+        stdout.contains(
+            "Skipped rebuilding catalog search index: projection already current with 3 documents."
+        ),
+        "expected no-op rebuild output: {stdout}"
+    );
+    assert!(
+        !stdout.contains("Rebuilt catalog"),
+        "no-op rebuild must not claim a rebuild: {stdout}"
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn search_index_drain_calls_app_maintenance_rpc() {
+    let server = MockServer::start().await;
+
+    let assert = server
+        .cmd()
+        .args(["search-index", "drain", "--budget-ms", "2500"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(
+        stdout.contains("Drained observed-values search queue"),
+        "expected drain output: {stdout}"
+    );
+    assert!(
+        stdout.contains("dropped 1"),
+        "expected dropped storage job count: {stdout}"
+    );
+
+    assert!(
+        server.search_requests().is_empty(),
+        "maintenance command must not call Search"
+    );
+    let requests = server.drain_search_queue_requests();
+    assert_eq!(requests.len(), 1, "expected one drain call");
+    assert_default_workspace(requests[0].workspace.as_ref());
+    assert_eq!(requests[0].budget_ms, 2500);
+
+    server
+        .cmd()
+        .args(["search-index", "drain"])
+        .assert()
+        .success();
+    let requests = server.drain_search_queue_requests();
+    assert_eq!(requests.len(), 2, "expected second drain call");
+    assert_eq!(requests[1].budget_ms, 0);
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn search_index_clear_calls_app_maintenance_rpc() {
+    let server = MockServer::start().await;
+
+    let assert = server
+        .cmd()
+        .args([
+            "search-index",
+            "clear",
+            "--scope",
+            "all",
+            "--workspace",
+            "default",
+            "--yes",
+        ])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(
+        stdout.contains("Cleared catalog search data"),
+        "expected clear output: {stdout}"
+    );
+    assert!(
+        stdout.contains("Storage cleanup: local search storage cleanup completed."),
+        "expected storage cleanup output: {stdout}"
+    );
+
+    assert!(
+        server.search_requests().is_empty(),
+        "maintenance command must not call Search"
+    );
+    let requests = server.clear_search_data_requests();
+    assert_eq!(requests.len(), 1, "expected one clear call");
+    assert_default_workspace(requests[0].workspace.as_ref());
+    assert_eq!(requests[0].scope, SearchDataScope::All as i32);
+    match requests[0]
+        .target
+        .as_ref()
+        .and_then(|target| target.target.as_ref())
+    {
+        Some(search_clear_target::Target::Workspace(workspace_scope)) => {
+            assert!(*workspace_scope);
+        }
+        other => panic!("expected workspace clear target, got {other:?}"),
+    }
+
+    server
+        .cmd()
+        .args([
+            "search-index",
+            "clear",
+            "--scope",
+            "all",
+            "--workspace",
+            "work",
+            "--yes",
+        ])
+        .assert()
+        .success();
+    let requests = server.clear_search_data_requests();
+    assert_eq!(requests.len(), 2, "expected second clear call");
+    assert_workspace_name(requests[1].workspace.as_ref(), "work");
+
+    server
+        .cmd()
+        .args([
+            "search-index",
+            "clear",
+            "--scope",
+            "all",
+            "--source",
+            "searchable",
+            "--workspace",
+            "default",
+            "--yes",
+        ])
+        .assert()
+        .success();
+    let requests = server.clear_search_data_requests();
+    assert_eq!(requests.len(), 3, "expected source clear call");
+    assert_default_workspace(requests[2].workspace.as_ref());
+    assert_eq!(requests[2].scope, SearchDataScope::All as i32);
+    match requests[2]
+        .target
+        .as_ref()
+        .and_then(|target| target.target.as_ref())
+    {
+        Some(search_clear_target::Target::SourceName(source_name)) => {
+            assert_eq!(source_name, "searchable");
+        }
+        other => panic!("expected source clear target, got {other:?}"),
+    }
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn search_index_clear_requires_explicit_workspace_even_when_env_is_set() {
+    let server = MockServer::start().await;
+
+    let assert = server
+        .cmd()
+        .env("CORAL_WORKSPACE", "work")
+        .args(["search-index", "clear", "--scope", "all", "--yes"])
+        .assert()
+        .failure();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    assert!(
+        stderr.contains("requires an explicit `--workspace NAME` and `--yes`"),
+        "expected explicit workspace error: {stderr}"
+    );
+
+    assert!(
+        server.clear_search_data_requests().is_empty(),
+        "implicit environment selection must not authorize destructive clear"
+    );
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn sql_table_output_renders_empty_result() {
     let schema = Schema::new(vec![
         Field::new("id", DataType::Int64, false),
@@ -1002,15 +1416,14 @@ paths: {}
         r"
 name: github
 dsl_version: 4
-surfaces:
-  - id: rest
+surface:
     type: openapi
     file: openapi.yaml
 ",
     )
     .expect("write manifest");
 
-    server
+    let assert = server
         .cmd()
         .args([
             "source",
@@ -1020,6 +1433,20 @@ surfaces:
         ])
         .assert()
         .success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(
+        stdout.contains("github (1 table function)"),
+        "expected table-function schema summary after source add: {stdout}"
+    );
+    assert!(
+        stdout.contains("search_issues"),
+        "expected table-function name after source add: {stdout}"
+    );
+    assert!(
+        !stdout.contains("search_issues()"),
+        "table-function summary must not imply a zero-argument signature after source add: {stdout}"
+    );
 
     let requests = server.import_source_requests();
     assert_eq!(requests.len(), 1, "expected one import_source call");

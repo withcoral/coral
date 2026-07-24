@@ -2,8 +2,8 @@
 
 use coral_api::{
     CORAL_ERROR_DOMAIN, CORAL_ERROR_METADATA_DETAIL, CORAL_ERROR_METADATA_HINT,
-    CORAL_ERROR_METADATA_SUMMARY, CORAL_ERROR_REASON_SOURCE_NOT_FOUND,
-    CORAL_ERROR_REASON_WORKSPACE_NOT_FOUND,
+    CORAL_ERROR_METADATA_SUMMARY, CORAL_ERROR_REASON_FUNCTION_NOT_FOUND,
+    CORAL_ERROR_REASON_SOURCE_NOT_FOUND, CORAL_ERROR_REASON_WORKSPACE_NOT_FOUND,
 };
 use coral_engine::{CoreError, StatusCode};
 use tonic::{Code, Status};
@@ -15,9 +15,15 @@ use crate::state::db::DbError;
 /// Errors surfaced by the local application layer.
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
+    /// The request did not present valid authentication.
+    #[error("unauthenticated: {0}")]
+    Unauthenticated(String),
     /// A requested source was not found in config.
     #[error("source '{0}' not found")]
     SourceNotFound(String),
+    /// A requested function was not found in config.
+    #[error("function '{0}' not found")]
+    FunctionNotFound(String),
     /// A requested workspace was not found in config.
     #[error("workspace '{0}' not found")]
     WorkspaceNotFound(String),
@@ -30,6 +36,22 @@ pub enum AppError {
     /// The request requires additional setup before it can succeed.
     #[error("failed precondition: {0}")]
     FailedPrecondition(String),
+    /// One installed source is missing required configured inputs.
+    #[error("failed precondition: source '{source_name}' is missing {detail}")]
+    MissingSourceInputs {
+        /// Source whose required input is absent.
+        source_name: String,
+        /// Human-readable description of the missing input or inputs.
+        detail: String,
+    },
+    /// This build cannot resolve a DSL v4 source's declared identities.
+    #[error(
+        "failed precondition: source '{source_name}' declares DSL v4 identity_requirements, but this Coral build cannot resolve source identities. Use a Coral build with identity runtime support before querying this source."
+    )]
+    UnsupportedV4IdentityRequirements {
+        /// Source containing unsupported identity requirements.
+        source_name: String,
+    },
     /// A DSL v4 source has missing or stale generated runtime artifacts.
     #[error(
         "failed precondition: source '{source_name}' has missing or incompatible DSL v4 materialized artifacts: {detail}. Re-add the source to regenerate them."
@@ -38,6 +60,16 @@ pub enum AppError {
         /// Source name whose installed artifacts failed validation.
         source_name: String,
         /// Specific materialization mismatch or missing-artifact detail.
+        detail: String,
+    },
+    /// An installed DSL v4 manifest uses a no-longer-supported schema shape.
+    #[error(
+        "failed precondition: source '{source_name}' has an incompatible installed DSL v4 manifest: {detail}. Re-add the source with a current manifest."
+    )]
+    IncompatibleInstalledV4Manifest {
+        /// Source whose installed manifest is incompatible.
+        source_name: String,
+        /// Specific manifest incompatibility.
         detail: String,
     },
     /// A user-maintained DSL v4 projection override is malformed or stale.
@@ -52,12 +84,30 @@ pub enum AppError {
         /// Specific override mismatch or malformed-artifact detail.
         detail: String,
     },
+    /// A user-maintained DSL v4 operation metadata override is malformed or stale.
+    #[error(
+        "failed precondition: source '{source_name}' has invalid DSL v4 operation metadata override '{override_path}': {detail}. Edit or remove the override file."
+    )]
+    InvalidV4OperationMetadataOverride {
+        /// Source name whose override failed validation.
+        source_name: String,
+        /// Operation metadata override path that failed validation.
+        override_path: String,
+        /// Specific override mismatch or malformed-file detail.
+        detail: String,
+    },
     /// Provider-managed credential refresh failed during active source use.
     #[error("credential refresh failed: {0}")]
     CredentialRefresh(String),
     /// A required remote dependency was unavailable.
     #[error("unavailable: {0}")]
     Unavailable(String),
+    /// The server exhausted a resource required to complete the request.
+    #[error("resource exhausted: {0}")]
+    ResourceExhausted(String),
+    /// An internal server operation failed.
+    #[error("internal error: {0}")]
+    Internal(String),
     /// Filesystem access failed.
     #[error(transparent)]
     Io(#[from] std::io::Error),
@@ -143,6 +193,10 @@ fn truncate_status_detail(detail: String) -> String {
     format!("{truncated}{MARKER}")
 }
 
+pub(crate) fn status_with_bounded_detail(code: Code, detail: impl Into<String>) -> Status {
+    Status::new(code, truncate_status_detail(detail.into()))
+}
+
 #[expect(
     clippy::needless_pass_by_value,
     reason = "used directly as a map_err adapter across tonic service handlers"
@@ -150,6 +204,7 @@ fn truncate_status_detail(detail: String) -> String {
 pub(crate) fn app_status(error: AppError) -> Status {
     let not_found_reason = match &error {
         AppError::SourceNotFound(_) => Some(CORAL_ERROR_REASON_SOURCE_NOT_FOUND),
+        AppError::FunctionNotFound(_) => Some(CORAL_ERROR_REASON_FUNCTION_NOT_FOUND),
         AppError::WorkspaceNotFound(_) => Some(CORAL_ERROR_REASON_WORKSPACE_NOT_FOUND),
         _ => None,
     };
@@ -167,7 +222,7 @@ pub(crate) fn app_status(error: AppError) -> Status {
             details,
         );
     }
-    Status::new(app_code(&error), truncate_status_detail(error.to_string()))
+    status_with_bounded_detail(app_code(&error), error.to_string())
 }
 
 pub(crate) fn core_status(error: CoreError) -> Status {
@@ -235,20 +290,29 @@ fn grpc_code(status: StatusCode) -> Code {
 
 fn app_code(error: &AppError) -> Code {
     match error {
-        AppError::SourceNotFound(_) | AppError::WorkspaceNotFound(_) => Code::NotFound,
+        AppError::Unauthenticated(_) => Code::Unauthenticated,
+        AppError::SourceNotFound(_)
+        | AppError::FunctionNotFound(_)
+        | AppError::WorkspaceNotFound(_) => Code::NotFound,
         AppError::WorkspaceAlreadyExists(_) => Code::AlreadyExists,
         AppError::InvalidInput(_) => Code::InvalidArgument,
         AppError::FailedPrecondition(_)
+        | AppError::MissingSourceInputs { .. }
+        | AppError::UnsupportedV4IdentityRequirements { .. }
         | AppError::MissingOrIncompatibleV4Materialization { .. }
+        | AppError::IncompatibleInstalledV4Manifest { .. }
         | AppError::InvalidV4ProjectionOverride { .. }
+        | AppError::InvalidV4OperationMetadataOverride { .. }
         | AppError::CredentialRefresh(_)
         | AppError::MissingConfigDir
         | AppError::Credentials(CredentialsError::Parse(_) | CredentialsError::Unavailable(_)) => {
             Code::FailedPrecondition
         }
         AppError::Unavailable(_) => Code::Unavailable,
+        AppError::ResourceExhausted(_) => Code::ResourceExhausted,
         AppError::Io(error) if error.kind() == std::io::ErrorKind::NotFound => Code::NotFound,
-        AppError::Io(_)
+        AppError::Internal(_)
+        | AppError::Io(_)
         | AppError::Yaml(_)
         | AppError::TomlDecode(_)
         | AppError::TomlEditDecode(_)
@@ -280,6 +344,35 @@ mod tests {
     }
 
     #[test]
+    fn app_status_maps_unauthenticated_and_truncates_detail() {
+        let status = app_status(AppError::Unauthenticated("x".repeat(20 * 1024)));
+
+        assert_eq!(status.code(), Code::Unauthenticated);
+        assert!(status.message().len() <= MAX_STATUS_DETAIL_BYTES);
+        assert!(status.message().ends_with("… (truncated)"));
+    }
+
+    #[test]
+    fn app_status_explains_unsupported_v4_identity_requirements_without_readd_guidance() {
+        let status = app_status(AppError::UnsupportedV4IdentityRequirements {
+            source_name: "demo".to_string(),
+        });
+
+        assert_eq!(status.code(), Code::FailedPrecondition);
+        assert!(
+            status
+                .message()
+                .contains("source 'demo' declares DSL v4 identity_requirements")
+        );
+        assert!(
+            status
+                .message()
+                .contains("cannot resolve source identities")
+        );
+        assert!(!status.message().contains("Re-add"));
+    }
+
+    #[test]
     fn app_status_attaches_structured_reason_for_source_not_found() {
         let status = app_status(AppError::SourceNotFound("default:hn".to_string()));
         assert_eq!(status.code(), Code::NotFound);
@@ -299,6 +392,28 @@ mod tests {
         assert!(
             info.metadata.is_empty(),
             "SOURCE_NOT_FOUND must not carry unbounded identifier metadata: {:?}",
+            info.metadata
+        );
+    }
+
+    #[test]
+    fn app_status_attaches_structured_reason_for_function_not_found() {
+        let status = app_status(AppError::FunctionNotFound("review_queue".to_string()));
+        assert_eq!(status.code(), Code::NotFound);
+
+        let details = status.get_error_details_vec();
+        let info = details
+            .iter()
+            .find_map(|detail| match detail {
+                ErrorDetail::ErrorInfo(info) => Some(info),
+                _ => None,
+            })
+            .expect("function-not-found status must carry an ErrorInfo detail");
+        assert_eq!(info.reason, CORAL_ERROR_REASON_FUNCTION_NOT_FOUND);
+        assert_eq!(info.domain, CORAL_ERROR_DOMAIN);
+        assert!(
+            info.metadata.is_empty(),
+            "FUNCTION_NOT_FOUND must not carry unbounded identifier metadata: {:?}",
             info.metadata
         );
     }
@@ -345,6 +460,22 @@ mod tests {
             "remote descriptor timed out".to_string(),
         ));
         assert_eq!(status.code(), Code::Unavailable);
+    }
+
+    #[test]
+    fn app_status_maps_resource_exhausted() {
+        let status = app_status(AppError::ResourceExhausted(
+            "local storage is full".to_string(),
+        ));
+
+        assert_eq!(status.code(), Code::ResourceExhausted);
+    }
+
+    #[test]
+    fn app_status_maps_internal() {
+        let status = app_status(AppError::Internal("storage failure".to_string()));
+
+        assert_eq!(status.code(), Code::Internal);
     }
 
     #[test]

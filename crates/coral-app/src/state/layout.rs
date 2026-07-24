@@ -5,15 +5,16 @@ use std::path::{Path, PathBuf};
 use etcetera::app_strategy::{AppStrategy, AppStrategyArgs, choose_native_strategy};
 
 use crate::bootstrap::AppError;
+use crate::functions::FunctionName;
 use crate::sources::SourceName;
 use crate::sources::materialization::{
-    DIAGNOSTICS_FILENAME, FINGERPRINT_FILENAME, PARAMETER_METADATA_OVERRIDE_FILENAME,
-    PROJECTIONS_FILENAME,
+    DIAGNOSTICS_FILENAME, FINGERPRINT_FILENAME, OPERATION_METADATA_FILENAME, PROJECTIONS_FILENAME,
 };
 use crate::storage::fs::ensure_dir;
 use crate::workspaces::{WorkspaceName, WorkspacePaths};
 
 pub(crate) const INSTALLED_MANIFEST_FILE_NAME: &str = "manifest.yaml";
+pub(crate) const INSTALLED_FUNCTION_FILE_NAME: &str = "function.sql";
 pub(crate) const INSTALLED_SECRETS_FILE_NAME: &str = "secrets.env";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,6 +27,18 @@ pub(crate) enum V4ProjectionCatalogOrigin {
 pub(crate) struct V4ProjectionCatalogFile {
     pub(crate) path: PathBuf,
     pub(crate) origin: V4ProjectionCatalogOrigin,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum V4OperationMetadataOrigin {
+    Materialized,
+    Override,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct V4OperationMetadataFile {
+    pub(crate) path: PathBuf,
+    pub(crate) origin: V4OperationMetadataOrigin,
 }
 
 #[derive(Debug, Clone)]
@@ -106,12 +119,45 @@ impl AppStateLayout {
         self.feedback_dir(workspace_name).join("reports.jsonl")
     }
 
+    pub(crate) fn functions_root(&self, workspace_name: &WorkspaceName) -> PathBuf {
+        self.workspace_dir(workspace_name).join("functions")
+    }
+
+    pub(crate) fn function_dir(
+        &self,
+        workspace_name: &WorkspaceName,
+        function_name: &FunctionName,
+    ) -> PathBuf {
+        self.functions_root(workspace_name)
+            .join(function_name.as_str())
+    }
+
+    pub(crate) fn function_file(
+        &self,
+        workspace_name: &WorkspaceName,
+        function_name: &FunctionName,
+    ) -> PathBuf {
+        self.function_dir(workspace_name, function_name)
+            .join(INSTALLED_FUNCTION_FILE_NAME)
+    }
+
+    pub(crate) fn credential_encryption_key_file(&self) -> PathBuf {
+        self.config_dir.join("credentials").join("encryption.key")
+    }
+
     pub(crate) fn search_dir(&self, workspace_name: &WorkspaceName) -> PathBuf {
         self.workspace_dir(workspace_name).join("search")
     }
 
     pub(crate) fn search_sqlite_file(&self, workspace_name: &WorkspaceName) -> PathBuf {
         self.search_dir(workspace_name).join("search.sqlite3")
+    }
+
+    /// Per-workspace task lifecycle event log (JSONL).
+    pub(crate) fn task_events_file(&self, workspace_name: &WorkspaceName) -> PathBuf {
+        self.workspace_dir(workspace_name)
+            .join("tasks")
+            .join("tasks.jsonl")
     }
 
     pub(crate) fn source_dir(
@@ -223,27 +269,29 @@ impl AppStateLayout {
             .join(DIAGNOSTICS_FILENAME)
     }
 
-    pub(crate) fn v4_parameter_metadata_override_file(
+    pub(crate) fn v4_operation_metadata_file(
         &self,
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
-        surface_id: &str,
-    ) -> PathBuf {
-        self.v4_override_dir(workspace_name, source_name)
-            .join("surfaces")
-            .join(surface_id)
-            .join(PARAMETER_METADATA_OVERRIDE_FILENAME)
-    }
-
-    pub(crate) fn v4_surface_dir(
-        &self,
-        workspace_name: &WorkspaceName,
-        source_name: &SourceName,
-        surface_id: &str,
-    ) -> PathBuf {
-        self.v4_materialized_dir(workspace_name, source_name)
-            .join("surfaces")
-            .join(surface_id)
+    ) -> Result<V4OperationMetadataFile, AppError> {
+        let override_file = self
+            .v4_override_dir(workspace_name, source_name)
+            .join(OPERATION_METADATA_FILENAME);
+        match std::fs::symlink_metadata(&override_file) {
+            Ok(_) => Ok(V4OperationMetadataFile {
+                path: override_file,
+                origin: V4OperationMetadataOrigin::Override,
+            }),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Ok(V4OperationMetadataFile {
+                    path: self
+                        .v4_materialized_dir(workspace_name, source_name)
+                        .join(OPERATION_METADATA_FILENAME),
+                    origin: V4OperationMetadataOrigin::Materialized,
+                })
+            }
+            Err(error) => Err(error.into()),
+        }
     }
 }
 
@@ -258,6 +306,7 @@ mod tests {
     use std::fs;
 
     use super::AppStateLayout;
+    use crate::functions::FunctionName;
     use crate::sources::SourceName;
     use crate::sources::materialization::PROJECTIONS_FILENAME;
     use crate::workspaces::WorkspaceName;
@@ -270,6 +319,7 @@ mod tests {
         let layout = AppStateLayout::discover(Some(config_dir.clone())).expect("layout");
         let workspace_name = WorkspaceName::parse("default").expect("workspace");
         let source_name = SourceName::parse("github").expect("source");
+        let function_name = FunctionName::parse("review_queue").expect("function");
 
         assert_eq!(layout.config_file(), config_dir.join("config.toml"));
         assert_eq!(layout.database_file(), config_dir.join("coral.db"));
@@ -300,12 +350,29 @@ mod tests {
                 .join("reports.jsonl")
         );
         assert_eq!(
+            layout.function_file(&workspace_name, &function_name),
+            config_dir
+                .join("workspaces")
+                .join("default")
+                .join("functions")
+                .join("review_queue")
+                .join("function.sql")
+        );
+        assert_eq!(
             layout.search_sqlite_file(&workspace_name),
             config_dir
                 .join("workspaces")
                 .join("default")
                 .join("search")
                 .join("search.sqlite3")
+        );
+        assert_eq!(
+            layout.task_events_file(&workspace_name),
+            config_dir
+                .join("workspaces")
+                .join("default")
+                .join("tasks")
+                .join("tasks.jsonl")
         );
         assert_eq!(
             layout.local_trace_store_dir(),
@@ -342,11 +409,29 @@ mod tests {
             overridden.origin,
             super::V4ProjectionCatalogOrigin::Override
         );
+        let generated_metadata = layout
+            .v4_operation_metadata_file(&workspace_name, &source_name)
+            .expect("generated metadata path");
         assert_eq!(
-            layout.v4_parameter_metadata_override_file(&workspace_name, &source_name, "rest"),
+            generated_metadata.path,
             config_dir
-                .join("workspaces/default/sources/github/overrides/surfaces/rest")
-                .join("parameter_metadata.yaml")
+                .join("workspaces/default/sources/github/materialized/v4/operation-metadata.yaml")
+        );
+        assert_eq!(
+            generated_metadata.origin,
+            super::V4OperationMetadataOrigin::Materialized
+        );
+
+        let metadata_override =
+            override_dir.join(crate::sources::materialization::OPERATION_METADATA_FILENAME);
+        fs::write(&metadata_override, "{}").expect("write operation metadata override");
+        let overridden_metadata = layout
+            .v4_operation_metadata_file(&workspace_name, &source_name)
+            .expect("overridden metadata path");
+        assert_eq!(overridden_metadata.path, metadata_override);
+        assert_eq!(
+            overridden_metadata.origin,
+            super::V4OperationMetadataOrigin::Override
         );
     }
 }

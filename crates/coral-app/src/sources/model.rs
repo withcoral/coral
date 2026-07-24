@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 use coral_spec::ManifestInputSpec;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::credentials::CredentialStorageKind;
 use crate::sources::SourceName;
@@ -43,6 +44,13 @@ pub(crate) struct InstalledSource {
     /// storage until the source is removed and re-added.
     #[serde(default)]
     pub(crate) credential_storage: Option<CredentialStorageKind>,
+    /// Non-secret account identity used to invalidate derived local state when
+    /// credential material is explicitly replaced.
+    ///
+    /// Existing source configurations deserialize to the nil UUID. Ordinary
+    /// OAuth access-token refreshes do not mutate this value.
+    #[serde(default)]
+    pub(crate) credential_revision: Uuid,
     /// Where this installed source came from.
     pub(crate) origin: SourceOrigin,
 }

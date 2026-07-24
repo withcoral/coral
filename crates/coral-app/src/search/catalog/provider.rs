@@ -1,13 +1,13 @@
 //! Catalog metadata Universal Search provider.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use coral_engine::{CatalogInfo, TableFunctionInfo, TableInfo};
 
 use crate::bootstrap::AppError;
 use crate::catalog::discovery::CatalogItem;
-use crate::query::QueryAttribution;
-use crate::search::catalog::local_snapshot::CatalogSnapshotLoader;
+use crate::catalog::model::CatalogResolution;
+use crate::query::manager::QueryManagerError;
 use crate::search::catalog::ranking::{RankedCatalogHit, rank_catalog_hits};
 use crate::search::catalog::snapshot::{
     CatalogSearchSnapshot, field_role_from_str, surface_kind_from_str,
@@ -15,13 +15,20 @@ use crate::search::catalog::snapshot::{
 use crate::search::catalog::sqlite_index::{
     CatalogIndexDocumentKind, CatalogRefreshResult, CatalogSearchHit, CatalogSearchHits,
 };
+use crate::search::maintenance::{
+    CatalogClearMaintenanceResult, CatalogRebuildMaintenanceResult, SearchClearTarget,
+    SearchDataScope, SearchMaintenanceDetail, SearchMaintenanceResult, SearchMaintenanceState,
+    SearchProviderClearOutcome, SearchProviderClearRequest, SearchStorageCleanupResult,
+};
 use crate::search::provider::ProviderSearchOutcome;
 use crate::search::result::{
     CatalogMetadataResult, ColumnHintResult, ProviderCoverage, ProviderStatus, SearchCandidate,
-    SearchFieldRole, SearchPayload, SearchProviderKind, SearchProviderState, SearchRequest,
-    SearchSurfaceKind, TableColumnPreview, TableColumnPreviewColumn,
+    SearchFieldRole, SearchManagerError, SearchPayload, SearchProviderKind, SearchProviderState,
+    SearchRequest, SearchSurfaceKind, TableColumnPreview, TableColumnPreviewColumn,
 };
-use crate::search::sqlite_store::{SqliteSearchError, SqliteSearchStore};
+use crate::search::sqlite_store::{
+    SqliteSearchCompactionResult, SqliteSearchError, SqliteSearchStore,
+};
 use crate::state::AppStateLayout;
 
 const CATALOG_PROVIDER_RETRIEVAL_MULTIPLIER: usize = 5;
@@ -47,27 +54,23 @@ struct CatalogProjectionState {
 #[derive(Clone)]
 pub(crate) struct CatalogMetadataProvider {
     layout: AppStateLayout,
-    catalog_loader: CatalogSnapshotLoader,
 }
 
 impl CatalogMetadataProvider {
-    pub(crate) fn new(layout: AppStateLayout, catalog_loader: CatalogSnapshotLoader) -> Self {
-        Self {
-            layout,
-            catalog_loader,
-        }
+    pub(crate) fn new(layout: AppStateLayout) -> Self {
+        Self { layout }
     }
 
     pub(crate) fn search(
         &self,
         request: &SearchRequest,
-        _attribution: &QueryAttribution,
+        resolution: Result<&CatalogResolution, &QueryManagerError>,
     ) -> ProviderSearchOutcome {
-        let catalog = match self.load_catalog(request) {
-            Ok(catalog) => catalog,
-            Err(error) => return catalog_query_error_outcome(&error),
+        let resolution = match resolution {
+            Ok(resolution) => resolution,
+            Err(error) => return catalog_query_error_outcome(error),
         };
-        let projection = match self.prepare_projection(request, &catalog) {
+        let projection = match self.prepare_projection(request, resolution) {
             Ok(projection) => projection,
             Err(error) => return catalog_index_error_outcome(&error),
         };
@@ -79,19 +82,25 @@ impl CatalogMetadataProvider {
             return outcome;
         }
 
-        catalog_search_outcome(request, &catalog, search_hits, &projection)
-    }
-
-    fn load_catalog(&self, request: &SearchRequest) -> Result<CatalogInfo, AppError> {
-        self.catalog_loader.load_catalog(&request.workspace_name)
+        catalog_search_outcome(
+            request,
+            &resolution.catalog,
+            &resolution.failed_source_names,
+            search_hits,
+            &projection,
+        )
     }
 
     fn prepare_projection(
         &self,
         request: &SearchRequest,
-        catalog: &CatalogInfo,
+        resolution: &CatalogResolution,
     ) -> Result<CatalogProjection, SqliteSearchError> {
-        let catalog_fingerprint = CatalogSearchSnapshot::fingerprint_catalog(catalog);
+        let catalog_fingerprint =
+            CatalogSearchSnapshot::fingerprint_catalog_with_runtime_schema_owners(
+                &resolution.catalog,
+                &resolution.runtime_schema_owners,
+            );
         let store = SqliteSearchStore::open_workspace(&self.layout, &request.workspace_name)?;
         let capabilities = store.capabilities();
         tracing::debug!(
@@ -101,7 +110,8 @@ impl CatalogMetadataProvider {
             trigram = capabilities.trigram,
             "using SQLite catalog search store"
         );
-        let state = Self::prepare_projection_state(request, catalog, &store, &catalog_fingerprint)?;
+        let state =
+            Self::prepare_projection_state(request, resolution, &store, &catalog_fingerprint)?;
         tracing::debug!(
             workspace = %request.workspace_name,
             refreshed = state.refresh.refreshed,
@@ -120,7 +130,7 @@ impl CatalogMetadataProvider {
 
     fn prepare_projection_state(
         request: &SearchRequest,
-        catalog: &CatalogInfo,
+        resolution: &CatalogResolution,
         store: &SqliteSearchStore,
         catalog_fingerprint: &str,
     ) -> Result<CatalogProjectionState, SqliteSearchError> {
@@ -137,7 +147,10 @@ impl CatalogMetadataProvider {
             });
         }
 
-        let snapshot = CatalogSearchSnapshot::from_catalog(catalog);
+        let snapshot = CatalogSearchSnapshot::from_catalog_with_runtime_schema_owners(
+            &resolution.catalog,
+            &resolution.runtime_schema_owners,
+        );
         let expected_document_count = u32::try_from(snapshot.documents.len()).unwrap_or(u32::MAX);
         let index_snapshot = snapshot.index_snapshot();
         match store.refresh_catalog_projection(&index_snapshot) {
@@ -180,9 +193,182 @@ impl CatalogMetadataProvider {
     }
 }
 
+impl CatalogMetadataProvider {
+    pub(crate) fn rebuild_index(
+        &self,
+        workspace_name: &crate::workspaces::WorkspaceName,
+        resolution: &CatalogResolution,
+        force: bool,
+    ) -> Result<SearchMaintenanceResult, SearchManagerError> {
+        let snapshot = CatalogSearchSnapshot::from_catalog_with_runtime_schema_owners(
+            &resolution.catalog,
+            &resolution.runtime_schema_owners,
+        )
+        .index_snapshot();
+        let store = SqliteSearchStore::open_workspace(&self.layout, workspace_name)
+            .map_err(|error| search_sqlite_app_error(&error))?;
+        let result = store
+            .rebuild_catalog_projection(&snapshot, force)
+            .map_err(|error| search_sqlite_app_error(&error))?;
+        Ok(catalog_rebuild_provider_result(
+            result.old_document_count,
+            result.new_document_count,
+            result.projection_changed,
+            result.rebuild_performed,
+            force,
+        ))
+    }
+
+    pub(crate) fn clear_data(
+        &self,
+        request: SearchProviderClearRequest<'_>,
+    ) -> Result<SearchProviderClearOutcome, SearchManagerError> {
+        if request.scope != SearchDataScope::All {
+            return Err(AppError::InvalidInput(
+                "catalog search provider supports only all search-data clear scope".to_string(),
+            )
+            .into());
+        }
+        match request.target {
+            SearchClearTarget::Workspace => {
+                let store = SqliteSearchStore::open_workspace(&self.layout, request.workspace_name)
+                    .map_err(|error| search_sqlite_app_error(&error))?;
+                let result = store
+                    .clear_catalog_workspace()
+                    .map_err(|error| search_sqlite_app_error(&error))?;
+                Ok(SearchProviderClearOutcome {
+                    result: catalog_clear_provider_result(result.deleted_document_count),
+                    storage_cleanup: request.compact_after_clear.then(|| {
+                        let compaction = store.compact_after_clear();
+                        search_storage_cleanup_result(&compaction)
+                    }),
+                })
+            }
+            SearchClearTarget::Source(source_name) => {
+                let store = SqliteSearchStore::open_workspace(&self.layout, request.workspace_name)
+                    .map_err(|error| search_sqlite_app_error(&error))?;
+                let result = store
+                    .clear_catalog_source(source_name.as_str())
+                    .map_err(|error| search_sqlite_app_error(&error))?;
+                Ok(SearchProviderClearOutcome {
+                    result: catalog_clear_provider_result(result.deleted_document_count),
+                    storage_cleanup: request.compact_after_clear.then(|| {
+                        let compaction = store.compact_after_clear();
+                        search_storage_cleanup_result(&compaction)
+                    }),
+                })
+            }
+        }
+    }
+}
+
+fn catalog_rebuild_provider_result(
+    old_document_count: u32,
+    new_document_count: u32,
+    projection_changed: bool,
+    rebuild_performed: bool,
+    force: bool,
+) -> SearchMaintenanceResult {
+    let note = if rebuild_performed && force {
+        "force rebuilt catalog search projection"
+    } else if rebuild_performed {
+        "rebuilt catalog search projection"
+    } else {
+        "catalog search projection already current"
+    }
+    .to_string();
+    SearchMaintenanceResult {
+        provider: SearchProviderKind::CatalogMetadata,
+        state: if rebuild_performed {
+            SearchMaintenanceState::Completed
+        } else {
+            SearchMaintenanceState::Noop
+        },
+        note,
+        detail: Some(SearchMaintenanceDetail::CatalogRebuild(
+            CatalogRebuildMaintenanceResult {
+                old_document_count,
+                new_document_count,
+                projection_changed,
+                rebuild_performed,
+            },
+        )),
+    }
+}
+
+pub(crate) fn catalog_clear_provider_result(
+    deleted_document_count: u32,
+) -> SearchMaintenanceResult {
+    SearchMaintenanceResult {
+        provider: SearchProviderKind::CatalogMetadata,
+        state: if deleted_document_count == 0 {
+            SearchMaintenanceState::Noop
+        } else {
+            SearchMaintenanceState::Completed
+        },
+        note: "cleared catalog search projection".to_string(),
+        detail: Some(SearchMaintenanceDetail::CatalogClear(
+            CatalogClearMaintenanceResult {
+                deleted_document_count,
+            },
+        )),
+    }
+}
+
+fn search_storage_cleanup_result(
+    result: &SqliteSearchCompactionResult,
+) -> SearchStorageCleanupResult {
+    let (state, note) = match (
+        result.wal_checkpoint_truncate_completed,
+        result.vacuum_completed,
+    ) {
+        (true, true) => (
+            SearchMaintenanceState::Completed,
+            "local search storage cleanup completed",
+        ),
+        (true, false) | (false, true) => (
+            SearchMaintenanceState::Partial,
+            "local search storage cleanup partially completed",
+        ),
+        (false, false) => (
+            SearchMaintenanceState::Failed,
+            "local search storage cleanup did not complete",
+        ),
+    };
+    if state != SearchMaintenanceState::Completed {
+        tracing::warn!(
+            wal_checkpoint_truncate_completed = result.wal_checkpoint_truncate_completed,
+            vacuum_completed = result.vacuum_completed,
+            detail = %result.note,
+            "local search storage cleanup did not fully complete"
+        );
+    }
+    SearchStorageCleanupResult {
+        state,
+        note: note.to_string(),
+    }
+}
+
+fn search_sqlite_app_error(error: &SqliteSearchError) -> AppError {
+    if error.is_lock_contention() {
+        AppError::Unavailable(format!("search maintenance storage is busy: {error}"))
+    } else if error.is_storage_exhaustion() {
+        AppError::ResourceExhausted(format!("search maintenance storage is exhausted: {error}"))
+    } else if matches!(
+        error,
+        SqliteSearchError::UnsupportedCapability { .. }
+            | SqliteSearchError::UnsupportedSchemaVersion { .. }
+    ) {
+        AppError::FailedPrecondition(format!("search maintenance is not supported: {error}"))
+    } else {
+        AppError::Internal(format!("search maintenance storage failed: {error}"))
+    }
+}
+
 fn catalog_search_outcome(
     request: &SearchRequest,
     catalog: &CatalogInfo,
+    failed_source_names: &BTreeSet<String>,
     search_hits: CatalogSearchHits,
     projection: &CatalogProjection,
 ) -> ProviderSearchOutcome {
@@ -200,10 +386,11 @@ fn catalog_search_outcome(
         );
     }
     let has_more = search_hits.retrieval_limited || candidate_set.omitted_column_hint_count > 0;
-    let state = if candidate_set.candidates.is_empty() {
-        SearchProviderState::Empty
-    } else if has_more {
+    let has_failures = !failed_source_names.is_empty();
+    let state = if has_more || has_failures {
         SearchProviderState::Partial
+    } else if candidate_set.candidates.is_empty() {
+        SearchProviderState::Empty
     } else {
         SearchProviderState::ResultsFound
     };
@@ -214,6 +401,7 @@ fn catalog_search_outcome(
         projection.stale_index,
         search_hits.retrieval_limited,
         candidate_set.omitted_column_hint_count,
+        failed_source_names,
     );
     ProviderSearchOutcome {
         candidates: candidate_set.candidates,
@@ -224,9 +412,10 @@ fn catalog_search_outcome(
             coverage: Some(ProviderCoverage {
                 eligible_units: search_hits.document_count,
                 searched_units: search_hits.document_count,
+                failed_units: u32::try_from(failed_source_names.len()).unwrap_or(u32::MAX),
                 returned_count: u32::try_from(candidate_count).unwrap_or(u32::MAX),
                 has_more,
-                stale_index: projection.stale_index,
+                stale_index: projection.stale_index || has_failures,
                 ..ProviderCoverage::default()
             }),
         },
@@ -518,13 +707,17 @@ fn find_function<'a>(
     })
 }
 
-fn catalog_query_error_outcome(error: &AppError) -> ProviderSearchOutcome {
+fn catalog_query_error_outcome(error: &QueryManagerError) -> ProviderSearchOutcome {
+    let detail = match error {
+        QueryManagerError::App(error) => error.to_string(),
+        QueryManagerError::Core(error) => error.to_string(),
+    };
     ProviderSearchOutcome {
         candidates: Vec::new(),
         status: ProviderStatus {
             provider: SearchProviderKind::CatalogMetadata,
             state: SearchProviderState::Error,
-            note: format!("Catalog metadata snapshot is unavailable: {error}"),
+            note: format!("Workspace catalog is unavailable: {detail}"),
             coverage: Some(ProviderCoverage::default()),
         },
     }
@@ -555,6 +748,7 @@ fn catalog_provider_note(
     stale_index: bool,
     retrieval_limited: bool,
     omitted_column_hint_count: usize,
+    failed_source_names: &BTreeSet<String>,
 ) -> String {
     let refresh_note = if stale_index {
         " from cached SQLite projection because refresh is currently locked"
@@ -568,8 +762,11 @@ fn catalog_provider_note(
             format!("Catalog metadata returned {total_count} search hints{refresh_note}")
         }
         SearchProviderState::Partial => {
-            let reason =
-                partial_catalog_provider_reason(retrieval_limited, omitted_column_hint_count);
+            let reason = partial_catalog_provider_reason(
+                retrieval_limited,
+                omitted_column_hint_count,
+                failed_source_names,
+            );
             format!("Catalog metadata returned {total_count} search hints; {reason}{refresh_note}")
         }
         SearchProviderState::Empty => {
@@ -584,46 +781,121 @@ fn catalog_provider_note(
 fn partial_catalog_provider_reason(
     retrieval_limited: bool,
     omitted_column_hint_count: usize,
+    failed_source_names: &BTreeSet<String>,
 ) -> String {
-    match (retrieval_limited, omitted_column_hint_count) {
-        (true, 0) => "local retrieval cap was reached".to_string(),
-        (false, count @ 1..) => {
-            format!("{count} matching column hint(s) exceeded the per-surface cap")
-        }
-        (true, count @ 1..) => {
-            format!(
-                "local retrieval cap was reached and {count} matching column hint(s) exceeded the per-surface cap"
-            )
-        }
-        (false, 0) => "partial results were returned".to_string(),
+    const MAX_FAILED_SOURCE_NAMES_IN_NOTE: usize = 3;
+
+    let mut reasons = Vec::new();
+    if retrieval_limited {
+        reasons.push("local retrieval cap was reached".to_string());
     }
+    if omitted_column_hint_count > 0 {
+        reasons.push(format!(
+            "{omitted_column_hint_count} matching column hint(s) exceeded the per-surface cap"
+        ));
+    }
+    if !failed_source_names.is_empty() {
+        let displayed_names = failed_source_names
+            .iter()
+            .take(MAX_FAILED_SOURCE_NAMES_IN_NOTE)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
+        let omitted_count = failed_source_names
+            .len()
+            .saturating_sub(MAX_FAILED_SOURCE_NAMES_IN_NOTE);
+        let omitted_note = if omitted_count > 0 {
+            format!(", and {omitted_count} more")
+        } else {
+            String::new()
+        };
+        let source_label = if failed_source_names.len() == 1 {
+            "source"
+        } else {
+            "sources"
+        };
+        reasons.push(format!(
+            "catalog preparation skipped {} {source_label}: {displayed_names}{omitted_note}",
+            failed_source_names.len(),
+        ));
+    }
+    if reasons.is_empty() {
+        reasons.push("partial results were returned".to_string());
+    }
+    reasons.join("; ")
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use coral_engine::{CatalogInfo, ColumnInfo, TableInfo};
     use tempfile::tempdir;
 
     use super::{
         CatalogProjection, MAX_COLUMN_HINTS_PER_SURFACE, catalog_provider_note,
-        catalog_search_outcome,
+        catalog_search_outcome, search_sqlite_app_error,
     };
+    use crate::bootstrap::AppError;
     use crate::search::catalog::sqlite_index::{
         CatalogIndexDocumentKind, CatalogRefreshResult, CatalogSearchHit, CatalogSearchHits,
     };
     use crate::search::result::{SearchProviderState, SearchRequest};
-    use crate::search::sqlite_store::SqliteSearchStore;
+    use crate::search::sqlite_store::{SqliteSearchError, SqliteSearchStore};
     use crate::workspaces::WorkspaceName;
 
     #[test]
     fn catalog_provider_note_reports_cached_projection_fallback() {
-        let note =
-            catalog_provider_note(SearchProviderState::ResultsFound, 3, false, true, false, 0);
+        let note = catalog_provider_note(
+            SearchProviderState::ResultsFound,
+            3,
+            false,
+            true,
+            false,
+            0,
+            &BTreeSet::new(),
+        );
 
         assert_eq!(
             note,
             "Catalog metadata returned 3 search hints from cached SQLite projection because refresh is currently locked"
         );
+    }
+
+    #[test]
+    fn maintenance_error_mapping_preserves_retry_and_failure_categories() {
+        assert!(matches!(
+            search_sqlite_app_error(&sqlite_failure(rusqlite::ffi::SQLITE_BUSY)),
+            AppError::Unavailable(_)
+        ));
+        assert!(matches!(
+            search_sqlite_app_error(&sqlite_failure(rusqlite::ffi::SQLITE_FULL)),
+            AppError::ResourceExhausted(_)
+        ));
+        assert!(matches!(
+            search_sqlite_app_error(&SqliteSearchError::Io(std::io::Error::new(
+                std::io::ErrorKind::StorageFull,
+                "fixture disk full",
+            ))),
+            AppError::ResourceExhausted(_)
+        ));
+        assert!(matches!(
+            search_sqlite_app_error(&sqlite_failure(rusqlite::ffi::SQLITE_CORRUPT)),
+            AppError::Internal(_)
+        ));
+        assert!(matches!(
+            search_sqlite_app_error(&SqliteSearchError::UnsupportedCapability {
+                feature: "FTS5",
+                sqlite_version: "fixture".to_string(),
+            }),
+            AppError::FailedPrecondition(_)
+        ));
+        assert!(matches!(
+            search_sqlite_app_error(&SqliteSearchError::Io(std::io::Error::other(
+                "fixture storage failure"
+            ))),
+            AppError::Internal(_)
+        ));
     }
 
     #[test]
@@ -649,6 +921,7 @@ mod tests {
         let outcome = catalog_search_outcome(
             &request,
             &catalog,
+            &BTreeSet::new(),
             CatalogSearchHits {
                 hits: column_cap_hits(5),
                 document_count: 5,
@@ -666,6 +939,100 @@ mod tests {
                 .note
                 .contains("2 matching column hint(s) exceeded the per-surface cap")
         );
+    }
+
+    #[test]
+    fn skipped_sources_report_partial_coverage_without_hiding_healthy_results() {
+        let temp = tempdir().expect("tempdir");
+        let workspace_name = WorkspaceName::default();
+        let projection = CatalogProjection {
+            store: SqliteSearchStore::open(
+                temp.path().join("search.sqlite3"),
+                workspace_name.clone(),
+            )
+            .expect("search store"),
+            refresh: CatalogRefreshResult {
+                refreshed: false,
+                document_count: 1,
+            },
+            stale_index: false,
+            refresh_lock_error: None,
+            expected_document_count: 1,
+        };
+        let request = SearchRequest::new(workspace_name, "alpha", 10).expect("search request");
+        let catalog = column_cap_catalog(1);
+        let failed_source_names = BTreeSet::from(["broken_source".to_string()]);
+        let degraded = catalog_search_outcome(
+            &request,
+            &catalog,
+            &failed_source_names,
+            CatalogSearchHits {
+                hits: column_cap_hits(1),
+                document_count: 1,
+                retrieval_limited: false,
+            },
+            &projection,
+        );
+
+        assert_eq!(degraded.candidates.len(), 1);
+        assert_eq!(degraded.status.state, SearchProviderState::Partial);
+        let coverage = degraded.status.coverage.as_ref().expect("coverage");
+        assert_eq!(coverage.failed_units, 1);
+        assert!(coverage.stale_index);
+        assert!(!coverage.has_more);
+        assert_eq!(
+            degraded.status.note,
+            "Catalog metadata returned 1 search hints; catalog preparation skipped 1 source: broken_source"
+        );
+
+        let recovered = catalog_search_outcome(
+            &request,
+            &catalog,
+            &BTreeSet::new(),
+            CatalogSearchHits {
+                hits: column_cap_hits(1),
+                document_count: 1,
+                retrieval_limited: false,
+            },
+            &projection,
+        );
+        assert_eq!(recovered.status.state, SearchProviderState::ResultsFound);
+        let coverage = recovered.status.coverage.as_ref().expect("coverage");
+        assert_eq!(coverage.failed_units, 0);
+        assert!(!coverage.stale_index);
+    }
+
+    #[test]
+    fn skipped_source_note_bounds_source_names() {
+        let failed_source_names = BTreeSet::from([
+            "alpha".to_string(),
+            "bravo".to_string(),
+            "charlie".to_string(),
+            "delta".to_string(),
+            "echo".to_string(),
+        ]);
+
+        let note = catalog_provider_note(
+            SearchProviderState::Partial,
+            1,
+            false,
+            false,
+            false,
+            0,
+            &failed_source_names,
+        );
+
+        assert_eq!(
+            note,
+            "Catalog metadata returned 1 search hints; catalog preparation skipped 5 sources: alpha, bravo, charlie, and 2 more"
+        );
+    }
+
+    fn sqlite_failure(code: i32) -> SqliteSearchError {
+        SqliteSearchError::Sqlite(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(code),
+            None,
+        ))
     }
 
     fn column_cap_catalog(column_count: usize) -> CatalogInfo {

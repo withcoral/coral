@@ -106,6 +106,186 @@ pub(crate) fn macos_sign_notarize(args: &MacosSignNotarizeArgs) -> Result<bool> 
     Ok(true)
 }
 
+#[derive(Debug, clap::Args)]
+pub(crate) struct DesktopMacosPackageArgs {
+    /// Release tag (vX.Y.Z) the desktop app version must match exactly.
+    #[arg(long)]
+    tag: String,
+
+    /// Temporary directory for the App Store Connect API key.
+    #[arg(long)]
+    work_dir: PathBuf,
+}
+
+/// Package, sign, notarize, and verify the prepared universal macOS desktop app.
+///
+/// Owns everything the release workflow needs beyond providing secrets:
+/// version/tag agreement, credential preflight, decoding the App Store
+/// Connect key to the file path `@electron/notarize` expects, packaging the
+/// prepared desktop build, and post-build verification.
+pub(crate) fn desktop_macos_package(args: &DesktopMacosPackageArgs) -> Result<bool> {
+    if !cfg!(target_os = "macos") {
+        bail!("release-desktop-macos-package must run on macOS");
+    }
+
+    let env = DesktopReleaseEnv::read()?;
+
+    // The updater compares the app's embedded version against release tags;
+    // a manual tag on a commit whose desktop version was never bumped would
+    // publish latest-mac.yml with a stale version.
+    let manifest = fs::read_to_string("apps/desktop/package.json")
+        .context("reading apps/desktop/package.json")?;
+    ensure_version_matches_tag(&desktop_package_version(&manifest)?, &args.tag)?;
+
+    fs::create_dir_all(&args.work_dir)
+        .with_context(|| format!("creating {}", args.work_dir.display()))?;
+    let _work_dir = WorkDirGuard {
+        path: args.work_dir.clone(),
+    };
+    // electron-builder's notarization (@electron/notarize) expects
+    // APPLE_API_KEY to be a *path* to the App Store Connect .p8 key, not its
+    // contents.
+    let key_path = args.work_dir.join("app-store-connect-api-key.p8");
+    write_base64_secret(
+        "APP_STORE_CONNECT_API_KEY_P8_BASE64",
+        &env.app_store_connect_api_key_p8_base64,
+        &key_path,
+    )?;
+
+    run_command(
+        Command::new("npm")
+            .arg("run")
+            .arg("package:mac:prepared")
+            .arg("--prefix")
+            .arg("apps/desktop")
+            .env("CORAL_DESKTOP_RELEASE", "1")
+            .env("APPLE_API_KEY", &key_path),
+        "packaging desktop app",
+    )?;
+
+    let dist_dir = Path::new("apps/desktop/dist");
+    let app_bundle = find_coral_app(dist_dir)?;
+    run_command(
+        Command::new("codesign")
+            .arg("--verify")
+            .arg("--deep")
+            .arg("--strict")
+            .arg("--verbose=2")
+            .arg(&app_bundle),
+        "verifying desktop app signature",
+    )?;
+    run_command(
+        Command::new("xcrun")
+            .arg("stapler")
+            .arg("validate")
+            .arg(&app_bundle),
+        "validating desktop notarization staple",
+    )?;
+    // Same artifact assertions as the Validate workflow's package job.
+    run_command(
+        Command::new("node")
+            .arg("apps/desktop/scripts/verify-dist.mjs")
+            .arg(dist_dir),
+        "verifying desktop dist artifacts",
+    )?;
+
+    Ok(true)
+}
+
+#[derive(Debug)]
+struct DesktopReleaseEnv {
+    app_store_connect_api_key_p8_base64: String,
+}
+
+impl DesktopReleaseEnv {
+    fn read() -> Result<Self> {
+        // Preflight the signing and notarization credentials: app-builder-lib
+        // warns and skips notarization when credentials cannot be constructed,
+        // which would otherwise only surface at staple validation after the
+        // full build. Missing GitHub secrets arrive as empty strings, so
+        // require non-empty values.
+        for name in [
+            "CSC_LINK",
+            "CSC_KEY_PASSWORD",
+            "APPLE_API_KEY_ID",
+            "APPLE_API_ISSUER",
+        ] {
+            required_non_empty_env(name)?;
+        }
+        Ok(Self {
+            app_store_connect_api_key_p8_base64: required_non_empty_env(
+                "APP_STORE_CONNECT_API_KEY_P8_BASE64",
+            )?,
+        })
+    }
+}
+
+fn required_non_empty_env(name: &str) -> Result<String> {
+    let value = required_env(name)?;
+    if value.trim().is_empty() {
+        bail!("{name} is empty");
+    }
+    Ok(value)
+}
+
+fn desktop_package_version(manifest: &str) -> Result<String> {
+    let value: Value = serde_json::from_str(manifest).context("parsing desktop package.json")?;
+    value
+        .get("version")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+        .context("desktop package.json has no version")
+}
+
+fn ensure_version_matches_tag(version: &str, tag: &str) -> Result<()> {
+    if format!("v{version}") == tag {
+        return Ok(());
+    }
+    bail!("desktop version v{version} does not match release tag {tag}");
+}
+
+fn find_coral_app(root: &Path) -> Result<PathBuf> {
+    fn walk(dir: &Path) -> Option<PathBuf> {
+        let entries = fs::read_dir(dir).ok()?;
+        let mut subdirs = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            if path.file_name().is_some_and(|name| name == "Coral.app") {
+                return Some(path);
+            }
+            subdirs.push(path);
+        }
+        subdirs.iter().find_map(|subdir| walk(subdir))
+    }
+    walk(root).with_context(|| format!("could not find Coral.app under {}", root.display()))
+}
+
+#[derive(Debug)]
+struct WorkDirGuard {
+    path: PathBuf,
+}
+
+impl Drop for WorkDirGuard {
+    fn drop(&mut self) {
+        drop(remove_dir_all_if_present(&self.path));
+    }
+}
+
+fn remove_dir_all_if_present(path: &Path) -> Result<()> {
+    fs::remove_dir_all(path)
+        .or_else(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                Ok(())
+            } else {
+                Err(error)
+            }
+        })
+        .with_context(|| format!("removing {}", path.display()))
+}
+
 #[derive(Debug)]
 struct SigningEnv {
     app_store_connect_api_issuer_id: String,
@@ -674,9 +854,43 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
-        NotarySubmission, macos_zip_args, output_path, parse_keychain_list,
-        parse_notary_submission, write_base64_secret,
+        NotarySubmission, desktop_package_version, ensure_version_matches_tag, macos_zip_args,
+        output_path, parse_keychain_list, parse_notary_submission, remove_dir_all_if_present,
+        write_base64_secret,
     };
+
+    #[test]
+    fn desktop_package_version_reads_manifest() {
+        assert_eq!(
+            desktop_package_version(r#"{"name":"@withcoral/desktop","version":"0.5.2"}"#)
+                .expect("read version"),
+            "0.5.2"
+        );
+        desktop_package_version(r#"{"name":"@withcoral/desktop"}"#)
+            .expect_err("manifest without version");
+    }
+
+    #[test]
+    fn ensure_version_matches_tag_requires_exact_agreement() {
+        ensure_version_matches_tag("0.5.2", "v0.5.2").expect("matching version");
+        ensure_version_matches_tag("0.5.2", "v0.5.3").expect_err("mismatched version");
+        ensure_version_matches_tag("0.5.2", "0.5.2").expect_err("tag without v prefix");
+    }
+
+    #[test]
+    fn remove_dir_all_if_present_is_idempotent() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "coral-desktop-work-dir-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&path).expect("create work dir");
+        remove_dir_all_if_present(&path).expect("remove existing work dir");
+        remove_dir_all_if_present(&path).expect("removing an absent work dir succeeds");
+    }
 
     #[test]
     fn parse_keychain_list_trims_security_output() {

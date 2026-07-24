@@ -1,41 +1,46 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Form, useActionData, useNavigate, useNavigation } from 'react-router'
+import { Form, useNavigate, useNavigation } from 'react-router'
 
 import { Container as ButtonContainer } from '@/wax/components/button/container'
 import { SpinningButtonIcon } from '@/wax/components/button/icon'
 import { Text as ButtonText } from '@/wax/components/button/text'
 import { Dialog } from '@/wax/components'
-import { Icon } from '@/wax/components/icon'
 import { TextInput } from '@/wax/components/inputs/text'
 import { Typography } from '@/wax/components/typography'
 
-import type {
-  CatalogEntry,
-  CatalogSource,
-  CatalogSourceInputSpec,
-  SourceOriginLabel,
-} from '@/lib/sources'
-import type { action as sourceDetailAction } from '@/routes/source-detail'
+import type { CatalogEntry, CatalogSource, CatalogSourceInputSpec } from '@/lib/sources'
 import type { SourcesActionData } from '@/routes/sources-action'
 
-import { ProviderLogo } from './provider-logo'
+import { formatSourceName } from '@/components/sources'
 import * as styles from './source-detail.css'
 import { SourceInstallDialog } from './source-install'
+import {
+  formatFieldName,
+  SourceError,
+  SourceField,
+  SourceIdentityHeader,
+  SourceInputField,
+  SourceNoConfiguration,
+} from './source-presentation'
 
 const SECRET_PLACEHOLDER = '••••••••'
 
 const IMPORTED_EDIT_NOTICE =
-  "Imported sources can't be edited here yet — re-import the source spec to change its credentials."
+  "Imported sources can't be edited. Please remove and re-import the source spec"
 
 export function SourceDetailView({
   actionData,
   loaderData,
+  sourcesPath,
+  workspaceId,
 }: {
   actionData: SourcesActionData | undefined
   loaderData: {
     entry: CatalogEntry
     loadError: string | null
   }
+  sourcesPath: string
+  workspaceId: string
 }) {
   const navigate = useNavigate()
   const navigation = useNavigation()
@@ -55,31 +60,35 @@ export function SourceDetailView({
         entry={entry}
         open
         onOpenChange={(open) => {
-          if (!open) navigate('/sources')
+          if (!open) navigate(sourcesPath)
         }}
         submitting={pendingName === entry.name && pendingIntent === 'install'}
+        workspaceId={workspaceId}
       />
     )
   }
 
   return (
     <SourceDetailDialog
+      actionData={actionData}
       entry={entry}
       loadError={loaderData.loadError}
       open
       onOpenChange={(open) => {
-        if (!open) navigate('/sources')
+        if (!open) navigate(sourcesPath)
       }}
     />
   )
 }
 
 export function SourceDetailDialog({
+  actionData,
   entry,
   loadError,
   open,
   onOpenChange,
 }: {
+  actionData: SourcesActionData
   entry: CatalogEntry | null
   loadError: string | null
   open: boolean
@@ -92,6 +101,7 @@ export function SourceDetailDialog({
         <Dialog.Popup size="l">
           {entry ? (
             <SourceDetailDialogContent
+              actionData={actionData}
               key={entry.name}
               entry={entry}
               loadError={loadError}
@@ -105,17 +115,24 @@ export function SourceDetailDialog({
 }
 
 function SourceDetailDialogContent({
+  actionData,
   entry,
   loadError,
   onClose,
 }: {
+  actionData: SourcesActionData
   entry: CatalogEntry
   loadError: string | null
   onClose: () => void
 }) {
   const [confirmingRemove, setConfirmingRemove] = useState(false)
   const [drafts, setDrafts] = useState<Record<string, string>>({})
-  const { actionError, pendingIntent, removeError } = useSourceDetailActionState(entry, loadError)
+  const { actionError, pendingIntent, removeError } = useSourceDetailActionState(
+    actionData,
+    entry,
+    loadError,
+  )
+  const sourceDisplayName = formatSourceName(entry.name)
 
   const source = entry.source ?? null
   const inputSpecs = entry.inputSpecs
@@ -154,48 +171,22 @@ function SourceDetailDialogContent({
     return false
   }, [drafts, source, inputSpecs])
 
-  const origin = source ? source.origin : entry.origin
-
   return (
     <>
       <Form method="post">
         <input type="hidden" name="_intent" value="edit" />
         <input type="hidden" name="name" value={entry.name} />
 
-        <div className={styles.header}>
-          <ProviderLogo name={entry.name} size="large" />
-          <div className={styles.headerText}>
-            <Dialog.Title className={styles.headerTitleRow}>
-              <Typography.HeadingMedium as="span" className={styles.headerTitle}>
-                {entry.name}
-              </Typography.HeadingMedium>
-              {origin ? (
-                <span className={styles.headerPill}>{originBadgeLabel(origin)}</span>
-              ) : null}
-            </Dialog.Title>
-            <Dialog.Description render={<div />}>
-              <Typography.BodySmall variant="secondary">
-                {source?.version || entry.version
-                  ? `v${source?.version || entry.version}`
-                  : 'Configured source'}
-              </Typography.BodySmall>
-            </Dialog.Description>
-          </div>
-        </div>
+        <SourceIdentityHeader
+          description={entry.description}
+          name={entry.name}
+          origin={source?.origin ?? entry.origin}
+          version={source?.version || entry.version}
+        />
 
-        {!source ? (
-          <div className={styles.alertError}>
-            <Icon name="CircleAlert" size="14" color="inherit" />
-            <Typography.BodySmall>Installed source details are unavailable.</Typography.BodySmall>
-          </div>
-        ) : null}
+        {!source ? <SourceError>Installed source details are unavailable.</SourceError> : null}
 
-        {actionError ? (
-          <div className={styles.alertError}>
-            <Icon name="CircleAlert" size="14" color="inherit" />
-            <Typography.BodySmall>{actionError}</Typography.BodySmall>
-          </div>
-        ) : null}
+        {actionError ? <SourceError>{actionError}</SourceError> : null}
 
         {!source ? null : inputSpecs ? (
           <SourceInputBindings
@@ -226,10 +217,7 @@ function SourceDetailDialogContent({
             source={source}
           />
         ) : source.variables.length === 0 && source.secrets.length === 0 ? (
-          <section className={styles.section}>
-            <Typography.HeadingXSmall as="h3">Configuration</Typography.HeadingXSmall>
-            <Typography.BodySmall variant="tertiary">No bindings recorded.</Typography.BodySmall>
-          </section>
+          <SourceNoConfiguration />
         ) : (
           <InstalledBindings
             disabled={!editable || saving || deleting}
@@ -270,6 +258,7 @@ function SourceDetailDialogContent({
           <Dialog.Popup size="m">
             <RemoveConfirmation
               deleting={deleting}
+              displayName={sourceDisplayName}
               error={removeError}
               name={entry.name}
               onCancel={() => setConfirmingRemove(false)}
@@ -283,11 +272,13 @@ function SourceDetailDialogContent({
 
 function RemoveConfirmation({
   deleting,
+  displayName,
   error,
   name,
   onCancel,
 }: {
   deleting: boolean
+  displayName: string
   error?: string | null
   name: string
   onCancel: () => void
@@ -298,18 +289,13 @@ function RemoveConfirmation({
       <input type="hidden" name="name" value={name} />
 
       <div className={styles.removeConfirmText}>
-        <Dialog.Title>Remove {name}?</Dialog.Title>
+        <Dialog.Title>Remove {displayName}?</Dialog.Title>
         <Dialog.Description>
           This deletes the source configuration and stored credentials from this workspace. You can
           reinstall later, but you'll need to re-supply any secrets.
         </Dialog.Description>
       </div>
-      {error ? (
-        <div className={styles.alertError}>
-          <Icon name="CircleAlert" size="14" color="inherit" />
-          <Typography.BodySmall>{error}</Typography.BodySmall>
-        </div>
-      ) : null}
+      {error ? <SourceError>{error}</SourceError> : null}
       <Dialog.Actions className={styles.removeConfirmActions}>
         <ButtonContainer variant="secondary" size="32" onClick={onCancel} disabled={deleting}>
           <ButtonText>Cancel</ButtonText>
@@ -337,50 +323,52 @@ function InstalledBindings({
   source: CatalogSource
 }) {
   return (
-    <section className={styles.section}>
-      <Typography.HeadingXSmall as="h3">Configuration</Typography.HeadingXSmall>
+    <div className={styles.fieldGroup}>
       {!editable ? (
         <Typography.BodySmall variant="tertiary">{IMPORTED_EDIT_NOTICE}</Typography.BodySmall>
       ) : null}
-      <div className={styles.fieldGroup}>
-        {source.variables.map((v) => {
-          const draftKey = `var:${v.key}`
-          return (
-            <div key={draftKey} className={styles.fieldItem}>
-              <Typography.Body className={styles.fieldLabel}>{v.key}</Typography.Body>
-              <TextInput
-                name={draftKey}
-                value={drafts[draftKey] ?? v.value}
-                onChange={(value) => onValueChange(draftKey, value)}
-                placeholder={v.key}
-                disabled={disabled}
-              />
-            </div>
-          )
-        })}
-        {source.secrets.map((s) => {
-          const draftKey = `sec:${s.key}`
-          return (
-            <div key={draftKey} className={styles.fieldItem}>
-              <Typography.Body className={styles.fieldLabel}>{s.key}</Typography.Body>
-              <input type="hidden" name={draftKey} value={drafts[draftKey] ?? ''} />
-              <TextInput
-                type="password"
-                value={drafts[draftKey] ?? ''}
-                onChange={(value) => onValueChange(draftKey, value)}
-                placeholder={SECRET_PLACEHOLDER}
-                disabled={disabled}
-              />
-            </div>
-          )
-        })}
-      </div>
-    </section>
+      {source.variables.map((v) => {
+        const draftKey = `var:${v.key}`
+        const label = formatFieldName(v.key)
+        return (
+          <SourceField key={draftKey} label={label}>
+            <TextInput
+              ariaLabel={label}
+              name={draftKey}
+              value={drafts[draftKey] ?? v.value}
+              onChange={(value) => onValueChange(draftKey, value)}
+              placeholder={label}
+              disabled={disabled}
+            />
+          </SourceField>
+        )
+      })}
+      {source.secrets.map((s) => {
+        const draftKey = `sec:${s.key}`
+        const label = formatFieldName(s.key)
+        return (
+          <SourceField key={draftKey} label={label}>
+            <input type="hidden" name={draftKey} value={drafts[draftKey] ?? ''} />
+            <TextInput
+              ariaLabel={label}
+              type="password"
+              value={drafts[draftKey] ?? ''}
+              onChange={(value) => onValueChange(draftKey, value)}
+              placeholder={SECRET_PLACEHOLDER}
+              disabled={disabled}
+            />
+          </SourceField>
+        )
+      })}
+    </div>
   )
 }
 
-function useSourceDetailActionState(entry: CatalogEntry, loadError: string | null) {
-  const actionData = useActionData<typeof sourceDetailAction>()
+function useSourceDetailActionState(
+  actionData: SourcesActionData,
+  entry: CatalogEntry,
+  loadError: string | null,
+) {
   const navigation = useNavigation()
   const actionError = actionData?.status === 'error' ? actionData : null
   const pendingIntent = formValue(navigation.formData, '_intent')
@@ -430,36 +418,28 @@ function SourceInputBindings({
   const configuredSecrets = useMemo(() => new Set(source.secrets.map((s) => s.key)), [source])
 
   if (inputSpecs.length === 0) {
-    return (
-      <section className={styles.section}>
-        <Typography.HeadingXSmall as="h3">Configuration</Typography.HeadingXSmall>
-        <Typography.BodySmall variant="tertiary">No bindings recorded.</Typography.BodySmall>
-      </section>
-    )
+    return <SourceNoConfiguration />
   }
 
   return (
-    <section className={styles.section}>
-      <Typography.HeadingXSmall as="h3">Configuration</Typography.HeadingXSmall>
+    <div className={styles.fieldGroup}>
       {!editable ? (
         <Typography.BodySmall variant="tertiary">{IMPORTED_EDIT_NOTICE}</Typography.BodySmall>
       ) : null}
-      <div className={styles.fieldGroup}>
-        {inputSpecs.map((input) => (
-          <SourceInfoInputRow
-            key={input.key}
-            configuredSecret={configuredSecrets.has(input.key)}
-            disabled={disabled}
-            draft={drafts[`${input.input.case === 'secret' ? 'sec' : 'var'}:${input.key}`]}
-            input={input}
-            onSecretBlur={onSecretBlur}
-            onSecretFocus={onSecretFocus}
-            onValueChange={onValueChange}
-            value={variables.get(input.key)}
-          />
-        ))}
-      </div>
-    </section>
+      {inputSpecs.map((input) => (
+        <SourceInfoInputRow
+          key={input.key}
+          configuredSecret={configuredSecrets.has(input.key)}
+          disabled={disabled}
+          draft={drafts[`${input.input.case === 'secret' ? 'sec' : 'var'}:${input.key}`]}
+          input={input}
+          onSecretBlur={onSecretBlur}
+          onSecretFocus={onSecretFocus}
+          onValueChange={onValueChange}
+          value={variables.get(input.key)}
+        />
+      ))}
+    </div>
   )
 }
 
@@ -485,47 +465,34 @@ function SourceInfoInputRow({
   if (input.input.case === 'variable') {
     const resolved = value ?? input.input.value.defaultValue ?? ''
     return (
-      <Field input={input}>
+      <SourceInputField input={input}>
         <TextInput
+          ariaLabel={formatFieldName(input.key)}
           name={`var:${input.key}`}
           value={draft ?? resolved}
           onChange={(next) => onValueChange(input.key, next, false)}
-          placeholder={resolved || input.key}
+          placeholder={resolved || formatFieldName(input.key)}
           disabled={disabled}
         />
-      </Field>
+      </SourceInputField>
     )
   }
 
   if (input.input.case !== 'secret') return null
 
   return (
-    <Field input={input}>
+    <SourceInputField input={input}>
       <input type="hidden" name={`sec:${input.key}`} value={draft ?? ''} />
       <TextInput
+        ariaLabel={formatFieldName(input.key)}
         type="password"
         value={draft ?? (configuredSecret ? SECRET_PLACEHOLDER : '')}
         onBlur={() => onSecretBlur(input.key)}
         onChange={(next) => onValueChange(input.key, next, true)}
         onFocus={() => onSecretFocus(input.key)}
-        placeholder={input.key}
+        placeholder={formatFieldName(input.key)}
         disabled={disabled}
       />
-    </Field>
+    </SourceInputField>
   )
-}
-
-function Field({ input, children }: { input: CatalogSourceInputSpec; children: React.ReactNode }) {
-  return (
-    <div className={styles.fieldItem}>
-      <Typography.Body className={styles.fieldLabel}>{input.key}</Typography.Body>
-      {children}
-    </div>
-  )
-}
-
-function originBadgeLabel(origin: SourceOriginLabel): string {
-  if (origin === 'bundled') return 'Core'
-  if (origin === 'imported') return 'Imported'
-  return '—'
 }

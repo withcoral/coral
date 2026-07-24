@@ -6,10 +6,16 @@ import type {
   McpClientDescriptor,
   McpClientId,
   McpConfigureResult,
-  SidecarInfo,
+  McpLaunchConfig,
 } from '../../../desktop/src/shared/types'
 
-export type { CoralDesktopApi, McpClientDescriptor, McpClientId, McpConfigureResult, SidecarInfo }
+export type {
+  CoralDesktopApi,
+  McpClientDescriptor,
+  McpClientId,
+  McpConfigureResult,
+  McpLaunchConfig,
+}
 
 declare global {
   interface Window {
@@ -18,7 +24,7 @@ declare global {
 }
 
 export function isCoralDesktopBuild(): boolean {
-  return import.meta.env.VITE_CORAL_DESKTOP_APP === '1'
+  return import.meta.env.CORAL_DESKTOP_APP
 }
 
 export function coralDesktopApi(): CoralDesktopApi | null {

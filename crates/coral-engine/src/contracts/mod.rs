@@ -4,6 +4,7 @@ mod catalog;
 mod error;
 mod query;
 mod query_error;
+mod udfs;
 
 pub use catalog::{
     CatalogInfo, ColumnInfo, DescribeTableInfo, TableFunctionArgumentInfo, TableFunctionInfo,
@@ -18,6 +19,11 @@ pub use query::{
     RuntimeSourceComponent, RuntimeSourcePackage, SourceValidationReport,
 };
 pub(crate) use query_error::{ColumnParts, TableRefParts};
+pub use udfs::{
+    UdfRuntimeArgument, UdfRuntimeDefinition, UdfRuntimeImplementation, UdfRuntimePublish,
+    UdfRuntimeResultColumn, UdfRuntimeSignature, UdfRuntimeSqlDefinition,
+    UdfRuntimeTableFunctionPublish,
+};
 
 #[cfg(test)]
 pub(crate) use query_error::UNKNOWN_COLUMN_REASON;

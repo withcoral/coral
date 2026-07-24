@@ -9,4 +9,7 @@ pub(crate) use config::{
     RawFeatureContainerState, RawFeatureOverrides, RawFeatureValue, load_raw_feature_overrides,
     set_raw_feature_override,
 };
-pub(crate) use layout::{AppStateLayout, V4ProjectionCatalogFile, V4ProjectionCatalogOrigin};
+pub(crate) use layout::{
+    AppStateLayout, V4OperationMetadataFile, V4OperationMetadataOrigin, V4ProjectionCatalogFile,
+    V4ProjectionCatalogOrigin,
+};

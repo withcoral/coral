@@ -1,10 +1,11 @@
 import type { Route } from './+types/index'
 
-import { SourcesIndex } from '@/views/sources/sources-index'
+import { redirectToFirstWorkspaceSources } from '@/lib/workspace-redirect.server'
 
-export { action } from './sources-action'
-export { loader } from './sources-loader'
+export async function loader({ request }: Route.LoaderArgs) {
+  return redirectToFirstWorkspaceSources(request)
+}
 
-export default function AppIndex({ loaderData }: Route.ComponentProps) {
-  return <SourcesIndex entries={loaderData.entries} loadError={loaderData.loadError} />
+export default function AppIndex() {
+  return null
 }

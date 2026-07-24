@@ -43,6 +43,7 @@ export const header = style({
 export const title = style({
   flexShrink: 1,
   minWidth: 0,
+  textTransform: 'capitalize',
 })
 
 export const headerPill = style({
