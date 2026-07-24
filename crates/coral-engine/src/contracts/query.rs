@@ -99,9 +99,18 @@ impl fmt::Debug for RuntimeSourceComponent {
                     .field("provider", &provider)
                     .finish_non_exhaustive()
             }
-            Self::Http(manifest) => formatter.debug_tuple("Http").field(manifest).finish(),
-            Self::File(manifest) => formatter.debug_tuple("File").field(manifest).finish(),
-            Self::Mcp(manifest) => formatter.debug_tuple("Mcp").field(manifest).finish(),
+            Self::Http(manifest) => formatter
+                .debug_struct("Http")
+                .field("source_name", &manifest.common.name)
+                .finish_non_exhaustive(),
+            Self::File(manifest) => formatter
+                .debug_struct("File")
+                .field("source_name", &manifest.common.name)
+                .finish_non_exhaustive(),
+            Self::Mcp(manifest) => formatter
+                .debug_struct("Mcp")
+                .field("source_name", &manifest.common.name)
+                .finish_non_exhaustive(),
         }
     }
 }
