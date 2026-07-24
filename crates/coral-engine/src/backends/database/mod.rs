@@ -542,9 +542,10 @@ mod tests {
         .await
         .expect_err("catalog registrations must reject source decorators");
         assert!(
-            error
-                .to_string()
-                .contains("registers database catalogs, which do not support source decorators"),
+            error.to_string().contains(
+                "registers database catalogs, which source decorator \
+                     'abort-on-source-failure' does not support"
+            ),
             "unexpected error: {error}"
         );
     }
