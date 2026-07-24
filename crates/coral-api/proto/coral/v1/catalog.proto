@@ -256,8 +256,7 @@ message DescribeTableResponse {
   Table table = 1;
   // Suggested nearby tables when the exact table is missing.
   repeated TableSummary suggestions = 2;
-  // Query-visible table namespaces available in this workspace: a schema
-  // name, or the composite `catalog.schema` for database sources.
+  // Query-visible raw schema names available in this workspace.
   repeated string available_schemas = 3;
   // Tables in the requested schema, capped for user-facing missing-table help.
   repeated TableSummary same_schema_tables = 4;
