@@ -660,12 +660,12 @@ fn schema_is_registered(candidate: &str, known_tables: &[TableInfo]) -> bool {
 }
 
 fn table_schema_matches(info: &TableInfo, schema_lower: &str) -> bool {
-    if info.schema_name.to_lowercase() == schema_lower {
-        return true;
+    match info.catalog_name.as_deref() {
+        None => info.schema_name.eq_ignore_ascii_case(schema_lower),
+        Some(catalog_name) => {
+            format!("{catalog_name}.{}", info.schema_name).to_lowercase() == schema_lower
+        }
     }
-    info.catalog_name.as_deref().is_some_and(|catalog_name| {
-        format!("{catalog_name}.{}", info.schema_name).to_lowercase() == schema_lower
-    })
 }
 
 // ---------------------------------------------------------------------------
@@ -920,6 +920,45 @@ mod tests {
         assert!(
             hint.contains("coral_db.main.users"),
             "namespaced miss should suggest the queryable table reference, got: {hint}"
+        );
+    }
+
+    #[test]
+    fn catalog_internal_public_schema_does_not_qualify_bare_table_miss() {
+        let tables = vec![catalog_table("warehouse", "public", "users")];
+        let err = StructuredQueryError::table_not_found(
+            &tr(&["datafusion", "public", "missing"]),
+            &tables,
+        );
+
+        assert_eq!(err.metadata().get("schema"), None);
+        assert_eq!(
+            err.metadata().get("table").map(String::as_str),
+            Some("missing")
+        );
+        assert!(
+            err.detail()
+                .contains("does not exist in any registered schema"),
+            "unexpected detail: {}",
+            err.detail()
+        );
+    }
+
+    #[test]
+    fn catalog_internal_schema_matches_compound_catalog_schema() {
+        let tables = vec![catalog_table("warehouse", "public", "users")];
+        let err = StructuredQueryError::table_not_found(
+            &tr(&["warehouse", "public", "missing"]),
+            &tables,
+        );
+
+        assert_eq!(
+            err.metadata().get("schema").map(String::as_str),
+            Some("warehouse.public")
+        );
+        assert_eq!(
+            err.metadata().get("table").map(String::as_str),
+            Some("missing")
         );
     }
 
