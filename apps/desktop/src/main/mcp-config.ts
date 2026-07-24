@@ -9,7 +9,6 @@ import {
   type InstalledServer,
   type McpServerConfig,
 } from 'add-mcp'
-import { existsSync } from 'node:fs'
 import { isDeepStrictEqual } from 'node:util'
 import type { McpClientDescriptor, McpLaunchConfig } from '../shared/types'
 import { externalCoralPath } from './sidecar'
@@ -139,12 +138,6 @@ export async function getMcpLaunchConfig(): Promise<McpLaunchConfig> {
 }
 
 function requireManageableCoralEntry(client: AgentServers): void {
-  if (!client.detected && existsSync(client.configPath)) {
-    throw new Error(
-      `${client.displayName} was not detected, but its global MCP config already exists; Coral will not overwrite it.`,
-    )
-  }
-
   if (coralEntry(client.servers).kind === 'collision') {
     throw new Error(
       `${client.displayName} already has an incompatible global MCP server named "coral".`,
