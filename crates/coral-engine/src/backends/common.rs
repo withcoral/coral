@@ -220,7 +220,7 @@ impl BackendRegistrationContext {
 pub(crate) trait CompiledBackendSource: Send + Sync {
     /// Runtime qualified name: the SQL schema for two-part sources, the SQL
     /// catalog for catalog-backed sources.
-    fn qualified_name(&self) -> &str;
+    fn qualified_name(&self) -> SourceQualifiedName;
 
     fn source_name(&self) -> &str;
 

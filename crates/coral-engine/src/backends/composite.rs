@@ -31,8 +31,8 @@ pub(crate) fn compile_source(
 
 #[async_trait]
 impl CompiledBackendSource for CompositeCompiledSource {
-    fn qualified_name(&self) -> &str {
-        &self.source_name
+    fn qualified_name(&self) -> SourceQualifiedName {
+        SourceQualifiedName::Schema(self.source_name.clone())
     }
 
     fn source_name(&self) -> &str {

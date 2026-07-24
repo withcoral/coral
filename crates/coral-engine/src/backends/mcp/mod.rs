@@ -178,8 +178,8 @@ fn compile_source_with_caller(
 
 #[async_trait]
 impl CompiledBackendSource for McpCompiledSource {
-    fn qualified_name(&self) -> &str {
-        &self.manifest.common.name
+    fn qualified_name(&self) -> SourceQualifiedName {
+        SourceQualifiedName::Schema(self.manifest.common.name.clone())
     }
 
     fn source_name(&self) -> &str {
