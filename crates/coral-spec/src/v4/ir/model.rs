@@ -69,7 +69,6 @@ pub enum OutputCardinality {
     None,
     Singleton,
     List,
-    WrappedList,
     Unknown,
 }
 

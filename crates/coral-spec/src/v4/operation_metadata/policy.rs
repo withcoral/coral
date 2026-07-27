@@ -4,7 +4,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::v4::ir::{
-    IrExecutionAttachment, IrInputLocation, IrOperation, IrScalarType, SemanticIr,
+    IrExecutionAttachment, IrInputLocation, IrOperation, IrOperationOutput, IrScalarType, IrType,
+    IrTypeShape, SemanticIr,
 };
 use crate::v4::operation_metadata::model::{
     McpOperationPagination, OperationMetadata, OperationMetadataCatalog,
@@ -22,6 +23,11 @@ pub fn validate_operation_metadata_structure(
         .iter()
         .map(|operation| (operation.id.as_str(), operation))
         .collect::<BTreeMap<_, _>>();
+    let types = semantic_ir
+        .types
+        .iter()
+        .map(|ty| (ty.id.as_str(), ty))
+        .collect::<BTreeMap<_, _>>();
 
     for operation_id in metadata.operations.keys() {
         if !operations.contains_key(operation_id.as_str()) {
@@ -36,7 +42,7 @@ pub fn validate_operation_metadata_structure(
                 "operation metadata is missing operation '{operation_id}'"
             ))
         })?;
-        validate_operation_metadata(operation, effective)?;
+        validate_operation_metadata(operation, effective, &types)?;
     }
     Ok(())
 }
@@ -44,15 +50,24 @@ pub fn validate_operation_metadata_structure(
 fn validate_operation_metadata(
     operation: &IrOperation,
     metadata: &OperationMetadata,
+    types: &BTreeMap<&str, &IrType>,
 ) -> Result<()> {
     match (&operation.execution, metadata) {
         (
             IrExecutionAttachment::Rest(_),
             OperationMetadata::Rest {
+                row_path,
                 pagination,
                 lookup_keys,
             },
         ) => {
+            validate_row_path(operation, row_path)?;
+            resolve_output_row_type_ref(&operation.output, row_path, types).map_err(|error| {
+                ManifestError::validation(format!(
+                    "operation '{}' output row path is invalid: {error}",
+                    operation.id
+                ))
+            })?;
             if pagination.mode == PaginationMode::None
                 && !rest_pagination_is_canonical_none(pagination)
             {
@@ -65,7 +80,17 @@ fn validate_operation_metadata(
             let pagination_inputs = validate_rest_pagination(operation, pagination)?;
             validate_lookup_keys(operation, lookup_keys, &pagination_inputs)
         }
-        (IrExecutionAttachment::Mcp(_), OperationMetadata::Mcp { pagination }) => {
+        (
+            IrExecutionAttachment::Mcp(_),
+            OperationMetadata::Mcp {
+                row_path,
+                pagination,
+            },
+        ) => {
+            // MCP output types stay opaque JSON, so an MCP row path is only
+            // checked for hygiene; the runtime resolves it against the decoded
+            // tool result.
+            validate_row_path(operation, row_path)?;
             validate_mcp_pagination(operation, pagination)
         }
         (IrExecutionAttachment::Rest(_), OperationMetadata::Mcp { .. }) => {
@@ -81,6 +106,59 @@ fn validate_operation_metadata(
             )))
         }
     }
+}
+
+fn validate_row_path(operation: &IrOperation, row_path: &[String]) -> Result<()> {
+    if row_path
+        .iter()
+        .any(|segment| segment.trim().is_empty() || segment != segment.trim())
+    {
+        return Err(ManifestError::validation(format!(
+            "operation '{}' output row path contains a blank or padded segment",
+            operation.id
+        )));
+    }
+    Ok(())
+}
+
+/// Resolves the type of the rows an operation yields once its row path is
+/// applied, or the declared output type when the path is empty.
+pub(crate) fn resolve_output_row_type_ref<'a>(
+    output: &'a IrOperationOutput,
+    row_path: &[String],
+    types: &BTreeMap<&str, &'a IrType>,
+) -> std::result::Result<&'a str, String> {
+    if row_path.is_empty() {
+        return Ok(&output.type_ref);
+    }
+
+    let mut type_ref = output.type_ref.as_str();
+    for segment in row_path {
+        let ty = types
+            .get(type_ref)
+            .ok_or_else(|| format!("type '{type_ref}' is missing"))?;
+        let IrTypeShape::Object { fields } = &ty.shape else {
+            return Err(format!(
+                "segment '{segment}' traverses non-object type '{type_ref}'"
+            ));
+        };
+        let field = fields
+            .iter()
+            .find(|field| field.name == *segment)
+            .ok_or_else(|| format!("type '{type_ref}' has no field '{segment}'"))?;
+        type_ref = &field.type_ref;
+    }
+
+    let ty = types
+        .get(type_ref)
+        .ok_or_else(|| format!("type '{type_ref}' is missing"))?;
+    let IrTypeShape::List { item_type_ref } = &ty.shape else {
+        return Err(format!("terminal type '{type_ref}' is not a list"));
+    };
+    if item_type_ref != "json" && !types.contains_key(item_type_ref.as_str()) {
+        return Err(format!("list item type '{item_type_ref}' is missing"));
+    }
+    Ok(item_type_ref)
 }
 
 fn validate_rest_pagination(

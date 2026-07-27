@@ -632,6 +632,7 @@ mod tests {
             operations: BTreeMap::from([(
                 operation_id.to_string(),
                 OperationMetadata::Rest {
+                    row_path: Vec::new(),
                     pagination,
                     lookup_keys: Vec::new(),
                 },
@@ -704,6 +705,7 @@ mod tests {
             operations: BTreeMap::from([(
                 operation_id.to_string(),
                 OperationMetadata::Rest {
+                    row_path: Vec::new(),
                     pagination: PaginationSpec::default(),
                     lookup_keys,
                 },
@@ -828,6 +830,7 @@ mod tests {
             operations: BTreeMap::from([(
                 operation_id.to_string(),
                 OperationMetadata::Mcp {
+                    row_path: Vec::new(),
                     pagination: McpOperationPagination {
                         cursor: pagination,
                         offset: offset_pagination,
