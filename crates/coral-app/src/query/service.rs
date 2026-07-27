@@ -5,9 +5,9 @@ use arrow::ipc::writer::StreamWriter;
 use arrow::record_batch::RecordBatch;
 use coral_api::v1::query_service_server::QueryService as QueryServiceApi;
 use coral_api::v1::{
-    ExecuteSqlRequest, ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse,
-    QueryGuideRequirement, QueryPlan as QueryPlanProto, QueryResourceKind,
-    ResolveSqlGuideRequirementsRequest, ResolveSqlGuideRequirementsResponse,
+    CatalogItemKind, ExecuteSqlRequest, ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse,
+    QueryGuideRequirement, QueryPlan as QueryPlanProto, ResolveSqlGuideRequirementsRequest,
+    ResolveSqlGuideRequirementsResponse,
 };
 use tonic::{Request, Response, Status};
 
@@ -145,8 +145,8 @@ fn required_query_guide_to_proto(guide: RequiredQueryGuide) -> QueryGuideRequire
         schema_name: guide.schema_name,
         resource_name: guide.resource_name,
         kind: match guide.kind {
-            QueryGuideResourceKind::Table => QueryResourceKind::Table,
-            QueryGuideResourceKind::TableFunction => QueryResourceKind::TableFunction,
+            QueryGuideResourceKind::Table => CatalogItemKind::Table,
+            QueryGuideResourceKind::TableFunction => CatalogItemKind::TableFunction,
         } as i32,
         guide: guide.guide,
     }

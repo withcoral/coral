@@ -61,8 +61,6 @@ message Table {
   repeated string required_filters = 6;
   // User-facing query guidance.
   string guide = 7;
-  // Whether MCP SQL surfaces the guide before first use in a task.
-  bool require_guide_read = 8;
 }
 
 // Table metadata without full column definitions.
@@ -80,8 +78,6 @@ message TableSummary {
   repeated string required_filters = 5;
   // User-facing query guidance.
   string guide = 6;
-  // Whether MCP SQL surfaces the guide before first use in a task.
-  bool require_guide_read = 7;
 }
 
 // An argument accepted by a query-visible table function.
@@ -146,8 +142,6 @@ message TableFunction {
   SearchLimits search_limits = 8;
   // User-facing query guidance.
   string guide = 9;
-  // Whether MCP SQL surfaces the guide before first use in a task.
-  bool require_guide_read = 10;
 }
 
 // Catalog item kind filter for unified discovery.

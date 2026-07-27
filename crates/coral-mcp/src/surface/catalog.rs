@@ -449,7 +449,6 @@ struct FoundTableValue<'a> {
     name: String,
     description: &'a str,
     guide: &'a str,
-    require_guide_read: bool,
     required_filters: &'a [String],
     column_count: usize,
     columns_hint: &'static str,
@@ -464,7 +463,6 @@ impl<'a> From<&'a ProtoTable> for FoundTableValue<'a> {
             name: format!("{}.{}", table.schema_name, table.name),
             description: &table.description,
             guide: &table.guide,
-            require_guide_read: table.require_guide_read,
             required_filters: &table.required_filters,
             column_count: table.columns.len(),
             columns_hint: "Use list_columns with this schema/table to inspect columns.",
@@ -536,7 +534,6 @@ impl<'a> From<&'a ProtoTableSummary> for CatalogTableItemValue<'a> {
             table: CatalogTableValue {
                 table_name: &table.name,
                 guide: &table.guide,
-                require_guide_read: table.require_guide_read,
                 required_filters: &table.required_filters,
             },
         }
@@ -554,7 +551,6 @@ enum CatalogTableKind {
 struct CatalogTableValue<'a> {
     table_name: &'a str,
     guide: &'a str,
-    require_guide_read: bool,
     required_filters: &'a [String],
 }
 
@@ -582,7 +578,6 @@ impl<'a> From<&'a ProtoTableFunction> for CatalogTableFunctionItemValue<'a> {
             table_function: CatalogTableFunctionValue {
                 function_name: &function.name,
                 guide: &function.guide,
-                require_guide_read: function.require_guide_read,
                 arguments: function
                     .arguments
                     .iter()
@@ -609,7 +604,6 @@ enum CatalogTableFunctionKind {
 struct CatalogTableFunctionValue<'a> {
     function_name: &'a str,
     guide: &'a str,
-    require_guide_read: bool,
     arguments: Vec<TableFunctionArgumentValue<'a>>,
     result_columns: Vec<TableFunctionResultColumnValue<'a>>,
 }

@@ -634,7 +634,6 @@ async fn coral_search_metadata_appends_columns_without_shifting_existing_ordinal
             "kind",
             "search_limits_json",
             "guide",
-            "require_guide_read",
         ]
     );
 

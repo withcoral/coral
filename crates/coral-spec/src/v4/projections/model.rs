@@ -105,8 +105,8 @@ mod tests {
                     function_kind: SourceTableFunctionKind::Search,
                 },
                 description: String::new(),
-                guide: String::new(),
-                require_guide_read: false,
+                guide: "Use search_issues for lookups.".to_string(),
+                require_guide_read: true,
                 operation_id: "issues/search".to_string(),
                 visibility: ProjectionVisibility::Published,
                 inputs: Vec::new(),
@@ -151,8 +151,8 @@ mod tests {
             "projection catalog should serialize explicit indexing policy: {yaml}"
         );
         assert!(
-            !yaml.contains("require_guide_read:"),
-            "default guide-read policy should stay implicit: {yaml}"
+            yaml.contains("require_guide_read: true"),
+            "required guide-read policy should serialize: {yaml}"
         );
         assert!(!yaml.contains("surface_id:"), "surface ID leaked: {yaml}");
 
@@ -169,37 +169,8 @@ mod tests {
                 .do_not_index,
             "projection column policy should survive round-trip"
         );
-    }
-
-    #[test]
-    fn projection_catalog_deserializes_required_guide_read() {
-        let raw = format!(
-            r"
-artifact_schema_version: {V4_ARTIFACT_SCHEMA_VERSION}
-source_name: demo
-projections:
-  - name: items
-    kind:
-      type: table
-    description: Items
-    guide: Use search_items for lookups.
-    require_guide_read: true
-    operation_id: items/list
-    visibility: published
-    inputs: []
-    columns: []
-    search_limits: null
-    detail_hints: []
-    diagnostics: []
-diagnostics: []
-"
-        );
-
-        let catalog: ProjectionCatalog =
-            serde_yaml::from_str(&raw).expect("projection override catalog should deserialize");
-
         assert!(
-            catalog
+            decoded
                 .projections
                 .first()
                 .expect("projection")

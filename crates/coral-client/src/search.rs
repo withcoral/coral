@@ -166,7 +166,6 @@ impl<'a> From<&'a TableSummary> for TableSummaryValue<'a> {
 struct TableSummaryDetailsValue<'a> {
     table_name: &'a str,
     guide: &'a str,
-    require_guide_read: bool,
     required_filters: &'a [String],
 }
 
@@ -175,7 +174,6 @@ impl<'a> From<&'a TableSummary> for TableSummaryDetailsValue<'a> {
         Self {
             table_name: &table.name,
             guide: &table.guide,
-            require_guide_read: table.require_guide_read,
             required_filters: &table.required_filters,
         }
     }
@@ -213,7 +211,6 @@ struct TableFunctionDetailsValue<'a> {
     function_name: &'a str,
     function_kind: &'static str,
     guide: &'a str,
-    require_guide_read: bool,
     arguments: Vec<TableFunctionArgumentValue<'a>>,
     result_columns: Vec<TableFunctionResultColumnValue<'a>>,
     search_limits: Option<SearchLimitsValue>,
@@ -225,7 +222,6 @@ impl<'a> From<&'a TableFunction> for TableFunctionDetailsValue<'a> {
             function_name: &function.name,
             function_kind: table_function_kind_name(function.kind),
             guide: &function.guide,
-            require_guide_read: function.require_guide_read,
             arguments: function
                 .arguments
                 .iter()

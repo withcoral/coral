@@ -30,7 +30,6 @@ struct QueryableTableSummaryValue<'a> {
     sql_reference: String,
     description: &'a str,
     guide: &'a str,
-    require_guide_read: bool,
     required_filters: &'a [String],
 }
 
@@ -43,7 +42,6 @@ impl<'a> From<&'a TableSummary> for QueryableTableSummaryValue<'a> {
             sql_reference: format_schema_table_equivalent(&table.schema_name, &table.name),
             description: &table.description,
             guide: &table.guide,
-            require_guide_read: table.require_guide_read,
             required_filters: &table.required_filters,
         }
     }

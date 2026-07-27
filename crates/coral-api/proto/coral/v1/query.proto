@@ -2,6 +2,7 @@ syntax = "proto3";
 
 package coral.v1;
 
+import "coral/v1/catalog.proto";
 import "coral/v1/resources.proto";
 
 // Executes one SQL statement against the sources registered in one workspace.
@@ -48,16 +49,6 @@ message QueryPlan {
   string physical_plan = 3;
 }
 
-// Kind of query resource protected by a required guide.
-enum QueryResourceKind {
-  // Resource kind was not provided.
-  QUERY_RESOURCE_KIND_UNSPECIFIED = 0;
-  // A query-visible table.
-  QUERY_RESOURCE_KIND_TABLE = 1;
-  // A query-visible table function.
-  QUERY_RESOURCE_KIND_TABLE_FUNCTION = 2;
-}
-
 // Guide metadata for one referenced query resource.
 message QueryGuideRequirement {
   // SQL schema containing the resource.
@@ -65,7 +56,7 @@ message QueryGuideRequirement {
   // Table or table function name within the schema.
   string resource_name = 2;
   // Resource kind.
-  QueryResourceKind kind = 3;
+  CatalogItemKind kind = 3;
   // Guidance that MCP SQL must surface.
   string guide = 4;
 }
