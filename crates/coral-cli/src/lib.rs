@@ -835,7 +835,7 @@ async fn run_no_runtime_command(
             .await
             .map_err(Into::into),
         #[cfg(feature = "embedded-ui")]
-        Command::Ui(args) => run_ui(args, feature_overrides.clone())
+        Command::Ui(args) => Box::pin(run_ui(args, feature_overrides.clone()))
             .await
             .map_err(Into::into),
         Command::Sql(_)
