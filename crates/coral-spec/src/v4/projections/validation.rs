@@ -3,10 +3,10 @@
 
 use std::collections::BTreeMap;
 
-use crate::v4::ir::{IrExecutionAttachment, IrInputLocation};
+use crate::v4::ir::{IrExecutionAttachment, IrInputLocation, IrTypeShape};
 use crate::v4::operation_metadata::ValidatedSurfacePlan;
 use crate::v4::projections::{
-    ProjectionCatalog, ProjectionKind, ProjectionVisibility, SqlInputExposure,
+    Projection, ProjectionCatalog, ProjectionKind, ProjectionVisibility, SqlInputExposure,
 };
 use crate::{ManifestError, Result};
 
@@ -27,6 +27,9 @@ pub fn validate_projection_compatibility(
                 projection.name, projection.operation_id
             )));
         };
+        if matches!(operation.execution, IrExecutionAttachment::Rest(_)) {
+            validate_projection_columns(plan, projection, &operation.id)?;
+        }
         let public_exposure = public_exposure_for_kind(&projection.kind);
         for input in &projection.inputs {
             let Some(operation_input) = operation.inputs.iter().find(|operation_input| {
@@ -119,6 +122,47 @@ pub fn validate_projection_compatibility(
                     projection.name, input.name, operation.id
                 )));
             }
+        }
+    }
+    Ok(())
+}
+
+/// Checks that a REST projection's columns describe the rows the effective
+/// operation policy actually yields.
+///
+/// The projection catalog is a snapshot: an operation-metadata override that
+/// moves the row path elsewhere leaves the materialized columns pointing at
+/// fields the new rows do not have. Rather than reconcile the snapshot at load
+/// time, reject the combination and let the user regenerate or override the
+/// catalog too.
+fn validate_projection_columns(
+    plan: &ValidatedSurfacePlan,
+    projection: &Projection,
+    operation_id: &str,
+) -> Result<()> {
+    let row_type_ref = plan.rest_output_type_ref(operation_id);
+    let Some(row_type) = plan
+        .semantic_ir()
+        .types
+        .iter()
+        .find(|ty| ty.id == row_type_ref)
+    else {
+        return Ok(());
+    };
+    // Only an object row type names its fields. Scalar, list, and opaque JSON
+    // rows are projected whole, and their columns carry no source path.
+    let IrTypeShape::Object { fields } = &row_type.shape else {
+        return Ok(());
+    };
+    for column in &projection.columns {
+        let Some(field_name) = column.source_path.first() else {
+            continue;
+        };
+        if !fields.iter().any(|field| field.name == *field_name) {
+            return Err(ManifestError::validation(format!(
+                "projection '{}' column '{}' reads field '{field_name}', but the rows operation '{operation_id}' yields have type '{row_type_ref}', which has no such field",
+                projection.name, column.name
+            )));
         }
     }
     Ok(())

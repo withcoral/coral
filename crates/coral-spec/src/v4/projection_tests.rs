@@ -1631,6 +1631,53 @@ fn imported_mcp_items_surface() -> (V4SourceManifest, ImportedSurface) {
     (manifest, imported)
 }
 
+fn imported_wrapped_items_surface() -> (V4SourceManifest, ImportedSurface) {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: demo
+dsl_version: 4
+surface:
+  type: openapi
+  file: /tmp/openapi.yaml
+  base_url: https://api.example.com
+",
+    )
+    .expect("manifest")
+    .as_v4()
+    .expect("v4")
+    .clone();
+    let imported = import_openapi_surface(
+        &manifest,
+        &manifest.surface,
+        br"
+openapi: 3.0.3
+paths:
+  /items:
+    get:
+      operationId: items/list
+      parameters:
+        - {name: page, in: query, schema: {type: integer, default: 1}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total_count: {type: integer}
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: {type: string}
+                        title: {type: string}
+",
+    )
+    .expect("import");
+    (manifest, imported)
+}
+
 fn imported_required_account_surface() -> (V4SourceManifest, ImportedSurface) {
     let manifest = parse_source_manifest_yaml(
         r"
@@ -1734,6 +1781,52 @@ fn projection_input_at_mut<'a>(
         .iter_mut()
         .find(|input| input.wire_name == wire_name && input.source_location == location)
         .expect("projection input")
+}
+
+#[test]
+fn generated_projection_columns_come_from_the_wrapped_list_row_type() {
+    let (manifest, imported) = imported_wrapped_items_surface();
+    let plan = imported.validated_plan().expect("plan");
+    assert_eq!(plan.output_row_path("items_list"), ["items"]);
+
+    let catalog = generate_projection_catalog(&manifest, &plan).expect("projections");
+    let projection = catalog.projections.first().expect("projection");
+    assert_eq!(
+        projection
+            .columns
+            .iter()
+            .map(|column| column.name.as_str())
+            .collect::<Vec<_>>(),
+        ["id", "title"]
+    );
+}
+
+#[test]
+fn projection_compatibility_rejects_columns_the_effective_row_path_cannot_yield() {
+    let (manifest, mut imported) = imported_wrapped_items_surface();
+    let catalog = generate_projection_catalog(&manifest, &imported.validated_plan().expect("plan"))
+        .expect("projections");
+
+    // Overriding the row path back to the envelope root leaves the snapshot's
+    // columns describing rows the operation no longer yields.
+    let OperationMetadata::Rest { row_path, .. } = imported
+        .operation_metadata
+        .operations
+        .get_mut("items_list")
+        .expect("items_list metadata")
+    else {
+        panic!("expected REST metadata");
+    };
+    row_path.clear();
+    let plan = imported.validated_plan().expect("plan");
+
+    let error =
+        validate_projection_compatibility(&plan, &catalog).expect_err("stale columns must fail");
+
+    assert!(
+        error.to_string().contains("column 'id' reads field 'id'"),
+        "unexpected error: {error}"
+    );
 }
 
 #[test]
