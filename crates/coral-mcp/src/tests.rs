@@ -1725,16 +1725,28 @@ async fn mcp_sql_logical_preflight_finds_required_table_and_function_guides() {
     assert_eq!(blocked.is_error, Some(false));
     let blocked = blocked.structured_content.expect("structured guide block");
     assert_matches_output_schema(sql_tool, &blocked);
-    assert_eq!(blocked["status"], "guide_required");
-    assert_eq!(blocked["executed"], false);
+    assert_eq!(blocked.as_object().expect("guide block").len(), 2);
+    assert!(
+        blocked["message"]
+            .as_str()
+            .is_some_and(|message| message.starts_with("Coral blocked this SQL call"))
+    );
     let guides = blocked["guides"].as_array().expect("required guides");
     assert_eq!(guides.len(), 2);
     assert_eq!(guides[0]["schema"], "searchy");
     assert_eq!(guides[0]["resource"], "lookup_issue");
-    assert_eq!(guides[0]["kind"], "table_function");
+    assert_eq!(
+        guides[0]["guide"],
+        "Use this function for exact issue lookup."
+    );
+    assert_eq!(guides[0].as_object().expect("function guide").len(), 3);
     assert_eq!(guides[1]["schema"], "searchy");
     assert_eq!(guides[1]["resource"], "placeholder");
-    assert_eq!(guides[1]["kind"], "table");
+    assert_eq!(
+        guides[1]["guide"],
+        "Supply an id filter before using this table."
+    );
+    assert_eq!(guides[1].as_object().expect("table guide").len(), 3);
 
     let retry = client
         .call_tool(
@@ -1752,8 +1764,8 @@ async fn mcp_sql_logical_preflight_finds_required_table_and_function_guides() {
         .expect("revised same-task SQL retry")
         .structured_content
         .expect("structured SQL retry");
-    assert_ne!(
-        retry["status"], "guide_required",
+    assert!(
+        retry.get("guides").is_none(),
         "a revised query must not repeat already surfaced guides: {retry}"
     );
 
@@ -1767,7 +1779,7 @@ async fn mcp_sql_logical_preflight_finds_required_table_and_function_guides() {
         .expect("next task gated SQL call")
         .structured_content
         .expect("next task guide block");
-    assert_eq!(next_task["status"], "guide_required");
+    assert!(next_task["guides"].is_array());
 
     session.shutdown().await;
 }
@@ -1839,7 +1851,7 @@ async fn factory_shares_configuration_and_task_guide_state_across_sessions() {
         .expect("first-session gated SQL")
         .structured_content
         .expect("first-session guide block");
-    assert_eq!(first_call["status"], "guide_required");
+    assert!(first_call["guides"].is_array());
 
     let second_call = second_client
         .call_tool(

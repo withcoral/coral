@@ -187,7 +187,6 @@ impl GuideReadState {
             newly_required.push(SqlRequiredGuideValue::new(
                 key.schema_name,
                 key.resource_name,
-                key.kind,
                 guide,
             ));
         }
