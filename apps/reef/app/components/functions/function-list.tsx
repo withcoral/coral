@@ -27,9 +27,7 @@ export function FunctionList({ functions, onDelete }: FunctionListProps) {
             <Table.HeaderCell className={styles.nameColumn}>Name</Table.HeaderCell>
             <Table.HeaderCell>Description</Table.HeaderCell>
             <Table.HeaderCell className={styles.sourcesColumn}>Sources</Table.HeaderCell>
-            <Table.HeaderCell align="right" className={styles.actionsColumn}>
-              <span aria-label="Actions" />
-            </Table.HeaderCell>
+            <Table.HeaderCell align="right" ariaLabel="Actions" className={styles.actionsColumn} />
           </Table.Row>
         </Table.Head>
         <Table.Body>

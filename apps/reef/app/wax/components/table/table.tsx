@@ -32,6 +32,7 @@ interface TableRowProps {
 
 interface TableHeaderCellProps {
   align?: 'center' | 'left' | 'right'
+  ariaLabel?: string
   children?: React.ReactNode
   className?: string
 }
@@ -64,9 +65,13 @@ function Row({ children, className }: TableRowProps) {
   return <tr className={classNames(styles.tr, className)}>{children}</tr>
 }
 
-function HeaderCell({ children, className, align = 'left' }: TableHeaderCellProps) {
+function HeaderCell({ ariaLabel, children, className, align = 'left' }: TableHeaderCellProps) {
   return (
-    <th className={classNames(styles.th, className)} style={{ textAlign: align }}>
+    <th
+      aria-label={ariaLabel}
+      className={classNames(styles.th, className)}
+      style={{ textAlign: align }}
+    >
       {children}
     </th>
   )
