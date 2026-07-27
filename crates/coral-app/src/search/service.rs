@@ -117,10 +117,17 @@ impl SearchServiceApi for SearchService {
     ) -> Result<Response<ProtoGetSearchCapabilitiesResponse>, Status> {
         let span = grpc_span(&request);
         let search = self.search.clone();
+        let tasks = self.tasks.clone();
+        let request_context = request_context(&request)?.clone();
         Box::pin(instrument_grpc(span, async move {
-            let attribution = QueryAttribution::from_extensions(request.extensions());
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            let attribution = QueryAttribution::new(
+                tasks
+                    .validate_attribution(&workspace_name, request_context.task_id())
+                    .await
+                    .map_err(task_manager_status)?,
+            );
             let capabilities = search
                 .capabilities(&workspace_name, &attribution)
                 .await
