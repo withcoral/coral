@@ -1217,8 +1217,12 @@ mod tests {
         function.kind = ProjectionKind::TableFunction {
             function_kind: SourceTableFunctionKind::Search,
         };
+        // `q` is on the operation's lookup-key allowlist, so exposing it as a
+        // function argument here covers the lookup-key exception: the allowlist
+        // decides join completeness for filters only and must not make the
+        // argument disappear.
         function.inputs = vec![
-            persisted_projection_input("q", SqlInputExposure::Internal, false),
+            persisted_projection_input("q", SqlInputExposure::FunctionArg, false),
             persisted_projection_input("state", SqlInputExposure::FunctionArg, false),
         ];
         let materialized = V4MaterializedSource {
@@ -1249,9 +1253,26 @@ mod tests {
         let filter = filters.first().expect("filter");
         assert_eq!(filter.name, "q");
         assert!(filter.lookup_key);
-        let args = &http.functions.first().expect("function").args;
-        assert_eq!(args.len(), 1);
-        assert_eq!(args.first().expect("arg").name, "state");
+        let function = http.functions.first().expect("function");
+        assert_eq!(
+            function
+                .args
+                .iter()
+                .map(|arg| arg.name.as_str())
+                .collect::<Vec<_>>(),
+            ["q", "state"],
+            "an allowlisted input must stay a function argument"
+        );
+        assert_eq!(
+            function
+                .request
+                .query
+                .iter()
+                .map(|param| param.name.as_str())
+                .collect::<Vec<_>>(),
+            ["q", "state"],
+            "function arguments must still be sent as query parameters"
+        );
     }
 
     #[test]
