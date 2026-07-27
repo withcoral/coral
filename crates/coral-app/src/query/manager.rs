@@ -2316,12 +2316,16 @@ select text from function_demo.messages
 name: messages_by_type
 schema: functions
 description: Messages filtered by sender type
+guide: |-
+  Prefer this function for sender lookups.
+  Required argument: kind.
 */
 
 select text
 from function_demo.messages
 where type = $kind
 ";
+        let expected_guide = "Prefer this function for sender lookups.\nRequired argument: kind.";
         let validated_function = fixture
             .manager
             .validate_udf_sql(&workspace_name, function_sql)
@@ -2344,6 +2348,7 @@ where type = $kind
             .expect("catalog");
         let function_function = catalog.table_functions.first().expect("function function");
         assert_eq!(function_function.function_name, "messages_by_type");
+        assert_eq!(function_function.guide, expected_guide);
         assert_eq!(
             function_function
                 .result_columns
@@ -2364,11 +2369,27 @@ where type = $kind
         else {
             panic!("function should be runtime-ready");
         };
+        assert_eq!(definition.publish.table_function.guide, expected_guide);
         let column = definition
             .result_columns
             .first()
             .expect("text result column");
         assert_eq!(column.name, "text");
+
+        let guide_query = fixture
+            .manager
+            .execute_sql(
+                &workspace_name,
+                "select guide from coral.table_functions \
+                 where schema_name = 'functions' and function_name = 'messages_by_type'",
+                &QueryAttribution::default(),
+            )
+            .await
+            .expect("function guide query");
+        assert_eq!(
+            execution_to_rows(&guide_query),
+            vec![json!({"guide": expected_guide})]
+        );
 
         let execution = fixture
             .manager
