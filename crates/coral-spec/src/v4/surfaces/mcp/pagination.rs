@@ -7,13 +7,14 @@ use crate::v4::surfaces::json_schema::json_schema_type_contains;
 pub(super) fn infer_mcp_pagination_contracts(
     inputs: &[IrOperationInput],
     output: &IrOperationOutput,
+    row_path: &[String],
     output_schema: Option<&Value>,
     input_schema: &Value,
 ) -> (Option<McpPaginationSpec>, Option<McpOffsetPaginationSpec>) {
-    let pagination = infer_mcp_pagination(inputs, output, output_schema);
+    let pagination = infer_mcp_pagination(inputs, output, row_path, output_schema);
     let offset_pagination = pagination
         .is_none()
-        .then(|| infer_mcp_offset_pagination(inputs, output, input_schema))
+        .then(|| infer_mcp_offset_pagination(inputs, output, row_path, input_schema))
         .flatten();
     (pagination, offset_pagination)
 }
@@ -21,12 +22,10 @@ pub(super) fn infer_mcp_pagination_contracts(
 fn infer_mcp_pagination(
     inputs: &[IrOperationInput],
     output: &IrOperationOutput,
+    row_path: &[String],
     output_schema: Option<&Value>,
 ) -> Option<McpPaginationSpec> {
-    if !matches!(
-        output.cardinality,
-        OutputCardinality::List | OutputCardinality::WrappedList
-    ) {
+    if !is_list_like_output(output, row_path) {
         return None;
     }
     let cursor_arg = cursor_input_name(inputs)?;
@@ -41,12 +40,10 @@ fn infer_mcp_pagination(
 fn infer_mcp_offset_pagination(
     inputs: &[IrOperationInput],
     output: &IrOperationOutput,
+    row_path: &[String],
     input_schema: &Value,
 ) -> Option<McpOffsetPaginationSpec> {
-    if !matches!(
-        output.cardinality,
-        OutputCardinality::List | OutputCardinality::WrappedList
-    ) {
+    if !is_list_like_output(output, row_path) {
         return None;
     }
     let properties = input_schema.get("properties").and_then(Value::as_object)?;
@@ -69,6 +66,12 @@ fn infer_mcp_offset_pagination(
         offset_start: offset.default,
         max_pages: None,
     })
+}
+
+/// A wrapped-list envelope is a singleton by cardinality but yields rows, so it
+/// paginates like a declared list.
+fn is_list_like_output(output: &IrOperationOutput, row_path: &[String]) -> bool {
+    output.cardinality == OutputCardinality::List || !row_path.is_empty()
 }
 
 struct OffsetPaginationInput<'a> {

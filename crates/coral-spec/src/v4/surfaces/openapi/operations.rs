@@ -6,7 +6,7 @@ use crate::v4::OperationMetadata;
 use crate::v4::diagnostics::Diagnostic;
 use crate::v4::ir::{
     HttpMethod, IrExecutionAttachment, IrInputLocation, IrOperation, IrOperationInput,
-    IrOperationNaming, IrScalarType, OutputCardinality, RestExecutionAttachment,
+    IrOperationNaming, IrOperationOutput, IrScalarType, OutputCardinality, RestExecutionAttachment,
     RestParameterBinding, RestRequestBody,
 };
 use crate::v4::lookup_keys::infer_rest_lookup_keys;
@@ -15,7 +15,11 @@ use crate::v4::surfaces::json_schema::{
     json_schema_default_to_string, json_schema_scalar_type_or_string, json_schema_type_contains,
     json_schema_type_display,
 };
-use crate::{ManifestError, PageSizeSpec, PaginationMode, PaginationSpec, Result};
+use crate::v4::wrapped_lists::{WrappedListInferenceContext, infer_wrapped_list_row_path};
+use crate::{
+    ManifestError, PageSizeSpec, PaginationMode, PaginationSpec, Result,
+    v4::resolve_output_row_type_ref,
+};
 
 use super::import::OpenApiImporter;
 use super::responses::OpenApiResponsePaginationContext;
@@ -45,7 +49,13 @@ impl OpenApiImporter<'_> {
         let request_body = self.import_request_body(op_obj, &operation_id, &mut diagnostics);
         let (output, response, entity, pagination_context) =
             self.import_response(path, op_obj, &operation_id, &mut diagnostics);
-        let pagination = detect_pagination(&parameters, &pagination_context);
+        let row_path = self.infer_row_path(
+            raw_operation_id.unwrap_or(&operation_id),
+            &parameters,
+            &pagination_context,
+            &output,
+        );
+        let pagination = detect_pagination(&parameters, &pagination_context, &row_path);
         let lookup_keys = infer_rest_lookup_keys(&parameters, &pagination);
         let rest_parameters = parameters
             .iter()
@@ -91,10 +101,42 @@ impl OpenApiImporter<'_> {
         Ok((
             operation,
             OperationMetadata::Rest {
+                row_path,
                 pagination,
                 lookup_keys,
             },
         ))
+    }
+
+    /// Infers where the rows of a wrapped-list response live, discarding a path
+    /// the imported types cannot resolve so the importer never emits metadata
+    /// that fails plan validation.
+    fn infer_row_path(
+        &self,
+        operation_name: &str,
+        parameters: &[IrOperationInput],
+        pagination_context: &OpenApiResponsePaginationContext,
+        output: &IrOperationOutput,
+    ) -> Vec<String> {
+        let row_path = infer_wrapped_list_row_path(WrappedListInferenceContext {
+            operation_name,
+            inputs: parameters,
+            schema_root: self.document,
+            response_schema: &pagination_context.schema,
+        });
+        if row_path.is_empty() {
+            return row_path;
+        }
+        let types = self
+            .types
+            .iter()
+            .map(|(id, ty)| (id.as_str(), ty))
+            .collect::<BTreeMap<_, _>>();
+        if resolve_output_row_type_ref(output, &row_path, &types).is_ok() {
+            row_path
+        } else {
+            Vec::new()
+        }
     }
 
     fn import_parameters(
@@ -303,8 +345,9 @@ fn parameter_is_required(parameter_obj: &Map<String, Value>, location: IrInputLo
 fn detect_pagination(
     inputs: &[IrOperationInput],
     context: &OpenApiResponsePaginationContext,
+    row_path: &[String],
 ) -> PaginationSpec {
-    if !is_paginated_cardinality(context.cardinality) {
+    if !is_list_like_output(context.cardinality, row_path) {
         return PaginationSpec::default();
     }
     detect_link_header_pagination(inputs, context)
@@ -578,11 +621,10 @@ fn is_response_cursor_property(name: &str, schema: &Value) -> bool {
         && (json_schema_type_contains(schema, "string") || schema.get("type").is_none())
 }
 
-fn is_paginated_cardinality(cardinality: OutputCardinality) -> bool {
-    matches!(
-        cardinality,
-        OutputCardinality::List | OutputCardinality::WrappedList
-    )
+/// A wrapped-list envelope is a singleton by cardinality but yields rows, so it
+/// paginates like a declared list.
+fn is_list_like_output(cardinality: OutputCardinality, row_path: &[String]) -> bool {
+    cardinality == OutputCardinality::List || !row_path.is_empty()
 }
 
 fn page_size_spec(input: &IrOperationInput) -> PageSizeSpec {

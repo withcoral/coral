@@ -231,9 +231,7 @@ pub(super) fn projection_name(operation: &IrOperation, is_search: bool) -> Strin
         OutputCardinality::Singleton if operation.inputs.iter().any(|input| input.required) => {
             format!("get_{entity}")
         }
-        OutputCardinality::List | OutputCardinality::WrappedList | OutputCardinality::Singleton => {
-            entity
-        }
+        OutputCardinality::List | OutputCardinality::Singleton => entity,
         OutputCardinality::None | OutputCardinality::Unknown => {
             normalize_identifier(&operation.id, "projection")
         }

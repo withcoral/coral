@@ -1837,7 +1837,7 @@ surface:
             .next()
             .expect("operation metadata")
         {
-            coral_spec::v4::OperationMetadata::Mcp { pagination } => pagination,
+            coral_spec::v4::OperationMetadata::Mcp { pagination, .. } => pagination,
             coral_spec::v4::OperationMetadata::Rest { .. } => panic!("expected MCP metadata"),
         };
         assert!(pagination.cursor.is_none());

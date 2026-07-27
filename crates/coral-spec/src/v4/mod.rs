@@ -7,8 +7,8 @@ pub const V4_ARTIFACT_SCHEMA_VERSION: u32 = 5;
 pub const SURFACE_IMPORTER_VERSION: &str = "surface-import-v3";
 pub const OPENAPI_IMPORTER_VERSION: &str = "openapi-v7";
 pub const MCP_IMPORTER_VERSION: &str = "mcp-tools-v3";
-pub const OPERATION_METADATA_GENERATOR_VERSION: &str = "operation-metadata-v1";
-pub const PROJECTION_GENERATOR_VERSION: &str = "derive-read-v10";
+pub const OPERATION_METADATA_GENERATOR_VERSION: &str = "operation-metadata-v2";
+pub const PROJECTION_GENERATOR_VERSION: &str = "derive-read-v11";
 
 mod artifacts;
 mod diagnostics;
@@ -20,6 +20,7 @@ mod operation_metadata;
 mod projections;
 mod schema;
 mod surfaces;
+mod wrapped_lists;
 
 #[cfg(test)]
 mod manifest_tests;
@@ -47,6 +48,7 @@ pub use manifest::{
     V4Surface, validate_openapi_base_url_template,
 };
 pub use naming::normalize_identifier;
+pub(crate) use operation_metadata::resolve_output_row_type_ref;
 pub use operation_metadata::{
     ImportedSurface, McpOperationPagination, OperationMetadata, OperationMetadataCatalog,
     ValidatedSurfacePlan, validate_operation_metadata_structure, validate_semantic_ir_structure,

@@ -150,6 +150,7 @@ fn plan_rejects_mcp_offset_pagination_starting_past_first_page() {
     }
     let operation_id = operation.id.clone();
     let metadata_with_offset_start = |offset_start| OperationMetadata::Mcp {
+        row_path: Vec::new(),
         pagination: crate::v4::McpOperationPagination {
             cursor: None,
             offset: Some(crate::backends::mcp::McpOffsetPaginationSpec {
@@ -199,9 +200,13 @@ fn semantic_ir_serialization_contains_facts_not_inferred_policy() {
         !yaml.contains("lookup_keys:"),
         "unexpected policy in IR: {yaml}"
     );
+    assert!(
+        !yaml.contains("row_path:"),
+        "unexpected policy in IR: {yaml}"
+    );
     assert!(matches!(
         imported.operation_metadata.operations.values().next(),
-        Some(OperationMetadata::Rest { pagination, lookup_keys })
+        Some(OperationMetadata::Rest { pagination, lookup_keys, .. })
             if pagination.page_param.as_deref() == Some("page")
                 && lookup_keys == &["state"]
     ));
@@ -210,6 +215,7 @@ fn semantic_ir_serialization_contains_facts_not_inferred_policy() {
 #[test]
 fn disabled_rest_pagination_serializes_only_its_mode() {
     let metadata = OperationMetadata::Rest {
+        row_path: Vec::new(),
         pagination: crate::PaginationSpec::default(),
         lookup_keys: Vec::new(),
     };

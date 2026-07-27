@@ -1615,7 +1615,7 @@ fn imported_mcp_items_surface() -> (V4SourceManifest, ImportedSurface) {
     };
     let mut imported =
         import_mcp_surface(&manifest, &manifest.surface, &catalog).expect("MCP import");
-    let OperationMetadata::Mcp { pagination } = imported
+    let OperationMetadata::Mcp { pagination, .. } = imported
         .operation_metadata
         .operations
         .get_mut("list_items")
