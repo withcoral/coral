@@ -73,7 +73,7 @@ export function SourceCreateDialog({
   discoveryPath: string
   fetchOAuthImport?: typeof fetch
   oauthImportPath?: string
-  onOAuthImportComplete?: (name: string) => Promise<void> | void
+  onOAuthImportComplete?: (name: string, signal: AbortSignal) => Promise<void> | void
   open: boolean
   openAuthorization?: (url: string) => unknown
   onOpenChange: (open: boolean) => void
@@ -122,7 +122,7 @@ function SourceCreateDialogContent({
   discoveryPath: string
   fetchOAuthImport: typeof fetch
   oauthImportPath: string
-  onOAuthImportComplete?: (name: string) => Promise<void> | void
+  onOAuthImportComplete?: (name: string, signal: AbortSignal) => Promise<void> | void
   onCancel: () => void
   openAuthorization: (url: string) => unknown
   requestCancelRef: RefObject<() => void>
@@ -135,8 +135,8 @@ function SourceCreateDialogContent({
   const oauth = useOAuthInstallFlow({
     fetchOAuthInstall: fetchOAuthImport,
     openAuthorization,
-    onComplete: async (name) => {
-      if (onOAuthImportComplete) await onOAuthImportComplete(name)
+    onComplete: async (name, signal) => {
+      if (onOAuthImportComplete) await onOAuthImportComplete(name, signal)
       else onCancel()
     },
   })

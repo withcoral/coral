@@ -23,7 +23,7 @@ export function useOAuthInstallFlow({
   openAuthorization,
 }: {
   fetchOAuthInstall: typeof fetch
-  onComplete: (name: string) => Promise<void> | void
+  onComplete: (name: string, signal: AbortSignal) => Promise<void> | void
   openAuthorization: (url: string) => unknown
 }) {
   const abortRef = useRef<AbortController | null>(null)
@@ -78,7 +78,7 @@ export function useOAuthInstallFlow({
 
       if (!abortController.signal.aborted) {
         setProgress({ kind: 'success', name: source.name })
-        await onComplete(source.name)
+        await onComplete(source.name, abortController.signal)
       }
     } catch (cause) {
       if (abortController.signal.aborted) return

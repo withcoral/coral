@@ -37,12 +37,13 @@ export default function SourceInstallRoute({ actionData, params }: Route.Compone
       actionData={actionData}
       discoveryPath={routePath('workspaceSourceDiscovery', { workspaceId: params.workspaceId })}
       oauthImportPath={`${sourcesPath}/oauth-import`}
-      onOAuthImportComplete={async (name) => {
+      onOAuthImportComplete={async (name, signal) => {
         addToast('success', {
           title: `Created ${name}`,
           description: 'The source was validated and installed.',
         })
         await revalidator.revalidate()
+        if (signal.aborted) return
         await navigate(sourcesPath)
       }}
       open

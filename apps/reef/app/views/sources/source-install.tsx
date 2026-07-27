@@ -99,8 +99,9 @@ function SourceInstallDialogContent({
   const oauth = useOAuthInstallFlow({
     fetchOAuthInstall,
     openAuthorization,
-    onComplete: async () => {
+    onComplete: async (_, signal) => {
       await revalidator.revalidate()
+      if (signal.aborted) return
       await (onOAuthInstallComplete
         ? onOAuthInstallComplete()
         : navigate(routePath('workspaceSources', { workspaceId })))
