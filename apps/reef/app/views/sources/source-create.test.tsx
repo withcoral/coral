@@ -287,7 +287,7 @@ describe('SourceCreateDialog', () => {
     expect(manifest).not.toContain('\nsurfaces:\n')
   })
 
-  it('creates a device-flow manifest and streams OAuth progress', async () => {
+  it('creates a GitHub device-flow manifest and streams OAuth progress', async () => {
     const openAuthorization = vi.fn()
     let submittedForm: FormData | undefined
     let releaseSource: (() => void) | undefined
@@ -346,12 +346,12 @@ describe('SourceCreateDialog', () => {
     await screen.getByRole('button', { name: 'Next' }).click()
     await screen.getByRole('radio', { name: 'OAuth device flow' }).click()
 
-    await screen
-      .getByLabelText('Device authorization URL')
-      .fill('https://github.com/login/device/code')
-    await screen.getByLabelText('Token URL').fill('https://github.com/login/oauth/access_token')
-    await screen.getByLabelText('Client ID').fill('Iv23liJHis6Bs8NO1DAI')
-    await screen.getByLabelText('Scopes').fill('repo read:org read:user user:email')
+    await expect
+      .element(screen.getByLabelText('Device authorization URL'))
+      .toHaveValue('https://github.com/login/device/code')
+    await expect
+      .element(screen.getByLabelText('Token URL'))
+      .toHaveValue('https://github.com/login/oauth/access_token')
     await screen.getByRole('button', { name: 'Create source' }).click()
 
     await expect.element(screen.getByText('ABCD-1234')).toBeVisible()
@@ -383,6 +383,40 @@ describe('SourceCreateDialog', () => {
     releaseSource?.()
     await expect.poll(() => onOAuthImportComplete.mock.calls.length).toBe(1)
     expect(onOAuthImportComplete).toHaveBeenCalledWith('github_custom')
+  })
+
+  it('prefills the maintained Sentry device-flow settings but requires its client ID', async () => {
+    const sentryUrl =
+      'https://raw.githubusercontent.com/getsentry/sentry-api-schema/refs/heads/main/openapi-derefed.json'
+    const { screen } = await renderSourceCreate({
+      auth: { kind: 'bearer', label: 'Bearer token' },
+      description: 'Sentry Public API',
+      format: 'unknown',
+      name: 'sentry_custom',
+      status: 'success',
+      url: sentryUrl,
+      warning: 'The source document is larger than 2 MB',
+    })
+
+    await screen.getByLabelText('Source URL').fill(sentryUrl)
+    await screen.getByRole('button', { name: 'Next' }).click()
+    await screen.getByRole('button', { name: 'Next' }).click()
+    await screen.getByRole('radio', { name: 'OAuth device flow' }).click()
+
+    await expect
+      .element(screen.getByLabelText('Device authorization URL'))
+      .toHaveValue('https://sentry.io/oauth/device/code/')
+    await expect
+      .element(screen.getByLabelText('Token URL'))
+      .toHaveValue('https://sentry.io/oauth/token/')
+    await expect
+      .element(screen.getByLabelText('Scopes'))
+      .toHaveValue('org:read event:read member:read project:read project:releases team:read')
+    await expect.element(screen.getByLabelText('Client ID')).toHaveValue('')
+    await expect.element(screen.getByRole('button', { name: 'Create source' })).toBeDisabled()
+
+    await screen.getByLabelText('Client ID').fill('sentry-oauth-app-client-id')
+    await expect.element(screen.getByRole('button', { name: 'Create source' })).toBeEnabled()
   })
 
   it('keeps the credentials dialog height stable across authentication choices', async () => {
