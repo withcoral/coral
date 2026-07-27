@@ -1903,6 +1903,50 @@ fn projection_compatibility_rejects_published_required_internal_input() {
 }
 
 #[test]
+fn projection_compatibility_rejects_exposure_mismatched_with_projection_kind() {
+    let (manifest, imported) = imported_items_surface();
+    let plan = imported.validated_plan().expect("plan");
+    let mut catalog = generate_projection_catalog(&manifest, &plan).expect("projections");
+    assert!(matches!(
+        catalog.projections.first().expect("projection").kind,
+        ProjectionKind::Table
+    ));
+    let state = projection_input_mut(&mut catalog, "state");
+    state.sql_exposure = SqlInputExposure::FunctionArg;
+    state.lookup_key = false;
+
+    let error = validate_projection_compatibility(&plan, &catalog)
+        .expect_err("function argument on a table must fail");
+
+    assert!(
+        error.to_string().contains(
+            "input 'state' on operation 'items_list' has sql_exposure 'function_arg'; table projections expose non-internal inputs as filters"
+        ),
+        "unexpected error: {error}"
+    );
+
+    let (tool_manifest, tool_imported) = imported_mcp_items_surface();
+    let tool_plan = tool_imported.validated_plan().expect("plan");
+    let mut tool_catalog =
+        generate_projection_catalog(&tool_manifest, &tool_plan).expect("projections");
+    assert!(matches!(
+        tool_catalog.projections.first().expect("projection").kind,
+        ProjectionKind::TableFunction { .. }
+    ));
+    projection_input_mut(&mut tool_catalog, "query").sql_exposure = SqlInputExposure::Filter;
+
+    let error = validate_projection_compatibility(&tool_plan, &tool_catalog)
+        .expect_err("filter on a table function must fail");
+
+    assert!(
+        error.to_string().contains(
+            "input 'query' on operation 'list_items' has sql_exposure 'filter'; table function projections expose non-internal inputs as function arguments"
+        ),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
 fn projection_compatibility_accepts_empty_operation_and_projection_catalogs() {
     let (manifest, mut imported) = imported_items_surface();
     imported.semantic_ir.operations.clear();

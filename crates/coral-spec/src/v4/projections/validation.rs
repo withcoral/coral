@@ -5,7 +5,9 @@ use std::collections::BTreeMap;
 
 use crate::v4::ir::IrExecutionAttachment;
 use crate::v4::operation_metadata::ValidatedSurfacePlan;
-use crate::v4::projections::{ProjectionCatalog, ProjectionVisibility, SqlInputExposure};
+use crate::v4::projections::{
+    ProjectionCatalog, ProjectionKind, ProjectionVisibility, SqlInputExposure,
+};
 use crate::{ManifestError, Result};
 
 pub fn validate_projection_compatibility(
@@ -25,6 +27,7 @@ pub fn validate_projection_compatibility(
                 projection.name, projection.operation_id
             )));
         };
+        let public_exposure = public_exposure_for_kind(&projection.kind);
         for input in &projection.inputs {
             let Some(operation_input) = operation.inputs.iter().find(|operation_input| {
                 operation_input.location == input.source_location
@@ -76,6 +79,23 @@ pub fn validate_projection_compatibility(
                 }
             }
 
+            // Runtime package assembly reads filters from table projections and
+            // arguments from table function projections, so the other exposure
+            // is unbindable: the input silently disappears from every request.
+            if input.sql_exposure != SqlInputExposure::Internal
+                && input.sql_exposure != public_exposure
+            {
+                return Err(ManifestError::validation(format!(
+                    "projection '{}' input '{}' on operation '{}' has sql_exposure '{}'; {} projections expose non-internal inputs as {}",
+                    projection.name,
+                    input.name,
+                    operation.id,
+                    sql_exposure_name(input.sql_exposure),
+                    projection_kind_name(&projection.kind),
+                    public_exposure_plural(public_exposure)
+                )));
+            }
+
             // Internal inputs are dropped by request lowering, so internalizing
             // an input the provider requires makes every request incomplete.
             // The generator hides such projections instead of publishing them.
@@ -92,6 +112,28 @@ pub fn validate_projection_compatibility(
         }
     }
     Ok(())
+}
+
+const fn public_exposure_for_kind(kind: &ProjectionKind) -> SqlInputExposure {
+    match kind {
+        ProjectionKind::Table => SqlInputExposure::Filter,
+        ProjectionKind::TableFunction { .. } => SqlInputExposure::FunctionArg,
+    }
+}
+
+const fn projection_kind_name(kind: &ProjectionKind) -> &'static str {
+    match kind {
+        ProjectionKind::Table => "table",
+        ProjectionKind::TableFunction { .. } => "table function",
+    }
+}
+
+const fn public_exposure_plural(exposure: SqlInputExposure) -> &'static str {
+    match exposure {
+        SqlInputExposure::Filter => "filters",
+        SqlInputExposure::FunctionArg => "function arguments",
+        SqlInputExposure::Internal => "internal inputs",
+    }
 }
 
 const fn sql_exposure_name(exposure: SqlInputExposure) -> &'static str {
