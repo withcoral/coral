@@ -94,6 +94,10 @@ impl SearchManager {
         )
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the composition root passes search providers, lifecycle state, and diagnostics explicitly"
+    )]
     pub(crate) fn with_diagnostic_reporter(
         layout: AppStateLayout,
         config_store: &ConfigStore,

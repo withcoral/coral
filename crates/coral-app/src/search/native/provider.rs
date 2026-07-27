@@ -428,56 +428,13 @@ struct RouteInventory {
 
 impl RouteInventory {
     fn from_reports(reports: &[UniversalSearchResolution]) -> Self {
-        let mut reports = reports.to_vec();
-        reports.sort_by(|left, right| left.source_name.cmp(&right.source_name));
-        let mut grouped = BTreeMap::<String, Vec<ResolvedUniversalSearchRoute>>::new();
-        let mut resolution_diagnostics = Vec::new();
-        let mut already_omitted_diagnostics = 0_usize;
-        for mut report in reports {
-            report.eligible_routes.sort_by_key(route_sort_key);
-            grouped
-                .entry(report.source_name.clone())
-                .or_default()
-                .extend(report.eligible_routes);
-            report.explicit_denials.sort_by_key(|denial| {
-                (
-                    denial.authored_route_id.clone(),
-                    denial
-                        .locator
-                        .as_ref()
-                        .map(|locator| locator.schema_name.clone())
-                        .unwrap_or_default(),
-                    denial
-                        .locator
-                        .as_ref()
-                        .map(|locator| locator.function_name.clone())
-                        .unwrap_or_default(),
-                )
-            });
-            resolution_diagnostics.extend(report.explicit_denials.iter().map(explicit_denial));
-            report.diagnostics.sort_by_key(|diagnostic| {
-                (
-                    diagnostic.authored_route_id.clone().unwrap_or_default(),
-                    diagnostic
-                        .locator
-                        .as_ref()
-                        .map(|locator| locator.schema_name.clone())
-                        .unwrap_or_default(),
-                    diagnostic
-                        .locator
-                        .as_ref()
-                        .map(|locator| locator.function_name.clone())
-                        .unwrap_or_default(),
-                    resolution_reason_order(diagnostic.reason),
-                )
-            });
-            resolution_diagnostics.extend(report.diagnostics.iter().map(resolution_failure));
-            already_omitted_diagnostics =
-                already_omitted_diagnostics.saturating_add(report.omitted_diagnostic_count);
-        }
-        resolution_diagnostics.sort_by_key(resolution_diagnostic_sort_key);
+        let CollectedResolutionReports {
+            routes_by_source,
+            diagnostics: resolution_diagnostics,
+            omitted_diagnostic_count: already_omitted_diagnostics,
+        } = collect_resolution_reports(reports);
 
-        let all = grouped
+        let all = routes_by_source
             .into_iter()
             .flat_map(|(source_name, mut routes)| {
                 routes.sort_by_key(route_sort_key);
@@ -531,6 +488,68 @@ impl RouteInventory {
             resolution_diagnostics,
             already_omitted_diagnostics,
         }
+    }
+}
+
+struct CollectedResolutionReports {
+    routes_by_source: BTreeMap<String, Vec<ResolvedUniversalSearchRoute>>,
+    diagnostics: Vec<NativeSearchDiagnostic>,
+    omitted_diagnostic_count: usize,
+}
+
+fn collect_resolution_reports(reports: &[UniversalSearchResolution]) -> CollectedResolutionReports {
+    let mut reports = reports.to_vec();
+    reports.sort_by(|left, right| left.source_name.cmp(&right.source_name));
+    let mut routes_by_source = BTreeMap::<String, Vec<ResolvedUniversalSearchRoute>>::new();
+    let mut diagnostics = Vec::new();
+    let mut omitted_diagnostic_count = 0_usize;
+    for mut report in reports {
+        report.eligible_routes.sort_by_key(route_sort_key);
+        routes_by_source
+            .entry(report.source_name.clone())
+            .or_default()
+            .extend(report.eligible_routes);
+        report.explicit_denials.sort_by_key(|denial| {
+            (
+                denial.authored_route_id.clone(),
+                denial
+                    .locator
+                    .as_ref()
+                    .map(|locator| locator.schema_name.clone())
+                    .unwrap_or_default(),
+                denial
+                    .locator
+                    .as_ref()
+                    .map(|locator| locator.function_name.clone())
+                    .unwrap_or_default(),
+            )
+        });
+        diagnostics.extend(report.explicit_denials.iter().map(explicit_denial));
+        report.diagnostics.sort_by_key(|diagnostic| {
+            (
+                diagnostic.authored_route_id.clone().unwrap_or_default(),
+                diagnostic
+                    .locator
+                    .as_ref()
+                    .map(|locator| locator.schema_name.clone())
+                    .unwrap_or_default(),
+                diagnostic
+                    .locator
+                    .as_ref()
+                    .map(|locator| locator.function_name.clone())
+                    .unwrap_or_default(),
+                resolution_reason_order(diagnostic.reason),
+            )
+        });
+        diagnostics.extend(report.diagnostics.iter().map(resolution_failure));
+        omitted_diagnostic_count =
+            omitted_diagnostic_count.saturating_add(report.omitted_diagnostic_count);
+    }
+    diagnostics.sort_by_key(resolution_diagnostic_sort_key);
+    CollectedResolutionReports {
+        routes_by_source,
+        diagnostics,
+        omitted_diagnostic_count,
     }
 }
 
