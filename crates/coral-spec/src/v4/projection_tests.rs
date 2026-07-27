@@ -1631,6 +1631,44 @@ fn imported_mcp_items_surface() -> (V4SourceManifest, ImportedSurface) {
     (manifest, imported)
 }
 
+fn imported_required_account_surface() -> (V4SourceManifest, ImportedSurface) {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: demo
+dsl_version: 4
+surface:
+  type: openapi
+  file: /tmp/openapi.yaml
+  base_url: https://api.example.com
+",
+    )
+    .expect("manifest")
+    .as_v4()
+    .expect("v4")
+    .clone();
+    let imported = import_openapi_surface(
+        &manifest,
+        &manifest.surface,
+        br"
+openapi: 3.0.3
+paths:
+  /items:
+    get:
+      operationId: items/list
+      parameters:
+        - {name: account, in: query, required: true, schema: {type: string}}
+        - {name: state, in: query, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {type: array, items: {type: object}}
+",
+    )
+    .expect("import");
+    (manifest, imported)
+}
+
 fn projection_input_mut<'a>(
     catalog: &'a mut ProjectionCatalog,
     wire_name: &str,
@@ -1829,6 +1867,39 @@ fn projection_compatibility_accepts_conservative_choices_without_mutation() {
 
     let after = serde_yaml::to_string(&catalog).expect("serialize after validation");
     assert_eq!(after, before);
+}
+
+#[test]
+fn projection_compatibility_rejects_published_required_internal_input() {
+    let (manifest, imported) = imported_required_account_surface();
+    let plan = imported.validated_plan().expect("plan");
+    let mut catalog = generate_projection_catalog(&manifest, &plan).expect("projections");
+    assert_eq!(
+        catalog.projections.first().expect("projection").visibility,
+        ProjectionVisibility::Published,
+        "generator should publish a projection whose required input is exposable"
+    );
+    projection_input_mut(&mut catalog, "account").sql_exposure = SqlInputExposure::Internal;
+
+    let error = validate_projection_compatibility(&plan, &catalog)
+        .expect_err("published projection must not internalize a required input");
+
+    assert!(
+        error.to_string().contains(
+            "input 'account' on operation 'items_list' is required by the operation but has sql_exposure 'internal'"
+        ),
+        "unexpected error: {error}"
+    );
+
+    // Hiding the projection is the generator's own escape hatch for a required
+    // input that SQL cannot bind, so it stays compatible.
+    catalog
+        .projections
+        .first_mut()
+        .expect("projection")
+        .visibility = ProjectionVisibility::Hidden;
+    validate_projection_compatibility(&plan, &catalog)
+        .expect("hidden projections may internalize required inputs");
 }
 
 #[test]
