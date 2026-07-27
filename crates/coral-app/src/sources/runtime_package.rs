@@ -892,7 +892,7 @@ mod tests {
             },
             description: "Search issues".to_string(),
             guide: "Prefer this function for issue lookup.".to_string(),
-            require_guide_read: false,
+            require_guide_read: true,
             operation_id: operation_id.to_string(),
             visibility: ProjectionVisibility::Published,
             inputs: Vec::new(),
@@ -1197,6 +1197,12 @@ mod tests {
             http.functions.first().expect("http function").guide,
             "Prefer this function for issue lookup."
         );
+        assert!(
+            http.functions
+                .first()
+                .expect("http function")
+                .require_guide_read
+        );
     }
 
     #[test]
@@ -1365,6 +1371,13 @@ mod tests {
         assert_eq!(
             mcp.functions.first().expect("mcp function").common.guide,
             "Prefer this function for issue lookup."
+        );
+        assert!(
+            mcp.functions
+                .first()
+                .expect("mcp function")
+                .common
+                .require_guide_read
         );
     }
 

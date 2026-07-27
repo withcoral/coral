@@ -1719,8 +1719,8 @@ async fn mcp_sql_logical_preflight_finds_required_table_and_function_guides() {
                 &task_id,
                 &json!({
                     "queries": [
-                        "SELECT * FROM searchy.lookup_issue(number => '1') LIMIT 0",
-                        "SELECT id FROM searchy.placeholder"
+                        "WITH issue AS (SELECT * FROM \"searchy\".\"lookup_issue\"(number => '1') LIMIT 0) SELECT * FROM issue",
+                        "SELECT first.id FROM searchy.placeholder AS first JOIN searchy.placeholder AS second ON first.id = second.id"
                     ]
                 }),
             )),
@@ -1739,12 +1739,35 @@ async fn mcp_sql_logical_preflight_finds_required_table_and_function_guides() {
     assert_eq!(guides[1]["resource"], "placeholder");
     assert_eq!(guides[1]["kind"], "table");
 
+    let retry = client
+        .call_tool(
+            CallToolRequestParams::new("sql").with_arguments(task_arguments(
+                &task_id,
+                &json!({
+                    "queries": [
+                        "SELECT * FROM searchy.lookup_issue(number => '2') LIMIT 0",
+                        "SELECT id FROM searchy.placeholder WHERE lookup_id = '2' LIMIT 0"
+                    ]
+                }),
+            )),
+        )
+        .await
+        .expect("revised same-task SQL retry")
+        .structured_content
+        .expect("structured SQL retry");
+    assert_ne!(
+        retry["status"], "guide_required",
+        "a revised query must not repeat already surfaced guides: {retry}"
+    );
+
     session.shutdown().await;
 }
 
 #[tokio::test]
-async fn factory_shares_client_and_configured_tools_across_sessions() {
+async fn factory_shares_configuration_and_task_guide_state_across_sessions() {
     let temp = TempDir::new().expect("temp dir");
+    let manifest_path = write_fixture_manifest(temp.path());
+    let manifest_yaml = fs::read_to_string(&manifest_path).expect("read manifest");
     let app_server = ServerBuilder::new()
         .with_config_dir(temp.path().join("coral-config"))
         .with_noop_feedback_uploads()
@@ -1754,6 +1777,8 @@ async fn factory_shares_client_and_configured_tools_across_sessions() {
     let app = AppClient::connect(app_server.endpoint_uri())
         .await
         .expect("connect client");
+    let mut source_client = app.source_client();
+    add_demo_source(&mut source_client, manifest_yaml).await;
     let factory = CoralMcpServerFactory::new(
         app,
         McpOptions {
@@ -1792,6 +1817,31 @@ async fn factory_shares_client_and_configured_tools_across_sessions() {
             vec!["coral://guide", "coral://tables"]
         );
     }
+
+    let task_id = start_test_task(&first_client).await;
+    let query = json!({
+        "queries": ["SELECT text FROM local_messages.events WHERE text = 'hello'"]
+    });
+    let first_call = first_client
+        .call_tool(
+            CallToolRequestParams::new("sql").with_arguments(task_arguments(&task_id, &query)),
+        )
+        .await
+        .expect("first-session gated SQL")
+        .structured_content
+        .expect("first-session guide block");
+    assert_eq!(first_call["status"], "guide_required");
+
+    let second_call = second_client
+        .call_tool(
+            CallToolRequestParams::new("sql").with_arguments(task_arguments(&task_id, &query)),
+        )
+        .await
+        .expect("second-session SQL retry")
+        .structured_content
+        .expect("second-session SQL result");
+    assert_eq!(second_call["success_count"], 1);
+    assert_eq!(second_call["results"][0]["rows"][0]["text"], "hello");
 
     shutdown_mcp_session(first_client, first_task).await;
     shutdown_mcp_session(second_client, second_task).await;

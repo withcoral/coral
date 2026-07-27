@@ -223,6 +223,107 @@ functions:
     }
 
     #[test]
+    fn parser_rejects_empty_required_guides_across_v3_backends() {
+        let manifests = [
+            r#"
+name: file_demo
+version: 1.0.0
+dsl_version: 3
+backend: file
+tables:
+  - name: items
+    description: Items
+    guide: " "
+    require_guide_read: true
+    format: jsonl
+    source:
+      location: file:///tmp/
+      glob: "*.jsonl"
+    columns:
+      - name: id
+        type: Utf8
+"#,
+            r#"
+name: http_demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+base_url: https://example.com
+tables:
+  - name: items
+    description: Items
+    guide: " "
+    require_guide_read: true
+    request:
+      method: GET
+      path: /items
+"#,
+            r#"
+name: http_function_demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+base_url: https://example.com
+functions:
+  - name: search_items
+    description: Search items
+    guide: " "
+    require_guide_read: true
+    request:
+      method: GET
+      path: /items/search
+"#,
+            r#"
+name: mcp_demo
+version: 1.0.0
+dsl_version: 3
+backend: mcp
+server:
+  transport: stdio
+  command: unused
+tables:
+  - name: items
+    description: Items
+    guide: " "
+    require_guide_read: true
+    tool: list_items
+    columns:
+      - name: id
+        type: Utf8
+"#,
+            r#"
+name: mcp_function_demo
+version: 1.0.0
+dsl_version: 3
+backend: mcp
+server:
+  transport: stdio
+  command: unused
+functions:
+  - name: search_items
+    description: Search items
+    guide: " "
+    require_guide_read: true
+    tool: search_items
+    columns:
+      - name: id
+        type: Utf8
+"#,
+        ];
+
+        for manifest in manifests {
+            let error = parse_source_manifest_yaml(manifest)
+                .expect_err("required guide must contain guidance");
+            assert!(
+                error
+                    .to_string()
+                    .contains("sets require_guide_read but has an empty guide"),
+                "unexpected validation error: {error}"
+            );
+        }
+    }
+
+    #[test]
     fn validate_identity_manifest_schema_uses_identity_error_prefix() {
         let manifest = json!({
             "kind": "source",

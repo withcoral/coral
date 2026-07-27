@@ -241,6 +241,8 @@ fn mcp_manifest() -> coral_spec::ValidatedSourceManifest {
         },
         "functions": [{
             "name": "search",
+            "guide": "Use search for exact issue lookup.",
+            "require_guide_read": true,
             "tool": "search_tool",
             "args": [{
                 "name": "query",
@@ -594,6 +596,8 @@ fn mcp_table_manifest() -> coral_spec::ValidatedSourceManifest {
         "tables": [{
             "name": "issues",
             "description": "Open issues",
+            "guide": "Use search for issue lookup.",
+            "require_guide_read": true,
             "tool": "list_issues",
             "tool_args": {
                 "owner": { "from": "literal", "value": "acme" }
@@ -1751,4 +1755,46 @@ async fn mcp_table_appears_in_catalog_metadata() {
     assert!(rendered.contains("| id"));
     assert!(rendered.contains("| title"));
     assert!(rendered.contains("| state"));
+
+    let batches = ctx
+        .sql(
+            "SELECT guide, require_guide_read FROM coral.tables \
+             WHERE schema_name = 'test_mcp' AND table_name = 'issues'",
+        )
+        .await
+        .expect("table metadata query should plan")
+        .collect()
+        .await
+        .expect("table metadata query should execute");
+    let rendered = pretty_format_batches(&batches)
+        .expect("batches should render")
+        .to_string();
+    assert!(rendered.contains("| Use search for issue lookup."));
+    assert!(rendered.contains("| true"));
+}
+
+#[tokio::test]
+async fn mcp_table_function_appears_in_catalog_with_required_guide() {
+    let ctx = SessionContext::new();
+    let caller = Arc::new(FakeMcpCaller {
+        calls: Mutex::new(Vec::new()),
+    });
+    register_test_sources_with_catalog(&ctx, compile_sources(mcp_manifest(), caller));
+
+    let batches = ctx
+        .sql(
+            "SELECT guide, require_guide_read FROM coral.table_functions \
+             WHERE schema_name = 'test_mcp' AND function_name = 'search'",
+        )
+        .await
+        .expect("metadata query should plan")
+        .collect()
+        .await
+        .expect("metadata query should execute");
+
+    let rendered = pretty_format_batches(&batches)
+        .expect("batches should render")
+        .to_string();
+    assert!(rendered.contains("| Use search for exact issue lookup."));
+    assert!(rendered.contains("| true"));
 }

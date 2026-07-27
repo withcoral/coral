@@ -1700,6 +1700,39 @@ async fn mcp_stdio_required_guide_blocks_every_query_before_backend_dispatch()
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn mcp_stdio_guide_preflight_operational_error_blocks_backend_dispatch()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start_with_config(
+        MockServerConfig::default().with_resolve_sql_guide_requirements_error(
+            tonic::Code::Unavailable,
+            "catalog temporarily unavailable",
+        ),
+    )
+    .await;
+    let client = start_mcp_client(&server).await?;
+    let task_id = start_test_task(&client).await?;
+
+    let result = client
+        .call_tool(
+            CallToolRequestParams::new("sql").with_arguments(task_arguments(
+                &task_id,
+                &json!({ "queries": ["SELECT 'must not execute' AS label"] }),
+            )),
+        )
+        .await?;
+
+    assert_eq!(result.is_error, Some(true));
+    assert!(
+        server.execute_sql_requests().is_empty(),
+        "SQL must fail closed when guide preflight is unavailable"
+    );
+
+    client.cancel().await?;
+    server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn mcp_stdio_sql_batch_propagates_task_id_to_each_query()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = MockServer::start().await;

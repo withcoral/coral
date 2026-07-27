@@ -310,6 +310,7 @@ fn task_context_requirement(options: &McpOptions, tool_name: ToolName) -> TaskCo
 pub(crate) struct CoralMcpServerFactory {
     app: AppClient,
     options: McpOptions,
+    guide_reads: Arc<GuideReadState>,
 }
 
 impl CoralMcpServerFactory {
@@ -322,13 +323,23 @@ impl CoralMcpServerFactory {
     /// fall back to a shared unauthenticated client.
     #[must_use]
     pub(crate) fn new(app: AppClient, options: McpOptions) -> Self {
-        Self { app, options }
+        Self {
+            app,
+            options,
+            guide_reads: Arc::new(GuideReadState::default()),
+        }
     }
 
     /// Constructs a fresh handler for one MCP session.
+    ///
+    /// Handlers from this factory share task-scoped guide-read state.
     #[must_use]
     pub(crate) fn create(&self) -> impl ServerHandler + Clone + use<> {
-        CoralMcpServer::new(&self.app, self.options.clone())
+        CoralMcpServer::new(
+            &self.app,
+            self.options.clone(),
+            Arc::clone(&self.guide_reads),
+        )
     }
 }
 
@@ -384,15 +395,16 @@ impl McpStartupContext {
 }
 
 impl CoralMcpServer {
-    fn new(app: &AppClient, options: McpOptions) -> Self {
+    fn new(app: &AppClient, options: McpOptions, guide_reads: Arc<GuideReadState>) -> Self {
         let startup_context = McpStartupContext::from_options(&options);
-        Self::new_with_startup_context(app, options, startup_context)
+        Self::new_with_startup_context(app, options, startup_context, guide_reads)
     }
 
     fn new_with_startup_context(
         app: &AppClient,
         options: McpOptions,
         startup_context: McpStartupContext,
+        guide_reads: Arc<GuideReadState>,
     ) -> Self {
         Self {
             source: app.source_client(),
@@ -401,7 +413,7 @@ impl CoralMcpServer {
             search: app.search_client(),
             feedback: app.feedback_client(),
             task: app.task_client(),
-            guide_reads: Arc::new(GuideReadState::default()),
+            guide_reads,
             startup_context,
             options,
         }
@@ -586,11 +598,13 @@ impl CoralMcpServer {
         let mut guides = Vec::new();
         while let Some(joined) = tasks.join_next().await {
             // Execution returns the per-query error if logical analysis fails.
-            // Successful siblings still need to gate the whole batch.
-            if let Ok(query_guides) =
-                joined.map_err(|error| tonic::Status::internal(error.to_string()))?
-            {
-                guides.extend(query_guides);
+            // Successful siblings still need to gate the whole batch. Operational
+            // failures must stop execution because Coral could not prove that the
+            // query does not require a guide.
+            match joined.map_err(|error| tonic::Status::internal(error.to_string()))? {
+                Ok(query_guides) => guides.extend(query_guides),
+                Err(status) if status.code() == tonic::Code::InvalidArgument => {}
+                Err(status) => return Err(status),
             }
         }
         Ok(guides)

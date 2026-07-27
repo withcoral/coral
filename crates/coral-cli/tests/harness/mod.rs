@@ -791,6 +791,15 @@ impl MockServerConfig {
         self
     }
 
+    pub(crate) fn with_resolve_sql_guide_requirements_error(
+        mut self,
+        code: Code,
+        message: impl Into<String>,
+    ) -> Self {
+        self.resolve_sql_guide_requirements = MockResult::err(code, message);
+        self
+    }
+
     pub(crate) fn with_add_function(mut self, response: AddFunctionResponse) -> Self {
         self.add_function = MockResult::ok(response);
         self

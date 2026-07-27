@@ -323,6 +323,24 @@ surface:
     }
 
     #[test]
+    fn structural_validation_rejects_empty_required_projection_guide() {
+        let mut materialized = materialized_source();
+        let mut guarded = projection("items");
+        guarded.require_guide_read = true;
+        guarded.guide = " ".to_string();
+        materialized.projections.projections.push(guarded);
+
+        let error = validate_materialized_source_structure(&manifest(), &materialized)
+            .expect_err("required projection guide must contain guidance");
+        assert!(
+            error
+                .to_string()
+                .contains("sets require_guide_read but has an empty guide"),
+            "unexpected validation error: {error}"
+        );
+    }
+
+    #[test]
     fn mcp_importer_version_is_distinct() {
         assert_ne!(OPENAPI_IMPORTER_VERSION, MCP_IMPORTER_VERSION);
     }
