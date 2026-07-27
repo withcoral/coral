@@ -4,6 +4,7 @@ import { extname, join, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { app, protocol } from 'electron'
 import { RouterContextProvider, createRequestHandler, type ServerBuild } from 'react-router'
+import { createRequestCancellationBridge } from './request-cancellation'
 import { repoRoot } from './sidecar'
 
 // The renderer is served over a custom, non-network scheme instead of a TCP
@@ -182,12 +183,7 @@ async function reactRouterResponse(
   request: Request,
   resolveSidecarBaseUrl: () => Promise<string>,
 ): Promise<Response> {
-  // Electron cancels the response body when the renderer aborts a custom-protocol
-  // fetch, but not the handler request. Restore that link for React Router.
-  const abortController = new AbortController()
-  const routedRequest = new Request(request, {
-    signal: AbortSignal.any([request.signal, abortController.signal]),
-  })
+  const cancellation = createRequestCancellationBridge(request)
 
   try {
     await refreshServerSidecarEndpoint(resolveSidecarBaseUrl)
@@ -196,25 +192,9 @@ async function reactRouterResponse(
   }
 
   const handler = await loadReactRouterHandler()
-  const response = await handler(routedRequest, new RouterContextProvider() as never)
+  const response = await handler(cancellation.request, new RouterContextProvider() as never)
   const securedResponse = await secureDocumentResponse(response, request.method === 'HEAD')
-  return abortRequestOnResponseCancel(securedResponse, abortController)
-}
-
-function abortRequestOnResponseCancel(
-  response: Response,
-  abortController: AbortController,
-): Response {
-  if (!response.body) return response
-
-  const bridge = new TransformStream<Uint8Array, Uint8Array>()
-  void response.body.pipeTo(bridge.writable).catch((reason) => abortController.abort(reason))
-
-  return new Response(bridge.readable, {
-    headers: response.headers,
-    status: response.status,
-    statusText: response.statusText,
-  })
+  return cancellation.wrapResponse(securedResponse)
 }
 
 async function secureDocumentResponse(response: Response, headOnly: boolean): Promise<Response> {
