@@ -466,7 +466,10 @@ observed_values_search = true
             .iter()
             .map(|spec| status_from_raw(spec, &raw, &features))
             .collect::<Vec<_>>();
-        let status = statuses.first().expect("feedback status");
+        let status = statuses
+            .iter()
+            .find(|status| status.key == "feedback")
+            .expect("feedback status");
 
         assert_eq!(status.key, "feedback");
         assert_eq!(status.configured, FeatureConfiguredState::InvalidValue);
