@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
-use coral_spec::{ManifestDataType, SourceTableFunctionSpec};
+use coral_spec::SourceTableFunctionSpec;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::datasource::TableProvider;
 use datafusion::error::{DataFusionError, Result};
