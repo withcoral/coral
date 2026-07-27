@@ -1,6 +1,6 @@
 //! RMCP server implementation for Coral's stdio MCP surface.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use coral_api::v1::{
@@ -55,6 +55,7 @@ const CATALOG_KIND_ALL: ProtoCatalogItemKind = ProtoCatalogItemKind::Unspecified
 const CATALOG_KIND_TABLE: ProtoCatalogItemKind = ProtoCatalogItemKind::Table;
 const CATALOG_KIND_TABLE_FUNCTION: ProtoCatalogItemKind = ProtoCatalogItemKind::TableFunction;
 const MAX_INITIAL_QUERY_EXAMPLES: usize = 5;
+const MAX_RETAINED_GUIDE_READ_TASKS: usize = 1_024;
 
 enum ToolCallOutcome {
     Payload(Value),
@@ -85,20 +86,76 @@ struct TaskGuideReadState {
 }
 
 #[derive(Default)]
+struct GuideReadStateInner {
+    tasks: HashMap<TaskId, TaskGuideReadState>,
+    recency: VecDeque<TaskId>,
+}
+
+impl GuideReadStateInner {
+    fn touch_task(&mut self, task_id: TaskId, max_tasks: usize) -> &mut TaskGuideReadState {
+        if !self.tasks.contains_key(&task_id) {
+            while self.tasks.len() >= max_tasks {
+                if !self.evict_least_recently_used_task() {
+                    break;
+                }
+            }
+        }
+        self.recency.retain(|existing| *existing != task_id);
+        self.recency.push_back(task_id);
+        self.tasks.entry(task_id).or_default()
+    }
+
+    fn evict_least_recently_used_task(&mut self) -> bool {
+        let candidate_count = self.recency.len();
+        for _ in 0..candidate_count {
+            let Some(task_id) = self.recency.pop_front() else {
+                return false;
+            };
+            let can_evict = self
+                .tasks
+                .get(&task_id)
+                .is_some_and(|task| Arc::strong_count(&task.sql_gate) == 1);
+            if can_evict {
+                self.tasks.remove(&task_id);
+                return true;
+            }
+            self.recency.push_back(task_id);
+        }
+        false
+    }
+}
+
 struct GuideReadState {
-    tasks: Mutex<HashMap<TaskId, TaskGuideReadState>>,
+    inner: Mutex<GuideReadStateInner>,
+    max_tasks: usize,
+}
+
+impl Default for GuideReadState {
+    fn default() -> Self {
+        Self {
+            inner: Mutex::new(GuideReadStateInner::default()),
+            max_tasks: MAX_RETAINED_GUIDE_READ_TASKS,
+        }
+    }
 }
 
 impl GuideReadState {
+    #[cfg(test)]
+    fn with_max_tasks(max_tasks: usize) -> Self {
+        assert!(max_tasks > 0, "guide-read task limit must be positive");
+        Self {
+            max_tasks,
+            ..Self::default()
+        }
+    }
+
     fn sql_gate(&self, task_id: TaskId) -> Result<Arc<tokio::sync::Mutex<()>>, tonic::Status> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_poisoned| tonic::Status::internal("guide-read state lock poisoned"))?;
         Ok(Arc::clone(
-            &self
-                .tasks
-                .lock()
-                .map_err(|_poisoned| tonic::Status::internal("guide-read state lock poisoned"))?
-                .entry(task_id)
-                .or_default()
-                .sql_gate,
+            &inner.touch_task(task_id, self.max_tasks).sql_gate,
         ))
     }
 
@@ -128,11 +185,11 @@ impl GuideReadState {
             );
         }
 
-        let mut tasks = self
-            .tasks
+        let mut inner = self
+            .inner
             .lock()
             .map_err(|_poisoned| tonic::Status::internal("guide-read state lock poisoned"))?;
-        let seen = &mut tasks.entry(task_id).or_default().resources;
+        let seen = &mut inner.touch_task(task_id, self.max_tasks).resources;
         let mut newly_required = Vec::new();
         for (key, guide) in candidates {
             if seen.get(&key) == Some(&guide) {
@@ -150,10 +207,12 @@ impl GuideReadState {
     }
 
     fn clear_task(&self, task_id: TaskId) -> Result<(), tonic::Status> {
-        self.tasks
+        let mut inner = self
+            .inner
             .lock()
-            .map_err(|_poisoned| tonic::Status::internal("guide-read state lock poisoned"))?
-            .remove(&task_id);
+            .map_err(|_poisoned| tonic::Status::internal("guide-read state lock poisoned"))?;
+        inner.tasks.remove(&task_id);
+        inner.recency.retain(|existing| *existing != task_id);
         Ok(())
     }
 }
@@ -1324,6 +1383,10 @@ mod guide_read_state_tests {
 
     use super::{GuideReadState, TaskId};
 
+    fn task_id(value: u128) -> TaskId {
+        TaskId::from_uuid_str(&uuid::Uuid::from_u128(value).to_string()).expect("task id")
+    }
+
     fn requirement(guide: &str) -> QueryGuideRequirement {
         QueryGuideRequirement {
             schema_name: "slack".to_string(),
@@ -1404,6 +1467,69 @@ mod guide_read_state_tests {
         assert!(
             same_task_gate.try_lock_owned().is_ok(),
             "same-task SQL call must continue after the previous response"
+        );
+    }
+
+    #[test]
+    fn guide_read_state_evicts_the_least_recently_used_task() {
+        let state = GuideReadState::with_max_tasks(2);
+        let first_task = task_id(1);
+        let second_task = task_id(2);
+        let third_task = task_id(3);
+
+        assert_eq!(
+            state
+                .newly_required_guides(first_task, vec![requirement("Use search.")])
+                .expect("first task guide")
+                .len(),
+            1
+        );
+        assert_eq!(
+            state
+                .newly_required_guides(second_task, vec![requirement("Use search.")])
+                .expect("second task guide")
+                .len(),
+            1
+        );
+        drop(state.sql_gate(first_task).expect("touch first task"));
+        drop(state.sql_gate(third_task).expect("insert third task"));
+
+        assert!(
+            state
+                .newly_required_guides(first_task, vec![requirement("Use search.")])
+                .expect("recent task guide")
+                .is_empty(),
+            "the recently used task must remain retained"
+        );
+        assert_eq!(
+            state
+                .newly_required_guides(second_task, vec![requirement("Use search.")])
+                .expect("evicted task guide")
+                .len(),
+            1,
+            "the least recently used task must require its guide again"
+        );
+    }
+
+    #[test]
+    fn guide_read_state_does_not_evict_a_task_with_active_sql() {
+        let state = GuideReadState::with_max_tasks(1);
+        let active_task = task_id(1);
+        let other_task = task_id(2);
+        let active_gate = state.sql_gate(active_task).expect("active task gate");
+        let _active_call = active_gate.try_lock_owned().expect("active SQL call");
+
+        drop(state.sql_gate(other_task).expect("other task gate"));
+
+        let inner = state.inner.lock().expect("guide-read state");
+        assert!(
+            inner.tasks.contains_key(&active_task),
+            "an active task must remain retained"
+        );
+        assert_eq!(
+            inner.tasks.len(),
+            2,
+            "the limit may be exceeded instead of evicting the active task"
         );
     }
 }
