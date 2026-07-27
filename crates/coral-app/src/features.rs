@@ -13,6 +13,8 @@ use crate::state::{
 /// Runtime feature keys recognized by Coral.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Feature {
+    /// Enable relational database source installation and runtime loading.
+    DatabaseSources,
     /// Expose the optional MCP `feedback` tool.
     Feedback,
     /// Enable observed-value collection, storage, retrieval, and maintenance
@@ -69,6 +71,14 @@ struct FeatureSpec {
 }
 
 const FEATURE_SPECS: &[FeatureSpec] = &[
+    FeatureSpec {
+        feature: Feature::DatabaseSources,
+        key: "database_sources",
+        default_enabled: false,
+        description: "Enables installing and querying database sources. Off by default.",
+        enable_flag: "enable-database-sources",
+        disable_flag: "disable-database-sources",
+    },
     FeatureSpec {
         feature: Feature::Feedback,
         key: "feedback",

@@ -387,6 +387,7 @@ impl ServerBuilder {
         let workspace_lifecycle_lock = WorkspaceLifecycleLock::default();
         let workspace_pool_registry = Arc::new(WorkspacePoolRegistry::default());
         let diagnostic_reporter = SourceDiagnosticReporter::default();
+        let database_sources_enabled = features.enabled(Feature::DatabaseSources);
         let source_manager = SourceManager::with_diagnostic_reporter(
             config_store.clone(),
             credential_manager.clone(),
@@ -394,7 +395,8 @@ impl ServerBuilder {
             workspace_lifecycle_lock.clone(),
             diagnostic_reporter.clone(),
         )
-        .with_pool_registry(Arc::clone(&workspace_pool_registry));
+        .with_pool_registry(Arc::clone(&workspace_pool_registry))
+        .with_database_sources_enabled(database_sources_enabled);
         let workspace_manager = WorkspaceManager::new(
             config_store.clone(),
             credential_manager.clone(),
@@ -425,7 +427,8 @@ impl ServerBuilder {
             self.config.engine_extensions_providers,
             diagnostic_reporter.clone(),
             workspace_pool_registry,
-        );
+        )
+        .with_database_sources_enabled(database_sources_enabled);
         let observed_values_search_enabled = features.enabled(Feature::ObservedValuesSearch);
         let search_observations =
             observed_values_search_enabled.then(|| SearchObservationHandle::new(layout.clone()));

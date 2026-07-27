@@ -18,7 +18,6 @@ use crate::credentials::{
 };
 use crate::search::observed::SearchObservationHandle;
 use crate::search::sqlite_store::SqliteSearchStore;
-use crate::sources::SourceName;
 use crate::sources::catalog::{
     describe_manifest, list_bundled_sources, load_bundled_source, resolve_installed_manifest,
 };
@@ -29,6 +28,7 @@ use crate::sources::materialization::{
     restore_materialization_backup,
 };
 use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
+use crate::sources::{SourceName, ensure_database_source_feature_enabled};
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::storage::fs;
 use crate::workspaces::{WorkspaceLifecycleLock, WorkspaceName, WorkspacePoolRegistry};
@@ -48,6 +48,7 @@ pub(crate) struct SourceManager {
     diagnostic_reporter: SourceDiagnosticReporter,
     search_observations: Option<SearchObservationHandle>,
     pool_registry: Arc<WorkspacePoolRegistry>,
+    database_sources_enabled: bool,
 }
 
 pub(crate) struct CreateBundledSourceCommand {
@@ -207,6 +208,7 @@ impl SourceManager {
             lifecycle_lock,
             SourceDiagnosticReporter::default(),
         )
+        .with_database_sources_enabled(true)
     }
 
     pub(crate) fn with_diagnostic_reporter(
@@ -225,7 +227,13 @@ impl SourceManager {
             diagnostic_reporter,
             search_observations: None,
             pool_registry: Arc::new(WorkspacePoolRegistry::default()),
+            database_sources_enabled: false,
         }
+    }
+
+    pub(crate) fn with_database_sources_enabled(mut self, enabled: bool) -> Self {
+        self.database_sources_enabled = enabled;
+        self
     }
 
     pub(crate) fn with_pool_registry(mut self, pool_registry: Arc<WorkspacePoolRegistry>) -> Self {
@@ -410,6 +418,7 @@ impl SourceManager {
         materialization_manifest_yaml: &str,
         origin: SourceOrigin,
     ) -> Result<InstalledSource, AppError> {
+        self.validate_source_features(materialization_manifest_yaml)?;
         let _lifecycle_guard = self.lifecycle_lock.lock();
         self.validate_runtime_schema_names_available(
             workspace_name,
@@ -465,6 +474,7 @@ impl SourceManager {
         materialization_manifest_yaml: &str,
         origin: SourceOrigin,
     ) -> Result<InstalledSource, AppError> {
+        self.validate_source_features(materialization_manifest_yaml)?;
         self.validate_runtime_schema_names_available(
             workspace_name,
             &candidate.name,
@@ -902,6 +912,12 @@ impl SourceManager {
             &new_materialization_suffix(suffix_prefix),
         )
         .map(Some)
+    }
+
+    fn validate_source_features(&self, manifest_yaml: &str) -> Result<(), AppError> {
+        let manifest = parse_source_manifest_yaml(manifest_yaml)
+            .map_err(|error| AppError::InvalidInput(error.to_string()))?;
+        ensure_database_source_feature_enabled(&manifest, self.database_sources_enabled)
     }
 
     fn validate_runtime_schema_names_available(
