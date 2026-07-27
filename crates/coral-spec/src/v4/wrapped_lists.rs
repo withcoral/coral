@@ -176,13 +176,13 @@ fn candidate_row_path<'a>(
             let Some(properties) = resolved.get("properties").and_then(Value::as_object) else {
                 return Ok(None);
             };
-            let evidence = has_envelope_evidence(root, properties, resolving_refs, next_depth)?;
+            let evidence = has_envelope_evidence(root, properties, resolving_refs, next_depth);
             let accept_preferred = paginated_operation || inherited_evidence || evidence;
             let accept_fallback = paginated_operation || evidence;
 
             for name in PREFERRED_ROW_PROPERTIES {
                 if let Some(property) = properties.get(*name)
-                    && schema_has_type(root, property, resolving_refs, next_depth, "array")?
+                    && schema_has_type(root, property, resolving_refs, next_depth, "array")
                 {
                     return Ok(accept_preferred.then(|| vec![(*name).to_string()]));
                 }
@@ -214,7 +214,7 @@ fn candidate_row_path<'a>(
                 if is_metadata_name(name) {
                     continue;
                 }
-                if schema_has_type(root, property, resolving_refs, next_depth, "array")? {
+                if schema_has_type(root, property, resolving_refs, next_depth, "array") {
                     arrays.push(name);
                 }
             }
@@ -230,28 +230,24 @@ fn candidate_row_path<'a>(
 ///
 /// A single agreeing name-and-type pair is enough: providers rarely put a
 /// `has_more` boolean or a `next_cursor` string on a plain resource.
-fn has_envelope_evidence<'a>(
-    root: &'a Value,
-    properties: &'a Map<String, Value>,
+fn has_envelope_evidence(
+    root: &Value,
+    properties: &Map<String, Value>,
     resolving_refs: &mut BTreeSet<String>,
     depth: usize,
-) -> Result<bool, JsonSchemaWalkError<'a>> {
+) -> bool {
     // A sole property is the envelope itself: `{"data": [...]}` has nothing
     // else it could be.
     if properties.len() == 1 {
-        return Ok(true);
+        return true;
     }
-    for (name, property) in properties {
+    properties.iter().any(|(name, property)| {
         let normalized = normalized_name(name);
-        for (names, expected) in METADATA_LEXICON {
-            if names.contains(&normalized.as_str())
-                && schema_has_type(root, property, resolving_refs, depth, expected)?
-            {
-                return Ok(true);
-            }
-        }
-    }
-    Ok(false)
+        METADATA_LEXICON.iter().any(|(names, expected)| {
+            names.contains(&normalized.as_str())
+                && schema_has_type(root, property, resolving_refs, depth, expected)
+        })
+    })
 }
 
 fn is_metadata_name(name: &str) -> bool {
@@ -279,14 +275,16 @@ fn schema_uses_composition(schema: &Value) -> bool {
         .any(|keyword| schema.get(*keyword).is_some())
 }
 
-fn schema_has_type<'a>(
-    root: &'a Value,
-    schema: &'a Value,
+/// An unresolvable or cyclic property simply does not declare the type asked
+/// about; it must not abandon inference for its siblings.
+fn schema_has_type(
+    root: &Value,
+    schema: &Value,
     resolving_refs: &mut BTreeSet<String>,
     depth: usize,
     expected: &str,
-) -> Result<bool, JsonSchemaWalkError<'a>> {
-    match with_resolved_json_schema(
+) -> bool {
+    with_resolved_json_schema(
         root,
         schema,
         resolving_refs,
@@ -295,12 +293,8 @@ fn schema_has_type<'a>(
         |resolved, _, _| {
             Ok(!schema_uses_composition(resolved) && json_schema_type_contains(resolved, expected))
         },
-    ) {
-        Ok(matched) => Ok(matched),
-        // An unresolvable or cyclic property is not the row collection, but it
-        // must not abandon inference for its siblings.
-        Err(_) => Ok(false),
-    }
+    )
+    .unwrap_or(false)
 }
 
 /// Collapses case and separators so `perPage`, `per_page`, and `per-page` all

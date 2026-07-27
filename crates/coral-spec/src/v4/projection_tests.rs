@@ -1355,7 +1355,7 @@ fn generated_mcp_projection_exposes_current_row_result_columns() {
 }
 
 #[test]
-fn generated_mcp_projection_exposes_cursor_without_pagination_metadata() {
+fn generated_mcp_projection_keeps_an_inferred_cursor_internal() {
     let manifest = mcp_manifest();
     let v4 = manifest.as_v4().expect("v4");
     let mcp_surface = &v4.surface;
@@ -1410,16 +1410,17 @@ fn generated_mcp_projection_exposes_cursor_without_pagination_metadata() {
         .find(|input| input.wire_name == "cursor")
         .expect("cursor input");
 
-    assert_eq!(cursor.sql_exposure, SqlInputExposure::FunctionArg);
+    // Pagination owns the cursor of a wrapped-list tool, so SQL never binds it.
+    assert_eq!(cursor.sql_exposure, SqlInputExposure::Internal);
     assert!(
         mcp_projection_arg_specs(projection)
             .iter()
-            .any(|arg| arg.bind.arg == "cursor")
+            .all(|arg| arg.bind.arg != "cursor")
     );
 }
 
 #[test]
-fn generated_mcp_projection_with_only_cursor_is_table_function_without_pagination_metadata() {
+fn generated_mcp_projection_with_only_an_inferred_cursor_is_a_table() {
     let manifest = mcp_manifest();
     let v4 = manifest.as_v4().expect("v4");
     let mcp_surface = &v4.surface;
@@ -1467,17 +1468,16 @@ fn generated_mcp_projection_with_only_cursor_is_table_function_without_paginatio
         .find(|projection| projection.operation_id == "list_items")
         .expect("mcp projection");
 
-    assert!(matches!(
-        projection.kind,
-        ProjectionKind::TableFunction { .. }
-    ));
+    // The cursor is the tool's only argument and pagination owns it, so the
+    // projection has nothing left to take as a function argument.
+    assert!(matches!(projection.kind, ProjectionKind::Table));
     assert_eq!(
         projection
             .inputs
             .iter()
-            .filter(|input| input.sql_exposure == SqlInputExposure::FunctionArg)
+            .filter(|input| input.sql_exposure != SqlInputExposure::Internal)
             .count(),
-        1
+        0
     );
 }
 

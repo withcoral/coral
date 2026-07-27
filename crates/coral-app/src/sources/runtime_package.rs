@@ -238,6 +238,10 @@ fn http_manifest_for_surface(
             })?;
         let rest = rest_execution_for_operation(operation)?;
         let pagination = materialized_surface.plan.rest_pagination(&operation.id);
+        let response = response_with_row_path(
+            rest.response.response.clone(),
+            materialized_surface.plan.output_row_path(&operation.id),
+        );
         let request = request_spec_for_projection(projection, operation)
             .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
         let columns = projection_column_specs(projection);
@@ -256,7 +260,7 @@ fn http_manifest_for_surface(
                     },
                     request,
                     requests: Vec::new(),
-                    response: rest.response.response.clone(),
+                    response: response.clone(),
                     pagination: pagination.clone(),
                 });
             }
@@ -271,7 +275,7 @@ fn http_manifest_for_surface(
                     detail_hints: projection.detail_hints.clone(),
                     args: projection_arg_specs(projection),
                     request,
-                    response: rest.response.response.clone(),
+                    response,
                     pagination: pagination.clone(),
                     columns,
                 });
@@ -348,11 +352,13 @@ fn mcp_manifest_for_surface(
         };
         let (cursor_pagination, offset_pagination) =
             materialized_surface.plan.mcp_pagination(&operation.id);
+        let row_path = materialized_surface.plan.output_row_path(&operation.id);
         match &projection.kind {
             ProjectionKind::Table => {
                 tables.push(mcp_table_spec(
                     projection,
                     mcp,
+                    row_path,
                     cursor_pagination.cloned(),
                     offset_pagination.cloned(),
                 ));
@@ -362,6 +368,7 @@ fn mcp_manifest_for_surface(
                     projection,
                     *function_kind,
                     mcp,
+                    row_path,
                     cursor_pagination.cloned(),
                     offset_pagination.cloned(),
                 ));
@@ -386,6 +393,7 @@ fn mcp_manifest_for_surface(
 fn mcp_table_spec(
     projection: &Projection,
     mcp: &coral_spec::v4::McpExecutionAttachment,
+    row_path: &[String],
     pagination: Option<coral_spec::backends::mcp::McpPaginationSpec>,
     offset_pagination: Option<coral_spec::backends::mcp::McpOffsetPaginationSpec>,
 ) -> McpTableSpec {
@@ -406,7 +414,7 @@ fn mcp_table_spec(
         limit_binding: None,
         pagination,
         offset_pagination,
-        response: ResponseSpec::default(),
+        response: response_with_row_path(ResponseSpec::default(), row_path),
     }
 }
 
@@ -414,6 +422,7 @@ fn mcp_table_function_spec(
     projection: &Projection,
     function_kind: SourceTableFunctionKind,
     mcp: &coral_spec::v4::McpExecutionAttachment,
+    row_path: &[String],
     pagination: Option<coral_spec::backends::mcp::McpPaginationSpec>,
     offset_pagination: Option<coral_spec::backends::mcp::McpOffsetPaginationSpec>,
 ) -> McpTableFunctionSpec {
@@ -431,11 +440,17 @@ fn mcp_table_function_spec(
             detail_hints: projection.detail_hints.clone(),
             args: mcp_projection_arg_specs(projection),
             request: RequestSpec::default(),
-            response: ResponseSpec::default(),
+            response: response_with_row_path(ResponseSpec::default(), row_path),
             pagination: PaginationSpec::default(),
             columns: projection_column_specs(projection),
         },
     }
+}
+
+/// Points row extraction at the property an operation's rows are wrapped in.
+fn response_with_row_path(mut response: ResponseSpec, row_path: &[String]) -> ResponseSpec {
+    response.rows_path = row_path.to_vec();
+    response
 }
 
 fn mcp_filter_bindings(projection: &Projection) -> Vec<McpTableFilterBinding> {
@@ -515,7 +530,7 @@ mod tests {
     use coral_spec::backends::mcp::{McpOffsetPaginationSpec, McpPaginationSpec, McpServerSpec};
     use coral_spec::v4::{
         AcceptedIdentityRequirement, Fingerprint, FingerprintSurface, HttpMethod,
-        IdentityRequirements, IrExecutionAttachment, IrInputLocation, IrOperation,
+        IdentityRequirements, IrExecutionAttachment, IrField, IrInputLocation, IrOperation,
         IrOperationInput, IrOperationOutput, IrScalarType, IrType, IrTypeShape,
         MCP_IMPORTER_VERSION, MaterializedSurface, McpExecutionAttachment, McpOperationPagination,
         McpRuntimeConfig, OPENAPI_IMPORTER_VERSION, OPERATION_METADATA_GENERATOR_VERSION,
@@ -844,6 +859,104 @@ mod tests {
             normalized_source_document_path: PathBuf::from("/tmp/source-document.yaml"),
             raw_source_document_path: PathBuf::from("/tmp/source-document.raw"),
         }
+    }
+
+    /// A REST surface whose operation declares an envelope wrapping its rows in
+    /// `items`.
+    fn rest_wrapped_list_materialized_surface(operation_id: &str) -> MaterializedSurface {
+        let semantic_ir = SemanticIr {
+            artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
+            source_name: "github_v4".to_string(),
+            surface_type: SurfaceType::OpenApi,
+            importer_version: OPENAPI_IMPORTER_VERSION.to_string(),
+            operations: vec![IrOperation {
+                id: operation_id.to_string(),
+                method_name: operation_id.to_string(),
+                description: String::new(),
+                deprecated: false,
+                read_only: true,
+                naming: None,
+                inputs: Vec::new(),
+                output: IrOperationOutput {
+                    cardinality: coral_spec::v4::OutputCardinality::Singleton,
+                    type_ref: "envelope".to_string(),
+                },
+                entity: None,
+                execution: IrExecutionAttachment::Rest(Box::new(RestExecutionAttachment {
+                    method: HttpMethod::Get,
+                    path_template: "/items".to_string(),
+                    parameters: Vec::new(),
+                    request_body: None,
+                    response: RestResponseAttachment {
+                        status_code: 200,
+                        media_type: "application/json".to_string(),
+                        response: ResponseSpec::default(),
+                    },
+                })),
+                diagnostics: Vec::new(),
+            }],
+            types: vec![
+                test_object_type("item"),
+                IrType {
+                    id: "item_list".to_string(),
+                    shape: IrTypeShape::List {
+                        item_type_ref: "item".to_string(),
+                    },
+                    nullable: false,
+                    description: String::new(),
+                },
+                IrType {
+                    id: "envelope".to_string(),
+                    shape: IrTypeShape::Object {
+                        fields: vec![IrField {
+                            name: "items".to_string(),
+                            type_ref: "item_list".to_string(),
+                            required: true,
+                            nullable: false,
+                            description: String::new(),
+                        }],
+                    },
+                    nullable: false,
+                    description: String::new(),
+                },
+            ],
+            diagnostics: Vec::new(),
+        };
+        let operation_metadata = OperationMetadataCatalog {
+            artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
+            source_name: "github_v4".to_string(),
+            generator_version: Some(OPERATION_METADATA_GENERATOR_VERSION.to_string()),
+            operations: BTreeMap::from([(
+                operation_id.to_string(),
+                OperationMetadata::Rest {
+                    row_path: vec!["items".to_string()],
+                    pagination: PaginationSpec::default(),
+                    lookup_keys: Vec::new(),
+                },
+            )]),
+        };
+        MaterializedSurface {
+            plan: ValidatedSurfacePlan::new(semantic_ir, operation_metadata).expect("plan"),
+            source_document_sha256: None,
+            normalized_source_document_path: PathBuf::from("/tmp/source-document.yaml"),
+            raw_source_document_path: PathBuf::from("/tmp/source-document.raw"),
+        }
+    }
+
+    fn mcp_wrapped_list_materialized_surface(operation_id: &str) -> MaterializedSurface {
+        let mut surface = mcp_materialized_surface_with_pagination(operation_id, None);
+        let mut operation_metadata = surface.plan.operation_metadata().clone();
+        operation_metadata.operations.insert(
+            operation_id.to_string(),
+            OperationMetadata::Mcp {
+                row_path: vec!["items".to_string()],
+                pagination: McpOperationPagination::default(),
+            },
+        );
+        surface.plan =
+            ValidatedSurfacePlan::new(surface.plan.semantic_ir().clone(), operation_metadata)
+                .expect("plan");
+        surface
     }
 
     fn test_input(name: &str, location: IrInputLocation) -> IrOperationInput {
@@ -1275,6 +1388,103 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["q", "state"],
             "function arguments must still be sent as query parameters"
+        );
+    }
+
+    #[test]
+    fn http_runtime_component_applies_the_operation_row_path() {
+        let manifest = manifest_with_surface(openapi_surface());
+        let component_for = |projection| {
+            let materialized = V4MaterializedSource {
+                fingerprint: Some(fingerprint(SurfaceType::OpenApi, "github_v4")),
+                surface: rest_wrapped_list_materialized_surface("rest_list_issues"),
+                projections: ProjectionCatalog {
+                    artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
+                    source_name: "github_v4".to_string(),
+                    generator_version: Some(PROJECTION_GENERATOR_VERSION.to_string()),
+                    projections: vec![projection],
+                    diagnostics: Vec::new(),
+                },
+                diagnostics: Vec::new(),
+            };
+            let component = runtime_component_for_v4_source(&manifest, &materialized)
+                .expect("runtime component")
+                .expect("published component");
+            let coral_engine::RuntimeSourceComponent::Http(http) = component else {
+                panic!("expected HTTP component");
+            };
+            http
+        };
+
+        let table_http = component_for(published_projection("rest_list_issues"));
+        assert_eq!(
+            table_http
+                .tables
+                .first()
+                .expect("HTTP table")
+                .response
+                .rows_path,
+            ["items"]
+        );
+
+        let function_http = component_for(published_function_projection("rest_list_issues"));
+        assert_eq!(
+            function_http
+                .functions
+                .first()
+                .expect("HTTP function")
+                .response
+                .rows_path,
+            ["items"]
+        );
+    }
+
+    #[test]
+    fn mcp_runtime_component_applies_the_operation_row_path() {
+        let manifest = manifest_with_surface(mcp_surface());
+        let component_for = |projection| {
+            let materialized = V4MaterializedSource {
+                fingerprint: Some(fingerprint(SurfaceType::Mcp, "github_v4")),
+                surface: mcp_wrapped_list_materialized_surface("mcp_list_issues"),
+                projections: ProjectionCatalog {
+                    artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
+                    source_name: "github_v4".to_string(),
+                    generator_version: Some(PROJECTION_GENERATOR_VERSION.to_string()),
+                    projections: vec![projection],
+                    diagnostics: Vec::new(),
+                },
+                diagnostics: Vec::new(),
+            };
+            let component = runtime_component_for_v4_source(&manifest, &materialized)
+                .expect("runtime component")
+                .expect("published component");
+            let coral_engine::RuntimeSourceComponent::Mcp(mcp) = component else {
+                panic!("expected MCP component");
+            };
+            mcp
+        };
+
+        let table_mcp = component_for(published_projection("mcp_list_issues"));
+        assert_eq!(
+            table_mcp
+                .tables
+                .first()
+                .expect("MCP table")
+                .response
+                .rows_path,
+            ["items"]
+        );
+
+        let function_mcp = component_for(published_function_projection("mcp_list_issues"));
+        assert_eq!(
+            function_mcp
+                .functions
+                .first()
+                .expect("MCP function")
+                .common
+                .response
+                .rows_path,
+            ["items"]
         );
     }
 
