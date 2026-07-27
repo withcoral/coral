@@ -213,6 +213,62 @@ fn semantic_ir_serialization_contains_facts_not_inferred_policy() {
 }
 
 #[test]
+fn plan_rejects_blank_or_unresolvable_rest_row_paths() {
+    let (_manifest, mut imported) = imported();
+    let OperationMetadata::Rest { row_path, .. } = imported
+        .operation_metadata
+        .operations
+        .values_mut()
+        .next()
+        .expect("metadata")
+    else {
+        panic!("expected REST metadata");
+    };
+    *row_path = vec![" ".to_string()];
+    let error = imported
+        .validated_plan()
+        .expect_err("blank row path must fail");
+    assert!(
+        error.to_string().contains("blank or padded segment"),
+        "unexpected error: {error}"
+    );
+
+    let OperationMetadata::Rest { row_path, .. } = imported
+        .operation_metadata
+        .operations
+        .values_mut()
+        .next()
+        .expect("metadata")
+    else {
+        panic!("expected REST metadata");
+    };
+    // The operation returns a declared array, so no path can traverse it.
+    *row_path = vec!["missing".to_string()];
+    let error = imported
+        .validated_plan()
+        .expect_err("unresolvable row path must fail");
+    assert!(
+        error.to_string().contains("traverses non-object type"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn operation_metadata_without_a_row_path_defaults_to_the_response_root() {
+    let metadata: OperationMetadata = serde_yaml::from_str(
+        r"
+type: rest
+pagination:
+  mode: none
+lookup_keys: []
+",
+    )
+    .expect("metadata without a row path");
+
+    assert!(metadata.row_path().is_empty());
+}
+
+#[test]
 fn disabled_rest_pagination_serializes_only_its_mode() {
     let metadata = OperationMetadata::Rest {
         row_path: Vec::new(),
