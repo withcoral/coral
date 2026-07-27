@@ -15,6 +15,7 @@ use crate::backends::http::filter_usage::{HttpRequestFilterUsage, http_request_f
 use crate::backends::http::registration_checks::validate_source_scoped_http_config;
 use crate::backends::http::target::HttpFetchTarget;
 use crate::backends::http::trace::HttpBodyCapture;
+use crate::backends::shared::function_args::FunctionArgumentValues;
 use crate::{
     BoundRequestIdentityHttpAuthenticator, QueryExecutionControls, QueryRetryPolicy,
     RequestAuthenticator, SourceInputResolutionContext, SourceInputResolver,
@@ -256,7 +257,7 @@ impl HttpSourceClient {
         &self,
         target: &HttpFetchTarget,
         filter_values: &HashMap<String, String>,
-        arg_values: &HashMap<String, Value>,
+        arguments: &FunctionArgumentValues,
         sql_limit: Option<usize>,
         controls: &QueryExecutionControls,
     ) -> Result<Vec<Value>> {
@@ -264,7 +265,7 @@ impl HttpSourceClient {
             self,
             target,
             filter_values,
-            arg_values,
+            arguments,
             sql_limit.or(target.fetch_limit_default()),
             sql_limit,
             FetchCompleteness::Default,
@@ -277,7 +278,7 @@ impl HttpSourceClient {
         &self,
         target: &HttpFetchTarget,
         filter_values: &HashMap<String, String>,
-        arg_values: &HashMap<String, Value>,
+        arguments: &FunctionArgumentValues,
         row_limit: Option<usize>,
         page_hint: Option<usize>,
         controls: &QueryExecutionControls,
@@ -286,7 +287,7 @@ impl HttpSourceClient {
             self,
             target,
             filter_values,
-            arg_values,
+            arguments,
             row_limit,
             page_hint,
             FetchCompleteness::Complete,

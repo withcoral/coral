@@ -17,6 +17,7 @@ use crate::backends::http::request::{build_query_pairs, build_request_body};
 use crate::backends::http::target::HttpFetchTarget;
 use crate::backends::http::transport::{OutgoingHttpRequest, execute_request};
 use crate::backends::http::url::{join_url, normalize_base_url};
+use crate::backends::shared::function_args::FunctionArgumentValues;
 use crate::backends::shared::json_path::get_path_value;
 use crate::backends::shared::response_rows::extract_rows;
 use crate::backends::shared::template::{RenderContext, render_template};
@@ -47,7 +48,7 @@ pub(super) async fn fetch_rows(
     client: &HttpSourceClient,
     target: &HttpFetchTarget,
     filter_values: &HashMap<String, String>,
-    arg_values: &HashMap<String, Value>,
+    arguments: &FunctionArgumentValues,
     row_limit: Option<usize>,
     page_hint: Option<usize>,
     completeness: FetchCompleteness,
@@ -101,9 +102,10 @@ pub(super) async fn fetch_rows(
                 execution_stopped_error(&client.source_schema, target.name(), kind)
             })??;
         let state_values = pagination_state_values(&state);
-        let render_context = RenderContext::new(
+        let render_context = RenderContext::with_argument_texts(
             filter_values,
-            arg_values,
+            arguments.values(),
+            arguments.text_values(),
             &state_values,
             resolved_inputs.as_ref(),
         );
@@ -426,9 +428,10 @@ mod tests {
             QueryPaginationPolicy::FirstPageOnly,
             QueryRetryPolicy::Disabled,
         );
+        let arguments = FunctionArgumentValues::default();
 
         let rows = client
-            .fetch(&target, &HashMap::new(), &HashMap::new(), None, &controls)
+            .fetch(&target, &HashMap::new(), &arguments, None, &controls)
             .await
             .expect("first page fetch");
 
@@ -492,9 +495,10 @@ mod tests {
             tokio::time::Instant::now() + std::time::Duration::from_secs(1),
             QueryCancellationToken::new(),
         );
+        let arguments = FunctionArgumentValues::default();
 
         let rows = client
-            .fetch(&target, &HashMap::new(), &HashMap::new(), None, &controls)
+            .fetch(&target, &HashMap::new(), &arguments, None, &controls)
             .await
             .expect("first page fetch");
 

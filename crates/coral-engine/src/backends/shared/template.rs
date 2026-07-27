@@ -18,6 +18,7 @@ pub(crate) static EMPTY_ARG_MAP: LazyLock<HashMap<String, Value>> = LazyLock::ne
 pub(crate) struct RenderContext<'a> {
     pub(crate) filters: &'a HashMap<String, String>,
     pub(crate) args: &'a HashMap<String, Value>,
+    arg_texts: Option<&'a HashMap<String, String>>,
     pub(crate) state: &'a HashMap<String, String>,
     pub(crate) resolved_inputs: &'a BTreeMap<String, String>,
 }
@@ -32,6 +33,23 @@ impl<'a> RenderContext<'a> {
         Self {
             filters,
             args,
+            arg_texts: None,
+            state,
+            resolved_inputs,
+        }
+    }
+
+    pub(crate) fn with_argument_texts(
+        filters: &'a HashMap<String, String>,
+        args: &'a HashMap<String, Value>,
+        arg_texts: &'a HashMap<String, String>,
+        state: &'a HashMap<String, String>,
+        resolved_inputs: &'a BTreeMap<String, String>,
+    ) -> Self {
+        Self {
+            filters,
+            args,
+            arg_texts: Some(arg_texts),
             state,
             resolved_inputs,
         }
@@ -39,6 +57,13 @@ impl<'a> RenderContext<'a> {
 
     pub(crate) fn source_scoped(resolved_inputs: &'a BTreeMap<String, String>) -> Self {
         Self::new(&EMPTY_MAP, &EMPTY_ARG_MAP, &EMPTY_MAP, resolved_inputs)
+    }
+
+    fn argument_text(&self, key: &str) -> Option<String> {
+        self.arg_texts
+            .and_then(|values| values.get(key))
+            .cloned()
+            .or_else(|| self.args.get(key).map(value_to_string))
     }
 }
 
@@ -57,8 +82,10 @@ impl RuntimeValueNamespace {
     }
 
     fn text(self, context: &RenderContext<'_>, key: &str) -> Option<String> {
-        self.value(context, key)
-            .map(|value| value_to_string(&value))
+        match self {
+            Self::Filter => context.filters.get(key).cloned(),
+            Self::FunctionArgument => context.argument_text(key),
+        }
     }
 
     fn label(self) -> &'static str {
@@ -172,6 +199,36 @@ pub(crate) fn resolve_value_source(
             Ok(context.state.get(key).map(|v| Value::String(v.clone())))
         }
         ValueSourceSpec::NowEpochMinusSeconds { seconds } => Ok(Some(now_minus_seconds(*seconds))),
+    }
+}
+
+/// Resolves a declarative value source for a textual request surface.
+///
+/// Plain argument sources use the declared-type-aware transport text carried
+/// by the HTTP function binder. Structured body rendering continues to call
+/// [`resolve_value_source`] and therefore keeps the typed JSON value.
+pub(crate) fn resolve_text_value_source(
+    value: &ValueSourceSpec,
+    context: &RenderContext<'_>,
+) -> Result<Option<String>> {
+    match value {
+        ValueSourceSpec::Template { template } => render_template(template, context).map(Some),
+        ValueSourceSpec::OneOf { values } => {
+            for value in values {
+                let Some(resolved) = resolve_text_value_source(value, context)? else {
+                    continue;
+                };
+                if !resolved.is_empty() {
+                    return Ok(Some(resolved));
+                }
+            }
+            Ok(None)
+        }
+        ValueSourceSpec::Arg { key, default } => Ok(context
+            .argument_text(key)
+            .or_else(|| default.as_ref().map(value_to_string))),
+        _ => resolve_value_source(value, context)
+            .map(|value| value.map(|value| value_to_string(&value))),
     }
 }
 
@@ -377,9 +434,7 @@ fn resolve_template_token(token: &TemplateToken, context: &RenderContext<'_>) ->
 
     if token.namespace() == &TemplateNamespace::Arg {
         return context
-            .args
-            .get(token.key())
-            .map(value_to_string)
+            .argument_text(token.key())
             .or(default)
             .ok_or_else(|| {
                 DataFusionError::Execution(format!("missing request argument '{}'", token.key()))
