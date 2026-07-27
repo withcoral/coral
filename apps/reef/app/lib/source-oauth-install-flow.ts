@@ -71,9 +71,6 @@ export function useOAuthInstallFlow({
         onCompleted: (event) => {
           setProgress({ kind: 'oauth-completed', inputKey: event.inputKey })
         },
-        onSource: (event) => {
-          setProgress({ kind: 'success', name: event.name })
-        },
       })
 
       if (!abortController.signal.aborted) {
