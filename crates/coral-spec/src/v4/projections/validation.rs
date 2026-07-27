@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::v4::ir::IrExecutionAttachment;
+use crate::v4::ir::{IrExecutionAttachment, IrInputLocation};
 use crate::v4::operation_metadata::ValidatedSurfacePlan;
 use crate::v4::projections::{
     ProjectionCatalog, ProjectionKind, ProjectionVisibility, SqlInputExposure,
@@ -60,6 +60,16 @@ pub fn validate_projection_compatibility(
                     return Err(ManifestError::validation(format!(
                         "projection '{}' input '{}' on operation '{}' has lookup_key=true, but lookup keys are only valid for REST inputs",
                         projection.name, input.name, operation.id
+                    )));
+                }
+                // The metadata allowlist is keyed by wire name alone, and only
+                // query parameters can enter it. A header, cookie, or body
+                // input sharing an allowlisted query name is never lowered into
+                // a request, so a dependent join must not bind to it.
+                if input.source_location != IrInputLocation::Query {
+                    return Err(ManifestError::validation(format!(
+                        "projection '{}' input '{}' on operation '{}' has lookup_key=true with source location {:?}; lookup keys are only valid for query inputs",
+                        projection.name, input.name, operation.id, input.source_location
                     )));
                 }
                 if input.sql_exposure != SqlInputExposure::Filter {

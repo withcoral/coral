@@ -1669,6 +1669,44 @@ paths:
     (manifest, imported)
 }
 
+fn imported_shadowed_header_surface() -> (V4SourceManifest, ImportedSurface) {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: demo
+dsl_version: 4
+surface:
+  type: openapi
+  file: /tmp/openapi.yaml
+  base_url: https://api.example.com
+",
+    )
+    .expect("manifest")
+    .as_v4()
+    .expect("v4")
+    .clone();
+    let imported = import_openapi_surface(
+        &manifest,
+        &manifest.surface,
+        br"
+openapi: 3.0.3
+paths:
+  /items:
+    get:
+      operationId: items/list
+      parameters:
+        - {name: state, in: query, schema: {type: string}}
+        - {name: state, in: header, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {type: array, items: {type: object}}
+",
+    )
+    .expect("import");
+    (manifest, imported)
+}
+
 fn projection_input_mut<'a>(
     catalog: &'a mut ProjectionCatalog,
     wire_name: &str,
@@ -1680,6 +1718,21 @@ fn projection_input_mut<'a>(
         .inputs
         .iter_mut()
         .find(|input| input.wire_name == wire_name)
+        .expect("projection input")
+}
+
+fn projection_input_at_mut<'a>(
+    catalog: &'a mut ProjectionCatalog,
+    wire_name: &str,
+    location: IrInputLocation,
+) -> &'a mut ProjectionInput {
+    catalog
+        .projections
+        .first_mut()
+        .expect("projection")
+        .inputs
+        .iter_mut()
+        .find(|input| input.wire_name == wire_name && input.source_location == location)
         .expect("projection input")
 }
 
@@ -1941,6 +1994,30 @@ fn projection_compatibility_rejects_exposure_mismatched_with_projection_kind() {
     assert!(
         error.to_string().contains(
             "input 'query' on operation 'list_items' has sql_exposure 'filter'; table function projections expose non-internal inputs as function arguments"
+        ),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn projection_compatibility_rejects_non_query_lookup_key() {
+    let (manifest, imported) = imported_shadowed_header_surface();
+    let plan = imported.validated_plan().expect("plan");
+    let mut catalog = generate_projection_catalog(&manifest, &plan).expect("projections");
+    assert!(
+        plan.input_is_lookup_key("items_list", "state"),
+        "the query input named 'state' should be allowlisted"
+    );
+    let header = projection_input_at_mut(&mut catalog, "state", IrInputLocation::Header);
+    header.sql_exposure = SqlInputExposure::Filter;
+    header.lookup_key = true;
+
+    let error = validate_projection_compatibility(&plan, &catalog)
+        .expect_err("header lookup key sharing an allowlisted query name must fail");
+
+    assert!(
+        error.to_string().contains(
+            "has lookup_key=true with source location Header; lookup keys are only valid for query inputs"
         ),
         "unexpected error: {error}"
     );
