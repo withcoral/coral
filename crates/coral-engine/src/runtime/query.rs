@@ -589,12 +589,9 @@ impl QueryRuntimeAdapter {
     ) -> Result<CatalogInfo, CoreError> {
         let includes_schema_sources =
             catalog_filter.is_none_or(|value| normalize_catalog_name(Some(value)).is_none());
-        // Catalog summaries never surface columns, so skip the coral.columns
-        // expansion (and the remote database inventory fetches behind it).
-        let tables =
-            catalog::collect_table_metadata(&self.ctx, catalog_filter, schema_filter, None)
-                .await
-                .map_err(|err| datafusion_to_core(&err, &self.tables))?;
+        let tables = catalog::collect_tables(&self.ctx, catalog_filter, schema_filter, None)
+            .await
+            .map_err(|err| datafusion_to_core(&err, &self.tables))?;
         Ok(CatalogInfo {
             tables,
             table_functions: if includes_schema_sources {
@@ -1506,7 +1503,7 @@ mod tests {
         UdfRuntimeTableFunctionPublish,
     };
 
-    async fn adapter_with_sources(active_sources: Vec<RegisteredSource>) -> QueryRuntimeAdapter {
+    fn adapter_with_sources(active_sources: Vec<RegisteredSource>) -> QueryRuntimeAdapter {
         let ctx = Arc::new(SessionContext::new());
         catalog::register(&ctx, &active_sources, &[], &[]).expect("catalog should register");
         let tables = catalog::collect_static_tables(&active_sources);
@@ -1573,7 +1570,6 @@ mod tests {
     #[tokio::test]
     async fn describe_table_hit_returns_full_table_without_missing_context() {
         let result = adapter_with_sources(vec![demo_source()])
-            .await
             .describe_table(None, "demo", "events")
             .await
             .expect("describe table");
@@ -1586,7 +1582,6 @@ mod tests {
     #[tokio::test]
     async fn describe_table_miss_returns_columnless_context_tables() {
         let result = adapter_with_sources(vec![demo_source()])
-            .await
             .describe_table(None, "demo", "missing")
             .await
             .expect("describe table miss");
@@ -1603,7 +1598,7 @@ mod tests {
 
     #[tokio::test]
     async fn explicit_datafusion_catalog_filters_schema_metadata() {
-        let mut adapter = adapter_with_sources(vec![demo_source()]).await;
+        let mut adapter = adapter_with_sources(vec![demo_source()]);
         adapter.table_functions.push(TableFunctionInfo {
             schema_name: "demo".to_string(),
             function_name: "search_events".to_string(),
@@ -1642,7 +1637,6 @@ mod tests {
             catalog_source("analytics", "public"),
             catalog_source("warehouse", "public"),
         ])
-        .await
         .describe_table(None, "public", "events")
         .await
         .expect_err("wildcard reference spanning catalogs must be ambiguous");
@@ -1672,14 +1666,14 @@ mod tests {
         };
         let catalog =
             adapter_with_sources(vec![schema_source, catalog_source("warehouse", "public")])
-                .await
                 .catalog_info_for_sources(&["public"], &[])
                 .await
                 .expect("source-scoped catalog info");
 
         assert_eq!(catalog.tables.len(), 1);
-        assert!(catalog.tables[0].catalog_name.is_none());
-        assert_eq!(catalog.tables[0].schema_name, "public");
+        let table = catalog.tables.first().expect("schema-backed table");
+        assert!(table.catalog_name.is_none());
+        assert_eq!(table.schema_name, "public");
     }
 
     #[test]
