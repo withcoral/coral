@@ -81,7 +81,6 @@ pub(crate) async fn start_standalone_server(
     let mcp_options = McpOptions {
         feedback_enabled: features.enabled(Feature::Feedback),
         observed_values_search_enabled: features.enabled(Feature::ObservedValuesSearch),
-        tasks_enabled: features.enabled(Feature::Tasks),
         ..McpOptions::default()
     };
     let builder = configure_server_builder(

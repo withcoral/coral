@@ -22,28 +22,45 @@ fn grpc_addr(server: &RunningServer) -> SocketAddr {
 }
 
 async fn assert_catalog_tool(endpoint: String) {
+    const INTENT: &str = "Exercise the composite server";
+
     let config = StreamableHttpClientTransportConfig::with_uri(endpoint);
     let client =
         ().serve(StreamableHttpClientTransport::from_config(config))
             .await
             .expect("initialize MCP client");
+    let task = client
+        .call_tool(CallToolRequestParams::new("start_task").with_arguments(
+            serde_json::Map::from_iter([("intent".to_string(), serde_json::json!(INTENT))]),
+        ))
+        .await
+        .expect("start task");
+    let task = task.structured_content.expect("structured task");
+    let task_id = task
+        .get("task_id")
+        .and_then(serde_json::Value::as_str)
+        .expect("task ID");
     let result = client
-        .call_tool(CallToolRequestParams::new("list_catalog"))
+        .call_tool(CallToolRequestParams::new("list_catalog").with_arguments(
+            serde_json::Map::from_iter([
+                ("task_id".to_string(), serde_json::json!(task_id)),
+                ("intent".to_string(), serde_json::json!(INTENT)),
+            ]),
+        ))
         .await
         .expect("call list_catalog");
     assert_eq!(result.is_error, Some(false));
     client.cancel().await.expect("stop MCP client");
 }
 
-async fn assert_task_tools(endpoint: String) {
+async fn assert_feedback_tool(endpoint: String) {
     let config = StreamableHttpClientTransportConfig::with_uri(endpoint);
     let client =
         ().serve(StreamableHttpClientTransport::from_config(config))
             .await
             .expect("initialize MCP client");
     let tools = client.list_all_tools().await.expect("list MCP tools");
-    assert!(tools.iter().any(|tool| tool.name == "start_task"));
-    assert!(tools.iter().any(|tool| tool.name == "end_task"));
+    assert!(tools.iter().any(|tool| tool.name == "feedback"));
     client.cancel().await.expect("stop MCP client");
 }
 
@@ -93,7 +110,7 @@ async fn auth_disabled_companion_serves_and_shuts_down() {
 }
 
 #[tokio::test]
-async fn companion_uses_supplied_mcp_feature_options() {
+async fn companion_uses_supplied_mcp_options() {
     let temp = TempDir::new().expect("temp dir");
     write_config(
         &temp,
@@ -104,14 +121,14 @@ async fn companion_uses_supplied_mcp_feature_options() {
             .with_config_dir(temp.path())
             .with_noop_feedback_uploads(),
         McpOptions {
-            tasks_enabled: true,
+            feedback_enabled: true,
             ..McpOptions::default()
         },
     )
     .await
     .expect("start composite server");
     let mcp_addr = server.mcp_http_addr().expect("MCP HTTP endpoint");
-    assert_task_tools(format!("http://{mcp_addr}/mcp")).await;
+    assert_feedback_tool(format!("http://{mcp_addr}/mcp")).await;
     server.shutdown().await.expect("shutdown composite server");
 }
 
