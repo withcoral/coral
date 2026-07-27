@@ -40,11 +40,13 @@ pub(super) struct DatabaseRelation {
 pub(super) async fn build_database_catalog<T: 'static, P: 'static>(
     catalog_name: &str,
     pool: Pool<T, P>,
+    inventory_session_sql: Option<&str>,
     inventory_sql: &str,
     columns_sql: &'static str,
     dialect: SqlDialect,
 ) -> DataFusionResult<DatabaseCatalog> {
-    let relations = load_database_inventory(catalog_name, &pool, inventory_sql).await?;
+    let relations =
+        load_database_inventory(catalog_name, &pool, inventory_session_sql, inventory_sql).await?;
     let provider = Arc::new(MemoryCatalogProvider::new());
     register_database_schemas(provider.as_ref(), &pool, &relations, &dialect)?;
     let column_fetcher = DatabaseColumnInventoryFetcher::new(&pool, columns_sql);
@@ -83,6 +85,7 @@ fn register_database_schemas<T: 'static, P: 'static>(
 async fn load_database_inventory<T: 'static, P: 'static>(
     catalog_name: &str,
     pool: &Pool<T, P>,
+    session_sql: Option<&str>,
     inventory_sql: &str,
 ) -> DataFusionResult<Vec<DatabaseRelation>> {
     let schema = Arc::new(Schema::new(vec![
@@ -92,6 +95,22 @@ async fn load_database_inventory<T: 'static, P: 'static>(
         Field::new("skip_reason", DataType::Utf8, true),
     ]));
     let connection = pool.connect().await.map_err(provider_error)?;
+    if let Some(session_sql) = session_sql {
+        if let Some(connection) = connection.as_sync() {
+            connection
+                .execute(session_sql, &[])
+                .map_err(provider_error)?;
+        } else if let Some(connection) = connection.as_async() {
+            connection
+                .execute(session_sql, &[])
+                .await
+                .map_err(provider_error)?;
+        } else {
+            return Err(DataFusionError::Execution(
+                "database connection does not support session configuration".to_string(),
+            ));
+        }
+    }
     let batches = query_arrow(connection, inventory_sql.to_string(), Some(schema))
         .await
         .map_err(provider_error)?
