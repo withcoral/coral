@@ -32,8 +32,9 @@ use rmcp::transport::{
         session::{
             ServerSseMessage, SessionId, SessionManager,
             local::{
-                LocalSessionHandle, LocalSessionManager, LocalSessionManagerError,
-                LocalSessionWorker, SessionConfig, SessionError, create_local_session,
+                EventIdParseError, LocalSessionHandle, LocalSessionManager,
+                LocalSessionManagerError, LocalSessionWorker, SessionConfig, SessionError,
+                create_local_session,
             },
         },
     },
@@ -41,7 +42,7 @@ use rmcp::transport::{
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use tokio::net::TcpListener;
-use tokio::sync::{RwLock, oneshot};
+use tokio::sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore, oneshot};
 use tokio::task::JoinHandle;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::Request as GrpcRequest;
@@ -56,6 +57,8 @@ const SESSION_ID_HEADER: &str = "mcp-session-id";
 const METADATA_ROOT: &str = "/.well-known/oauth-protected-resource";
 const METADATA_ROUTE: &str = "/.well-known/oauth-protected-resource/{*resource_path}";
 const MAX_MCP_REQUEST_BODY_SIZE: usize = 1_048_576;
+const MAX_AUTHENTICATED_SESSIONS: usize = 4096;
+const AUTHENTICATED_SESSION_IDLE_TIMEOUT: Duration = Duration::from_hours(1);
 
 type ProbeFuture = Pin<Box<dyn Future<Output = Result<(), tonic::Code>> + Send>>;
 type Fut<T> = Pin<Box<dyn Future<Output = T> + Send>>;
@@ -76,20 +79,48 @@ enum SessionAuthorization {
 struct AuthenticatedSessions {
     records: RwLock<HashMap<SessionId, AuthenticatedSession>>,
     config: SessionConfig,
+    admission: Arc<Semaphore>,
 }
 
 struct AuthenticatedSession {
     fingerprint: BearerFingerprint,
     handle: LocalSessionHandle,
+    _admission_permit: OwnedSemaphorePermit,
 }
 
-#[derive(Clone)]
 struct AuthenticatedSessionManager {
     sessions: Arc<AuthenticatedSessions>,
     fingerprint: BearerFingerprint,
+    admission_permit: Mutex<Option<OwnedSemaphorePermit>>,
+}
+
+#[derive(Debug, thiserror::Error)]
+enum AuthenticatedSessionManagerError {
+    #[error(transparent)]
+    Local(#[from] LocalSessionManagerError),
+    #[error(transparent)]
+    Session(#[from] SessionError),
+    #[error(transparent)]
+    EventId(#[from] EventIdParseError),
+    #[error("authenticated MCP session admission was not reserved")]
+    AdmissionNotReserved,
 }
 
 impl AuthenticatedSessions {
+    fn new(max_sessions: usize) -> Self {
+        let mut config = SessionConfig::default();
+        config.keep_alive = Some(AUTHENTICATED_SESSION_IDLE_TIMEOUT);
+        Self {
+            records: RwLock::new(HashMap::new()),
+            config,
+            admission: Arc::new(Semaphore::new(max_sessions)),
+        }
+    }
+
+    fn try_admit(&self) -> Option<OwnedSemaphorePermit> {
+        self.admission.clone().try_acquire_owned().ok()
+    }
+
     async fn authorize(
         &self,
         session_id: &SessionId,
@@ -107,14 +138,19 @@ impl AuthenticatedSessions {
     }
 
     async fn close_all(&self) {
-        let handles: Vec<_> = self
+        let sessions: Vec<_> = self
             .records
             .write()
             .await
             .drain()
-            .map(|(_session_id, session)| session.handle)
+            .map(|(_session_id, session)| session)
             .collect();
-        for handle in handles {
+        for AuthenticatedSession {
+            handle,
+            _admission_permit,
+            ..
+        } in sessions
+        {
             let _close_result = close_session_handle(handle).await;
         }
     }
@@ -123,14 +159,16 @@ impl AuthenticatedSessions {
     async fn len(&self) -> usize {
         self.records.read().await.len()
     }
+
+    #[cfg(test)]
+    fn available_permits(&self) -> usize {
+        self.admission.available_permits()
+    }
 }
 
 impl Default for AuthenticatedSessions {
     fn default() -> Self {
-        Self {
-            records: RwLock::new(HashMap::new()),
-            config: SessionConfig::default(),
-        }
+        Self::new(MAX_AUTHENTICATED_SESSIONS)
     }
 }
 
@@ -145,7 +183,7 @@ impl AuthenticatedSessionManager {
     async fn session_handle(
         &self,
         session_id: &SessionId,
-    ) -> Result<LocalSessionHandle, LocalSessionManagerError> {
+    ) -> Result<LocalSessionHandle, AuthenticatedSessionManagerError> {
         self.sessions
             .records
             .read()
@@ -153,16 +191,22 @@ impl AuthenticatedSessionManager {
             .get(session_id)
             .filter(|session| session.fingerprint == self.fingerprint)
             .map(|session| session.handle.clone())
-            .ok_or_else(|| LocalSessionManagerError::SessionNotFound(session_id.clone()))
+            .ok_or_else(|| LocalSessionManagerError::SessionNotFound(session_id.clone()).into())
     }
 }
 
 impl SessionManager for AuthenticatedSessionManager {
-    type Error = LocalSessionManagerError;
+    type Error = AuthenticatedSessionManagerError;
     type Transport = WorkerTransport<LocalSessionWorker>;
 
     async fn create_session(&self) -> Result<(SessionId, Self::Transport), Self::Error> {
         let mut records = self.sessions.records.write().await;
+        let admission_permit = self
+            .admission_permit
+            .try_lock()
+            .map_err(|_error| AuthenticatedSessionManagerError::AdmissionNotReserved)?
+            .take()
+            .ok_or(AuthenticatedSessionManagerError::AdmissionNotReserved)?;
         let session_id = new_session_id();
         let (handle, worker) =
             create_local_session(session_id.clone(), self.sessions.config.clone());
@@ -171,6 +215,7 @@ impl SessionManager for AuthenticatedSessionManager {
             AuthenticatedSession {
                 fingerprint: self.fingerprint,
                 handle,
+                _admission_permit: admission_permit,
             },
         );
         drop(records);
@@ -197,20 +242,24 @@ impl SessionManager for AuthenticatedSessionManager {
     }
 
     async fn close_session(&self, session_id: &SessionId) -> Result<(), Self::Error> {
-        let handle = {
+        let session = {
             let mut records = self.sessions.records.write().await;
             match records.get(session_id) {
                 None => None,
                 Some(session) if session.fingerprint != self.fingerprint => {
-                    return Err(LocalSessionManagerError::SessionNotFound(
-                        session_id.clone(),
-                    ));
+                    return Err(
+                        LocalSessionManagerError::SessionNotFound(session_id.clone()).into(),
+                    );
                 }
-                Some(_) => records.remove(session_id).map(|session| session.handle),
+                Some(_) => records.remove(session_id),
             }
         };
-        match handle {
-            Some(handle) => close_session_handle(handle).await,
+        match session {
+            Some(AuthenticatedSession {
+                handle,
+                _admission_permit,
+                ..
+            }) => Ok(close_session_handle(handle).await?),
             None => Ok(()),
         }
     }
@@ -765,9 +814,16 @@ fn authenticated_router(
     config: AuthenticatedMcpHttpConfig,
     runtime: AuthenticatedMcpHttpRuntime,
 ) -> (Router, AuthState) {
+    authenticated_router_with_sessions(config, runtime, Arc::new(AuthenticatedSessions::default()))
+}
+
+fn authenticated_router_with_sessions(
+    config: AuthenticatedMcpHttpConfig,
+    runtime: AuthenticatedMcpHttpRuntime,
+    sessions: Arc<AuthenticatedSessions>,
+) -> (Router, AuthState) {
     let streamable_config =
         StreamableHttpServerConfig::default().with_allowed_hosts(config.allowed_hosts.clone());
-    let sessions = Arc::new(AuthenticatedSessions::default());
     let server = Arc::new(ServerState {
         sessions: SessionOwner::Authenticated(sessions.clone()),
         config: streamable_config,
@@ -830,24 +886,28 @@ async fn authenticated_mcp(State(state): State<AuthState>, request: Request<Body
         Ok(session) => session.map(str::to_string),
         Err(()) => return StatusCode::BAD_REQUEST.into_response(),
     };
-    let sessions = Arc::new(AuthenticatedSessionManager {
-        sessions: state.sessions.clone(),
-        fingerprint: binding_fingerprint,
-    });
-    let factory = if let Some(session_id) = request_session.as_deref() {
+    let (factory, admission_permit) = if let Some(session_id) = request_session.as_deref() {
         if let Err(status) = authorize_bound_session(&state, session_id, &binding_fingerprint).await
         {
             return status.into_response();
         }
-        None
+        (None, None)
     } else if request.method() == Method::POST {
+        let Some(admission_permit) = state.sessions.try_admit() else {
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        };
         match create_session_factory(&state, token).await {
-            Ok(factory) => Some(factory),
+            Ok(factory) => (Some(factory), Some(admission_permit)),
             Err(status) => return status.into_response(),
         }
     } else {
-        None
+        (None, None)
     };
+    let sessions = Arc::new(AuthenticatedSessionManager {
+        sessions: state.sessions.clone(),
+        fingerprint: binding_fingerprint,
+        admission_permit: Mutex::new(admission_permit),
+    });
     serve_mcp_request(request, factory, sessions, state.server.config.clone()).await
 }
 

@@ -27,11 +27,12 @@ use tower::ServiceExt as _;
 use crate::McpOptions;
 
 use super::{
-    AuthenticatedMcpHttpConfig, AuthenticatedMcpHttpRuntime, AuthenticatedSession,
-    AuthenticatedSessionManager, AuthenticatedSessions, MAX_MCP_REQUEST_BODY_SIZE, McpHttpConfig,
-    McpHttpError, ReadinessProbe, RunningMcpHttpServer, SESSION_ID_HEADER, SHUTDOWN_GRACE_PERIOD,
-    SessionOwner, auth_disabled_router, authenticated_router, binding_fingerprint,
-    readiness_status, start_auth_disabled, start_authenticated,
+    AUTHENTICATED_SESSION_IDLE_TIMEOUT, AuthenticatedMcpHttpConfig, AuthenticatedMcpHttpRuntime,
+    AuthenticatedSession, AuthenticatedSessionManager, AuthenticatedSessions,
+    MAX_AUTHENTICATED_SESSIONS, MAX_MCP_REQUEST_BODY_SIZE, McpHttpConfig, McpHttpError,
+    ReadinessProbe, RunningMcpHttpServer, SESSION_ID_HEADER, SHUTDOWN_GRACE_PERIOD, SessionOwner,
+    auth_disabled_router, authenticated_router, authenticated_router_with_sessions,
+    binding_fingerprint, readiness_status, start_auth_disabled, start_authenticated,
 };
 
 const INITIALIZE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#;
@@ -763,11 +764,108 @@ async fn authenticated_sessions_remain_isolated() {
 }
 
 #[tokio::test]
+async fn authenticated_session_admission_rejects_before_client_creation() {
+    let (_temp, app_server, app) = local_app().await;
+    let factory_calls = Arc::new(AtomicUsize::new(0));
+    let counted_factory_calls = factory_calls.clone();
+    let runtime = AuthenticatedMcpHttpRuntime::new(
+        |_| async { Ok::<_, ()>(()) },
+        move |_| {
+            counted_factory_calls.fetch_add(1, Ordering::Relaxed);
+            std::future::ready(Ok::<_, ()>(app.clone()))
+        },
+        McpOptions::default(),
+        || async { Ok::<_, tonic::Code>(()) },
+    );
+    let sessions = Arc::new(AuthenticatedSessions::new(1));
+    let (router, state) =
+        authenticated_router_with_sessions(authenticated_config(), runtime, sessions);
+
+    let first = send(&router, auth_request("Bearer token-a", None, INITIALIZE)).await;
+    assert_eq!(first.status(), StatusCode::OK);
+    let first_session = first.headers()[SESSION_ID_HEADER]
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(factory_calls.load(Ordering::Relaxed), 1);
+    assert_eq!(state.sessions.len().await, 1);
+    assert_eq!(state.sessions.available_permits(), 0);
+
+    let rejected = send(&router, auth_request("Bearer token-b", None, INITIALIZE)).await;
+    assert_eq!(rejected.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(factory_calls.load(Ordering::Relaxed), 1);
+    assert_eq!(state.sessions.len().await, 1);
+
+    let mut ping = auth_request("Bearer token-a", Some(&first_session), PING);
+    ping.headers_mut()
+        .insert("mcp-protocol-version", "2025-03-26".parse().unwrap());
+    assert!(send(&router, ping).await.status().is_success());
+
+    state.sessions.close_all().await;
+    assert_eq!(state.sessions.available_permits(), 1);
+    app_server.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn authenticated_session_honors_the_declared_idle_timeout() {
+    let (_temp, app_server, app) = local_app().await;
+    tokio::time::pause();
+    let runtime = AuthenticatedMcpHttpRuntime::new(
+        |_| async { Ok::<_, ()>(()) },
+        move |_| std::future::ready(Ok::<_, ()>(app.clone())),
+        McpOptions::default(),
+        || async { Ok::<_, tonic::Code>(()) },
+    );
+    let sessions = Arc::new(AuthenticatedSessions::new(1));
+    let (router, state) =
+        authenticated_router_with_sessions(authenticated_config(), runtime, sessions);
+
+    let initialized = send(&router, auth_request("Bearer token-a", None, INITIALIZE)).await;
+    assert_eq!(initialized.status(), StatusCode::OK);
+    let session = initialized.headers()[SESSION_ID_HEADER]
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(state.sessions.available_permits(), 0);
+
+    tokio::task::yield_now().await;
+    tokio::time::advance(SessionConfig::DEFAULT_KEEP_ALIVE + Duration::from_secs(1)).await;
+    tokio::task::yield_now().await;
+    assert_eq!(state.sessions.len().await, 1);
+
+    let mut ping = auth_request("Bearer token-a", Some(&session), PING);
+    ping.headers_mut()
+        .insert("mcp-protocol-version", "2025-03-26".parse().unwrap());
+    assert!(send(&router, ping).await.status().is_success());
+
+    tokio::task::yield_now().await;
+    tokio::time::advance(AUTHENTICATED_SESSION_IDLE_TIMEOUT + Duration::from_secs(1)).await;
+    for _ in 0..100 {
+        if state.sessions.len().await == 0 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(state.sessions.len().await, 0);
+    assert_eq!(state.sessions.available_permits(), 1);
+
+    let missing = send(
+        &router,
+        auth_request("Bearer token-a", Some(&session), PING),
+    )
+    .await;
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    app_server.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn authenticated_session_creation_is_cancellation_atomic() {
     let sessions = Arc::new(AuthenticatedSessions::default());
+    let admission_permit = sessions.try_admit().expect("reserve session");
     let manager = AuthenticatedSessionManager {
         sessions: sessions.clone(),
         fingerprint: binding_fingerprint("token-a"),
+        admission_permit: tokio::sync::Mutex::new(Some(admission_permit)),
     };
 
     let records = sessions.records.write().await;
@@ -776,17 +874,20 @@ async fn authenticated_session_creation_is_cancellation_atomic() {
     drop(blocked_create);
     drop(records);
     assert_eq!(sessions.len().await, 0);
+    assert_eq!(sessions.available_permits(), MAX_AUTHENTICATED_SESSIONS - 1);
 
     let (session_id, transport) = manager.create_session().await.unwrap();
     assert_eq!(sessions.len().await, 1);
     drop(transport);
     manager.close_session(&session_id).await.unwrap();
     assert_eq!(sessions.len().await, 0);
+    assert_eq!(sessions.available_permits(), MAX_AUTHENTICATED_SESSIONS);
 }
 
 #[tokio::test]
 async fn cancelled_authenticated_session_close_removes_the_record() {
     let sessions = Arc::new(AuthenticatedSessions::default());
+    let admission_permit = sessions.try_admit().expect("reserve session");
     let session_id: Arc<str> = Arc::from("blocked-close");
     let fingerprint = binding_fingerprint("token-a");
     let mut config = SessionConfig::default();
@@ -799,17 +900,20 @@ async fn cancelled_authenticated_session_close_removes_the_record() {
         AuthenticatedSession {
             fingerprint,
             handle,
+            _admission_permit: admission_permit,
         },
     );
     let manager = AuthenticatedSessionManager {
         sessions: sessions.clone(),
         fingerprint,
+        admission_permit: tokio::sync::Mutex::new(None),
     };
 
     let mut close = Box::pin(manager.close_session(&session_id));
     assert!(matches!(poll!(close.as_mut()), Poll::Pending));
     drop(close);
     assert_eq!(sessions.len().await, 0);
+    assert_eq!(sessions.available_permits(), MAX_AUTHENTICATED_SESSIONS);
 }
 
 #[test]
