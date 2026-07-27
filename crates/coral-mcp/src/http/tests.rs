@@ -321,16 +321,40 @@ async fn streamable_http_executes_tools_and_shutdown_is_bounded() {
     let transport =
         StreamableHttpClientTransport::from_uri(format!("http://{}/mcp", server.local_addr()));
     let client = ().serve(transport).await.expect("initialize MCP client");
+    let task = client
+        .call_tool(CallToolRequestParams::new("start_task").with_arguments(
+            serde_json::Map::from_iter([(
+                "intent".to_string(),
+                serde_json::json!("Exercise the Streamable HTTP transport"),
+            )]),
+        ))
+        .await
+        .expect("start task");
+    let task = task.structured_content.expect("structured task");
+    let task_id = task
+        .get("task_id")
+        .and_then(serde_json::Value::as_str)
+        .expect("task ID")
+        .to_string();
+    let list_catalog = || {
+        CallToolRequestParams::new("list_catalog").with_arguments(serde_json::Map::from_iter([
+            ("task_id".to_string(), serde_json::json!(task_id)),
+            (
+                "intent".to_string(),
+                serde_json::json!("Exercise the Streamable HTTP transport"),
+            ),
+        ]))
+    };
 
     let catalog = client
-        .call_tool(CallToolRequestParams::new("list_catalog"))
+        .call_tool(list_catalog())
         .await
         .expect("call list_catalog");
     assert_eq!(catalog.is_error, Some(false));
 
     app_server.shutdown().await.expect("shutdown app server");
     let rejected = client
-        .call_tool(CallToolRequestParams::new("list_catalog"))
+        .call_tool(list_catalog())
         .await
         .expect("gRPC rejection is an in-band tool result");
     assert_eq!(rejected.is_error, Some(true));
