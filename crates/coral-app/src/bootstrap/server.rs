@@ -72,7 +72,7 @@ use crate::telemetry::TelemetryConfig;
 use crate::telemetry::service::TraceService;
 use crate::transport::GrpcRequestContextLayer;
 use crate::workspaces::{
-    WorkspaceLifecycleLock, WorkspaceManager, WorkspacePoolRegistries, WorkspaceService,
+    WorkspaceLifecycleLock, WorkspaceManager, WorkspacePoolRegistry, WorkspaceService,
 };
 
 /// A static asset (e.g., a built SPA file) served on the same port as
@@ -385,7 +385,7 @@ impl ServerBuilder {
             CredentialStore::with_preference(layout.clone(), credential_config.storage);
         let credential_manager = CredentialManager::new(credential_store);
         let workspace_lifecycle_lock = WorkspaceLifecycleLock::default();
-        let workspace_pool_registries = Arc::new(WorkspacePoolRegistries::default());
+        let workspace_pool_registry = Arc::new(WorkspacePoolRegistry::default());
         let diagnostic_reporter = SourceDiagnosticReporter::default();
         let source_manager = SourceManager::with_diagnostic_reporter(
             config_store.clone(),
@@ -394,7 +394,7 @@ impl ServerBuilder {
             workspace_lifecycle_lock.clone(),
             diagnostic_reporter.clone(),
         )
-        .with_pool_registries(Arc::clone(&workspace_pool_registries));
+        .with_pool_registry(Arc::clone(&workspace_pool_registry));
         let workspace_manager = WorkspaceManager::new(
             config_store.clone(),
             credential_manager.clone(),
@@ -404,7 +404,7 @@ impl ServerBuilder {
             Arc::clone(&coral_db),
             diagnostic_reporter.clone(),
         )
-        .with_pool_registries(Arc::clone(&workspace_pool_registries));
+        .with_pool_registry(Arc::clone(&workspace_pool_registry));
         let feedback_manager =
             FeedbackManager::with_publisher(layout.clone(), self.config.feedback_publisher);
         let task_manager = TaskManager::new(TaskStore::new(Arc::clone(&coral_db)));
@@ -424,7 +424,7 @@ impl ServerBuilder {
             workspace_lifecycle_lock.clone(),
             self.config.engine_extensions_providers,
             diagnostic_reporter.clone(),
-            workspace_pool_registries,
+            workspace_pool_registry,
         );
         let observed_values_search_enabled = features.enabled(Feature::ObservedValuesSearch);
         let search_observations =
