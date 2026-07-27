@@ -67,6 +67,7 @@ impl McpToolCaller for SchemaValidatingMcpCaller {
         _relation: &str,
         _tool_name: &str,
         arguments: JsonObject,
+        _controls: &QueryExecutionControls,
     ) -> Result<Value> {
         let include_archived = arguments
             .get("include_archived")
