@@ -180,10 +180,10 @@ impl DatabaseCatalogStrategy for PostgresConnectionSpec {
         let pool = pool_registry
             .get_or_create(catalog_name, async move {
                 Ok(DatabasePool::Postgres(Arc::new(
-                        PostgresConnectionPool::new(to_secret_map(params))
-                            .await
-                            .map_err(provider_error)?
-                            .with_unsupported_type_action(UnsupportedTypeAction::String),
+                    PostgresConnectionPool::new(to_secret_map(params))
+                        .await
+                        .map_err(provider_error)?
+                        .with_unsupported_type_action(UnsupportedTypeAction::String),
                 )))
             })
             .await?;
@@ -192,10 +192,11 @@ impl DatabaseCatalogStrategy for PostgresConnectionSpec {
                 "database catalog '{catalog_name}' resolved to a non-Postgres pool"
             )));
         };
-            build_database_catalog(
-                catalog_name,
-                pool,
-                POSTGRES_RELATIONS_SQL,
+        build_database_catalog(
+            catalog_name,
+            pool,
+            None,
+            POSTGRES_RELATIONS_SQL,
             POSTGRES_COLUMNS_SQL,
             Arc::new(PostgreSqlDialect {}),
         )
@@ -249,10 +250,11 @@ impl DatabaseCatalogStrategy for MySqlConnectionSpec {
                 "database catalog '{catalog_name}' resolved to a non-MySQL pool"
             )));
         };
-            build_database_catalog(
-                catalog_name,
-                pool,
-                MYSQL_RELATIONS_SQL,
+        build_database_catalog(
+            catalog_name,
+            pool,
+            Some(MYSQL_INVENTORY_SESSION_SQL),
+            MYSQL_RELATIONS_SQL,
             MYSQL_COLUMNS_SQL,
             Arc::new(MySqlDialect {}),
         )
@@ -294,6 +296,7 @@ impl DatabaseCatalogStrategy for SqliteConnectionSpec {
         build_database_catalog(
             catalog_name,
             Arc::new(pool),
+            None,
             SQLITE_RELATIONS_SQL,
             SQLITE_COLUMNS_SQL,
             Arc::new(SqliteDialect {}),
@@ -310,6 +313,9 @@ SELECT table_schema AS schema_name,
 FROM information_schema.tables
 WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
   AND table_type IN ('BASE TABLE', 'VIEW')";
+
+// Keep unsupported-column diagnostics intact for the widest valid MySQL tables.
+const MYSQL_INVENTORY_SESSION_SQL: &str = "SET SESSION group_concat_max_len = 1048576";
 
 const MYSQL_RELATIONS_SQL: &str = "
 SELECT tables.TABLE_SCHEMA AS schema_name,
