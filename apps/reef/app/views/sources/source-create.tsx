@@ -10,6 +10,8 @@ import { TextArea, TextInput } from '@/wax/components/inputs/text'
 import { Pill } from '@/wax/components/pill'
 import { Typography } from '@/wax/components/typography'
 
+import { OAuthInstallStatus } from '@/components/sources/install/oauth-progress'
+import { oauthActionLabel, useOAuthInstallFlow } from '@/lib/source-oauth-install-flow'
 import type { SourcesActionData } from '@/routes/sources-action'
 import type {
   SourceDetectedAuth,
@@ -18,14 +20,14 @@ import type {
 } from '@/routes/source-discovery'
 
 import * as styles from './source-create.css'
-import { SourceError, SourceField, SourceHeader } from './source-presentation'
+import { formatFieldName, SourceError, SourceField, SourceHeader } from './source-presentation'
 
 const SECRET_KEY = 'API_TOKEN'
 const NAME_PATTERN = /^[a-z][a-z0-9_]*$/
 const RESERVED_SOURCE_NAMES = new Set(['coral', 'coral_admin', 'public'])
 
 type SurfaceType = 'openapi' | 'mcp'
-type AuthChoice = 'none' | 'bearer' | 'header'
+type AuthChoice = 'none' | 'bearer' | 'header' | 'oauthDevice'
 
 interface Draft {
   name: string
@@ -34,6 +36,10 @@ interface Draft {
   url: string
   auth: AuthChoice
   headerName: string
+  oauthClientId: string
+  oauthDeviceAuthorizationUrl: string
+  oauthScopes: string
+  oauthTokenUrl: string
   token: string
 }
 
@@ -44,6 +50,10 @@ const EMPTY_DRAFT: Draft = {
   url: '',
   auth: 'bearer',
   headerName: '',
+  oauthClientId: '',
+  oauthDeviceAuthorizationUrl: '',
+  oauthScopes: '',
+  oauthTokenUrl: '',
   token: '',
 }
 
@@ -52,12 +62,20 @@ const STEP_COUNT = 3
 export function SourceCreateDialog({
   actionData,
   discoveryPath,
+  fetchOAuthImport = fetch,
+  oauthImportPath,
+  onOAuthImportComplete,
   open,
+  openAuthorization = (url) => window.open(url, '_blank', 'noopener,noreferrer'),
   onOpenChange,
 }: {
   actionData: SourcesActionData
   discoveryPath: string
+  fetchOAuthImport?: typeof fetch
+  oauthImportPath: string
+  onOAuthImportComplete?: (name: string) => Promise<void> | void
   open: boolean
+  openAuthorization?: (url: string) => unknown
   onOpenChange: (open: boolean) => void
 }) {
   const requestCancelRef = useRef<() => void>(() => onOpenChange(false))
@@ -76,7 +94,11 @@ export function SourceCreateDialog({
             <SourceCreateDialogContent
               actionData={actionData}
               discoveryPath={discoveryPath}
+              fetchOAuthImport={fetchOAuthImport}
+              oauthImportPath={oauthImportPath}
+              onOAuthImportComplete={onOAuthImportComplete}
               onCancel={() => onOpenChange(false)}
+              openAuthorization={openAuthorization}
               requestCancelRef={requestCancelRef}
             />
           ) : null}
@@ -89,12 +111,20 @@ export function SourceCreateDialog({
 function SourceCreateDialogContent({
   actionData,
   discoveryPath,
+  fetchOAuthImport,
+  oauthImportPath,
+  onOAuthImportComplete,
   onCancel,
+  openAuthorization,
   requestCancelRef,
 }: {
   actionData: SourcesActionData
   discoveryPath: string
+  fetchOAuthImport: typeof fetch
+  oauthImportPath: string
+  onOAuthImportComplete?: (name: string) => Promise<void> | void
   onCancel: () => void
+  openAuthorization: (url: string) => unknown
   requestCancelRef: RefObject<() => void>
 }) {
   const [step, setStep] = useState(0)
@@ -102,9 +132,19 @@ function SourceCreateDialogContent({
   const [confirmingCancel, setConfirmingCancel] = useState(false)
   const formId = useId()
   const discovery = useFetcher<SourceDiscoveryData>()
+  const oauth = useOAuthInstallFlow({
+    fetchOAuthInstall: fetchOAuthImport,
+    openAuthorization,
+    onComplete: async (name) => {
+      if (onOAuthImportComplete) await onOAuthImportComplete(name)
+      else onCancel()
+    },
+  })
 
   const navigation = useNavigation()
-  const submitting = navigation.state !== 'idle' && navigation.formData?.get('_intent') === 'import'
+  const navigationSubmitting =
+    navigation.state !== 'idle' && navigation.formData?.get('_intent') === 'import'
+  const submitting = navigationSubmitting || oauth.busy
   const importError =
     actionData?.status === 'error' && actionData.intent === 'import' ? actionData.message : null
   const discovering = discovery.state !== 'idle'
@@ -161,11 +201,24 @@ function SourceCreateDialogContent({
       return true
     }
     if (draft.auth === 'header' && draft.headerName.trim().length === 0) return false
+    if (draft.auth === 'oauthDevice') {
+      return (
+        isHttpsUrl(draft.oauthDeviceAuthorizationUrl) &&
+        isHttpsUrl(draft.oauthTokenUrl) &&
+        draft.oauthClientId.trim().length > 0
+      )
+    }
     return draft.auth === 'none' || draft.token.trim().length > 0
   })()
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
-    if (step === 2) return
+    if (step === 2) {
+      if (draft.auth !== 'oauthDevice') return
+      event.preventDefault()
+      if (!stepValid || submitting) return
+      void oauth.start(oauthImportPath, new FormData(event.currentTarget))
+      return
+    }
 
     event.preventDefault()
     if (!stepValid || discovering || submitting) return
@@ -181,10 +234,16 @@ function SourceCreateDialogContent({
       <input type="hidden" name="_intent" value="import" />
       <input type="hidden" name="name" value={draft.name.trim()} />
       <input type="hidden" name="manifest_yaml" value={buildManifestYaml(draft)} />
-      {draft.auth !== 'none' ? (
+      {draft.auth === 'bearer' || draft.auth === 'header' ? (
         <>
           <input type="hidden" name="secret_key" value={SECRET_KEY} />
           <input type="hidden" name="secret_value" value={draft.token.trim()} />
+        </>
+      ) : null}
+      {draft.auth === 'oauthDevice' ? (
+        <>
+          <input type="hidden" name="oauth_input_key" value={SECRET_KEY} />
+          <input type="hidden" name="oauth_method_index" value="0" />
         </>
       ) : null}
 
@@ -194,7 +253,12 @@ function SourceCreateDialogContent({
       {discoveryError ? <SourceError>{discoveryError}</SourceError> : null}
 
       <Dialog.Actions>
-        <ButtonContainer disabled={submitting} onClick={requestCancel} size="32" variant="bare">
+        <ButtonContainer
+          disabled={navigationSubmitting}
+          onClick={requestCancel}
+          size="32"
+          variant="bare"
+        >
           <ButtonText>Cancel</ButtonText>
         </ButtonContainer>
         <ButtonContainer
@@ -222,7 +286,7 @@ function SourceCreateDialogContent({
 
               <Dialog.Actions>
                 <ButtonContainer
-                  disabled={submitting}
+                  disabled={navigationSubmitting}
                   onClick={requestCancel}
                   size="32"
                   variant="bare"
@@ -262,10 +326,18 @@ function SourceCreateDialogContent({
                       {importError ? (
                         <SourceError className={styles.importError}>{importError}</SourceError>
                       ) : null}
+                      <OAuthInstallStatus
+                        className={styles.oauthProgress}
+                        inputLabel={formatFieldName}
+                        progress={oauth.progress}
+                      />
+                      {oauth.error ? (
+                        <SourceError className={styles.importError}>{oauth.error}</SourceError>
+                      ) : null}
 
                       <Dialog.Actions>
                         <ButtonContainer
-                          disabled={submitting}
+                          disabled={navigationSubmitting}
                           onClick={requestCancel}
                           size="32"
                           variant="bare"
@@ -288,7 +360,16 @@ function SourceCreateDialogContent({
                           variant="primary"
                         >
                           {submitting ? <SpinningButtonIcon name="Loader" /> : null}
-                          <ButtonText>{submitting ? 'Creating…' : 'Create source'}</ButtonText>
+                          <ButtonText>
+                            {draft.auth === 'oauthDevice'
+                              ? oauthActionLabel(oauth.progress, {
+                                  busy: 'Creating…',
+                                  idle: 'Create source',
+                                })
+                              : navigationSubmitting
+                                ? 'Creating…'
+                                : 'Create source'}
+                          </ButtonText>
                         </ButtonContainer>
                       </Dialog.Actions>
                     </div>
@@ -312,7 +393,14 @@ function SourceCreateDialogContent({
               >
                 <ButtonText>Keep editing</ButtonText>
               </ButtonContainer>
-              <ButtonContainer onClick={onCancel} size="32" variant="destructive">
+              <ButtonContainer
+                onClick={() => {
+                  oauth.cancel()
+                  onCancel()
+                }}
+                size="32"
+                variant="destructive"
+              >
                 <ButtonText>Discard</ButtonText>
               </ButtonContainer>
             </Dialog.Actions>
@@ -465,16 +553,22 @@ function CredentialsStep({
   const idBearerToken = useId()
   const idHeaderName = useId()
   const idHeaderToken = useId()
+  const idOAuthClientId = useId()
+  const idOAuthDeviceAuthorizationUrl = useId()
+  const idOAuthScopes = useId()
+  const idOAuthTokenUrl = useId()
   const authChoices: { key: AuthChoice; label: string }[] =
     draft.surfaceType === 'openapi'
       ? [
           { key: 'none', label: 'None' },
           { key: 'bearer', label: 'Bearer token' },
+          { key: 'oauthDevice', label: 'OAuth device flow' },
           { key: 'header', label: 'Custom header' },
         ]
       : [
           { key: 'none', label: 'None' },
           { key: 'bearer', label: 'Bearer token' },
+          { key: 'oauthDevice', label: 'OAuth device flow' },
         ]
   return (
     <div className={styles.fieldGroup}>
@@ -520,6 +614,63 @@ function CredentialsStep({
               onChange={(value) => update({ token: value })}
               placeholder="Paste token"
               disabled={disabled || draft.auth !== 'bearer'}
+            />
+          </SourceField>
+        </div>
+        <div
+          aria-hidden={draft.auth !== 'oauthDevice'}
+          className={classNames(
+            styles.authPanel,
+            draft.auth !== 'oauthDevice' && styles.authPanelHidden,
+          )}
+        >
+          <SourceField
+            className={styles.fieldItem}
+            htmlFor={idOAuthDeviceAuthorizationUrl}
+            label="Device authorization URL"
+          >
+            <TextInput
+              disabled={disabled || draft.auth !== 'oauthDevice'}
+              id={idOAuthDeviceAuthorizationUrl}
+              onChange={(value) => update({ oauthDeviceAuthorizationUrl: value })}
+              placeholder="https://provider.example/oauth/device/code"
+              value={draft.oauthDeviceAuthorizationUrl}
+            />
+          </SourceField>
+          <SourceField className={styles.fieldItem} htmlFor={idOAuthTokenUrl} label="Token URL">
+            <TextInput
+              disabled={disabled || draft.auth !== 'oauthDevice'}
+              id={idOAuthTokenUrl}
+              onChange={(value) => update({ oauthTokenUrl: value })}
+              placeholder="https://provider.example/oauth/token"
+              value={draft.oauthTokenUrl}
+            />
+          </SourceField>
+          <SourceField className={styles.fieldItem} htmlFor={idOAuthClientId} label="Client ID">
+            <TextInput
+              disabled={disabled || draft.auth !== 'oauthDevice'}
+              id={idOAuthClientId}
+              onChange={(value) => update({ oauthClientId: value })}
+              placeholder="OAuth public client ID"
+              value={draft.oauthClientId}
+            />
+          </SourceField>
+          <SourceField
+            className={styles.fieldItem}
+            hint={
+              <Typography.BodySmall variant="tertiary">
+                Optional, separated by spaces.
+              </Typography.BodySmall>
+            }
+            htmlFor={idOAuthScopes}
+            label="Scopes"
+          >
+            <TextInput
+              disabled={disabled || draft.auth !== 'oauthDevice'}
+              id={idOAuthScopes}
+              onChange={(value) => update({ oauthScopes: value })}
+              placeholder="read profile"
+              value={draft.oauthScopes}
             />
           </SourceField>
         </div>
@@ -575,6 +726,14 @@ function sourceNameIsValid(name: string): boolean {
   return sourceNameValidationError(name) === null
 }
 
+function isHttpsUrl(value: string): boolean {
+  try {
+    return new URL(value.trim()).protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
 function sourceNameValidationError(name: string): string | null {
   if (!name) return 'Enter a source name.'
   if (RESERVED_SOURCE_NAMES.has(name)) {
@@ -602,6 +761,39 @@ function buildManifestYaml(draft: Draft): string {
       '    kind: secret',
       `    hint: ${s(`API token for ${name}`)}`,
     )
+    if (draft.auth === 'oauthDevice') {
+      lines.push(
+        '    credential:',
+        '      methods:',
+        '        - type: oauth',
+        '          label: Connect with OAuth device flow',
+        '          description: Sign in with a device code.',
+        '          oauth:',
+        '            flow:',
+        '              type: device_code',
+        '            endpoints:',
+        `              device_authorization_url: ${s(draft.oauthDeviceAuthorizationUrl.trim())}`,
+        `              token_url: ${s(draft.oauthTokenUrl.trim())}`,
+        '            client:',
+        '              id:',
+        `                default: ${s(draft.oauthClientId.trim())}`,
+      )
+      const scopes = oauthScopes(draft.oauthScopes)
+      if (scopes.length > 0) {
+        lines.push(
+          '            scopes:',
+          '              scope:',
+          '                delimiter: space',
+          '                values:',
+          ...scopes.map((scope) => `                  - ${s(scope)}`),
+        )
+      }
+      lines.push(
+        '        - type: source_config',
+        '          label: Paste token',
+        '          description: Paste an existing access token.',
+      )
+    }
   }
   lines.push('surface:')
 
@@ -627,4 +819,15 @@ function buildManifestYaml(draft: Draft): string {
     }
   }
   return lines.join('\n') + '\n'
+}
+
+function oauthScopes(value: string): string[] {
+  return [
+    ...new Set(
+      value
+        .split(/[\s,]+/)
+        .map((scope) => scope.trim())
+        .filter(Boolean),
+    ),
+  ]
 }

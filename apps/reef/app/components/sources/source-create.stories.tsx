@@ -34,6 +34,7 @@ const meta = {
   args: {
     actionData: undefined,
     discoveryPath: DISCOVERY_PATH,
+    oauthImportPath: '/workspaces/default/sources/oauth-import',
     onOpenChange: fn(),
     open: true,
   },
