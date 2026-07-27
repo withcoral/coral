@@ -75,7 +75,13 @@ export function useOAuthInstallFlow({
 
       if (!abortController.signal.aborted) {
         setProgress({ kind: 'success', name: source.name })
-        await onComplete(source.name, abortController.signal)
+        try {
+          await onComplete(source.name, abortController.signal)
+        } catch (cause) {
+          if (!abortController.signal.aborted) {
+            console.error('Failed to finish OAuth source setup:', cause)
+          }
+        }
       }
     } catch (cause) {
       if (abortController.signal.aborted) return
