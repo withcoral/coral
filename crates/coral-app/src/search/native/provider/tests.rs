@@ -35,7 +35,7 @@ use crate::query::{
     ExecuteSelectedTableFunction, SelectedTableFunctionExecution,
     SelectedTableFunctionExecutionError, SelectedTableFunctionFailureKind,
 };
-use crate::search::provider::{ObservedValuesPolicyInput, SearchExecutionContext};
+use crate::search::provider::SearchExecutionContext;
 use crate::search::result::{
     NativeSearchDiagnosticReason, NativeSearchDiagnosticState, SearchPayload, SearchProviderState,
     SearchRequest,
@@ -191,6 +191,7 @@ fn context(
                 table_functions: Vec::new(),
             },
             failed_source_names: BTreeSet::new(),
+            runtime_schema_owners: BTreeMap::new(),
             universal_search_resolutions: reports,
         }),
     )
@@ -211,7 +212,7 @@ fn context_with_resolution(
         Uuid::from_u128(99),
         SearchRequest::new(workspace, "payment", limit).expect("request"),
         catalog_resolution,
-        ObservedValuesPolicyInput::Disabled,
+        None,
     ))
 }
 
