@@ -32,13 +32,14 @@ const PREFERRED_ROW_PROPERTIES: &[&str] = &["items", "data", "results", "rows"];
 
 /// Envelope metadata names, matched together with the declared JSON type so a
 /// resource field only counts as evidence when name and type agree.
+// `links` is deliberately absent: a HAL-style `_links` object is at least as
+// common on a singleton resource as on a page envelope.
 const METADATA_OBJECT_NAMES: &[&str] = &[
     "meta",
     "metadata",
     "paging",
     "pagination",
     "pageinfo",
-    "links",
     "cursor",
     "cursors",
 ];
@@ -472,12 +473,32 @@ mod tests {
     }
 
     #[test]
+    fn ignores_hal_style_link_objects_on_resources() {
+        // GitHub's `activity/get-feeds` shape: a resource whose only array is
+        // incidental and whose `_links` object describes relations, not pages.
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "timeline_url": {"type": "string"},
+                "user_url": {"type": "string"},
+                "current_user_organization_urls": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "_links": {"type": "object"},
+            },
+        });
+
+        assert!(row_path(&schema, &[]).is_empty());
+    }
+
+    #[test]
     fn ignores_metadata_named_arrays_as_row_candidates() {
         let schema = json!({
             "type": "object",
             "properties": {
                 "has_more": {"type": "boolean"},
-                "links": {"type": "array", "items": {"type": "string"}},
+                "cursors": {"type": "array", "items": {"type": "string"}},
             },
         });
 
