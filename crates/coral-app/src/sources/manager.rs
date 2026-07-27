@@ -24,7 +24,7 @@ use crate::sources::catalog::{
 use crate::sources::materialization::{
     MaterializationBuild, MaterializationInputs, SourceDiagnosticReporter,
     build_v4_materialization_tmp, canonicalize_file_descriptor, cleanup_materialization_backup,
-    cleanup_materialization_tmp, new_materialization_suffix, replace_v4_materialization,
+    cleanup_materialization_tmp, new_materialization_suffix, replace_or_retire_v4_materialization,
     restore_materialization_backup,
 };
 use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
@@ -847,30 +847,25 @@ impl SourceManager {
                 (Vec::new(), None)
             };
 
-        let materialization_backup =
-            if let Some(materialization_tmp) = request.materialization_tmp.as_ref() {
-                match replace_v4_materialization(
-                    &self.layout,
+        let materialization_backup = match replace_or_retire_v4_materialization(
+            &self.layout,
+            workspace_name,
+            &source_name,
+            request.materialization_tmp.as_deref(),
+        ) {
+            Ok(backup) => backup,
+            Err(error) => {
+                cleanup_materialization_tmp(request.materialization_tmp.as_deref());
+                self.restore_source_rollback_state_with_state_lock_held(
                     workspace_name,
                     &source_name,
-                    materialization_tmp,
-                ) {
-                    Ok(backup) => backup,
-                    Err(error) => {
-                        cleanup_materialization_tmp(request.materialization_tmp.as_deref());
-                        self.restore_source_rollback_state_with_state_lock_held(
-                            workspace_name,
-                            &source_name,
-                            previous,
-                            credential_storage,
-                            &credential_guard,
-                        );
-                        return Err(error);
-                    }
-                }
-            } else {
-                None
-            };
+                    previous,
+                    credential_storage,
+                    &credential_guard,
+                );
+                return Err(error);
+            }
+        };
 
         let persisted_version = match request.origin {
             SourceOrigin::Bundled => None,
