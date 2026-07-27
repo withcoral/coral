@@ -1,0 +1,214 @@
+//! Shared Query Stream operation classification and aggregation policy.
+
+use coral_telemetry::{
+    QUERY_STREAM_ENTRY_ATTRIBUTE, QUERY_STREAM_KIND_ATTRIBUTE, QUERY_STREAM_KIND_QUERY,
+    QUERY_STREAM_KIND_SEARCH, QUERY_STREAM_KIND_TOOL, QUERY_STREAM_NAME_ATTRIBUTE,
+};
+use serde_json::Value as JsonValue;
+
+use super::super::{StoredTraceOperationKind, TraceListSpanRecord, attr_bool, attr_string};
+
+const MCP_METHOD_ATTRIBUTE: &str = "mcp.method";
+const MCP_TOOL_NAME_ATTRIBUTE: &str = "mcp.tool.name";
+const MCP_CALL_TOOL_METHOD: &str = "tools/call";
+pub(super) const UNKNOWN_TOOL_OPERATION_NAME: &str = "unknown_tool";
+pub(super) const MAX_LEGACY_TOOL_OPERATION_NAME_LEN: usize = 128;
+
+// Shared operation semantics used by the LIST projector.
+
+pub(super) trait QueryStreamSpan {
+    fn name(&self) -> &str;
+}
+
+impl QueryStreamSpan for TraceListSpanRecord {
+    fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct QueryStreamMetadata {
+    pub(super) explicit: bool,
+    pub(super) kind: StoredTraceOperationKind,
+    pub(super) name: String,
+}
+
+pub(super) fn query_stream_metadata<T>(
+    span: &T,
+    attributes: Option<&JsonValue>,
+) -> Option<QueryStreamMetadata>
+where
+    T: QueryStreamSpan,
+{
+    match attributes.and_then(|attributes| attr_bool(attributes, QUERY_STREAM_ENTRY_ATTRIBUTE)) {
+        Some(false) => None,
+        Some(true) => {
+            let kind_name = attributes
+                .and_then(|attributes| attr_string(attributes, QUERY_STREAM_KIND_ATTRIBUTE));
+            let kind = operation_kind_from_name(kind_name.as_deref());
+            let name = attributes
+                .and_then(|attributes| attr_string(attributes, QUERY_STREAM_NAME_ATTRIBUTE))
+                .filter(|name| !name.trim().is_empty())
+                .unwrap_or_else(|| fallback_operation_name(span, attributes, kind));
+            Some(QueryStreamMetadata {
+                explicit: true,
+                kind,
+                name,
+            })
+        }
+        None => legacy_query_stream_metadata(span, attributes),
+    }
+}
+
+fn legacy_query_stream_metadata<T>(
+    span: &T,
+    attributes: Option<&JsonValue>,
+) -> Option<QueryStreamMetadata>
+where
+    T: QueryStreamSpan,
+{
+    if let Some(tool_name) = attributes
+        .filter(|attributes| {
+            attr_string(attributes, MCP_METHOD_ATTRIBUTE).as_deref() == Some(MCP_CALL_TOOL_METHOD)
+        })
+        .and_then(|attributes| attr_string(attributes, MCP_TOOL_NAME_ATTRIBUTE))
+        .filter(|tool_name| !tool_name.trim().is_empty())
+    {
+        return Some(QueryStreamMetadata {
+            explicit: true,
+            kind: StoredTraceOperationKind::Tool,
+            name: privacy_safe_legacy_tool_operation_name(tool_name),
+        });
+    }
+    let (kind, default_name) = match span.name() {
+        "coral.query" => (StoredTraceOperationKind::Query, "sql"),
+        "coral.search" => (StoredTraceOperationKind::Search, "search"),
+        _ => return None,
+    };
+    let name = attributes
+        .and_then(|attributes| attr_string(attributes, "operation"))
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| default_name.to_string());
+    Some(QueryStreamMetadata {
+        explicit: false,
+        kind,
+        name,
+    })
+}
+
+fn operation_kind_from_name(kind: Option<&str>) -> StoredTraceOperationKind {
+    match kind {
+        Some(QUERY_STREAM_KIND_QUERY) => StoredTraceOperationKind::Query,
+        Some(QUERY_STREAM_KIND_SEARCH) => StoredTraceOperationKind::Search,
+        Some(QUERY_STREAM_KIND_TOOL) => StoredTraceOperationKind::Tool,
+        _ => StoredTraceOperationKind::Other,
+    }
+}
+
+pub(super) fn privacy_safe_legacy_tool_operation_name(tool_name: String) -> String {
+    let has_identifier_shape = !tool_name.is_empty()
+        && tool_name.len() <= MAX_LEGACY_TOOL_OPERATION_NAME_LEN
+        && tool_name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'));
+    if has_identifier_shape {
+        tool_name
+    } else {
+        UNKNOWN_TOOL_OPERATION_NAME.to_string()
+    }
+}
+
+fn fallback_operation_name<T>(
+    span: &T,
+    attributes: Option<&JsonValue>,
+    kind: StoredTraceOperationKind,
+) -> String
+where
+    T: QueryStreamSpan,
+{
+    match kind {
+        StoredTraceOperationKind::Query => attributes
+            .and_then(|attributes| attr_string(attributes, "operation"))
+            .unwrap_or_else(|| "sql".to_string()),
+        StoredTraceOperationKind::Search => "search".to_string(),
+        StoredTraceOperationKind::Tool => attributes
+            .and_then(|attributes| attr_string(attributes, MCP_TOOL_NAME_ATTRIBUTE))
+            .unwrap_or_else(|| span.name().to_string()),
+        StoredTraceOperationKind::Other | StoredTraceOperationKind::Unspecified => {
+            span.name().to_string()
+        }
+    }
+}
+
+pub(super) fn is_unmarked_mcp_protocol_attributes(attributes: &JsonValue) -> bool {
+    let is_marked = attr_bool(attributes, QUERY_STREAM_ENTRY_ATTRIBUTE).unwrap_or(false);
+    !is_marked
+        && attributes.get(MCP_METHOD_ATTRIBUTE).is_some()
+        && attributes.get(MCP_TOOL_NAME_ATTRIBUTE).is_none()
+}
+
+pub(super) fn query_enrichment_is_semantic(
+    entry_kind: StoredTraceOperationKind,
+    primary_descendant: Option<&QueryStreamPrimaryOperation>,
+) -> bool {
+    entry_kind == StoredTraceOperationKind::Query
+        || (entry_kind == StoredTraceOperationKind::Tool
+            && primary_descendant
+                .is_some_and(|operation| operation.kind == StoredTraceOperationKind::Query))
+}
+
+#[derive(Debug)]
+pub(super) struct QueryStreamPrimaryOperation {
+    kind: StoredTraceOperationKind,
+    depth: usize,
+    start_time_unix_nanos: i64,
+    span_id: String,
+}
+
+impl QueryStreamPrimaryOperation {
+    pub(super) fn new(
+        kind: StoredTraceOperationKind,
+        depth: usize,
+        start_time_unix_nanos: i64,
+        span_id: &str,
+    ) -> Self {
+        Self {
+            kind,
+            depth,
+            start_time_unix_nanos,
+            span_id: span_id.to_string(),
+        }
+    }
+
+    pub(super) fn sort_key(&self) -> (usize, i64, &str) {
+        (self.depth, self.start_time_unix_nanos, &self.span_id)
+    }
+}
+
+#[derive(Debug, Default)]
+pub(super) enum QueryStreamWorkspaceEvidence {
+    #[default]
+    None,
+    One(String),
+    Conflict,
+}
+
+impl QueryStreamWorkspaceEvidence {
+    pub(super) fn record(&mut self, workspace: Option<&str>) {
+        let Some(workspace) = workspace.filter(|workspace| !workspace.trim().is_empty()) else {
+            return;
+        };
+        match self {
+            Self::None => *self = Self::One(workspace.to_string()),
+            Self::One(current) if current != workspace => *self = Self::Conflict,
+            Self::One(_) | Self::Conflict => {}
+        }
+    }
+
+    pub(super) fn unique(&self) -> Option<&str> {
+        match self {
+            Self::One(workspace) => Some(workspace),
+            Self::None | Self::Conflict => None,
+        }
+    }
+}
