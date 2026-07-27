@@ -7,11 +7,11 @@ use crate::workspaces::WorkspaceName;
 
 /// Server-owned database pool registries keyed by workspace.
 #[derive(Default)]
-pub(crate) struct WorkspacePoolRegistries {
+pub(crate) struct WorkspacePoolRegistry {
     registries: Mutex<HashMap<WorkspaceName, Arc<DatabasePoolRegistry>>>,
 }
 
-impl WorkspacePoolRegistries {
+impl WorkspacePoolRegistry {
     pub(crate) fn for_workspace(
         &self,
         workspace_name: &WorkspaceName,
@@ -55,7 +55,7 @@ mod tests {
 
     #[test]
     fn reuses_registry_per_workspace_and_isolates_workspaces() {
-        let registries = WorkspacePoolRegistries::default();
+        let registries = WorkspacePoolRegistry::default();
         let alpha = WorkspaceName::parse("alpha").expect("workspace");
         let beta = WorkspaceName::parse("beta").expect("workspace");
 
@@ -69,7 +69,7 @@ mod tests {
 
     #[test]
     fn removal_gives_recreated_workspace_a_fresh_registry() {
-        let registries = WorkspacePoolRegistries::default();
+        let registries = WorkspacePoolRegistry::default();
         let workspace = WorkspaceName::parse("recreated").expect("workspace");
 
         let before = registries.for_workspace(&workspace);
@@ -81,7 +81,7 @@ mod tests {
 
     #[test]
     fn catalog_removal_keeps_the_workspace_registry() {
-        let registries = WorkspacePoolRegistries::default();
+        let registries = WorkspacePoolRegistry::default();
         let workspace = WorkspaceName::parse("catalog-removal").expect("workspace");
 
         let before = registries.for_workspace(&workspace);
