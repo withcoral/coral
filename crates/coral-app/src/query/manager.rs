@@ -32,13 +32,13 @@ use crate::query::input_resolver::{
     CredentialRefreshingInputResolver, SourceCredentialSnapshot, StoredCredentialInputResolver,
 };
 use crate::search::observed::{SearchObservationHandle, SearchObservationSource};
-use crate::sources::SourceName;
 use crate::sources::catalog::resolve_installed_manifest;
 use crate::sources::materialization::{SourceDiagnosticReporter, SourceLoadDiagnosticStage};
 use crate::sources::model::InstalledSource;
 use crate::sources::runtime_package::{
     RuntimeContractFingerprint, query_source_from_installed_manifest,
 };
+use crate::sources::{SourceName, ensure_database_source_feature_enabled};
 use crate::state::{AppConfig, AppStateLayout, ConfigStore};
 use crate::task::id::TaskId;
 use crate::telemetry::app_error_type;
@@ -187,6 +187,7 @@ pub(crate) struct QueryManager {
     diagnostic_reporter: SourceDiagnosticReporter,
     search_observations: Option<SearchObservationHandle>,
     pool_registry: Arc<WorkspacePoolRegistry>,
+    database_sources_enabled: bool,
 }
 
 impl QueryManager {
@@ -231,6 +232,7 @@ impl QueryManager {
             SourceDiagnosticReporter::default(),
             Arc::new(WorkspacePoolRegistry::default()),
         )
+        .with_database_sources_enabled(true)
     }
 
     #[expect(
@@ -262,7 +264,13 @@ impl QueryManager {
             diagnostic_reporter,
             search_observations: None,
             pool_registry,
+            database_sources_enabled: false,
         }
+    }
+
+    pub(crate) fn with_database_sources_enabled(mut self, enabled: bool) -> Self {
+        self.database_sources_enabled = enabled;
+        self
     }
 
     pub(crate) fn with_search_observation_handle(
@@ -673,6 +681,7 @@ impl QueryManager {
     ) -> Result<(LoadedQuerySource, Option<String>), AppError> {
         let installed = resolve_installed_manifest(workspace_name, source, &self.layout)?;
         let source_spec = &installed.source_spec;
+        ensure_database_source_feature_enabled(source_spec, self.database_sources_enabled)?;
         validate_required_variables(source, source_spec.declared_inputs())?;
         let stored_secrets =
             if let Some(credential_storage) = source.credential_storage_for_material() {
