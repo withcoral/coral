@@ -119,7 +119,7 @@ function dialogContent(
       }
     case 'oauth-completed':
       return {
-        description: `${inputLabel(progress.inputKey)} authorized. Installing source…`,
+        description: `${inputLabel(progress.inputKey)} authorized. Configuring source…`,
         title: 'Finishing setup',
       }
     case 'success':
