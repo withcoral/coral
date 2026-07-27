@@ -1,19 +1,16 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { Form, useNavigate, useRevalidator } from 'react-router'
 
 import { Container as ButtonContainer } from '@/wax/components/button/container'
 import { SpinningButtonIcon } from '@/wax/components/button/icon'
 import { Text as ButtonText } from '@/wax/components/button/text'
 import { Dialog, Tabs } from '@/wax/components'
-import { Icon } from '@/wax/components/icon'
 import { TextInput } from '@/wax/components/inputs/text'
-import { Typography } from '@/wax/components/typography'
 
 import { Markdown } from '@/components/markdown'
 import { OAuthFields, type OAuthField } from '@/components/sources/install/oauth-fields'
-import { OAuthProgress } from '@/components/sources/install/oauth-progress'
-import * as oauthStatusStyles from '@/components/sources/install/oauth-status.css'
-import { readOAuthInstallStream } from '@/lib/source-oauth-install-stream'
+import { OAuthProgressDialog } from '@/components/sources/install/oauth-progress-dialog'
+import { oauthActionLabel, useOAuthInstallFlow } from '@/lib/source-oauth-install-flow'
 import type {
   CatalogEntry,
   CatalogOAuthCredentialMethod,
@@ -30,21 +27,6 @@ import {
   SourceInputField,
   SourceNoConfiguration,
 } from './source-presentation'
-
-type InstallProgress =
-  | { kind: 'idle' }
-  | { kind: 'busy' }
-  | {
-      kind: 'awaiting-oauth'
-      authorizationUrl: string
-      inputKey: string
-      userCode: string
-      verificationUri: string
-      verificationUriComplete: string
-    }
-  | { kind: 'oauth-callback-received'; inputKey: string }
-  | { kind: 'oauth-completed'; inputKey: string }
-  | { kind: 'success'; name: string }
 
 export function SourceInstallDialog({
   actionError,
@@ -111,15 +93,22 @@ function SourceInstallDialogContent({
 }) {
   const navigate = useNavigate()
   const revalidator = useRevalidator()
-  const abortRef = useRef<AbortController | null>(null)
   const formRef = useRef<HTMLFormElement>(null)
   const [values, setValues] = useState<Record<string, string>>({})
   const [methodChoices, setMethodChoices] = useState<Record<string, number>>({})
-  const [progress, setProgress] = useState<InstallProgress>({ kind: 'idle' })
-  const [streamError, setStreamError] = useState<string | null>(null)
+  const oauth = useOAuthInstallFlow({
+    fetchOAuthInstall,
+    openAuthorization,
+    onComplete: async () => {
+      await revalidator.revalidate()
+      await (onOAuthInstallComplete
+        ? onOAuthInstallComplete()
+        : navigate(routePath('workspaceSources', { workspaceId })))
+    },
+  })
   const inputSpecs = entry.inputSpecs
   const inputs: CatalogSourceInputSpec[] = inputSpecs ?? []
-  const oauthBusy = progress.kind !== 'idle'
+  const oauthBusy = oauth.busy
   const busy = submitting || oauthBusy
 
   const effectiveChoice = (input: CatalogSourceInputSpec): number => methodChoices[input.key] ?? 0
@@ -149,14 +138,8 @@ function SourceInstallDialogContent({
     })
   }, [inputSpecs, values, methodChoices])
 
-  useEffect(() => {
-    return () => {
-      abortRef.current?.abort()
-    }
-  }, [])
-
   function cancel() {
-    abortRef.current?.abort()
+    oauth.cancel()
     onCancel()
   }
 
@@ -171,56 +154,7 @@ function SourceInstallDialogContent({
 
   async function submitOAuthInstall() {
     if (!formRef.current || oauthBusy) return
-    setStreamError(null)
-    setProgress({ kind: 'busy' })
-
-    const abortController = new AbortController()
-    abortRef.current = abortController
-    try {
-      const response = await fetchOAuthInstall(oauthInstallEndpoint(workspaceId, entry.name), {
-        body: new FormData(formRef.current),
-        method: 'POST',
-        signal: abortController.signal,
-      })
-      const source = await readOAuthInstallStream(response, {
-        onAuthorization: (event) => {
-          setProgress({
-            kind: 'awaiting-oauth',
-            authorizationUrl: event.authorizationUrl,
-            inputKey: event.inputKey,
-            userCode: event.userCode,
-            verificationUri: event.verificationUri,
-            verificationUriComplete: event.verificationUriComplete,
-          })
-          openAuthorization(event.authorizationUrl)
-        },
-        onCallbackReceived: (event) => {
-          setProgress({ kind: 'oauth-callback-received', inputKey: event.inputKey })
-        },
-        onCompleted: (event) => {
-          setProgress({ kind: 'oauth-completed', inputKey: event.inputKey })
-        },
-        onSource: (event) => {
-          setProgress({ kind: 'success', name: event.name })
-        },
-      })
-
-      if (!abortController.signal.aborted) {
-        setProgress({ kind: 'success', name: source.name })
-        await revalidator.revalidate()
-        if (!abortController.signal.aborted) {
-          await (onOAuthInstallComplete
-            ? onOAuthInstallComplete()
-            : navigate(routePath('workspaceSources', { workspaceId })))
-        }
-      }
-    } catch (error) {
-      if (abortController.signal.aborted) return
-      setStreamError(error instanceof Error ? error.message : String(error))
-      setProgress({ kind: 'idle' })
-    } finally {
-      if (abortRef.current === abortController) abortRef.current = null
-    }
+    await oauth.start(oauthInstallEndpoint(workspaceId, entry.name), new FormData(formRef.current))
   }
 
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
@@ -261,41 +195,12 @@ function SourceInstallDialogContent({
         </div>
       )}
 
-      {progress.kind === 'awaiting-oauth' ? (
-        <OAuthProgress
-          authorizationUrl={progress.authorizationUrl}
-          inputLabel={formatFieldName(progress.inputKey)}
-          userCode={progress.userCode}
-          verificationUri={progress.verificationUri}
-          verificationUriComplete={progress.verificationUriComplete}
-        />
-      ) : null}
-      {progress.kind === 'oauth-completed' ? (
-        <div className={oauthStatusStyles.box}>
-          <Icon name="CircleCheck" size="16" color="success" />
-          <Typography.BodySmall variant="primary">
-            {formatFieldName(progress.inputKey)} authorized. Finishing install…
-          </Typography.BodySmall>
-        </div>
-      ) : null}
-      {progress.kind === 'oauth-callback-received' ? (
-        <div className={oauthStatusStyles.box}>
-          <Icon name="Loader" size="16" color="secondary" />
-          <Typography.BodySmall variant="primary">
-            {formatFieldName(progress.inputKey)} authorization received. Exchanging token…
-          </Typography.BodySmall>
-        </div>
-      ) : null}
-      {progress.kind === 'success' ? (
-        <div className={oauthStatusStyles.box}>
-          <Icon name="CircleCheck" size="16" color="success" />
-          <Typography.BodySmall variant="primary">
-            {formatFieldName(progress.name)} configured.
-          </Typography.BodySmall>
-        </div>
-      ) : null}
-
-      {streamError ? <SourceError>{streamError}</SourceError> : null}
+      <OAuthProgressDialog
+        error={oauth.error}
+        inputLabel={formatFieldName}
+        onCancel={oauth.cancel}
+        progress={oauth.progress}
+      />
 
       {actionError ? <SourceError>{actionError}</SourceError> : null}
 
@@ -311,7 +216,11 @@ function SourceInstallDialogContent({
           variant="primary"
         >
           {busy ? <SpinningButtonIcon name="Loader" /> : null}
-          <ButtonText>{busyLabel(progress, submitting)}</ButtonText>
+          <ButtonText>
+            {submitting
+              ? 'Adding…'
+              : oauthActionLabel(oauth.progress, { busy: 'Adding…', idle: 'Add source' })}
+          </ButtonText>
         </ButtonContainer>
       </Dialog.Actions>
     </Form>
@@ -538,13 +447,4 @@ function clearValues(values: Record<string, string>, keys: string[]): Record<str
 
 function oauthInstallEndpoint(workspaceId: string, name: string): string {
   return `${routePath('workspaceSource', { sourceName: name, workspaceId })}/oauth-install`
-}
-
-function busyLabel(progress: InstallProgress, submitting: boolean): string {
-  if (submitting || progress.kind === 'busy') return 'Adding…'
-  if (progress.kind === 'awaiting-oauth') return 'Awaiting OAuth…'
-  if (progress.kind === 'oauth-callback-received') return 'Exchanging token…'
-  if (progress.kind === 'oauth-completed') return 'Finishing…'
-  if (progress.kind === 'success') return 'Configured'
-  return 'Add source'
 }
