@@ -1831,16 +1831,22 @@ surface:
         let metadata: OperationMetadataCatalog =
             read_yaml(&build.temp_dir.join(OPERATION_METADATA_FILENAME))
                 .expect("read operation metadata");
-        let pagination = match metadata
+        let (row_path, pagination) = match metadata
             .operations
             .values()
             .next()
             .expect("operation metadata")
         {
-            coral_spec::v4::OperationMetadata::Mcp { pagination, .. } => pagination,
+            coral_spec::v4::OperationMetadata::Mcp {
+                row_path,
+                pagination,
+            } => (row_path, pagination),
             coral_spec::v4::OperationMetadata::Rest { .. } => panic!("expected MCP metadata"),
         };
-        assert!(pagination.cursor.is_none());
+        assert_eq!(row_path, &["items"]);
+        let cursor = pagination.cursor.as_ref().expect("cursor pagination");
+        assert_eq!(cursor.cursor_arg, "cursor");
+        assert_eq!(cursor.response_cursor_path, ["meta", "nextCursor"]);
         assert!(pagination.offset.is_none());
 
         let projections: ProjectionCatalog =

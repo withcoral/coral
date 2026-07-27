@@ -129,7 +129,7 @@ fn generate_projection(
             }
         })
         .collect::<Vec<_>>();
-    let columns = projection_columns(type_by_id, operation);
+    let columns = projection_columns(plan, type_by_id, operation);
     let name = generated_projection_name(operation, is_search);
     let guide = projection_guide(&kind, &inputs, is_search);
     let projection = Projection {
@@ -299,6 +299,7 @@ fn type_index(ir: &SemanticIr) -> TypeIndex<'_> {
 }
 
 fn projection_columns(
+    plan: &ValidatedSurfacePlan,
     type_by_id: &TypeIndex<'_>,
     operation: &IrOperation,
 ) -> Vec<ProjectionColumn> {
@@ -325,7 +326,9 @@ fn projection_columns(
             },
         ];
     }
-    let Some(row_type) = type_by_id.get(operation.output.type_ref.as_str()) else {
+    // A wrapped-list operation declares an envelope but yields the rows nested
+    // inside it, so columns come from the type its row path selects.
+    let Some(row_type) = type_by_id.get(plan.rest_output_type_ref(&operation.id)) else {
         return vec![ProjectionColumn {
             name: "value".to_string(),
             data_type: ManifestDataType::Json,

@@ -21,6 +21,15 @@ fn imported_rest_pagination<'a>(
     }
 }
 
+fn imported_row_path<'a>(surface: &'a ImportedSurface, operation_id: &str) -> &'a [String] {
+    surface
+        .operation_metadata
+        .operations
+        .get(operation_id)
+        .expect("operation metadata")
+        .row_path()
+}
+
 #[test]
 fn extracts_openapi_document_metadata() {
     let metadata = openapi_document_metadata(
@@ -252,7 +261,7 @@ components:
 }
 
 #[test]
-fn importer_keeps_common_envelope_objects_as_singletons() {
+fn importer_infers_row_paths_for_common_envelope_objects() {
     let manifest = parse_source_manifest_yaml(
         r"
 name: statusgator
@@ -302,7 +311,10 @@ components:
     )
     .expect("import");
     let operation = ir.operations.first().expect("operation");
+    // The IR keeps the declared envelope; only the metadata says where its rows
+    // are.
     assert_eq!(operation.output.cardinality, OutputCardinality::Singleton);
+    assert_eq!(imported_row_path(&ir, "listincidents"), ["data"]);
 
     let catalog =
         generate_projection_catalog(v4, &ir.validated_plan().expect("plan")).expect("catalog");
@@ -316,9 +328,9 @@ components:
         .iter()
         .map(|column| (column.name.as_str(), column.data_type))
         .collect::<BTreeMap<_, _>>();
-    assert_eq!(columns.get("success"), Some(&ManifestDataType::Boolean));
-    assert_eq!(columns.get("data"), Some(&ManifestDataType::Json));
-    assert_eq!(columns.get("pagination"), Some(&ManifestDataType::Json));
+    assert_eq!(columns.get("id"), Some(&ManifestDataType::Utf8));
+    assert_eq!(columns.get("name"), Some(&ManifestDataType::Utf8));
+    assert_eq!(columns.len(), 2);
     assert!(matches!(
         projection.kind,
         ProjectionKind::TableFunction {
@@ -328,7 +340,7 @@ components:
 }
 
 #[test]
-fn importer_keeps_single_array_payload_objects_as_singletons() {
+fn importer_infers_row_path_for_a_sole_array_payload_beside_a_total() {
     let manifest = parse_source_manifest_yaml(
         r"
 name: github
@@ -377,6 +389,13 @@ components:
     .expect("import");
     let operation = ir.operations.first().expect("operation");
     assert_eq!(operation.output.cardinality, OutputCardinality::Singleton);
+    assert_eq!(
+        imported_row_path(
+            &ir,
+            "actions_list_selected_repositories_enabled_github_actions_organization"
+        ),
+        ["repositories"]
+    );
 
     let catalog =
         generate_projection_catalog(v4, &ir.validated_plan().expect("plan")).expect("catalog");
@@ -386,8 +405,9 @@ components:
         .iter()
         .map(|column| (column.name.as_str(), column.data_type))
         .collect::<BTreeMap<_, _>>();
-    assert_eq!(columns.get("total_count"), Some(&ManifestDataType::Int64));
-    assert_eq!(columns.get("repositories"), Some(&ManifestDataType::Json));
+    assert_eq!(columns.get("id"), Some(&ManifestDataType::Int64));
+    assert_eq!(columns.get("name"), Some(&ManifestDataType::Utf8));
+    assert_eq!(columns.len(), 2);
     assert!(matches!(
         projection.kind,
         ProjectionKind::TableFunction {
@@ -397,7 +417,7 @@ components:
 }
 
 #[test]
-fn importer_keeps_search_result_objects_as_singletons() {
+fn importer_prefers_a_named_row_property_over_other_arrays() {
     let manifest = parse_source_manifest_yaml(
         r"
 name: github
@@ -456,6 +476,11 @@ paths:
 
     let operation = ir.operations.first().expect("operation");
     assert_eq!(operation.output.cardinality, OutputCardinality::Singleton);
+    // `lexical_fallback_reason` is an array too; the conventional row name wins.
+    assert_eq!(
+        imported_row_path(&ir, "search_issues_and_pull_requests"),
+        ["items"]
+    );
 
     let catalog =
         generate_projection_catalog(v4, &ir.validated_plan().expect("plan")).expect("catalog");
@@ -465,21 +490,13 @@ paths:
         .iter()
         .map(|column| (column.name.as_str(), column.data_type))
         .collect::<BTreeMap<_, _>>();
-    assert_eq!(columns.get("total_count"), Some(&ManifestDataType::Int64));
-    assert_eq!(
-        columns.get("incomplete_results"),
-        Some(&ManifestDataType::Boolean)
-    );
-    assert_eq!(columns.get("items"), Some(&ManifestDataType::Json));
-    assert_eq!(columns.get("search_type"), Some(&ManifestDataType::Utf8));
-    assert_eq!(
-        columns.get("lexical_fallback_reason"),
-        Some(&ManifestDataType::Json)
-    );
-    assert!(!columns.contains_key("id"));
-    assert!(!columns.contains_key("number"));
-    assert!(!columns.contains_key("title"));
-    assert!(!columns.contains_key("state"));
+    assert_eq!(columns.get("id"), Some(&ManifestDataType::Int64));
+    assert_eq!(columns.get("number"), Some(&ManifestDataType::Int64));
+    assert_eq!(columns.get("title"), Some(&ManifestDataType::Utf8));
+    assert_eq!(columns.get("state"), Some(&ManifestDataType::Utf8));
+    assert_eq!(columns.len(), 4);
+    assert!(!columns.contains_key("total_count"));
+    assert!(!columns.contains_key("lexical_fallback_reason"));
 }
 
 #[test]
@@ -580,6 +597,9 @@ components:
 
     let operation = ir.operations.first().expect("operation");
     assert_eq!(operation.output.cardinality, OutputCardinality::Singleton);
+    // A project item is a resource, not a page of its `fields`: nothing in the
+    // response or the request says otherwise.
+    assert!(imported_row_path(&ir, "projects_get_org_item").is_empty());
 
     let row_type = ir
         .types
@@ -660,6 +680,9 @@ paths:
 
     let operation = ir.operations.first().expect("operation");
     assert_eq!(operation.output.cardinality, OutputCardinality::Singleton);
+    // A bundle's `items` is a conventional row name, but a bundle is still a
+    // resource: no metadata sibling, no pagination parameter.
+    assert!(imported_row_path(&ir, "bundles_get").is_empty());
 }
 
 #[test]
@@ -1759,16 +1782,17 @@ paths:
         .map(|operation| (operation.id.as_str(), operation))
         .collect::<BTreeMap<_, _>>();
 
-    for operation_id in [
-        "cursor_list",
-        "pagination_token_list",
-        "iterator_list",
-        "start_cursor_list",
-        "nested_next_list",
-        "singleton_get",
-        "cursor_header_list",
-        "cursor_page_list",
-        "numeric_page_list",
+    // Each of these declares an envelope object, so cardinality stays
+    // Singleton; the inferred row path is what makes them paginate.
+    for (operation_id, mode) in [
+        ("cursor_list", PaginationMode::CursorQuery),
+        ("pagination_token_list", PaginationMode::CursorQuery),
+        ("iterator_list", PaginationMode::CursorQuery),
+        ("start_cursor_list", PaginationMode::CursorQuery),
+        ("nested_next_list", PaginationMode::CursorQuery),
+        ("cursor_header_list", PaginationMode::CursorQuery),
+        ("cursor_page_list", PaginationMode::CursorQuery),
+        ("numeric_page_list", PaginationMode::Page),
     ] {
         let operation = operations.get(operation_id).expect("operation");
         assert_eq!(
@@ -1776,12 +1800,26 @@ paths:
             OutputCardinality::Singleton,
             "{operation_id}"
         );
+        assert!(
+            !imported_row_path(&ir, operation_id).is_empty(),
+            "{operation_id}"
+        );
         assert_eq!(
             imported_rest_pagination(&ir, operation_id).mode,
-            PaginationMode::None,
+            mode,
             "{operation_id}"
         );
     }
+
+    // A singleton with a cursor query parameter has no row collection to page
+    // through, so the parameter stays an ordinary input.
+    let singleton = operations.get("singleton_get").expect("singleton");
+    assert_eq!(singleton.output.cardinality, OutputCardinality::Singleton);
+    assert!(imported_row_path(&ir, "singleton_get").is_empty());
+    assert_eq!(
+        imported_rest_pagination(&ir, "singleton_get").mode,
+        PaginationMode::None
+    );
 
     let link = imported_rest_pagination(&ir, "link_list");
     assert_eq!(link.mode, PaginationMode::LinkHeader);

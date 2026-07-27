@@ -934,6 +934,15 @@ surface:
             wrapped_items.output.cardinality,
             OutputCardinality::Singleton
         );
+        // The IR keeps the declared envelope shape; the row path is metadata.
+        assert_eq!(
+            ir.operation_metadata
+                .operations
+                .get("wrapped_items")
+                .expect("metadata")
+                .row_path(),
+            ["items"]
+        );
         let wrapped_fields = row_fields(&ir, "wrapped_items_row");
         assert_eq!(field(wrapped_fields, "items").type_ref, "mcp_json");
         assert!(wrapped_fields.iter().any(|field| field.name == "raw"));
@@ -951,7 +960,7 @@ surface:
     }
 
     #[test]
-    fn does_not_infer_cursor_pagination_for_wrapped_list_envelopes() {
+    fn infers_cursor_pagination_for_wrapped_list_envelopes() {
         let catalog = McpToolCatalog {
             tools: vec![tool_with_schemas(
                 "list-items",
@@ -990,13 +999,16 @@ surface:
         let operation = operation(&ir, "list_items");
         assert_eq!(operation.output.cardinality, OutputCardinality::Singleton);
         let plan = ir.validated_plan().expect("plan");
+        assert_eq!(plan.output_row_path("list_items"), ["items"]);
         let (cursor, offset) = plan.mcp_pagination("list_items");
-        assert!(cursor.is_none());
+        let cursor = cursor.expect("cursor pagination");
+        assert_eq!(cursor.cursor_arg, "cursor");
+        assert_eq!(cursor.response_cursor_path, ["meta", "nextCursor"]);
         assert!(offset.is_none());
     }
 
     #[test]
-    fn does_not_infer_offset_pagination_for_wrapped_list_envelopes() {
+    fn infers_offset_pagination_for_wrapped_list_envelopes() {
         let catalog = McpToolCatalog {
             tools: vec![tool_with_schemas(
                 "list-catalog",
@@ -1044,10 +1056,18 @@ surface:
         let surface = &v4.surface;
         let ir = import_mcp_surface(v4, surface, &catalog).expect("import");
         let plan = ir.validated_plan().expect("plan");
+        assert_eq!(plan.output_row_path("list_catalog"), ["items"]);
         let (cursor, offset) = plan.mcp_pagination("list_catalog");
         assert!(cursor.is_none());
-        assert!(offset.is_none());
+        let offset = offset.expect("offset pagination");
+        assert_eq!(offset.limit_arg, "limit");
+        assert_eq!(offset.default_limit, 50);
+        assert_eq!(offset.max_limit, 200);
+        assert_eq!(offset.offset_arg, "offset");
+        assert_eq!(offset.offset_start, 0);
 
+        // `limit` and `offset` are the tool's only arguments, and pagination
+        // now owns both, so nothing is left to expose as a function argument.
         let projections = generate_projection_catalog(v4, &ir.validated_plan().expect("plan"))
             .expect("projection catalog");
         let projection = projections
@@ -1055,12 +1075,9 @@ surface:
             .iter()
             .find(|projection| projection.operation_id == "list_catalog")
             .expect("projection");
-        assert!(matches!(
-            projection.kind,
-            crate::v4::ProjectionKind::TableFunction { .. }
-        ));
+        assert!(matches!(projection.kind, crate::v4::ProjectionKind::Table));
         for input in &projection.inputs {
-            assert_eq!(input.sql_exposure, SqlInputExposure::FunctionArg);
+            assert_eq!(input.sql_exposure, SqlInputExposure::Internal);
         }
     }
 
@@ -1151,6 +1168,16 @@ surface:
         let ir = import_catalog(&catalog);
         let operation = operation(&ir, "get_item");
         assert_eq!(operation.output.cardinality, OutputCardinality::Singleton);
+        // `items` is a conventional row name, but nothing else about the tool
+        // says this is a page of them.
+        assert!(
+            ir.operation_metadata
+                .operations
+                .get("get_item")
+                .expect("metadata")
+                .row_path()
+                .is_empty()
+        );
     }
 
     #[test]
