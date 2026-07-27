@@ -180,11 +180,10 @@ impl DatabaseCatalogStrategy for PostgresConnectionSpec {
         let pool = pool_registry
             .get_or_create(catalog_name, async move {
                 Ok(DatabasePool::Postgres(Arc::new(
-                    PostgresConnectionPool::new(to_secret_map(params))
-                        .await
-                        .map_err(provider_error)?
-                        // The MySQL adapter has no equivalent unsupported-type policy.
-                        .with_unsupported_type_action(UnsupportedTypeAction::String),
+                        PostgresConnectionPool::new(to_secret_map(params))
+                            .await
+                            .map_err(provider_error)?
+                            .with_unsupported_type_action(UnsupportedTypeAction::String),
                 )))
             })
             .await?;
@@ -193,9 +192,10 @@ impl DatabaseCatalogStrategy for PostgresConnectionSpec {
                 "database catalog '{catalog_name}' resolved to a non-Postgres pool"
             )));
         };
-        build_database_catalog(
-            pool,
-            POSTGRES_RELATIONS_SQL,
+            build_database_catalog(
+                catalog_name,
+                pool,
+                POSTGRES_RELATIONS_SQL,
             POSTGRES_COLUMNS_SQL,
             Arc::new(PostgreSqlDialect {}),
         )
@@ -249,9 +249,10 @@ impl DatabaseCatalogStrategy for MySqlConnectionSpec {
                 "database catalog '{catalog_name}' resolved to a non-MySQL pool"
             )));
         };
-        build_database_catalog(
-            pool,
-            MYSQL_RELATIONS_SQL,
+            build_database_catalog(
+                catalog_name,
+                pool,
+                MYSQL_RELATIONS_SQL,
             MYSQL_COLUMNS_SQL,
             Arc::new(MySqlDialect {}),
         )
@@ -281,7 +282,7 @@ impl DatabaseCatalogStrategy for SqliteConnectionSpec {
 
     async fn build_catalog(
         &self,
-        _catalog_name: &str,
+        catalog_name: &str,
         context: &RenderContext<'_>,
         _pool_registry: &DatabasePoolRegistry,
     ) -> DataFusionResult<DatabaseCatalog> {
@@ -291,6 +292,7 @@ impl DatabaseCatalogStrategy for SqliteConnectionSpec {
             .await
             .map_err(provider_error)?;
         build_database_catalog(
+            catalog_name,
             Arc::new(pool),
             SQLITE_RELATIONS_SQL,
             SQLITE_COLUMNS_SQL,
@@ -303,22 +305,48 @@ impl DatabaseCatalogStrategy for SqliteConnectionSpec {
 const POSTGRES_RELATIONS_SQL: &str = "
 SELECT table_schema AS schema_name,
        table_name,
-       table_type AS relation_type
+       table_type AS relation_type,
+       CAST(NULL AS TEXT) AS skip_reason
 FROM information_schema.tables
 WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
   AND table_type IN ('BASE TABLE', 'VIEW')";
 
 const MYSQL_RELATIONS_SQL: &str = "
-SELECT TABLE_SCHEMA AS schema_name,
-       TABLE_NAME AS table_name,
-       TABLE_TYPE AS relation_type
-FROM INFORMATION_SCHEMA.TABLES
-WHERE TABLE_SCHEMA NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys')";
+SELECT tables.TABLE_SCHEMA AS schema_name,
+       tables.TABLE_NAME AS table_name,
+       tables.TABLE_TYPE AS relation_type,
+       GROUP_CONCAT(
+           CASE
+               WHEN LOWER(columns.DATA_TYPE) NOT IN (
+                   'decimal', 'numeric',
+                   'tinyint', 'smallint', 'int', 'integer', 'bigint', 'mediumint',
+                   'float', 'double', 'real',
+                   'timestamp', 'time', 'datetime', 'date', 'year',
+                   'bit', 'json',
+                   'enum', 'set',
+                   'tinyblob', 'tinytext', 'mediumblob', 'mediumtext',
+                   'longblob', 'longtext', 'blob', 'text',
+                   'varchar', 'varbinary', 'char', 'binary'
+               )
+               THEN CONCAT(columns.COLUMN_NAME, ' (', columns.DATA_TYPE, ')')
+           END
+           ORDER BY columns.ORDINAL_POSITION
+           SEPARATOR ', '
+       ) AS skip_reason
+FROM INFORMATION_SCHEMA.TABLES AS tables
+LEFT JOIN INFORMATION_SCHEMA.COLUMNS AS columns
+  ON columns.TABLE_SCHEMA = tables.TABLE_SCHEMA
+ AND columns.TABLE_NAME = tables.TABLE_NAME
+WHERE tables.TABLE_SCHEMA NOT IN (
+    'information_schema', 'mysql', 'performance_schema', 'sys'
+)
+GROUP BY tables.TABLE_SCHEMA, tables.TABLE_NAME, tables.TABLE_TYPE";
 
 const SQLITE_RELATIONS_SQL: &str = "
 SELECT 'main' AS schema_name,
        name AS table_name,
-       CASE type WHEN 'view' THEN 'VIEW' ELSE 'BASE TABLE' END AS relation_type
+       CASE type WHEN 'view' THEN 'VIEW' ELSE 'BASE TABLE' END AS relation_type,
+       CAST(NULL AS TEXT) AS skip_reason
 FROM sqlite_master
 WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%'";
 

@@ -5,7 +5,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use datafusion::arrow::array::StringArray;
+use datafusion::arrow::array::{Array as _, StringArray};
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::catalog::{CatalogProvider, MemoryCatalogProvider, SchemaProvider};
 use datafusion::datasource::TableProvider;
@@ -38,12 +38,13 @@ pub(super) struct DatabaseRelation {
 }
 
 pub(super) async fn build_database_catalog<T: 'static, P: 'static>(
+    catalog_name: &str,
     pool: Pool<T, P>,
     inventory_sql: &str,
     columns_sql: &'static str,
     dialect: SqlDialect,
 ) -> DataFusionResult<DatabaseCatalog> {
-    let relations = load_database_inventory(&pool, inventory_sql).await?;
+    let relations = load_database_inventory(catalog_name, &pool, inventory_sql).await?;
     let provider = Arc::new(MemoryCatalogProvider::new());
     register_database_schemas(provider.as_ref(), &pool, &relations, &dialect)?;
     let column_fetcher = DatabaseColumnInventoryFetcher::new(&pool, columns_sql);
@@ -80,6 +81,7 @@ fn register_database_schemas<T: 'static, P: 'static>(
 }
 
 async fn load_database_inventory<T: 'static, P: 'static>(
+    catalog_name: &str,
     pool: &Pool<T, P>,
     inventory_sql: &str,
 ) -> DataFusionResult<Vec<DatabaseRelation>> {
@@ -87,6 +89,7 @@ async fn load_database_inventory<T: 'static, P: 'static>(
         Field::new("schema_name", DataType::Utf8, false),
         Field::new("table_name", DataType::Utf8, false),
         Field::new("relation_type", DataType::Utf8, false),
+        Field::new("skip_reason", DataType::Utf8, true),
     ]));
     let connection = pool.connect().await.map_err(provider_error)?;
     let batches = query_arrow(connection, inventory_sql.to_string(), Some(schema))
@@ -99,7 +102,18 @@ async fn load_database_inventory<T: 'static, P: 'static>(
         let schema_names = inventory_column(&batch, "schema_name")?;
         let table_names = inventory_column(&batch, "table_name")?;
         let relation_types = inventory_column(&batch, "relation_type")?;
+        let skip_reasons = inventory_column(&batch, "skip_reason")?;
         for row in 0..batch.num_rows() {
+            if !skip_reasons.is_null(row) {
+                tracing::warn!(
+                    catalog_name = ?catalog_name,
+                    schema_name = ?schema_names.value(row),
+                    table_name = ?table_names.value(row),
+                    unsupported_columns = ?skip_reasons.value(row),
+                    "skipping database table with unsupported column types"
+                );
+                continue;
+            }
             relations.push(DatabaseRelation {
                 schema_name: schema_names.value(row).to_string(),
                 table_name: table_names.value(row).to_string(),
