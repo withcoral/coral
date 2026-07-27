@@ -24,7 +24,7 @@ use crate::search::observed::{
     ObservedValuesRetrievalPolicy,
 };
 use crate::search::provider::{
-    ObservedValuesPolicyInput, SearchExecutionContext, SearchProviderRegistry,
+    LocalSearchWriteCoordinator, SearchExecutionContext, SearchProviderRegistry,
 };
 use crate::search::result::{
     SearchManagerError, SearchProviderKind, SearchRequest, SearchResponse,
@@ -97,8 +97,13 @@ impl SearchManager {
         catalog_discovery: CatalogDiscovery,
         lifecycle_lock: WorkspaceLifecycleLock,
     ) -> Self {
-        let catalog = CatalogMetadataProvider::new(layout.clone());
-        let observed = ObservedValuesProvider::new(layout.clone());
+        let write_coordinator = LocalSearchWriteCoordinator::default();
+        let catalog = CatalogMetadataProvider::with_write_coordinator(
+            layout.clone(),
+            write_coordinator.clone(),
+        );
+        let observed =
+            ObservedValuesProvider::with_write_coordinator(layout.clone(), write_coordinator);
         let observed_scope_loader = ObservedValuesLiveScopeLoader::new(
             layout.clone(),
             config_store.clone(),
@@ -110,7 +115,10 @@ impl SearchManager {
             observed: observed.clone(),
             observed_scope_loader,
             observed_values_search_enabled,
-            engine: UniversalSearchEngine::new(SearchProviderRegistry::local(catalog, observed)),
+            engine: UniversalSearchEngine::new(SearchProviderRegistry::local(
+                catalog,
+                observed_values_search_enabled.then(|| observed.clone()),
+            )),
             workspaces: workspace_manager,
             lifecycle_lock,
             layout,
@@ -144,14 +152,14 @@ impl SearchManager {
                 let search = self.clone();
                 let workspace_name = request.workspace_name.clone();
                 run_blocking_search_operation(move || {
-                    let policy = ObservedValuesPolicyInput::Enabled(
-                        search.observed_retrieval_policy(&workspace_name),
-                    );
-                    Ok((policy, lifecycle_lease))
+                    Ok((
+                        Some(search.observed_retrieval_policy(&workspace_name)),
+                        lifecycle_lease,
+                    ))
                 })
                 .await?
             } else {
-                (ObservedValuesPolicyInput::Disabled, lifecycle_lease)
+                (None, lifecycle_lease)
             };
             let context = SearchExecutionContext::new(
                 request_started_at,

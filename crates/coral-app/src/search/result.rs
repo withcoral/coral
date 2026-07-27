@@ -121,6 +121,8 @@ pub(crate) struct ProviderCoverage {
 
 #[derive(Debug, Clone)]
 pub(crate) struct SearchCandidate {
+    /// Provider-scoped stable ordering key, not a cross-provider identity.
+    /// Equal keys emitted by different providers remain separate candidates.
     pub(crate) key: String,
     pub(crate) score: u32,
     pub(crate) provider: SearchProviderKind,

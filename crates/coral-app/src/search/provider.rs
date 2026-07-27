@@ -1,8 +1,9 @@
 //! Provider-facing Universal Search contracts and ordered registration.
 
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Instant;
 
 use tokio::task;
@@ -16,7 +17,7 @@ use crate::search::observed::provider::ObservedValuesProvider;
 use crate::search::result::{
     ProviderStatus, SearchCandidate, SearchProviderKind, SearchProviderState, SearchRequest,
 };
-use crate::workspaces::WorkspaceLifecycleReadLease;
+use crate::workspaces::{WorkspaceLifecycleReadLease, WorkspaceName};
 
 pub(crate) type ProviderSearchFuture =
     Pin<Box<dyn Future<Output = ProviderSearchOutcome> + Send + 'static>>;
@@ -27,10 +28,7 @@ pub(crate) struct ProviderSearchOutcome {
     pub(crate) status: ProviderStatus,
 }
 
-pub(crate) enum ObservedValuesPolicyInput {
-    Disabled,
-    Enabled(Result<ObservedValuesRetrievalPolicy, AppError>),
-}
+pub(crate) type ObservedValuesPolicyInput = Result<ObservedValuesRetrievalPolicy, AppError>;
 
 pub(crate) struct SearchExecutionContext {
     pub(crate) request_started_at: Instant,
@@ -40,7 +38,7 @@ pub(crate) struct SearchExecutionContext {
     _lifecycle_lease: WorkspaceLifecycleReadLease,
     pub(crate) request: SearchRequest,
     pub(crate) catalog_resolution: Result<CatalogResolution, QueryManagerError>,
-    pub(crate) observed_values_policy: ObservedValuesPolicyInput,
+    pub(crate) observed_values_policy: Option<ObservedValuesPolicyInput>,
 }
 
 impl SearchExecutionContext {
@@ -49,7 +47,7 @@ impl SearchExecutionContext {
         lifecycle_lease: WorkspaceLifecycleReadLease,
         request: SearchRequest,
         catalog_resolution: Result<CatalogResolution, QueryManagerError>,
-        observed_values_policy: ObservedValuesPolicyInput,
+        observed_values_policy: Option<ObservedValuesPolicyInput>,
     ) -> Self {
         Self {
             request_started_at,
@@ -58,6 +56,40 @@ impl SearchExecutionContext {
             catalog_resolution,
             observed_values_policy,
         }
+    }
+}
+
+/// Serializes local SQLite-backed provider work per workspace while leaving
+/// providers that do not use the coordinator free to run concurrently.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct LocalSearchWriteCoordinator {
+    gates: Arc<Mutex<BTreeMap<WorkspaceName, Weak<Mutex<()>>>>>,
+}
+
+impl LocalSearchWriteCoordinator {
+    pub(crate) fn run<T>(
+        &self,
+        workspace_name: &WorkspaceName,
+        operation: impl FnOnce() -> T,
+    ) -> T {
+        let gate = {
+            let mut gates = self
+                .gates
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            gates.retain(|_, gate| gate.strong_count() > 0);
+            if let Some(gate) = gates.get(workspace_name).and_then(Weak::upgrade) {
+                gate
+            } else {
+                let gate = Arc::new(Mutex::new(()));
+                gates.insert(workspace_name.clone(), Arc::downgrade(&gate));
+                gate
+            }
+        };
+        let _guard = gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        operation()
     }
 }
 
@@ -84,13 +116,12 @@ pub(crate) enum SearchProviderRegistration {
 impl SearchProviderRegistry {
     pub(crate) fn local(
         catalog: CatalogMetadataProvider,
-        observed: ObservedValuesProvider,
+        observed: Option<ObservedValuesProvider>,
     ) -> Self {
-        let ordered = vec![
-            SearchProviderRegistration::Provider(Arc::new(catalog)),
-            SearchProviderRegistration::Provider(Arc::new(observed)),
-            SearchProviderRegistration::StaticStatus(native_not_enabled_status()),
-        ];
+        let ordered = local_registrations(
+            Arc::new(catalog),
+            observed.map(|provider| Arc::new(provider) as Arc<dyn SearchProvider>),
+        );
         Self {
             ordered: ordered.into(),
         }
@@ -106,6 +137,21 @@ impl SearchProviderRegistry {
             ordered: ordered.into(),
         }
     }
+}
+
+fn local_registrations(
+    catalog: Arc<dyn SearchProvider>,
+    observed: Option<Arc<dyn SearchProvider>>,
+) -> Vec<SearchProviderRegistration> {
+    let observed = observed.map_or_else(
+        || SearchProviderRegistration::StaticStatus(observed_not_enabled_status()),
+        SearchProviderRegistration::Provider,
+    );
+    vec![
+        SearchProviderRegistration::Provider(catalog),
+        observed,
+        SearchProviderRegistration::StaticStatus(native_not_enabled_status()),
+    ]
 }
 
 fn native_not_enabled_status() -> ProviderStatus {
@@ -141,21 +187,16 @@ impl SearchProvider for ObservedValuesProvider {
     fn search(&self, context: Arc<SearchExecutionContext>) -> ProviderSearchFuture {
         let provider = self.clone();
         Box::pin(async move {
-            if matches!(
-                &context.observed_values_policy,
-                ObservedValuesPolicyInput::Disabled
-            ) {
-                return observed_not_enabled_outcome();
+            if context.observed_values_policy.is_none() {
+                tracing::error!("enabled observed-values provider received no retrieval policy");
+                return provider_error_outcome(SearchProviderKind::ObservedValues);
             }
             run_blocking_provider(SearchProviderKind::ObservedValues, move || {
-                match &context.observed_values_policy {
-                    ObservedValuesPolicyInput::Enabled(policy) => {
-                        provider.search(&context.request, policy.as_ref())
-                    }
-                    ObservedValuesPolicyInput::Disabled => {
-                        unreachable!("disabled observed search returns before blocking offload")
-                    }
-                }
+                let policy = context
+                    .observed_values_policy
+                    .as_ref()
+                    .expect("registry enables observed provider only with a retrieval policy");
+                provider.search(&context.request, policy.as_ref())
             })
             .await
         })
@@ -191,45 +232,141 @@ pub(crate) fn provider_error_outcome(provider: SearchProviderKind) -> ProviderSe
     }
 }
 
-fn observed_not_enabled_outcome() -> ProviderSearchOutcome {
-    ProviderSearchOutcome {
-        candidates: Vec::new(),
-        status: ProviderStatus {
-            provider: SearchProviderKind::ObservedValues,
-            state: SearchProviderState::NotEnabled,
-            note: "observed value search is disabled; enable `observed_values_search` to include values from earlier queries".to_string(),
-            coverage: None,
-        },
+fn observed_not_enabled_status() -> ProviderStatus {
+    ProviderStatus {
+        provider: SearchProviderKind::ObservedValues,
+        state: SearchProviderState::NotEnabled,
+        note: "observed value search is disabled; enable `observed_values_search` to include values from earlier queries".to_string(),
+        coverage: None,
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::mpsc as std_mpsc;
     use std::thread;
 
-    use super::{observed_not_enabled_outcome, provider_error_outcome, run_blocking_provider};
+    use super::{
+        LocalSearchWriteCoordinator, ProviderSearchFuture, SearchExecutionContext, SearchProvider,
+        SearchProviderRegistration, local_registrations, provider_error_outcome,
+        run_blocking_provider,
+    };
     use crate::search::result::{SearchProviderKind, SearchProviderState};
+    use crate::workspaces::WorkspaceName;
 
     #[test]
-    fn disabled_observed_search_reports_not_enabled_without_candidates_or_coverage() {
-        let outcome = observed_not_enabled_outcome();
+    fn disabled_observed_search_is_registered_as_a_static_status() {
+        let registrations = local_registrations(
+            Arc::new(UnusedProvider(SearchProviderKind::CatalogMetadata)),
+            None,
+        );
 
-        assert!(outcome.candidates.is_empty());
-        assert_eq!(outcome.status.provider, SearchProviderKind::ObservedValues);
-        assert_eq!(outcome.status.state, SearchProviderState::NotEnabled);
-        assert!(outcome.status.coverage.is_none());
-        assert!(outcome.status.note.contains("`observed_values_search`"));
+        let SearchProviderRegistration::StaticStatus(status) =
+            registrations.get(1).expect("observed registration")
+        else {
+            panic!("disabled observed search must not register its provider");
+        };
+        assert_eq!(status.provider, SearchProviderKind::ObservedValues);
+        assert_eq!(status.state, SearchProviderState::NotEnabled);
+        assert!(status.coverage.is_none());
+        assert!(status.note.contains("`observed_values_search`"));
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn local_provider_work_runs_off_the_async_worker() {
         let async_thread = thread::current().id();
+        let (thread_tx, thread_rx) = std_mpsc::sync_channel(1);
         let outcome = run_blocking_provider(SearchProviderKind::CatalogMetadata, move || {
-            assert_ne!(thread::current().id(), async_thread);
+            thread_tx
+                .send(thread::current().id())
+                .expect("record blocking thread");
             provider_error_outcome(SearchProviderKind::CatalogMetadata)
         })
         .await;
 
+        assert_ne!(
+            thread_rx.recv().expect("blocking thread id"),
+            async_thread,
+            "provider work must leave the async worker thread"
+        );
         assert_eq!(outcome.status.provider, SearchProviderKind::CatalogMetadata);
+    }
+
+    #[test]
+    fn shared_local_writers_never_overlap_and_independent_work_still_runs() {
+        let coordinator = LocalSearchWriteCoordinator::default();
+        let workspace = WorkspaceName::default();
+        let active_writers = Arc::new(AtomicUsize::new(0));
+        let max_active_writers = Arc::new(AtomicUsize::new(0));
+        let (first_started_tx, first_started_rx) = std_mpsc::channel();
+        let (release_first_tx, release_first_rx) = std_mpsc::channel();
+
+        let first_coordinator = coordinator.clone();
+        let first_workspace = workspace.clone();
+        let first_active = Arc::clone(&active_writers);
+        let first_max = Arc::clone(&max_active_writers);
+        let first = thread::spawn(move || {
+            first_coordinator.run(&first_workspace, || {
+                record_active_writer(&first_active, &first_max);
+                first_started_tx.send(()).expect("signal first writer");
+                release_first_rx.recv().expect("release first writer");
+                first_active.fetch_sub(1, Ordering::SeqCst);
+            });
+        });
+        first_started_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("first writer starts");
+
+        let second_active = Arc::clone(&active_writers);
+        let second_max = Arc::clone(&max_active_writers);
+        let (second_started_tx, second_started_rx) = std_mpsc::channel();
+        let second = thread::spawn(move || {
+            coordinator.run(&workspace, || {
+                record_active_writer(&second_active, &second_max);
+                second_started_tx.send(()).expect("signal second writer");
+                second_active.fetch_sub(1, Ordering::SeqCst);
+            });
+        });
+        assert!(matches!(
+            second_started_rx.recv_timeout(std::time::Duration::from_millis(100)),
+            Err(std_mpsc::RecvTimeoutError::Timeout)
+        ));
+
+        let (independent_tx, independent_rx) = std_mpsc::channel();
+        let independent = thread::spawn(move || independent_tx.send(()));
+        independent_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("independent provider work remains concurrent");
+
+        release_first_tx.send(()).expect("release first writer");
+        second_started_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("second writer starts after first completes");
+        first.join().expect("first writer");
+        second.join().expect("second writer");
+        independent
+            .join()
+            .expect("independent worker")
+            .expect("signal independent work");
+        assert_eq!(max_active_writers.load(Ordering::SeqCst), 1);
+    }
+
+    fn record_active_writer(active: &AtomicUsize, max_active: &AtomicUsize) {
+        let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+        max_active.fetch_max(current, Ordering::SeqCst);
+    }
+
+    struct UnusedProvider(SearchProviderKind);
+
+    impl SearchProvider for UnusedProvider {
+        fn kind(&self) -> SearchProviderKind {
+            self.0
+        }
+
+        fn search(&self, _context: Arc<SearchExecutionContext>) -> ProviderSearchFuture {
+            panic!("static registration must not invoke disabled provider")
+        }
     }
 }

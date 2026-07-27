@@ -2,6 +2,8 @@
 
 use std::sync::Arc;
 
+use tracing::Instrument as _;
+
 use crate::search::fusion;
 use crate::search::provider::{
     ProviderSearchOutcome, SearchExecutionContext, SearchProviderRegistration,
@@ -48,7 +50,10 @@ impl UniversalSearchEngine {
                     let provider = Arc::clone(provider);
                     let kind = provider.kind();
                     let context = Arc::clone(&context);
-                    let task = tokio::spawn(async move { provider.search(context).await });
+                    let span = tracing::Span::current();
+                    let task = tokio::spawn(
+                        async move { provider.search(context).await }.instrument(span),
+                    );
                     PendingProviderSearch::Provider { kind, task }
                 }
                 SearchProviderRegistration::StaticStatus(status) => {
@@ -153,14 +158,14 @@ mod tests {
 
     use tokio::sync::{Barrier, oneshot};
     use tokio::time::timeout;
+    use tracing::Instrument as _;
 
     use super::{UniversalSearchEngine, providers_have_more, truncation_note};
     use crate::bootstrap::AppError;
     use crate::query::manager::QueryManagerError;
     use crate::search::provider::{
-        ObservedValuesPolicyInput, ProviderSearchFuture, ProviderSearchOutcome,
-        SearchExecutionContext, SearchProvider, SearchProviderRegistration, SearchProviderRegistry,
-        provider_error_outcome,
+        ProviderSearchFuture, ProviderSearchOutcome, SearchExecutionContext, SearchProvider,
+        SearchProviderRegistration, SearchProviderRegistry, provider_error_outcome,
     };
     use crate::search::result::{
         ObservedValueResult, ProviderCoverage, ProviderStatus, SearchCandidate, SearchPayload,
@@ -318,6 +323,30 @@ mod tests {
         );
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn provider_future_inherits_the_search_request_span() {
+        let _subscriber = tracing::subscriber::set_default(tracing_subscriber::Registry::default());
+        let observed_span = Arc::new(Mutex::new(None));
+        let registry =
+            SearchProviderRegistry::from_ordered(vec![SearchProviderRegistration::Provider(
+                Arc::new(SpanCapturingProvider {
+                    observed_span: Arc::clone(&observed_span),
+                }),
+            )]);
+        let request_span = tracing::info_span!("universal_search_request");
+        let expected_span = request_span.id().expect("request span id");
+
+        UniversalSearchEngine::new(registry)
+            .search(test_context().await)
+            .instrument(request_span)
+            .await;
+
+        assert_eq!(
+            observed_span.lock().expect("observed span lock").as_ref(),
+            Some(&expected_span)
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancelled_search_keeps_lifecycle_lease_until_blocking_provider_finishes() {
         let lifecycle = WorkspaceLifecycleLock::default();
@@ -410,6 +439,24 @@ mod tests {
         release: Mutex<Option<std_mpsc::Receiver<()>>>,
     }
 
+    struct SpanCapturingProvider {
+        observed_span: Arc<Mutex<Option<tracing::span::Id>>>,
+    }
+
+    impl SearchProvider for SpanCapturingProvider {
+        fn kind(&self) -> SearchProviderKind {
+            SearchProviderKind::CatalogMetadata
+        }
+
+        fn search(&self, _context: Arc<SearchExecutionContext>) -> ProviderSearchFuture {
+            let observed_span = Arc::clone(&self.observed_span);
+            Box::pin(async move {
+                *observed_span.lock().expect("observed span lock") = tracing::Span::current().id();
+                provider_error_outcome(SearchProviderKind::CatalogMetadata)
+            })
+        }
+    }
+
     impl SearchProvider for PausingBlockingProvider {
         fn kind(&self) -> SearchProviderKind {
             self.kind
@@ -481,7 +528,7 @@ mod tests {
             Err(QueryManagerError::App(AppError::Internal(
                 "catalog resolution is unused by test providers".to_string(),
             ))),
-            ObservedValuesPolicyInput::Disabled,
+            None,
         )
     }
 

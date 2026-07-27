@@ -17,7 +17,7 @@ use crate::search::observed::sqlite_projection::{
 };
 use crate::search::observed::sqlite_queue::ObservedValuesSurfaceKind;
 use crate::search::observed::sqlite_store::{ObservedValuesClearResult, SqliteObservedValuesStore};
-use crate::search::provider::ProviderSearchOutcome;
+use crate::search::provider::{LocalSearchWriteCoordinator, ProviderSearchOutcome};
 use crate::search::result::{
     ObservedValueResult, ProviderCoverage, ProviderStatus, SearchCandidate, SearchPayload,
     SearchProviderKind, SearchProviderState, SearchRequest, SearchSurfaceKind,
@@ -37,12 +37,22 @@ const OBSERVED_REBUILD_DRAIN_MS: u64 = 1_000;
 #[derive(Debug, Clone)]
 pub(crate) struct ObservedValuesProvider {
     store: SqliteObservedValuesStore,
+    write_coordinator: LocalSearchWriteCoordinator,
 }
 
 impl ObservedValuesProvider {
+    #[cfg(test)]
     pub(crate) fn new(layout: AppStateLayout) -> Self {
+        Self::with_write_coordinator(layout, LocalSearchWriteCoordinator::default())
+    }
+
+    pub(crate) fn with_write_coordinator(
+        layout: AppStateLayout,
+        write_coordinator: LocalSearchWriteCoordinator,
+    ) -> Self {
         Self {
             store: SqliteObservedValuesStore::new(layout),
+            write_coordinator,
         }
     }
 
@@ -55,6 +65,16 @@ impl ObservedValuesProvider {
             Ok(policy) => policy,
             Err(error) => return observed_policy_error_outcome(error),
         };
+        self.write_coordinator.run(&request.workspace_name, || {
+            self.search_with_policy(request, policy)
+        })
+    }
+
+    fn search_with_policy(
+        &self,
+        request: &SearchRequest,
+        policy: &ObservedValuesRetrievalPolicy,
+    ) -> ProviderSearchOutcome {
         let (drain, drain_error) = self.drain_before_search(&request.workspace_name);
         let retrieval_limit = usize::try_from(request.limit)
             .unwrap_or(usize::MAX)

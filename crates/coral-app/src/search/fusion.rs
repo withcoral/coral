@@ -178,6 +178,41 @@ mod tests {
         );
     }
 
+    #[test]
+    fn equal_keys_from_different_providers_remain_distinct() {
+        let mut outcomes = vec![
+            outcome(
+                SearchProviderKind::CatalogMetadata,
+                vec![candidate(
+                    SearchProviderKind::CatalogMetadata,
+                    "provider-scoped-key",
+                    99,
+                )],
+            ),
+            outcome(
+                SearchProviderKind::NativeFanout,
+                vec![candidate(
+                    SearchProviderKind::NativeFanout,
+                    "provider-scoped-key",
+                    1,
+                )],
+            ),
+        ];
+
+        let ordered = order_candidates(&mut outcomes);
+
+        assert_eq!(
+            ordered
+                .iter()
+                .map(|candidate| (candidate.provider, candidate.key.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                (SearchProviderKind::CatalogMetadata, "provider-scoped-key"),
+                (SearchProviderKind::NativeFanout, "provider-scoped-key"),
+            ]
+        );
+    }
+
     fn outcome(
         provider: SearchProviderKind,
         candidates: Vec<SearchCandidate>,
