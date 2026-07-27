@@ -39,6 +39,9 @@ registration, and query execution.
   of the provider and all resolved connection parameters. Keep pool
   implementation in this crate; do not introduce process-global or
   cross-workspace pool state.
+- Keep `mod.rs` files as slender module boundaries: declare and re-export named
+  sibling modules there, and keep substantive implementation in those sibling
+  files.
 - Keep this crate transport-neutral. Arrow IPC, CLI formatting, and MCP-facing
   shaping belong outside `coral-engine`.
 
