@@ -1466,11 +1466,15 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  type: object
-                  properties:
-                    id: {type: integer}
+                type: object
+                properties:
+                  total_count: {type: integer}
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: {type: integer}
 "
     }
 
@@ -1773,21 +1777,26 @@ surface:
     }
 
     #[test]
-    fn build_v4_materialization_persists_lookup_keys_in_operation_metadata() {
+    fn build_v4_materialization_persists_inferred_policy_in_operation_metadata() {
         let (_state, _descriptor, layout, _manifest_yaml, _manifest) = setup_materialization();
         let surface_dir = layout.v4_materialized_dir(&workspace_name(), &source_name());
         let metadata: OperationMetadataCatalog =
             read_yaml(&surface_dir.join(OPERATION_METADATA_FILENAME))
                 .expect("read operation metadata");
-        let lookup_keys = match metadata
+        let (row_path, lookup_keys) = match metadata
             .operations
             .values()
             .next()
             .expect("operation metadata")
         {
-            coral_spec::v4::OperationMetadata::Rest { lookup_keys, .. } => lookup_keys,
+            coral_spec::v4::OperationMetadata::Rest {
+                row_path,
+                lookup_keys,
+                ..
+            } => (row_path, lookup_keys),
             coral_spec::v4::OperationMetadata::Mcp { .. } => panic!("expected REST metadata"),
         };
+        assert_eq!(row_path, &["items"]);
         assert_eq!(lookup_keys, &["state"]);
     }
 
@@ -2222,6 +2231,45 @@ surface:
         assert!(
             !q.lookup_key,
             "loading must not enable a persisted lookup key"
+        );
+    }
+
+    #[test]
+    fn load_v4_materialization_rejects_row_path_override_the_projection_cannot_serve() {
+        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
+        let mut metadata = installed_operation_metadata(&layout);
+        let coral_spec::v4::OperationMetadata::Rest { row_path, .. } = metadata
+            .operations
+            .values_mut()
+            .next()
+            .expect("operation metadata")
+        else {
+            panic!("expected REST metadata");
+        };
+        // The materialized projection has issue columns because the rows come
+        // from `items`; making the envelope the row makes them unreadable.
+        row_path.clear();
+        write_operation_metadata_override(&layout, &metadata);
+
+        let error = load_v4_materialization(
+            &layout,
+            &workspace_name(),
+            &source_name(),
+            &manifest_yaml,
+            &manifest,
+        )
+        .expect_err("row path override incompatible with persisted columns must fail");
+
+        assert!(
+            matches!(
+                error,
+                AppError::MissingOrIncompatibleV4Materialization { .. }
+            ),
+            "unexpected error: {error:#}"
+        );
+        assert!(
+            error.to_string().contains("column 'id' reads field 'id'"),
+            "unexpected error: {error}"
         );
     }
 
