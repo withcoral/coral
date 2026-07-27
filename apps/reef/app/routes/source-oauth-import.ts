@@ -19,13 +19,14 @@ export async function action({ params, request }: Route.ActionArgs): Promise<Res
   const formData = await request.formData()
   const manifestYaml = formData.get('manifest_yaml')
   const inputKey = formValue(formData, 'oauth_input_key')
-  const methodIndex = Number(formValue(formData, 'oauth_method_index'))
+  const methodIndexValue = formValue(formData, 'oauth_method_index')
+  const methodIndex = Number(methodIndexValue)
 
   if (typeof manifestYaml !== 'string' || !manifestYaml.trim()) {
     return oauthStreamErrorResponse('Missing source manifest', 400)
   }
   if (!inputKey) return oauthStreamErrorResponse('Missing OAuth source input key', 400)
-  if (!Number.isInteger(methodIndex) || methodIndex < 0) {
+  if (methodIndexValue === '' || !Number.isInteger(methodIndex) || methodIndex < 0) {
     return oauthStreamErrorResponse('Invalid OAuth credential method index', 400)
   }
 
