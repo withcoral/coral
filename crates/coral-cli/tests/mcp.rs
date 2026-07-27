@@ -1305,13 +1305,17 @@ async fn mcp_search_returns_native_result_and_diagnostic_contracts()
     )
     .await;
     let client = start_mcp_client(&server).await?;
+    let task_id = start_test_task(&client).await?;
 
     let search = structured_tool_content(
         &client,
-        CallToolRequestParams::new("search").with_arguments(json_object(&json!({
-            "query": "native",
-            "limit": 10
-        }))),
+        CallToolRequestParams::new("search").with_arguments(task_arguments(
+            &task_id,
+            &json!({
+                "query": "native",
+                "limit": 10
+            }),
+        )),
     )
     .await?;
     assert_eq!(search["results"][0]["kind"], "native_result");

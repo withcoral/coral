@@ -161,7 +161,7 @@ mod tests {
     #[test]
     fn search_output_schema_accepts_native_contract_and_feature_off_omission() {
         let context = ToolDescriptionContext::new(1, 0, Vec::new());
-        let tools = available_tools(&context, BASE_TOOLS);
+        let tools = available_tools(&context, DEFAULT_TOOLS);
         let search = tool_by_name(&tools, "search");
         let schema = Value::Object(
             search
