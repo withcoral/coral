@@ -210,7 +210,7 @@ mod tests {
     const SESSION: &str = "[auth.session]\nsigning_key_file = 'session.key'\n";
     const AUTHORIZATION_SERVER: &str =
         "[auth.authorization_server]\nissuer = 'http://localhost:9080'\n";
-    const PROVIDER: &str = "[auth.providers.test]\nissuer = 'https://accounts.example.test'\nclient_id = 'upstream-client'\nclient_secret_env = 'UNREAD_ENV'\nredirect_uri = 'http://localhost:9080/auth/oidc/test/callback'\n";
+    const PROVIDER: &str = "[auth.provider]\nissuer = 'https://accounts.example.test'\nclient_id = 'upstream-client'\nclient_secret_env = 'UNREAD_ENV'\nredirect_uri = 'http://localhost:9080/auth/oidc/callback'\n";
 
     fn config(auth: &str) -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("tempdir");

@@ -1,6 +1,5 @@
 //! Parsing and validation for Coral authentication settings.
 
-use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -37,8 +36,7 @@ pub struct AuthSettings {
     allow_insecure_remote_http_bind: bool,
     session: SessionTokenSettings,
     authorization_server: AuthorizationServerSettings,
-    #[serde(default)]
-    providers: BTreeMap<String, OidcProviderSettings>,
+    provider: OidcProviderSettings,
 }
 
 impl AuthSettings {
@@ -89,14 +87,7 @@ impl AuthSettings {
     pub(super) fn validate(&mut self) -> Result<(), String> {
         self.session.validate()?;
         self.authorization_server.validate()?;
-        if self.providers.is_empty() {
-            return Err(config_error(
-                "auth.providers must configure at least one OIDC provider",
-            ));
-        }
-        for (name, provider) in &mut self.providers {
-            provider.validate(name)?;
-        }
+        self.provider.validate()?;
         if !is_loopback_ip(self.http_bind_addr.ip()) && !self.allow_insecure_remote_http_bind {
             return Err(config_error(
                 "non-loopback auth.http_bind_addr serves cleartext OAuth endpoints and requires auth.allow_insecure_remote_http_bind = true",
@@ -218,24 +209,16 @@ struct OidcProviderSettings {
 }
 
 impl OidcProviderSettings {
-    fn validate(&mut self, name: &str) -> Result<(), String> {
-        if !valid_path_segment(name) {
+    fn validate(&mut self) -> Result<(), String> {
+        if self.client_secret.is_some() == self.client_secret_env.is_some() {
             return Err(config_error(
-                "auth.providers keys must be non-empty path segments",
+                "auth.provider must configure exactly one of client_secret or client_secret_env",
             ));
         }
-        if self.client_secret.is_some() == self.client_secret_env.is_some() {
-            return Err(config_error(format!(
-                "auth.providers.{name} must configure exactly one of client_secret or client_secret_env"
-            )));
-        }
-        self.issuer = required(&format!("auth.providers.{name}.issuer"), &self.issuer)?;
+        self.issuer = required("auth.provider.issuer", &self.issuer)?;
         self.issuer = validate_issuer("OIDC provider issuer", &self.issuer, false)?;
-        self.client_id = required(&format!("auth.providers.{name}.client_id"), &self.client_id)?;
-        self.redirect_uri = required(
-            &format!("auth.providers.{name}.redirect_uri"),
-            &self.redirect_uri,
-        )?;
+        self.client_id = required("auth.provider.client_id", &self.client_id)?;
+        self.redirect_uri = required("auth.provider.redirect_uri", &self.redirect_uri)?;
         validate_endpoint("OIDC provider redirect URI", &self.redirect_uri)?;
         Ok(())
     }
@@ -279,14 +262,6 @@ fn required(label: &str, value: &str) -> Result<String, String> {
     } else {
         Ok(value.to_string())
     }
-}
-
-fn valid_path_segment(value: &str) -> bool {
-    !value.is_empty()
-        && !matches!(value, "." | "..")
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~'))
 }
 
 fn validate_issuer(label: &str, raw: &str, root_only: bool) -> Result<String, String> {
@@ -363,7 +338,7 @@ mod tests {
     const SESSION: &str = "[auth.session]\nsigning_key_file = 'session.key'\n";
     const AUTHORIZATION_SERVER: &str =
         "[auth.authorization_server]\nissuer = 'http://localhost:9080/'\n";
-    const PROVIDER: &str = "[auth.providers.test]\nissuer = 'https://accounts.example.test'\nclient_id = 'upstream-client'\nclient_secret_env = 'UNREAD_ENV'\nredirect_uri = 'http://localhost:9080/auth/oidc/test/callback'\n";
+    const PROVIDER: &str = "[auth.provider]\nissuer = 'https://accounts.example.test'\nclient_id = 'upstream-client'\nclient_secret_env = 'UNREAD_ENV'\nredirect_uri = 'http://localhost:9080/auth/oidc/callback'\n";
 
     fn valid(extra: &str) -> String {
         format!("[auth]\n{SESSION}{AUTHORIZATION_SERVER}{extra}\n{PROVIDER}")
@@ -400,7 +375,7 @@ mod tests {
             ),
             (
                 format!("[auth]\n{SESSION}{AUTHORIZATION_SERVER}"),
-                "must configure at least one",
+                "missing field `provider`",
             ),
             (
                 valid("").replace(
@@ -412,6 +387,10 @@ mod tests {
             (
                 valid("").replace("[auth.authorization_server]", "[auth.oauth]"),
                 "oauth",
+            ),
+            (
+                valid("").replace("[auth.provider]", "[auth.providers.test]"),
+                "unknown field `providers`",
             ),
             (
                 valid("").replace(
