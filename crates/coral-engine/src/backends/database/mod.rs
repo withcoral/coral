@@ -154,6 +154,10 @@ struct CompiledDatabaseSource {
 trait DatabaseCatalogStrategy: Send + Sync {
     fn provider_name(&self) -> &'static str;
 
+    fn registration_timeout(&self) -> Option<Duration> {
+        Some(REMOTE_DATABASE_ATTEMPT_TIMEOUT)
+    }
+
     async fn build_catalog(
         &self,
         catalog_name: &str,
@@ -167,6 +171,37 @@ fn database_strategy(connection: &DatabaseConnectionSpec) -> &dyn DatabaseCatalo
         DatabaseConnectionSpec::Postgres(connection) => connection,
         DatabaseConnectionSpec::MySql(connection) => connection,
         DatabaseConnectionSpec::Sqlite(connection) => connection,
+    }
+}
+
+async fn register_database_catalog(
+    strategy: &dyn DatabaseCatalogStrategy,
+    catalog_name: &str,
+    context: &RenderContext<'_>,
+    pool_registry: &DatabasePoolRegistry,
+) -> DataFusionResult<DatabaseCatalog> {
+    let Some(timeout) = strategy.registration_timeout() else {
+        return strategy
+            .build_catalog(catalog_name, context, pool_registry)
+            .await;
+    };
+    let registration = || strategy.build_catalog(catalog_name, context, pool_registry);
+    match tokio::time::timeout(timeout, registration()).await {
+        Ok(result) => result,
+        Err(_elapsed) => {
+            pool_registry.remove_catalog(catalog_name);
+            match tokio::time::timeout(timeout, registration()).await {
+                Ok(result) => result,
+                Err(_elapsed) => {
+                    pool_registry.remove_catalog(catalog_name);
+                    Err(DataFusionError::Execution(format!(
+                        "database source '{catalog_name}' ({}) registration timed out after two {} second attempts",
+                        strategy.provider_name(),
+                        timeout.as_secs()
+                    )))
+                }
+            }
+        }
     }
 }
 
@@ -196,9 +231,10 @@ impl CompiledBackendSource for CompiledDatabaseSource {
         );
         let context = RenderContext::source_scoped(&resolved_inputs);
         let strategy = database_strategy(&self.manifest.connection);
-        let database_catalog = strategy
-            .build_catalog(&self.manifest.common.name, &context, &self.pool_registry)
-            .await?;
+        let catalog_name = &self.manifest.common.name;
+        let database_catalog =
+            register_database_catalog(strategy, catalog_name, &context, &self.pool_registry)
+                .await?;
         let source = registered_source_for_catalog(
             &self.manifest.common,
             &self.manifest.declared_inputs,
@@ -243,27 +279,23 @@ impl DatabaseCatalogStrategy for PostgresConnectionSpec {
             params.insert("sslmode".to_string(), render_template(sslmode, context)?);
         }
         let pool_id = PoolId::new(catalog_name, self.provider_name(), &params);
-        remote_database_catalog(self.provider_name(), async move {
-            let pool = pool_registry
-                .get_or_create(pool_id, async move {
-                    Ok(DatabasePool::Postgres(Arc::new(
-                        PostgresConnectionPool::new(to_secret_map(params))
-                            .await
-                            .map_err(provider_error)?
-                            // The MySQL adapter has no equivalent unsupported-type policy.
-                            .with_unsupported_type_action(UnsupportedTypeAction::String),
-                    )))
-                })
-                .await?;
-            let DatabasePool::Postgres(pool) = pool else {
-                return Err(DataFusionError::Internal(format!(
-                    "database catalog '{catalog_name}' resolved to a non-Postgres pool"
-                )));
-            };
-            build_database_catalog(pool, POSTGRES_RELATIONS_SQL, Arc::new(PostgreSqlDialect {}))
-                .await
-        })
-        .await
+        let pool = pool_registry
+            .get_or_create(pool_id, async move {
+                Ok(DatabasePool::Postgres(Arc::new(
+                    PostgresConnectionPool::new(to_secret_map(params))
+                        .await
+                        .map_err(provider_error)?
+                        // The MySQL adapter has no equivalent unsupported-type policy.
+                        .with_unsupported_type_action(UnsupportedTypeAction::String),
+                )))
+            })
+            .await?;
+        let DatabasePool::Postgres(pool) = pool else {
+            return Err(DataFusionError::Internal(format!(
+                "database catalog '{catalog_name}' resolved to a non-Postgres pool"
+            )));
+        };
+        build_database_catalog(pool, POSTGRES_RELATIONS_SQL, Arc::new(PostgreSqlDialect {})).await
     }
 }
 
@@ -300,24 +332,21 @@ impl DatabaseCatalogStrategy for MySqlConnectionSpec {
         };
         params.insert("tcp_port".to_string(), tcp_port.to_string());
         let pool_id = PoolId::new(catalog_name, self.provider_name(), &params);
-        remote_database_catalog(self.provider_name(), async move {
-            let pool = pool_registry
-                .get_or_create(pool_id, async move {
-                    Ok(DatabasePool::MySql(Arc::new(
-                        MySQLConnectionPool::new(to_secret_map(params))
-                            .await
-                            .map_err(provider_error)?,
-                    )))
-                })
-                .await?;
-            let DatabasePool::MySql(pool) = pool else {
-                return Err(DataFusionError::Internal(format!(
-                    "database catalog '{catalog_name}' resolved to a non-MySQL pool"
-                )));
-            };
-            build_database_catalog(pool, MYSQL_RELATIONS_SQL, Arc::new(MySqlDialect {})).await
-        })
-        .await
+        let pool = pool_registry
+            .get_or_create(pool_id, async move {
+                Ok(DatabasePool::MySql(Arc::new(
+                    MySQLConnectionPool::new(to_secret_map(params))
+                        .await
+                        .map_err(provider_error)?,
+                )))
+            })
+            .await?;
+        let DatabasePool::MySql(pool) = pool else {
+            return Err(DataFusionError::Internal(format!(
+                "database catalog '{catalog_name}' resolved to a non-MySQL pool"
+            )));
+        };
+        build_database_catalog(pool, MYSQL_RELATIONS_SQL, Arc::new(MySqlDialect {})).await
     }
 }
 
@@ -335,6 +364,10 @@ fn render_connection_params<const N: usize>(
 impl DatabaseCatalogStrategy for SqliteConnectionSpec {
     fn provider_name(&self) -> &'static str {
         "sqlite"
+    }
+
+    fn registration_timeout(&self) -> Option<Duration> {
+        None
     }
 
     async fn build_catalog(
@@ -378,22 +411,6 @@ SELECT 'main' AS schema_name,
        CASE type WHEN 'view' THEN 'VIEW' ELSE 'BASE TABLE' END AS relation_type
 FROM sqlite_master
 WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%'";
-
-async fn remote_database_catalog<F>(
-    provider_name: &str,
-    operation: F,
-) -> DataFusionResult<DatabaseCatalog>
-where
-    F: std::future::Future<Output = DataFusionResult<DatabaseCatalog>>,
-{
-    tokio::time::timeout(REMOTE_DATABASE_ATTEMPT_TIMEOUT, operation)
-        .await
-        .map_err(|_elapsed| {
-            DataFusionError::Execution(format!(
-                "{provider_name} database registration timed out after {REMOTE_DATABASE_ATTEMPT_TIMEOUT:?}"
-            ))
-        })?
-}
 
 fn registered_source_for_catalog(
     common: &SourceManifestCommon,
