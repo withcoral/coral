@@ -101,15 +101,22 @@ impl FunctionManager {
         revision: WorkspaceLifecycleRevision,
     ) -> Result<ValidatedFunctionInstall, AppError> {
         let function_name = validated_function_name(raw_sql, runtime_function)?;
-        let Some(_lifecycle_guard) = self.lifecycle_lock.lock_if_unchanged_async(revision).await
+        let manager = self.clone();
+        let operation_workspace_name = workspace_name.clone();
+        let raw_sql = raw_sql.to_string();
+        let Some(_) = self
+            .lifecycle_lock
+            .run_blocking_workspace_write_if_unchanged(revision, workspace_name, move || {
+                manager.install_user_function_artifact_with_lifecycle_lock(
+                    &operation_workspace_name,
+                    &function_name,
+                    &raw_sql,
+                )
+            })
+            .await?
         else {
             return Ok(ValidatedFunctionInstall::WorkspaceChanged);
         };
-        self.install_user_function_artifact_with_lifecycle_lock(
-            workspace_name,
-            &function_name,
-            raw_sql,
-        )?;
         Ok(ValidatedFunctionInstall::Installed)
     }
 
@@ -305,7 +312,21 @@ impl FunctionManager {
         workspace_name: &WorkspaceName,
         function_name: &FunctionName,
     ) -> Result<(), AppError> {
-        let _lifecycle_guard = self.lifecycle_lock.lock_async().await;
+        let manager = self.clone();
+        let workspace_name = workspace_name.clone();
+        let function_name = function_name.clone();
+        self.lifecycle_lock
+            .run_blocking_write(move || {
+                manager.remove_user_function_with_lifecycle_lock(&workspace_name, &function_name)
+            })
+            .await
+    }
+
+    fn remove_user_function_with_lifecycle_lock(
+        &self,
+        workspace_name: &WorkspaceName,
+        function_name: &FunctionName,
+    ) -> Result<(), AppError> {
         let _state_lock = self.config_store.state_lock_exclusive()?;
         self.config_store
             .get_function_unlocked(workspace_name, function_name)?;

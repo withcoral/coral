@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 use async_lock::{RwLock, RwLockReadGuardArc, RwLockWriteGuardArc};
 #[cfg(test)]
 use async_lock::{RwLockReadGuard, RwLockWriteGuard};
+use tokio::task;
 
 use crate::sources::model::InstalledSource;
 use crate::workspaces::WorkspaceName;
@@ -51,6 +52,45 @@ impl WorkspaceLifecycleLock {
         WorkspaceLifecycleOwnedGuard {
             guard: self.inner.write_arc().await,
         }
+    }
+
+    /// Runs a blocking lifecycle write without occupying a Tokio worker.
+    ///
+    /// The owned guard moves into the blocking task so cancellation of the
+    /// awaiting request cannot release the lifecycle writer before the
+    /// synchronous persistence tail finishes.
+    pub(crate) async fn run_blocking_write<T, E, F>(&self, operation: F) -> Result<T, E>
+    where
+        T: Send + 'static,
+        E: From<task::JoinError> + Send + 'static,
+        F: FnOnce() -> Result<T, E> + Send + 'static,
+    {
+        let guard = self.lock_async().await;
+        Self::run_blocking_with_guard(guard, operation).await
+    }
+
+    /// Runs a blocking workspace write only when the workspace is still active
+    /// at the caller's captured lifecycle revision.
+    pub(crate) async fn run_blocking_workspace_write_if_unchanged<T, E, F>(
+        &self,
+        revision: WorkspaceLifecycleRevision,
+        workspace_name: &WorkspaceName,
+        operation: F,
+    ) -> Result<Option<T>, E>
+    where
+        T: Send + 'static,
+        E: From<task::JoinError> + Send + 'static,
+        F: FnOnce() -> Result<T, E> + Send + 'static,
+    {
+        let Some(guard) = self
+            .lock_workspace_if_unchanged_async(revision, workspace_name)
+            .await
+        else {
+            return Ok(None);
+        };
+        Self::run_blocking_with_guard(guard, operation)
+            .await
+            .map(Some)
     }
 
     #[cfg(test)]
@@ -171,16 +211,38 @@ impl WorkspaceLifecycleLock {
         }
     }
 
-    pub(crate) async fn lock_if_unchanged_async(
+    pub(crate) async fn lock_workspace_if_unchanged_async(
         &self,
         revision: WorkspaceLifecycleRevision,
+        workspace_name: &WorkspaceName,
     ) -> Option<WorkspaceLifecycleOwnedGuard> {
+        if self.workspace_is_deleting(workspace_name) {
+            return None;
+        }
         let guard = self.inner.write_arc().await;
-        if guard.revision == revision.0 {
+        if guard.revision == revision.0 && !self.workspace_is_deleting(workspace_name) {
             Some(WorkspaceLifecycleOwnedGuard { guard })
         } else {
             None
         }
+    }
+
+    async fn run_blocking_with_guard<T, E, F>(
+        guard: WorkspaceLifecycleOwnedGuard,
+        operation: F,
+    ) -> Result<T, E>
+    where
+        T: Send + 'static,
+        E: From<task::JoinError> + Send + 'static,
+        F: FnOnce() -> Result<T, E> + Send + 'static,
+    {
+        let span = tracing::Span::current();
+        task::spawn_blocking(move || {
+            let _guard = guard;
+            span.in_scope(operation)
+        })
+        .await
+        .map_err(E::from)?
     }
 
     #[cfg(test)]
@@ -298,6 +360,10 @@ pub(crate) struct WorkspaceLifecycleRevision(u64);
 
 #[cfg(test)]
 mod tests {
+    use std::thread;
+
+    use crate::bootstrap::AppError;
+
     use super::*;
 
     #[tokio::test]
@@ -327,6 +393,12 @@ mod tests {
         assert!(
             lifecycle
                 .read_lease_if_unchanged(initial_revision, &workspace)
+                .await
+                .is_none()
+        );
+        assert!(
+            lifecycle
+                .lock_workspace_if_unchanged_async(initial_revision, &workspace)
                 .await
                 .is_none()
         );
@@ -366,6 +438,59 @@ mod tests {
             lifecycle.revision_if_active_async(&workspace).await,
             Some(initial_revision)
         );
+    }
+
+    #[tokio::test]
+    async fn workspace_writer_fails_when_deletion_is_announced_while_waiting() {
+        let lifecycle = WorkspaceLifecycleLock::default();
+        let workspace = WorkspaceName::parse("acme").expect("workspace");
+        let revision = lifecycle
+            .revision_if_active_async(&workspace)
+            .await
+            .expect("workspace starts active");
+        let read_lease = lifecycle.snapshot_async().await;
+        let mut pending_writer =
+            Box::pin(lifecycle.lock_workspace_if_unchanged_async(revision, &workspace));
+
+        tokio::select! {
+            biased;
+            _ = &mut pending_writer => panic!("writer should wait for the read lease"),
+            () = tokio::task::yield_now() => {}
+        }
+
+        let deletion_lifecycle = lifecycle.clone();
+        let deletion_workspace = workspace.clone();
+        let deletion = tokio::spawn(async move {
+            let marker = deletion_lifecycle
+                .mark_workspace_deleting(&deletion_workspace)
+                .await
+                .expect("mark workspace deleting");
+            drop(marker);
+        });
+        while !lifecycle.workspace_is_deleting(&workspace) {
+            tokio::task::yield_now().await;
+        }
+        drop(read_lease);
+
+        let (writer, deletion) = tokio::join!(pending_writer, deletion);
+        deletion.expect("deletion marker task");
+        assert!(
+            writer.is_none(),
+            "announced workspace deletion must reject a writer after it acquires the gate"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn blocking_lifecycle_write_runs_off_the_async_worker() {
+        let lifecycle = WorkspaceLifecycleLock::default();
+        let async_thread = thread::current().id();
+
+        let blocking_thread = lifecycle
+            .run_blocking_write(|| Ok::<_, AppError>(thread::current().id()))
+            .await
+            .expect("blocking lifecycle write");
+
+        assert_ne!(blocking_thread, async_thread);
     }
 
     #[test]

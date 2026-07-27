@@ -10,7 +10,8 @@ use crate::state::ConfigStore;
 use crate::state::db::{CoralDb, DbRepos, now_unix_nanos_i64};
 use crate::storage::fs::DirectoryBackup;
 use crate::workspaces::{
-    DeletedWorkspace, WorkspaceLifecycleLock, WorkspaceName, WorkspacePaths, WorkspaceRecord,
+    DeletedWorkspace, WorkspaceLifecycleLock, WorkspaceLifecycleRevision, WorkspaceName,
+    WorkspacePaths, WorkspaceRecord,
 };
 
 /// App-owned workspace lifecycle behavior.
@@ -98,6 +99,20 @@ impl WorkspaceManager {
         }
     }
 
+    /// Verifies the canonical workspace row while holding one active lifecycle
+    /// snapshot, then returns the revision a long-running writer must preserve.
+    pub(crate) async fn require_active_workspace_revision(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<WorkspaceLifecycleRevision, AppError> {
+        let snapshot = self.lifecycle_lock.snapshot_async().await;
+        if snapshot.workspace_is_deleting(workspace_name) {
+            return Err(AppError::WorkspaceNotFound(workspace_name.to_string()));
+        }
+        self.require_workspace(workspace_name).await?;
+        Ok(snapshot.revision())
+    }
+
     #[cfg(test)]
     pub(crate) fn lifecycle_lock(&self) -> WorkspaceLifecycleLock {
         self.lifecycle_lock.clone()
@@ -161,11 +176,9 @@ impl WorkspaceManager {
             else {
                 return Err(AppError::WorkspaceNotFound(workspace_name.to_string()));
             };
-            let deleted = {
-                let _lifecycle_guard = self.lifecycle_lock.lock();
-                self.config_store
-                    .remove_workspace_config_entries(workspace_name)
-            };
+            let deleted = self
+                .config_store
+                .remove_workspace_config_entries(workspace_name);
             let deleted = match deleted {
                 Ok(deleted) => deleted.unwrap_or_else(|| DeletedWorkspace {
                     workspace: WorkspaceRecord {

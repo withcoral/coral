@@ -48,7 +48,7 @@ use crate::transport::{
     grpc_span, instrument_grpc, query_status, validate_source_response_to_proto,
     workspace_name_from_proto, workspace_to_proto,
 };
-use crate::workspaces::{WorkspaceManager, WorkspaceName};
+use crate::workspaces::{WorkspaceLifecycleRevision, WorkspaceManager, WorkspaceName};
 use tokio::sync::mpsc;
 use tokio_stream::Stream;
 use tokio_stream::StreamExt as _;
@@ -177,7 +177,7 @@ impl SourceServiceApi for SourceService {
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            require_workspace(&workspaces, &workspace_name).await?;
+            let revision = require_active_workspace_revision(&workspaces, &workspace_name).await?;
             let bundled_name = SourceName::parse(&request.name).map_err(app_status)?;
             let command = CreateBundledSourceCommand {
                 name: bundled_name,
@@ -185,7 +185,7 @@ impl SourceServiceApi for SourceService {
             };
             let response_workspace_name = workspace_name.clone();
             let installed = sources
-                .create_bundled_source_async(workspace_name, command)
+                .create_bundled_source_async(workspace_name, revision, command)
                 .await
                 .map_err(app_status)?;
             Ok(Response::new(CreateBundledSourceResponse {
@@ -208,7 +208,7 @@ impl SourceServiceApi for SourceService {
         instrument_grpc(span.clone(), async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            require_workspace(&workspaces, &workspace_name).await?;
+            let revision = require_active_workspace_revision(&workspaces, &workspace_name).await?;
             let response_workspace_name = workspace_name.clone();
             let command = CreateBundledSourceWithOAuthCommand {
                 name: SourceName::parse(&request.name).map_err(app_status)?,
@@ -226,6 +226,7 @@ impl SourceServiceApi for SourceService {
                         sources
                             .create_bundled_source_with_oauth(
                                 &workspace_name,
+                                revision,
                                 command,
                                 event_sender,
                             )
@@ -251,7 +252,7 @@ impl SourceServiceApi for SourceService {
         instrument_grpc(span.clone(), async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            require_workspace(&workspaces, &workspace_name).await?;
+            let revision = require_active_workspace_revision(&workspaces, &workspace_name).await?;
             let response_workspace_name = workspace_name.clone();
             if request.oauth_credential_retrievals.is_empty() {
                 let command = ImportSourceCommand {
@@ -259,7 +260,7 @@ impl SourceServiceApi for SourceService {
                     bindings: source_bindings_from_proto(request.variables, request.secrets),
                 };
                 let installed = sources
-                    .import_source_async(workspace_name, command)
+                    .import_source_async(workspace_name, revision, command)
                     .await
                     .map_err(app_status)?;
                 let response = ImportSourceResponse {
@@ -285,7 +286,12 @@ impl SourceServiceApi for SourceService {
                 import_source_response_stream(response_workspace_name, move |event_sender| {
                     instrument_grpc(span, async move {
                         sources
-                            .import_source_with_credentials(&workspace_name, command, event_sender)
+                            .import_source_with_credentials(
+                                &workspace_name,
+                                revision,
+                                command,
+                                event_sender,
+                            )
                             .await
                             .map_err(app_status)
                     })
@@ -305,10 +311,10 @@ impl SourceServiceApi for SourceService {
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            require_workspace(&workspaces, &workspace_name).await?;
+            let revision = require_active_workspace_revision(&workspaces, &workspace_name).await?;
             let source_name = SourceName::parse(&request.name).map_err(app_status)?;
             sources
-                .delete_source_async(workspace_name, source_name)
+                .delete_source_async(workspace_name, revision, source_name)
                 .await
                 .map_err(app_status)?;
             Ok(Response::new(DeleteSourceResponse {}))
@@ -350,6 +356,16 @@ async fn require_workspace(
 ) -> Result<(), Status> {
     workspaces
         .require_workspace(workspace_name)
+        .await
+        .map_err(app_status)
+}
+
+async fn require_active_workspace_revision(
+    workspaces: &WorkspaceManager,
+    workspace_name: &WorkspaceName,
+) -> Result<WorkspaceLifecycleRevision, Status> {
+    workspaces
+        .require_active_workspace_revision(workspace_name)
         .await
         .map_err(app_status)
 }

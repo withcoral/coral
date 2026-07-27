@@ -30,11 +30,10 @@ use crate::sources::materialization::{
 use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::storage::fs;
-use crate::workspaces::{WorkspaceLifecycleLock, WorkspaceName};
+use crate::workspaces::{WorkspaceLifecycleLock, WorkspaceLifecycleRevision, WorkspaceName};
 use coral_spec::{ManifestCredentialMethodKind, ManifestInputKind, ManifestOAuthCredentialSpec};
 use coral_spec::{ValidatedSourceManifest, parse_source_manifest_yaml};
 use tokio::sync::{mpsc, oneshot};
-use tokio::task;
 use tracing::warn;
 use uuid::Uuid;
 
@@ -157,6 +156,17 @@ struct PersistSourceRequest<'a> {
     bindings: ValidatedBindings,
     origin: SourceOrigin,
     materialization_tmp: Option<PathBuf>,
+}
+
+struct OAuthSourceInstallRequest {
+    workspace_name: WorkspaceName,
+    candidate: CandidateSource,
+    bindings: SourceBindings,
+    oauth_input_keys: BTreeSet<String>,
+    oauth_material: Vec<OAuthCredentialMaterial>,
+    manifest_yaml: Option<String>,
+    materialization_manifest_yaml: String,
+    origin: SourceOrigin,
 }
 
 struct SourceRollbackState {
@@ -311,11 +321,13 @@ impl SourceManager {
     pub(crate) async fn create_bundled_source_async(
         &self,
         workspace_name: WorkspaceName,
+        revision: WorkspaceLifecycleRevision,
         command: CreateBundledSourceCommand,
     ) -> Result<InstalledSource, AppError> {
         let manager = self.clone();
-        self.run_blocking_lifecycle_write(move || {
-            manager.create_bundled_source_with_lifecycle_lock(&workspace_name, &command)
+        let operation_workspace_name = workspace_name.clone();
+        self.run_blocking_lifecycle_write_if_unchanged(&workspace_name, revision, move || {
+            manager.create_bundled_source_with_lifecycle_lock(&operation_workspace_name, &command)
         })
         .await
     }
@@ -340,19 +352,21 @@ impl SourceManager {
     pub(crate) async fn create_bundled_source_with_oauth(
         &self,
         workspace_name: &WorkspaceName,
+        revision: WorkspaceLifecycleRevision,
         command: CreateBundledSourceWithOAuthCommand,
         events: ImportSourceEventSender,
     ) -> Result<InstalledSource, AppError> {
         let bundled = load_bundled_source(&command.name)?;
         let candidate = self.describe_bundled_source(workspace_name, &bundled.manifest_yaml)?;
         self.install_source_with_oauth(
-            workspace_name,
-            &candidate,
-            &command.bindings,
+            workspace_name.clone(),
+            revision,
+            candidate,
+            command.bindings,
             command.oauth_credential_retrievals,
             events,
             None,
-            &bundled.manifest_yaml,
+            bundled.manifest_yaml,
             SourceOrigin::Bundled,
         )
         .await
@@ -371,11 +385,13 @@ impl SourceManager {
     pub(crate) async fn import_source_async(
         &self,
         workspace_name: WorkspaceName,
+        revision: WorkspaceLifecycleRevision,
         command: ImportSourceCommand,
     ) -> Result<InstalledSource, AppError> {
         let manager = self.clone();
-        self.run_blocking_lifecycle_write(move || {
-            manager.import_source_with_lifecycle_lock(&workspace_name, &command)
+        let operation_workspace_name = workspace_name.clone();
+        self.run_blocking_lifecycle_write_if_unchanged(&workspace_name, revision, move || {
+            manager.import_source_with_lifecycle_lock(&operation_workspace_name, &command)
         })
         .await
     }
@@ -403,6 +419,7 @@ impl SourceManager {
     pub(crate) async fn import_source_with_credentials(
         &self,
         workspace_name: &WorkspaceName,
+        revision: WorkspaceLifecycleRevision,
         command: ImportSourceWithCredentialsCommand,
         events: ImportSourceEventSender,
     ) -> Result<InstalledSource, AppError> {
@@ -412,13 +429,14 @@ impl SourceManager {
         let mut candidate = describe_manifest(&manifest_yaml, SourceOrigin::Imported, false)?;
         candidate.installed = self.source_exists(workspace_name, &candidate.name)?;
         self.install_source_with_oauth(
-            workspace_name,
-            &candidate,
-            &command.bindings,
+            workspace_name.clone(),
+            revision,
+            candidate,
+            command.bindings,
             command.oauth_credential_retrievals,
             events,
-            Some(&manifest_yaml),
-            &manifest_yaml,
+            Some(manifest_yaml.clone()),
+            manifest_yaml,
             SourceOrigin::Imported,
         )
         .await
@@ -482,76 +500,107 @@ impl SourceManager {
     )]
     async fn install_source_with_oauth(
         &self,
-        workspace_name: &WorkspaceName,
-        candidate: &CandidateSource,
-        bindings: &SourceBindings,
+        workspace_name: WorkspaceName,
+        revision: WorkspaceLifecycleRevision,
+        candidate: CandidateSource,
+        bindings: SourceBindings,
         oauth_credential_retrievals: Vec<SourceOAuthCredentialRetrieval>,
         events: ImportSourceEventSender,
-        manifest_yaml: Option<&str>,
-        materialization_manifest_yaml: &str,
+        manifest_yaml: Option<String>,
+        materialization_manifest_yaml: String,
         origin: SourceOrigin,
     ) -> Result<InstalledSource, AppError> {
         self.validate_runtime_schema_names_available(
-            workspace_name,
+            &workspace_name,
             &candidate.name,
-            materialization_manifest_yaml,
+            &materialization_manifest_yaml,
         )?;
         let oauth_input_keys = oauth_credential_retrievals
             .iter()
             .map(|credential| credential.input_key.clone())
             .collect::<BTreeSet<_>>();
         let stored_material = self.source_stored_material_for_validation(
-            workspace_name,
-            candidate,
-            bindings,
+            &workspace_name,
+            &candidate,
+            &bindings,
             &oauth_input_keys,
         )?;
         let preflight_bindings = Self::validate_oauth_import_preflight(
-            candidate,
-            bindings,
+            &candidate,
+            &bindings,
             &stored_material,
             &oauth_credential_retrievals,
         )?;
         let oauth_material = self
             .retrieve_oauth_material(
-                candidate,
+                &candidate,
                 &preflight_bindings.variables,
                 oauth_credential_retrievals,
                 events,
             )
             .await?;
-        let _lifecycle_guard = self.lifecycle_lock.lock_async().await;
-        self.validate_runtime_schema_names_available(
-            workspace_name,
-            &candidate.name,
-            materialization_manifest_yaml,
-        )?;
-        let stored_material = self.source_stored_material_for_validation(
+        let guard_workspace_name = workspace_name.clone();
+        let manager = self.clone();
+        self.run_blocking_lifecycle_write_if_unchanged(&guard_workspace_name, revision, move || {
+            manager.install_oauth_source_with_lifecycle_lock(OAuthSourceInstallRequest {
+                workspace_name,
+                candidate,
+                bindings,
+                oauth_input_keys,
+                oauth_material,
+                manifest_yaml,
+                materialization_manifest_yaml,
+                origin,
+            })
+        })
+        .await
+    }
+
+    fn install_oauth_source_with_lifecycle_lock(
+        &self,
+        request: OAuthSourceInstallRequest,
+    ) -> Result<InstalledSource, AppError> {
+        let OAuthSourceInstallRequest {
             workspace_name,
             candidate,
             bindings,
+            oauth_input_keys,
+            oauth_material,
+            manifest_yaml,
+            materialization_manifest_yaml,
+            origin,
+        } = request;
+        self.validate_runtime_schema_names_available(
+            &workspace_name,
+            &candidate.name,
+            &materialization_manifest_yaml,
+        )?;
+        let stored_material = self.source_stored_material_for_validation(
+            &workspace_name,
+            &candidate,
+            &bindings,
             &oauth_input_keys,
         )?;
         let mut validation_material = stored_material.clone();
         for material in &oauth_material {
             validation_material.insert(material.input_key.clone(), material.access_token.clone());
         }
-        let mut bindings = validate_bindings(candidate, bindings, &validation_material)?;
+        let mut bindings = validate_bindings(&candidate, &bindings, &validation_material)?;
         merge_oauth_material_into_bindings(&mut bindings, oauth_material)?;
         let materialization_inputs =
             materialization_inputs_from_bindings(&bindings, &stored_material);
         self.persist_source(
-            workspace_name,
+            &workspace_name,
             PersistSourceRequest {
-                candidate,
-                manifest_yaml,
+                candidate: &candidate,
+                manifest_yaml: manifest_yaml.as_deref(),
                 bindings,
                 origin,
                 materialization_tmp: self
                     .prepare_v4_materialization(
-                        workspace_name,
-                        candidate,
-                        materialization_manifest_yaml,
+                        &workspace_name,
+                        &candidate,
+                        &materialization_manifest_yaml,
                         &materialization_inputs,
                         origin,
                         "tmp",
@@ -574,11 +623,13 @@ impl SourceManager {
     pub(crate) async fn delete_source_async(
         &self,
         workspace_name: WorkspaceName,
+        revision: WorkspaceLifecycleRevision,
         source_name: SourceName,
     ) -> Result<InstalledSource, AppError> {
         let manager = self.clone();
-        self.run_blocking_lifecycle_write(move || {
-            manager.delete_source_with_lifecycle_lock(&workspace_name, &source_name)
+        let operation_workspace_name = workspace_name.clone();
+        self.run_blocking_lifecycle_write_if_unchanged(&workspace_name, revision, move || {
+            manager.delete_source_with_lifecycle_lock(&operation_workspace_name, &source_name)
         })
         .await
     }
@@ -1360,19 +1411,24 @@ impl SourceManager {
             .unwrap_or(source)
     }
 
-    async fn run_blocking_lifecycle_write<T, F>(&self, operation: F) -> Result<T, AppError>
+    async fn run_blocking_lifecycle_write_if_unchanged<T, F>(
+        &self,
+        workspace_name: &WorkspaceName,
+        revision: WorkspaceLifecycleRevision,
+        operation: F,
+    ) -> Result<T, AppError>
     where
         T: Send + 'static,
         F: FnOnce() -> Result<T, AppError> + Send + 'static,
     {
-        let lifecycle_guard = self.lifecycle_lock.lock_async().await;
-        let span = tracing::Span::current();
-        task::spawn_blocking(move || {
-            let _lifecycle_guard = lifecycle_guard;
-            span.in_scope(operation)
-        })
-        .await
-        .map_err(AppError::from)?
+        self.lifecycle_lock
+            .run_blocking_workspace_write_if_unchanged(revision, workspace_name, operation)
+            .await?
+            .ok_or_else(|| {
+                AppError::FailedPrecondition(format!(
+                    "workspace '{workspace_name}' changed while a source lifecycle operation was pending; retry the operation"
+                ))
+            })
     }
 }
 
@@ -1714,11 +1770,22 @@ mod tests {
     use crate::sources::materialization::{FINGERPRINT_FILENAME, PROJECTIONS_FILENAME};
     use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
     use crate::state::{AppStateLayout, ConfigStore};
-    use crate::workspaces::WorkspaceName;
+    use crate::workspaces::{WorkspaceLifecycleRevision, WorkspaceName};
     use coral_spec::{ManifestInputKind, ManifestInputSpec};
 
     fn default_workspace() -> WorkspaceName {
         WorkspaceName::default()
+    }
+
+    async fn active_revision(
+        manager: &SourceManager,
+        workspace_name: &WorkspaceName,
+    ) -> WorkspaceLifecycleRevision {
+        manager
+            .lifecycle_lock
+            .revision_if_active_async(workspace_name)
+            .await
+            .expect("workspace lifecycle revision")
     }
 
     fn manifest_with_secret() -> String {
@@ -3387,6 +3454,140 @@ surface:
     }
 
     #[tokio::test]
+    async fn announced_workspace_deletion_prevents_source_persistence() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(CredentialStore::new(layout.clone()));
+        let manager =
+            SourceManager::new_for_tests(config_store.clone(), credential_manager, layout.clone());
+        let workspace_name = default_workspace();
+        let revision = active_revision(&manager, &workspace_name).await;
+        let deletion_marker = manager
+            .lifecycle_lock
+            .mark_workspace_deleting(&workspace_name)
+            .await
+            .expect("mark workspace deleting");
+
+        let error = manager
+            .import_source_async(
+                workspace_name.clone(),
+                revision,
+                ImportSourceCommand {
+                    manifest_yaml: manifest_without_secrets(),
+                    bindings: SourceBindings::default(),
+                },
+            )
+            .await
+            .expect_err("deleting workspace must fail closed");
+        drop(deletion_marker);
+
+        assert!(
+            matches!(error, crate::bootstrap::AppError::FailedPrecondition(ref message) if message.contains("retry the operation"))
+        );
+        assert!(
+            config_store
+                .list_workspace_sources(&workspace_name)
+                .expect("list sources")
+                .is_empty()
+        );
+        let source_name = SourceName::parse("public_messages").expect("source");
+        assert!(!layout.source_dir(&workspace_name, &source_name).exists());
+    }
+
+    #[tokio::test]
+    async fn workspace_deletion_during_oauth_prevents_source_persistence() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(CredentialStore::new(layout.clone()));
+        let manager =
+            SourceManager::new_for_tests(config_store.clone(), credential_manager, layout.clone());
+        let fixture = OAuthFixture::new();
+        let redirect_port = free_loopback_port();
+        let (manifest_yaml, _) =
+            manifest_with_templated_oauth_endpoints(&fixture.token_url, redirect_port);
+        let (event_tx, mut event_rx) = import_event_channel();
+        let workspace_name = default_workspace();
+        let revision = active_revision(&manager, &workspace_name).await;
+        let lifecycle_lock = manager.lifecycle_lock.clone();
+        let deletion_workspace = workspace_name.clone();
+        let import = manager.import_source_with_credentials(
+            &workspace_name,
+            revision,
+            ImportSourceWithCredentialsCommand {
+                manifest_yaml,
+                bindings: oauth_import_bindings_with_tenant(),
+                oauth_credential_retrievals: vec![SourceOAuthCredentialRetrieval {
+                    input_key: "API_TOKEN".to_string(),
+                    method_index: 0,
+                    credential_inputs: Vec::new(),
+                }],
+            },
+            event_tx,
+        );
+        let delete_during_oauth = async {
+            let event = event_rx
+                .recv()
+                .await
+                .expect("authorization event")
+                .into_event();
+            let ImportSourceWithCredentialsEvent::Authorization {
+                authorization_url, ..
+            } = event
+            else {
+                panic!("unexpected import event");
+            };
+            let deletion_marker = lifecycle_lock
+                .mark_workspace_deleting(&deletion_workspace)
+                .await
+                .expect("mark workspace deleting");
+            callback(&authorization_url, redirect_port).await;
+
+            let event = event_rx
+                .recv()
+                .await
+                .expect("callback received event")
+                .into_event();
+            assert!(matches!(
+                event,
+                ImportSourceWithCredentialsEvent::CallbackReceived { .. }
+            ));
+            let event = event_rx
+                .recv()
+                .await
+                .expect("completion event")
+                .into_event();
+            assert!(matches!(
+                event,
+                ImportSourceWithCredentialsEvent::Completed { .. }
+            ));
+            deletion_marker
+        };
+
+        let (result, deletion_marker) = tokio::join!(import, delete_during_oauth);
+        let error = result.expect_err("OAuth import into deleting workspace must fail closed");
+        drop(deletion_marker);
+
+        assert!(
+            matches!(error, crate::bootstrap::AppError::FailedPrecondition(ref message) if message.contains("retry the operation"))
+        );
+        fixture.token_server.await.expect("token server");
+        assert!(
+            config_store
+                .list_workspace_sources(&workspace_name)
+                .expect("list sources")
+                .is_empty()
+        );
+        let source_name = SourceName::parse("secured_messages").expect("source");
+        assert!(!layout.source_dir(&workspace_name, &source_name).exists());
+    }
+
+    #[tokio::test]
     async fn import_with_oauth_persists_retrieved_material() {
         let temp = TempDir::new().expect("temp dir");
         let layout =
@@ -3412,8 +3613,10 @@ surface:
         );
         let (event_tx, mut event_rx) = import_event_channel();
         let workspace_name = default_workspace();
+        let revision = active_revision(&manager, &workspace_name).await;
         let import = manager.import_source_with_credentials(
             &workspace_name,
+            revision,
             ImportSourceWithCredentialsCommand {
                 manifest_yaml,
                 bindings: oauth_import_bindings_with_tenant(),
@@ -3493,8 +3696,10 @@ surface:
         );
         let (event_tx, mut event_rx) = import_event_channel();
         let workspace_name = default_workspace();
+        let revision = active_revision(&manager, &workspace_name).await;
         let import = manager.import_source_with_credentials(
             &workspace_name,
+            revision,
             ImportSourceWithCredentialsCommand {
                 manifest_yaml,
                 bindings: oauth_import_bindings_with_tenant(),
@@ -3573,9 +3778,11 @@ surface:
         let redirect_port = free_loopback_port();
         let (event_tx, mut event_rx) = import_event_channel();
         let workspace_name = default_workspace();
+        let revision = active_revision(&manager, &workspace_name).await;
         let error = manager
             .import_source_with_credentials(
                 &workspace_name,
+                revision,
                 ImportSourceWithCredentialsCommand {
                     manifest_yaml: manifest_with_oauth_secret(
                         "http://127.0.0.1:1/token",
@@ -3630,10 +3837,13 @@ surface:
         let manager = SourceManager::new_for_tests(config_store, credential_manager, layout);
         let redirect_port = free_loopback_port();
         let (event_tx, mut event_rx) = import_event_channel();
+        let workspace_name = default_workspace();
+        let revision = active_revision(&manager, &workspace_name).await;
 
         let error = manager
             .import_source_with_credentials(
-                &default_workspace(),
+                &workspace_name,
+                revision,
                 ImportSourceWithCredentialsCommand {
                     manifest_yaml: manifest_with_oauth_secret(
                         "http://127.0.0.1:1/token",
