@@ -101,7 +101,7 @@ impl<'a> From<&'a TableFunctionResultColumn> for FunctionResultColumnValue<'a> {
 pub(crate) fn add_function_tool() -> Tool {
     Tool::new(
         ToolName::AddFunction.as_str(),
-        "Create a reusable table function in the current Coral workspace from one read-only SQL query. Use this when a SQL pattern developed during the task is likely to be useful again. Values written as $placeholders become required named arguments. Coral validates the function before persisting it.",
+        "Create a reusable table function in the current Coral workspace from one read-only SQL query. When a SQL pattern developed during the task may be useful again, propose the function and ask the user whether to add it; call this tool only after they confirm. Values written as $placeholders become required named arguments. Coral validates the function before persisting it.",
         tool_input_schema::<AddFunctionArguments>(),
     )
     .with_raw_output_schema(tool_output_schema::<FunctionAddedValue<'static>>())

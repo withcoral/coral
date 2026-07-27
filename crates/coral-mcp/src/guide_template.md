@@ -64,7 +64,7 @@ WHERE json_get_str(rules, 0, 'clauses', 0, 'values', 0) = 'phoebe-org';
 
 ## Creating Reusable Functions
 
-Use `add_function` when a SQL pattern developed during the task is likely to be useful again. First test the query with literal values, then consolidate the useful work into one read-only query. Replace scalar values that callers will vary with `$placeholders`:
+When a SQL pattern developed during the task may be useful again, first propose the function and ask the user whether to add it. Call `add_function` only after they confirm. First test the query with literal values, then consolidate the useful work into one read-only query. Replace scalar values that callers will vary with `$placeholders`:
 
 ```sql
 select number, title, html_url as url
