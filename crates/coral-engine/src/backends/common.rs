@@ -197,9 +197,9 @@ pub(crate) struct BackendCompileRequest<'a> {
 /// runtime build.
 #[derive(Default)]
 pub(crate) struct BackendRegistrationContext {
-    default_http_client: OnceLock<Result<reqwest::Client, String>>,
-    credential_safe_http_client: OnceLock<Result<reqwest::Client, String>>,
-    single_attempt_http_client: OnceLock<Result<reqwest::Client, String>>,
+    default: OnceLock<Result<reqwest::Client, String>>,
+    credential_safe: OnceLock<Result<reqwest::Client, String>>,
+    single_attempt: OnceLock<Result<reqwest::Client, String>>,
 }
 
 impl BackendRegistrationContext {
@@ -209,9 +209,9 @@ impl BackendRegistrationContext {
         build_client: impl FnOnce() -> Result<reqwest::Client, String>,
     ) -> Result<reqwest::Client, String> {
         let cache = if credential_safe {
-            &self.credential_safe_http_client
+            &self.credential_safe
         } else {
-            &self.default_http_client
+            &self.default
         };
         cache
             .get_or_init(build_client)
@@ -224,7 +224,7 @@ impl BackendRegistrationContext {
         &self,
         build_client: impl FnOnce() -> Result<reqwest::Client, String>,
     ) -> Result<reqwest::Client, String> {
-        self.single_attempt_http_client
+        self.single_attempt
             .get_or_init(build_client)
             .as_ref()
             .cloned()
