@@ -1014,6 +1014,7 @@ functions:
         let manifest = validated_v4_rest_manifest();
         let resolution = resolve_universal_search(
             "different_installed_name",
+            Uuid::nil(),
             &manifest,
             None,
             &RuntimeContractFingerprint::for_test("v1:identity-mismatch"),
@@ -1052,6 +1053,7 @@ functions:
 
         let resolution = resolve_universal_search(
             "authored_owner",
+            Uuid::nil(),
             &manifest,
             Some(&materialized),
             &RuntimeContractFingerprint::for_test("v1:advisory-headers"),

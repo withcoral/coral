@@ -592,7 +592,6 @@ impl QueryManager {
             operation = "execute_selected_table_function",
             workspace = %command.workspace_name,
             source = %command.route.source_name,
-            schema = %command.route.locator.schema_name,
             function = %command.route.locator.function_name,
             route_id = command.route.authored_route_id.as_deref().unwrap_or(""),
             query_len_bytes = command.query.len(),
@@ -611,6 +610,7 @@ impl QueryManager {
             if command.row_limit == 0
                 || command.query.trim().is_empty()
                 || command.route.query_argument.data_type != ManifestDataType::Utf8
+                || command.route.source_name != command.route.locator.schema_name
             {
                 return Err(SelectedTableFunctionExecutionError::route_stale(&controls));
             }
@@ -1413,6 +1413,9 @@ fn selected_function_statement(
     query: &str,
     requested_rows: usize,
 ) -> Option<(String, QueryParameters)> {
+    if route.source_name != route.locator.schema_name {
+        return None;
+    }
     let top_k = requested_rows
         .min(route.search_limits.max_top_k)
         .min(MAX_SELECTED_FUNCTION_ROWS);
@@ -1444,7 +1447,7 @@ fn selected_function_statement(
     Some((
         format!(
             "SELECT * FROM {}.{}({}) LIMIT {top_k}",
-            quote_sql_identifier(&route.locator.schema_name),
+            quote_sql_identifier(&route.source_name),
             quote_sql_identifier(&route.locator.function_name),
             arguments.join(", ")
         ),
@@ -4283,6 +4286,10 @@ surface:
         let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
         let routes = install_selected_http_source(&fixture, &server.uri()).await;
         let query = "x'); DROP TABLE secrets; --";
+        for route in &routes {
+            assert_eq!(route.source_name, "selected_http");
+            assert_eq!(route.locator.schema_name, route.source_name);
+        }
 
         for (function, requested_rows) in [
             ("search_default_ignored", 5),
@@ -4479,6 +4486,49 @@ surface:
     }
 
     #[tokio::test]
+    async fn divergent_selected_source_and_schema_stop_before_oauth_or_provider_requests() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/oauth/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "access_token": "refreshed-token",
+                "expires_in": 3600
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/search/default"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!([{"title": "should not run"}])),
+            )
+            .mount(&server)
+            .await;
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
+        let mut route = route_named(
+            &install_selected_http_source(&fixture, &server.uri()).await,
+            "search_default_ignored",
+        );
+        assert_eq!(route.source_name, "selected_http");
+        assert_eq!(route.locator.schema_name, route.source_name);
+        route.locator.schema_name = "legacy_selected_http".to_string();
+        attach_expired_selected_oauth_material(&fixture, &server.uri());
+
+        let error = execute_selected_route(&fixture.manager, route, "query", 5)
+            .await
+            .expect_err("divergent route identity must fail closed");
+
+        assert_eq!(error.kind, SelectedTableFunctionFailureKind::RouteStale);
+        assert!(!error.upstream_started);
+        assert!(
+            server
+                .received_requests()
+                .await
+                .expect("record requests")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
     async fn stale_selected_target_and_fingerprint_stop_before_provider_requests() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
@@ -4661,7 +4711,7 @@ surface:
         max_top_k: usize,
     ) -> ResolvedUniversalSearchRoute {
         ResolvedUniversalSearchRoute {
-            owner_source_name: "selected_source".to_string(),
+            source_name: "selected\"schema".to_string(),
             installation_revision: uuid::Uuid::new_v4(),
             authored_route_id: Some("selected-route".to_string()),
             target: ResolvedUniversalSearchTarget {
@@ -4796,6 +4846,14 @@ surface:
         assert!(route_capped.ends_with("LIMIT 3"));
         assert!(globally_capped.ends_with("LIMIT 5"));
         assert!(selected_function_statement(&route, "query", 0).is_none());
+    }
+
+    #[test]
+    fn selected_function_statement_rejects_divergent_source_and_schema() {
+        let mut route = selected_route_with_defaults(Vec::new(), 1, 3);
+        route.locator.schema_name = "legacy_selected_schema".to_string();
+
+        assert!(selected_function_statement(&route, "query", 2).is_none());
     }
 
     #[tokio::test]
