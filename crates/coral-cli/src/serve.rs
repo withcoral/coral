@@ -3,7 +3,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 
 use coral_app::{
-    BearerAuthenticator, CoralAuthorizationServer, McpHttpServeConfig,
+    AuthServerError, BearerAuthenticator, CoralAuthorizationServer, McpHttpServeConfig,
     RunningCoralAuthorizationServer, SessionAuthSettings,
 };
 use coral_client::{
@@ -32,10 +32,10 @@ enum ServeErrorKind {
     #[error("failed to start gRPC server: {0}")]
     GrpcStart(#[source] LocalServerError),
     #[error("failed to start OAuth authorization server: {0}")]
-    OAuthStart(#[source] OAuthLifecycleError),
+    OAuthStart(#[source] AuthServerError),
     #[error("failed to start OAuth authorization server: {oauth}; cleanup also failed: {cleanup}")]
     OAuthStartCleanup {
-        oauth: OAuthLifecycleError,
+        oauth: AuthServerError,
         cleanup: ShutdownFailures,
     },
     #[error("failed to start MCP HTTP server: {0}")]
@@ -49,21 +49,17 @@ enum ServeErrorKind {
     Shutdown(ShutdownFailures),
 }
 
-#[derive(Debug, thiserror::Error)]
-#[error("{0}")]
-struct OAuthLifecycleError(String);
-
 #[derive(Debug)]
 struct ShutdownFailures {
     mcp: Option<McpHttpError>,
-    oauth: Option<OAuthLifecycleError>,
+    oauth: Option<AuthServerError>,
     grpc: Option<Box<LocalServerError>>,
 }
 
 impl ShutdownFailures {
     fn from_results(
         mcp: Result<(), McpHttpError>,
-        oauth: Result<(), OAuthLifecycleError>,
+        oauth: Result<(), AuthServerError>,
         grpc: Result<(), LocalServerError>,
     ) -> Result<(), Self> {
         let failures = Self {
@@ -256,9 +252,9 @@ fn compose_session_policies(
 
 async fn start_oauth(
     server: Option<CoralAuthorizationServer>,
-) -> Result<Option<RunningCoralAuthorizationServer>, OAuthLifecycleError> {
+) -> Result<Option<RunningCoralAuthorizationServer>, AuthServerError> {
     match server {
-        Some(server) => server.start().await.map(Some).map_err(OAuthLifecycleError),
+        Some(server) => server.start().await.map(Some),
         None => Ok(None),
     }
 }
@@ -273,7 +269,7 @@ async fn shutdown_components(
         None => Ok(()),
     };
     let oauth_result = match oauth {
-        Some(server) => server.shutdown().await.map_err(OAuthLifecycleError),
+        Some(server) => server.shutdown().await,
         None => Ok(()),
     };
     let grpc_result = grpc.shutdown().await;

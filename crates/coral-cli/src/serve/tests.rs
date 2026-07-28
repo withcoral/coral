@@ -161,7 +161,7 @@ fn loopback_grpc_endpoint_maps_wildcards_and_rejects_public_addresses() {
 fn shutdown_failures_retain_every_component_in_order() {
     let failures = ShutdownFailures::from_results(
         Err(McpHttpError::ShutdownTimedOut),
-        Err(OAuthLifecycleError("OAuth test failure".to_string())),
+        Err(AuthServerError::Config("OAuth test failure".to_string())),
         Err(LocalServerError::Unavailable(
             "gRPC test failure".to_string(),
         )),
