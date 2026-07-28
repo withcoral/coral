@@ -5,6 +5,7 @@ import {
   FunctionRuntimeInvalidSchema,
   FunctionRuntimeReadySchema,
   FunctionSchema,
+  FunctionTableFunctionPublishSchema,
 } from '@/generated/coral/v1/functions_pb'
 
 import { toFunctionDetails } from './functions'
@@ -26,6 +27,10 @@ describe('functions route mapping', () => {
             { dataType: 'Utf8', name: 'title', nullable: true },
           ],
           sqlBody: 'select * from github.pull_requests',
+          tableFunction: create(FunctionTableFunctionPublishSchema, {
+            name: 'review_queue',
+            schemaName: 'functions',
+          }),
         }),
       },
     })
@@ -38,6 +43,7 @@ describe('functions route mapping', () => {
       body: 'select * from github.pull_requests',
       description: 'Pull requests waiting for review.',
       name: 'review_queue',
+      namespace: 'functions',
       resultColumns: [
         { dataType: 'Int64', name: 'number', nullable: false },
         { dataType: 'Utf8', name: 'title', nullable: true },
@@ -52,6 +58,18 @@ describe('functions route mapping', () => {
       runtime: {
         case: 'invalid',
         value: create(FunctionRuntimeInvalidSchema, { reason: 'Invalid SQL' }),
+      },
+    })
+
+    expect(toFunctionDetails(fn)).toBeNull()
+  })
+
+  it('omits functions without a SQL namespace', () => {
+    const fn = create(FunctionSchema, {
+      name: 'missing_publish_target',
+      runtime: {
+        case: 'ready',
+        value: create(FunctionRuntimeReadySchema),
       },
     })
 

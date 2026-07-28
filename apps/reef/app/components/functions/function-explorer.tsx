@@ -1,5 +1,8 @@
+import { useState } from 'react'
+
 import { PageHeader } from '@/views/traces/page-header'
 import { Container as ButtonContainer } from '@/wax/components/button'
+import { Icon } from '@/wax/components/icon'
 import { Container as ScrollArea } from '@/wax/components/scroll-area'
 import { Typography } from '@/wax/components/typography'
 
@@ -12,8 +15,24 @@ export interface FunctionExplorerProps {
   selectedName?: string
 }
 
+interface FunctionNamespace {
+  functions: FunctionDetailsProps[]
+  name: string
+}
+
 export function FunctionExplorer({ functions, onSelect, selectedName }: FunctionExplorerProps) {
   const selectedFunction = functions.find((fn) => fn.name === selectedName)
+  const namespaces = groupFunctionsByNamespace(functions)
+  const [expandedNamespaces, setExpandedNamespaces] = useState<Set<string>>(() => new Set())
+
+  const toggleNamespace = (name: string) => {
+    setExpandedNamespaces((previous) => {
+      const next = new Set(previous)
+      if (next.has(name)) next.delete(name)
+      else next.add(name)
+      return next
+    })
+  }
 
   return (
     <section aria-label="Functions explorer" className={styles.root}>
@@ -30,23 +49,60 @@ export function FunctionExplorer({ functions, onSelect, selectedName }: Function
               </div>
             ) : (
               <div className={styles.list}>
-                {functions.map((fn) => {
-                  const selected = fn.name === selectedName
+                {namespaces.map((namespace) => {
+                  const expanded = expandedNamespaces.has(namespace.name)
+                  const namespaceChildrenId = `function-namespace-${namespace.name}-items`
                   return (
-                    <ButtonContainer
-                      aria-pressed={selected}
-                      className={styles.listRow}
-                      fullWidth
-                      isActive={selected}
-                      key={fn.name}
-                      onClick={() => onSelect(fn.name)}
-                      size="22"
-                      variant="bare"
-                    >
-                      <Typography.BodyStrong className={styles.functionName}>
-                        {fn.name}
-                      </Typography.BodyStrong>
-                    </ButtonContainer>
+                    <div key={namespace.name}>
+                      <ButtonContainer
+                        aria-controls={namespaceChildrenId}
+                        aria-expanded={expanded}
+                        className={styles.listRow}
+                        fullWidth
+                        onClick={() => toggleNamespace(namespace.name)}
+                        size="22"
+                        variant="bare"
+                      >
+                        <Icon
+                          color="secondary"
+                          name={expanded ? 'ChevronDown' : 'ChevronRight'}
+                          size="14"
+                        />
+                        <Typography.BodyStrong className={styles.namespaceName}>
+                          {namespace.name}
+                        </Typography.BodyStrong>
+                        <Typography.BodySmall
+                          className={styles.namespaceFunctionCount}
+                          variant="tertiary"
+                        >
+                          {namespace.functions.length}
+                        </Typography.BodySmall>
+                      </ButtonContainer>
+
+                      {expanded ? (
+                        <div className={styles.namespaceFunctions} id={namespaceChildrenId}>
+                          {namespace.functions.map((fn) => {
+                            const selected = fn.name === selectedName
+                            return (
+                              <ButtonContainer
+                                aria-pressed={selected}
+                                className={styles.listRow}
+                                fullWidth
+                                isActive={selected}
+                                key={fn.name}
+                                onClick={() => onSelect(fn.name)}
+                                size="22"
+                                variant="bare"
+                              >
+                                <Typography.BodyStrong className={styles.functionName}>
+                                  {fn.name}
+                                </Typography.BodyStrong>
+                              </ButtonContainer>
+                            )
+                          })}
+                        </div>
+                      ) : null}
+                    </div>
                   )
                 })}
               </div>
@@ -68,4 +124,21 @@ export function FunctionExplorer({ functions, onSelect, selectedName }: Function
       </div>
     </section>
   )
+}
+
+function groupFunctionsByNamespace(functions: FunctionDetailsProps[]): FunctionNamespace[] {
+  const grouped = new Map<string, FunctionDetailsProps[]>()
+
+  for (const fn of functions) {
+    const namespace = grouped.get(fn.namespace)
+    if (namespace) namespace.push(fn)
+    else grouped.set(fn.namespace, [fn])
+  }
+
+  return [...grouped.entries()]
+    .map(([name, namespaceFunctions]) => ({
+      functions: namespaceFunctions.toSorted((left, right) => left.name.localeCompare(right.name)),
+      name,
+    }))
+    .toSorted((left, right) => left.name.localeCompare(right.name))
 }

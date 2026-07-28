@@ -19,6 +19,7 @@ where pull.state = 'open'
 order by pull.updated_at desc`,
     description: 'Pull requests waiting for review in a repository.',
     name: 'github_review_queue',
+    namespace: 'functions',
     resultColumns: [
       { dataType: 'Int64', name: 'number', nullable: false },
       { dataType: 'Utf8', name: 'title', nullable: false },

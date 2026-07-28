@@ -22,6 +22,7 @@ export interface FunctionDetailsProps {
   body?: string
   description: string
   name: string
+  namespace: string
   resultColumns: FunctionDetailsResultColumn[]
   sources: string[]
 }

@@ -50,7 +50,26 @@ export const list = style({
 
 export const listRow = style({
   borderRadius: 4,
+  gap: 6,
   justifyContent: 'flex-start',
+})
+
+export const namespaceName = style({
+  minWidth: 0,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+})
+
+export const namespaceFunctionCount = style({
+  color: theme.content.tertiary,
+  marginInlineStart: 'auto',
+})
+
+export const namespaceFunctions = style({
+  display: 'flex',
+  flexDirection: 'column',
+  marginInlineStart: 16,
 })
 
 export const functionName = style({

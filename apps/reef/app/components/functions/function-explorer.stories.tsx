@@ -22,6 +22,7 @@ where pull.state = 'open'
 order by pull.updated_at desc`,
     description: 'Pull requests waiting for review in a repository.',
     name: 'review_queue',
+    namespace: 'engineering',
     resultColumns: [
       { dataType: 'Int64', name: 'number', nullable: false },
       { dataType: 'Utf8', name: 'title', nullable: false },
@@ -37,6 +38,7 @@ order by pull.updated_at desc`,
     ],
     description: 'Incidents opened since a point in time, filtered by severity.',
     name: 'recent_incidents',
+    namespace: 'operations',
     resultColumns: [
       { dataType: 'Utf8', name: 'id', nullable: false },
       { dataType: 'Utf8', name: 'title', nullable: false },
@@ -48,6 +50,7 @@ order by pull.updated_at desc`,
     arguments: [],
     description: 'Customer conversations that still need a response.',
     name: 'customer_follow_up',
+    namespace: 'operations',
     resultColumns: [
       { dataType: 'Utf8', name: 'conversation_id', nullable: false },
       { dataType: 'Utf8', name: 'summary', nullable: true },
@@ -98,11 +101,17 @@ type Story = StoryObj<typeof meta>
 
 export const Default: Story = {
   play: async ({ canvas, userEvent }) => {
+    await expect(canvas.getByRole('button', { name: /engineering/ })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    )
+    await userEvent.click(canvas.getByRole('button', { name: /engineering/ }))
     await expect(canvas.getByRole('button', { name: 'review_queue' })).toHaveAttribute(
       'aria-pressed',
       'true',
     )
 
+    await userEvent.click(canvas.getByRole('button', { name: /operations/ }))
     await userEvent.click(canvas.getByRole('button', { name: 'recent_incidents' }))
 
     await expect(canvas.getByRole('button', { name: 'recent_incidents' })).toHaveAttribute(
