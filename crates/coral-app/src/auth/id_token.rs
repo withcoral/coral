@@ -1,4 +1,4 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use jsonwebtoken::jwk::{
     AlgorithmParameters, EllipticCurve, Jwk, JwkSet, KeyAlgorithm, KeyOperations, PublicKeyUse,
@@ -133,8 +133,8 @@ fn validate_claims(
         .duration_since(UNIX_EPOCH)
         .map_err(|_error| ())?
         .as_secs();
-    let issued_at = claim_u64(claims, "iat")?;
-    let expires_at = claim_u64(claims, "exp")?;
+    let issued_at = claim_numeric_date(claims, "iat")?;
+    let expires_at = claim_numeric_date(claims, "exp")?;
     if expires_at <= issued_at
         || expires_at.saturating_add(CLOCK_SKEW_SECONDS) < now
         || issued_at > now.saturating_add(CLOCK_SKEW_SECONDS)
@@ -144,7 +144,7 @@ fn validate_claims(
         return Err(());
     }
     if let Some(not_before) = claims.get("nbf") {
-        let not_before = not_before.as_u64().ok_or(())?;
+        let not_before = numeric_date(not_before)?;
         if not_before > now.saturating_add(CLOCK_SKEW_SECONDS) {
             return Err(());
         }
@@ -190,8 +190,21 @@ fn valid_subject(value: &str) -> bool {
     !value.is_empty() && value.len() <= MAX_SUBJECT_BYTES && value.is_ascii()
 }
 
-fn claim_u64(claims: &Map<String, Value>, name: &str) -> Result<u64, ()> {
-    claims.get(name).and_then(Value::as_u64).ok_or(())
+fn claim_numeric_date(claims: &Map<String, Value>, name: &str) -> Result<u64, ()> {
+    claims.get(name).ok_or(()).and_then(numeric_date)
+}
+
+fn numeric_date(value: &Value) -> Result<u64, ()> {
+    if let Some(value) = value.as_u64() {
+        return Ok(value);
+    }
+    let value = value.as_f64().ok_or(())?;
+    if value < 0.0 {
+        return Err(());
+    }
+    Duration::try_from_secs_f64(value.round())
+        .map(|duration| duration.as_secs())
+        .map_err(|_error| ())
 }
 
 fn validate_audience(claims: &Map<String, Value>, client_id: &str) -> Result<(), ()> {
@@ -258,7 +271,7 @@ pub(in crate::auth) mod tests {
              issuer = 'http://localhost/issuer'
              client_id = 'provider-client'
              client_secret = 'secret'
-             redirect_uri = 'http://localhost/callback'
+             redirect_uri = 'http://localhost:9080/callback'
              {extra}"
         ))
         .expect("valid auth config")
@@ -331,11 +344,7 @@ pub(in crate::auth) mod tests {
             ("key_ops", json!(["sign"])),
         ] {
             let mut key = rsa_key();
-            if value.is_null() {
-                key.as_object_mut().expect("key").remove(field);
-            } else {
-                set_claim(&mut key, field, value);
-            }
+            set_claim(&mut key, field, value);
             assert!(validate(&good_token, &["RS256".into()], vec![key]));
         }
         let mut key_without_alg = rsa_key();
@@ -455,7 +464,8 @@ pub(in crate::auth) mod tests {
             ("azp", json!("other")),
             ("nonce", json!("wrong")),
             ("iat", json!("1")),
-            ("exp", json!(1.5)),
+            ("iat", json!(-0.25)),
+            ("exp", json!("2")),
             ("nbf", json!("soon")),
             ("sub", json!("")),
             ("sub", json!("nön-ascii")),
@@ -483,6 +493,13 @@ pub(in crate::auth) mod tests {
                 panic!("invalid OIDC claims must be rejected");
             };
         }
+        let now = Duration::from_secs(get_current_timestamp()).as_secs_f64();
+        let mut fractional = base.clone();
+        set_claim(&mut fractional, "iat", json!(now - 0.75));
+        set_claim(&mut fractional, "exp", json!(now + 300.25));
+        set_claim(&mut fractional, "nbf", json!(now - 0.25));
+        validate_claims(&provider, "expected-nonce", &fractional)
+            .expect("fractional NumericDate claims");
         let mut multiple = base;
         set_claim(&mut multiple, "aud", json!(["provider-client", "other"]));
         set_claim(&mut multiple, "azp", json!("provider-client"));
