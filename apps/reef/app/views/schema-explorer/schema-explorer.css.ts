@@ -67,11 +67,6 @@ export const treeRow = style({
   borderRadius: 4,
   gap: 6,
   justifyContent: 'flex-start',
-  selectors: {
-    '&:hover:not(:disabled)': {
-      background: theme.surface.onMainContentSubtle,
-    },
-  },
 })
 
 export const connectorName = style({

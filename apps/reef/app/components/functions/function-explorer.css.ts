@@ -51,11 +51,6 @@ export const list = style({
 export const listRow = style({
   borderRadius: 4,
   justifyContent: 'flex-start',
-  selectors: {
-    '&:hover:not(:disabled)': {
-      background: theme.surface.onMainContentSubtle,
-    },
-  },
 })
 
 export const functionName = style({
