@@ -11,22 +11,41 @@ use serde::{Deserialize, Deserializer};
 use url::{Host, Url};
 use zeroize::Zeroizing;
 
-use super::session::{SessionTokenError, SessionTokenIssuer};
+use super::error::AuthServerError;
+use super::session::SessionTokenIssuer;
+use crate::bootstrap::is_loopback_ip;
 
 const DEFAULT_BIND_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
 const DEFAULT_SIGNING_KEY_ENV: &str = "CORAL_SESSION_SIGNING_KEY";
 const DEFAULT_TOKEN_TTL: Duration = Duration::from_hours(720);
+const MAX_TOKEN_TTL: Duration = Duration::from_hours(24 * 365);
+const CONFLICTING_KEY_SOURCES: &str = "configure only one of signing_key_env or signing_key_file";
 
-/// Settings for the top-level `[auth]` configuration section.
+/// Validated settings for the top-level `[auth]` configuration section.
 ///
-/// [`AuthSettings::from_toml`] deserializes this type directly and validates it
-/// before returning.
-/// [`CoralAuthorizationServer::from_settings`](super::CoralAuthorizationServer::from_settings)
-/// revalidates these settings at its own boundary. This type performs no
-/// `config.toml` filesystem reads.
+/// [`AuthSettings::from_toml`] is the only constructor: the deserialize target
+/// is the private `RawAuthSettings`, so an unvalidated value of this type
+/// cannot be built outside this module — by the rest of the crate or by
+/// external callers. Holding one is proof that validation ran, which is why
+/// nothing downstream revalidates. This type performs no `config.toml`
+/// filesystem reads.
+pub struct AuthSettings(RawAuthSettings);
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct AuthSettings {
+struct RawAuthSettings {
+    /// Address the authorization server's HTTP listener binds to.
+    ///
+    /// This address must serve [`AuthorizationServerSettings::issuer`]'s
+    /// origin, either directly or through a TLS-terminating reverse proxy.
+    /// Published metadata derives `authorization_endpoint` and `token_endpoint`
+    /// from the issuer rather than from the bound address, so a bind that does
+    /// not serve the issuer origin advertises endpoints nothing answers on.
+    /// The relationship is deliberately not validated, because proxied
+    /// deployments legitimately bind an address that shares no host or port
+    /// with the issuer. Note that the default binds an ephemeral loopback port,
+    /// so a fixed issuer can only be served through it in flows that discover
+    /// the assigned port at runtime.
     #[serde(
         default = "default_bind_addr",
         deserialize_with = "deserialize_bind_addr"
@@ -44,50 +63,53 @@ impl AuthSettings {
     ///
     /// # Errors
     ///
-    /// Returns an error when an auth-owned TOML field or cross-section
-    /// relationship is invalid.
-    pub fn from_toml(raw: &str) -> Result<Option<Self>, String> {
+    /// Returns [`AuthServerError::Config`] when an auth-owned TOML field or
+    /// cross-section relationship is invalid.
+    pub fn from_toml(raw: &str) -> Result<Option<Self>, AuthServerError> {
         let document: AuthConfigDocument =
             toml::from_str(raw).map_err(|error| config_error(error.message()))?;
         let Some(mut settings) = document.auth else {
             return Ok(None);
         };
         settings.validate()?;
-        Ok(Some(settings))
+        Ok(Some(Self(settings)))
     }
 
     pub(crate) fn bind_addr(&self) -> SocketAddr {
-        self.http_bind_addr
+        self.0.http_bind_addr
     }
 
     pub(crate) fn authorization_server(&self) -> &AuthorizationServerSettings {
-        &self.authorization_server
+        &self.0.authorization_server
     }
 
     pub(super) fn resolve_session_token_issuer(
-        mut self,
+        self,
         config_path: &Path,
         get_var: &impl Fn(&str) -> Result<Option<String>, String>,
-    ) -> Result<(Self, SessionTokenIssuer), SessionTokenError> {
-        self.validate()?;
-        let key = self.session.load_signing_key(config_path, get_var)?;
+    ) -> Result<(Self, SessionTokenIssuer), AuthServerError> {
+        let key = self.0.session.load_signing_key(config_path, get_var)?;
         let issuer = SessionTokenIssuer::new(
-            Some(&self.authorization_server.issuer),
+            Some(&self.0.authorization_server.issuer),
             key.as_slice(),
-            Duration::from_secs(self.session.access_token_ttl_seconds),
-        )?;
+            Duration::from_secs(self.0.session.access_token_ttl_seconds),
+        )
+        .map_err(AuthServerError::Config)?;
         Ok((self, issuer))
     }
 
     pub(super) fn matches_session_token_issuer(&self, issuer: &SessionTokenIssuer) -> bool {
-        self.authorization_server.issuer == issuer.issuer
-            && Duration::from_secs(self.session.access_token_ttl_seconds) == issuer.access_token_ttl
+        self.0.authorization_server.issuer == issuer.issuer
+            && Duration::from_secs(self.0.session.access_token_ttl_seconds)
+                == issuer.access_token_ttl
     }
+}
 
-    pub(super) fn validate(&mut self) -> Result<(), String> {
+impl RawAuthSettings {
+    fn validate(&mut self) -> Result<(), AuthServerError> {
         self.session.validate()?;
         self.authorization_server.validate()?;
-        self.provider.validate()?;
+        self.provider.validate(&self.authorization_server.issuer)?;
         if !is_loopback_ip(self.http_bind_addr.ip()) && !self.allow_insecure_remote_http_bind {
             return Err(config_error(
                 "non-loopback auth.http_bind_addr serves cleartext OAuth endpoints and requires auth.allow_insecure_remote_http_bind = true",
@@ -99,7 +121,7 @@ impl AuthSettings {
 
 #[derive(Deserialize)]
 struct AuthConfigDocument {
-    auth: Option<AuthSettings>,
+    auth: Option<RawAuthSettings>,
 }
 
 #[derive(Deserialize)]
@@ -121,16 +143,20 @@ impl Default for SessionTokenSettings {
 }
 
 impl SessionTokenSettings {
-    fn validate(&mut self) -> Result<(), String> {
+    fn validate(&mut self) -> Result<(), AuthServerError> {
         if self.access_token_ttl_seconds == 0 {
             return Err(session_config_error(
                 "access_token_ttl_seconds must be greater than 0",
             ));
         }
+        if self.access_token_ttl_seconds > MAX_TOKEN_TTL.as_secs() {
+            return Err(session_config_error(format!(
+                "access_token_ttl_seconds must not exceed {}",
+                MAX_TOKEN_TTL.as_secs()
+            )));
+        }
         match (&mut self.signing_key_env, &self.signing_key_file) {
-            (Some(_), Some(_)) => Err(session_config_error(
-                "configure only one of signing_key_env or signing_key_file",
-            )),
+            (Some(_), Some(_)) => Err(session_config_error(CONFLICTING_KEY_SOURCES)),
             (Some(env_name), None) => {
                 *env_name = env_name.trim().to_string();
                 if env_name.is_empty() {
@@ -147,11 +173,11 @@ impl SessionTokenSettings {
         &self,
         config_path: &Path,
         get_var: &impl Fn(&str) -> Result<Option<String>, String>,
-    ) -> Result<Zeroizing<Vec<u8>>, SessionTokenError> {
+    ) -> Result<Zeroizing<Vec<u8>>, AuthServerError> {
+        // Defense in depth: `validate` rejects this pairing before any call
+        // reaches here, so this arm only guards a future caller that skips it.
         match (&self.signing_key_env, &self.signing_key_file) {
-            (Some(_), Some(_)) => Err(session_config_error(
-                "configure only one of signing_key_env or signing_key_file",
-            )),
+            (Some(_), Some(_)) => Err(session_config_error(CONFLICTING_KEY_SOURCES)),
             (None, Some(path)) => {
                 let path = config_path.parent().unwrap_or(Path::new(".")).join(path);
                 std::fs::read(&path)
@@ -191,7 +217,7 @@ pub(crate) struct AuthorizationServerSettings {
 }
 
 impl AuthorizationServerSettings {
-    fn validate(&mut self) -> Result<(), String> {
+    fn validate(&mut self) -> Result<(), AuthServerError> {
         self.issuer = required("auth.authorization_server.issuer", &self.issuer)?;
         self.issuer = validate_issuer("auth.authorization_server.issuer", &self.issuer, true)?;
         Ok(())
@@ -209,7 +235,7 @@ struct OidcProviderSettings {
 }
 
 impl OidcProviderSettings {
-    fn validate(&mut self) -> Result<(), String> {
+    fn validate(&mut self, authorization_server_issuer: &str) -> Result<(), AuthServerError> {
         if self.client_secret.is_some() == self.client_secret_env.is_some() {
             return Err(config_error(
                 "auth.provider must configure exactly one of client_secret or client_secret_env",
@@ -219,7 +245,22 @@ impl OidcProviderSettings {
         self.issuer = validate_issuer("OIDC provider issuer", &self.issuer, false)?;
         self.client_id = required("auth.provider.client_id", &self.client_id)?;
         self.redirect_uri = required("auth.provider.redirect_uri", &self.redirect_uri)?;
-        validate_endpoint("OIDC provider redirect URI", &self.redirect_uri)?;
+        let redirect_uri = validate_endpoint("OIDC provider redirect URI", &self.redirect_uri)?;
+        // The upstream IdP sends the browser back to a callback route under
+        // this server's origin, so a redirect URI pointing anywhere else can
+        // only fail later, at the IdP or in the browser — far from Coral's own
+        // logs.
+        let issuer = Url::parse(authorization_server_issuer).map_err(|error| {
+            config_error(format!(
+                "auth.authorization_server.issuer is not a valid URL: {error}"
+            ))
+        })?;
+        if redirect_uri.origin() != issuer.origin() {
+            return Err(config_error(format!(
+                "auth.provider.redirect_uri must share the origin of auth.authorization_server.issuer ({})",
+                issuer.origin().ascii_serialization()
+            )));
+        }
         Ok(())
     }
 }
@@ -255,7 +296,7 @@ fn deserialize_bind_addr<'de, D: Deserializer<'de>>(
         .map_err(|error| D::Error::custom(format!("auth.http_bind_addr is invalid: {error}")))
 }
 
-fn required(label: &str, value: &str) -> Result<String, String> {
+fn required(label: &str, value: &str) -> Result<String, AuthServerError> {
     let value = value.trim();
     if value.is_empty() {
         Err(config_error(format!("{label} is required")))
@@ -264,7 +305,7 @@ fn required(label: &str, value: &str) -> Result<String, String> {
     }
 }
 
-fn validate_issuer(label: &str, raw: &str, root_only: bool) -> Result<String, String> {
+fn validate_issuer(label: &str, raw: &str, root_only: bool) -> Result<String, AuthServerError> {
     let url = validate_endpoint(label, raw)?;
     if url.query().is_some() {
         return Err(config_error(format!("{label} must not include a query")));
@@ -275,7 +316,7 @@ fn validate_issuer(label: &str, raw: &str, root_only: bool) -> Result<String, St
     Ok(url.as_str().trim_end_matches('/').to_string())
 }
 
-fn validate_endpoint(label: &str, raw: &str) -> Result<Url, String> {
+fn validate_endpoint(label: &str, raw: &str) -> Result<Url, AuthServerError> {
     let url = Url::parse(raw.trim())
         .map_err(|error| config_error(format!("{label} is not a valid URL: {error}")))?;
     if !url.username().is_empty() || url.password().is_some() {
@@ -300,20 +341,18 @@ fn validate_endpoint(label: &str, raw: &str) -> Result<Url, String> {
     Ok(url)
 }
 
-fn is_loopback_ip(ip: IpAddr) -> bool {
-    ip.is_loopback()
-        || matches!(ip, IpAddr::V6(ip) if ip.to_ipv4_mapped().is_some_and(|ip| ip.is_loopback()))
+fn config_error(message: impl AsRef<str>) -> AuthServerError {
+    AuthServerError::Config(format!("invalid auth configuration: {}", message.as_ref()))
 }
 
-fn config_error(message: impl AsRef<str>) -> String {
-    format!("invalid auth configuration: {}", message.as_ref())
+fn session_config_error(message: impl AsRef<str>) -> AuthServerError {
+    AuthServerError::Config(format!(
+        "invalid auth.session configuration: {}",
+        message.as_ref()
+    ))
 }
 
-fn session_config_error(message: impl AsRef<str>) -> String {
-    format!("invalid auth.session configuration: {}", message.as_ref())
-}
-
-fn session_file_error(action: &str, path: &Path, error: &std::io::Error) -> String {
+fn session_file_error(action: &str, path: &Path, error: &std::io::Error) -> AuthServerError {
     session_config_error(format!("failed to {action} {}: {error}", path.display()))
 }
 
@@ -346,7 +385,7 @@ mod tests {
 
     fn reject(raw: &str) -> String {
         match AuthSettings::from_toml(raw) {
-            Err(error) => error,
+            Err(error) => error.to_string(),
             Ok(_) => panic!("expected invalid config"),
         }
     }
@@ -417,6 +456,20 @@ mod tests {
                 valid("").replace("client_secret_env = 'UNREAD_ENV'\n", ""),
                 "exactly one",
             ),
+            (
+                valid("").replace(
+                    "redirect_uri = 'http://localhost:9080/auth/oidc/callback'",
+                    "redirect_uri = 'https://elsewhere.example/auth/oidc/callback'",
+                ),
+                "must share the origin",
+            ),
+            (
+                valid("").replace(
+                    "redirect_uri = 'http://localhost:9080/auth/oidc/callback'",
+                    "redirect_uri = 'http://localhost:9081/auth/oidc/callback'",
+                ),
+                "must share the origin",
+            ),
         ];
         for (raw, expected) in cases {
             assert!(
@@ -484,6 +537,11 @@ mod tests {
             ),
             ("signing_key_env = ''", "signing_key_env must not be empty"),
             ("access_token_ttl_seconds = 0", "greater than 0"),
+            (
+                "access_token_ttl_seconds = 18446744073709551615",
+                "must not exceed",
+            ),
+            ("access_token_ttl_seconds = 31536001", "must not exceed"),
         ] {
             let raw = valid("").replace("signing_key_file = 'session.key'", replacement);
             assert!(reject(&raw).contains(expected));
@@ -496,7 +554,11 @@ mod tests {
         else {
             panic!("expected missing signing key file");
         };
-        assert!(missing_file.contains(&temp.path().join("session.key").display().to_string()));
+        assert!(
+            missing_file
+                .to_string()
+                .contains(&temp.path().join("session.key").display().to_string())
+        );
 
         let env_config = valid("").replace(
             "signing_key_file = 'session.key'",
@@ -510,7 +572,7 @@ mod tests {
         }) else {
             panic!("expected invalid environment key");
         };
-        assert!(!invalid_base64.contains("visible-secret"));
+        assert!(!invalid_base64.to_string().contains("visible-secret"));
 
         let inline_key = valid("").replace(
             "signing_key_file = 'session.key'",

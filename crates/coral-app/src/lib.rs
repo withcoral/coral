@@ -62,7 +62,9 @@ pub mod telemetry;
 mod transport;
 mod workspaces;
 
-pub use auth::{AuthSettings, CoralAuthorizationServer, RunningCoralAuthorizationServer};
+pub use auth::{
+    AuthServerError, AuthSettings, CoralAuthorizationServer, RunningCoralAuthorizationServer,
+};
 pub use bootstrap::{
     AppError, McpHttpServeConfig, RunningServer, ServerBuilder, ServerMode, StaticAsset,
     StaticAssetsProvider,

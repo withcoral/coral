@@ -14,10 +14,11 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 use super::config::{AuthSettings, signing_key_env_error};
+use super::error::AuthServerError;
 use super::session::SessionTokenIssuer;
 use super::state_store::{InMemoryStateStore, StateStore};
 
-const SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(if cfg!(test) { 25 } else { 5_000 });
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Prepared Coral authorization server with validated settings and runtime dependencies.
 pub struct CoralAuthorizationServer {
@@ -27,8 +28,10 @@ pub struct CoralAuthorizationServer {
 }
 
 impl CoralAuthorizationServer {
-    /// Builds the Coral authorization server from validated auth settings,
-    /// revalidating them before use.
+    /// Builds the Coral authorization server from validated auth settings.
+    ///
+    /// [`AuthSettings`] can only be produced by [`AuthSettings::from_toml`],
+    /// so the settings arrive already validated and are not rechecked here.
     ///
     /// `config_path` is used only to resolve a relative session signing-key
     /// path. Config parsing and the `config.toml` filesystem read remain the
@@ -36,10 +39,12 @@ impl CoralAuthorizationServer {
     ///
     /// # Errors
     ///
-    /// Returns an error when the settings fail revalidation, the session
-    /// signing key cannot be resolved, or the session-token key material is
-    /// invalid.
-    pub fn from_settings(config_path: &Path, settings: AuthSettings) -> Result<Self, String> {
+    /// Returns an error when the session signing key cannot be resolved or the
+    /// session-token key material is invalid.
+    pub fn from_settings(
+        config_path: &Path,
+        settings: AuthSettings,
+    ) -> Result<Self, AuthServerError> {
         let (settings, session_tokens) = settings
             .resolve_session_token_issuer(config_path, &|name| {
                 crate::bootstrap::env_var(name).map_err(|error| signing_key_env_error(&error))
@@ -48,15 +53,11 @@ impl CoralAuthorizationServer {
     }
 
     pub(crate) fn from_resolved_settings(
-        mut settings: AuthSettings,
+        settings: AuthSettings,
         session_tokens: SessionTokenIssuer,
-    ) -> Result<Self, String> {
-        settings.validate()?;
+    ) -> Result<Self, AuthServerError> {
         if !settings.matches_session_token_issuer(&session_tokens) {
-            return Err(
-                "resolved session-token issuer does not match authorization-server settings"
-                    .to_string(),
-            );
+            return Err(AuthServerError::SessionIssuerMismatch);
         }
         Ok(Self::from_validated_parts(settings, session_tokens))
     }
@@ -75,7 +76,7 @@ impl CoralAuthorizationServer {
     /// reverse proxy.
     /// # Errors
     /// Returns an error when the listener cannot start.
-    pub async fn start(self) -> Result<RunningCoralAuthorizationServer, String> {
+    pub async fn start(self) -> Result<RunningCoralAuthorizationServer, AuthServerError> {
         let bind_addr = self.settings.bind_addr();
         let state = AuthorizationServerHttpState {
             settings: self.settings,
@@ -88,14 +89,16 @@ impl CoralAuthorizationServer {
                 get(authorization_server_metadata),
             )
             .with_state(state);
-        let listener = TcpListener::bind(bind_addr)
-            .await
-            .map_err(|error| format!("failed to bind authorization server: {error}"))?;
+        let listener =
+            TcpListener::bind(bind_addr)
+                .await
+                .map_err(|source| AuthServerError::Bind {
+                    address: bind_addr,
+                    source,
+                })?;
         let endpoint_uri = format!(
             "http://{}",
-            listener
-                .local_addr()
-                .map_err(|error| format!("failed to read authorization server address: {error}"))?
+            listener.local_addr().map_err(AuthServerError::LocalAddr)?
         );
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let task = tokio::spawn(async move {
@@ -130,21 +133,23 @@ impl RunningCoralAuthorizationServer {
     /// Requests graceful shutdown and joins the HTTP server task.
     /// # Errors
     /// Returns an error when the server task fails.
-    pub async fn shutdown(mut self) -> Result<(), String> {
+    pub async fn shutdown(self) -> Result<(), AuthServerError> {
+        self.shutdown_with_timeout(SHUTDOWN_TIMEOUT).await
+    }
+
+    async fn shutdown_with_timeout(mut self, timeout: Duration) -> Result<(), AuthServerError> {
         if let Some(shutdown_tx) = self.shutdown_tx.take() {
             let _result = shutdown_tx.send(());
         }
         if let Some(mut task) = self.task.take() {
-            let Ok(result) = tokio::time::timeout(SHUTDOWN_TIMEOUT, &mut task).await else {
+            let Ok(result) = tokio::time::timeout(timeout, &mut task).await else {
                 task.abort();
                 let _result = task.await;
-                return Err(
-                    "authorization server graceful shutdown timed out; task aborted".into(),
-                );
+                return Err(AuthServerError::ShutdownTimedOut);
             };
             result
-                .map_err(|error| format!("authorization server task failed: {error}"))?
-                .map_err(|error| format!("authorization server failed: {error}"))?;
+                .map_err(AuthServerError::Join)?
+                .map_err(AuthServerError::Server)?;
         }
         Ok(())
     }
@@ -257,22 +262,23 @@ mod tests {
             .expect("prepared from snapshot");
     }
 
+    /// `AuthSettings` has no public constructor other than `from_toml`, so the
+    /// unsafe-bind guard cannot be bypassed by building a value directly; the
+    /// parsing boundary is the only place it needs to hold.
     #[test]
-    fn rejects_settings_that_bypassed_the_validating_parser() {
+    fn rejects_unsafe_bind_at_the_only_construction_site() {
         let raw = format!(
-            "http_bind_addr = '0.0.0.0:0'\n{}{}{}",
-            SESSION.replace("[auth.", "["),
-            AUTHORIZATION_SERVER.replace("[auth.", "["),
-            PROVIDER.replace("[auth.", "["),
+            "[auth]\nhttp_bind_addr = '0.0.0.0:0'\n{AUTHORIZATION_SERVER}{PROVIDER}{SESSION}"
         );
-        let settings: AuthSettings = toml::from_str(&raw).expect("deserialized settings");
-        let Err(error) =
-            CoralAuthorizationServer::from_settings(std::path::Path::new("config.toml"), settings)
-        else {
+        let Err(error) = AuthSettings::from_toml(&raw) else {
             panic!("expected unsafe bind to be rejected");
         };
 
-        assert!(error.contains("allow_insecure_remote_http_bind"));
+        assert!(
+            error
+                .to_string()
+                .contains("allow_insecure_remote_http_bind")
+        );
     }
 
     #[test]
@@ -295,7 +301,11 @@ mod tests {
         else {
             panic!("expected mismatched session settings");
         };
-        assert!(error.contains("does not match authorization-server settings"));
+        assert!(
+            error
+                .to_string()
+                .contains("does not match authorization-server settings")
+        );
     }
 
     #[tokio::test]
@@ -343,7 +353,10 @@ mod tests {
             shutdown_tx: None,
             task: Some(tokio::spawn(std::future::pending::<std::io::Result<()>>())),
         };
-        let error = server.shutdown().await.expect_err("timeout");
-        assert!(error.contains("timed out"));
+        let error = server
+            .shutdown_with_timeout(std::time::Duration::ZERO)
+            .await
+            .expect_err("timeout");
+        assert!(error.to_string().contains("timed out"));
     }
 }

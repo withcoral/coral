@@ -1,11 +1,11 @@
 //! Configuration owned by the long-running Coral server surface.
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{Ipv4Addr, SocketAddr};
 
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
-use super::AppError;
+use super::{AppError, is_loopback_ip};
 use crate::state::AppStateLayout;
 
 #[derive(Debug, Default, Deserialize)]
@@ -94,7 +94,7 @@ impl McpHttpServeConfig {
         if !settings.mcp_http.enabled {
             return Ok(None);
         }
-        if !is_loopback(settings.mcp_http.bind.ip()) {
+        if !is_loopback_ip(settings.mcp_http.bind.ip()) {
             return Err(AppError::FailedPrecondition(
                 "auth-disabled server.mcp_http.bind must be loopback".to_string(),
             ));
@@ -137,11 +137,6 @@ fn reject_removed_auth(value: Option<&toml::Value>) -> Result<(), AppError> {
         ));
     }
     Ok(())
-}
-
-fn is_loopback(ip: IpAddr) -> bool {
-    ip.is_loopback()
-        || matches!(ip, IpAddr::V6(ip) if ip.to_ipv4_mapped().is_some_and(|ip| ip.is_loopback()))
 }
 
 #[cfg(test)]

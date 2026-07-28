@@ -33,6 +33,18 @@ pub(crate) fn env_var(name: &str) -> Result<Option<String>, std::env::VarError> 
     env::AppEnvironment::env_var(name)
 }
 
+/// Reports whether `ip` addresses the local machine.
+///
+/// Shared by every loopback check in this crate — the `server.mcp_http.bind`
+/// and `auth.http_bind_addr` bind guards, and the auth URL validator's
+/// loopback-http allowance — so that tightening the rule (for instance, to
+/// stop treating `::ffff:127.0.0.1` as loopback) cannot leave one call site
+/// more permissive than another.
+pub(crate) fn is_loopback_ip(ip: std::net::IpAddr) -> bool {
+    ip.is_loopback()
+        || matches!(ip, std::net::IpAddr::V6(ip) if ip.to_ipv4_mapped().is_some_and(|ip| ip.is_loopback()))
+}
+
 /// Startup context for one workspace's MCP session.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceMcpStartupContext {

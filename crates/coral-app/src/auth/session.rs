@@ -15,7 +15,6 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 const DEFAULT_ISSUER: &str = "coral";
-const DEFAULT_TOKEN_TTL: Duration = Duration::from_hours(720);
 const CLOCK_SKEW: Duration = Duration::from_mins(1);
 const SESSION_TOKEN_ALGORITHM: Algorithm = Algorithm::ES256;
 
@@ -490,7 +489,7 @@ mod tests {
         let issuer = test_issuer();
         let debug = format!("{issuer:?}");
         assert!(debug.contains("<redacted>"));
-        SessionTokenIssuer::new(None, b"not a P-256 key", DEFAULT_TOKEN_TTL)
+        SessionTokenIssuer::new(None, b"not a P-256 key", Duration::from_hours(1))
             .expect_err("invalid key");
         SessionTokenIssuer::new(None, signing_key(), Duration::ZERO).expect_err("zero TTL");
     }
