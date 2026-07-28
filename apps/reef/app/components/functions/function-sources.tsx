@@ -1,6 +1,7 @@
 import { TruncatedList } from '@/components/truncated-list'
 import { Pill } from '@/wax/components/pill'
 import { Typography } from '@/wax/components/typography'
+import { pluralise } from '~/utils/pluralise'
 
 export interface FunctionSourcesProps {
   sources: string[]
@@ -24,7 +25,11 @@ export function FunctionSources({ sources }: FunctionSourcesProps) {
         ))
       }
       renderOverflowTrigger={(hiddenCount) => (
-        <Pill as="button" color="gray">
+        <Pill
+          aria-label={`Show ${hiddenCount} more ${pluralise(hiddenCount, 'source')}`}
+          as="button"
+          color="gray"
+        >
           +{hiddenCount}
         </Pill>
       )}
