@@ -7,14 +7,13 @@ use std::sync::{Arc, Mutex};
 use datafusion::error::Result as DataFusionResult;
 use datafusion_table_providers::sql::db_connection_pool::mysqlpool::MySQLConnectionPool;
 use datafusion_table_providers::sql::db_connection_pool::postgrespool::PostgresConnectionPool;
-use sha2::{Digest as _, Sha256};
 
 /// Reusable remote database connection pools for one workspace.
 ///
 /// Coral's application layer creates one registry per workspace and passes it
 /// into every query runtime built for that workspace.
 pub struct DatabasePoolRegistry {
-    pools: Mutex<HashMap<PoolId, DatabasePool>>,
+    pools: Mutex<HashMap<String, DatabasePool>>,
 }
 
 impl DatabasePoolRegistry {
@@ -28,20 +27,17 @@ impl DatabasePoolRegistry {
 
     pub(super) async fn get_or_create(
         &self,
-        id: PoolId,
+        catalog_name: &str,
         create: impl Future<Output = DataFusionResult<DatabasePool>>,
     ) -> DataFusionResult<DatabasePool> {
+        if let Some(pool) = self
+            .pools
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(catalog_name)
+            .cloned()
         {
-            let mut pools = self
-                .pools
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            pools.retain(|existing, _pool| {
-                existing.catalog_name != id.catalog_name || existing == &id
-            });
-            if let Some(pool) = pools.get(&id).cloned() {
-                return Ok(pool);
-            }
+            return Ok(pool);
         }
 
         let pool = create.await?;
@@ -49,7 +45,10 @@ impl DatabasePoolRegistry {
             .pools
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        Ok(pools.entry(id).or_insert(pool).clone())
+        Ok(pools
+            .entry(catalog_name.to_string())
+            .or_insert(pool)
+            .clone())
     }
 
     /// Removes one catalog's pool without disturbing other workspace sources.
@@ -57,7 +56,7 @@ impl DatabasePoolRegistry {
         self.pools
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .retain(|id, _pool| id.catalog_name != catalog_name);
+            .remove(catalog_name);
     }
 }
 
@@ -75,46 +74,9 @@ pub(super) enum DatabasePool {
     Test,
 }
 
-/// Identity of one resolved connection configuration for a SQL catalog.
-///
-/// Catalog names survive source replacement. Including the connection
-/// fingerprint prevents an in-flight build using an old source definition from
-/// publishing a pool that a replacement source could subsequently reuse.
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub(super) struct PoolId {
-    catalog_name: String,
-    connection_fingerprint: [u8; 32],
-}
-
-impl PoolId {
-    pub(super) fn new(
-        catalog_name: &str,
-        provider: &str,
-        params: &HashMap<String, String>,
-    ) -> Self {
-        let mut sorted = params.iter().collect::<Vec<_>>();
-        sorted.sort();
-        let mut hasher = Sha256::new();
-        hash_pool_id_component(&mut hasher, provider);
-        for (key, value) in sorted {
-            hash_pool_id_component(&mut hasher, key);
-            hash_pool_id_component(&mut hasher, value);
-        }
-        Self {
-            catalog_name: catalog_name.to_string(),
-            connection_fingerprint: hasher.finalize().into(),
-        }
-    }
-}
-
-fn hash_pool_id_component(hasher: &mut Sha256, value: &str) {
-    hasher.update((value.len() as u64).to_le_bytes());
-    hasher.update(value.as_bytes());
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{DatabasePool, DatabasePoolRegistry, PoolId};
+    use super::{DatabasePool, DatabasePoolRegistry};
 
     #[test]
     fn removing_one_catalog_pool_preserves_other_catalogs() {
@@ -124,20 +86,8 @@ mod tests {
                 .pools
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            pools.insert(
-                PoolId {
-                    catalog_name: "orders".to_string(),
-                    connection_fingerprint: [1; 32],
-                },
-                DatabasePool::Test,
-            );
-            pools.insert(
-                PoolId {
-                    catalog_name: "inventory".to_string(),
-                    connection_fingerprint: [2; 32],
-                },
-                DatabasePool::Test,
-            );
+            pools.insert("orders".to_string(), DatabasePool::Test);
+            pools.insert("inventory".to_string(), DatabasePool::Test);
         }
 
         registry.remove_catalog("orders");
@@ -146,7 +96,7 @@ mod tests {
             .pools
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        assert!(!pools.keys().any(|id| id.catalog_name == "orders"));
-        assert!(pools.keys().any(|id| id.catalog_name == "inventory"));
+        assert!(!pools.contains_key("orders"));
+        assert!(pools.contains_key("inventory"));
     }
 }
