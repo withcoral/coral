@@ -276,7 +276,10 @@ const RESERVED_PROVIDER_AUTH_PARAMS: &[&str] = &[
 ];
 
 /// Validated settings for one upstream OIDC provider.
-#[derive(Clone, Default, Deserialize)]
+///
+/// The derived `Debug` is safe to print: the only secret-bearing field is a
+/// [`ProviderSecret`], which redacts itself.
+#[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub(super) struct OidcProviderSettings {
     #[serde(rename = "type")]
@@ -424,25 +427,6 @@ impl OidcProviderSettings {
             .as_ref()
             .expect("runtime-ready provider has a resolved client secret")
             .as_str()
-    }
-}
-
-impl fmt::Debug for OidcProviderSettings {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("OidcProviderSettings")
-            .field("provider_type", &self.provider_type)
-            .field("issuer", &self.issuer)
-            .field("client_id", &self.client_id)
-            .field("client_secret", &self.client_secret)
-            .field("client_secret_env", &self.client_secret_env)
-            .field("redirect_uri", &self.redirect_uri)
-            .field("scopes", &self.scopes)
-            .field("principal_claim", &self.principal_claim)
-            .field("display_name_claim", &self.display_name_claim)
-            .field("auth_params", &self.auth_params)
-            .field("required_claims", &self.required_claims)
-            .finish()
     }
 }
 
