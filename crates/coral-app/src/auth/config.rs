@@ -551,7 +551,10 @@ mod tests {
                 "configure only one",
             ),
             ("signing_key_env = ''", "signing_key_env must not be empty"),
-            ("signing_key_file = ''", "signing_key_file must not be empty"),
+            (
+                "signing_key_file = ''",
+                "signing_key_file must not be empty",
+            ),
             ("access_token_ttl_seconds = 0", "greater than 0"),
             (
                 "access_token_ttl_seconds = 18446744073709551615",
