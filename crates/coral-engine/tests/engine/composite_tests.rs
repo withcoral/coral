@@ -260,7 +260,7 @@ async fn validate_source_reports_only_component_schemas_for_multi_schema_source(
 async fn identity_gated_source_requires_request_identity_selector() {
     let source = identity_runtime_source(identity_http_component());
 
-    let error = CoralQuery::list_catalog(&[source], test_runtime(), None)
+    let error = CoralQuery::list_catalog(&[source], test_runtime(), None, None)
         .await
         .expect_err("identity-gated source should require a selector");
 
@@ -278,7 +278,7 @@ async fn identity_gated_source_requires_request_identity_authenticator_factory()
     let runtime =
         test_runtime().with_request_identity_selector(Some(Arc::new(UnexpectedIdentitySelector)));
 
-    let error = CoralQuery::list_catalog(&[source], runtime, None)
+    let error = CoralQuery::list_catalog(&[source], runtime, None, None)
         .await
         .expect_err("identity-gated source should require an authenticator factory");
 
@@ -303,7 +303,7 @@ async fn identity_gated_sources_reject_duplicate_source_names_before_binding() {
             &factory_called,
         ))));
 
-    let error = CoralQuery::list_catalog(&sources, runtime, None)
+    let error = CoralQuery::list_catalog(&sources, runtime, None, None)
         .await
         .expect_err("duplicate gated source names should fail before identity binding");
 
@@ -335,7 +335,7 @@ async fn identity_gated_source_binds_identity_once_for_all_http_components() {
         Arc::clone(&factory_called),
     );
 
-    let catalog = CoralQuery::list_catalog(&[source], runtime, None)
+    let catalog = CoralQuery::list_catalog(&[source], runtime, None, None)
         .await
         .expect("one source identity should authenticate every HTTP component");
 
@@ -370,7 +370,7 @@ async fn identity_gated_source_rejects_selected_identity_type_mismatch() {
         Arc::clone(&factory_called),
     );
 
-    let error = CoralQuery::list_catalog(&[source], runtime, None)
+    let error = CoralQuery::list_catalog(&[source], runtime, None, None)
         .await
         .expect_err("JSON type mismatch should reject selected identity");
 
@@ -400,7 +400,7 @@ async fn identity_gated_source_accepts_spec_id_and_audience_subset() {
         Arc::clone(&factory_called),
     );
 
-    let catalog = CoralQuery::list_catalog(&[source], runtime, None)
+    let catalog = CoralQuery::list_catalog(&[source], runtime, None, None)
         .await
         .expect("matching identity should build runtime");
 
