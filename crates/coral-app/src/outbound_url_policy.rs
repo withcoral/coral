@@ -94,6 +94,9 @@ impl PublicMetadataUrl {
         if has_dot_path_segment(value) {
             return Err(OutboundUrlPolicyError::DotPathSegment);
         }
+        if has_encoded_path_separator(value) {
+            return Err(OutboundUrlPolicyError::EncodedPathSeparator);
+        }
         let url = Url::parse(value).map_err(OutboundUrlPolicyError::InvalidUrl)?;
         if url.scheme() != "https" {
             return Err(OutboundUrlPolicyError::PublicMetadataTransport);
@@ -176,6 +179,9 @@ pub(crate) enum OutboundUrlPolicyError {
     /// An untrusted URL contained a traversal segment.
     #[error("public metadata URL must not include dot path segments")]
     DotPathSegment,
+    /// An untrusted URL percent-encoded a path separator.
+    #[error("public metadata URL must not percent-encode path separators")]
+    EncodedPathSeparator,
     /// An untrusted URL directly identified a non-public host.
     #[error("public metadata URL host must be public")]
     NonPublicHost,
@@ -381,29 +387,46 @@ fn public_metadata_ipv6_is_blocked(address: Ipv6Addr) -> bool {
 ///
 /// This reads the raw string rather than a parsed [`Url`] because the parser
 /// resolves `..` away: once there is a [`Url`], a traversal attempt is
-/// indistinguishable from the path it collapsed to. Reading the raw string
-/// means matching every spelling the parser accepts — for a special scheme it
-/// treats any run of `/` and `\` after the scheme's `:` as the authority
-/// separator, and strips ASCII tab, CR, and LF anywhere in the input first. A
-/// scan keyed on a literal `://` misses all of those.
+/// indistinguishable from the path it collapsed to.
 fn has_dot_path_segment(value: &str) -> bool {
+    raw_path(value).is_some_and(|path| path.split(['/', '\\']).any(is_dot_path_segment))
+}
+
+/// Reports whether the path percent-encodes a `/` or `\`.
+///
+/// Unlike a literal dot segment, [`Url::parse`] leaves `%2f` and `%5c` encoded,
+/// so they reach the wire verbatim: `/oauth/%2e%2e%2fclient.json` is sent as
+/// written. A server that decodes separators before resolving the path then
+/// sees the traversal this module promises to have rejected. Nothing legitimate
+/// needs an encoded separator in a metadata path, so refusing outright is safer
+/// than decoding and re-classifying, which would have to reason about how many
+/// rounds of decoding the far end applies.
+fn has_encoded_path_separator(value: &str) -> bool {
+    raw_path(value).is_some_and(|path| {
+        let path = path.to_ascii_lowercase();
+        path.contains("%2f") || path.contains("%5c")
+    })
+}
+
+/// Returns the path portion of a URL string exactly as supplied.
+///
+/// Shared by the two traversal checks, which both have to read the raw string.
+/// It accepts every spelling the parser does — for a special scheme the parser
+/// treats any run of `/` and `\` after the scheme's `:` as the authority
+/// separator, and strips ASCII tab, CR, and LF anywhere in the input first — so
+/// a scan keyed on a literal `://` misses all of those. The query and fragment
+/// are excluded: an encoded separator there is data, not structure.
+fn raw_path(value: &str) -> Option<String> {
     let value: String = value
         .chars()
         .filter(|character| !matches!(character, '\t' | '\r' | '\n'))
         .collect();
-    let Some((_, after_scheme)) = value.split_once(':') else {
-        return false;
-    };
+    let (_, after_scheme) = value.split_once(':')?;
     let authority = after_scheme.trim_start_matches(['/', '\\']);
-    let Some(path_start) = authority.find(['/', '\\']) else {
-        return false;
-    };
-    let Some(path) = authority.get(path_start..) else {
-        return false;
-    };
+    let path_start = authority.find(['/', '\\'])?;
+    let path = authority.get(path_start..)?;
     let path_end = path.find(['?', '#']).unwrap_or(path.len());
-    path.get(..path_end)
-        .is_some_and(|path| path.split(['/', '\\']).any(is_dot_path_segment))
+    path.get(..path_end).map(str::to_owned)
 }
 
 fn is_dot_path_segment(segment: &str) -> bool {
@@ -568,6 +591,32 @@ mod tests {
 
         PublicMetadataUrl::parse("https://client.example.test/oauth/client.json")
             .expect("a traversal-free path is unaffected");
+    }
+
+    /// `Url::parse` keeps `%2f` and `%5c` encoded, so unlike a literal dot
+    /// segment these reach the wire as written and only become a traversal at a
+    /// server that decodes separators before resolving the path.
+    #[test]
+    fn public_metadata_rejects_percent_encoded_path_separators() {
+        for metadata_url in [
+            "https://client.example.test/oauth/%2e%2e%2fclient.json",
+            "https://client.example.test/oauth/..%2fclient.json",
+            "https://client.example.test/oauth/%2e%2e%5cclient.json",
+            "https://client.example.test/oauth/%2E%2E%2Fclient.json",
+            "https://client.example.test/oauth%2fclient.json",
+        ] {
+            assert!(
+                matches!(
+                    PublicMetadataUrl::parse(metadata_url),
+                    Err(OutboundUrlPolicyError::EncodedPathSeparator)
+                ),
+                "{metadata_url}"
+            );
+        }
+
+        // An encoded separator past the path delimiter is data, not structure.
+        PublicMetadataUrl::parse("https://client.example.test/oauth/client.json?next=%2fhome")
+            .expect("encoded separator in the query is unaffected");
     }
 
     #[test]
