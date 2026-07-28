@@ -2078,6 +2078,20 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Envelope'}
+  /link-header:
+    get:
+      operationId: linkHeaderList
+      parameters:
+        - {name: page, in: query, schema: {type: integer, default: 1}}
+        - {name: per_page, in: query, schema: {type: integer, default: 30}}
+      responses:
+        '200':
+          headers:
+            Link:
+              schema: {type: string}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
   /unpaginated:
     get:
       operationId: unpaginatedGet
@@ -2110,6 +2124,10 @@ components:
         ("odatalist", PaginationMode::Offset),
         ("cursorlist", PaginationMode::CursorQuery),
         ("pagelist", PaginationMode::Page),
+        // Link-header detection is tried first, so this reaches
+        // `binds_pagination_input` by a different route than `pagelist` does —
+        // and it is the shape most real paginated endpoints use.
+        ("linkheaderlist", PaginationMode::LinkHeader),
     ] {
         assert_eq!(
             imported_row_path(&ir, operation_id),
