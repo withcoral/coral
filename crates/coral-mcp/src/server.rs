@@ -57,17 +57,21 @@ const MAX_INITIAL_QUERY_EXAMPLES: usize = 5;
 
 enum ToolCallOutcome {
     Payload(Value),
-    SqlBatch(SqlBatchValue),
-    SqlGuideBlock(SqlGuideBlockValue),
+    Sql(SqlBatchExecution),
     ToolError {
         operation: &'static str,
         status: tonic::Status,
     },
 }
 
-enum SqlBatchExecution {
+enum SqlBatchOutput {
     Executed(SqlBatchValue),
     GuideBlocked(SqlGuideBlockValue),
+}
+
+struct SqlBatchExecution {
+    output: SqlBatchOutput,
+    task_gate: tokio::sync::OwnedMutexGuard<()>,
 }
 
 fn serialize_tool_value(value: impl Serialize) -> Result<Value, tonic::Status> {
@@ -532,6 +536,7 @@ impl CoralMcpServer {
         task_id: TaskId,
         task_id_metadata: Option<MetadataValue<Ascii>>,
     ) -> Result<SqlBatchExecution, tonic::Status> {
+        let task_gate = self.guide_block.lock_task(task_id).await?;
         let shown_guide_ids = self.guide_block.shown_guide_ids(task_id)?;
 
         let mut tasks = tokio::task::JoinSet::new();
@@ -560,14 +565,16 @@ impl CoralMcpServer {
             .collect::<Vec<_>>();
         self.guide_block.record_guides(task_id, &guides)?;
         if let [SqlQueryResultValue::GuideRequired { guides, .. }] = results.as_slice() {
-            return Ok(SqlBatchExecution::GuideBlocked(SqlGuideBlockValue::new(
-                guides.clone(),
-            )));
+            return Ok(SqlBatchExecution {
+                output: SqlBatchOutput::GuideBlocked(SqlGuideBlockValue::new(guides.clone())),
+                task_gate,
+            });
         }
 
-        Ok(SqlBatchExecution::Executed(SqlBatchValue::from_unordered(
-            results,
-        )))
+        Ok(SqlBatchExecution {
+            output: SqlBatchOutput::Executed(SqlBatchValue::from_unordered(results)),
+            task_gate,
+        })
     }
 
     async fn start_task_value(
@@ -739,10 +746,7 @@ impl CoralMcpServer {
                     .execute_sql_batch(arguments.queries, task_id, task_id_metadata)
                     .await
                 {
-                    Ok(SqlBatchExecution::Executed(batch)) => Ok(ToolCallOutcome::SqlBatch(batch)),
-                    Ok(SqlBatchExecution::GuideBlocked(block)) => {
-                        Ok(ToolCallOutcome::SqlGuideBlock(block))
-                    }
+                    Ok(execution) => Ok(ToolCallOutcome::Sql(execution)),
                     Err(status) => Ok(ToolCallOutcome::ToolError {
                         operation: "Query",
                         status,
@@ -1023,7 +1027,28 @@ fn finish_tool_call(
             telemetry::record_success(span);
             Ok(build_tool_result(value))
         }
-        Ok(ToolCallOutcome::SqlBatch(batch)) => {
+        Ok(ToolCallOutcome::Sql(execution)) => finish_sql_tool_call(span, execution),
+        Ok(ToolCallOutcome::ToolError { operation, status }) => {
+            telemetry::record_tonic_status(span, &status);
+            Ok(tool_error_result(
+                tool_error_from_status(operation, &status),
+                None,
+            ))
+        }
+        Err(error) => {
+            telemetry::record_protocol_error(span, &error);
+            Err(error)
+        }
+    }
+}
+
+fn finish_sql_tool_call(
+    span: &tracing::Span,
+    execution: SqlBatchExecution,
+) -> Result<CallToolResult, ErrorData> {
+    let SqlBatchExecution { output, task_gate } = execution;
+    let result = match output {
+        SqlBatchOutput::Executed(batch) => {
             let serialized = match serialize_tool_value(&batch) {
                 Ok(value) => value,
                 Err(status) => {
@@ -1045,7 +1070,7 @@ fn finish_tool_call(
                 Ok(build_tool_result(serialized))
             }
         }
-        Ok(ToolCallOutcome::SqlGuideBlock(block)) => {
+        SqlBatchOutput::GuideBlocked(block) => {
             let serialized = serialize_tool_value(block).map_err(|status| {
                 telemetry::record_tonic_status(span, &status);
                 ErrorData::internal_error(status.message().to_string(), None)
@@ -1053,18 +1078,9 @@ fn finish_tool_call(
             telemetry::record_success(span);
             Ok(build_tool_result(serialized))
         }
-        Ok(ToolCallOutcome::ToolError { operation, status }) => {
-            telemetry::record_tonic_status(span, &status);
-            Ok(tool_error_result(
-                tool_error_from_status(operation, &status),
-                None,
-            ))
-        }
-        Err(error) => {
-            telemetry::record_protocol_error(span, &error);
-            Err(error)
-        }
-    }
+    };
+    drop(task_gate);
+    result
 }
 
 fn catalog_item_kind_from_tool(kind: Option<CatalogToolKind>) -> ProtoCatalogItemKind {

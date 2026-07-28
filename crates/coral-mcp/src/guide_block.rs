@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use crate::surface::{SqlGuideValue, TaskId};
 
@@ -8,6 +8,7 @@ const MAX_RETAINED_TASKS: usize = 1_024;
 #[derive(Default)]
 struct TaskGuideState {
     guide_ids: HashSet<String>,
+    sql_gate: Arc<tokio::sync::Mutex<()>>,
     last_used: u64,
 }
 
@@ -21,14 +22,18 @@ impl GuideBlockStateInner {
     fn touch_task(&mut self, task_id: TaskId, max_tasks: usize) -> &mut TaskGuideState {
         self.clock = self.clock.saturating_add(1);
         self.tasks.entry(task_id).or_default().last_used = self.clock;
-        if self.tasks.len() > max_tasks {
-            let oldest = self
+        while self.tasks.len() > max_tasks {
+            let Some(oldest) = self
                 .tasks
                 .iter()
-                .filter(|(candidate_id, _)| **candidate_id != task_id)
+                .filter(|(candidate_id, task)| {
+                    **candidate_id != task_id && Arc::strong_count(&task.sql_gate) == 1
+                })
                 .min_by_key(|(_, task)| task.last_used)
                 .map(|(candidate_id, _)| *candidate_id)
-                .expect("an overflowing guide state has an older task");
+            else {
+                break;
+            };
             self.tasks.remove(&oldest);
         }
         self.tasks
@@ -70,6 +75,20 @@ impl GuideBlockState {
         let mut guide_ids = task.guide_ids.iter().cloned().collect::<Vec<_>>();
         guide_ids.sort_unstable();
         Ok(guide_ids)
+    }
+
+    pub(crate) async fn lock_task(
+        &self,
+        task_id: TaskId,
+    ) -> Result<tokio::sync::OwnedMutexGuard<()>, tonic::Status> {
+        let gate = {
+            let mut inner = self
+                .inner
+                .lock()
+                .map_err(|_poisoned| tonic::Status::internal("guide block state lock poisoned"))?;
+            Arc::clone(&inner.touch_task(task_id, self.max_tasks).sql_gate)
+        };
+        Ok(gate.lock_owned().await)
     }
 
     pub(crate) fn record_guides(
@@ -175,5 +194,45 @@ mod tests {
             ),
             (1, 0)
         );
+    }
+
+    #[tokio::test]
+    async fn retains_active_tasks_and_serializes_their_sql() {
+        let state = GuideBlockState::with_max_tasks(2);
+        let first_task = task_id(1);
+        let second_task = task_id(2);
+        let third_task = task_id(3);
+
+        state
+            .record_guides(first_task, &[guide("First.", "first")])
+            .expect("first task");
+        let first_gate = state.lock_task(first_task).await.expect("first gate");
+        let waiting = state.lock_task(first_task);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(10), waiting)
+                .await
+                .is_err(),
+            "same-task SQL must wait for the active call"
+        );
+
+        let second_gate = state.lock_task(second_task).await.expect("second gate");
+        let third_gate = state.lock_task(third_task).await.expect("third gate");
+        assert_eq!(
+            state.inner.lock().expect("guide state").tasks.len(),
+            3,
+            "all-active task state may temporarily exceed the cap"
+        );
+        assert_eq!(
+            state
+                .shown_guide_ids(first_task)
+                .expect("active task guide ids"),
+            ["first"]
+        );
+
+        drop((first_gate, second_gate, third_gate));
+        state
+            .shown_guide_ids(third_task)
+            .expect("reclaim inactive overflow");
+        assert_eq!(state.inner.lock().expect("guide state").tasks.len(), 2);
     }
 }
