@@ -165,6 +165,13 @@ impl SessionTokenSettings {
                     Ok(())
                 }
             }
+            // An empty path would otherwise reach `load_signing_key`, where
+            // joining it onto the config directory yields that directory and
+            // the read fails with EISDIR — naming the directory rather than
+            // the blank setting that caused it.
+            (None, Some(path)) if path.as_os_str().is_empty() => {
+                Err(session_config_error("signing_key_file must not be empty"))
+            }
             (None, _) => Ok(()),
         }
     }
@@ -374,10 +381,13 @@ mod tests {
 
     use super::*;
 
-    const SESSION: &str = "[auth.session]\nsigning_key_file = 'session.key'\n";
+    use crate::auth::test_config::{PROVIDER, SESSION};
+
+    /// Local override of the shared fixture: the trailing slash proves
+    /// `validate_issuer` normalizes it away, and the rejection table rewrites
+    /// this exact string to build its nested-path case.
     const AUTHORIZATION_SERVER: &str =
         "[auth.authorization_server]\nissuer = 'http://localhost:9080/'\n";
-    const PROVIDER: &str = "[auth.provider]\nissuer = 'https://accounts.example.test'\nclient_id = 'upstream-client'\nclient_secret_env = 'UNREAD_ENV'\nredirect_uri = 'http://localhost:9080/auth/oidc/callback'\n";
 
     fn valid(extra: &str) -> String {
         format!("[auth]\n{SESSION}{AUTHORIZATION_SERVER}{extra}\n{PROVIDER}")
@@ -536,6 +546,7 @@ mod tests {
                 "configure only one",
             ),
             ("signing_key_env = ''", "signing_key_env must not be empty"),
+            ("signing_key_file = ''", "signing_key_file must not be empty"),
             ("access_token_ttl_seconds = 0", "greater than 0"),
             (
                 "access_token_ttl_seconds = 18446744073709551615",

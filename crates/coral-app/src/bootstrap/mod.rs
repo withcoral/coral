@@ -35,11 +35,13 @@ pub(crate) fn env_var(name: &str) -> Result<Option<String>, std::env::VarError> 
 
 /// Reports whether `ip` addresses the local machine.
 ///
-/// Shared by every loopback check in this crate — the `server.mcp_http.bind`
-/// and `auth.http_bind_addr` bind guards, and the auth URL validator's
-/// loopback-http allowance — so that tightening the rule (for instance, to
-/// stop treating `::ffff:127.0.0.1` as loopback) cannot leave one call site
-/// more permissive than another.
+/// Shared by the `server.mcp_http.bind` and `auth.http_bind_addr` bind guards
+/// and the auth URL validator's loopback-http allowance, so that tightening the
+/// rule (for instance, to stop treating `::ffff:127.0.0.1` as loopback) cannot
+/// leave one of those call sites more permissive than another. Other loopback
+/// tests in this crate deliberately do not route through it:
+/// `validate_mcp_http_grpc_mode` accepts a wildcard bind as well, and
+/// `postgres_host_is_loopback` works on host strings rather than addresses.
 pub(crate) fn is_loopback_ip(ip: std::net::IpAddr) -> bool {
     ip.is_loopback()
         || matches!(ip, std::net::IpAddr::V6(ip) if ip.to_ipv4_mapped().is_some_and(|ip| ip.is_loopback()))
