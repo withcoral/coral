@@ -17,6 +17,7 @@ export default [
       route('oauth-import', 'routes/source-oauth-import.ts'),
       route(':sourceName', 'routes/source-detail.tsx'),
     ]),
+    route(routePattern('workspaceFunctions'), 'routes/functions.tsx'),
     route(routePattern('workspaceSchema'), 'routes/schema.tsx', [
       index('routes/schema-empty.tsx'),
       route(':schemaName/:tableName', 'routes/schema-table.tsx'),

@@ -7,6 +7,7 @@ const CANONICAL_PATTERNS = {
   home: '/',
   settings: '/settings',
   workspaces: '/workspaces',
+  workspaceFunctions: '/workspaces/:workspaceId/functions',
   workspaceSchema: '/workspaces/:workspaceId/schema',
   workspaceSchemaTable: '/workspaces/:workspaceId/schema/:schemaName/:tableName',
   workspaceSchemaTableFunction:
@@ -38,6 +39,7 @@ describe('route map', () => {
       home: routePath('home'),
       settings: routePath('settings'),
       workspaces: routePath('workspaces'),
+      workspaceFunctions: routePath('workspaceFunctions', { workspaceId: 'analytics' }),
       workspaceSchema: routePath('workspaceSchema', { workspaceId: 'analytics' }),
       workspaceSchemaTable: routePath('workspaceSchemaTable', {
         schemaName: 'github',
@@ -69,6 +71,7 @@ describe('route map', () => {
       home: '/',
       settings: '/settings',
       workspaces: '/workspaces',
+      workspaceFunctions: '/workspaces/analytics/functions',
       workspaceSchema: '/workspaces/analytics/schema',
       workspaceSchemaTable: '/workspaces/analytics/schema/github/issues',
       workspaceSchemaTableFunction: '/workspaces/analytics/schema/github/functions/search_issues',
