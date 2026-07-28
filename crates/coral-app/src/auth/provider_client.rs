@@ -276,7 +276,7 @@ mod tests {
             "[auth]
              [auth.session]
              [auth.authorization_server]
-             issuer = 'http://localhost:9080'
+             issuer = 'http://localhost'
              [auth.provider]
              issuer = '{issuer}'
              client_id = 'provider-client'
