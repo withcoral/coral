@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::v4::ir::{
     IrExecutionAttachment, IrInputLocation, IrOperation, IrOperationOutput, IrScalarType, IrType,
-    IrTypeShape, SemanticIr,
+    IrTypeShape, OutputCardinality, SemanticIr,
 };
 use crate::v4::operation_metadata::model::{
     McpOperationPagination, OperationMetadata, OperationMetadataCatalog,
@@ -130,6 +130,14 @@ pub(crate) fn resolve_output_row_type_ref<'a>(
 ) -> std::result::Result<&'a str, String> {
     if row_path.is_empty() {
         return Ok(&output.type_ref);
+    }
+
+    // A row path selects from the response root, but a declared list is already
+    // the rows: its `type_ref` describes one of them. Traversing from there
+    // would check the path against a single row's fields while the runtime
+    // applies it to the enclosing array, where it selects nothing.
+    if output.cardinality == OutputCardinality::List {
+        return Err("row path must be empty when the response root is already a list".to_string());
     }
 
     let mut type_ref = output.type_ref.as_str();

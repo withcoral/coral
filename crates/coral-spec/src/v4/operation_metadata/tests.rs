@@ -242,15 +242,95 @@ fn plan_rejects_blank_or_unresolvable_rest_row_paths() {
     else {
         panic!("expected REST metadata");
     };
-    // The operation returns a declared array, so no path can traverse it.
+    // The operation returns a declared array, which already *is* the rows, so
+    // no path applies: the runtime would select the segment from the array.
     *row_path = vec!["missing".to_string()];
     let error = imported
         .validated_plan()
-        .expect_err("unresolvable row path must fail");
+        .expect_err("a row path on a declared list must fail");
     assert!(
-        error.to_string().contains("traverses non-object type"),
+        error
+            .to_string()
+            .contains("row path must be empty when the response root is already a list"),
         "unexpected error: {error}"
     );
+}
+
+/// A singleton envelope is the case a row path is *for*, so resolution has to
+/// keep checking that the path reaches an array of rows.
+#[test]
+fn plan_rejects_rest_row_paths_a_singleton_response_cannot_resolve() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: demo
+dsl_version: 4
+surface:
+  type: openapi
+  file: /tmp/openapi.yaml
+  base_url: https://api.example.com
+",
+    )
+    .expect("manifest")
+    .as_v4()
+    .expect("v4")
+    .clone();
+    let imported = import_openapi_surface(
+        &manifest,
+        &manifest.surface,
+        br"
+openapi: 3.0.3
+paths:
+  /items:
+    get:
+      operationId: items/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total: {type: integer}
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: {type: string}
+",
+    )
+    .expect("import");
+
+    for (row_path, fragment) in [
+        (vec!["missing".to_string()], "has no field 'missing'"),
+        (vec!["total".to_string()], "is not a list"),
+        (
+            vec!["data".to_string(), "id".to_string()],
+            "traverses non-object type",
+        ),
+    ] {
+        let mut imported = imported.clone();
+        let OperationMetadata::Rest {
+            row_path: metadata_row_path,
+            ..
+        } = imported
+            .operation_metadata
+            .operations
+            .values_mut()
+            .next()
+            .expect("metadata")
+        else {
+            panic!("expected REST metadata");
+        };
+        *metadata_row_path = row_path.clone();
+        let error = imported
+            .validated_plan()
+            .expect_err("unresolvable row path must fail");
+        assert!(
+            error.to_string().contains(fragment),
+            "row path {row_path:?}: unexpected error: {error}"
+        );
+    }
 }
 
 #[test]
