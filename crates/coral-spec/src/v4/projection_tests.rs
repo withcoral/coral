@@ -1734,6 +1734,87 @@ paths:
     (manifest, imported)
 }
 
+/// Rows whose fields cover every `IrTypeShape` a nested source path can be
+/// walked through: an object, a list, a map, an opaque payload, and a scalar.
+fn imported_nested_row_surface() -> (V4SourceManifest, ImportedSurface) {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: demo
+dsl_version: 4
+surface:
+  type: openapi
+  file: /tmp/openapi.yaml
+  base_url: https://api.example.com
+",
+    )
+    .expect("manifest")
+    .as_v4()
+    .expect("v4")
+    .clone();
+    let imported = import_openapi_surface(
+        &manifest,
+        &manifest.surface,
+        br"
+openapi: 3.0.3
+paths:
+  /items:
+    get:
+      operationId: items/list
+      parameters:
+        - {name: page, in: query, schema: {type: integer, default: 1}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total_count: {type: integer}
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: {type: string}
+                        owner:
+                          type: object
+                          properties:
+                            login: {type: string}
+                        tags:
+                          type: array
+                          items: {type: string}
+                        extra: {}
+                        labels:
+                          type: object
+                          additionalProperties: {type: string}
+",
+    )
+    .expect("import");
+    (manifest, imported)
+}
+
+/// Replaces the catalog's columns with a single column reading `source_path`,
+/// standing in for a hand-authored projection override.
+fn compatibility_of_source_path(
+    catalog: &ProjectionCatalog,
+    source_path: &[&str],
+) -> ProjectionCatalog {
+    let mut catalog = catalog.clone();
+    let projection = catalog.projections.first_mut().expect("projection");
+    projection.columns = vec![ProjectionColumn {
+        name: "probe".to_string(),
+        data_type: ManifestDataType::Json,
+        source_path: source_path
+            .iter()
+            .map(|segment| (*segment).to_string())
+            .collect(),
+        nullable: true,
+        description: String::new(),
+        do_not_index: false,
+    }];
+    catalog
+}
+
 fn override_row_path(imported: &mut ImportedSurface, operation_id: &str, path: &[&str]) {
     let OperationMetadata::Rest { row_path, .. } = imported
         .operation_metadata
@@ -1962,6 +2043,60 @@ fn projection_compatibility_accepts_whole_row_columns_for_non_object_rows() {
 
         validate_projection_compatibility(&plan, &catalog)
             .expect("a catalog generated for these rows is compatible with them");
+    }
+}
+
+/// The generator never nests a source path, but an authored override may, and
+/// runtime follows every segment. Each case is the shape reached *before* the
+/// final segment deciding whether that segment is selectable.
+#[test]
+fn projection_compatibility_walks_every_segment_of_a_nested_source_path() {
+    let (manifest, imported) = imported_nested_row_surface();
+    let plan = imported.validated_plan().expect("plan");
+    let generated = generate_projection_catalog(&manifest, &plan).expect("projections");
+
+    for (source_path, expected) in [
+        // An object names its fields, so a real one resolves and a bogus one
+        // cannot.
+        (&["owner", "login"][..], Ok(())),
+        (
+            &["owner", "nope"][..],
+            Err("type 'items_list_row_items_item_owner' has no field 'nope'"),
+        ),
+        // A scalar has nothing below it at all.
+        (
+            &["id", "nope"][..],
+            Err("names no fields, so segment 'nope' cannot be selected"),
+        ),
+        // `get_path_value` indexes arrays numerically, and only numerically.
+        (&["tags", "0"][..], Ok(())),
+        (
+            &["tags", "name"][..],
+            Err("is a list, so segment 'name' must be a numeric index"),
+        ),
+        // A map admits any key, and an opaque payload admits anything at all.
+        (&["labels", "any_key"][..], Ok(())),
+        (&["extra", "anything", "deep"][..], Ok(())),
+        // The first segment is still checked as before.
+        (&["nope", "deeper"][..], Err("which has no such field")),
+    ] {
+        let catalog = compatibility_of_source_path(&generated, source_path);
+        let outcome = validate_projection_compatibility(&plan, &catalog);
+        match expected {
+            Ok(()) => {
+                outcome.unwrap_or_else(|error| {
+                    panic!("source path {source_path:?} should be compatible: {error}")
+                });
+            }
+            Err(fragment) => {
+                let error =
+                    outcome.expect_err(&format!("source path {source_path:?} should be rejected"));
+                assert!(
+                    error.to_string().contains(fragment),
+                    "source path {source_path:?}: unexpected error: {error}"
+                );
+            }
+        }
     }
 }
 
