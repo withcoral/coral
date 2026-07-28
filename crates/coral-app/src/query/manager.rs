@@ -8,8 +8,9 @@ use std::time::Instant;
 use coral_engine::{
     CatalogInfo, CoralQuery, CoreError, DescribeTableInfo, PreparedQueryRuntime, QueryExecution,
     QueryExecutionProvenance, QueryPlan, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,
-    SourceDecorator, SourceDecoratorError, SourceFailurePolicy, SourceInputResolver, SourceTables,
-    SourceValidationReport, StatusCode, TableInfo, UdfRuntimeDefinition,
+    ResolvedQueryResources, SourceDecorator, SourceDecoratorError, SourceFailurePolicy,
+    SourceInputResolver, SourceTables, SourceValidationReport, StatusCode, TableInfo,
+    UdfRuntimeDefinition,
 };
 use coral_spec::{ManifestInputKind, ManifestInputSpec};
 use opentelemetry::trace::Status as OtelStatus;
@@ -472,13 +473,13 @@ impl QueryManager {
                         SourceObservationMode::Disabled,
                     )
                     .await?;
-                let provenance = runtime
-                    .analyze_sql(sql)
+                let resources = runtime
+                    .resolve_sql_resources(sql)
                     .await
                     .map_err(QueryManagerError::Core)?;
                 Ok(required_query_guides(
                     &runtime.list_catalog(None),
-                    &provenance,
+                    &resources,
                 ))
             },
             |_| None,
@@ -964,10 +965,10 @@ impl QueryManager {
 
 fn required_query_guides(
     catalog: &CatalogInfo,
-    provenance: &QueryExecutionProvenance,
+    resources: &ResolvedQueryResources,
 ) -> Vec<RequiredQueryGuide> {
     let mut guides = Vec::new();
-    for usage in provenance.tables() {
+    for usage in resources.tables() {
         if let Some(table) = catalog.tables.iter().find(|table| {
             table.schema_name == usage.schema_name() && table.table_name == usage.table_name()
         }) && table.require_guide_read
@@ -979,7 +980,7 @@ fn required_query_guides(
             });
         }
     }
-    for usage in provenance.table_functions() {
+    for usage in resources.table_functions() {
         if let Some(function) = catalog.table_functions.iter().find(|function| {
             function.schema_name == usage.schema_name()
                 && function.function_name == usage.function_name()
@@ -1290,8 +1291,8 @@ mod tests {
 
     use coral_engine::{
         EngineExtensions, QueryExecution, QueryExecutionProvenance, QueryTableFunctionUsage,
-        QueryTableUsage, SourceDecorator, SourceDecoratorError, SourceInputResolutionContext,
-        SourceInputResolver, SourceInputResolverError, SourceTables,
+        QueryTableUsage, ResolvedQueryResources, SourceDecorator, SourceDecoratorError,
+        SourceInputResolutionContext, SourceInputResolver, SourceInputResolverError, SourceTables,
     };
     use coral_spec::parse_source_manifest_yaml;
     use serde_json::{Value, json};
@@ -1574,8 +1575,7 @@ mod tests {
             "SELECT title FROM github.issues",
             None,
         );
-        let provenance = QueryExecutionProvenance::new(
-            "SELECT title FROM github.issues",
+        let resources = ResolvedQueryResources::new(
             vec!["github".to_string()],
             vec![QueryTableUsage::new("github", "github", "issues")],
             vec![QueryTableFunctionUsage::new(
@@ -1584,6 +1584,8 @@ mod tests {
                 "search_issues",
             )],
         );
+        let provenance =
+            QueryExecutionProvenance::new("SELECT title FROM github.issues", resources, 0);
         record_query_provenance(&span, &provenance);
         drop(span);
 

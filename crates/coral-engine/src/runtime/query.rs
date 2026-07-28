@@ -50,9 +50,9 @@ use crate::{
     QueryRuntimeConfig, QueryRuntimeContext, QuerySource, QueryTableFunctionUsage, QueryTableUsage,
     RequestAuthenticator, RequestIdentityHttpAuthenticatorError,
     RequestIdentityHttpAuthenticatorFactory, RequestIdentitySelectionContext,
-    RequestIdentitySelectionError, RequestIdentitySelector, SelectedRequestIdentity,
-    SourceDecorator, SourceInputResolver, SourceObservationPublisher, TableFunctionInfo, TableInfo,
-    UdfRuntimeDefinition,
+    RequestIdentitySelectionError, RequestIdentitySelector, ResolvedQueryResources,
+    SelectedRequestIdentity, SourceDecorator, SourceInputResolver, SourceObservationPublisher,
+    TableFunctionInfo, TableInfo, UdfRuntimeDefinition,
 };
 
 pub(crate) struct QueryRuntimeAdapter {
@@ -722,8 +722,8 @@ impl QueryRuntimeAdapter {
             .await
             .map_err(SqlExecutionFailure::Planning)?;
         let df = apply_query_parameters(df, params).map_err(SqlExecutionFailure::Planning)?;
-        let provenance = self
-            .query_provenance(sql, df.logical_plan())
+        let resources = self
+            .resolve_query_resources(df.logical_plan())
             .map_err(SqlExecutionFailure::Planning)?;
         let task_ctx = Arc::new(df.task_ctx());
         let physical_plan = df
@@ -734,7 +734,7 @@ impl QueryRuntimeAdapter {
         let batches = collect(physical_plan, task_ctx)
             .await
             .map_err(SqlExecutionFailure::Collection)?;
-        let execution = QueryExecution::new(arrow_schema, batches, provenance);
+        let execution = QueryExecution::new(arrow_schema, batches, sql, resources);
         self.observe_query_result(
             sql,
             execution.arrow_schema().as_ref(),
@@ -784,14 +784,13 @@ impl QueryRuntimeAdapter {
         Ok(())
     }
 
-    fn query_provenance(
+    fn resolve_query_resources(
         &self,
-        sql: &str,
         plan: &LogicalPlan,
-    ) -> Result<QueryExecutionProvenance, DataFusionError> {
+    ) -> Result<ResolvedQueryResources, DataFusionError> {
         let mut tables = BTreeSet::new();
         let mut table_functions = BTreeSet::new();
-        self.collect_plan_provenance(plan, &mut tables, &mut table_functions)?;
+        self.collect_plan_resources(plan, &mut tables, &mut table_functions)?;
 
         let mut sources = BTreeSet::new();
         sources.extend(tables.iter().map(|usage| usage.source_name().to_string()));
@@ -802,15 +801,14 @@ impl QueryRuntimeAdapter {
                 .map(|usage| usage.source_name().to_string()),
         );
 
-        Ok(QueryExecutionProvenance::new(
-            sql,
+        Ok(ResolvedQueryResources::new(
             sources.into_iter().collect(),
             tables.into_iter().collect(),
             table_functions.into_iter().collect(),
         ))
     }
 
-    fn collect_plan_provenance(
+    fn collect_plan_resources(
         &self,
         plan: &LogicalPlan,
         tables: &mut BTreeSet<QueryTableUsage>,
@@ -836,11 +834,7 @@ impl QueryRuntimeAdapter {
                             function.table_reference(),
                             table_functions,
                         );
-                        self.collect_plan_provenance(
-                            function.body_plan(),
-                            tables,
-                            table_functions,
-                        )?;
+                        self.collect_plan_resources(function.body_plan(), tables, table_functions)?;
                     }
                 }
                 _ => {}
@@ -940,13 +934,13 @@ impl QueryRuntimeAdapter {
         ))
     }
 
-    pub(crate) async fn analyze_sql(
+    pub(crate) async fn resolve_sql_resources(
         &self,
         sql: &str,
         params: &QueryParameters,
-    ) -> Result<QueryExecutionProvenance, CoreError> {
+    ) -> Result<ResolvedQueryResources, CoreError> {
         let df = self.sql_dataframe(sql, params).await?;
-        self.query_provenance(sql, df.logical_plan())
+        self.resolve_query_resources(df.logical_plan())
             .map_err(|error| {
                 datafusion_to_core_with_sql_and_table_functions(
                     &error,

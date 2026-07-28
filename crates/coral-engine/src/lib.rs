@@ -76,12 +76,12 @@ pub use contracts::{
     DescribeTableInfo, EffectiveDependentJoinConfig, MemorySize, QueryExecution,
     QueryExecutionProvenance, QueryMemoryConfig, QueryParameterValue, QueryParameters, QueryPlan,
     QueryRuntimeConfig, QueryRuntimeContext, QuerySource, QueryTableFunctionUsage, QueryTableUsage,
-    QueryTestFailure, QueryTestResult, QueryTestSuccess, RuntimeSourceComponent,
-    RuntimeSourcePackage, SourceValidationReport, StatusCode, StructuredQueryError,
-    TableFunctionArgumentInfo, TableFunctionInfo, TableFunctionResultColumnInfo, TableInfo,
-    UdfRuntimeArgument, UdfRuntimeDefinition, UdfRuntimeImplementation, UdfRuntimePublish,
-    UdfRuntimeResultColumn, UdfRuntimeSignature, UdfRuntimeSqlDefinition,
-    UdfRuntimeTableFunctionPublish,
+    QueryTestFailure, QueryTestResult, QueryTestSuccess, ResolvedQueryResources,
+    RuntimeSourceComponent, RuntimeSourcePackage, SourceValidationReport, StatusCode,
+    StructuredQueryError, TableFunctionArgumentInfo, TableFunctionInfo,
+    TableFunctionResultColumnInfo, TableInfo, UdfRuntimeArgument, UdfRuntimeDefinition,
+    UdfRuntimeImplementation, UdfRuntimePublish, UdfRuntimeResultColumn, UdfRuntimeSignature,
+    UdfRuntimeSqlDefinition, UdfRuntimeTableFunctionPublish,
 };
 
 /// High-level query operations for the local query engine.
@@ -217,11 +217,16 @@ impl PreparedQueryRuntime {
     ///
     /// Returns [`CoreError`] if the SQL is empty, parameter binding fails, or
     /// the statement cannot be logically planned.
-    pub async fn analyze_sql(&self, sql: &str) -> Result<QueryExecutionProvenance, CoreError> {
+    pub async fn resolve_sql_resources(
+        &self,
+        sql: &str,
+    ) -> Result<ResolvedQueryResources, CoreError> {
         if sql.trim().is_empty() {
             return Err(CoreError::InvalidInput("SQL must not be empty".to_string()));
         }
-        self.inner.analyze_sql(sql, &QueryParameters::new()).await
+        self.inner
+            .resolve_sql_resources(sql, &QueryParameters::new())
+            .await
     }
 }
 

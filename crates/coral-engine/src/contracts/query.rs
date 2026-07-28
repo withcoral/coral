@@ -923,7 +923,8 @@ impl QueryExecution {
     pub fn new(
         arrow_schema: Arc<Schema>,
         batches: Vec<RecordBatch>,
-        mut provenance: QueryExecutionProvenance,
+        sql: impl Into<String>,
+        resources: ResolvedQueryResources,
     ) -> Self {
         let schema = arrow_schema
             .fields()
@@ -940,7 +941,7 @@ impl QueryExecution {
             })
             .collect();
         let row_count = batches.iter().map(RecordBatch::num_rows).sum();
-        provenance.set_row_count(row_count);
+        let provenance = QueryExecutionProvenance::new(sql, resources, row_count);
         Self {
             schema,
             arrow_schema,
@@ -981,34 +982,68 @@ impl QueryExecution {
     }
 }
 
-/// Successful-execution provenance for one query result.
+/// Source resources referenced by a resolved logical query plan.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct QueryExecutionProvenance {
-    sql: String,
+pub struct ResolvedQueryResources {
     sources: Vec<String>,
     tables: Vec<QueryTableUsage>,
     table_functions: Vec<QueryTableFunctionUsage>,
-    row_count: usize,
 }
 
-impl QueryExecutionProvenance {
+impl ResolvedQueryResources {
     #[must_use]
-    /// Builds one provenance entry for a planned query.
-    ///
-    /// [`QueryExecution::new`] stamps the final row count from the materialized
-    /// result batches.
+    /// Builds the resource set resolved from one logical query plan.
     pub fn new(
-        sql: impl Into<String>,
         sources: Vec<String>,
         tables: Vec<QueryTableUsage>,
         table_functions: Vec<QueryTableFunctionUsage>,
     ) -> Self {
         Self {
-            sql: sql.into(),
             sources,
             tables,
             table_functions,
-            row_count: 0,
+        }
+    }
+
+    #[must_use]
+    /// Returns the installed source names referenced by the query.
+    pub fn sources(&self) -> &[String] {
+        &self.sources
+    }
+
+    #[must_use]
+    /// Returns source tables referenced by the query.
+    pub fn tables(&self) -> &[QueryTableUsage] {
+        &self.tables
+    }
+
+    #[must_use]
+    /// Returns source-scoped table functions referenced by the query.
+    pub fn table_functions(&self) -> &[QueryTableFunctionUsage] {
+        &self.table_functions
+    }
+}
+
+/// Successful-execution provenance for one query result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueryExecutionProvenance {
+    sql: String,
+    resources: ResolvedQueryResources,
+    row_count: usize,
+}
+
+impl QueryExecutionProvenance {
+    #[must_use]
+    /// Builds provenance for one successfully materialized query.
+    pub fn new(
+        sql: impl Into<String>,
+        resources: ResolvedQueryResources,
+        row_count: usize,
+    ) -> Self {
+        Self {
+            sql: sql.into(),
+            resources,
+            row_count,
         }
     }
 
@@ -1021,19 +1056,19 @@ impl QueryExecutionProvenance {
     #[must_use]
     /// Returns the installed source names used by the query.
     pub fn sources(&self) -> &[String] {
-        &self.sources
+        self.resources.sources()
     }
 
     #[must_use]
     /// Returns source tables used by the query.
     pub fn tables(&self) -> &[QueryTableUsage] {
-        &self.tables
+        self.resources.tables()
     }
 
     #[must_use]
     /// Returns source-scoped table functions used by the query.
     pub fn table_functions(&self) -> &[QueryTableFunctionUsage] {
-        &self.table_functions
+        self.resources.table_functions()
     }
 
     #[must_use]
@@ -1041,13 +1076,9 @@ impl QueryExecutionProvenance {
     pub fn row_count(&self) -> usize {
         self.row_count
     }
-
-    pub(crate) fn set_row_count(&mut self, row_count: usize) {
-        self.row_count = row_count;
-    }
 }
 
-/// One source table referenced by a successful query.
+/// One source table referenced by a query.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct QueryTableUsage {
     source: String,
@@ -1089,7 +1120,7 @@ impl QueryTableUsage {
     }
 }
 
-/// One source-scoped table function referenced by a successful query.
+/// One source-scoped table function referenced by a query.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct QueryTableFunctionUsage {
     source: String,
