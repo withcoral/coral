@@ -40,9 +40,9 @@ impl CoralAuthorizationServer {
     ///
     /// # Errors
     ///
-    /// Returns an error when the settings fail revalidation, the session
-    /// signing key cannot be resolved, or the session-token key material is
-    /// invalid.
+    /// Returns an error when the provider secret cannot be resolved from its
+    /// environment variable, the session signing key cannot be resolved, or
+    /// the session-token key material is invalid.
     pub fn from_settings(
         config_path: &Path,
         settings: AuthSettings,
@@ -55,7 +55,7 @@ impl CoralAuthorizationServer {
     }
 
     pub(crate) fn from_resolved_settings(
-        mut settings: AuthSettings,
+        settings: AuthSettings,
         session_tokens: SessionTokenIssuer,
     ) -> Result<Self, AuthServerError> {
         settings.validate_runtime_ready()?;
