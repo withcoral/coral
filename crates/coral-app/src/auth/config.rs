@@ -1,5 +1,6 @@
 //! Parsing and validation for Coral authentication settings.
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -340,11 +341,10 @@ impl OidcProviderSettings {
         }
 
         self.issuer = provider_required("issuer", &self.issuer)?;
-        let issuer = provider_endpoint("issuer", &self.issuer)?;
+        let issuer = provider_issuer_endpoint(&self.issuer)?;
         if issuer.as_url().query().is_some() {
             return Err(invalid_provider("issuer must not include a query"));
         }
-        validate_canonical_issuer(&self.issuer, &issuer)?;
         self.client_id = provider_required("client_id", &self.client_id)?;
         self.redirect_uri = provider_required("redirect_uri", &self.redirect_uri)?;
         let redirect_uri = provider_endpoint("redirect_uri", &self.redirect_uri)?;
@@ -553,27 +553,17 @@ fn provider_endpoint(field: &str, value: &str) -> Result<ConfiguredEndpointUrl, 
         .map_err(|error| invalid_provider(format!("{field} is invalid: {error}")))
 }
 
-/// Rejects a provider issuer the URL parser would rewrite.
-///
-/// The issuer is retained exactly as configured, because an `OpenID` Connect
-/// discovery document's `issuer` must equal the configured one byte for byte.
-/// Providers publish issuers both with a trailing slash and without one, so
-/// both are accepted — the parser appends one only to a root-path URL. Any
-/// other divergence from the parser's canonical serialization (a mixed-case
-/// host, an explicit default port, dot segments, non-canonical percent
-/// encoding) is a form no provider can publish, so accepting it would trade a
-/// startup error for a discovery mismatch on every login.
-fn validate_canonical_issuer(
-    configured: &str,
-    parsed: &ConfiguredEndpointUrl,
-) -> Result<(), AuthServerError> {
-    let canonical = parsed.as_url().as_str();
-    if configured == canonical || format!("{configured}/") == canonical {
-        return Ok(());
+fn provider_issuer_endpoint(value: &str) -> Result<ConfiguredEndpointUrl, AuthServerError> {
+    let syntax_violation = Cell::new(None);
+    let record_violation = |violation| syntax_violation.set(Some(violation));
+    Url::options()
+        .syntax_violation_callback(Some(&record_violation))
+        .parse(value)
+        .map_err(|error| invalid_provider(format!("issuer is invalid: {error}")))?;
+    if let Some(violation) = syntax_violation.get() {
+        return Err(invalid_provider(format!("issuer is invalid: {violation}")));
     }
-    Err(invalid_provider(format!(
-        "issuer must be copied exactly as the provider publishes it; `{configured}` is not a canonical URL (its canonical form is `{canonical}`)"
-    )))
+    provider_endpoint("issuer", value)
 }
 
 fn valid_scope_token(scope: &str) -> bool {
@@ -839,8 +829,8 @@ mod tests {
     }
 
     /// A provider issuer is compared byte for byte against the issuer in the
-    /// discovery document, so every form a provider can publish has to survive
-    /// validation unchanged — including both trailing-slash spellings.
+    /// discovery document, so every valid spelling a provider publishes has to
+    /// survive validation unchanged.
     #[test]
     fn retains_every_issuer_spelling_a_provider_can_publish() {
         for issuer in [
@@ -848,34 +838,12 @@ mod tests {
             "https://accounts.example.test/",
             "https://accounts.example.test/tenant",
             "https://accounts.example.test/tenant/",
+            "https://ACCOUNTS.example.test/tenant",
+            "https://accounts.example.test:443/tenant",
+            "https://accounts.example.test/tenant/../other",
             "http://127.0.0.1:9080/tenant/",
         ] {
             assert_eq!(resolved(&provider_issuer(issuer)).provider().issuer, issuer);
-        }
-    }
-
-    #[test]
-    fn rejects_provider_issuers_no_provider_could_publish() {
-        for (issuer, canonical) in [
-            (
-                "https://ACCOUNTS.example.test/tenant",
-                "https://accounts.example.test/tenant",
-            ),
-            (
-                "https://accounts.example.test:443/tenant",
-                "https://accounts.example.test/tenant",
-            ),
-            (
-                "https://accounts.example.test/tenant/../other",
-                "https://accounts.example.test/other",
-            ),
-        ] {
-            let error = reject(&provider_issuer(issuer));
-            assert!(
-                error.contains("copied exactly as the provider publishes it"),
-                "{error}"
-            );
-            assert!(error.contains(canonical), "{error}");
         }
     }
 
@@ -895,6 +863,18 @@ mod tests {
                     "http://accounts.example.test",
                 ),
                 "issuer is invalid: configured endpoint must use HTTPS",
+            ),
+            (
+                provider_issuer(r"https://accounts.example.test\tenant"),
+                "issuer is invalid: backslash",
+            ),
+            (
+                provider_issuer("https://accounts.example.test/^"),
+                "issuer is invalid: non-URL code point",
+            ),
+            (
+                provider_issuer("https://accounts.example.test/%1"),
+                "issuer is invalid: expected 2 hex digits after %",
             ),
             (
                 valid("").replace(
