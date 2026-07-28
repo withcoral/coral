@@ -335,13 +335,13 @@ impl OidcProviderSettings {
         }
 
         if let Some(secret) = &mut self.client_secret {
-            *secret = ProviderSecret::from_trimmed(secret.as_str())?;
+            *secret = ProviderSecret::from_trimmed("client_secret", secret.as_str())?;
         }
         if let Some(env_name) = &mut self.client_secret_env {
             *env_name = env_name.trim().to_string();
             if env_name.is_empty() {
                 return Err(invalid_provider(
-                    "provider secret must be a nonempty string",
+                    "client_secret_env must be a nonempty string",
                 ));
             }
             if env_name.bytes().any(|byte| matches!(byte, b'=' | b'\0')) {
@@ -398,9 +398,9 @@ impl OidcProviderSettings {
         let value = Zeroizing::new(
             get_var(env_name)
                 .map_err(|_error| invalid_provider("client_secret_env could not be read"))?
-                .ok_or_else(|| invalid_provider("client_secret_env is unset or empty"))?,
+                .ok_or_else(|| invalid_provider("client_secret_env names an unset variable"))?,
         );
-        self.client_secret = Some(ProviderSecret::from_trimmed(&value)?);
+        self.client_secret = Some(ProviderSecret::from_trimmed("client_secret_env", &value)?);
         self.client_secret_env = None;
         Ok(())
     }
@@ -450,10 +450,11 @@ impl fmt::Debug for OidcProviderSettings {
 struct ProviderSecret(Arc<Zeroizing<String>>);
 
 impl ProviderSecret {
-    fn from_trimmed(value: &str) -> Result<Self, AuthServerError> {
+    /// Trims a secret read from `field`, which names it in any error.
+    fn from_trimmed(field: &str, value: &str) -> Result<Self, AuthServerError> {
         let value = value.trim();
         if value.is_empty() {
-            Err(invalid_provider("client secret must not be empty"))
+            Err(invalid_provider(format!("{field} must not be empty")))
         } else {
             Ok(Self(Arc::new(Zeroizing::new(value.to_string()))))
         }
@@ -1050,11 +1051,20 @@ mod tests {
 
     #[test]
     fn configuration_errors_do_not_leak_secrets() {
-        for secret in ["client_secret_env = ''", "client_secret = 42"] {
+        for (secret, expected) in [
+            (
+                "client_secret_env = ''",
+                "client_secret_env must be a nonempty string",
+            ),
+            (
+                "client_secret = 42",
+                "provider secret must be a nonempty string",
+            ),
+        ] {
             let raw = valid("").replace("client_secret = 'provider-secret'", secret);
             let error = reject(&raw);
-            assert!(error.contains("provider secret must be a nonempty string"));
-            assert!(!error.contains("42"));
+            assert!(error.contains(expected), "{error}");
+            assert!(!error.contains("42"), "{error}");
         }
         let malformed = "[auth]\nclient_secret = 'SUPER_SECRET' trailing-garbage\n";
         assert!(!reject(malformed).contains("SUPER_SECRET"));
