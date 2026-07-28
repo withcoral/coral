@@ -1780,6 +1780,7 @@ paths:
                           type: object
                           properties:
                             login: {type: string}
+                            '0': {type: string}
                         tags:
                           type: array
                           items: {type: string}
@@ -2077,6 +2078,18 @@ fn projection_compatibility_walks_every_segment_of_a_nested_source_path() {
         // A map admits any key, and an opaque payload admits anything at all.
         (&["labels", "any_key"][..], Ok(())),
         (&["extra", "anything", "deep"][..], Ok(())),
+        // ...but not a numeric one: runtime reads that as an array index, so it
+        // selects nothing however the payload is shaped. `owner` really does
+        // declare a field named `0`, so this is the numeric rule rejecting it
+        // rather than the missing-field rule.
+        (
+            &["owner", "0"][..],
+            Err("is read as an array index and so selects nothing"),
+        ),
+        (
+            &["labels", "0"][..],
+            Err("is read as an array index and so selects nothing"),
+        ),
         // The first segment is still checked as before.
         (&["nope", "deeper"][..], Err("which has no such field")),
     ] {

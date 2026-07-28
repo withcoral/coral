@@ -2001,12 +2001,18 @@ components:
 }
 
 /// Row-path inference asks the pagination detectors whether an operation is
-/// paginated rather than predicting their answer, so every alias they accept is
-/// envelope evidence. Predicting it used to deadlock these two: no row path
-/// because the alias was unknown, and no pagination because the gate needs a row
-/// path.
+/// paginated rather than predicting their answer, so a contract binding any
+/// request input is envelope evidence — one case per way `binds_pagination_input`
+/// can be satisfied. Predicting the answer used to deadlock the two inferences:
+/// no row path because an alias was unknown, and no pagination because the gate
+/// needs a row path. `skip`/`take` and `$skip`/`$top` are the aliases that
+/// deadlocked.
 #[test]
-fn importer_infers_row_paths_for_every_pagination_alias_the_detectors_accept() {
+#[expect(
+    clippy::too_many_lines,
+    reason = "Every mode shares one envelope fixture, which is what makes the inputs the only variable."
+)]
+fn importer_infers_row_paths_when_pagination_detection_binds_a_request_input() {
     let manifest = parse_source_manifest_yaml(
         r"
 name: aliases
@@ -2048,6 +2054,30 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Envelope'}
+  /cursor:
+    get:
+      operationId: cursorList
+      parameters:
+        - {name: cursor, in: query, schema: {type: string}}
+      responses:
+        '200':
+          headers:
+            X-Next-Cursor:
+              schema: {type: string}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+  /page:
+    get:
+      operationId: pageList
+      parameters:
+        - {name: page, in: query, schema: {type: integer, default: 1}}
+        - {name: per_page, in: query, schema: {type: integer, default: 30}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
   /unpaginated:
     get:
       operationId: unpaginatedGet
@@ -2073,9 +2103,14 @@ components:
     )
     .expect("import");
 
-    // The envelope carries no metadata sibling, so the operation's own inputs
-    // are the only evidence available.
-    for operation_id in ["skiptakelist", "odatalist"] {
+    // Every operation returns the same envelope, and it carries no metadata
+    // sibling, so the operation's own inputs are the only evidence available.
+    for (operation_id, mode) in [
+        ("skiptakelist", PaginationMode::Offset),
+        ("odatalist", PaginationMode::Offset),
+        ("cursorlist", PaginationMode::CursorQuery),
+        ("pagelist", PaginationMode::Page),
+    ] {
         assert_eq!(
             imported_row_path(&ir, operation_id),
             ["data"],
@@ -2083,7 +2118,7 @@ components:
         );
         assert_eq!(
             imported_rest_pagination(&ir, operation_id).mode,
-            PaginationMode::Offset,
+            mode,
             "{operation_id} should paginate"
         );
     }
