@@ -97,10 +97,6 @@ impl LoadedServerConfig {
                 mcp_principal_provider: None,
             });
         };
-        let authorization_server = required_oauth_url(
-            "auth.authorization_server.issuer",
-            Some(auth_settings.authorization_server().issuer()),
-        )?;
         let (auth_settings, session) = auth_settings
             .resolve_runtime_dependencies(&self.config_path, &|name| {
                 AppEnvironment::env_var(name).map_err(|error| match error {
@@ -113,6 +109,12 @@ impl LoadedServerConfig {
                 })
             })
             .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
+        // The issuer accessor lives on the resolved settings, so read it after
+        // runtime resolution rather than before.
+        let authorization_server = required_oauth_url(
+            "auth.authorization_server.issuer",
+            Some(auth_settings.authorization_server().issuer()),
+        )?;
         let mcp_http = self.resolve_mcp_http(Some(&authorization_server))?;
         let mcp_audience = match &mcp_http {
             Some(McpHttpServeConfig::Authenticated { public_url, .. }) => public_url.clone(),
