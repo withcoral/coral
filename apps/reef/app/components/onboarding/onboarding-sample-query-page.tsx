@@ -7,7 +7,6 @@ import {
   type QueryDetailStatusTone,
 } from '@/components/query-detail'
 import type { SourceCatalogEntry } from '@/components/sources'
-import { formatSQL } from '@/lib/sql-format'
 import { ONBOARDING_SAMPLE_QUERY, type OnboardingSampleQueryRow } from '@/lib/onboarding-query'
 import { Table, Typography } from '@/wax/components'
 import { Icon } from '@/wax/components/icon'
@@ -120,7 +119,7 @@ function QueryPanelBody({
 
   return (
     <QueryDetailSummary
-      sql={formatSQL(ONBOARDING_SAMPLE_QUERY)}
+      sql={ONBOARDING_SAMPLE_QUERY}
       statusLabel={queryState.statusLabel}
       statusTone={queryState.statusTone}
       title="Query details"
@@ -207,7 +206,7 @@ function getQueryState({
 function MissingSourceFallback() {
   return (
     <QueryDetailSummary
-      sql={formatSQL(ONBOARDING_SAMPLE_QUERY)}
+      sql={ONBOARDING_SAMPLE_QUERY}
       statusLabel="error"
       statusTone="error"
       title="Query details"
