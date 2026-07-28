@@ -1214,7 +1214,7 @@ checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 
 [[package]]
 name = "coral-api"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "prost",
  "protoc-bin-vendored",
@@ -1226,7 +1226,7 @@ dependencies = [
 
 [[package]]
 name = "coral-app"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "apple-native-keyring-store",
  "arrow",
@@ -1285,7 +1285,7 @@ dependencies = [
 
 [[package]]
 name = "coral-auth-aws"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "aws-credential-types",
  "aws-sigv4",
@@ -1298,7 +1298,7 @@ dependencies = [
 
 [[package]]
 name = "coral-benchmarks"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -1318,7 +1318,7 @@ dependencies = [
 
 [[package]]
 name = "coral-cli"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "anyhow",
  "arrow",
@@ -1349,7 +1349,7 @@ dependencies = [
 
 [[package]]
 name = "coral-client"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "arrow",
  "coral-api",
@@ -1375,7 +1375,7 @@ dependencies = [
 
 [[package]]
 name = "coral-engine"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "arrow",
  "async-trait",
@@ -1414,7 +1414,7 @@ dependencies = [
 
 [[package]]
 name = "coral-mcp"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "axum",
  "coral-api",
@@ -1447,7 +1447,7 @@ dependencies = [
 
 [[package]]
 name = "coral-spec"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "jsonschema",
  "schemars",
@@ -1461,7 +1461,7 @@ dependencies = [
 
 [[package]]
 name = "coral-telemetry"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "opentelemetry",
  "opentelemetry_sdk",
@@ -7096,7 +7096,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "anyhow",
  "assert_cmd",
