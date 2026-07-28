@@ -162,6 +162,12 @@ impl WorkspaceManager {
             })?;
 
         let (deleted, workspace_dir_backup) = {
+            // Global lock order: take the app state file lock before beginning a
+            // database transaction, never the other way around. Source install
+            // and removal take the same order, so inverting it here would let
+            // two processes sharing one config directory deadlock across the
+            // file lock and the database.
+            let state_lock = self.config_store.state_lock_exclusive()?;
             let Some(deletion) = self
                 .db
                 .begin_workspace_deletion(workspace_name.as_str())
@@ -171,7 +177,7 @@ impl WorkspaceManager {
             };
             let removed = match self
                 .config_store
-                .remove_workspace_config_entries(workspace_name)
+                .remove_workspace_config_entries_unlocked(workspace_name)
             {
                 Ok(removed) => removed,
                 Err(error) => {
@@ -208,6 +214,10 @@ impl WorkspaceManager {
                 RemovedWorkspaceConfig::into_deleted_workspace,
             );
             self.pool_registry.remove(workspace_name);
+            // Credential cleanup re-acquires the state lock through the file
+            // credential backend, and `flock` conflicts per open file
+            // description, so the guard must be released first.
+            drop(state_lock);
             self.remove_deleted_workspace_credentials(&deleted);
             // Staging comes last, and failing to move the directory only
             // warns. Everything above it is already durable, so an abort here
@@ -328,7 +338,8 @@ impl WorkspaceManager {
                 "workspace config restore failed for tests".to_string(),
             ));
         }
-        self.config_store.restore_workspace_config_entries(removed)
+        self.config_store
+            .restore_workspace_config_entries_unlocked(removed)
     }
 
     fn stage_deleted_workspace_dir(
@@ -1129,8 +1140,30 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn delete_workspace_commits_config_then_cleans_artifacts() {
+    /// Credential cleanup re-acquires the exclusive state lock, so `delete_workspace` must have
+    /// released its own guard first. A regression there deadlocks the deletion inside a blocking
+    /// `flock(2)` call, which no `tokio::time::timeout` can interrupt, so the scenario runs on a
+    /// helper thread behind a wall-clock deadline and fails instead of hanging the suite.
+    #[test]
+    fn delete_workspace_commits_config_then_cleans_artifacts() {
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("current-thread runtime");
+            let name = runtime.block_on(delete_workspace_and_clean_artifacts());
+            // The receiver is gone only when the deadline below already failed the test.
+            drop(done_tx.send(name));
+        });
+
+        let name = done_rx
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .expect("workspace deletion must release the state lock before credential cleanup");
+        assert_eq!(name, "work");
+    }
+
+    async fn delete_workspace_and_clean_artifacts() -> String {
         let temp = TempDir::new().expect("temp dir");
         let layout = test_layout(&temp);
         let store = ConfigStore::new(layout.clone());
@@ -1222,6 +1255,56 @@ mod tests {
             &pool_registry_before_delete,
             &pool_registry_after_delete
         ));
+
+        deleted.name.to_string()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn delete_workspace_waits_for_the_state_lock_before_opening_a_transaction() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout = test_layout(&temp);
+        let store = ConfigStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(CredentialStore::new(layout.clone()));
+        let db = test_db(&layout).await;
+        let manager = WorkspaceManager::new(
+            store.clone(),
+            credential_manager,
+            layout,
+            None,
+            crate::workspaces::WorkspaceLifecycleLock::default(),
+            Arc::clone(&db),
+            SourceDiagnosticReporter::default(),
+        );
+        let doomed_name = WorkspaceName::parse("work").expect("workspace");
+        let other_name = WorkspaceName::parse("other").expect("workspace");
+        let owner = seed_user(&db, "owner").await;
+        manager
+            .create_workspace_for_user(&doomed_name, &owner)
+            .await
+            .expect("create workspace");
+
+        let state_lock = store.state_lock_exclusive().expect("hold state lock");
+        let delete_manager = manager.clone();
+        let delete =
+            tokio::spawn(async move { delete_manager.delete_workspace(&doomed_name).await });
+        // Give the deletion time to reach the state lock it cannot take yet.
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+
+        // The blocked deletion must not be holding a database write open, so an
+        // unrelated workspace write still completes.
+        tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            manager.create_workspace_for_user(&other_name, &owner),
+        )
+        .await
+        .expect("blocked deletion should not hold a database transaction")
+        .expect("create unrelated workspace");
+
+        drop(state_lock);
+        delete
+            .await
+            .expect("deletion task")
+            .expect("delete workspace");
     }
 
     #[tokio::test]
