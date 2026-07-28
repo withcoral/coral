@@ -19,7 +19,6 @@ use std::collections::BTreeSet;
 
 use serde_json::{Map, Value};
 
-use crate::v4::ir::{IrInputLocation, IrOperationInput};
 use crate::v4::surfaces::json_schema::{
     JsonSchemaWalkError, json_schema_type_contains, with_resolved_json_schema,
 };
@@ -88,27 +87,6 @@ const METADATA_LEXICON: [(&[&str], &str); 4] = [
     (METADATA_BOOLEAN_NAMES, "boolean"),
 ];
 
-/// Request-side names that mark an operation as paginated. This is a syntactic
-/// check on declared inputs rather than a look at the inferred `PaginationSpec`,
-/// because pagination inference consumes the row path this module produces.
-const PAGINATION_INPUT_NAMES: &[&str] = &[
-    "page",
-    "pagenumber",
-    "pagetoken",
-    "pagesize",
-    "perpage",
-    "limit",
-    "maxresults",
-    "offset",
-    "cursor",
-    "startcursor",
-    "continuationtoken",
-    "after",
-    "nexttoken",
-    "nextcursor",
-    "iterator",
-];
-
 /// Inputs available to wrapped-list inference.
 ///
 /// The operation name is deliberately part of the context even though the
@@ -117,7 +95,11 @@ const PAGINATION_INPUT_NAMES: &[&str] = &[
 #[derive(Clone, Copy)]
 pub(in crate::v4) struct WrappedListInferenceContext<'a> {
     pub(in crate::v4) operation_name: &'a str,
-    pub(in crate::v4) inputs: &'a [IrOperationInput],
+    /// Whether the surface's own pagination detection found a contract on this
+    /// operation. Each surface answers this before inferring a row path, so
+    /// that the vocabulary of pagination parameter names lives with the
+    /// detectors that own it rather than being predicted here.
+    pub(in crate::v4) paginated_operation: bool,
     /// Document the response schema was taken from, used to resolve `$ref`.
     pub(in crate::v4) schema_root: &'a Value,
     pub(in crate::v4) response_schema: &'a Value,
@@ -129,11 +111,10 @@ pub(in crate::v4) fn infer_wrapped_list_row_path(
     context: WrappedListInferenceContext<'_>,
 ) -> Vec<String> {
     let _ = context.operation_name;
-    let paginated_operation = declares_pagination_input(context.inputs);
     candidate_row_path(
         context.schema_root,
         context.response_schema,
-        paginated_operation,
+        context.paginated_operation,
         false,
         &mut BTreeSet::new(),
         0,
@@ -258,18 +239,6 @@ fn is_metadata_name(name: &str) -> bool {
         .any(|(names, _)| names.contains(&normalized.as_str()))
 }
 
-fn declares_pagination_input(inputs: &[IrOperationInput]) -> bool {
-    inputs
-        .iter()
-        .filter(|input| {
-            matches!(
-                input.location,
-                IrInputLocation::Query | IrInputLocation::ToolArg
-            )
-        })
-        .any(|input| PAGINATION_INPUT_NAMES.contains(&normalized_name(&input.name).as_str()))
-}
-
 fn schema_uses_composition(schema: &Value) -> bool {
     ["allOf", "anyOf", "oneOf", "not"]
         .iter()
@@ -311,28 +280,12 @@ fn normalized_name(name: &str) -> String {
 mod tests {
     use serde_json::{Value, json};
 
-    use crate::v4::ir::{IrInputLocation, IrOperationInput, IrScalarType};
-
     use super::{WrappedListInferenceContext, infer_wrapped_list_row_path};
 
-    fn inputs(specs: &[(&str, IrInputLocation)]) -> Vec<IrOperationInput> {
-        specs
-            .iter()
-            .map(|(name, location)| IrOperationInput {
-                name: (*name).to_string(),
-                location: *location,
-                required: false,
-                data_type: IrScalarType::String,
-                default_value: None,
-                description: String::new(),
-            })
-            .collect()
-    }
-
-    fn row_path(schema: &Value, operation_inputs: &[IrOperationInput]) -> Vec<String> {
+    fn row_path(schema: &Value, paginated_operation: bool) -> Vec<String> {
         infer_wrapped_list_row_path(WrappedListInferenceContext {
             operation_name: "list_things",
-            inputs: operation_inputs,
+            paginated_operation,
             schema_root: schema,
             response_schema: schema,
         })
@@ -349,7 +302,7 @@ mod tests {
             },
         });
 
-        assert_eq!(row_path(&schema, &[]), ["items"]);
+        assert_eq!(row_path(&schema, false), ["items"]);
     }
 
     #[test]
@@ -368,7 +321,7 @@ mod tests {
             },
         });
 
-        assert_eq!(row_path(&schema, &[]), ["results", "data"]);
+        assert_eq!(row_path(&schema, false), ["results", "data"]);
     }
 
     #[test]
@@ -381,7 +334,7 @@ mod tests {
             },
         });
 
-        assert_eq!(row_path(&schema, &[]), ["repositories"]);
+        assert_eq!(row_path(&schema, false), ["repositories"]);
     }
 
     #[test]
@@ -393,7 +346,7 @@ mod tests {
             },
         });
 
-        assert_eq!(row_path(&schema, &[]), ["data"]);
+        assert_eq!(row_path(&schema, false), ["data"]);
     }
 
     #[test]
@@ -406,14 +359,8 @@ mod tests {
             },
         });
 
-        assert!(row_path(&schema, &[]).is_empty());
-        assert_eq!(
-            row_path(
-                &schema,
-                &inputs(&[("start_cursor", IrInputLocation::Query)])
-            ),
-            ["data"]
-        );
+        assert!(row_path(&schema, false).is_empty());
+        assert_eq!(row_path(&schema, true), ["data"]);
     }
 
     #[test]
@@ -427,8 +374,8 @@ mod tests {
         });
 
         assert!(
-            row_path(&schema, &inputs(&[("bundle_id", IrInputLocation::Path)])).is_empty(),
-            "a path parameter is not a pagination signal"
+            row_path(&schema, false).is_empty(),
+            "an unpaginated resource is not an envelope"
         );
     }
 
@@ -444,7 +391,7 @@ mod tests {
             },
         });
 
-        assert!(row_path(&schema, &[]).is_empty());
+        assert!(row_path(&schema, false).is_empty());
     }
 
     #[test]
@@ -468,8 +415,8 @@ mod tests {
             },
         });
 
-        assert!(row_path(&string_count, &[]).is_empty());
-        assert_eq!(row_path(&integer_count, &[]), ["steps"]);
+        assert!(row_path(&string_count, false).is_empty());
+        assert_eq!(row_path(&integer_count, false), ["steps"]);
     }
 
     #[test]
@@ -489,7 +436,7 @@ mod tests {
             },
         });
 
-        assert!(row_path(&schema, &[]).is_empty());
+        assert!(row_path(&schema, false).is_empty());
     }
 
     #[test]
@@ -502,7 +449,7 @@ mod tests {
             },
         });
 
-        assert!(row_path(&schema, &[]).is_empty());
+        assert!(row_path(&schema, false).is_empty());
     }
 
     #[test]
@@ -521,7 +468,7 @@ mod tests {
             },
         });
 
-        assert!(row_path(&schema, &[]).is_empty());
+        assert!(row_path(&schema, false).is_empty());
     }
 
     #[test]
@@ -535,7 +482,7 @@ mod tests {
         });
 
         assert!(
-            row_path(&schema, &inputs(&[("cursor", IrInputLocation::Query)])).is_empty(),
+            row_path(&schema, true).is_empty(),
             "a singleton with a cursor field has no row collection"
         );
     }
@@ -551,7 +498,7 @@ mod tests {
             },
         });
 
-        assert!(row_path(&schema, &[]).is_empty());
+        assert!(row_path(&schema, false).is_empty());
     }
 
     #[test]
@@ -566,7 +513,7 @@ mod tests {
             }],
         });
 
-        assert!(row_path(&schema, &[]).is_empty());
+        assert!(row_path(&schema, false).is_empty());
     }
 
     #[test]
@@ -587,7 +534,7 @@ mod tests {
             },
         });
 
-        assert_eq!(row_path(&schema, &[]), ["data"]);
+        assert_eq!(row_path(&schema, false), ["data"]);
     }
 
     #[test]
@@ -601,7 +548,7 @@ mod tests {
             },
         });
 
-        assert!(row_path(&schema, &[]).is_empty());
+        assert!(row_path(&schema, false).is_empty());
     }
 
     #[test]
@@ -620,6 +567,6 @@ mod tests {
             });
         }
 
-        assert!(row_path(&schema, &[]).is_empty());
+        assert!(row_path(&schema, false).is_empty());
     }
 }

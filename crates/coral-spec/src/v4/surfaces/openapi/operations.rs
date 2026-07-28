@@ -50,14 +50,19 @@ impl OpenApiImporter<'_> {
         let request_body = self.import_request_body(op_obj, &operation_id, &mut diagnostics);
         let (output, response, entity, pagination_context) =
             self.import_response(path, op_obj, &operation_id, &mut diagnostics);
+        let contract = detect_pagination_contract(self.document, &parameters, &pagination_context);
         let row_path = self.infer_row_path(
             raw_operation_id.unwrap_or(&operation_id),
-            &parameters,
+            contract.as_ref().is_some_and(binds_pagination_input),
             &pagination_context,
             &output,
         );
-        let pagination =
-            detect_pagination(self.document, &parameters, &pagination_context, &row_path);
+        // A contract only becomes this operation's pagination once Coral reads
+        // the response as a list, whether by declaration or by row path.
+        let pagination = is_list_like_output(pagination_context.cardinality, &row_path)
+            .then_some(contract)
+            .flatten()
+            .unwrap_or_default();
         let lookup_keys = infer_rest_lookup_keys(&parameters, &pagination);
         let rest_parameters = parameters
             .iter()
@@ -116,13 +121,13 @@ impl OpenApiImporter<'_> {
     fn infer_row_path(
         &self,
         operation_name: &str,
-        parameters: &[IrOperationInput],
+        paginated_operation: bool,
         pagination_context: &OpenApiResponsePaginationContext,
         output: &IrOperationOutput,
     ) -> Vec<String> {
         let row_path = infer_wrapped_list_row_path(WrappedListInferenceContext {
             operation_name,
-            inputs: parameters,
+            paginated_operation,
             schema_root: self.document,
             response_schema: &pagination_context.schema,
         });
@@ -344,20 +349,35 @@ fn parameter_is_required(parameter_obj: &Map<String, Value>, location: IrInputLo
         .unwrap_or(false)
 }
 
-fn detect_pagination(
+/// Finds the pagination contract the operation's inputs and response describe,
+/// independently of whether Coral will read the response as a list.
+///
+/// None of the detectors consults the row path, so this runs first and answers
+/// the question wrapped-list inference needs — is this operation paginated? —
+/// without the two inferences having to predict each other.
+fn detect_pagination_contract(
     document: &Value,
     inputs: &[IrOperationInput],
     context: &OpenApiResponsePaginationContext,
-    row_path: &[String],
-) -> PaginationSpec {
-    if !is_list_like_output(context.cardinality, row_path) {
-        return PaginationSpec::default();
-    }
+) -> Option<PaginationSpec> {
     detect_link_header_pagination(inputs, context)
         .or_else(|| detect_cursor_query_pagination(document, inputs, context))
         .or_else(|| detect_offset_pagination(inputs))
         .or_else(|| detect_page_pagination(inputs))
-        .unwrap_or_default()
+}
+
+/// Whether a detected contract binds any request input.
+///
+/// Only this narrower question is envelope evidence. `Link` header detection
+/// reads no input at all, and providers declare that header on singleton
+/// resources too — GitHub does, on `GET /orgs/{org}/actions/hosted-runners/{id}`
+/// among others. Treating a bare header as evidence would promote a resource's
+/// incidental array, such as that runner's `public_ips`, to the whole relation.
+fn binds_pagination_input(contract: &PaginationSpec) -> bool {
+    contract.cursor_param.is_some()
+        || contract.offset_param.is_some()
+        || contract.page_param.is_some()
+        || contract.page_size.is_some()
 }
 
 fn detect_link_header_pagination(

@@ -4,34 +4,44 @@ use crate::backends::mcp::{McpOffsetPaginationSpec, McpPaginationSpec};
 use crate::v4::ir::{IrOperationInput, IrOperationOutput, IrScalarType, OutputCardinality};
 use crate::v4::response_cursors::find_response_cursor_path;
 
-pub(super) fn infer_mcp_pagination_contracts(
+/// Pagination contracts a tool's arguments and output schema describe, before
+/// any decision about whether its result is read as a list.
+#[derive(Default)]
+pub(super) struct McpPaginationContracts {
+    pub(super) cursor: Option<McpPaginationSpec>,
+    pub(super) offset: Option<McpOffsetPaginationSpec>,
+}
+
+impl McpPaginationContracts {
+    pub(super) const fn is_paginated(&self) -> bool {
+        self.cursor.is_some() || self.offset.is_some()
+    }
+}
+
+/// Neither detector consults the row path, so this runs first and answers the
+/// question wrapped-list inference needs — is this tool paginated? — without the
+/// two inferences having to predict each other.
+pub(super) fn detect_mcp_pagination_contracts(
     inputs: &[IrOperationInput],
-    output: &IrOperationOutput,
-    row_path: &[String],
     output_schema: Option<&Value>,
     input_schema: &Value,
-) -> (Option<McpPaginationSpec>, Option<McpOffsetPaginationSpec>) {
-    let pagination = infer_mcp_pagination(inputs, output, row_path, output_schema);
-    let offset_pagination = pagination
+) -> McpPaginationContracts {
+    let cursor = infer_mcp_pagination(inputs, output_schema);
+    let offset = cursor
         .is_none()
-        .then(|| infer_mcp_offset_pagination(inputs, output, row_path, input_schema))
+        .then(|| infer_mcp_offset_pagination(inputs, input_schema))
         .flatten();
-    (pagination, offset_pagination)
+    McpPaginationContracts { cursor, offset }
 }
 
 fn infer_mcp_pagination(
     inputs: &[IrOperationInput],
-    output: &IrOperationOutput,
-    row_path: &[String],
     output_schema: Option<&Value>,
 ) -> Option<McpPaginationSpec> {
     /// Response property names that conventionally carry a continuation token.
     const RESPONSE_CURSOR_TOKENS: &[&str] =
         &["nextcursor", "nextpagetoken", "nexttoken", "endcursor"];
 
-    if !is_list_like_output(output, row_path) {
-        return None;
-    }
     let cursor_arg = cursor_input_name(inputs)?;
     // A tool's output schema is its own reference root, so `$defs` entries
     // resolve against the schema itself.
@@ -47,13 +57,8 @@ fn infer_mcp_pagination(
 
 fn infer_mcp_offset_pagination(
     inputs: &[IrOperationInput],
-    output: &IrOperationOutput,
-    row_path: &[String],
     input_schema: &Value,
 ) -> Option<McpOffsetPaginationSpec> {
-    if !is_list_like_output(output, row_path) {
-        return None;
-    }
     let properties = input_schema.get("properties").and_then(Value::as_object)?;
     let limit = offset_pagination_input(inputs, properties.get("limit")?, "limit")?;
     if limit.default == 0
@@ -78,7 +83,7 @@ fn infer_mcp_offset_pagination(
 
 /// A wrapped-list envelope is a singleton by cardinality but yields rows, so it
 /// paginates like a declared list.
-fn is_list_like_output(output: &IrOperationOutput, row_path: &[String]) -> bool {
+pub(super) fn is_list_like_output(output: &IrOperationOutput, row_path: &[String]) -> bool {
     output.cardinality == OutputCardinality::List || !row_path.is_empty()
 }
 

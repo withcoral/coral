@@ -2000,6 +2000,156 @@ components:
     );
 }
 
+/// Row-path inference asks the pagination detectors whether an operation is
+/// paginated rather than predicting their answer, so every alias they accept is
+/// envelope evidence. Predicting it used to deadlock these two: no row path
+/// because the alias was unknown, and no pagination because the gate needs a row
+/// path.
+#[test]
+fn importer_infers_row_paths_for_every_pagination_alias_the_detectors_accept() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: aliases
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = &v4.surface;
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /skip-take:
+    get:
+      operationId: skipTakeList
+      parameters:
+        - {name: skip, in: query, schema: {type: integer, default: 0}}
+        - {name: take, in: query, schema: {type: integer, default: 25}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+  /odata:
+    get:
+      operationId: odataList
+      parameters:
+        - {name: $skip, in: query, schema: {type: integer, default: 0}}
+        - {name: $top, in: query, schema: {type: integer, default: 25}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+  /unpaginated:
+    get:
+      operationId: unpaginatedGet
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+components:
+  schemas:
+    Envelope:
+      type: object
+      properties:
+        success: {type: boolean}
+        data:
+          type: array
+          items:
+            type: object
+            properties:
+              id: {type: string}
+"
+        .as_bytes(),
+    )
+    .expect("import");
+
+    // The envelope carries no metadata sibling, so the operation's own inputs
+    // are the only evidence available.
+    for operation_id in ["skiptakelist", "odatalist"] {
+        assert_eq!(
+            imported_row_path(&ir, operation_id),
+            ["data"],
+            "{operation_id} should be unwrapped"
+        );
+        assert_eq!(
+            imported_rest_pagination(&ir, operation_id).mode,
+            PaginationMode::Offset,
+            "{operation_id} should paginate"
+        );
+    }
+
+    // The same envelope without pagination inputs stays a singleton: nothing
+    // says this response is a page rather than a resource.
+    assert!(imported_row_path(&ir, "unpaginatedget").is_empty());
+}
+
+/// A `Link` response header alone is not envelope evidence. GitHub declares one
+/// on singleton resources, where treating it as evidence would promote an
+/// incidental array to the whole relation.
+#[test]
+fn importer_does_not_treat_a_bare_link_header_as_envelope_evidence() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: link_header_singleton
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = &v4.surface;
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /runners/{runner_id}:
+    get:
+      operationId: getRunner
+      parameters:
+        - {name: runner_id, in: path, required: true, schema: {type: integer}}
+      responses:
+        '200':
+          headers:
+            Link:
+              schema: {type: string}
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  name: {type: string}
+                  public_ips:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        prefix: {type: string}
+"
+        .as_bytes(),
+    )
+    .expect("import");
+
+    assert!(
+        imported_row_path(&ir, "getrunner").is_empty(),
+        "a runner is a resource, not a page of its IP addresses"
+    );
+}
+
 #[test]
 fn importer_treats_path_parameters_as_required_when_required_is_omitted() {
     let manifest = parse_source_manifest_yaml(
