@@ -41,7 +41,7 @@ export function FunctionDetails({
   sources,
 }: FunctionDetailsProps) {
   return (
-    <div aria-label={`Function ${name}`} className={styles.root}>
+    <section aria-label={`Function ${name}`} className={styles.root}>
       <ScrollArea
         className={styles.scrollBody}
         constrainWidth
@@ -88,7 +88,7 @@ export function FunctionDetails({
           ) : null}
         </div>
       </ScrollArea>
-    </div>
+    </section>
   )
 }
 
