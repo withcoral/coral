@@ -1473,6 +1473,7 @@ mod tests {
                 schema_name: "demo".to_string(),
                 function_name: "search_events".to_string(),
                 description: "Search events.".to_string(),
+                guide: String::new(),
                 arguments: Vec::new(),
                 result_columns: Vec::new(),
                 kind: coral_spec::SourceTableFunctionKind::Table,
