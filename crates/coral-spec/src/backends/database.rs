@@ -31,15 +31,19 @@ impl DatabaseProvider {
 }
 
 /// Validated database source manifest consumed by the query engine.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct DatabaseSourceManifest {
     pub common: SourceManifestCommon,
     pub connection: DatabaseConnectionSpec,
+    /// Skipped when serializing: declared inputs come verbatim from the
+    /// authored manifest, which fingerprinting hashes separately.
+    #[serde(skip)]
     pub declared_inputs: Vec<ManifestInputSpec>,
 }
 
 /// Provider-specific database connection configuration.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DatabaseConnectionSpec {
     Postgres(PostgresConnectionSpec),
     MySql(MySqlConnectionSpec),
@@ -47,7 +51,7 @@ pub enum DatabaseConnectionSpec {
 }
 
 /// `PostgreSQL` connection configuration.
-#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PostgresConnectionSpec {
     pub host: ParsedTemplate,
@@ -60,7 +64,7 @@ pub struct PostgresConnectionSpec {
 }
 
 /// `MySQL` connection configuration.
-#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct MySqlConnectionSpec {
     pub host: ParsedTemplate,
@@ -71,7 +75,7 @@ pub struct MySqlConnectionSpec {
 }
 
 /// `SQLite` connection configuration.
-#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SqliteConnectionSpec {
     pub path: ParsedTemplate,

@@ -186,6 +186,9 @@ surface:
                 importer_version: match surface_type {
                     SurfaceType::OpenApi => OPENAPI_IMPORTER_VERSION,
                     SurfaceType::Mcp => MCP_IMPORTER_VERSION,
+                    SurfaceType::Database => {
+                        panic!("database surfaces do not have materialized plans")
+                    }
                 }
                 .to_string(),
                 operations: Vec::new(),
