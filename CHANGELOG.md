@@ -1,5 +1,70 @@
 # Changelog
 
+## [0.8.0](https://github.com/withcoral/coral/compare/v0.7.1...v0.8.0) (2026-07-28)
+
+
+### ⚠ BREAKING CHANGES
+
+* **spec:** move inferred operation metadata out of v4 IR ([#1884](https://github.com/withcoral/coral/issues/1884))
+
+### Features
+
+* **app:** add ES256 session token core ([#1625](https://github.com/withcoral/coral/issues/1625)) ([7931972](https://github.com/withcoral/coral/commit/7931972f8470ea30cdf45486967579de285eb271))
+* **app:** add in-memory OAuth state store ([#1629](https://github.com/withcoral/coral/issues/1629)) ([a9b6973](https://github.com/withcoral/coral/commit/a9b69735c9257d5f6f898b4127e66f7d8844c883))
+* **app:** persist tasks in SQL ([#1940](https://github.com/withcoral/coral/issues/1940)) ([b1975f4](https://github.com/withcoral/coral/commit/b1975f4a68b566607a0386544ee15f264c451cd7))
+* **app:** resolve MCP HTTP serve configuration ([#1636](https://github.com/withcoral/coral/issues/1636)) ([6f82b91](https://github.com/withcoral/coral/commit/6f82b91868c6ba4acc257daaa825f2aa1663c1b9))
+* **cli:** compose MCP HTTP with gRPC ([#1638](https://github.com/withcoral/coral/issues/1638)) ([2badecc](https://github.com/withcoral/coral/commit/2badecc0a5c81a46542871a117e04c41186a9db7))
+* **engine:** add request identity contracts ([#1515](https://github.com/withcoral/coral/issues/1515)) ([3a9451a](https://github.com/withcoral/coral/commit/3a9451a5d0b40f70a1bf54fb9b841d7961130dfa))
+* **engine:** compose request identity selection ([#1516](https://github.com/withcoral/coral/issues/1516)) ([660b32b](https://github.com/withcoral/coral/commit/660b32b6a56dc917a2e9e32061b34b3e3546c1a5))
+* **engine:** inject request identity headers ([#1517](https://github.com/withcoral/coral/issues/1517)) ([f831be9](https://github.com/withcoral/coral/commit/f831be9639c6468aff9df19b9ff55c624b88a45d))
+* **mcp-http:** add loopback Streamable HTTP server ([#1626](https://github.com/withcoral/coral/issues/1626)) ([1fb9d48](https://github.com/withcoral/coral/commit/1fb9d48edadb41fca76e68b2335765781bd00c9f))
+* **mcp-http:** enforce OAuth bearer sessions ([#1632](https://github.com/withcoral/coral/issues/1632)) ([a8be07a](https://github.com/withcoral/coral/commit/a8be07a570552ad5209f46479cd4c21a40cf770a))
+* **mcp:** require task lifecycle ([#1941](https://github.com/withcoral/coral/issues/1941)) ([e6e0607](https://github.com/withcoral/coral/commit/e6e0607bf4bb5e5ce4c0534f0189e10363046155))
+* **reef/wax:** Add MCP clients settings component ([#1955](https://github.com/withcoral/coral/issues/1955)) ([e95b51b](https://github.com/withcoral/coral/commit/e95b51b339ea71adc9ae46fcfae05014a5484f74))
+* **reef:** add agent setup onboarding step ([#1764](https://github.com/withcoral/coral/issues/1764)) ([f322108](https://github.com/withcoral/coral/commit/f32210821696b31f2c7b2f747de15190a3400fd4))
+* **reef:** add function details component ([#1980](https://github.com/withcoral/coral/issues/1980)) ([218041d](https://github.com/withcoral/coral/commit/218041d713b76e59ac85f18c4f5f96be90ffa64e))
+* **reef:** add function explorer ([#1981](https://github.com/withcoral/coral/issues/1981)) ([f5fd69a](https://github.com/withcoral/coral/commit/f5fd69afbb353d246aa1518ba34ad23ac0d3e441))
+* **reef:** add function list component ([#1969](https://github.com/withcoral/coral/issues/1969)) ([e635b7a](https://github.com/withcoral/coral/commit/e635b7a66ec2fd441414158a98c079c4e0d1b931))
+* **reef:** add shared code block ([#1978](https://github.com/withcoral/coral/issues/1978)) ([a39f836](https://github.com/withcoral/coral/commit/a39f83633c43988f62817d84d642cd7c5f573977))
+* **reef:** add truncated list component ([#1968](https://github.com/withcoral/coral/issues/1968)) ([bdab901](https://github.com/withcoral/coral/commit/bdab901b588a6eb9f6ab0d5b8a4aa6222e9a1fde))
+* **reef:** Add Wax Banner ([#1945](https://github.com/withcoral/coral/issues/1945)) ([71d7ee6](https://github.com/withcoral/coral/commit/71d7ee62efd96d8f9535b0d1218ed3d960b8da58))
+* **reef:** add Wax radio group ([#1869](https://github.com/withcoral/coral/issues/1869)) ([1bd5aad](https://github.com/withcoral/coral/commit/1bd5aad71b274e371e351bd3c18f2a78cbb8710f))
+* **reef:** add Wax textarea input ([#1868](https://github.com/withcoral/coral/issues/1868)) ([6720c41](https://github.com/withcoral/coral/commit/6720c419ebed3995f4a77f57738171c87a9a619a))
+* **reef:** create custom sources with OAuth device flow ([#1922](https://github.com/withcoral/coral/issues/1922)) ([51a6279](https://github.com/withcoral/coral/commit/51a62793016ed1ae6df4bb3a02210291ee8d596c))
+* **reef:** show table functions in schema explorer ([#1909](https://github.com/withcoral/coral/issues/1909)) ([178dd8d](https://github.com/withcoral/coral/commit/178dd8d8e485722c3f93ffee6cdda4d95bcc62e8))
+* **reef:** source creation wizard for DSL v4 manifests ([#1800](https://github.com/withcoral/coral/issues/1800)) ([0751168](https://github.com/withcoral/coral/commit/07511686954576cba55fc9b43a4dd6d92e39d318))
+* **reef:** wire function explorer ([#1982](https://github.com/withcoral/coral/issues/1982)) ([4670409](https://github.com/withcoral/coral/commit/4670409865fdb78c4b7f0f6e4baff7e51614ba41))
+* **spec:** re-introduce wrapped-list detection as operation metadata ([#1977](https://github.com/withcoral/coral/issues/1977)) ([e398a64](https://github.com/withcoral/coral/commit/e398a647a3379d5049ef3e9bfee3a347d6cae63d))
+
+
+### Bug Fixes
+
+* **catalog:** propagate table function guides ([#1964](https://github.com/withcoral/coral/issues/1964)) ([244542d](https://github.com/withcoral/coral/commit/244542d9c83748bdbda40655d012f27909386a58))
+* **desktop:** allow select all shortcut ([#1926](https://github.com/withcoral/coral/issues/1926)) ([8effe46](https://github.com/withcoral/coral/commit/8effe4605ea982d9adb85f2435e9f4d9402b35d9))
+* **desktop:** manage MCP client workspace access ([#1957](https://github.com/withcoral/coral/issues/1957)) ([96007ac](https://github.com/withcoral/coral/commit/96007ac14560f1a176055db99cafa758651f6188))
+* **desktop:** propagate protocol response cancellation ([#1967](https://github.com/withcoral/coral/issues/1967)) ([14de26c](https://github.com/withcoral/coral/commit/14de26c67a3f6830e4f2d7bd22aa10fe72047890))
+* **desktop:** reuse release CLI artifacts for macOS packaging ([#1932](https://github.com/withcoral/coral/issues/1932)) ([35094a4](https://github.com/withcoral/coral/commit/35094a428017ea19a1a1fa2e78fd78589e8028e0))
+* **engine:** bind table-function arguments by declared type ([#1966](https://github.com/withcoral/coral/issues/1966)) ([822fdd1](https://github.com/withcoral/coral/commit/822fdd1f42a1906394b6cc3b66a225b4767512bd))
+* **mcp:** simplify task lifecycle results ([#1939](https://github.com/withcoral/coral/issues/1939)) ([e04c4ac](https://github.com/withcoral/coral/commit/e04c4ac4febbba822d55dcc1bac5f9e241e9177c))
+* **reef:** align source discovery limits ([#1931](https://github.com/withcoral/coral/issues/1931)) ([4a162d3](https://github.com/withcoral/coral/commit/4a162d353dbcae48da24b3c4d260fdc45816850b))
+* **reef:** fix DS button hover background ([#1983](https://github.com/withcoral/coral/issues/1983)) ([12ee114](https://github.com/withcoral/coral/commit/12ee114b57a0d4762288fd48ebcd5d3a67e039fd))
+* **reef:** preserve native label associations in source fields ([#1866](https://github.com/withcoral/coral/issues/1866)) ([2e2f72f](https://github.com/withcoral/coral/commit/2e2f72f7c53c42f678419fcf685fb22f729ab9de))
+* **reef:** remove final table row border ([#1956](https://github.com/withcoral/coral/issues/1956)) ([4336b67](https://github.com/withcoral/coral/commit/4336b676c2736154b8a725553bbc620d55febf0a))
+* **reef:** Sync tokens with Figma ([#1943](https://github.com/withcoral/coral/issues/1943)) ([8b2f3c6](https://github.com/withcoral/coral/commit/8b2f3c6a6c24bddaeb87970f5b170a0d001b950a))
+* **spec:** remove runtime projection syncing ([#1958](https://github.com/withcoral/coral/issues/1958)) ([b45f48c](https://github.com/withcoral/coral/commit/b45f48c097b244da8af4c6c5946a849049b1401f))
+* **telemetry:** redact caller-controlled error details ([#1900](https://github.com/withcoral/coral/issues/1900)) ([03358c8](https://github.com/withcoral/coral/commit/03358c8be3f29ff926b216693fc9133cd1496967))
+
+
+### Performance Improvements
+
+* **mcp:** compact list_columns output ([#1934](https://github.com/withcoral/coral/issues/1934)) ([842137b](https://github.com/withcoral/coral/commit/842137b8356e5da11326f8dc483f1a7476aeaf94))
+* **xtask:** benchmark list_columns token efficiency ([#1933](https://github.com/withcoral/coral/issues/1933)) ([b008be1](https://github.com/withcoral/coral/commit/b008be1d2fed860a2f8cc5dd0ea0a35bc12bedf8))
+
+
+### Code Refactoring
+
+* **spec:** move inferred operation metadata out of v4 IR ([#1884](https://github.com/withcoral/coral/issues/1884)) ([f9bf9bc](https://github.com/withcoral/coral/commit/f9bf9bcf14d943009f7bc183e86eca4a7068041a))
+
 ## [0.7.1](https://github.com/withcoral/coral/compare/v0.7.0...v0.7.1) (2026-07-21)
 
 
