@@ -1678,6 +1678,74 @@ paths:
     (manifest, imported)
 }
 
+/// An envelope offering row paths of three different shapes: `items` yields
+/// objects, `tags` yields scalars, and `blobs` yields rows whose item type the
+/// importer could not resolve.
+fn imported_mixed_row_shapes_surface() -> (V4SourceManifest, ImportedSurface) {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: demo
+dsl_version: 4
+surface:
+  type: openapi
+  file: /tmp/openapi.yaml
+  base_url: https://api.example.com
+",
+    )
+    .expect("manifest")
+    .as_v4()
+    .expect("v4")
+    .clone();
+    let imported = import_openapi_surface(
+        &manifest,
+        &manifest.surface,
+        br"
+openapi: 3.0.3
+paths:
+  /items:
+    get:
+      operationId: items/list
+      parameters:
+        - {name: page, in: query, schema: {type: integer, default: 1}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total_count: {type: integer}
+                  tags:
+                    type: array
+                    items: {type: string}
+                  blobs:
+                    type: array
+                    items: {$ref: '#/components/schemas/Missing'}
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: {type: string}
+                        title: {type: string}
+",
+    )
+    .expect("import");
+    (manifest, imported)
+}
+
+fn override_row_path(imported: &mut ImportedSurface, operation_id: &str, path: &[&str]) {
+    let OperationMetadata::Rest { row_path, .. } = imported
+        .operation_metadata
+        .operations
+        .get_mut(operation_id)
+        .expect("operation metadata")
+    else {
+        panic!("expected REST metadata");
+    };
+    *row_path = path.iter().map(|segment| (*segment).to_string()).collect();
+}
+
 fn imported_required_account_surface() -> (V4SourceManifest, ImportedSurface) {
     let manifest = parse_source_manifest_yaml(
         r"
@@ -1827,6 +1895,74 @@ fn projection_compatibility_rejects_columns_the_effective_row_path_cannot_yield(
         error.to_string().contains("column 'id' reads field 'id'"),
         "unexpected error: {error}"
     );
+}
+
+/// A row path may legitimately select an array of scalars, so the plan accepts
+/// the override. The snapshot's field columns cannot survive it: a source path
+/// against a string row resolves to null on every row rather than failing.
+#[test]
+fn projection_compatibility_rejects_field_columns_when_the_rows_are_scalars() {
+    let (manifest, mut imported) = imported_mixed_row_shapes_surface();
+    let catalog = generate_projection_catalog(&manifest, &imported.validated_plan().expect("plan"))
+        .expect("projections");
+    override_row_path(&mut imported, "items_list", &["tags"]);
+    let plan = imported.validated_plan().expect("plan");
+
+    let error = validate_projection_compatibility(&plan, &catalog)
+        .expect_err("field columns must not survive a scalar row path");
+
+    assert!(
+        error
+            .to_string()
+            .contains("is not an object and names no fields"),
+        "unexpected error: {error}"
+    );
+}
+
+/// The same hole one step earlier: a row type the semantic IR carries no entry
+/// for names no fields either, and an unresolved item type reaches exactly that
+/// state through the `json` sentinel.
+#[test]
+fn projection_compatibility_rejects_field_columns_when_the_row_type_is_absent() {
+    let (manifest, mut imported) = imported_mixed_row_shapes_surface();
+    let catalog = generate_projection_catalog(&manifest, &imported.validated_plan().expect("plan"))
+        .expect("projections");
+    override_row_path(&mut imported, "items_list", &["blobs"]);
+    let plan = imported.validated_plan().expect("plan");
+    assert_eq!(plan.rest_output_type_ref("items_list"), "json");
+
+    let error = validate_projection_compatibility(&plan, &catalog)
+        .expect_err("field columns must not survive an opaque row path");
+
+    assert!(
+        error
+            .to_string()
+            .contains("is not an object and names no fields"),
+        "unexpected error: {error}"
+    );
+}
+
+/// The rule is about source paths, not row shapes: a catalog generated for
+/// non-object rows projects them whole, and stays compatible.
+#[test]
+fn projection_compatibility_accepts_whole_row_columns_for_non_object_rows() {
+    for row_path in [["tags"], ["blobs"]] {
+        let (manifest, mut imported) = imported_mixed_row_shapes_surface();
+        override_row_path(&mut imported, "items_list", &row_path);
+        let plan = imported.validated_plan().expect("plan");
+        let catalog = generate_projection_catalog(&manifest, &plan).expect("projections");
+        assert!(
+            catalog
+                .projections
+                .iter()
+                .flat_map(|projection| &projection.columns)
+                .all(|column| column.source_path.is_empty()),
+            "non-object rows are projected whole"
+        );
+
+        validate_projection_compatibility(&plan, &catalog)
+            .expect("a catalog generated for these rows is compatible with them");
+    }
 }
 
 #[test]

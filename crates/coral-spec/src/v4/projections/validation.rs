@@ -141,22 +141,33 @@ fn validate_projection_columns(
     operation_id: &str,
 ) -> Result<()> {
     let row_type_ref = plan.rest_output_type_ref(operation_id);
-    let Some(row_type) = plan
+    // Only an object row type names its fields. Every other shape is projected
+    // whole, as a single column with no source path — including a `json` row,
+    // which the semantic IR carries no entry for at all.
+    let row_fields = plan
         .semantic_ir()
         .types
         .iter()
         .find(|ty| ty.id == row_type_ref)
-    else {
-        return Ok(());
-    };
-    // Only an object row type names its fields. Scalar, list, and opaque JSON
-    // rows are projected whole, and their columns carry no source path.
-    let IrTypeShape::Object { fields } = &row_type.shape else {
-        return Ok(());
-    };
+        .and_then(|row_type| match &row_type.shape {
+            IrTypeShape::Object { fields } => Some(fields.as_slice()),
+            IrTypeShape::Scalar(_)
+            | IrTypeShape::List { .. }
+            | IrTypeShape::Map { .. }
+            | IrTypeShape::Enum { .. }
+            | IrTypeShape::Json => None,
+        });
     for column in &projection.columns {
         let Some(field_name) = column.source_path.first() else {
             continue;
+        };
+        // A source path against a row that names nothing is not merely stale:
+        // it resolves to null on every row, silently.
+        let Some(fields) = row_fields else {
+            return Err(ManifestError::validation(format!(
+                "projection '{}' column '{}' reads field '{field_name}', but the rows operation '{operation_id}' yields have type '{row_type_ref}', which is not an object and names no fields",
+                projection.name, column.name
+            )));
         };
         if !fields.iter().any(|field| field.name == *field_name) {
             return Err(ManifestError::validation(format!(
