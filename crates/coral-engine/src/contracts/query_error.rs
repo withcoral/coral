@@ -936,11 +936,9 @@ mod tests {
             err.metadata().get("table").map(String::as_str),
             Some("missing")
         );
-        assert!(
-            err.detail()
-                .contains("does not exist in any registered schema"),
-            "unexpected detail: {}",
-            err.detail()
+        assert_eq!(
+            err.detail(),
+            "No table `missing` exists in any registered schema."
         );
     }
 
