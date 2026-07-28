@@ -80,7 +80,7 @@ impl fmt::Debug for QuerySource {
             .field("components", &self.components)
             .field("variables", &self.variables)
             .field("secret_count", &self.secrets.len())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
