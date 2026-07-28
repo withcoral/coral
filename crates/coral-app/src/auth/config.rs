@@ -204,14 +204,19 @@ impl SessionTokenSettings {
                         session_config_error(format!("env var `{env_name}` is not set"))
                     })?;
                 let value = Zeroizing::new(value);
+                // Decode into a zeroizing buffer rather than taking the `Vec`
+                // that `decode` allocates: a malformed value fails partway
+                // through, and that buffer would be freed still holding the
+                // leading plaintext bytes of the private key.
+                let mut decoded = Zeroizing::new(Vec::new());
                 BASE64_STANDARD
-                    .decode(value.trim())
-                    .map(Zeroizing::new)
+                    .decode_vec(value.trim(), &mut decoded)
                     .map_err(|_error| {
                         session_config_error(format!(
                             "env var `{env_name}` must contain a base64-encoded PKCS#8 P-256 private key"
                         ))
-                    })
+                    })?;
+                Ok(decoded)
             }
         }
     }
