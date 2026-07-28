@@ -1,5 +1,5 @@
 #![cfg_attr(not(test), expect(dead_code, reason = "wired by OAuth descendants"))]
-use super::config::OidcProviderSettings;
+use super::config::ResolvedOidcProvider;
 use crate::outbound_url_policy::{ConfiguredEndpointUrl, read_bounded_body};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -69,7 +69,7 @@ impl OidcProviderClient {
 
     pub(super) async fn authorization_request(
         &self,
-        provider: &OidcProviderSettings,
+        provider: &ResolvedOidcProvider,
     ) -> Result<OidcAuthorizationRequest, OidcProviderClientError> {
         let discovery = self.discover(provider).await?;
         let state = random_url_token()?;
@@ -101,7 +101,7 @@ impl OidcProviderClient {
     }
     pub(super) async fn exchange_code(
         &self,
-        provider: &OidcProviderSettings,
+        provider: &ResolvedOidcProvider,
         code: &str,
         code_verifier: &str,
     ) -> Result<OidcCodeExchange, OidcProviderClientError> {
@@ -142,7 +142,7 @@ impl OidcProviderClient {
     }
     async fn discover(
         &self,
-        provider: &OidcProviderSettings,
+        provider: &ResolvedOidcProvider,
     ) -> Result<ValidatedDiscovery, OidcProviderClientError> {
         let url = discovery_url(&provider.issuer)?;
         let response = self
@@ -262,12 +262,16 @@ mod tests {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+    use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair};
+    use std::path::Path;
+
     use super::*;
     use crate::auth::config::AuthSettings;
 
     const CLIENT_SECRET: &str = "client-secret-must-not-leak";
 
-    fn provider(issuer: &str) -> OidcProviderSettings {
+    fn provider(issuer: &str) -> ResolvedOidcProvider {
         let settings = AuthSettings::from_toml(&format!(
             "[auth]
              [auth.session]
@@ -284,6 +288,18 @@ mod tests {
         ))
         .expect("valid auth config")
         .expect("auth settings");
+        // A resolved provider is only reachable through runtime resolution, so
+        // the helper supplies the session signing key the same way a running
+        // server would.
+        let signing_key = BASE64_STANDARD.encode(
+            EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
+                .expect("P-256 signing key"),
+        );
+        let (settings, _issuer) = settings
+            .resolve_runtime_dependencies(Path::new("config.toml"), &|name| {
+                Ok((name == "CORAL_SESSION_SIGNING_KEY").then(|| signing_key.clone()))
+            })
+            .expect("resolved runtime dependencies");
         settings.provider().clone()
     }
 
