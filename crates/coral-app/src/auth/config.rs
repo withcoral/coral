@@ -290,10 +290,7 @@ pub(super) struct OidcProviderSettings {
 }
 
 impl OidcProviderSettings {
-    fn validate(
-        &mut self,
-        authorization_server_issuer: &str,
-    ) -> Result<(), AuthServerError> {
+    fn validate(&mut self, authorization_server_issuer: &str) -> Result<(), AuthServerError> {
         if self.client_secret.is_some() == self.client_secret_env.is_some() {
             return Err(config_error(
                 "auth.provider must configure exactly one of client_secret or client_secret_env",
@@ -338,7 +335,9 @@ impl OidcProviderSettings {
         if let Some(env_name) = &mut self.client_secret_env {
             *env_name = env_name.trim().to_string();
             if env_name.is_empty() {
-                return Err(invalid_provider("provider secret must be a nonempty string"));
+                return Err(invalid_provider(
+                    "provider secret must be a nonempty string",
+                ));
             }
             if env_name.bytes().any(|byte| matches!(byte, b'=' | b'\0')) {
                 return Err(invalid_provider("client_secret_env is invalid"));
@@ -546,7 +545,9 @@ fn validate_provider_key(field: &str, key: &str) -> Result<(), AuthServerError> 
 }
 
 fn invalid_provider(message: impl fmt::Display) -> AuthServerError {
-    AuthServerError::Config(format!("invalid auth configuration: auth.provider.{message}"))
+    AuthServerError::Config(format!(
+        "invalid auth configuration: auth.provider.{message}"
+    ))
 }
 
 fn validate_issuer(label: &str, raw: &str, root_only: bool) -> Result<String, AuthServerError> {
@@ -742,8 +743,7 @@ mod tests {
 
         let reserved = valid("") + "\n[auth.provider.auth_params]\nCLIENT_ID = 'override'\n";
         assert!(reject(&reserved).contains("reserved parameter `CLIENT_ID`"));
-        let invalid_claim =
-            valid("") + "\n[auth.provider.required_claims]\n' spaced ' = true\n";
+        let invalid_claim = valid("") + "\n[auth.provider.required_claims]\n' spaced ' = true\n";
         assert!(reject(&invalid_claim).contains("required_claims"));
     }
 

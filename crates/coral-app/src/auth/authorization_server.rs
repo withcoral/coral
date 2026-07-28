@@ -92,12 +92,13 @@ impl CoralAuthorizationServer {
                 get(authorization_server_metadata),
             )
             .with_state(state);
-        let listener = TcpListener::bind(bind_addr)
-            .await
-            .map_err(|source| AuthServerError::Bind {
-                address: bind_addr,
-                source,
-            })?;
+        let listener =
+            TcpListener::bind(bind_addr)
+                .await
+                .map_err(|source| AuthServerError::Bind {
+                    address: bind_addr,
+                    source,
+                })?;
         let endpoint_uri = format!(
             "http://{}",
             listener.local_addr().map_err(AuthServerError::LocalAddr)?
@@ -275,7 +276,11 @@ mod tests {
             panic!("expected unsafe bind to be rejected");
         };
 
-        assert!(error.to_string().contains("allow_insecure_remote_http_bind"));
+        assert!(
+            error
+                .to_string()
+                .contains("allow_insecure_remote_http_bind")
+        );
     }
 
     #[test]
