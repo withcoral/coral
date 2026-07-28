@@ -107,6 +107,12 @@ function FunctionShape({
       {items.length > 0 ? (
         <Table.Wrapper className={styles.shapeTable} style="compact">
           <Table.Root className={styles.shapeTableRoot}>
+            <Table.Head>
+              <Table.Row>
+                <Table.HeaderCell>name</Table.HeaderCell>
+                <Table.HeaderCell align="right">type</Table.HeaderCell>
+              </Table.Row>
+            </Table.Head>
             <Table.Body>
               {items.map((item) => (
                 <Table.Row key={item.name}>
