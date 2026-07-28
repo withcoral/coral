@@ -495,7 +495,11 @@ observed_values_search = true
         let keys = Feature::all().map(Feature::key).collect::<Vec<_>>();
         let error = unknown_feature_error("tasks");
 
-        assert_eq!(keys, vec!["feedback", "observed_values_search"]);
+        assert_eq!(
+            keys,
+            vec!["database_sources", "feedback", "observed_values_search"]
+        );
+        assert!(!features.enabled(Feature::DatabaseSources));
         assert!(!features.enabled(Feature::Feedback));
         assert!(!features.enabled(Feature::ObservedValuesSearch));
         assert!(error.to_string().contains("unknown feature 'tasks'"));
