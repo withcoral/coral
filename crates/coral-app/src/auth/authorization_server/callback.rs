@@ -223,9 +223,11 @@ fn security_headers() -> [(header::HeaderName, &'static str); 3] {
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
+    use std::path::Path;
     use std::sync::Arc;
     use std::time::Duration;
 
+    use base64::engine::general_purpose::STANDARD;
     use ring::rand::SystemRandom;
     use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair};
     use serde_json::{Value, json};
@@ -235,7 +237,7 @@ mod tests {
     use super::super::AuthorizationServerHttpState;
     use super::*;
     use crate::auth::PROVIDER_ID;
-    use crate::auth::config::AuthSettings;
+    use crate::auth::config::{AuthSettings, ResolvedAuthSettings};
     use crate::auth::id_token::tests::{
         claims as id_token_claims, rsa_key, set_claim, token as id_token,
     };
@@ -253,8 +255,8 @@ mod tests {
     const AUTH_ISSUER: &str = "https://auth.example.test";
     const RESOURCE: &str = "https://api.example.test/mcp";
 
-    fn settings(issuer: &str) -> AuthSettings {
-        AuthSettings::from_toml(&format!(
+    fn settings(issuer: &str) -> ResolvedAuthSettings {
+        let settings = AuthSettings::from_toml(&format!(
             "[auth]
              [auth.session]
              [auth.authorization_server]
@@ -266,7 +268,17 @@ mod tests {
              redirect_uri = 'http://localhost/provider-callback'"
         ))
         .expect("valid auth config")
-        .expect("auth settings")
+        .expect("auth settings");
+        let signing_key = STANDARD.encode(
+            EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
+                .expect("P-256 signing key"),
+        );
+        let (settings, _issuer) = settings
+            .resolve_runtime_dependencies(Path::new("config.toml"), &|name| {
+                Ok((name == "CORAL_SESSION_SIGNING_KEY").then(|| signing_key.clone()))
+            })
+            .expect("resolved runtime dependencies");
+        settings
     }
 
     fn state(issuer: &str, state_store: Arc<dyn StateStore>) -> AuthorizationServerHttpState {
