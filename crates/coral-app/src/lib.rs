@@ -51,7 +51,7 @@ mod feedback;
 mod functions;
 mod hash;
 mod identity;
-pub(crate) mod outbound_url_policy;
+mod outbound_url_policy;
 mod query;
 mod request_context;
 mod search;

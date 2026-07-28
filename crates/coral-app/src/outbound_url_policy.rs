@@ -20,10 +20,27 @@ use std::time::Duration;
 use thiserror::Error;
 use url::{Host, Url};
 
+use crate::bootstrap::is_loopback_ip;
+
 /// Timeout applied to public metadata connections and complete requests.
 pub(crate) const PUBLIC_METADATA_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// A configured endpoint that is safe for credential-bearing requests.
+///
+/// # Trust
+///
+/// This profile permits plain-HTTP loopback, and HTTPS to any host including a
+/// private one, with no check on what the host resolves to. Both are sound only
+/// for a value an operator authored — a config file or environment variable.
+///
+/// Do not build one from a value a remote party controls. That includes the
+/// endpoints inside an `OpenID` Connect discovery document, which the provider
+/// supplies: a compromised provider answering with
+/// `token_endpoint: "http://127.0.0.1:9999/x"` would be handed the client
+/// secret, authorization code, and PKCE verifier in cleartext, readable by any
+/// local process. Remote-supplied endpoints are a third trust level and need
+/// their own profile — one that requires HTTPS unless the configured issuer is
+/// itself loopback HTTP.
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct ConfiguredEndpointUrl(Url);
 
@@ -166,10 +183,13 @@ pub(crate) enum OutboundUrlPolicyError {
     #[error("failed to build public metadata HTTP client: {0}")]
     ClientBuild(reqwest::Error),
     /// A response body could not be read.
-    #[error("failed to read public metadata response: {0}")]
+    ///
+    /// Shared by both profiles: [`read_bounded_body`] is profile-agnostic, so
+    /// this must not name one.
+    #[error("failed to read response body: {0}")]
     BodyRead(reqwest::Error),
     /// A response body exceeded the caller's bound.
-    #[error("public metadata response exceeded {limit} bytes")]
+    #[error("response body exceeded {limit} bytes")]
     BodyTooLarge {
         /// Maximum number of accepted bytes.
         limit: usize,
@@ -253,11 +273,18 @@ fn validate_public_resolution(host: &str, addresses: &[SocketAddr]) -> std::io::
     Ok(())
 }
 
+/// Reports whether `url` names the local machine explicitly enough to allow
+/// plain HTTP.
+///
+/// The address arms delegate to [`is_loopback_ip`] so this shares one rule with
+/// the bind guards and the auth URL validator: that helper's doc comment calls
+/// out `::ffff:127.0.0.1` as the case a divergent copy would get wrong, and a
+/// copy here did.
 fn is_explicit_loopback(url: &Url) -> bool {
     match url.host() {
         Some(Host::Domain(host)) => host.trim_end_matches('.').eq_ignore_ascii_case("localhost"),
-        Some(Host::Ipv4(address)) => address.is_loopback(),
-        Some(Host::Ipv6(address)) => address.is_loopback(),
+        Some(Host::Ipv4(address)) => is_loopback_ip(address.into()),
+        Some(Host::Ipv6(address)) => is_loopback_ip(address.into()),
         None => false,
     }
 }
@@ -281,51 +308,97 @@ fn public_metadata_ip_is_blocked(address: IpAddr) -> bool {
     }
 }
 
+/// Reports whether `address` sits outside the public IPv4 internet.
+///
+/// Every branch is one entry of the IANA IPv4 Special-Purpose Address Registry
+/// marked "Globally Reachable: False", so this is that registry as a denylist
+/// rather than a hand-picked set. Registry completeness is not reachability
+/// completeness, though: an address IANA calls ordinary public unicast can
+/// still front something internal — a deployment's own ASN space, or a cloud
+/// host-node address such as Azure's `168.63.129.16` — and no arithmetic here
+/// can know that. The resolver check in [`validate_public_resolution`] has the
+/// same blind spot, so neither is a substitute for an operator deny list.
 fn public_metadata_ipv4_is_blocked(address: Ipv4Addr) -> bool {
     let [a, b, c, _] = address.octets();
-    a == 0
-        || a == 10
-        || a == 127
-        || (a == 100 && (64..=127).contains(&b))
-        || (a == 169 && b == 254)
-        || (a == 172 && (16..=31).contains(&b))
-        || (a == 192 && b == 0 && c == 0)
-        || (a == 192 && b == 0 && c == 2)
-        || (a == 192 && b == 88 && c == 99)
-        || (a == 192 && b == 168)
-        || (a == 198 && (b == 18 || b == 19))
-        || (a == 198 && b == 51 && c == 100)
-        || (a == 203 && b == 0 && c == 113)
+    a == 0 // 0.0.0.0/8 this network; also 0.0.0.0/32, which connect(2) sends to a local listener
+        || a == 10 // 10.0.0.0/8 private
+        || a == 127 // 127.0.0.0/8 loopback, the whole /8 and not just 127.0.0.1
+        || (a == 100 && (64..=127).contains(&b)) // 100.64.0.0/10 shared address space (CGNAT)
+        || (a == 169 && b == 254) // 169.254.0.0/16 link-local, which is where cloud metadata lives
+        || (a == 172 && (16..=31).contains(&b)) // 172.16.0.0/12 private
+        || (a == 192 && b == 0 && c == 0) // 192.0.0.0/24 IETF protocol assignments
+        || (a == 192 && b == 0 && c == 2) // 192.0.2.0/24 documentation (TEST-NET-1)
+        || (a == 192 && b == 88 && c == 99) // 192.88.99.0/24 deprecated 6to4 relay anycast
+        || (a == 192 && b == 168) // 192.168.0.0/16 private
+        || (a == 198 && (b == 18 || b == 19)) // 198.18.0.0/15 benchmarking
+        || (a == 198 && b == 51 && c == 100) // 198.51.100.0/24 documentation (TEST-NET-2)
+        || (a == 203 && b == 0 && c == 113) // 203.0.113.0/24 documentation (TEST-NET-3)
+        // 224.0.0.0/3: 240.0.0.0/4 reserved (with 255.255.255.255 broadcast) plus 224.0.0.0/4
+        // multicast, which is wider than the registry entry on purpose — no TCP origin can
+        // live on a multicast address.
         || a >= 224
 }
 
+/// Reports whether `address` sits outside the public IPv6 internet.
+///
+/// As with the IPv4 table, each branch is a registry entry that is not globally
+/// reachable, plus the transition ranges that carry an IPv4 destination inside
+/// an IPv6 address. Being a denylist, a new registry entry is allowed until it
+/// is added here — the three most recent ones had to be added after the fact.
 fn public_metadata_ipv6_is_blocked(address: Ipv6Addr) -> bool {
     let segments = address.segments();
-    address.is_loopback()
-        || address.is_unspecified()
-        || address.is_multicast()
+    // `::1` and `::` are already matched by the `to_ipv4` branch, which covers
+    // every address whose top 80 bits are zero. They stay spelled out so that
+    // narrowing that branch to `to_ipv4_mapped` — which stops matching them —
+    // cannot quietly unblock loopback.
+    address.is_loopback() // ::1/128
+        || address.is_unspecified() // ::/128
+        || address.is_multicast() // ff00::/8
+        // ::/96 IPv4-compatible and ::ffff:0:0/96 IPv4-mapped. `to_ipv4` rather than
+        // `to_ipv4_mapped` on purpose: it matches both, so neither spelling can smuggle
+        // back an IPv4 destination the IPv4 table would have refused.
         || address.to_ipv4().is_some()
-        || (segments[0] & 0xfe00) == 0xfc00
-        || (segments[0] & 0xffc0) == 0xfe80
-        || (segments[0] & 0xffc0) == 0xfec0
+        || (segments[0] & 0xfe00) == 0xfc00 // fc00::/7 unique-local
+        || (segments[0] & 0xffc0) == 0xfe80 // fe80::/10 link-local
+        || (segments[0] & 0xffc0) == 0xfec0 // fec0::/10 deprecated site-local
+        || segments[0] == 0x5f00 // 5f00::/16 SRv6 SIDs, routable inside an SRv6 domain
+        || (segments[0] == 0x3fff && (segments[1] & 0xf000) == 0) // 3fff::/20 documentation
+        // 64:ff9b::/96 NAT64 well-known prefix and 64:ff9b:1::/48 local-use translation
         || (segments[0] == 0x0064
             && segments[1] == 0xff9b
             && ((segments[2..6] == [0, 0, 0, 0]) || segments[2] == 1))
-        || (segments[0] == 0x0100 && segments[1] == 0 && segments[2] == 0 && segments[3] == 0)
+        // 100::/64 discard-only and its neighbour 100:0:0:1::/64 dummy prefix
+        || (segments[0] == 0x0100 && segments[1] == 0 && segments[2] == 0 && segments[3] <= 1)
+        // 2001::/32 Teredo and 2001:2::/48 benchmarking (matched as the wider /32, which is
+        // unallocated IETF protocol space either way)
         || (segments[0] == 0x2001 && (segments[1] == 0 || segments[1] == 0x0002))
-        || (segments[0] == 0x2001 && (0x0010..=0x002f).contains(&segments[1]))
-        || (segments[0] == 0x2001 && segments[1] == 0x0db8)
-        || segments[0] == 0x2002
+        || (segments[0] == 0x2001 && (0x0010..=0x002f).contains(&segments[1])) // 2001:10::/28 ORCHID, 2001:20::/28 ORCHIDv2
+        || (segments[0] == 0x2001 && segments[1] == 0x0db8) // 2001:db8::/32 documentation
+        || segments[0] == 0x2002 // 2002::/16 6to4, which embeds an arbitrary IPv4 destination
 }
 
+/// Reports whether the URL *as supplied* spells out a dot path segment.
+///
+/// This reads the raw string rather than a parsed [`Url`] because the parser
+/// resolves `..` away: once there is a [`Url`], a traversal attempt is
+/// indistinguishable from the path it collapsed to. Reading the raw string
+/// means matching every spelling the parser accepts — for a special scheme it
+/// treats any run of `/` and `\` after the scheme's `:` as the authority
+/// separator, and strips ASCII tab, CR, and LF anywhere in the input first. A
+/// scan keyed on a literal `://` misses all of those.
 fn has_dot_path_segment(value: &str) -> bool {
-    let Some((_, after_scheme)) = value.split_once("://") else {
+    let value: String = value
+        .chars()
+        .filter(|character| !matches!(character, '\t' | '\r' | '\n'))
+        .collect();
+    let Some((_, after_scheme)) = value.split_once(':') else {
         return false;
     };
-    let Some(path_start) = after_scheme.find(['/', '\\']) else {
+    let authority = after_scheme.trim_start_matches(['/', '\\']);
+    let Some(path_start) = authority.find(['/', '\\']) else {
         return false;
     };
-    let Some(path) = after_scheme.get(path_start..) else {
+    let Some(path) = authority.get(path_start..) else {
         return false;
     };
     let path_end = path.find(['?', '#']).unwrap_or(path.len());
@@ -373,9 +446,32 @@ mod tests {
             "http://localhost:14554/callback",
             "http://127.42.0.1:14554/callback",
             "http://[::1]:14554/callback",
+            // Routed through `bootstrap::is_loopback_ip`, so the IPv4-mapped
+            // spelling this profile once refused is accepted, matching what the
+            // auth URL validator accepts.
+            "http://[::ffff:127.0.0.1]:14554/callback",
         ] {
             ConfiguredEndpointUrl::parse(endpoint).expect(endpoint);
         }
+    }
+
+    /// `is_explicit_loopback` matches only the exact host `localhost`, while
+    /// `public_metadata_host_is_blocked` also treats `*.localhost` as loopback
+    /// per RFC 6761. Both refusals below are the fail-safe direction; this pins
+    /// the asymmetry so a later change to either side is deliberate.
+    #[test]
+    fn loopback_name_rules_differ_between_profiles() {
+        assert!(matches!(
+            ConfiguredEndpointUrl::parse("http://keycloak.localhost:8080/realms/coral"),
+            Err(OutboundUrlPolicyError::ConfiguredEndpointTransport)
+        ));
+        ConfiguredEndpointUrl::parse("https://keycloak.localhost:8443/realms/coral")
+            .expect("https reaches any host");
+
+        assert!(matches!(
+            PublicMetadataUrl::parse("https://keycloak.localhost/oauth/client.json"),
+            Err(OutboundUrlPolicyError::NonPublicHost)
+        ));
     }
 
     #[test]
@@ -448,6 +544,32 @@ mod tests {
         }
     }
 
+    /// `Url::parse` accepts several spellings of the authority separator and
+    /// strips ASCII tab, CR, and LF first. Each of these parses to the same
+    /// host and a `/client.json` path, so a scan keyed on a literal `://`
+    /// silently canonicalized them instead of rejecting them.
+    #[test]
+    fn public_metadata_rejects_dot_segments_in_every_parsed_spelling() {
+        for metadata_url in [
+            "https:/client.example.test/oauth/../client.json",
+            "https:client.example.test/oauth/../client.json",
+            "https:\\\\client.example.test/oauth/../client.json",
+            "https://client.example.test/oauth/.\t./client.json",
+            "https://client.example.test/oauth/.\r\n./client.json",
+        ] {
+            assert!(
+                matches!(
+                    PublicMetadataUrl::parse(metadata_url),
+                    Err(OutboundUrlPolicyError::DotPathSegment)
+                ),
+                "{metadata_url}"
+            );
+        }
+
+        PublicMetadataUrl::parse("https://client.example.test/oauth/client.json")
+            .expect("a traversal-free path is unaffected");
+    }
+
     #[test]
     fn public_metadata_rejects_localhost_and_non_public_ipv4() {
         for host in [
@@ -493,9 +615,31 @@ mod tests {
             "fe80::1",
             "fec0::1",
             "ff02::1",
+            // Registry entries newer than the original table.
+            "5f00::1",          // 5f00::/16 SRv6 SIDs
+            "5f00:ffff::1",     // upper edge of the same /16
+            "3fff::1",          // 3fff::/20 documentation
+            "3fff:fff:ffff::1", // upper edge of the same /20
+            "100:0:0:1::1",     // 100:0:0:1::/64 dummy prefix
         ] {
             let url = format!("https://[{host}]/oauth/client.json");
             PublicMetadataUrl::parse(&url).expect_err(&url);
+        }
+    }
+
+    /// The ranges immediately outside the three newest branches must stay
+    /// reachable, or the added arithmetic is quietly over-blocking.
+    #[test]
+    fn public_metadata_keeps_neighbours_of_the_newest_ranges_public() {
+        for host in [
+            "5eff:ffff::1", // just below 5f00::/16
+            "5f01::1",      // just above 5f00::/16
+            "3ffe::1",      // just below 3fff::/20
+            "3fff:1000::1", // just above the /20, still inside 3fff::/16
+            "100:0:0:2::1", // just above the dummy prefix
+        ] {
+            let url = format!("https://[{host}]/oauth/client.json");
+            PublicMetadataUrl::parse(&url).expect(&url);
         }
     }
 
@@ -575,5 +719,86 @@ mod tests {
     #[test]
     fn hardened_public_client_builds() {
         public_metadata_http_client().expect("public metadata client");
+    }
+
+    /// Refusing redirects is the hardening that matters most for SSRF: without
+    /// it a public URL can bounce the client to a private one, after every
+    /// static check has already passed. Asserting the builder returns `Ok` does
+    /// not pin that, so drive a real 302. The mock listens on a literal IP,
+    /// which hyper resolves without consulting the custom resolver.
+    #[tokio::test]
+    async fn hardened_public_client_does_not_follow_redirects() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/metadata"))
+            .respond_with(
+                ResponseTemplate::new(302).insert_header("location", "http://169.254.169.254/"),
+            )
+            .mount(&server)
+            .await;
+
+        let response = public_metadata_http_client()
+            .expect("public metadata client")
+            .get(format!("{}/metadata", server.uri()))
+            .send()
+            .await
+            .expect("response");
+
+        assert_eq!(response.status().as_u16(), 302);
+        assert_eq!(
+            response
+                .headers()
+                .get("location")
+                .and_then(|location| location.to_str().ok()),
+            Some("http://169.254.169.254/")
+        );
+    }
+
+    /// A server that omits `Content-Length` skips the declared-size early
+    /// return, leaving the streaming loop as the only bound. Answer over a raw
+    /// socket, since a response body terminated by connection close is exactly
+    /// the shape that carries no length.
+    #[tokio::test]
+    async fn bounded_body_rejects_undeclared_oversize_while_streaming() {
+        async fn serve_unsized_body(body: &'static [u8]) -> String {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("listener");
+            let address = listener.local_addr().expect("address");
+            tokio::spawn(async move {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+                let (mut stream, _) = listener.accept().await.expect("connection");
+                let mut request = [0_u8; 1024];
+                let read = stream.read(&mut request).await.expect("request");
+                assert!(read > 0, "expected a request before answering");
+                stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n")
+                    .await
+                    .expect("headers");
+                stream.write_all(body).await.expect("body");
+                // Closing the socket is what terminates the body.
+                drop(stream);
+            });
+            format!("http://{address}/metadata")
+        }
+
+        let url = serve_unsized_body(b"0123456789").await;
+        let response = reqwest::get(&url).await.expect("response");
+        assert!(
+            response.content_length().is_none(),
+            "the fixture must not declare a length, or this exercises the early return"
+        );
+        assert!(matches!(
+            read_bounded_body(response, 4).await,
+            Err(OutboundUrlPolicyError::BodyTooLarge { limit: 4 })
+        ));
+
+        let url = serve_unsized_body(b"hello").await;
+        let response = reqwest::get(&url).await.expect("response");
+        assert_eq!(
+            read_bounded_body(response, 5).await.expect("body"),
+            b"hello"
+        );
     }
 }
