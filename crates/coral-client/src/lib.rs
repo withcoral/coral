@@ -112,11 +112,17 @@ impl CollectedQueryResult {
 ///
 /// # Errors
 ///
-/// Returns [`QueryResultError`] if the Arrow IPC payload is invalid or if the
-/// declared row count does not match the decoded batches.
+/// Returns [`QueryResultError`] if guidance was returned instead of rows, the
+/// Arrow IPC payload is invalid, or the declared row count does not match the
+/// decoded batches.
 pub fn decode_execute_sql_response(
     response: &ExecuteSqlResponse,
 ) -> Result<CollectedQueryResult, QueryResultError> {
+    if response.guide_required.is_some() {
+        return Err(QueryResultError::InvalidResponse(
+            "query execution was blocked by required guidance".to_string(),
+        ));
+    }
     let (schema, batches) = decode_arrow_ipc_stream(&response.arrow_ipc_stream)?;
     let row_count = usize::try_from(response.row_count).map_err(|_err| {
         QueryResultError::InvalidResponse("row_count must not be negative".into())
@@ -260,7 +266,7 @@ mod tests {
     use arrow::array::{Int64Array, StringArray};
     use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
     use arrow::record_batch::RecordBatch;
-    use coral_api::v1::ExecuteSqlResponse;
+    use coral_api::v1::{ExecuteSqlResponse, QueryGuideRequired};
     use serde_json::Value;
 
     use super::{
@@ -285,6 +291,7 @@ mod tests {
         ExecuteSqlResponse {
             arrow_ipc_stream: encode_arrow_ipc_stream(&schema, &[batch]).expect("encode"),
             row_count: 2,
+            guide_required: None,
         }
     }
 
@@ -319,11 +326,22 @@ mod tests {
         let response = ExecuteSqlResponse {
             arrow_ipc_stream: encode_arrow_ipc_stream(&schema, &[]).expect("encode"),
             row_count: 0,
+            guide_required: None,
         };
         let decoded = decode_execute_sql_response(&response).expect("decode");
         assert_eq!(decoded.row_count(), 0);
         assert_eq!(decoded.schema(), &schema);
         assert!(decoded.batches().is_empty());
+    }
+
+    #[test]
+    fn execute_sql_response_rejects_required_guidance_as_query_rows() {
+        let mut response = response();
+        response.guide_required = Some(QueryGuideRequired { guides: Vec::new() });
+
+        let error =
+            decode_execute_sql_response(&response).expect_err("required guidance is not row data");
+        assert!(error.to_string().contains("required guidance"));
     }
 
     #[test]

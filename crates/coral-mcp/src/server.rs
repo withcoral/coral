@@ -1,20 +1,18 @@
 //! RMCP server implementation for Coral's stdio MCP surface.
 
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
-use coral_api::CORAL_GUIDE_STATE_FINGERPRINT_METADATA_KEY;
 use coral_api::v1::{
     CatalogItemKind as ProtoCatalogItemKind, DescribeTableRequest, DescribeTableResponse,
     EndTaskRequest, ExecuteSqlRequest, ListCatalogRequest, ListCatalogResponse, ListColumnsRequest,
-    ListSourcesRequest, PaginationRequest, QueryGuideRequirement,
-    ResolveSqlGuideRequirementsRequest, SearchRequest, Source, StartTaskRequest,
-    SubmitFeedbackRequest, TableSummary as ProtoTableSummary, TaskStatus as ProtoTaskStatus,
-    catalog_item,
+    ListSourcesRequest, PaginationRequest, QueryGuideReadContext, SearchRequest, Source,
+    StartTaskRequest, SubmitFeedbackRequest, TableSummary as ProtoTableSummary,
+    TaskStatus as ProtoTaskStatus, catalog_item,
 };
 use coral_client::{
-    AppClient, CatalogClient, DecodedStatusError, FeedbackClient, QueryClient, SearchClient,
-    SourceClient, TaskClient, batches_to_json_rows_json_safe_numbers, decode_execute_sql_response,
-    decode_status_error, default_workspace, search_response_json_value, with_task_metadata,
+    AppClient, CatalogClient, FeedbackClient, QueryClient, SearchClient, SourceClient, TaskClient,
+    batches_to_json_rows_json_safe_numbers, decode_execute_sql_response, default_workspace,
+    search_response_json_value, with_task_metadata,
 };
 use rmcp::{
     ErrorData, ServerHandler,
@@ -37,11 +35,11 @@ use crate::{
     guide_block::GuideBlockState,
     surface::{
         CatalogToolKind, EndTaskArguments, FeedbackStoredValue, SqlBatchValue, SqlGuideBlockValue,
-        SqlQueryResultValue, StartTaskArguments, TaskEndedValue, TaskId, TaskStartedValue,
-        TaskStatus, ToolAvailability, ToolDescriptionContext, ToolName, available_tools,
-        build_tool_result, describe_table_arguments, describe_table_value, end_task_arguments,
-        feedback_arguments, guide_resource, guide_resource_content, initial_instructions,
-        list_catalog_arguments, list_catalog_value, list_columns_arguments,
+        SqlGuideValue, SqlQueryResultValue, StartTaskArguments, TaskEndedValue, TaskId,
+        TaskStartedValue, TaskStatus, ToolAvailability, ToolDescriptionContext, ToolName,
+        available_tools, build_tool_result, describe_table_arguments, describe_table_value,
+        end_task_arguments, feedback_arguments, guide_resource, guide_resource_content,
+        initial_instructions, list_catalog_arguments, list_catalog_value, list_columns_arguments,
         list_columns_table_fallback_value, list_columns_value, required_task_id_argument,
         required_tool_intent_argument, search_arguments, sql_arguments, start_task_arguments,
         status_to_error_data, tables_resource, tables_resource_content, tool_error_from_status,
@@ -56,7 +54,6 @@ const CATALOG_KIND_ALL: ProtoCatalogItemKind = ProtoCatalogItemKind::Unspecified
 const CATALOG_KIND_TABLE: ProtoCatalogItemKind = ProtoCatalogItemKind::Table;
 const CATALOG_KIND_TABLE_FUNCTION: ProtoCatalogItemKind = ProtoCatalogItemKind::TableFunction;
 const MAX_INITIAL_QUERY_EXAMPLES: usize = 5;
-const QUERY_ANALYSIS_FAILED_FINGERPRINT: &str = "v1:analysis-failed";
 
 enum ToolCallOutcome {
     Payload(Value),
@@ -73,21 +70,13 @@ enum SqlBatchExecution {
     GuideBlocked(SqlGuideBlockValue),
 }
 
-struct SqlQueryGuideState {
-    required_guides: Vec<QueryGuideRequirement>,
-    fingerprint: String,
-}
-
 fn serialize_tool_value(value: impl Serialize) -> Result<Value, tonic::Status> {
     serde_json::to_value(value).map_err(|error| tonic::Status::internal(error.to_string()))
 }
 
-fn is_query_analysis_failure(status: &tonic::Status) -> bool {
-    status.code() == tonic::Code::InvalidArgument
-        || matches!(
-            decode_status_error(status),
-            DecodedStatusError::Structured(error) if error.reason == "TABLE_NOT_FOUND"
-        )
+enum QueryRows {
+    Rows(Vec<Value>),
+    GuideRequired(Vec<SqlGuideValue>),
 }
 
 fn task_id_from_backend_response(
@@ -483,111 +472,53 @@ impl CoralMcpServer {
     async fn query_rows(
         &self,
         request: Request<ExecuteSqlRequest>,
-    ) -> Result<Vec<Value>, tonic::Status> {
+    ) -> Result<QueryRows, tonic::Status> {
         let mut query_client = self.query.clone();
-        let response = query_client.execute_sql(request).await?.into_inner();
+        let mut response = query_client.execute_sql(request).await?.into_inner();
+        if let Some(required) = response.guide_required.take() {
+            if required.guides.is_empty() {
+                return Err(tonic::Status::internal(
+                    "guide-required response contained no guides",
+                ));
+            }
+            return Ok(QueryRows::GuideRequired(
+                required
+                    .guides
+                    .into_iter()
+                    .map(|guide| {
+                        SqlGuideValue::new(
+                            guide.schema_name,
+                            guide.resource_name,
+                            guide.guide,
+                            guide.guide_fingerprint,
+                        )
+                    })
+                    .collect(),
+            ));
+        }
         let result = decode_execute_sql_response(&response)
             .map_err(|error| tonic::Status::internal(error.to_string()))?;
         batches_to_json_rows_json_safe_numbers(result.batches())
+            .map(QueryRows::Rows)
             .map_err(|error| tonic::Status::internal(error.to_string()))
-    }
-
-    async fn load_query_guide_state(
-        &self,
-        sql: String,
-    ) -> Result<SqlQueryGuideState, tonic::Status> {
-        let mut query_client = self.query.clone();
-        let response = query_client
-            .resolve_sql_guide_requirements(Request::new(ResolveSqlGuideRequirementsRequest {
-                workspace: Some(self.workspace()),
-                sql,
-            }))
-            .await?
-            .into_inner();
-        if response.guide_state_fingerprint.is_empty() {
-            return Err(tonic::Status::failed_precondition(
-                "SQL guide preflight response missing guide state fingerprint",
-            ));
-        }
-        Ok(SqlQueryGuideState {
-            required_guides: response.required_guides,
-            fingerprint: response.guide_state_fingerprint,
-        })
-    }
-
-    async fn preflight_sql_batch(
-        &self,
-        queries: &[String],
-        task_id_metadata: Option<MetadataValue<Ascii>>,
-    ) -> Result<Vec<SqlQueryGuideState>, tonic::Status> {
-        let mut tasks = tokio::task::JoinSet::new();
-        for (index, sql) in queries.iter().enumerate() {
-            let server = self.clone();
-            let sql = sql.clone();
-            let task_id_metadata = task_id_metadata.clone();
-            tasks.spawn(async move {
-                (
-                    index,
-                    with_task_metadata(task_id_metadata, server.load_query_guide_state(sql)).await,
-                )
-            });
-        }
-
-        let mut guide_states = Vec::with_capacity(queries.len());
-        while let Some(joined) = tasks.join_next().await {
-            // Execution returns the per-query error if logical analysis fails.
-            // Successful siblings still need to gate the whole batch. Operational
-            // failures must stop execution because Coral could not prove that the
-            // query does not require a guide.
-            let (index, result) =
-                joined.map_err(|error| tonic::Status::internal(error.to_string()))?;
-            match result {
-                Ok(guide_state) => guide_states.push((index, guide_state)),
-                Err(status) if is_query_analysis_failure(&status) => {
-                    guide_states.push((
-                        index,
-                        SqlQueryGuideState {
-                            required_guides: Vec::new(),
-                            fingerprint: QUERY_ANALYSIS_FAILED_FINGERPRINT.to_string(),
-                        },
-                    ));
-                }
-                Err(status) => return Err(status),
-            }
-        }
-        guide_states.sort_unstable_by_key(|(index, _)| *index);
-        Ok(guide_states
-            .into_iter()
-            .map(|(_, guide_state)| guide_state)
-            .collect())
     }
 
     async fn execute_one_sql_query(
         &self,
         index: usize,
         sql: String,
-        guide_state_fingerprint: String,
+        shown_guides: Vec<coral_api::v1::QueryGuideVersion>,
     ) -> SqlQueryResultValue {
-        let mut request = Request::new(ExecuteSqlRequest {
+        let request = Request::new(ExecuteSqlRequest {
             workspace: Some(self.workspace()),
             sql,
+            guide_read_context: Some(QueryGuideReadContext { shown_guides }),
         });
-        let Ok(fingerprint) = MetadataValue::<Ascii>::try_from(guide_state_fingerprint) else {
-            return SqlQueryResultValue::Error {
-                index,
-                error: tool_error_from_status(
-                    "Query",
-                    &tonic::Status::internal(
-                        "SQL guide state fingerprint is not valid gRPC metadata",
-                    ),
-                ),
-            };
-        };
-        request
-            .metadata_mut()
-            .insert(CORAL_GUIDE_STATE_FINGERPRINT_METADATA_KEY, fingerprint);
         match self.query_rows(request).await {
-            Ok(rows) => SqlQueryResultValue::Success { index, rows },
+            Ok(QueryRows::Rows(rows)) => SqlQueryResultValue::Success { index, rows },
+            Ok(QueryRows::GuideRequired(guides)) => {
+                SqlQueryResultValue::GuideRequired { index, guides }
+            }
             Err(status) => SqlQueryResultValue::Error {
                 index,
                 error: tool_error_from_status("Query", &status),
@@ -601,30 +532,17 @@ impl CoralMcpServer {
         task_id: TaskId,
         task_id_metadata: Option<MetadataValue<Ascii>>,
     ) -> Result<SqlBatchExecution, tonic::Status> {
-        let guide_states = self
-            .preflight_sql_batch(&queries, task_id_metadata.clone())
-            .await?;
-        let requirements = guide_states
-            .iter()
-            .flat_map(|state| state.required_guides.iter().cloned())
-            .collect();
-        let guides = self
-            .guide_block
-            .newly_required_guides(task_id, requirements)?;
-        if !guides.is_empty() {
-            return Ok(SqlBatchExecution::GuideBlocked(SqlGuideBlockValue::new(
-                guides,
-            )));
-        }
+        let shown_guides = self.guide_block.shown_guide_versions(task_id)?;
 
         let mut tasks = tokio::task::JoinSet::new();
-        for (index, (sql, guide_state)) in queries.into_iter().zip(guide_states).enumerate() {
+        for (index, sql) in queries.into_iter().enumerate() {
             let server = self.clone();
             let task_id_metadata = task_id_metadata.clone();
+            let shown_guides = shown_guides.clone();
             tasks.spawn(async move {
                 with_task_metadata(
                     task_id_metadata,
-                    server.execute_one_sql_query(index, sql, guide_state.fingerprint),
+                    server.execute_one_sql_query(index, sql, shown_guides),
                 )
                 .await
             });
@@ -634,6 +552,28 @@ impl CoralMcpServer {
         while let Some(joined) = tasks.join_next().await {
             results.push(joined.map_err(|error| tonic::Status::internal(error.to_string()))?);
         }
+
+        let mut guides_by_resource = BTreeMap::new();
+        for guide in results
+            .iter()
+            .flat_map(SqlQueryResultValue::required_guides)
+        {
+            guides_by_resource
+                .entry((
+                    guide.schema.clone(),
+                    guide.resource.clone(),
+                    guide.fingerprint.clone(),
+                ))
+                .or_insert_with(|| guide.clone());
+        }
+        let guides = guides_by_resource.into_values().collect::<Vec<_>>();
+        self.guide_block.record_guides(task_id, &guides)?;
+        if !results.is_empty() && results.iter().all(SqlQueryResultValue::is_guide_required) {
+            return Ok(SqlBatchExecution::GuideBlocked(SqlGuideBlockValue::new(
+                guides,
+            )));
+        }
+
         Ok(SqlBatchExecution::Executed(SqlBatchValue::from_unordered(
             results,
         )))
@@ -995,16 +935,6 @@ impl ServerHandler for CoralMcpServer {
             Ok(task_context) => {
                 task_context.record_telemetry(&span);
                 let task_id = task_context.task_id();
-                let _sql_gate = match (tool_name, task_id) {
-                    (Some(ToolName::Sql), Some(task_id)) => Some(
-                        self.guide_block
-                            .sql_gate(task_id)
-                            .map_err(|status| status_to_error_data(&status))?
-                            .lock_owned()
-                            .await,
-                    ),
-                    _ => None,
-                };
                 let task_id_metadata = inject_task_metadata
                     .then(|| task_context.into_metadata())
                     .flatten();

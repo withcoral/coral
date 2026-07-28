@@ -1,22 +1,22 @@
-use std::collections::{BTreeMap, HashMap};
-use std::sync::{Arc, Mutex};
+use std::collections::{HashMap, HashSet};
+use std::sync::Mutex;
 
-use coral_api::v1::QueryGuideRequirement;
+use coral_api::v1::QueryGuideVersion;
 
 use crate::surface::{SqlGuideValue, TaskId};
 
 const MAX_RETAINED_TASKS: usize = 1_024;
 
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-struct GuideResourceKey {
+#[derive(Eq, Hash, PartialEq)]
+struct ShownGuideVersion {
     schema_name: String,
     resource_name: String,
+    guide_fingerprint: String,
 }
 
 #[derive(Default)]
 struct TaskGuideState {
-    resources: HashMap<GuideResourceKey, String>,
-    sql_gate: Arc<tokio::sync::Mutex<()>>,
+    guides: HashSet<ShownGuideVersion>,
     last_used: u64,
 }
 
@@ -30,18 +30,14 @@ impl GuideBlockStateInner {
     fn touch_task(&mut self, task_id: TaskId, max_tasks: usize) -> &mut TaskGuideState {
         self.clock = self.clock.saturating_add(1);
         self.tasks.entry(task_id).or_default().last_used = self.clock;
-        while self.tasks.len() > max_tasks {
-            let Some(oldest) = self
+        if self.tasks.len() > max_tasks {
+            let oldest = self
                 .tasks
                 .iter()
-                .filter(|(candidate_id, task)| {
-                    **candidate_id != task_id && Arc::strong_count(&task.sql_gate) == 1
-                })
+                .filter(|(candidate_id, _)| **candidate_id != task_id)
                 .min_by_key(|(_, task)| task.last_used)
                 .map(|(candidate_id, _)| *candidate_id)
-            else {
-                break;
-            };
+                .expect("an overflowing guide state has an older task");
             self.tasks.remove(&oldest);
         }
         self.tasks
@@ -74,53 +70,57 @@ impl GuideBlockState {
         }
     }
 
-    pub(crate) fn sql_gate(
+    pub(crate) fn shown_guide_versions(
         &self,
         task_id: TaskId,
-    ) -> Result<Arc<tokio::sync::Mutex<()>>, tonic::Status> {
+    ) -> Result<Vec<QueryGuideVersion>, tonic::Status> {
         let mut inner = self
             .inner
             .lock()
             .map_err(|_poisoned| tonic::Status::internal("guide block state lock poisoned"))?;
-        Ok(Arc::clone(
-            &inner.touch_task(task_id, self.max_tasks).sql_gate,
-        ))
+        let task = inner.touch_task(task_id, self.max_tasks);
+        let mut versions = task
+            .guides
+            .iter()
+            .map(|guide| QueryGuideVersion {
+                schema_name: guide.schema_name.clone(),
+                resource_name: guide.resource_name.clone(),
+                guide_fingerprint: guide.guide_fingerprint.clone(),
+            })
+            .collect::<Vec<_>>();
+        versions.sort_unstable_by(|left, right| {
+            (
+                &left.schema_name,
+                &left.resource_name,
+                &left.guide_fingerprint,
+            )
+                .cmp(&(
+                    &right.schema_name,
+                    &right.resource_name,
+                    &right.guide_fingerprint,
+                ))
+        });
+        Ok(versions)
     }
 
-    pub(crate) fn newly_required_guides(
+    pub(crate) fn record_guides(
         &self,
         task_id: TaskId,
-        requirements: Vec<QueryGuideRequirement>,
-    ) -> Result<Vec<SqlGuideValue>, tonic::Status> {
-        let mut candidates = BTreeMap::new();
-        for requirement in requirements {
-            candidates.insert(
-                GuideResourceKey {
-                    schema_name: requirement.schema_name,
-                    resource_name: requirement.resource_name,
-                },
-                requirement.guide,
-            );
-        }
-
+        guides: &[SqlGuideValue],
+    ) -> Result<(), tonic::Status> {
         let mut inner = self
             .inner
             .lock()
             .map_err(|_poisoned| tonic::Status::internal("guide block state lock poisoned"))?;
-        let seen = &mut inner.touch_task(task_id, self.max_tasks).resources;
-        let mut newly_required = Vec::new();
-        for (key, guide) in candidates {
-            if seen.get(&key) == Some(&guide) {
-                continue;
-            }
-            seen.insert(key.clone(), guide.clone());
-            newly_required.push(SqlGuideValue::new(
-                key.schema_name,
-                key.resource_name,
-                guide,
-            ));
+        let shown_guides = &mut inner.touch_task(task_id, self.max_tasks).guides;
+        for guide in guides {
+            shown_guides.insert(ShownGuideVersion {
+                schema_name: guide.schema.clone(),
+                resource_name: guide.resource.clone(),
+                guide_fingerprint: guide.fingerprint.clone(),
+            });
         }
-        Ok(newly_required)
+        Ok(())
     }
 
     pub(crate) fn clear_task(&self, task_id: TaskId) -> Result<(), tonic::Status> {
@@ -135,66 +135,57 @@ impl GuideBlockState {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
-    use coral_api::v1::QueryGuideRequirement;
-
     use super::GuideBlockState;
-    use crate::surface::TaskId;
+    use crate::surface::{SqlGuideValue, TaskId};
 
     fn task_id(value: u128) -> TaskId {
         TaskId::from_uuid_str(&uuid::Uuid::from_u128(value).to_string()).expect("task id")
     }
 
-    fn requirement(guide: &str) -> QueryGuideRequirement {
-        QueryGuideRequirement {
-            schema_name: "slack".to_string(),
-            resource_name: "channels".to_string(),
-            guide: guide.to_string(),
-        }
-    }
-
-    fn required(state: &GuideBlockState, task_id: TaskId, guide: &str) -> usize {
-        state
-            .newly_required_guides(task_id, vec![requirement(guide)])
-            .expect("guide block state")
-            .len()
+    fn guide(text: &str, fingerprint: &str) -> SqlGuideValue {
+        SqlGuideValue::new(
+            "slack".to_string(),
+            "channels".to_string(),
+            text.to_string(),
+            fingerprint.to_string(),
+        )
     }
 
     #[test]
-    fn guide_changes_and_task_boundaries_require_another_read() {
+    fn records_each_guide_version_per_task_and_resource() {
         let state = GuideBlockState::default();
         let first_task = task_id(1);
 
-        assert_eq!(required(&state, first_task, "Use search."), 1);
-        assert_eq!(required(&state, first_task, "Use search."), 0);
-        assert_eq!(required(&state, first_task, "Use lookup."), 1);
-        assert_eq!(required(&state, task_id(2), "Use lookup."), 1);
-        state.clear_task(first_task).expect("clear task");
-        assert_eq!(required(&state, first_task, "Use lookup."), 1);
-    }
+        state
+            .record_guides(first_task, &[guide("Use search.", "v1:first")])
+            .expect("record first guide");
+        assert_eq!(
+            state
+                .shown_guide_versions(first_task)
+                .expect("first versions")
+                .into_iter()
+                .map(|guide| guide.guide_fingerprint)
+                .collect::<Vec<_>>(),
+            ["v1:first"]
+        );
 
-    #[test]
-    fn sql_gate_serializes_calls_for_the_same_task() {
-        let state = GuideBlockState::default();
-        let first_gate = state.sql_gate(task_id(1)).expect("first task gate");
-        let same_task_gate = state.sql_gate(task_id(1)).expect("same task gate");
-        let other_task_gate = state.sql_gate(task_id(2)).expect("other task gate");
-
-        assert!(Arc::ptr_eq(&first_gate, &same_task_gate));
-        let first_call = first_gate.try_lock_owned().expect("first SQL call");
-        assert!(
-            Arc::clone(&same_task_gate).try_lock_owned().is_err(),
-            "overlapping SQL call in the same task must wait"
+        state
+            .record_guides(first_task, &[guide("Use lookup.", "v1:second")])
+            .expect("record changed guide");
+        assert_eq!(
+            state
+                .shown_guide_versions(first_task)
+                .expect("updated versions")
+                .into_iter()
+                .map(|guide| guide.guide_fingerprint)
+                .collect::<Vec<_>>(),
+            ["v1:first", "v1:second"]
         );
         assert!(
-            other_task_gate.try_lock_owned().is_ok(),
-            "different tasks must remain independent"
-        );
-        drop(first_call);
-        assert!(
-            same_task_gate.try_lock_owned().is_ok(),
-            "same-task SQL call must continue after the previous response"
+            state
+                .shown_guide_versions(task_id(2))
+                .expect("other task versions")
+                .is_empty()
         );
     }
 
@@ -205,46 +196,31 @@ mod tests {
         let second_task = task_id(2);
         let third_task = task_id(3);
 
-        assert_eq!(required(&state, first_task, "Use search."), 1);
-        assert_eq!(required(&state, second_task, "Use search."), 1);
-        drop(state.sql_gate(first_task).expect("touch first task"));
-        drop(state.sql_gate(third_task).expect("insert third task"));
+        state
+            .record_guides(first_task, &[guide("First.", "v1:first")])
+            .expect("first task");
+        state
+            .record_guides(second_task, &[guide("Second.", "v1:second")])
+            .expect("second task");
+        state
+            .shown_guide_versions(first_task)
+            .expect("touch first task");
+        state
+            .shown_guide_versions(third_task)
+            .expect("insert third task");
 
         assert_eq!(
             (
-                required(&state, first_task, "Use search."),
-                required(&state, second_task, "Use search.")
+                state
+                    .shown_guide_versions(first_task)
+                    .expect("retained task")
+                    .len(),
+                state
+                    .shown_guide_versions(second_task)
+                    .expect("evicted task")
+                    .len(),
             ),
-            (0, 1)
+            (1, 0)
         );
-    }
-
-    #[test]
-    fn reclaims_overflow_after_active_sql_finishes() {
-        let state = GuideBlockState::with_max_tasks(1);
-        let active_task = task_id(1);
-        let other_task = task_id(2);
-        let active_gate = state.sql_gate(active_task).expect("active task gate");
-        let active_call = active_gate.try_lock_owned().expect("active SQL call");
-
-        drop(state.sql_gate(other_task).expect("other task gate"));
-
-        let inner = state.inner.lock().expect("guide block state");
-        assert!(
-            inner.tasks.contains_key(&active_task),
-            "an active task must remain retained"
-        );
-        assert_eq!(
-            inner.tasks.len(),
-            2,
-            "the limit may be exceeded instead of evicting the active task"
-        );
-        drop(inner);
-        drop(active_call);
-
-        drop(state.sql_gate(other_task).expect("reuse other task gate"));
-        let inner = state.inner.lock().expect("guide block state");
-        assert_eq!(inner.tasks.len(), 1);
-        assert!(inner.tasks.contains_key(&other_task));
     }
 }

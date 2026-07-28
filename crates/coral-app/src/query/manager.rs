@@ -55,12 +55,19 @@ pub(crate) struct RequiredQueryGuide {
     pub(crate) schema_name: String,
     pub(crate) resource_name: String,
     pub(crate) guide: String,
+    pub(crate) guide_fingerprint: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ResolvedQueryGuideState {
-    pub(crate) required_guides: Vec<RequiredQueryGuide>,
-    pub(crate) fingerprint: String,
+#[derive(Debug, Clone, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) struct ShownQueryGuideVersion {
+    pub(crate) schema_name: String,
+    pub(crate) resource_name: String,
+    pub(crate) guide_fingerprint: String,
+}
+
+pub(crate) enum ExecuteSqlOutcome {
+    Executed(QueryExecution),
+    GuideRequired(Vec<RequiredQueryGuide>),
 }
 
 pub(crate) struct ValidatedSource {
@@ -388,9 +395,9 @@ impl QueryManager {
         &self,
         workspace_name: &WorkspaceName,
         sql: &str,
-        expected_guide_state_fingerprint: Option<&str>,
+        shown_guides: Option<&BTreeSet<ShownQueryGuideVersion>>,
         attribution: &QueryAttribution,
-    ) -> Result<QueryExecution, QueryManagerError> {
+    ) -> Result<ExecuteSqlOutcome, QueryManagerError> {
         run_query_operation(
             QueryOperation::ExecuteSql,
             workspace_name,
@@ -410,22 +417,44 @@ impl QueryManager {
                         SourceObservationMode::Enabled,
                     )
                     .await?;
-                if let Some(expected) = expected_guide_state_fingerprint {
-                    let current = resolve_query_guide_state(&runtime, sql).await?;
-                    if current.fingerprint != expected {
-                        return Err(QueryManagerError::App(AppError::FailedPrecondition(
-                            "SQL guide requirements changed after preflight; retry the SQL call so Coral can return the current guidance"
-                                .to_string(),
-                        )));
+                let prepared = runtime
+                    .prepare_sql(sql)
+                    .await
+                    .map_err(QueryManagerError::Core)?;
+                if let Some(shown_guides) = shown_guides {
+                    let required_guides =
+                        required_query_guides(&runtime.list_catalog(None), prepared.resources());
+                    let unseen_guides = required_guides
+                        .into_iter()
+                        .filter(|guide| {
+                            !shown_guides.contains(&ShownQueryGuideVersion {
+                                schema_name: guide.schema_name.clone(),
+                                resource_name: guide.resource_name.clone(),
+                                guide_fingerprint: guide.guide_fingerprint.clone(),
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    if !unseen_guides.is_empty() {
+                        return Ok(ExecuteSqlOutcome::GuideRequired(unseen_guides));
                     }
                 }
-                runtime
-                    .execute_sql(sql)
+                prepared
+                    .execute()
                     .await
+                    .map(ExecuteSqlOutcome::Executed)
                     .map_err(QueryManagerError::Core)
             },
-            |execution| Some(u64::try_from(execution.row_count()).unwrap_or(u64::MAX)),
-            |span, execution| record_query_provenance(span, execution.provenance()),
+            |outcome| match outcome {
+                ExecuteSqlOutcome::Executed(execution) => {
+                    Some(u64::try_from(execution.row_count()).unwrap_or(u64::MAX))
+                }
+                ExecuteSqlOutcome::GuideRequired(_) => None,
+            },
+            |span, outcome| {
+                if let ExecuteSqlOutcome::Executed(execution) = outcome {
+                    record_query_provenance(span, execution.provenance());
+                }
+            },
         )
         .await
     }
@@ -459,39 +488,6 @@ impl QueryManager {
                     .explain_sql(sql)
                     .await
                     .map_err(QueryManagerError::Core)
-            },
-            |_| None,
-            |_, _| {},
-        )
-        .await
-    }
-
-    pub(crate) async fn resolve_sql_guide_requirements(
-        &self,
-        workspace_name: &WorkspaceName,
-        sql: &str,
-        attribution: &QueryAttribution,
-    ) -> Result<ResolvedQueryGuideState, QueryManagerError> {
-        run_query_operation(
-            QueryOperation::ResolveSqlGuideRequirements,
-            workspace_name,
-            sql,
-            attribution.task_id.as_ref(),
-            async {
-                let (source_load, config) = self
-                    .load_query_sources(workspace_name)
-                    .await
-                    .map_err(QueryManagerError::App)?;
-                let runtime = self
-                    .prepared_runtime_with_udfs(
-                        workspace_name,
-                        &source_load.loaded,
-                        &config,
-                        CredentialResolutionMode::Refreshing,
-                        SourceObservationMode::Disabled,
-                    )
-                    .await?;
-                resolve_query_guide_state(&runtime, sql).await
             },
             |_| None,
             |_, _| {},
@@ -974,24 +970,6 @@ impl QueryManager {
     }
 }
 
-async fn resolve_query_guide_state(
-    runtime: &PreparedQueryRuntime,
-    sql: &str,
-) -> Result<ResolvedQueryGuideState, QueryManagerError> {
-    let resources = runtime
-        .resolve_sql_resources(sql)
-        .await
-        .map_err(QueryManagerError::Core)?;
-    let required_guides = required_query_guides(&runtime.list_catalog(None), &resources);
-    let bytes = serde_json::to_vec(&required_guides)
-        .map_err(AppError::from)
-        .map_err(QueryManagerError::App)?;
-    Ok(ResolvedQueryGuideState {
-        required_guides,
-        fingerprint: format!("v1:{}", sha256_hex(&bytes)),
-    })
-}
-
 fn required_query_guides(
     catalog: &CatalogInfo,
     resources: &ResolvedQueryResources,
@@ -1002,10 +980,12 @@ fn required_query_guides(
             table.schema_name == usage.schema_name() && table.table_name == usage.table_name()
         }) && table.require_guide_read
         {
+            let guide = table.guide.clone();
             guides.push(RequiredQueryGuide {
                 schema_name: table.schema_name.clone(),
                 resource_name: table.table_name.clone(),
-                guide: table.guide.clone(),
+                guide_fingerprint: format!("v1:{}", sha256_hex(guide.as_bytes())),
+                guide,
             });
         }
     }
@@ -1015,10 +995,12 @@ fn required_query_guides(
                 && function.function_name == usage.function_name()
         }) && function.require_guide_read
         {
+            let guide = function.guide.clone();
             guides.push(RequiredQueryGuide {
                 schema_name: function.schema_name.clone(),
                 resource_name: function.function_name.clone(),
-                guide: function.guide.clone(),
+                guide_fingerprint: format!("v1:{}", sha256_hex(guide.as_bytes())),
+                guide,
             });
         }
     }
@@ -1036,7 +1018,6 @@ fn query_sources_from_loaded(loaded_sources: &[LoadedQuerySource]) -> Vec<QueryS
 enum QueryOperation {
     ExecuteSql,
     ExplainSql,
-    ResolveSqlGuideRequirements,
     ListTables,
     ListCatalog,
     DescribeTable,
@@ -1053,7 +1034,6 @@ impl QueryOperation {
         match self {
             Self::ExecuteSql => "execute_sql",
             Self::ExplainSql => "explain_sql",
-            Self::ResolveSqlGuideRequirements => "resolve_sql_guide_requirements",
             Self::ListTables => "list_tables",
             Self::ListCatalog => "list_catalog",
             Self::DescribeTable => "describe_table",
@@ -1319,11 +1299,12 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use coral_engine::{
-        EngineExtensions, QueryExecution, QueryExecutionProvenance, QueryTableFunctionUsage,
-        QueryTableUsage, ResolvedQueryResources, SourceDecorator, SourceDecoratorError,
+        EngineExtensions, QueryExecutionProvenance, QueryTableFunctionUsage, QueryTableUsage,
+        ResolvedQueryResources, SourceDecorator, SourceDecoratorError,
         SourceInputResolutionContext, SourceInputResolver, SourceInputResolverError, SourceTables,
     };
     use coral_spec::parse_source_manifest_yaml;
+    use coral_spec::v4::ProjectionCatalog;
     use serde_json::{Value, json};
     use tempfile::TempDir;
     use wiremock::matchers::{method, path};
@@ -1534,6 +1515,7 @@ mod tests {
                 name: WorkspaceName::default().as_str().to_string(),
             }),
             sql: "SELECT 1".to_string(),
+            guide_read_context: None,
         });
         request.extensions_mut().insert(request_context);
 
@@ -1779,7 +1761,10 @@ mod tests {
             .map(|attribute| attribute.value.as_str().into_owned())
     }
 
-    fn execution_to_rows(execution: &QueryExecution) -> Vec<Value> {
+    fn execution_to_rows(outcome: &ExecuteSqlOutcome) -> Vec<Value> {
+        let ExecuteSqlOutcome::Executed(execution) = outcome else {
+            panic!("query should execute");
+        };
         let mut bytes = Vec::new();
         {
             let mut writer = arrow::json::ArrayWriter::new(&mut bytes);
@@ -2035,7 +2020,11 @@ tables:
     }
 
     #[tokio::test]
-    async fn execute_sql_rejects_a_stale_guide_preflight_before_provider_io() {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the integration test keeps manifest replacement, guide blocking, and provider-I/O assertions together"
+    )]
+    async fn execute_sql_requires_a_changed_guide_again_before_provider_io() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/items"))
@@ -2064,9 +2053,32 @@ tables:
         let sql = "SELECT id FROM changing_guidance.items";
         let initial = fixture
             .manager
-            .resolve_sql_guide_requirements(&workspace_name, sql, &QueryAttribution::default())
+            .execute_sql(
+                &workspace_name,
+                sql,
+                Some(&BTreeSet::new()),
+                &QueryAttribution::default(),
+            )
             .await
-            .expect("resolve initial guide");
+            .expect("require initial guide");
+        let ExecuteSqlOutcome::GuideRequired(initial) = initial else {
+            panic!("initial guide should be required");
+        };
+        let initial = initial.first().expect("initial guide");
+        assert_eq!(initial.guide, "Use the old lookup.");
+        assert!(
+            server
+                .received_requests()
+                .await
+                .expect("request recording")
+                .is_empty(),
+            "requiring a guide must not perform provider I/O"
+        );
+        let shown_initial = BTreeSet::from([ShownQueryGuideVersion {
+            schema_name: initial.schema_name.clone(),
+            resource_name: initial.resource_name.clone(),
+            guide_fingerprint: initial.guide_fingerprint.clone(),
+        }]);
 
         source_manager
             .import_source(
@@ -2086,21 +2098,22 @@ tables:
             .expect("request recording")
             .len();
 
-        let error = fixture
+        let current = fixture
             .manager
             .execute_sql(
                 &workspace_name,
                 sql,
-                Some(&initial.fingerprint),
+                Some(&shown_initial),
                 &QueryAttribution::default(),
             )
             .await
-            .expect_err("stale guide state must prevent execution");
-        assert!(matches!(
-            error,
-            QueryManagerError::App(AppError::FailedPrecondition(message))
-                if message.contains("guide requirements changed")
-        ));
+            .expect("require changed guide");
+        let ExecuteSqlOutcome::GuideRequired(current) = current else {
+            panic!("changed guide should be required");
+        };
+        let current = current.first().expect("current guide");
+        assert_eq!(current.guide, "Use the new lookup.");
+        assert_ne!(current.guide_fingerprint, initial.guide_fingerprint);
         assert_eq!(
             server
                 .received_requests()
@@ -2108,25 +2121,39 @@ tables:
                 .expect("request recording")
                 .len(),
             provider_requests_before,
-            "a stale guide preflight must fail before provider I/O"
+            "requiring a changed guide must not perform provider I/O"
         );
-        let current = fixture
+        let shown_current = BTreeSet::from([ShownQueryGuideVersion {
+            schema_name: current.schema_name.clone(),
+            resource_name: current.resource_name.clone(),
+            guide_fingerprint: current.guide_fingerprint.clone(),
+        }]);
+        let executed = fixture
             .manager
-            .resolve_sql_guide_requirements(&workspace_name, sql, &QueryAttribution::default())
+            .execute_sql(
+                &workspace_name,
+                sql,
+                Some(&shown_current),
+                &QueryAttribution::default(),
+            )
             .await
-            .expect("resolve current guide");
-        assert_ne!(current.fingerprint, initial.fingerprint);
+            .expect("execute after showing changed guide");
+        assert!(matches!(executed, ExecuteSqlOutcome::Executed(_)));
         assert_eq!(
-            current
-                .required_guides
-                .first()
-                .expect("current guide")
-                .guide,
-            "Use the new lookup."
+            server
+                .received_requests()
+                .await
+                .expect("request recording")
+                .len(),
+            provider_requests_before + 1
         );
     }
 
     #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the integration test keeps V4 materialization, override, guide blocking, and execution together"
+    )]
     async fn installed_v4_source_queries_through_app_assembled_runtime_component() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
@@ -2196,12 +2223,72 @@ surface:
             .expect("import v4 source");
         std::fs::remove_file(&openapi_file).expect("remove authored descriptor after import");
 
+        let source_name = SourceName::parse("github_v4_query").expect("source name");
+        let generated_path = fixture
+            .manager
+            .layout
+            .v4_projection_catalog_file(&workspace_name, &source_name)
+            .path;
+        let mut projections: ProjectionCatalog = serde_yaml::from_slice(
+            &std::fs::read(generated_path).expect("read generated projections"),
+        )
+        .expect("parse generated projections");
+        let issues = projections
+            .projections
+            .iter_mut()
+            .find(|projection| projection.name == "issues")
+            .expect("issues projection");
+        issues.guide = "Use issue_search for lookups.".to_string();
+        issues.require_guide_read = true;
+        let override_path = fixture
+            .manager
+            .layout
+            .v4_override_dir(&workspace_name, &source_name)
+            .join("projections.yaml");
+        std::fs::create_dir_all(override_path.parent().expect("override parent"))
+            .expect("create override dir");
+        std::fs::write(
+            override_path,
+            serde_yaml::to_string(&projections).expect("encode projection override"),
+        )
+        .expect("write projection override");
+
+        let sql = "SELECT id, title FROM github_v4_query.issues";
+        let required = fixture
+            .manager
+            .execute_sql(
+                &workspace_name,
+                sql,
+                Some(&BTreeSet::new()),
+                &QueryAttribution::default(),
+            )
+            .await
+            .expect("require overridden projection guide");
+        let ExecuteSqlOutcome::GuideRequired(required) = required else {
+            panic!("overridden projection guide should be required");
+        };
+        let required = required.first().expect("required projection guide");
+        assert_eq!(required.resource_name, "issues");
+        assert_eq!(required.guide, "Use issue_search for lookups.");
+        assert!(
+            server
+                .received_requests()
+                .await
+                .expect("request recording")
+                .is_empty(),
+            "requiring a v4 projection guide must not perform provider I/O"
+        );
+        let shown = BTreeSet::from([ShownQueryGuideVersion {
+            schema_name: required.schema_name.clone(),
+            resource_name: required.resource_name.clone(),
+            guide_fingerprint: required.guide_fingerprint.clone(),
+        }]);
         let execution = fixture
             .manager
             .execute_sql(
                 &workspace_name,
-                "SELECT id, title FROM github_v4_query.issues",
-                None,
+                sql,
+                Some(&shown),
                 &QueryAttribution::default(),
             )
             .await

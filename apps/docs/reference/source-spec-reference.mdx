@@ -519,9 +519,11 @@ tables:
     require_guide_read: true
 ```
 
-`require_guide_read` requires a non-empty guide. Coral blocks the first matching
-MCP `sql` call without executing it; the agent can then retry or revise the
-query. Other SQL clients are unaffected.
+`require_guide_read` requires a non-empty guide. Coral returns the guide instead
+of executing the first matching query in each MCP task; other queries in the
+same batch still run. The agent can then retry or revise the query. Other SQL
+clients are unaffected. In a DSL v4 projection override, set the same fields on
+the projection.
 
 ### Table filters
 

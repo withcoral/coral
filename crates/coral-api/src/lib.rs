@@ -21,6 +21,7 @@
 //!         name: "default".to_string(),
 //!     }),
 //!     sql: "select 1".to_string(),
+//!     guide_read_context: None,
 //! };
 //! assert_eq!(request.sql, "select 1");
 //! ```
@@ -92,10 +93,6 @@ pub const DEFAULT_WORKSPACE_ID: &str = "default";
 /// `TaskService.StartTask`. This is the shared wire-contract constant for
 /// clients and servers that opt into task attribution.
 pub const CORAL_TASK_ID_METADATA_KEY: &str = "coral-task-id";
-
-/// gRPC metadata key carrying the guide-state fingerprint returned by SQL
-/// guide preflight.
-pub const CORAL_GUIDE_STATE_FINGERPRINT_METADATA_KEY: &str = "coral-guide-state-fingerprint";
 
 /// Maximum length of a Coral task id, in bytes. Validated identically server-
 /// and client-side so the contract stays in one place.

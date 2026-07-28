@@ -1699,7 +1699,7 @@ async fn list_catalog_surfaces_table_functions() {
 }
 
 #[tokio::test]
-async fn mcp_sql_logical_preflight_finds_required_table_and_function_guides() {
+async fn mcp_sql_execution_finds_required_table_and_function_guides() {
     let temp = TempDir::new().expect("temp dir");
     let manifest_path = write_function_fixture_manifest(temp.path());
     let manifest_yaml = fs::read_to_string(&manifest_path).expect("read manifest");
@@ -1783,6 +1783,69 @@ async fn mcp_sql_logical_preflight_finds_required_table_and_function_guides() {
         .structured_content
         .expect("next task guide block");
     assert!(next_task["guides"].is_array());
+
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn mcp_sql_batch_executes_ungated_queries_while_returning_required_guides() {
+    let temp = TempDir::new().expect("temp dir");
+    let manifest_path = write_fixture_manifest(temp.path());
+    let manifest_yaml = fs::read_to_string(&manifest_path).expect("read manifest");
+    let mut session = start_session(&temp).await;
+    add_demo_source(&mut session.source_client, manifest_yaml).await;
+    let client = &session.client;
+    let task_id = start_test_task(client).await;
+    let tools = client.list_all_tools().await.expect("tools");
+    let sql_tool = tool_by_name(&tools, "sql");
+
+    let first = client
+        .call_tool(
+            CallToolRequestParams::new("sql").with_arguments(task_arguments(
+                &task_id,
+                &json!({
+                    "queries": [
+                        "SELECT text FROM local_messages.events WHERE text = 'hello'",
+                        "SELECT text FROM local_messages.messages WHERE text = 'world'"
+                    ]
+                }),
+            )),
+        )
+        .await
+        .expect("mixed gated SQL batch")
+        .structured_content
+        .expect("mixed SQL result");
+
+    assert_matches_output_schema(sql_tool, &first);
+    assert_eq!(first["total_count"], 2, "{first}");
+    assert_eq!(first["success_count"], 1, "{first}");
+    assert_eq!(first["error_count"], 0, "{first}");
+    assert_eq!(first["guide_required_count"], 1, "{first}");
+    assert_eq!(first["results"][0]["status"], "guide_required", "{first}");
+    assert_eq!(
+        first["results"][0]["guides"][0]["guide"],
+        "Use messages for ordinary text lookup."
+    );
+    assert_eq!(first["results"][1]["status"], "success", "{first}");
+    assert_eq!(first["results"][1]["rows"][0]["text"], "world", "{first}");
+
+    let retry = client
+        .call_tool(
+            CallToolRequestParams::new("sql").with_arguments(task_arguments(
+                &task_id,
+                &json!({
+                    "queries": [
+                        "SELECT text FROM local_messages.events WHERE text = 'hello'"
+                    ]
+                }),
+            )),
+        )
+        .await
+        .expect("same-task retry")
+        .structured_content
+        .expect("retry result");
+    assert_eq!(retry["success_count"], 1, "{retry}");
+    assert_eq!(retry["results"][0]["rows"][0]["text"], "hello", "{retry}");
 
     session.shutdown().await;
 }

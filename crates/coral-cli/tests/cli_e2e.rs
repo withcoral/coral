@@ -827,6 +827,7 @@ fn sql_response(schema: &Schema, batches: &[RecordBatch], row_count: i64) -> Exe
     ExecuteSqlResponse {
         arrow_ipc_stream: encode_arrow_ipc_stream(schema, batches).expect("encode arrow ipc"),
         row_count,
+        guide_required: None,
     }
 }
 

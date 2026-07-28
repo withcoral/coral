@@ -865,6 +865,7 @@ async fn run_app_command(
                 .execute_sql(Request::new(ExecuteSqlRequest {
                     workspace: Some(workspace.clone()),
                     sql: args.sql,
+                    guide_read_context: None,
                 }))
                 .await
             {

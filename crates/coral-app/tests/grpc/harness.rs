@@ -221,6 +221,7 @@ impl GrpcHarness {
             .execute_sql(Request::new(ExecuteSqlRequest {
                 workspace: Some(default_workspace()),
                 sql: sql.to_string(),
+                guide_read_context: None,
             }))
             .await
             .expect("execute sql")

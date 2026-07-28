@@ -3,7 +3,7 @@
 use std::future::Future;
 use std::sync::Arc;
 
-use coral_api::{CORAL_GUIDE_STATE_FINGERPRINT_METADATA_KEY, CORAL_TASK_ID_METADATA_KEY};
+use coral_api::CORAL_TASK_ID_METADATA_KEY;
 use opentelemetry::propagation::Injector;
 use tonic::metadata::{Ascii, MetadataKey, MetadataValue};
 
@@ -137,7 +137,6 @@ fn is_reserved_static_metadata_key(key: &MetadataKey<Ascii>) -> bool {
         "traceparent"
             | "tracestate"
             | "baggage"
-            | CORAL_GUIDE_STATE_FINGERPRINT_METADATA_KEY
             | CORAL_TASK_ID_METADATA_KEY
             | "content-type"
             | "te"

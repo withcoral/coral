@@ -10,6 +10,9 @@ message ExecuteSqlRequest {
   Workspace workspace = 1;
   // One read-only SQL statement.
   string sql = 2;
+  // Caller-scoped guide versions already shown for this task. Presence opts
+  // this request into required-guide enforcement.
+  QueryGuideReadContext guide_read_context = 3;
 }
 
 // Fully materialized query result encoded as Arrow IPC bytes.
@@ -18,20 +21,14 @@ message ExecuteSqlResponse {
   bytes arrow_ipc_stream = 1;
   // Total row count returned by the query.
   int64 row_count = 2;
+  // Guidance required before this query may execute. When present, Coral did
+  // not physically plan or execute the query and the result fields are empty.
+  QueryGuideRequired guide_required = 3;
 }
 
 // Explains one SQL statement by producing query-engine plan renderings without
 // executing it.
 message ExplainSqlRequest {
-  // Workspace that scopes the queryable source set.
-  Workspace workspace = 1;
-  // One read-only SQL statement.
-  string sql = 2;
-}
-
-// Resolves guide-read requirements for one SQL statement without physically
-// planning or executing it.
-message ResolveSqlGuideRequirementsRequest {
   // Workspace that scopes the queryable source set.
   Workspace workspace = 1;
   // One read-only SQL statement.
@@ -56,16 +53,30 @@ message QueryGuideRequirement {
   string resource_name = 2;
   // Guidance that MCP SQL must surface.
   string guide = 3;
+  // Opaque identity for this guide's current contents.
+  string guide_fingerprint = 4;
 }
 
-// Guide-read requirements resolved before SQL execution.
-message ResolveSqlGuideRequirementsResponse {
-  // Referenced resources whose guide must be surfaced by MCP SQL.
-  repeated QueryGuideRequirement required_guides = 1;
-  // Opaque identity for the resolved guide requirements. MCP returns this as
-  // request metadata when executing the statement so Coral can fail closed if
-  // the effective guide state changes after preflight.
-  string guide_state_fingerprint = 2;
+// One resource guide version already shown by the caller.
+message QueryGuideVersion {
+  // SQL schema containing the resource.
+  string schema_name = 1;
+  // Table or table function name within the schema.
+  string resource_name = 2;
+  // Opaque identity for the guide contents already shown.
+  string guide_fingerprint = 3;
+}
+
+// Optional caller context enabling required-guide enforcement.
+message QueryGuideReadContext {
+  // Resource guide versions already shown in the caller's current task.
+  repeated QueryGuideVersion shown_guides = 1;
+}
+
+// Guidance returned instead of physically executing one SQL statement.
+message QueryGuideRequired {
+  // Referenced resource guides the caller has not yet shown.
+  repeated QueryGuideRequirement guides = 1;
 }
 
 // SQL explanation response.
@@ -80,8 +91,4 @@ service QueryService {
   rpc ExecuteSql(ExecuteSqlRequest) returns (ExecuteSqlResponse);
   // Explains one read-only SQL statement without executing it.
   rpc ExplainSql(ExplainSqlRequest) returns (ExplainSqlResponse);
-  // Resolves guide-read requirements without physically planning or executing
-  // the statement.
-  rpc ResolveSqlGuideRequirements(ResolveSqlGuideRequirementsRequest)
-      returns (ResolveSqlGuideRequirementsResponse);
 }

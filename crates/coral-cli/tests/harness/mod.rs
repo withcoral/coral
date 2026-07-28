@@ -37,11 +37,10 @@ use coral_api::v1::{
     ListColumnsResponse, ListFunctionsRequest, ListFunctionsResponse, ListSourcesRequest,
     ListSourcesResponse, ListWorkspacesRequest, ListWorkspacesResponse, ObservedDrainResult,
     ObservedRebuildResult, PaginationRequest, PaginationResponse, QueryPlan,
-    RebuildSearchIndexRequest, RebuildSearchIndexResponse, ResolveSqlGuideRequirementsRequest,
-    ResolveSqlGuideRequirementsResponse, SearchCatalogRequest, SearchCatalogResponse,
-    SearchFieldRole, SearchMaintenanceResult, SearchMaintenanceState, SearchProvider,
-    SearchProviderCoverage, SearchProviderState, SearchRequest, SearchResponse, SearchResult,
-    SearchResultTruncation, SearchStorageCleanupResult, SearchSurfaceKind,
+    RebuildSearchIndexRequest, RebuildSearchIndexResponse, SearchCatalogRequest,
+    SearchCatalogResponse, SearchFieldRole, SearchMaintenanceResult, SearchMaintenanceState,
+    SearchProvider, SearchProviderCoverage, SearchProviderState, SearchRequest, SearchResponse,
+    SearchResult, SearchResultTruncation, SearchStorageCleanupResult, SearchSurfaceKind,
     SearchTableColumnPreview, SearchTableColumnPreviewColumn, Source, SourceCredentialStorage,
     SourceInfo, SourceInputSpec, SourceOrigin, SourceSecretInput, StartTaskRequest,
     StartTaskResponse, Table, TableFunction, TableSummary, Task as ProtoTask,
@@ -256,6 +255,7 @@ fn mock_sql_response(sql: &str) -> ExecuteSqlResponse {
         return ExecuteSqlResponse {
             arrow_ipc_stream: encode_arrow_ipc_stream(&schema, &[batch]).expect("encode arrow ipc"),
             row_count: 1,
+            guide_required: None,
         };
     }
 
@@ -280,6 +280,7 @@ fn mock_sql_response(sql: &str) -> ExecuteSqlResponse {
     ExecuteSqlResponse {
         arrow_ipc_stream: encode_arrow_ipc_stream(&schema, &[batch]).expect("encode arrow ipc"),
         row_count,
+        guide_required: None,
     }
 }
 
@@ -318,6 +319,7 @@ fn mock_coral_tables_response() -> ExecuteSqlResponse {
     ExecuteSqlResponse {
         arrow_ipc_stream: encode_arrow_ipc_stream(&schema, &[batch]).expect("encode arrow ipc"),
         row_count: 3,
+        guide_required: None,
     }
 }
 
@@ -1032,16 +1034,6 @@ impl QueryService for MockQueryService {
                 optimized_logical_plan: "OptimizedLogicalPlan".to_string(),
                 physical_plan: "PhysicalPlan".to_string(),
             }),
-        }))
-    }
-
-    async fn resolve_sql_guide_requirements(
-        &self,
-        _request: Request<ResolveSqlGuideRequirementsRequest>,
-    ) -> Result<Response<ResolveSqlGuideRequirementsResponse>, Status> {
-        Ok(Response::new(ResolveSqlGuideRequirementsResponse {
-            required_guides: Vec::new(),
-            guide_state_fingerprint: "v1:mock".to_string(),
         }))
     }
 }
