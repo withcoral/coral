@@ -1,4 +1,4 @@
-//! DataFusion catalog adapter for a normalized relational database inventory.
+//! `DataFusion` catalog adapter for a normalized relational database inventory.
 
 use std::collections::BTreeMap;
 use std::fmt;

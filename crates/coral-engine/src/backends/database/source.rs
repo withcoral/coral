@@ -22,7 +22,7 @@ use datafusion_table_providers::util::secrets::to_secret_map;
 use super::catalog::{
     DatabaseCatalog, DatabaseRelation, boxed_provider_error, build_database_catalog, provider_error,
 };
-use super::registry::{DatabasePool, DatabasePoolRegistry, PoolId};
+use super::registry::{DatabasePool, DatabasePoolRegistry};
 use crate::backends::shared::template::{RenderContext, render_template};
 use crate::backends::{
     BackendCatalogRegistration, BackendCompileRequest, BackendRegistration,
@@ -177,9 +177,8 @@ impl DatabaseCatalogStrategy for PostgresConnectionSpec {
         if let Some(sslmode) = self.sslmode.as_ref() {
             params.insert("sslmode".to_string(), render_template(sslmode, context)?);
         }
-        let pool_id = PoolId::new(catalog_name, self.provider_name(), &params);
         let pool = pool_registry
-            .get_or_create(pool_id, async move {
+            .get_or_create(catalog_name, async move {
                 Ok(DatabasePool::Postgres(Arc::new(
                     PostgresConnectionPool::new(to_secret_map(params))
                         .await
@@ -230,9 +229,8 @@ impl DatabaseCatalogStrategy for MySqlConnectionSpec {
             }
         };
         params.insert("tcp_port".to_string(), tcp_port.to_string());
-        let pool_id = PoolId::new(catalog_name, self.provider_name(), &params);
         let pool = pool_registry
-            .get_or_create(pool_id, async move {
+            .get_or_create(catalog_name, async move {
                 Ok(DatabasePool::MySql(Arc::new(
                     MySQLConnectionPool::new(to_secret_map(params))
                         .await
@@ -354,7 +352,7 @@ mod tests {
         SourceManifestCommon, SqliteConnectionSpec,
     };
 
-    use super::{DatabaseCatalogStrategy, DatabasePoolRegistry};
+    use super::DatabaseCatalogStrategy;
     use crate::backends::shared::template::RenderContext;
     use crate::{
         CoralQuery, QueryRuntimeConfig, QuerySource, RuntimeSourceComponent, RuntimeSourcePackage,
