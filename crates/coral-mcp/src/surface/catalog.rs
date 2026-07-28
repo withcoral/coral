@@ -788,7 +788,7 @@ mod tests {
             }),
         };
 
-        let value = list_columns_value("github", "issues", &response);
+        let value = list_columns_value(None, "github", "issues", &response);
         let fields = value.get("fields").expect("fields");
         let first_row = value
             .get("rows")

@@ -179,6 +179,7 @@ async fn search_catalog_matches_table_function_guide() {
             workspace: Some(default_workspace()),
             pattern: "exact issue lookup".to_string(),
             ignore_case: true,
+            catalog_name: String::new(),
             schema_name: "searchy".to_string(),
             kind: 2,
             pagination: None,

@@ -666,6 +666,7 @@ impl ReadinessProbe {
                 catalog
                     .list_catalog(GrpcRequest::new(ListCatalogRequest {
                         workspace: Some(default_workspace()),
+                        catalog_name: String::new(),
                         schema_name: String::new(),
                         kind: CatalogItemKind::Unspecified as i32,
                         pagination: Some(PaginationRequest {
