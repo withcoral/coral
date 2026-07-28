@@ -596,12 +596,22 @@ mod tests {
         let issuer = test_issuer();
         let original = claims(&issuer);
         let now = unix_timestamp().expect("timestamp");
+        // How far past the accepted skew the future-dated cases sit.
+        //
+        // The verifier reads the clock again after this test does, and
+        // `unix_timestamp` truncates to whole seconds, so a one-second offset
+        // lands exactly on the tolerance boundary — which `iat > now + skew`
+        // accepts — whenever the second boundary falls between the two reads.
+        // That raced at roughly 2% of runs. Pinning the boundary itself would
+        // need an injectable clock on the verifier; short of that the offset
+        // only has to dwarf the time these cases spend signing and validating.
+        let past_skew = CLOCK_SKEW.as_secs() + 30;
         let time_invalid = [
             changed(original.clone(), |c| {
-                c.iat = now + CLOCK_SKEW.as_secs() + 1;
+                c.iat = now + past_skew;
                 c.exp = c.iat + issuer.access_token_ttl.as_secs();
             }),
-            changed(original.clone(), |c| c.nbf = now + CLOCK_SKEW.as_secs() + 1),
+            changed(original.clone(), |c| c.nbf = now + past_skew),
             changed(original.clone(), |c| c.exp += 1),
             changed(original.clone(), |c| {
                 c.iat = now + CLOCK_SKEW.as_secs();
