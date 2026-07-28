@@ -30,7 +30,7 @@ pub(crate) use resources::{
 };
 pub(crate) use search::search_arguments;
 pub(crate) use sql::{
-    SqlBatchValue, SqlGuideRequiredValue, SqlQueryResultValue, SqlRequiredGuideValue, sql_arguments,
+    SqlBatchValue, SqlGuideBlockValue, SqlGuideValue, SqlQueryResultValue, sql_arguments,
 };
 pub(crate) use task::{
     EndTaskArguments, StartTaskArguments, TaskEndedValue, TaskId, TaskStartedValue, TaskStatus,

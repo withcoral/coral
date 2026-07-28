@@ -1,7 +1,6 @@
 //! RMCP server implementation for Coral's stdio MCP surface.
 
-use std::collections::{BTreeMap, HashMap};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use coral_api::v1::{
     CatalogItemKind as ProtoCatalogItemKind, DescribeTableRequest, DescribeTableResponse,
@@ -34,17 +33,18 @@ use tonic::{
 
 use crate::{
     McpOptions, McpQueryExample,
+    guide_block::GuideBlockState,
     surface::{
-        CatalogToolKind, EndTaskArguments, FeedbackStoredValue, SqlBatchValue,
-        SqlGuideRequiredValue, SqlQueryResultValue, SqlRequiredGuideValue, StartTaskArguments,
-        TaskEndedValue, TaskId, TaskStartedValue, TaskStatus, ToolAvailability,
-        ToolDescriptionContext, ToolName, available_tools, build_tool_result,
-        describe_table_arguments, describe_table_value, end_task_arguments, feedback_arguments,
-        guide_resource, guide_resource_content, initial_instructions, list_catalog_arguments,
-        list_catalog_value, list_columns_arguments, list_columns_table_fallback_value,
-        list_columns_value, required_task_id_argument, required_tool_intent_argument,
-        search_arguments, sql_arguments, start_task_arguments, status_to_error_data,
-        tables_resource, tables_resource_content, tool_error_from_status, tool_error_result,
+        CatalogToolKind, EndTaskArguments, FeedbackStoredValue, SqlBatchValue, SqlGuideBlockValue,
+        SqlQueryResultValue, StartTaskArguments, TaskEndedValue, TaskId, TaskStartedValue,
+        TaskStatus, ToolAvailability, ToolDescriptionContext, ToolName, available_tools,
+        build_tool_result, describe_table_arguments, describe_table_value, end_task_arguments,
+        feedback_arguments, guide_resource, guide_resource_content, initial_instructions,
+        list_catalog_arguments, list_catalog_value, list_columns_arguments,
+        list_columns_table_fallback_value, list_columns_value, required_task_id_argument,
+        required_tool_intent_argument, search_arguments, sql_arguments, start_task_arguments,
+        status_to_error_data, tables_resource, tables_resource_content, tool_error_from_status,
+        tool_error_result,
     },
     telemetry,
 };
@@ -55,12 +55,11 @@ const CATALOG_KIND_ALL: ProtoCatalogItemKind = ProtoCatalogItemKind::Unspecified
 const CATALOG_KIND_TABLE: ProtoCatalogItemKind = ProtoCatalogItemKind::Table;
 const CATALOG_KIND_TABLE_FUNCTION: ProtoCatalogItemKind = ProtoCatalogItemKind::TableFunction;
 const MAX_INITIAL_QUERY_EXAMPLES: usize = 5;
-const MAX_RETAINED_GUIDE_READ_TASKS: usize = 1_024;
 
 enum ToolCallOutcome {
     Payload(Value),
     SqlBatch(SqlBatchValue),
-    SqlGuideRequired(SqlGuideRequiredValue),
+    SqlGuideBlock(SqlGuideBlockValue),
     ToolError {
         operation: &'static str,
         status: tonic::Status,
@@ -69,127 +68,7 @@ enum ToolCallOutcome {
 
 enum SqlBatchExecution {
     Executed(SqlBatchValue),
-    GuideRequired(SqlGuideRequiredValue),
-}
-
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-struct GuideResourceKey {
-    schema_name: String,
-    resource_name: String,
-}
-
-#[derive(Default)]
-struct TaskGuideReadState {
-    resources: HashMap<GuideResourceKey, String>,
-    sql_gate: Arc<tokio::sync::Mutex<()>>,
-    last_used: u64,
-}
-
-#[derive(Default)]
-struct GuideReadStateInner {
-    tasks: HashMap<TaskId, TaskGuideReadState>,
-    clock: u64,
-}
-
-impl GuideReadStateInner {
-    fn touch_task(&mut self, task_id: TaskId, max_tasks: usize) -> &mut TaskGuideReadState {
-        self.clock = self.clock.saturating_add(1);
-        while !self.tasks.contains_key(&task_id) && self.tasks.len() >= max_tasks {
-            let Some(oldest) = self
-                .tasks
-                .iter()
-                .filter(|(_, task)| Arc::strong_count(&task.sql_gate) == 1)
-                .min_by_key(|(_, task)| task.last_used)
-                .map(|(task_id, _)| *task_id)
-            else {
-                break;
-            };
-            self.tasks.remove(&oldest);
-        }
-        let task = self.tasks.entry(task_id).or_default();
-        task.last_used = self.clock;
-        task
-    }
-}
-
-struct GuideReadState {
-    inner: Mutex<GuideReadStateInner>,
-    max_tasks: usize,
-}
-
-impl Default for GuideReadState {
-    fn default() -> Self {
-        Self {
-            inner: Mutex::new(GuideReadStateInner::default()),
-            max_tasks: MAX_RETAINED_GUIDE_READ_TASKS,
-        }
-    }
-}
-
-impl GuideReadState {
-    #[cfg(test)]
-    fn with_max_tasks(max_tasks: usize) -> Self {
-        assert!(max_tasks > 0, "guide-read task limit must be positive");
-        Self {
-            max_tasks,
-            ..Self::default()
-        }
-    }
-
-    fn sql_gate(&self, task_id: TaskId) -> Result<Arc<tokio::sync::Mutex<()>>, tonic::Status> {
-        let mut inner = self
-            .inner
-            .lock()
-            .map_err(|_poisoned| tonic::Status::internal("guide-read state lock poisoned"))?;
-        Ok(Arc::clone(
-            &inner.touch_task(task_id, self.max_tasks).sql_gate,
-        ))
-    }
-
-    fn newly_required_guides(
-        &self,
-        task_id: TaskId,
-        requirements: Vec<QueryGuideRequirement>,
-    ) -> Result<Vec<SqlRequiredGuideValue>, tonic::Status> {
-        let mut candidates = BTreeMap::new();
-        for requirement in requirements {
-            candidates.insert(
-                GuideResourceKey {
-                    schema_name: requirement.schema_name,
-                    resource_name: requirement.resource_name,
-                },
-                requirement.guide,
-            );
-        }
-
-        let mut inner = self
-            .inner
-            .lock()
-            .map_err(|_poisoned| tonic::Status::internal("guide-read state lock poisoned"))?;
-        let seen = &mut inner.touch_task(task_id, self.max_tasks).resources;
-        let mut newly_required = Vec::new();
-        for (key, guide) in candidates {
-            if seen.get(&key) == Some(&guide) {
-                continue;
-            }
-            seen.insert(key.clone(), guide.clone());
-            newly_required.push(SqlRequiredGuideValue::new(
-                key.schema_name,
-                key.resource_name,
-                guide,
-            ));
-        }
-        Ok(newly_required)
-    }
-
-    fn clear_task(&self, task_id: TaskId) -> Result<(), tonic::Status> {
-        let mut inner = self
-            .inner
-            .lock()
-            .map_err(|_poisoned| tonic::Status::internal("guide-read state lock poisoned"))?;
-        inner.tasks.remove(&task_id);
-        Ok(())
-    }
+    GuideBlocked(SqlGuideBlockValue),
 }
 
 fn serialize_tool_value(value: impl Serialize) -> Result<Value, tonic::Status> {
@@ -344,7 +223,7 @@ fn task_context_requirement(options: &McpOptions, tool_name: ToolName) -> TaskCo
 pub(crate) struct CoralMcpServerFactory {
     app: AppClient,
     options: McpOptions,
-    guide_reads: Arc<GuideReadState>,
+    guide_block: Arc<GuideBlockState>,
 }
 
 impl CoralMcpServerFactory {
@@ -360,19 +239,19 @@ impl CoralMcpServerFactory {
         Self {
             app,
             options,
-            guide_reads: Arc::new(GuideReadState::default()),
+            guide_block: Arc::new(GuideBlockState::default()),
         }
     }
 
     /// Constructs a fresh handler for one MCP session.
     ///
-    /// Handlers from this factory share task-scoped guide-read state.
+    /// Handlers from this factory share task-scoped guide-block state.
     #[must_use]
     pub(crate) fn create(&self) -> impl ServerHandler + Clone + use<> {
         CoralMcpServer::new(
             &self.app,
             self.options.clone(),
-            Arc::clone(&self.guide_reads),
+            Arc::clone(&self.guide_block),
         )
     }
 }
@@ -385,7 +264,7 @@ pub(crate) struct CoralMcpServer {
     search: SearchClient,
     feedback: FeedbackClient,
     task: TaskClient,
-    guide_reads: Arc<GuideReadState>,
+    guide_block: Arc<GuideBlockState>,
     startup_context: McpStartupContext,
     options: McpOptions,
 }
@@ -429,16 +308,16 @@ impl McpStartupContext {
 }
 
 impl CoralMcpServer {
-    fn new(app: &AppClient, options: McpOptions, guide_reads: Arc<GuideReadState>) -> Self {
+    fn new(app: &AppClient, options: McpOptions, guide_block: Arc<GuideBlockState>) -> Self {
         let startup_context = McpStartupContext::from_options(&options);
-        Self::new_with_startup_context(app, options, startup_context, guide_reads)
+        Self::new_with_startup_context(app, options, startup_context, guide_block)
     }
 
     fn new_with_startup_context(
         app: &AppClient,
         options: McpOptions,
         startup_context: McpStartupContext,
-        guide_reads: Arc<GuideReadState>,
+        guide_block: Arc<GuideBlockState>,
     ) -> Self {
         Self {
             source: app.source_client(),
@@ -447,7 +326,7 @@ impl CoralMcpServer {
             search: app.search_client(),
             feedback: app.feedback_client(),
             task: app.task_client(),
-            guide_reads,
+            guide_block,
             startup_context,
             options,
         }
@@ -668,12 +547,12 @@ impl CoralMcpServer {
             .preflight_sql_batch(&queries, task_id_metadata.clone())
             .await?;
         let guides = self
-            .guide_reads
+            .guide_block
             .newly_required_guides(task_id, requirements)?;
         if !guides.is_empty() {
-            return Ok(SqlBatchExecution::GuideRequired(
-                SqlGuideRequiredValue::new(guides),
-            ));
+            return Ok(SqlBatchExecution::GuideBlocked(SqlGuideBlockValue::new(
+                guides,
+            )));
         }
 
         let mut tasks = tokio::task::JoinSet::new();
@@ -729,7 +608,7 @@ impl CoralMcpServer {
                 "end task response task_id did not match request",
             ));
         }
-        self.guide_reads.clear_task(task_id)?;
+        self.guide_block.clear_task(task_id)?;
         serialize_tool_value(TaskEndedValue {
             task_id,
             task_status: task_status_from_proto(task_end.task_status)?,
@@ -864,8 +743,8 @@ impl CoralMcpServer {
                     .await
                 {
                     Ok(SqlBatchExecution::Executed(batch)) => Ok(ToolCallOutcome::SqlBatch(batch)),
-                    Ok(SqlBatchExecution::GuideRequired(required)) => {
-                        Ok(ToolCallOutcome::SqlGuideRequired(required))
+                    Ok(SqlBatchExecution::GuideBlocked(block)) => {
+                        Ok(ToolCallOutcome::SqlGuideBlock(block))
                     }
                     Err(status) => Ok(ToolCallOutcome::ToolError {
                         operation: "Query",
@@ -1052,7 +931,7 @@ impl ServerHandler for CoralMcpServer {
                 let task_id = task_context.task_id();
                 let _sql_gate = match (tool_name, task_id) {
                     (Some(ToolName::Sql), Some(task_id)) => Some(
-                        self.guide_reads
+                        self.guide_block
                             .sql_gate(task_id)
                             .map_err(|status| status_to_error_data(&status))?
                             .lock_owned()
@@ -1179,8 +1058,8 @@ fn finish_tool_call(
                 Ok(build_tool_result(serialized))
             }
         }
-        Ok(ToolCallOutcome::SqlGuideRequired(required)) => {
-            let serialized = serialize_tool_value(required).map_err(|status| {
+        Ok(ToolCallOutcome::SqlGuideBlock(block)) => {
+            let serialized = serialize_tool_value(block).map_err(|status| {
                 telemetry::record_tonic_status(span, &status);
                 ErrorData::internal_error(status.message().to_string(), None)
             })?;
@@ -1346,123 +1225,6 @@ mod startup_context_tests {
         assert_eq!(
             context.query_examples().last().map(McpQueryExample::sql),
             Some("SELECT 4")
-        );
-    }
-}
-
-#[cfg(test)]
-mod guide_read_state_tests {
-    use std::sync::Arc;
-
-    use coral_api::v1::QueryGuideRequirement;
-
-    use super::{GuideReadState, TaskId};
-
-    fn task_id(value: u128) -> TaskId {
-        TaskId::from_uuid_str(&uuid::Uuid::from_u128(value).to_string()).expect("task id")
-    }
-
-    fn requirement(guide: &str) -> QueryGuideRequirement {
-        QueryGuideRequirement {
-            schema_name: "slack".to_string(),
-            resource_name: "channels".to_string(),
-            guide: guide.to_string(),
-        }
-    }
-
-    fn required(state: &GuideReadState, task_id: TaskId, guide: &str) -> usize {
-        state
-            .newly_required_guides(task_id, vec![requirement(guide)])
-            .expect("guide-read state")
-            .len()
-    }
-
-    #[test]
-    fn guide_changes_and_task_boundaries_require_another_read() {
-        let state = GuideReadState::default();
-        let first_task = task_id(1);
-
-        assert_eq!(required(&state, first_task, "Use search."), 1);
-        assert_eq!(required(&state, first_task, "Use search."), 0);
-        assert_eq!(required(&state, first_task, "Use lookup."), 1);
-        assert_eq!(required(&state, task_id(2), "Use lookup."), 1);
-        state.clear_task(first_task).expect("clear task");
-        assert_eq!(required(&state, first_task, "Use lookup."), 1);
-    }
-
-    #[test]
-    fn sql_gate_serializes_calls_for_the_same_task() {
-        let state = GuideReadState::default();
-        let first_gate = state.sql_gate(task_id(1)).expect("first task gate");
-        let same_task_gate = state.sql_gate(task_id(1)).expect("same task gate");
-        let other_task_gate = state.sql_gate(task_id(2)).expect("other task gate");
-
-        assert!(Arc::ptr_eq(&first_gate, &same_task_gate));
-        let first_call = first_gate.try_lock_owned().expect("first SQL call");
-        assert!(
-            Arc::clone(&same_task_gate).try_lock_owned().is_err(),
-            "overlapping SQL call in the same task must wait"
-        );
-        assert!(
-            other_task_gate.try_lock_owned().is_ok(),
-            "different tasks must remain independent"
-        );
-        drop(first_call);
-        assert!(
-            same_task_gate.try_lock_owned().is_ok(),
-            "same-task SQL call must continue after the previous response"
-        );
-    }
-
-    #[test]
-    fn guide_read_state_evicts_the_least_recently_used_task() {
-        let state = GuideReadState::with_max_tasks(2);
-        let first_task = task_id(1);
-        let second_task = task_id(2);
-        let third_task = task_id(3);
-
-        assert_eq!(required(&state, first_task, "Use search."), 1);
-        assert_eq!(required(&state, second_task, "Use search."), 1);
-        drop(state.sql_gate(first_task).expect("touch first task"));
-        drop(state.sql_gate(third_task).expect("insert third task"));
-
-        assert_eq!(
-            (
-                required(&state, first_task, "Use search."),
-                required(&state, second_task, "Use search.")
-            ),
-            (0, 1)
-        );
-    }
-
-    #[test]
-    fn guide_read_state_does_not_evict_a_task_with_active_sql() {
-        let state = GuideReadState::with_max_tasks(1);
-        let active_task = task_id(1);
-        let other_task = task_id(2);
-        let active_gate = state.sql_gate(active_task).expect("active task gate");
-        let active_call = active_gate.try_lock_owned().expect("active SQL call");
-
-        drop(state.sql_gate(other_task).expect("other task gate"));
-
-        let inner = state.inner.lock().expect("guide-read state");
-        assert!(
-            inner.tasks.contains_key(&active_task),
-            "an active task must remain retained"
-        );
-        assert_eq!(
-            inner.tasks.len(),
-            2,
-            "the limit may be exceeded instead of evicting the active task"
-        );
-        drop(inner);
-        drop(active_call);
-
-        drop(state.sql_gate(task_id(3)).expect("new task gate"));
-        assert_eq!(
-            state.inner.lock().expect("guide-read state").tasks.len(),
-            1,
-            "the state must return to its limit after active SQL finishes"
         );
     }
 }

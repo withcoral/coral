@@ -39,7 +39,7 @@ pub(crate) struct SqlBatchValue {
 
 #[derive(Serialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
-pub(crate) struct SqlRequiredGuideValue {
+pub(crate) struct SqlGuideValue {
     schema: String,
     resource: String,
     guide: String,
@@ -47,10 +47,10 @@ pub(crate) struct SqlRequiredGuideValue {
 
 #[derive(Serialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
-pub(crate) struct SqlGuideRequiredValue {
+pub(crate) struct SqlGuideBlockValue {
     message: &'static str,
     #[schemars(length(min = 1))]
-    guides: Vec<SqlRequiredGuideValue>,
+    guides: Vec<SqlGuideValue>,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -81,10 +81,10 @@ pub(crate) enum SqlQueryResultValue {
 enum SqlToolOutputSchema {
     Success(SqlBatchValue),
     PartialFailure(ToolErrorWithData<SqlBatchValue>),
-    GuideRequired(SqlGuideRequiredValue),
+    GuideBlock(SqlGuideBlockValue),
 }
 
-impl SqlRequiredGuideValue {
+impl SqlGuideValue {
     pub(crate) fn new(schema: String, resource: String, guide: String) -> Self {
         Self {
             schema,
@@ -94,8 +94,8 @@ impl SqlRequiredGuideValue {
     }
 }
 
-impl SqlGuideRequiredValue {
-    pub(crate) fn new(guides: Vec<SqlRequiredGuideValue>) -> Self {
+impl SqlGuideBlockValue {
+    pub(crate) fn new(guides: Vec<SqlGuideValue>) -> Self {
         Self {
             message: "Coral blocked this SQL call because one or more referenced resources have require_guide_read enabled. No queries in this call were executed. Read the guidance below. These guide versions are now unblocked for the remainder of this task. Retry the SQL unchanged if it follows the guidance, or revise it before trying again.",
             guides,

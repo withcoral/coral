@@ -27,6 +27,7 @@
 
 mod error;
 pub mod http;
+mod guide_block;
 mod server;
 mod surface;
 mod telemetry;
