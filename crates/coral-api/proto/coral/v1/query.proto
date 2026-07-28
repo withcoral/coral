@@ -46,37 +46,27 @@ message QueryPlan {
 }
 
 // Guide metadata for one referenced query resource.
-message QueryGuideRequirement {
+message QueryGuide {
   // SQL schema containing the resource.
   string schema_name = 1;
   // Table or table function name within the schema.
   string resource_name = 2;
   // Guidance that MCP SQL must surface.
   string guide = 3;
-  // Opaque identity for this guide's current contents.
-  string guide_fingerprint = 4;
-}
-
-// One resource guide version already shown by the caller.
-message QueryGuideVersion {
-  // SQL schema containing the resource.
-  string schema_name = 1;
-  // Table or table function name within the schema.
-  string resource_name = 2;
-  // Opaque identity for the guide contents already shown.
-  string guide_fingerprint = 3;
+  // Opaque identity for this resource and its current guide contents.
+  string guide_id = 4;
 }
 
 // Optional caller context enabling required-guide enforcement.
 message QueryGuideReadContext {
-  // Resource guide versions already shown in the caller's current task.
-  repeated QueryGuideVersion shown_guides = 1;
+  // Resource guide identities already shown in the caller's current task.
+  repeated string shown_guide_ids = 1;
 }
 
 // Guidance returned instead of physically executing one SQL statement.
 message QueryGuideRequired {
   // Referenced resource guides the caller has not yet shown.
-  repeated QueryGuideRequirement guides = 1;
+  repeated QueryGuide guides = 1;
 }
 
 // SQL explanation response.

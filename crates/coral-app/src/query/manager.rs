@@ -1,6 +1,6 @@
 //! Query-time loading, validation, and execution over installed sources.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -14,7 +14,6 @@ use coral_engine::{
 };
 use coral_spec::{ManifestInputKind, ManifestInputSpec};
 use opentelemetry::trace::Status as OtelStatus;
-use serde::Serialize;
 use serde_json::json;
 use tracing::Instrument as _;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
@@ -50,19 +49,12 @@ pub(crate) enum QueryManagerError {
     Core(CoreError),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RequiredQueryGuide {
     pub(crate) schema_name: String,
     pub(crate) resource_name: String,
     pub(crate) guide: String,
-    pub(crate) guide_fingerprint: String,
-}
-
-#[derive(Debug, Clone, Eq, Ord, PartialEq, PartialOrd)]
-pub(crate) struct ShownQueryGuideVersion {
-    pub(crate) schema_name: String,
-    pub(crate) resource_name: String,
-    pub(crate) guide_fingerprint: String,
+    pub(crate) guide_id: String,
 }
 
 pub(crate) enum ExecuteSqlOutcome {
@@ -395,7 +387,7 @@ impl QueryManager {
         &self,
         workspace_name: &WorkspaceName,
         sql: &str,
-        shown_guides: Option<&BTreeSet<ShownQueryGuideVersion>>,
+        shown_guide_ids: Option<&HashSet<String>>,
         attribution: &QueryAttribution,
     ) -> Result<ExecuteSqlOutcome, QueryManagerError> {
         run_query_operation(
@@ -421,18 +413,12 @@ impl QueryManager {
                     .prepare_sql(sql)
                     .await
                     .map_err(QueryManagerError::Core)?;
-                if let Some(shown_guides) = shown_guides {
+                if let Some(shown_guide_ids) = shown_guide_ids {
                     let required_guides =
                         required_query_guides(&runtime.list_catalog(None), prepared.resources());
                     let unseen_guides = required_guides
                         .into_iter()
-                        .filter(|guide| {
-                            !shown_guides.contains(&ShownQueryGuideVersion {
-                                schema_name: guide.schema_name.clone(),
-                                resource_name: guide.resource_name.clone(),
-                                guide_fingerprint: guide.guide_fingerprint.clone(),
-                            })
-                        })
+                        .filter(|guide| !shown_guide_ids.contains(&guide.guide_id))
                         .collect::<Vec<_>>();
                     if !unseen_guides.is_empty() {
                         return Ok(ExecuteSqlOutcome::GuideRequired(unseen_guides));
@@ -984,7 +970,7 @@ fn required_query_guides(
             guides.push(RequiredQueryGuide {
                 schema_name: table.schema_name.clone(),
                 resource_name: table.table_name.clone(),
-                guide_fingerprint: format!("v1:{}", sha256_hex(guide.as_bytes())),
+                guide_id: required_guide_id(&table.schema_name, &table.table_name, &guide),
                 guide,
             });
         }
@@ -999,12 +985,16 @@ fn required_query_guides(
             guides.push(RequiredQueryGuide {
                 schema_name: function.schema_name.clone(),
                 resource_name: function.function_name.clone(),
-                guide_fingerprint: format!("v1:{}", sha256_hex(guide.as_bytes())),
+                guide_id: required_guide_id(&function.schema_name, &function.function_name, &guide),
                 guide,
             });
         }
     }
     guides
+}
+
+fn required_guide_id(schema_name: &str, resource_name: &str, guide: &str) -> String {
+    sha256_hex(format!("{schema_name}\0{resource_name}\0{guide}").as_bytes())
 }
 
 fn query_sources_from_loaded(loaded_sources: &[LoadedQuerySource]) -> Vec<QuerySource> {
@@ -2056,7 +2046,7 @@ tables:
             .execute_sql(
                 &workspace_name,
                 sql,
-                Some(&BTreeSet::new()),
+                Some(&HashSet::new()),
                 &QueryAttribution::default(),
             )
             .await
@@ -2074,11 +2064,7 @@ tables:
                 .is_empty(),
             "requiring a guide must not perform provider I/O"
         );
-        let shown_initial = BTreeSet::from([ShownQueryGuideVersion {
-            schema_name: initial.schema_name.clone(),
-            resource_name: initial.resource_name.clone(),
-            guide_fingerprint: initial.guide_fingerprint.clone(),
-        }]);
+        let shown_initial = HashSet::from([initial.guide_id.clone()]);
 
         source_manager
             .import_source(
@@ -2113,7 +2099,7 @@ tables:
         };
         let current = current.first().expect("current guide");
         assert_eq!(current.guide, "Use the new lookup.");
-        assert_ne!(current.guide_fingerprint, initial.guide_fingerprint);
+        assert_ne!(current.guide_id, initial.guide_id);
         assert_eq!(
             server
                 .received_requests()
@@ -2123,11 +2109,7 @@ tables:
             provider_requests_before,
             "requiring a changed guide must not perform provider I/O"
         );
-        let shown_current = BTreeSet::from([ShownQueryGuideVersion {
-            schema_name: current.schema_name.clone(),
-            resource_name: current.resource_name.clone(),
-            guide_fingerprint: current.guide_fingerprint.clone(),
-        }]);
+        let shown_current = HashSet::from([current.guide_id.clone()]);
         let executed = fixture
             .manager
             .execute_sql(
@@ -2259,7 +2241,7 @@ surface:
             .execute_sql(
                 &workspace_name,
                 sql,
-                Some(&BTreeSet::new()),
+                Some(&HashSet::new()),
                 &QueryAttribution::default(),
             )
             .await
@@ -2278,11 +2260,7 @@ surface:
                 .is_empty(),
             "requiring a v4 projection guide must not perform provider I/O"
         );
-        let shown = BTreeSet::from([ShownQueryGuideVersion {
-            schema_name: required.schema_name.clone(),
-            resource_name: required.resource_name.clone(),
-            guide_fingerprint: required.guide_fingerprint.clone(),
-        }]);
+        let shown = HashSet::from([required.guide_id.clone()]);
         let execution = fixture
             .manager
             .execute_sql(

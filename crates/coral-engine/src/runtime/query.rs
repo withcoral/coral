@@ -989,23 +989,6 @@ impl QueryRuntimeAdapter {
         ))
     }
 
-    pub(crate) async fn resolve_sql_resources(
-        &self,
-        sql: &str,
-        params: &QueryParameters,
-    ) -> Result<ResolvedQueryResources, CoreError> {
-        let df = self.sql_dataframe(sql, params).await?;
-        self.resolve_query_resources(df.logical_plan())
-            .map_err(|error| {
-                datafusion_to_core_with_sql_and_table_functions(
-                    &error,
-                    &self.tables,
-                    &self.table_functions,
-                    Some(sql),
-                )
-            })
-    }
-
     async fn sql_dataframe(
         &self,
         sql: &str,

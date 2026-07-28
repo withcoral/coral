@@ -33,9 +33,6 @@ pub(crate) struct SqlBatchValue {
     success_count: usize,
     #[schemars(range(min = 0, max = MAX_SQL_BATCH_QUERIES))]
     error_count: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[schemars(range(min = 1, max = MAX_SQL_BATCH_QUERIES))]
-    guide_required_count: Option<usize>,
     #[schemars(length(min = 1, max = MAX_SQL_BATCH_QUERIES))]
     results: Vec<SqlQueryResultValue>,
 }
@@ -48,7 +45,7 @@ pub(crate) struct SqlGuideValue {
     guide: String,
     #[serde(skip)]
     #[schemars(skip)]
-    pub(crate) fingerprint: String,
+    pub(crate) id: String,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -98,17 +95,12 @@ enum SqlToolOutputSchema {
 }
 
 impl SqlGuideValue {
-    pub(crate) fn new(
-        schema: String,
-        resource: String,
-        guide: String,
-        fingerprint: String,
-    ) -> Self {
+    pub(crate) fn new(schema: String, resource: String, guide: String, id: String) -> Self {
         Self {
             schema,
             resource,
             guide,
-            fingerprint,
+            id,
         }
     }
 }
@@ -138,12 +130,10 @@ impl SqlBatchValue {
             .iter()
             .filter(|result| matches!(result, SqlQueryResultValue::Error { .. }))
             .count();
-        let guide_required_count = results.len() - success_count - error_count;
         Self {
             total_count: results.len(),
             success_count,
             error_count,
-            guide_required_count: (guide_required_count > 0).then_some(guide_required_count),
             results,
         }
     }
@@ -190,10 +180,6 @@ impl SqlQueryResultValue {
             Self::GuideRequired { guides, .. } => guides,
             Self::Success { .. } | Self::Error { .. } => &[],
         }
-    }
-
-    pub(crate) fn is_guide_required(&self) -> bool {
-        matches!(self, Self::GuideRequired { .. })
     }
 }
 

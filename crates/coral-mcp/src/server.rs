@@ -1,6 +1,6 @@
 //! RMCP server implementation for Coral's stdio MCP surface.
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::sync::Arc;
 
 use coral_api::v1::{
     CatalogItemKind as ProtoCatalogItemKind, DescribeTableRequest, DescribeTableResponse,
@@ -490,7 +490,7 @@ impl CoralMcpServer {
                             guide.schema_name,
                             guide.resource_name,
                             guide.guide,
-                            guide.guide_fingerprint,
+                            guide.guide_id,
                         )
                     })
                     .collect(),
@@ -507,12 +507,12 @@ impl CoralMcpServer {
         &self,
         index: usize,
         sql: String,
-        shown_guides: Vec<coral_api::v1::QueryGuideVersion>,
+        shown_guide_ids: Vec<String>,
     ) -> SqlQueryResultValue {
         let request = Request::new(ExecuteSqlRequest {
             workspace: Some(self.workspace()),
             sql,
-            guide_read_context: Some(QueryGuideReadContext { shown_guides }),
+            guide_read_context: Some(QueryGuideReadContext { shown_guide_ids }),
         });
         match self.query_rows(request).await {
             Ok(QueryRows::Rows(rows)) => SqlQueryResultValue::Success { index, rows },
@@ -532,17 +532,17 @@ impl CoralMcpServer {
         task_id: TaskId,
         task_id_metadata: Option<MetadataValue<Ascii>>,
     ) -> Result<SqlBatchExecution, tonic::Status> {
-        let shown_guides = self.guide_block.shown_guide_versions(task_id)?;
+        let shown_guide_ids = self.guide_block.shown_guide_ids(task_id)?;
 
         let mut tasks = tokio::task::JoinSet::new();
         for (index, sql) in queries.into_iter().enumerate() {
             let server = self.clone();
             let task_id_metadata = task_id_metadata.clone();
-            let shown_guides = shown_guides.clone();
+            let shown_guide_ids = shown_guide_ids.clone();
             tasks.spawn(async move {
                 with_task_metadata(
                     task_id_metadata,
-                    server.execute_one_sql_query(index, sql, shown_guides),
+                    server.execute_one_sql_query(index, sql, shown_guide_ids),
                 )
                 .await
             });
@@ -553,24 +553,15 @@ impl CoralMcpServer {
             results.push(joined.map_err(|error| tonic::Status::internal(error.to_string()))?);
         }
 
-        let mut guides_by_resource = BTreeMap::new();
-        for guide in results
+        let guides = results
             .iter()
             .flat_map(SqlQueryResultValue::required_guides)
-        {
-            guides_by_resource
-                .entry((
-                    guide.schema.clone(),
-                    guide.resource.clone(),
-                    guide.fingerprint.clone(),
-                ))
-                .or_insert_with(|| guide.clone());
-        }
-        let guides = guides_by_resource.into_values().collect::<Vec<_>>();
+            .cloned()
+            .collect::<Vec<_>>();
         self.guide_block.record_guides(task_id, &guides)?;
-        if !results.is_empty() && results.iter().all(SqlQueryResultValue::is_guide_required) {
+        if let [SqlQueryResultValue::GuideRequired { guides, .. }] = results.as_slice() {
             return Ok(SqlBatchExecution::GuideBlocked(SqlGuideBlockValue::new(
-                guides,
+                guides.clone(),
             )));
         }
 

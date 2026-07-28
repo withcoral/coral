@@ -1,22 +1,20 @@
 //! Implements the gRPC `QueryService`.
 
-use std::collections::BTreeSet;
+use std::collections::HashSet;
 
 use arrow::datatypes::SchemaRef;
 use arrow::ipc::writer::StreamWriter;
 use arrow::record_batch::RecordBatch;
 use coral_api::v1::query_service_server::QueryService as QueryServiceApi;
 use coral_api::v1::{
-    ExecuteSqlRequest, ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse,
-    QueryGuideReadContext, QueryGuideRequired, QueryGuideRequirement, QueryPlan as QueryPlanProto,
+    ExecuteSqlRequest, ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse, QueryGuide,
+    QueryGuideReadContext, QueryGuideRequired, QueryPlan as QueryPlanProto,
 };
 use tonic::{Request, Response, Status};
 
 use crate::bootstrap::core_status;
 use crate::query::QueryAttribution;
-use crate::query::manager::{
-    ExecuteSqlOutcome, QueryManager, RequiredQueryGuide, ShownQueryGuideVersion,
-};
+use crate::query::manager::{ExecuteSqlOutcome, QueryManager, RequiredQueryGuide};
 use crate::task::manager::TaskManager;
 use crate::task::service::task_manager_status;
 use crate::transport::{
@@ -51,7 +49,7 @@ impl QueryServiceApi for QueryService {
         Box::pin(instrument_grpc(span, async move {
             let inner = request.into_inner();
             let workspace_name = workspace_name_from_proto(inner.workspace.as_ref())?;
-            let shown_guides = shown_guide_versions(inner.guide_read_context)?;
+            let shown_guide_ids = shown_guide_ids(inner.guide_read_context);
             let attribution = QueryAttribution::new(
                 tasks
                     .validate_attribution(&workspace_name, request_context.task_id())
@@ -62,7 +60,7 @@ impl QueryServiceApi for QueryService {
                 .execute_sql(
                     &workspace_name,
                     &inner.sql,
-                    shown_guides.as_ref(),
+                    shown_guide_ids.as_ref(),
                     &attribution,
                 )
                 .await
@@ -123,32 +121,8 @@ impl QueryServiceApi for QueryService {
     }
 }
 
-fn shown_guide_versions(
-    context: Option<QueryGuideReadContext>,
-) -> Result<Option<BTreeSet<ShownQueryGuideVersion>>, Status> {
-    let Some(context) = context else {
-        return Ok(None);
-    };
-    let mut shown = BTreeSet::new();
-    for guide in context.shown_guides {
-        let digest = guide.guide_fingerprint.strip_prefix("v1:");
-        if guide.schema_name.is_empty()
-            || guide.resource_name.is_empty()
-            || !digest.is_some_and(|digest| {
-                digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
-            })
-        {
-            return Err(Status::invalid_argument(
-                "guide_read_context contains an invalid guide version",
-            ));
-        }
-        shown.insert(ShownQueryGuideVersion {
-            schema_name: guide.schema_name,
-            resource_name: guide.resource_name,
-            guide_fingerprint: guide.guide_fingerprint,
-        });
-    }
-    Ok(Some(shown))
+fn shown_guide_ids(context: Option<QueryGuideReadContext>) -> Option<HashSet<String>> {
+    context.map(|context| context.shown_guide_ids.into_iter().collect())
 }
 
 fn query_plan_to_proto(plan: &coral_engine::QueryPlan) -> QueryPlanProto {
@@ -159,12 +133,12 @@ fn query_plan_to_proto(plan: &coral_engine::QueryPlan) -> QueryPlanProto {
     }
 }
 
-fn required_query_guide_to_proto(guide: RequiredQueryGuide) -> QueryGuideRequirement {
-    QueryGuideRequirement {
+fn required_query_guide_to_proto(guide: RequiredQueryGuide) -> QueryGuide {
+    QueryGuide {
         schema_name: guide.schema_name,
         resource_name: guide.resource_name,
         guide: guide.guide,
-        guide_fingerprint: guide.guide_fingerprint,
+        guide_id: guide.guide_id,
     }
 }
 

@@ -218,13 +218,7 @@ impl PreparedQueryRuntime {
             .await
     }
 
-    /// Logically plans one parameterized `SQL` statement without physical execution.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CoreError`] if the SQL is empty, parameter binding fails, or
-    /// the statement cannot be logically planned.
-    pub async fn prepare_sql_with_params(
+    async fn prepare_sql_with_params(
         &self,
         sql: &str,
         params: QueryParameters,
@@ -263,25 +257,6 @@ impl PreparedQueryRuntime {
             return Err(CoreError::InvalidInput("SQL must not be empty".to_string()));
         }
         self.inner.explain_sql(sql, &params).await
-    }
-
-    /// Resolves the source resources referenced by one `SQL` statement without
-    /// physical planning or execution.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CoreError`] if the SQL is empty, parameter binding fails, or
-    /// the statement cannot be logically planned.
-    pub async fn resolve_sql_resources(
-        &self,
-        sql: &str,
-    ) -> Result<ResolvedQueryResources, CoreError> {
-        if sql.trim().is_empty() {
-            return Err(CoreError::InvalidInput("SQL must not be empty".to_string()));
-        }
-        self.inner
-            .resolve_sql_resources(sql, &QueryParameters::new())
-            .await
     }
 }
 

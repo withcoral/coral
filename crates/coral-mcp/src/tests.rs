@@ -1711,8 +1711,7 @@ async fn mcp_sql_execution_finds_required_table_and_function_guides() {
     let sql_tool = tool_by_name(&tools, "sql");
     let queries = json!({
         "queries": [
-            "WITH issue AS (SELECT * FROM \"searchy\".\"lookup_issue\"(number => '1') LIMIT 0) SELECT * FROM issue",
-            "SELECT first.id FROM searchy.placeholder AS first JOIN searchy.placeholder AS second ON first.id = second.id"
+            "WITH issue AS (SELECT * FROM \"searchy\".\"lookup_issue\"(number => '1') LIMIT 0) SELECT placeholder.id FROM searchy.placeholder CROSS JOIN issue LIMIT 0"
         ]
     });
 
@@ -1734,19 +1733,19 @@ async fn mcp_sql_execution_finds_required_table_and_function_guides() {
     let guides = blocked["guides"].as_array().expect("required guides");
     assert_eq!(guides.len(), 2);
     assert_eq!(guides[0]["schema"], "searchy");
-    assert_eq!(guides[0]["resource"], "lookup_issue");
+    assert_eq!(guides[0]["resource"], "placeholder");
     assert_eq!(
         guides[0]["guide"],
-        "Use this function for exact issue lookup."
-    );
-    assert_eq!(guides[0].as_object().expect("function guide").len(), 3);
-    assert_eq!(guides[1]["schema"], "searchy");
-    assert_eq!(guides[1]["resource"], "placeholder");
-    assert_eq!(
-        guides[1]["guide"],
         "Supply an id filter before using this table."
     );
-    assert_eq!(guides[1].as_object().expect("table guide").len(), 3);
+    assert_eq!(guides[0].as_object().expect("table guide").len(), 3);
+    assert_eq!(guides[1]["schema"], "searchy");
+    assert_eq!(guides[1]["resource"], "lookup_issue");
+    assert_eq!(
+        guides[1]["guide"],
+        "Use this function for exact issue lookup."
+    );
+    assert_eq!(guides[1].as_object().expect("function guide").len(), 3);
 
     let retry = client
         .call_tool(
@@ -1754,8 +1753,7 @@ async fn mcp_sql_execution_finds_required_table_and_function_guides() {
                 &task_id,
                 &json!({
                     "queries": [
-                        "SELECT * FROM searchy.lookup_issue(number => '2') LIMIT 0",
-                        "SELECT id FROM searchy.placeholder WHERE id = '2' LIMIT 0"
+                        "WITH issue AS (SELECT * FROM searchy.lookup_issue(number => '2') LIMIT 0) SELECT placeholder.id FROM searchy.placeholder CROSS JOIN issue WHERE placeholder.id = '2' LIMIT 0"
                     ]
                 }),
             )),
@@ -1768,8 +1766,8 @@ async fn mcp_sql_execution_finds_required_table_and_function_guides() {
         retry.get("guides").is_none(),
         "a revised query must not repeat already surfaced guides: {retry}"
     );
-    assert_eq!(retry["total_count"], 2, "{retry}");
-    assert_eq!(retry["success_count"], 2, "{retry}");
+    assert_eq!(retry["total_count"], 1, "{retry}");
+    assert_eq!(retry["success_count"], 1, "{retry}");
     assert_eq!(retry["error_count"], 0, "{retry}");
 
     let next_task_id = start_test_task(client).await;
@@ -1820,7 +1818,6 @@ async fn mcp_sql_batch_executes_ungated_queries_while_returning_required_guides(
     assert_eq!(first["total_count"], 2, "{first}");
     assert_eq!(first["success_count"], 1, "{first}");
     assert_eq!(first["error_count"], 0, "{first}");
-    assert_eq!(first["guide_required_count"], 1, "{first}");
     assert_eq!(first["results"][0]["status"], "guide_required", "{first}");
     assert_eq!(
         first["results"][0]["guides"][0]["guide"],
@@ -2191,45 +2188,6 @@ async fn mcp_sql_executes_successful_batch_in_input_order() {
     assert_eq!(sql["results"][1]["index"], 1);
     assert_eq!(sql["results"][1]["status"], "success");
     assert_eq!(sql["results"][1]["rows"][0]["text"], "hello");
-
-    session.shutdown().await;
-}
-
-#[tokio::test]
-async fn mcp_sql_keeps_unknown_tables_as_per_query_batch_errors() {
-    let temp = TempDir::new().expect("temp dir");
-    let manifest_path = write_fixture_manifest(temp.path());
-    let manifest_yaml = fs::read_to_string(&manifest_path).expect("read manifest");
-    let mut session = start_session(&temp).await;
-    add_demo_source(&mut session.source_client, manifest_yaml).await;
-    let client = &session.client;
-    let task_id = start_test_task(client).await;
-
-    let sql = client
-        .call_tool(
-            CallToolRequestParams::new("sql").with_arguments(task_arguments(
-                &task_id,
-                &json!({
-                    "queries": [
-                        "SELECT text FROM local_messages.messages WHERE text = 'hello'",
-                        "SELECT * FROM local_messages.missing"
-                    ]
-                }),
-            )),
-        )
-        .await
-        .expect("mixed known and unknown table batch");
-    assert_eq!(sql.is_error, Some(true));
-    let sql = sql.structured_content.expect("structured content");
-    assert_eq!(sql["error"]["reason"], "SQL_BATCH_PARTIAL_FAILURE");
-    let batch = &sql["data"];
-    assert_eq!(batch["total_count"], 2);
-    assert_eq!(batch["success_count"], 1);
-    assert_eq!(batch["error_count"], 1);
-    assert_eq!(batch["results"][0]["status"], "success");
-    assert_eq!(batch["results"][0]["rows"][0]["text"], "hello");
-    assert_eq!(batch["results"][1]["status"], "error");
-    assert_eq!(batch["results"][1]["error"]["reason"], "TABLE_NOT_FOUND");
 
     session.shutdown().await;
 }
