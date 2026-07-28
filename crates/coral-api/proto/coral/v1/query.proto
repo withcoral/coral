@@ -55,10 +55,8 @@ message QueryGuideRequirement {
   string schema_name = 1;
   // Table or table function name within the schema.
   string resource_name = 2;
-  // Resource kind.
-  CatalogItemKind kind = 3;
   // Guidance that MCP SQL must surface.
-  string guide = 4;
+  string guide = 3;
 }
 
 // Guide-read requirements resolved before SQL execution.

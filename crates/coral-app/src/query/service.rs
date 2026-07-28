@@ -5,7 +5,7 @@ use arrow::ipc::writer::StreamWriter;
 use arrow::record_batch::RecordBatch;
 use coral_api::v1::query_service_server::QueryService as QueryServiceApi;
 use coral_api::v1::{
-    CatalogItemKind, ExecuteSqlRequest, ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse,
+    ExecuteSqlRequest, ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse,
     QueryGuideRequirement, QueryPlan as QueryPlanProto, ResolveSqlGuideRequirementsRequest,
     ResolveSqlGuideRequirementsResponse,
 };
@@ -13,7 +13,7 @@ use tonic::{Request, Response, Status};
 
 use crate::bootstrap::core_status;
 use crate::query::QueryAttribution;
-use crate::query::manager::{QueryGuideResourceKind, QueryManager, RequiredQueryGuide};
+use crate::query::manager::{QueryManager, RequiredQueryGuide};
 use crate::task::manager::TaskManager;
 use crate::task::service::task_manager_status;
 use crate::transport::{
@@ -144,10 +144,6 @@ fn required_query_guide_to_proto(guide: RequiredQueryGuide) -> QueryGuideRequire
     QueryGuideRequirement {
         schema_name: guide.schema_name,
         resource_name: guide.resource_name,
-        kind: match guide.kind {
-            QueryGuideResourceKind::Table => CatalogItemKind::Table,
-            QueryGuideResourceKind::TableFunction => CatalogItemKind::TableFunction,
-        } as i32,
         guide: guide.guide,
     }
 }

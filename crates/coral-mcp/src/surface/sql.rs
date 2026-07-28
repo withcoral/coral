@@ -37,12 +37,6 @@ pub(crate) struct SqlBatchValue {
     results: Vec<SqlQueryResultValue>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub(crate) enum SqlGuideResourceKind {
-    Table,
-    TableFunction,
-}
-
 #[derive(Serialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub(crate) struct SqlRequiredGuideValue {

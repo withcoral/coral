@@ -36,8 +36,8 @@ use crate::{
     McpOptions, McpQueryExample,
     surface::{
         CatalogToolKind, EndTaskArguments, FeedbackStoredValue, SqlBatchValue,
-        SqlGuideRequiredValue, SqlGuideResourceKind, SqlQueryResultValue, SqlRequiredGuideValue,
-        StartTaskArguments, TaskEndedValue, TaskId, TaskStartedValue, TaskStatus, ToolAvailability,
+        SqlGuideRequiredValue, SqlQueryResultValue, SqlRequiredGuideValue, StartTaskArguments,
+        TaskEndedValue, TaskId, TaskStartedValue, TaskStatus, ToolAvailability,
         ToolDescriptionContext, ToolName, available_tools, build_tool_result,
         describe_table_arguments, describe_table_value, end_task_arguments, feedback_arguments,
         guide_resource, guide_resource_content, initial_instructions, list_catalog_arguments,
@@ -76,7 +76,6 @@ enum SqlBatchExecution {
 struct GuideResourceKey {
     schema_name: String,
     resource_name: String,
-    kind: SqlGuideResourceKind,
 }
 
 #[derive(Default)]
@@ -154,20 +153,10 @@ impl GuideReadState {
     ) -> Result<Vec<SqlRequiredGuideValue>, tonic::Status> {
         let mut candidates = BTreeMap::new();
         for requirement in requirements {
-            let kind = match ProtoCatalogItemKind::try_from(requirement.kind) {
-                Ok(ProtoCatalogItemKind::Table) => SqlGuideResourceKind::Table,
-                Ok(ProtoCatalogItemKind::TableFunction) => SqlGuideResourceKind::TableFunction,
-                Ok(ProtoCatalogItemKind::Unspecified) | Err(_) => {
-                    return Err(tonic::Status::internal(
-                        "query guide requirement missing resource kind",
-                    ));
-                }
-            };
             candidates.insert(
                 GuideResourceKey {
                     schema_name: requirement.schema_name,
                     resource_name: requirement.resource_name,
-                    kind,
                 },
                 requirement.guide,
             );
@@ -1365,7 +1354,7 @@ mod startup_context_tests {
 mod guide_read_state_tests {
     use std::sync::Arc;
 
-    use coral_api::v1::{CatalogItemKind, QueryGuideRequirement};
+    use coral_api::v1::QueryGuideRequirement;
 
     use super::{GuideReadState, TaskId};
 
@@ -1377,7 +1366,6 @@ mod guide_read_state_tests {
         QueryGuideRequirement {
             schema_name: "slack".to_string(),
             resource_name: "channels".to_string(),
-            kind: CatalogItemKind::Table as i32,
             guide: guide.to_string(),
         }
     }

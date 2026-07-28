@@ -47,17 +47,10 @@ pub(crate) enum QueryManagerError {
     Core(CoreError),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum QueryGuideResourceKind {
-    Table,
-    TableFunction,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RequiredQueryGuide {
     pub(crate) schema_name: String,
     pub(crate) resource_name: String,
-    pub(crate) kind: QueryGuideResourceKind,
     pub(crate) guide: String,
 }
 
@@ -982,7 +975,6 @@ fn required_query_guides(
             guides.push(RequiredQueryGuide {
                 schema_name: table.schema_name.clone(),
                 resource_name: table.table_name.clone(),
-                kind: QueryGuideResourceKind::Table,
                 guide: table.guide.clone(),
             });
         }
@@ -996,7 +988,6 @@ fn required_query_guides(
             guides.push(RequiredQueryGuide {
                 schema_name: function.schema_name.clone(),
                 resource_name: function.function_name.clone(),
-                kind: QueryGuideResourceKind::TableFunction,
                 guide: function.guide.clone(),
             });
         }
