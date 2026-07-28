@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -34,6 +35,10 @@ const CONFLICTING_KEY_SOURCES: &str = "configure only one of signing_key_env or 
 /// external callers. Holding one is proof that validation ran, which is why
 /// nothing downstream revalidates. This type performs no `config.toml`
 /// filesystem reads.
+///
+/// The settings are read through [`ResolvedAuthSettings`], which
+/// [`AuthSettings::resolve_runtime_dependencies`] produces once the secrets
+/// the config only points at have actually been fetched.
 pub struct AuthSettings(RawAuthSettings);
 
 #[derive(Deserialize)]
@@ -80,51 +85,75 @@ impl AuthSettings {
         Ok(Some(Self(settings)))
     }
 
+    /// Fetches the secrets the config only points at — the provider client
+    /// secret and the session signing key — and builds the session-token
+    /// issuer keyed by the latter.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AuthServerError::Config`] when a secret source cannot be read
+    /// or the session key material is unusable.
+    pub(super) fn resolve_runtime_dependencies(
+        self,
+        config_path: &Path,
+        get_var: &impl Fn(&str) -> Result<Option<String>, String>,
+    ) -> Result<(ResolvedAuthSettings, SessionTokenIssuer), AuthServerError> {
+        let client_secret = self.0.provider.resolve_secret(get_var)?;
+        let key = self.0.session.load_signing_key(config_path, get_var)?;
+        let access_token_ttl = Duration::from_secs(self.0.session.access_token_ttl_seconds);
+        let session_tokens = SessionTokenIssuer::new(
+            Some(&self.0.authorization_server.issuer),
+            key.as_slice(),
+            access_token_ttl,
+        )
+        .map_err(AuthServerError::Config)?;
+        Ok((
+            ResolvedAuthSettings {
+                http_bind_addr: self.0.http_bind_addr,
+                authorization_server: self.0.authorization_server,
+                access_token_ttl,
+                provider: ResolvedOidcProvider {
+                    client_secret,
+                    settings: self.0.provider,
+                },
+            },
+            session_tokens,
+        ))
+    }
+}
+
+/// Validated auth settings whose runtime dependencies have been resolved.
+///
+/// [`AuthSettings::resolve_runtime_dependencies`] is the only constructor, so
+/// holding one is proof that the provider secret was fetched from its source —
+/// which is why reading it cannot fail and nothing rechecks runtime readiness.
+pub(crate) struct ResolvedAuthSettings {
+    http_bind_addr: SocketAddr,
+    authorization_server: AuthorizationServerSettings,
+    access_token_ttl: Duration,
+    provider: ResolvedOidcProvider,
+}
+
+impl ResolvedAuthSettings {
     pub(crate) fn bind_addr(&self) -> SocketAddr {
-        self.0.http_bind_addr
+        self.http_bind_addr
     }
 
     pub(crate) fn authorization_server(&self) -> &AuthorizationServerSettings {
-        &self.0.authorization_server
+        &self.authorization_server
     }
 
     #[cfg_attr(
         not(test),
         expect(dead_code, reason = "used by the OIDC federation descendant")
     )]
-    pub(super) fn provider(&self) -> &OidcProviderSettings {
-        &self.0.provider
-    }
-
-    pub(super) fn resolve_runtime_dependencies(
-        mut self,
-        config_path: &Path,
-        get_var: &impl Fn(&str) -> Result<Option<String>, String>,
-    ) -> Result<(Self, SessionTokenIssuer), AuthServerError> {
-        self.0.provider.resolve_secret(get_var)?;
-        let key = self.0.session.load_signing_key(config_path, get_var)?;
-        let issuer = SessionTokenIssuer::new(
-            Some(&self.0.authorization_server.issuer),
-            key.as_slice(),
-            Duration::from_secs(self.0.session.access_token_ttl_seconds),
-        )
-        .map_err(AuthServerError::Config)?;
-        Ok((self, issuer))
-    }
-
-    /// Confirms the settings carry everything the running server needs.
-    ///
-    /// Field validation already ran at construction, so this checks only what
-    /// construction cannot: that the provider secret has been resolved from its
-    /// environment variable.
-    pub(super) fn validate_runtime_ready(&self) -> Result<(), AuthServerError> {
-        self.0.provider.require_resolved_secret()
+    pub(super) fn provider(&self) -> &ResolvedOidcProvider {
+        &self.provider
     }
 
     pub(super) fn matches_session_token_issuer(&self, issuer: &SessionTokenIssuer) -> bool {
-        self.0.authorization_server.issuer == issuer.issuer
-            && Duration::from_secs(self.0.session.access_token_ttl_seconds)
-                == issuer.access_token_ttl
+        self.authorization_server.issuer == issuer.issuer
+            && self.access_token_ttl == issuer.access_token_ttl
     }
 }
 
@@ -387,46 +416,62 @@ impl OidcProviderSettings {
         Ok(())
     }
 
+    /// Reads the client secret from whichever source the config names.
     fn resolve_secret(
-        &mut self,
+        &self,
         get_var: &impl Fn(&str) -> Result<Option<String>, String>,
-    ) -> Result<(), AuthServerError> {
-        if self.client_secret.is_some() {
-            return Ok(());
-        }
-        let env_name = self
-            .client_secret_env
-            .as_deref()
-            .expect("validated provider has one secret source");
-        let value = Zeroizing::new(
-            get_var(env_name)
-                .map_err(|_error| invalid_provider("client_secret_env could not be read"))?
-                .ok_or_else(|| invalid_provider("client_secret_env names an unset variable"))?,
-        );
-        self.client_secret = Some(ProviderSecret::from_trimmed("client_secret_env", &value)?);
-        self.client_secret_env = None;
-        Ok(())
-    }
-
-    fn require_resolved_secret(&self) -> Result<(), AuthServerError> {
-        if self.client_secret.is_some() && self.client_secret_env.is_none() {
-            Ok(())
-        } else {
-            Err(invalid_provider(
-                "client_secret_env must be resolved before server construction",
-            ))
+    ) -> Result<ProviderSecret, AuthServerError> {
+        match (&self.client_secret, &self.client_secret_env) {
+            (Some(secret), _) => Ok(secret.clone()),
+            (None, Some(env_name)) => {
+                let value = Zeroizing::new(
+                    get_var(env_name)
+                        .map_err(|_error| invalid_provider("client_secret_env could not be read"))?
+                        .ok_or_else(|| {
+                            invalid_provider(format!(
+                                "client_secret_env names `{env_name}`, which is not set"
+                            ))
+                        })?,
+                );
+                ProviderSecret::from_trimmed("client_secret_env", &value)
+            }
+            // Defense in depth: `validate` requires exactly one source before
+            // any call reaches here, so this arm only guards a future caller
+            // that skips it.
+            (None, None) => Err(invalid_provider(
+                "client_secret or client_secret_env is required",
+            )),
         }
     }
+}
 
+/// Provider settings whose client secret has been read from its source.
+///
+/// [`OidcProviderSettings::resolve_secret`] is the only way to build one, so
+/// holding one is proof the secret is present. The configured fields are
+/// reached through [`Deref`]; only the secret needs an accessor, because it is
+/// the one value the config may merely have pointed at.
+#[derive(Clone, Debug)]
+pub(super) struct ResolvedOidcProvider {
+    settings: OidcProviderSettings,
+    client_secret: ProviderSecret,
+}
+
+impl ResolvedOidcProvider {
     #[cfg_attr(
         not(test),
         expect(dead_code, reason = "used by the OIDC federation descendant")
     )]
     pub(super) fn client_secret(&self) -> &str {
-        self.client_secret
-            .as_ref()
-            .expect("runtime-ready provider has a resolved client secret")
-            .as_str()
+        self.client_secret.as_str()
+    }
+}
+
+impl Deref for ResolvedOidcProvider {
+    type Target = OidcProviderSettings;
+
+    fn deref(&self) -> &Self::Target {
+        &self.settings
     }
 }
 
@@ -645,11 +690,52 @@ mod tests {
         }
     }
 
+    /// A config directory holding the session signing key the fixture names.
+    fn signing_key_dir() -> tempfile::TempDir {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let key =
+            EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
+                .expect("P-256 signing key");
+        fs::write(temp.path().join("session.key"), key.as_ref()).expect("session key");
+        temp
+    }
+
+    fn parse(raw: &str) -> AuthSettings {
+        AuthSettings::from_toml(raw)
+            .expect("valid config")
+            .expect("auth settings")
+    }
+
+    fn resolve(
+        raw: &str,
+        get_var: &impl Fn(&str) -> Result<Option<String>, String>,
+    ) -> (ResolvedAuthSettings, SessionTokenIssuer) {
+        let temp = signing_key_dir();
+        parse(raw)
+            .resolve_runtime_dependencies(&temp.path().join("config.toml"), get_var)
+            .expect("resolved runtime dependencies")
+    }
+
+    fn resolve_error(
+        raw: &str,
+        get_var: &impl Fn(&str) -> Result<Option<String>, String>,
+    ) -> String {
+        let temp = signing_key_dir();
+        let Err(error) =
+            parse(raw).resolve_runtime_dependencies(&temp.path().join("config.toml"), get_var)
+        else {
+            panic!("expected unresolvable runtime dependencies");
+        };
+        error.to_string()
+    }
+
+    fn resolved(raw: &str) -> ResolvedAuthSettings {
+        resolve(raw, &|_| Ok(None)).0
+    }
+
     #[test]
     fn directly_deserializes_and_validates_auth_settings() {
-        let settings = AuthSettings::from_toml(&valid(""))
-            .expect("valid config")
-            .expect("auth settings");
+        let settings = resolved(&valid(""));
         assert_eq!(settings.bind_addr(), DEFAULT_BIND_ADDR);
         assert_eq!(
             settings.authorization_server().issuer,
@@ -675,9 +761,7 @@ mod tests {
                 "redirect_uri = 'http://localhost:9080/auth/oidc/callback'",
                 "redirect_uri = ' http://localhost:9080/callback '\nprincipal_claim = ' '\ndisplay_name_claim = ' email '",
             );
-        let settings = AuthSettings::from_toml(&raw)
-            .expect("valid config")
-            .expect("auth settings");
+        let settings = resolved(&raw);
         let provider = settings.provider();
         assert_eq!(provider.issuer, "https://accounts.example.test/tenant/");
         assert_eq!(provider.client_id, "client-id");
@@ -693,12 +777,6 @@ mod tests {
 
     #[test]
     fn resolves_provider_env_secret_and_retains_options() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let config_path = temp.path().join("config.toml");
-        let key =
-            EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
-                .expect("P-256 signing key");
-        fs::write(temp.path().join("session.key"), key.as_ref()).expect("session key");
         let raw = valid("")
             .replace(
                 "client_secret = 'provider-secret'",
@@ -710,14 +788,9 @@ mod tests {
             )
             + "\n[auth.provider.auth_params]\nprompt = 'select_account'\n\
                [auth.provider.required_claims]\nhd = 'example.test'\n";
-        let settings = AuthSettings::from_toml(&raw)
-            .expect("valid config")
-            .expect("auth settings");
-        let (settings, _issuer) = settings
-            .resolve_runtime_dependencies(&config_path, &|name| {
-                Ok((name == "PROVIDER_SECRET").then(|| " env-secret ".to_string()))
-            })
-            .expect("resolved runtime");
+        let (settings, _issuer) = resolve(&raw, &|name| {
+            Ok((name == "PROVIDER_SECRET").then(|| " env-secret ".to_string()))
+        });
         let provider = settings.provider();
         assert_eq!(provider.client_secret(), "env-secret");
         assert_eq!(provider.scopes, ["openid", "groups"]);
@@ -735,6 +808,36 @@ mod tests {
         assert!(!debug.contains("env-secret"));
     }
 
+    #[test]
+    fn reports_provider_secret_sources_that_cannot_be_read() {
+        let env_config = valid("").replace(
+            "client_secret = 'provider-secret'",
+            "client_secret_env = 'PROVIDER_SECRET'",
+        );
+        let unset = resolve_error(&env_config, &|_| Ok(None));
+        assert!(
+            unset.contains("client_secret_env names `PROVIDER_SECRET`, which is not set"),
+            "{unset}"
+        );
+        let blank = resolve_error(&env_config, &|_| Ok(Some("   ".to_string())));
+        assert!(
+            blank.contains("client_secret_env must not be empty"),
+            "{blank}"
+        );
+        let unreadable = resolve_error(&env_config, &|_| Err("host detail".to_string()));
+        assert!(
+            unreadable.contains("client_secret_env could not be read"),
+            "{unreadable}"
+        );
+        assert!(!unreadable.contains("host detail"), "{unreadable}");
+
+        let invalid_name = valid("").replace(
+            "client_secret = 'provider-secret'",
+            "client_secret_env = 'PROVIDER=SECRET'",
+        );
+        assert!(reject(&invalid_name).contains("client_secret_env is invalid"));
+    }
+
     /// A provider issuer is compared byte for byte against the issuer in the
     /// discovery document, so every form a provider can publish has to survive
     /// validation unchanged — including both trailing-slash spellings.
@@ -747,10 +850,7 @@ mod tests {
             "https://accounts.example.test/tenant/",
             "http://127.0.0.1:9080/tenant/",
         ] {
-            let settings = AuthSettings::from_toml(&provider_issuer(issuer))
-                .expect("valid config")
-                .expect("auth settings");
-            assert_eq!(settings.provider().issuer, issuer);
+            assert_eq!(resolved(&provider_issuer(issuer)).provider().issuer, issuer);
         }
     }
 
