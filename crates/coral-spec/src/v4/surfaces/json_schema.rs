@@ -316,6 +316,149 @@ pub(crate) fn json_schema_scalar_type_or_string(schema: &Value) -> Option<IrScal
     json_schema_scalar_type_with_default(schema, Some("string"))
 }
 
+/// A schema's properties and declared types after folding its `allOf` branches
+/// together.
+#[derive(Debug, Default)]
+pub(crate) struct MergedObjectView {
+    /// Every `type` any branch declares. Usually one entry; an empty set means
+    /// no branch declared a type at all.
+    pub(crate) declared_types: BTreeSet<String>,
+    pub(crate) properties: BTreeMap<String, Value>,
+}
+
+impl MergedObjectView {
+    pub(crate) fn declares_type(&self, expected: &str) -> bool {
+        self.declared_types.contains(expected)
+    }
+}
+
+/// Folds a schema's `allOf` branches into one view of its properties.
+///
+/// Inference passes that ask shape questions of a response — is this a page
+/// envelope, does it carry a cursor — cannot answer them through a composed
+/// schema without this: the properties live on the branches, not the schema.
+/// `OData` collection responses are the motivating case, being uniformly
+/// `type: object` plus an `allOf` of a shared pagination base and the rows.
+///
+/// Only `allOf` is folded. `anyOf`, `oneOf`, and `not` describe alternation and
+/// negation rather than intersection, so there is no single property map to
+/// answer questions against, and this returns `None` for them — which is what
+/// the callers did for all composition before.
+///
+/// Returns `None` when the schema is not object-like, so callers can keep
+/// treating "not an object" and "cannot be read as an envelope" alike.
+///
+/// On duplicate property names the first branch wins, and no conflict is
+/// reported. This answers a heuristic question, so an annotation-only
+/// disagreement between branches must not discard the whole envelope. Type
+/// import has the opposite need and keeps its own exact merge.
+pub(crate) fn merged_all_of_object_view<'a>(
+    root: &'a Value,
+    schema: &'a Value,
+    resolving_refs: &mut BTreeSet<String>,
+    depth: usize,
+    max_depth: usize,
+) -> Option<MergedObjectView> {
+    let mut view = MergedObjectView::default();
+    let mut alternation = false;
+    collect_all_of_branches(
+        root,
+        schema,
+        resolving_refs,
+        depth,
+        max_depth,
+        &mut view,
+        &mut alternation,
+    );
+    if alternation {
+        return None;
+    }
+
+    // An explicit `type: object` on any branch settles it. Failing that, a
+    // schema that declares no type at all but does declare properties is an
+    // object by convention, which is how JSON Schema is usually written.
+    let object_like = view.declares_type("object")
+        || (view.declared_types.is_empty() && !view.properties.is_empty());
+    object_like.then_some(view)
+}
+
+/// Walks the schema and its `allOf` members, accumulating types and properties.
+///
+/// An unresolvable, cyclic, or too-deep branch contributes nothing rather than
+/// abandoning the merge: its siblings may still describe the envelope. An
+/// alternation anywhere is different — it makes the whole merge meaningless, so
+/// it is recorded and the caller discards the view.
+fn collect_all_of_branches(
+    root: &Value,
+    schema: &Value,
+    resolving_refs: &mut BTreeSet<String>,
+    depth: usize,
+    max_depth: usize,
+    view: &mut MergedObjectView,
+    alternation: &mut bool,
+) {
+    // Discarded on purpose: a branch that cannot be walked contributes nothing,
+    // and its siblings still can.
+    let _unwalkable_branch = with_resolved_json_schema(
+        root,
+        schema,
+        resolving_refs,
+        depth,
+        max_depth,
+        |resolved, resolving_refs, next_depth| {
+            if schema_uses_alternation(resolved) {
+                *alternation = true;
+                return Ok(());
+            }
+            match resolved.get("type") {
+                Some(Value::String(value)) => {
+                    view.declared_types.insert(value.clone());
+                }
+                Some(Value::Array(values)) => {
+                    view.declared_types.extend(
+                        values
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(ToString::to_string),
+                    );
+                }
+                _ => {}
+            }
+            if let Some(properties) = resolved.get("properties").and_then(Value::as_object) {
+                for (name, property) in properties {
+                    view.properties
+                        .entry(name.clone())
+                        .or_insert_with(|| property.clone());
+                }
+            }
+            for branch in resolved
+                .get("allOf")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                collect_all_of_branches(
+                    root,
+                    branch,
+                    resolving_refs,
+                    next_depth,
+                    max_depth,
+                    view,
+                    alternation,
+                );
+            }
+            Ok(())
+        },
+    );
+}
+
+/// Whether the schema describes a choice between shapes rather than one shape.
+pub(crate) fn schema_uses_alternation(schema: &Value) -> bool {
+    ["anyOf", "oneOf", "not"]
+        .iter()
+        .any(|keyword| schema.get(*keyword).is_some())
+}
+
 pub(crate) fn json_schema_type_contains(schema: &Value, expected: &str) -> bool {
     match schema.get("type") {
         Some(Value::String(value)) => value == expected,

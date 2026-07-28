@@ -2624,3 +2624,89 @@ paths:
         "a contract only survives once the response reads as a list"
     );
 }
+
+/// End to end on the Microsoft Graph shape: an `allOf` envelope of a shared
+/// pagination base and a `value` array, with `$top`/`$skip` both declared.
+///
+/// The `offset_param` assertion is the regression guard for the ordering
+/// constraint. Graph declares `$skip` on collections that reject it at runtime,
+/// so if body next-URL detection ever stopped winning, these tables would go
+/// from returning one page to returning an error.
+#[test]
+fn importer_reads_odata_collections_as_paginated_row_tables() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: graph
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://graph.microsoft.com/v1.0
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.0.3
+paths:
+  /me/chats:
+    get:
+      operationId: me.listChats
+      parameters:
+        - {name: $top, in: query, schema: {type: integer}}
+        - {name: $skip, in: query, schema: {type: integer}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/microsoft.graph.chatCollectionResponse'
+components:
+  schemas:
+    BaseCollectionPaginationCountResponse:
+      title: Base collection pagination and count responses
+      type: object
+      properties:
+        '@odata.count': {type: integer, format: int64, nullable: true}
+        '@odata.nextLink': {type: string, nullable: true}
+    microsoft.graph.chat:
+      type: object
+      properties:
+        id: {type: string}
+        topic: {type: string}
+    microsoft.graph.chatCollectionResponse:
+      title: Collection of chat
+      type: object
+      allOf:
+        - $ref: '#/components/schemas/BaseCollectionPaginationCountResponse'
+        - type: object
+          properties:
+            value:
+              type: array
+              items:
+                $ref: '#/components/schemas/microsoft.graph.chat'
+"
+        .as_bytes(),
+    )
+    .expect("import");
+
+    assert_eq!(imported_row_path(&ir, "me_listchats"), ["value"]);
+
+    let pagination = imported_rest_pagination(&ir, "me_listchats");
+    assert_eq!(pagination.mode, PaginationMode::NextUrlBody);
+    assert_eq!(pagination.next_url_path, ["@odata.nextLink"]);
+    assert_eq!(
+        pagination
+            .page_size
+            .as_ref()
+            .and_then(|size| size.query_param.as_deref()),
+        Some("$top")
+    );
+    assert!(
+        pagination.offset_param.is_none(),
+        "Graph rejects $skip on several collections; the next link is the only contract that works"
+    );
+}

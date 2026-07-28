@@ -28,7 +28,8 @@ use std::collections::BTreeSet;
 use serde_json::Value;
 
 use crate::v4::surfaces::json_schema::{
-    JsonSchemaWalkError, json_schema_type_contains, with_resolved_json_schema,
+    JsonSchemaWalkError, json_schema_type_contains, merged_all_of_object_view,
+    with_resolved_json_schema,
 };
 
 const MAX_DEPTH: usize = 8;
@@ -92,10 +93,18 @@ fn cursor_path<'a>(
         depth,
         MAX_DEPTH,
         |resolved, resolving_refs, next_depth| {
-            let Some(properties) = resolved.get("properties").and_then(Value::as_object) else {
+            // Folding `allOf` keeps this walk agreeing with wrapped-list
+            // inference: an envelope assembled from a shared pagination base
+            // declares its cursor on a branch, not on the schema itself. If one
+            // half of the decision could see through composition and the other
+            // could not, an operation would be presented as a paginated table
+            // that silently stops after its first page.
+            let Some(view) =
+                merged_all_of_object_view(root, resolved, resolving_refs, next_depth, MAX_DEPTH)
+            else {
                 return Ok(None);
             };
-            for (name, property) in properties {
+            for (name, property) in &view.properties {
                 if name_tokens.contains(&normalized_name(name).as_str())
                     && property_holds_string(
                         root,
@@ -108,10 +117,14 @@ fn cursor_path<'a>(
                     return Ok(Some(vec![name.clone()]));
                 }
             }
-            for (name, property) in properties {
+            for (name, property) in &view.properties {
                 if !property_is_object(root, property, resolving_refs, next_depth) {
                     continue;
                 }
+                // A branch that cannot be walked — unresolvable, cyclic, too
+                // deep — declares no cursor, which is not a reason to abandon
+                // its siblings. This matches how `property_holds_string` and
+                // `property_is_object` already treat the same failures.
                 if let Some(mut path) = cursor_path(
                     root,
                     property,
@@ -119,7 +132,10 @@ fn cursor_path<'a>(
                     string_type,
                     resolving_refs,
                     next_depth,
-                )? {
+                )
+                .ok()
+                .flatten()
+                {
                     path.insert(0, name.clone());
                     return Ok(Some(path));
                 }
@@ -208,7 +224,11 @@ fn property_is_object(
         resolving_refs,
         depth,
         MAX_DEPTH,
-        |resolved, _, _| Ok(json_schema_type_contains(resolved, "object")),
+        |resolved, resolving_refs, next_depth| {
+            Ok(json_schema_type_contains(resolved, "object")
+                || merged_all_of_object_view(root, resolved, resolving_refs, next_depth, MAX_DEPTH)
+                    .is_some_and(|view| view.declares_type("object")))
+        },
     )
     .unwrap_or(false)
 }
@@ -446,5 +466,43 @@ mod tests {
         });
 
         assert_eq!(find_untyped(&schema, &schema, TOKENS), None);
+    }
+
+    /// The cursor walk and wrapped-list inference must agree about composed
+    /// envelopes. If only one of them could see through `allOf`, an operation
+    /// would be presented as a paginated table that stops after page one.
+    #[test]
+    fn finds_a_cursor_through_an_all_of_envelope() {
+        let schema = json!({
+            "$ref": "#/components/schemas/Page",
+            "components": {
+                "schemas": {
+                    "PaginationBase": {
+                        "type": "object",
+                        "properties": {"@odata.nextLink": {"type": "string"}},
+                    },
+                    "Page": {
+                        "type": "object",
+                        "allOf": [
+                            {"$ref": "#/components/schemas/PaginationBase"},
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "value": {"type": "array", "items": {"type": "object"}},
+                                },
+                            },
+                        ],
+                    },
+                },
+            },
+        });
+
+        // The strict standard, because this is the body next-URL lexicon: an
+        // `allOf` branch still has to declare the property a string, and
+        // Graph's base does.
+        assert_eq!(
+            find_declared(&schema, &schema, &["odatanextlink"]),
+            Some(vec!["@odata.nextLink".to_string()])
+        );
     }
 }
