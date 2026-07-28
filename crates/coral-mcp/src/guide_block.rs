@@ -29,21 +29,24 @@ struct GuideBlockStateInner {
 impl GuideBlockStateInner {
     fn touch_task(&mut self, task_id: TaskId, max_tasks: usize) -> &mut TaskGuideState {
         self.clock = self.clock.saturating_add(1);
-        while !self.tasks.contains_key(&task_id) && self.tasks.len() >= max_tasks {
+        self.tasks.entry(task_id).or_default().last_used = self.clock;
+        while self.tasks.len() > max_tasks {
             let Some(oldest) = self
                 .tasks
                 .iter()
-                .filter(|(_, task)| Arc::strong_count(&task.sql_gate) == 1)
+                .filter(|(candidate_id, task)| {
+                    **candidate_id != task_id && Arc::strong_count(&task.sql_gate) == 1
+                })
                 .min_by_key(|(_, task)| task.last_used)
-                .map(|(task_id, _)| *task_id)
+                .map(|(candidate_id, _)| *candidate_id)
             else {
                 break;
             };
             self.tasks.remove(&oldest);
         }
-        let task = self.tasks.entry(task_id).or_default();
-        task.last_used = self.clock;
-        task
+        self.tasks
+            .get_mut(&task_id)
+            .expect("the touched guide-block task remains retained")
     }
 }
 
@@ -217,7 +220,7 @@ mod tests {
     }
 
     #[test]
-    fn does_not_evict_a_task_with_active_sql() {
+    fn reclaims_overflow_after_active_sql_finishes() {
         let state = GuideBlockState::with_max_tasks(1);
         let active_task = task_id(1);
         let other_task = task_id(2);
@@ -239,11 +242,9 @@ mod tests {
         drop(inner);
         drop(active_call);
 
-        drop(state.sql_gate(task_id(3)).expect("new task gate"));
-        assert_eq!(
-            state.inner.lock().expect("guide block state").tasks.len(),
-            1,
-            "the state must return to its limit after active SQL finishes"
-        );
+        drop(state.sql_gate(other_task).expect("reuse other task gate"));
+        let inner = state.inner.lock().expect("guide block state");
+        assert_eq!(inner.tasks.len(), 1);
+        assert!(inner.tasks.contains_key(&other_task));
     }
 }

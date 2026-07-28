@@ -93,6 +93,10 @@ pub const DEFAULT_WORKSPACE_ID: &str = "default";
 /// clients and servers that opt into task attribution.
 pub const CORAL_TASK_ID_METADATA_KEY: &str = "coral-task-id";
 
+/// gRPC metadata key carrying the guide-state fingerprint returned by SQL
+/// guide preflight.
+pub const CORAL_GUIDE_STATE_FINGERPRINT_METADATA_KEY: &str = "coral-guide-state-fingerprint";
+
 /// Maximum length of a Coral task id, in bytes. Validated identically server-
 /// and client-side so the contract stays in one place.
 pub const CORAL_TASK_ID_MAX_LEN: usize = 128;

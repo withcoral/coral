@@ -1041,6 +1041,7 @@ impl QueryService for MockQueryService {
     ) -> Result<Response<ResolveSqlGuideRequirementsResponse>, Status> {
         Ok(Response::new(ResolveSqlGuideRequirementsResponse {
             required_guides: Vec::new(),
+            guide_state_fingerprint: "v1:mock".to_string(),
         }))
     }
 }

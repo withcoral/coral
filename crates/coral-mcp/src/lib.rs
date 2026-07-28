@@ -26,8 +26,8 @@
 )]
 
 mod error;
-pub mod http;
 mod guide_block;
+pub mod http;
 mod server;
 mod surface;
 mod telemetry;

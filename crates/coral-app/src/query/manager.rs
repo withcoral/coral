@@ -14,6 +14,7 @@ use coral_engine::{
 };
 use coral_spec::{ManifestInputKind, ManifestInputSpec};
 use opentelemetry::trace::Status as OtelStatus;
+use serde::Serialize;
 use serde_json::json;
 use tracing::Instrument as _;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
@@ -22,6 +23,7 @@ use crate::bootstrap::AppError;
 use crate::catalog::model::CatalogResolution;
 use crate::credentials::{CredentialManager, CredentialSetId};
 use crate::functions::manager::{FunctionListing, FunctionManager, ValidatedFunctionInstall};
+use crate::hash::sha256_hex;
 use crate::query::QueryAttribution;
 use crate::query::extensions::{EngineExtensionsProvider, engine_extensions_for_providers};
 use crate::query::input_resolver::{
@@ -48,11 +50,17 @@ pub(crate) enum QueryManagerError {
     Core(CoreError),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct RequiredQueryGuide {
     pub(crate) schema_name: String,
     pub(crate) resource_name: String,
     pub(crate) guide: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResolvedQueryGuideState {
+    pub(crate) required_guides: Vec<RequiredQueryGuide>,
+    pub(crate) fingerprint: String,
 }
 
 pub(crate) struct ValidatedSource {
@@ -380,6 +388,7 @@ impl QueryManager {
         &self,
         workspace_name: &WorkspaceName,
         sql: &str,
+        expected_guide_state_fingerprint: Option<&str>,
         attribution: &QueryAttribution,
     ) -> Result<QueryExecution, QueryManagerError> {
         run_query_operation(
@@ -401,6 +410,15 @@ impl QueryManager {
                         SourceObservationMode::Enabled,
                     )
                     .await?;
+                if let Some(expected) = expected_guide_state_fingerprint {
+                    let current = resolve_query_guide_state(&runtime, sql).await?;
+                    if current.fingerprint != expected {
+                        return Err(QueryManagerError::App(AppError::FailedPrecondition(
+                            "SQL guide requirements changed after preflight; retry the SQL call so Coral can return the current guidance"
+                                .to_string(),
+                        )));
+                    }
+                }
                 runtime
                     .execute_sql(sql)
                     .await
@@ -453,7 +471,7 @@ impl QueryManager {
         workspace_name: &WorkspaceName,
         sql: &str,
         attribution: &QueryAttribution,
-    ) -> Result<Vec<RequiredQueryGuide>, QueryManagerError> {
+    ) -> Result<ResolvedQueryGuideState, QueryManagerError> {
         run_query_operation(
             QueryOperation::ResolveSqlGuideRequirements,
             workspace_name,
@@ -473,14 +491,7 @@ impl QueryManager {
                         SourceObservationMode::Disabled,
                     )
                     .await?;
-                let resources = runtime
-                    .resolve_sql_resources(sql)
-                    .await
-                    .map_err(QueryManagerError::Core)?;
-                Ok(required_query_guides(
-                    &runtime.list_catalog(None),
-                    &resources,
-                ))
+                resolve_query_guide_state(&runtime, sql).await
             },
             |_| None,
             |_, _| {},
@@ -961,6 +972,24 @@ impl QueryManager {
             .await
             .map_err(QueryManagerError::Core)
     }
+}
+
+async fn resolve_query_guide_state(
+    runtime: &PreparedQueryRuntime,
+    sql: &str,
+) -> Result<ResolvedQueryGuideState, QueryManagerError> {
+    let resources = runtime
+        .resolve_sql_resources(sql)
+        .await
+        .map_err(QueryManagerError::Core)?;
+    let required_guides = required_query_guides(&runtime.list_catalog(None), &resources);
+    let bytes = serde_json::to_vec(&required_guides)
+        .map_err(AppError::from)
+        .map_err(QueryManagerError::App)?;
+    Ok(ResolvedQueryGuideState {
+        required_guides,
+        fingerprint: format!("v1:{}", sha256_hex(&bytes)),
+    })
 }
 
 fn required_query_guides(
@@ -1982,6 +2011,121 @@ tables:
         );
     }
 
+    fn required_guide_http_manifest(base_url: &str, guide: &str) -> String {
+        format!(
+            r"
+name: changing_guidance
+version: 0.1.0
+dsl_version: 3
+backend: http
+base_url: {base_url}
+tables:
+  - name: items
+    description: Items
+    guide: {guide}
+    require_guide_read: true
+    request:
+      method: GET
+      path: /items
+    columns:
+      - name: id
+        type: Utf8
+"
+        )
+    }
+
+    #[tokio::test]
+    async fn execute_sql_rejects_a_stale_guide_preflight_before_provider_io() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/items"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([{"id": "1"}])))
+            .mount(&server)
+            .await;
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
+        let source_manager = SourceManager::new_for_tests(
+            fixture.manager.config_store.clone(),
+            fixture.manager.credential_manager.clone(),
+            fixture.manager.layout.clone(),
+        );
+        let workspace_name = WorkspaceName::default();
+        source_manager
+            .import_source(
+                &workspace_name,
+                &ImportSourceCommand {
+                    manifest_yaml: required_guide_http_manifest(
+                        &server.uri(),
+                        "Use the old lookup.",
+                    ),
+                    bindings: SourceBindings::default(),
+                },
+            )
+            .expect("import initial guide");
+        let sql = "SELECT id FROM changing_guidance.items";
+        let initial = fixture
+            .manager
+            .resolve_sql_guide_requirements(&workspace_name, sql, &QueryAttribution::default())
+            .await
+            .expect("resolve initial guide");
+
+        source_manager
+            .import_source(
+                &workspace_name,
+                &ImportSourceCommand {
+                    manifest_yaml: required_guide_http_manifest(
+                        &server.uri(),
+                        "Use the new lookup.",
+                    ),
+                    bindings: SourceBindings::default(),
+                },
+            )
+            .expect("replace guide");
+        let provider_requests_before = server
+            .received_requests()
+            .await
+            .expect("request recording")
+            .len();
+
+        let error = fixture
+            .manager
+            .execute_sql(
+                &workspace_name,
+                sql,
+                Some(&initial.fingerprint),
+                &QueryAttribution::default(),
+            )
+            .await
+            .expect_err("stale guide state must prevent execution");
+        assert!(matches!(
+            error,
+            QueryManagerError::App(AppError::FailedPrecondition(message))
+                if message.contains("guide requirements changed")
+        ));
+        assert_eq!(
+            server
+                .received_requests()
+                .await
+                .expect("request recording")
+                .len(),
+            provider_requests_before,
+            "a stale guide preflight must fail before provider I/O"
+        );
+        let current = fixture
+            .manager
+            .resolve_sql_guide_requirements(&workspace_name, sql, &QueryAttribution::default())
+            .await
+            .expect("resolve current guide");
+        assert_ne!(current.fingerprint, initial.fingerprint);
+        assert_eq!(
+            current
+                .required_guides
+                .first()
+                .expect("current guide")
+                .guide,
+            "Use the new lookup."
+        );
+    }
+
     #[tokio::test]
     async fn installed_v4_source_queries_through_app_assembled_runtime_component() {
         let server = MockServer::start().await;
@@ -2057,6 +2201,7 @@ surface:
             .execute_sql(
                 &workspace_name,
                 "SELECT id, title FROM github_v4_query.issues",
+                None,
                 &QueryAttribution::default(),
             )
             .await
@@ -2208,6 +2353,7 @@ surface:
             .execute_sql(
                 &workspace_name,
                 "SELECT id FROM github_v4_pagination_override.widgets LIMIT 3",
+                None,
                 &QueryAttribution::default(),
             )
             .await
@@ -2466,6 +2612,7 @@ where type = $kind
                 &workspace_name,
                 "select guide from coral.table_functions \
                  where schema_name = 'functions' and function_name = 'messages_by_type'",
+                None,
                 &QueryAttribution::default(),
             )
             .await
@@ -2480,6 +2627,7 @@ where type = $kind
             .execute_sql(
                 &workspace_name,
                 "select text from functions.messages_by_type(kind => 'user')",
+                None,
                 &QueryAttribution::default(),
             )
             .await
@@ -2855,6 +3003,7 @@ select 1 as value
             .execute_sql(
                 &workspace_name,
                 "select value from functions.constant_value()",
+                None,
                 &QueryAttribution::default(),
             )
             .await

@@ -62,6 +62,10 @@ message QueryGuideRequirement {
 message ResolveSqlGuideRequirementsResponse {
   // Referenced resources whose guide must be surfaced by MCP SQL.
   repeated QueryGuideRequirement required_guides = 1;
+  // Opaque identity for the resolved guide requirements. MCP returns this as
+  // request metadata when executing the statement so Coral can fail closed if
+  // the effective guide state changes after preflight.
+  string guide_state_fingerprint = 2;
 }
 
 // SQL explanation response.

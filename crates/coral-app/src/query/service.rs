@@ -3,6 +3,7 @@
 use arrow::datatypes::SchemaRef;
 use arrow::ipc::writer::StreamWriter;
 use arrow::record_batch::RecordBatch;
+use coral_api::CORAL_GUIDE_STATE_FINGERPRINT_METADATA_KEY;
 use coral_api::v1::query_service_server::QueryService as QueryServiceApi;
 use coral_api::v1::{
     ExecuteSqlRequest, ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse,
@@ -45,6 +46,7 @@ impl QueryServiceApi for QueryService {
         let queries = self.queries.clone();
         let tasks = self.tasks.clone();
         let request_context = request_context(&request)?.clone();
+        let guide_state_fingerprint = guide_state_fingerprint(&request)?;
         Box::pin(instrument_grpc(span, async move {
             let inner = request.into_inner();
             let workspace_name = workspace_name_from_proto(inner.workspace.as_ref())?;
@@ -55,7 +57,12 @@ impl QueryServiceApi for QueryService {
                     .map_err(task_manager_status)?,
             );
             let execution = queries
-                .execute_sql(&workspace_name, &inner.sql, &attribution)
+                .execute_sql(
+                    &workspace_name,
+                    &inner.sql,
+                    guide_state_fingerprint.as_deref(),
+                    &attribution,
+                )
                 .await
                 .map_err(query_status)?;
             let response = ExecuteSqlResponse {
@@ -117,19 +124,45 @@ impl QueryServiceApi for QueryService {
                     .await
                     .map_err(task_manager_status)?,
             );
-            let required_guides = queries
+            let guide_state = queries
                 .resolve_sql_guide_requirements(&workspace_name, &inner.sql, &attribution)
                 .await
                 .map_err(query_status)?;
             Ok(Response::new(ResolveSqlGuideRequirementsResponse {
-                required_guides: required_guides
+                required_guides: guide_state
+                    .required_guides
                     .into_iter()
                     .map(required_query_guide_to_proto)
                     .collect(),
+                guide_state_fingerprint: guide_state.fingerprint,
             }))
         }))
         .await
     }
+}
+
+fn guide_state_fingerprint<T>(request: &Request<T>) -> Result<Option<String>, Status> {
+    let mut values = request
+        .metadata()
+        .get_all(CORAL_GUIDE_STATE_FINGERPRINT_METADATA_KEY)
+        .iter();
+    let Some(value) = values.next() else {
+        return Ok(None);
+    };
+    if values.next().is_some() {
+        return Err(Status::invalid_argument(
+            "coral-guide-state-fingerprint metadata must contain exactly one value",
+        ));
+    }
+    let value = value.to_str().map_err(|_error| {
+        Status::invalid_argument("coral-guide-state-fingerprint metadata must be ASCII")
+    })?;
+    if value.is_empty() || value.len() > 128 {
+        return Err(Status::invalid_argument(
+            "coral-guide-state-fingerprint metadata must contain 1 to 128 characters",
+        ));
+    }
+    Ok(Some(value.to_string()))
 }
 
 fn query_plan_to_proto(plan: &coral_engine::QueryPlan) -> QueryPlanProto {

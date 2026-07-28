@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use coral_api::CORAL_GUIDE_STATE_FINGERPRINT_METADATA_KEY;
 use coral_api::v1::{
     CatalogItemKind as ProtoCatalogItemKind, DescribeTableRequest, DescribeTableResponse,
     EndTaskRequest, ExecuteSqlRequest, ListCatalogRequest, ListCatalogResponse, ListColumnsRequest,
@@ -11,9 +12,9 @@ use coral_api::v1::{
     catalog_item,
 };
 use coral_client::{
-    AppClient, CatalogClient, FeedbackClient, QueryClient, SearchClient, SourceClient, TaskClient,
-    batches_to_json_rows_json_safe_numbers, decode_execute_sql_response, default_workspace,
-    search_response_json_value, with_task_metadata,
+    AppClient, CatalogClient, DecodedStatusError, FeedbackClient, QueryClient, SearchClient,
+    SourceClient, TaskClient, batches_to_json_rows_json_safe_numbers, decode_execute_sql_response,
+    decode_status_error, default_workspace, search_response_json_value, with_task_metadata,
 };
 use rmcp::{
     ErrorData, ServerHandler,
@@ -55,6 +56,7 @@ const CATALOG_KIND_ALL: ProtoCatalogItemKind = ProtoCatalogItemKind::Unspecified
 const CATALOG_KIND_TABLE: ProtoCatalogItemKind = ProtoCatalogItemKind::Table;
 const CATALOG_KIND_TABLE_FUNCTION: ProtoCatalogItemKind = ProtoCatalogItemKind::TableFunction;
 const MAX_INITIAL_QUERY_EXAMPLES: usize = 5;
+const QUERY_ANALYSIS_FAILED_FINGERPRINT: &str = "v1:analysis-failed";
 
 enum ToolCallOutcome {
     Payload(Value),
@@ -71,8 +73,21 @@ enum SqlBatchExecution {
     GuideBlocked(SqlGuideBlockValue),
 }
 
+struct SqlQueryGuideState {
+    required_guides: Vec<QueryGuideRequirement>,
+    fingerprint: String,
+}
+
 fn serialize_tool_value(value: impl Serialize) -> Result<Value, tonic::Status> {
     serde_json::to_value(value).map_err(|error| tonic::Status::internal(error.to_string()))
+}
+
+fn is_query_analysis_failure(status: &tonic::Status) -> bool {
+    status.code() == tonic::Code::InvalidArgument
+        || matches!(
+            decode_status_error(status),
+            DecodedStatusError::Structured(error) if error.reason == "TABLE_NOT_FOUND"
+        )
 }
 
 fn task_id_from_backend_response(
@@ -477,10 +492,10 @@ impl CoralMcpServer {
             .map_err(|error| tonic::Status::internal(error.to_string()))
     }
 
-    async fn load_query_guide_requirements(
+    async fn load_query_guide_state(
         &self,
         sql: String,
-    ) -> Result<Vec<QueryGuideRequirement>, tonic::Status> {
+    ) -> Result<SqlQueryGuideState, tonic::Status> {
         let mut query_client = self.query.clone();
         let response = query_client
             .resolve_sql_guide_requirements(Request::new(ResolveSqlGuideRequirementsRequest {
@@ -489,45 +504,88 @@ impl CoralMcpServer {
             }))
             .await?
             .into_inner();
-        Ok(response.required_guides)
+        if response.guide_state_fingerprint.is_empty() {
+            return Err(tonic::Status::failed_precondition(
+                "SQL guide preflight response missing guide state fingerprint",
+            ));
+        }
+        Ok(SqlQueryGuideState {
+            required_guides: response.required_guides,
+            fingerprint: response.guide_state_fingerprint,
+        })
     }
 
     async fn preflight_sql_batch(
         &self,
         queries: &[String],
         task_id_metadata: Option<MetadataValue<Ascii>>,
-    ) -> Result<Vec<QueryGuideRequirement>, tonic::Status> {
+    ) -> Result<Vec<SqlQueryGuideState>, tonic::Status> {
         let mut tasks = tokio::task::JoinSet::new();
-        for sql in queries {
+        for (index, sql) in queries.iter().enumerate() {
             let server = self.clone();
             let sql = sql.clone();
             let task_id_metadata = task_id_metadata.clone();
             tasks.spawn(async move {
-                with_task_metadata(task_id_metadata, server.load_query_guide_requirements(sql))
-                    .await
+                (
+                    index,
+                    with_task_metadata(task_id_metadata, server.load_query_guide_state(sql)).await,
+                )
             });
         }
 
-        let mut guides = Vec::new();
+        let mut guide_states = Vec::with_capacity(queries.len());
         while let Some(joined) = tasks.join_next().await {
             // Execution returns the per-query error if logical analysis fails.
             // Successful siblings still need to gate the whole batch. Operational
             // failures must stop execution because Coral could not prove that the
             // query does not require a guide.
-            match joined.map_err(|error| tonic::Status::internal(error.to_string()))? {
-                Ok(query_guides) => guides.extend(query_guides),
-                Err(status) if status.code() == tonic::Code::InvalidArgument => {}
+            let (index, result) =
+                joined.map_err(|error| tonic::Status::internal(error.to_string()))?;
+            match result {
+                Ok(guide_state) => guide_states.push((index, guide_state)),
+                Err(status) if is_query_analysis_failure(&status) => {
+                    guide_states.push((
+                        index,
+                        SqlQueryGuideState {
+                            required_guides: Vec::new(),
+                            fingerprint: QUERY_ANALYSIS_FAILED_FINGERPRINT.to_string(),
+                        },
+                    ));
+                }
                 Err(status) => return Err(status),
             }
         }
-        Ok(guides)
+        guide_states.sort_unstable_by_key(|(index, _)| *index);
+        Ok(guide_states
+            .into_iter()
+            .map(|(_, guide_state)| guide_state)
+            .collect())
     }
 
-    async fn execute_one_sql_query(&self, index: usize, sql: String) -> SqlQueryResultValue {
-        let request = Request::new(ExecuteSqlRequest {
+    async fn execute_one_sql_query(
+        &self,
+        index: usize,
+        sql: String,
+        guide_state_fingerprint: String,
+    ) -> SqlQueryResultValue {
+        let mut request = Request::new(ExecuteSqlRequest {
             workspace: Some(self.workspace()),
             sql,
         });
+        let Ok(fingerprint) = MetadataValue::<Ascii>::try_from(guide_state_fingerprint) else {
+            return SqlQueryResultValue::Error {
+                index,
+                error: tool_error_from_status(
+                    "Query",
+                    &tonic::Status::internal(
+                        "SQL guide state fingerprint is not valid gRPC metadata",
+                    ),
+                ),
+            };
+        };
+        request
+            .metadata_mut()
+            .insert(CORAL_GUIDE_STATE_FINGERPRINT_METADATA_KEY, fingerprint);
         match self.query_rows(request).await {
             Ok(rows) => SqlQueryResultValue::Success { index, rows },
             Err(status) => SqlQueryResultValue::Error {
@@ -543,9 +601,13 @@ impl CoralMcpServer {
         task_id: TaskId,
         task_id_metadata: Option<MetadataValue<Ascii>>,
     ) -> Result<SqlBatchExecution, tonic::Status> {
-        let requirements = self
+        let guide_states = self
             .preflight_sql_batch(&queries, task_id_metadata.clone())
             .await?;
+        let requirements = guide_states
+            .iter()
+            .flat_map(|state| state.required_guides.iter().cloned())
+            .collect();
         let guides = self
             .guide_block
             .newly_required_guides(task_id, requirements)?;
@@ -556,11 +618,15 @@ impl CoralMcpServer {
         }
 
         let mut tasks = tokio::task::JoinSet::new();
-        for (index, sql) in queries.into_iter().enumerate() {
+        for (index, (sql, guide_state)) in queries.into_iter().zip(guide_states).enumerate() {
             let server = self.clone();
             let task_id_metadata = task_id_metadata.clone();
             tasks.spawn(async move {
-                with_task_metadata(task_id_metadata, server.execute_one_sql_query(index, sql)).await
+                with_task_metadata(
+                    task_id_metadata,
+                    server.execute_one_sql_query(index, sql, guide_state.fingerprint),
+                )
+                .await
             });
         }
 
