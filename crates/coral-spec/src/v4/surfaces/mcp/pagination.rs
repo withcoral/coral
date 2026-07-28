@@ -2,7 +2,7 @@ use serde_json::Value;
 
 use crate::backends::mcp::{McpOffsetPaginationSpec, McpPaginationSpec};
 use crate::v4::ir::{IrOperationInput, IrOperationOutput, IrScalarType, OutputCardinality};
-use crate::v4::surfaces::json_schema::json_schema_type_contains;
+use crate::v4::response_cursors::find_response_cursor_path;
 
 pub(super) fn infer_mcp_pagination_contracts(
     inputs: &[IrOperationInput],
@@ -25,11 +25,19 @@ fn infer_mcp_pagination(
     row_path: &[String],
     output_schema: Option<&Value>,
 ) -> Option<McpPaginationSpec> {
+    /// Response property names that conventionally carry a continuation token.
+    const RESPONSE_CURSOR_TOKENS: &[&str] =
+        &["nextcursor", "nextpagetoken", "nexttoken", "endcursor"];
+
     if !is_list_like_output(output, row_path) {
         return None;
     }
     let cursor_arg = cursor_input_name(inputs)?;
-    let response_cursor_path = find_response_cursor_path(output_schema?)?;
+    // A tool's output schema is its own reference root, so `$defs` entries
+    // resolve against the schema itself.
+    let output_schema = output_schema?;
+    let response_cursor_path =
+        find_response_cursor_path(output_schema, output_schema, RESPONSE_CURSOR_TOKENS)?;
     Some(McpPaginationSpec {
         cursor_arg: cursor_arg.to_string(),
         response_cursor_path,
@@ -140,31 +148,6 @@ fn cursor_input_name(inputs: &[IrOperationInput]) -> Option<&str> {
             CURSOR_INPUTS.contains(&normalized.as_str())
         })
         .map(|input| input.name.as_str())
-}
-
-pub(super) fn find_response_cursor_path(schema: &Value) -> Option<Vec<String>> {
-    let properties = schema.get("properties").and_then(Value::as_object)?;
-    for (name, property) in properties {
-        if is_response_cursor_property(name, property) {
-            return Some(vec![name.clone()]);
-        }
-    }
-    for (name, property) in properties {
-        if !json_schema_type_contains(property, "object") {
-            continue;
-        }
-        if let Some(mut path) = find_response_cursor_path(property) {
-            path.insert(0, name.clone());
-            return Some(path);
-        }
-    }
-    None
-}
-
-fn is_response_cursor_property(name: &str, schema: &Value) -> bool {
-    const RESPONSE_CURSORS: &[&str] = &["nextcursor", "nextpagetoken", "nexttoken", "endcursor"];
-    RESPONSE_CURSORS.contains(&cursor_token(name).as_str())
-        && (json_schema_type_contains(schema, "string") || schema.get("type").is_none())
 }
 
 fn cursor_token(value: &str) -> String {

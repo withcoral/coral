@@ -11,6 +11,7 @@ use crate::v4::ir::{
 };
 use crate::v4::lookup_keys::infer_rest_lookup_keys;
 use crate::v4::naming::normalize_identifier;
+use crate::v4::response_cursors::find_response_cursor_path;
 use crate::v4::surfaces::json_schema::{
     json_schema_default_to_string, json_schema_scalar_type_or_string, json_schema_type_contains,
     json_schema_type_display,
@@ -55,7 +56,8 @@ impl OpenApiImporter<'_> {
             &pagination_context,
             &output,
         );
-        let pagination = detect_pagination(&parameters, &pagination_context, &row_path);
+        let pagination =
+            detect_pagination(self.document, &parameters, &pagination_context, &row_path);
         let lookup_keys = infer_rest_lookup_keys(&parameters, &pagination);
         let rest_parameters = parameters
             .iter()
@@ -343,6 +345,7 @@ fn parameter_is_required(parameter_obj: &Map<String, Value>, location: IrInputLo
 }
 
 fn detect_pagination(
+    document: &Value,
     inputs: &[IrOperationInput],
     context: &OpenApiResponsePaginationContext,
     row_path: &[String],
@@ -351,7 +354,7 @@ fn detect_pagination(
         return PaginationSpec::default();
     }
     detect_link_header_pagination(inputs, context)
-        .or_else(|| detect_cursor_query_pagination(inputs, context))
+        .or_else(|| detect_cursor_query_pagination(document, inputs, context))
         .or_else(|| detect_offset_pagination(inputs))
         .or_else(|| detect_page_pagination(inputs))
         .unwrap_or_default()
@@ -378,9 +381,25 @@ fn detect_link_header_pagination(
 }
 
 fn detect_cursor_query_pagination(
+    document: &Value,
     inputs: &[IrOperationInput],
     context: &OpenApiResponsePaginationContext,
 ) -> Option<PaginationSpec> {
+    /// Response property names that conventionally carry a continuation token.
+    const RESPONSE_CURSOR_TOKENS: &[&str] = &[
+        "after",
+        "continuationtoken",
+        "cursor",
+        "endcursor",
+        "iterator",
+        "next",
+        "nextcursor",
+        "nextmarker",
+        "nextpage",
+        "nextpagetoken",
+        "nexttoken",
+    ];
+
     let cursor_input = find_optional_string_query_input(
         inputs,
         &[
@@ -406,7 +425,12 @@ fn detect_cursor_query_pagination(
         return None;
     }
 
-    let response_cursor_path = find_response_cursor_path(&context.schema).unwrap_or_default();
+    // The pagination context holds the response schema with only its own `$ref`
+    // resolved, so the document is still needed to see inside a referenced
+    // metadata sibling.
+    let response_cursor_path =
+        find_response_cursor_path(document, &context.schema, RESPONSE_CURSOR_TOKENS)
+            .unwrap_or_default();
     let response_cursor_header = response_cursor_header(context);
     if response_cursor_path.is_empty() && response_cursor_header.is_none() {
         return None;
@@ -581,44 +605,6 @@ fn response_header_allows_string(header: &Value) -> bool {
     header.get("schema").is_none_or(|schema| {
         json_schema_type_contains(schema, "string") || schema.get("type").is_none()
     })
-}
-
-fn find_response_cursor_path(schema: &Value) -> Option<Vec<String>> {
-    let properties = schema.get("properties").and_then(Value::as_object)?;
-    for (name, property) in properties {
-        if is_response_cursor_property(name, property) {
-            return Some(vec![name.clone()]);
-        }
-    }
-    for (name, property) in properties {
-        if !json_schema_type_contains(property, "object") {
-            continue;
-        }
-        if let Some(mut path) = find_response_cursor_path(property) {
-            path.insert(0, name.clone());
-            return Some(path);
-        }
-    }
-    None
-}
-
-fn is_response_cursor_property(name: &str, schema: &Value) -> bool {
-    const RESPONSE_CURSOR_TOKENS: &[&str] = &[
-        "after",
-        "continuationtoken",
-        "cursor",
-        "endcursor",
-        "iterator",
-        "next",
-        "nextcursor",
-        "nextmarker",
-        "nextpage",
-        "nextpagetoken",
-        "nexttoken",
-    ];
-
-    RESPONSE_CURSOR_TOKENS.contains(&name_token(name).as_str())
-        && (json_schema_type_contains(schema, "string") || schema.get("type").is_none())
 }
 
 /// A wrapped-list envelope is a singleton by cardinality but yields rows, so it

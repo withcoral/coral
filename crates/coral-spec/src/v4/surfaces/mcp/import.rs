@@ -1007,6 +1007,56 @@ surface:
         assert!(offset.is_none());
     }
 
+    /// Tool schemas routinely put their page metadata in `$defs`. Row-path
+    /// inference resolves those references, so cursor discovery has to as well,
+    /// or the tool becomes a table that stops after its first page.
+    #[test]
+    fn infers_cursor_pagination_through_a_referenced_metadata_object() {
+        let catalog = McpToolCatalog {
+            tools: vec![tool_with_schemas(
+                "list-items",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "cursor": {"type": "string"},
+                        "limit": {"type": "integer"}
+                    }
+                }),
+                Some(json!({
+                    "type": "object",
+                    "properties": {
+                        "items": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {"id": {"type": "string"}}
+                            }
+                        },
+                        "meta": {"$ref": "#/$defs/PageMeta"}
+                    },
+                    "$defs": {
+                        "PageMeta": {
+                            "type": "object",
+                            "properties": {
+                                "nextCursor": {"type": ["string", "null"]}
+                            }
+                        }
+                    }
+                })),
+                Some(true),
+            )],
+        };
+
+        let ir = import_catalog(&catalog);
+        let plan = ir.validated_plan().expect("plan");
+        assert_eq!(plan.output_row_path("list_items"), ["items"]);
+        let (cursor, offset) = plan.mcp_pagination("list_items");
+        let cursor = cursor.expect("cursor pagination");
+        assert_eq!(cursor.cursor_arg, "cursor");
+        assert_eq!(cursor.response_cursor_path, ["meta", "nextCursor"]);
+        assert!(offset.is_none());
+    }
+
     #[test]
     fn infers_offset_pagination_for_wrapped_list_envelopes() {
         let catalog = McpToolCatalog {

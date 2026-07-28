@@ -18,6 +18,7 @@ mod manifest;
 mod naming;
 mod operation_metadata;
 mod projections;
+mod response_cursors;
 mod schema;
 mod surfaces;
 mod wrapped_lists;

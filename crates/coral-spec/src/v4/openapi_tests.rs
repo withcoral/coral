@@ -1901,6 +1901,105 @@ paths:
     );
 }
 
+/// Wrapped-list inference resolves `$ref` when it decides a response is an
+/// envelope, so cursor discovery has to resolve it too: a row path without a
+/// cursor is a table that silently stops after its first page.
+#[test]
+fn importer_finds_a_cursor_inside_a_referenced_envelope_metadata_object() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: referenced_meta
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = &v4.surface;
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /things:
+    get:
+      operationId: listThings
+      parameters:
+        - {name: cursor, in: query, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ThingPage'}
+  /widgets:
+    get:
+      operationId: listWidgets
+      parameters:
+        - {name: cursor, in: query, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: {$ref: '#/components/schemas/Thing'}
+                  pageInfo:
+                    type: object
+                    properties:
+                      end_cursor: {$ref: '#/components/schemas/Cursor'}
+components:
+  schemas:
+    Cursor:
+      type: string
+    Thing:
+      type: object
+      properties:
+        id: {type: string}
+    PageMeta:
+      type: object
+      properties:
+        next_cursor: {type: string}
+    ThingPage:
+      type: object
+      properties:
+        data:
+          type: array
+          items: {$ref: '#/components/schemas/Thing'}
+        meta: {$ref: '#/components/schemas/PageMeta'}
+"
+        .as_bytes(),
+    )
+    .expect("import");
+
+    // A referenced `meta` sibling: the reference is what supplies the envelope
+    // evidence, so the row path depends on resolving exactly what the cursor
+    // walk must also see.
+    assert_eq!(imported_row_path(&ir, "listthings"), ["data"]);
+    let referenced_meta = imported_rest_pagination(&ir, "listthings");
+    assert_eq!(referenced_meta.mode, PaginationMode::CursorQuery);
+    assert_eq!(referenced_meta.cursor_param.as_deref(), Some("cursor"));
+    assert_eq!(
+        referenced_meta.response_cursor_path,
+        ["meta", "next_cursor"]
+    );
+
+    // An inline `pageInfo` whose token is itself a reference.
+    assert_eq!(imported_row_path(&ir, "listwidgets"), ["data"]);
+    let referenced_token = imported_rest_pagination(&ir, "listwidgets");
+    assert_eq!(referenced_token.mode, PaginationMode::CursorQuery);
+    assert_eq!(
+        referenced_token.response_cursor_path,
+        ["pageInfo", "end_cursor"]
+    );
+}
+
 #[test]
 fn importer_treats_path_parameters_as_required_when_required_is_omitted() {
     let manifest = parse_source_manifest_yaml(
