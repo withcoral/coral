@@ -796,51 +796,75 @@ mod tests {
 
     #[test]
     fn rejects_invalid_provider_fields() {
-        let invalid = [
-            valid("").replace(
-                "issuer = 'https://accounts.example.test'",
-                "type = 'oauth'\nissuer = 'https://accounts.example.test'",
+        let cases = vec![
+            (
+                valid("").replace(
+                    "issuer = 'https://accounts.example.test'",
+                    "type = 'oauth'\nissuer = 'https://accounts.example.test'",
+                ),
+                "type must be `oidc`",
             ),
-            valid("").replace(
-                "https://accounts.example.test",
-                "http://accounts.example.test",
+            (
+                valid("").replace(
+                    "https://accounts.example.test",
+                    "http://accounts.example.test",
+                ),
+                "issuer is invalid: configured endpoint must use HTTPS",
             ),
-            valid("").replace(
-                "https://accounts.example.test",
-                "https://accounts.example.test?q=1",
+            (
+                valid("").replace(
+                    "https://accounts.example.test",
+                    "https://accounts.example.test?q=1",
+                ),
+                "issuer must not include a query",
             ),
-            valid("").replace(
-                "http://localhost:9080/auth/oidc/callback",
-                "http://remote.test/callback",
+            (
+                valid("").replace(
+                    "http://localhost:9080/auth/oidc/callback",
+                    "https://remote.test/callback",
+                ),
+                "must share the origin",
             ),
-            valid("").replace(
-                "redirect_uri = 'http://localhost:9080/auth/oidc/callback'",
-                "redirect_uri = 'http://localhost:9080/auth/oidc/callback'\nscopes = ['email']",
+            (
+                valid("").replace(
+                    "redirect_uri = 'http://localhost:9080/auth/oidc/callback'",
+                    "redirect_uri = 'http://localhost:9080/auth/oidc/callback'\nscopes = ['email']",
+                ),
+                "scopes must include `openid`",
             ),
-            valid("").replace(
-                "redirect_uri = 'http://localhost:9080/auth/oidc/callback'",
-                "redirect_uri = 'http://localhost:9080/auth/oidc/callback'\nscopes = ['openid', 'two scopes']",
+            (
+                valid("").replace(
+                    "redirect_uri = 'http://localhost:9080/auth/oidc/callback'",
+                    "redirect_uri = 'http://localhost:9080/auth/oidc/callback'\nscopes = ['openid', 'two scopes']",
+                ),
+                "scopes must contain valid OAuth scope tokens",
+            ),
+            (
+                valid("").replace(
+                    "client_id = 'upstream-client'",
+                    "client_id = 'upstream-client'\nprincipal_claim = 'user id'",
+                ),
+                "principal_claim keys must be nonempty and contain no whitespace",
+            ),
+            (
+                valid("") + "\n[auth.provider.auth_params]\nCLIENT_ID = 'override'\n",
+                "reserved parameter `CLIENT_ID`",
+            ),
+            (
+                valid("") + "\n[auth.provider.auth_params]\nresponse_mode = 'fragment'\n",
+                "reserved parameter `response_mode`",
+            ),
+            (
+                valid("") + "\n[auth.provider.required_claims]\n' spaced ' = true\n",
+                "required_claims keys must be nonempty and contain no whitespace",
             ),
         ];
-        for raw in invalid {
-            assert!(AuthSettings::from_toml(&raw).is_err(), "{raw}");
+        for (raw, expected) in cases {
+            assert!(
+                reject(&raw).contains(expected),
+                "expected `{expected}` for {raw}"
+            );
         }
-
-        let reserved = valid("") + "\n[auth.provider.auth_params]\nCLIENT_ID = 'override'\n";
-        assert!(reject(&reserved).contains("reserved parameter `CLIENT_ID`"));
-        let invalid_claim = valid("") + "\n[auth.provider.required_claims]\n' spaced ' = true\n";
-        assert!(reject(&invalid_claim).contains("required_claims"));
-        let response_mode =
-            valid("") + "\n[auth.provider.auth_params]\nresponse_mode = 'fragment'\n";
-        assert!(reject(&response_mode).contains("reserved parameter `response_mode`"));
-        let spaced_claim = valid("").replace(
-            "client_id = 'upstream-client'",
-            "client_id = 'upstream-client'\nprincipal_claim = 'user id'",
-        );
-        assert!(
-            reject(&spaced_claim)
-                .contains("principal_claim keys must be nonempty and contain no whitespace")
-        );
     }
 
     #[test]
