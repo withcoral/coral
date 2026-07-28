@@ -36,6 +36,8 @@ message FunctionRuntimeReady {
   FunctionTableFunctionPublish table_function = 3;
   // Result columns inferred from the planned function SQL.
   repeated TableFunctionResultColumn result_columns = 4;
+  // Executable SQL body parsed from the installed artifact.
+  string sql_body = 5;
 }
 
 // Validation failure for an installed function that is not currently queryable.

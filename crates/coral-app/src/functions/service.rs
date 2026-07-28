@@ -7,7 +7,9 @@ use coral_api::v1::{
     FunctionTableFunctionPublish, ListFunctionsRequest, ListFunctionsResponse,
     TableFunctionResultColumn, function,
 };
-use coral_engine::{UdfRuntimeDefinition, UdfRuntimeTableFunctionPublish};
+use coral_engine::{
+    UdfRuntimeDefinition, UdfRuntimeImplementation, UdfRuntimeTableFunctionPublish,
+};
 use tonic::{Request, Response, Status};
 
 use crate::bootstrap::app_status;
@@ -115,6 +117,9 @@ fn runtime_function_to_proto(
     function: UdfRuntimeDefinition,
 ) -> Function {
     let name = function.name;
+    let UdfRuntimeImplementation::CoralSql { query: sql_body } = function.implementation else {
+        unreachable!("unsupported function runtime implementation")
+    };
     Function {
         workspace: Some(workspace_to_proto(workspace_name)),
         name,
@@ -141,6 +146,7 @@ fn runtime_function_to_proto(
                     description: String::new(),
                 })
                 .collect(),
+            sql_body,
         })),
     }
 }

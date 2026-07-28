@@ -25,6 +25,7 @@ describe('functions route mapping', () => {
             { dataType: 'Int64', name: 'number', nullable: false },
             { dataType: 'Utf8', name: 'title', nullable: true },
           ],
+          sqlBody: 'select * from github.pull_requests',
         }),
       },
     })
@@ -34,6 +35,7 @@ describe('functions route mapping', () => {
         { dataType: 'Utf8', name: 'owner' },
         { dataType: 'Utf8', name: 'repo' },
       ],
+      body: 'select * from github.pull_requests',
       description: 'Pull requests waiting for review.',
       name: 'review_queue',
       resultColumns: [

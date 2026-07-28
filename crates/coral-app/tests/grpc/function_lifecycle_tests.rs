@@ -39,11 +39,13 @@ async fn function_lifecycle_is_scoped_to_the_selected_workspace() {
         .await
         .expect("create workspace");
 
+    let sql_body = "select cast($value as VARCHAR) as value";
+    let sql = function_sql(sql_body);
     let added = harness
         .function_client()
         .add_function(Request::new(AddFunctionRequest {
             workspace: Some(work.clone()),
-            sql: function_sql("select cast($value as VARCHAR) as value"),
+            sql: sql.clone(),
         }))
         .await
         .expect("add function")
@@ -55,6 +57,7 @@ async fn function_lifecycle_is_scoped_to_the_selected_workspace() {
     let Some(function::Runtime::Ready(ready)) = added.runtime else {
         panic!("expected runtime-ready function");
     };
+    assert_eq!(ready.sql_body, sql_body);
     assert_eq!(
         ready.table_function.expect("table function").guide,
         "Use this function to echo a typed value."
@@ -81,6 +84,11 @@ async fn function_lifecycle_is_scoped_to_the_selected_workspace() {
         .into_inner()
         .functions;
     assert_eq!(work_functions.len(), 1);
+    let listed = work_functions.into_iter().next().expect("listed function");
+    let Some(function::Runtime::Ready(ready)) = listed.runtime else {
+        panic!("expected listed runtime-ready function");
+    };
+    assert_eq!(ready.sql_body, sql_body);
 
     harness
         .function_client()

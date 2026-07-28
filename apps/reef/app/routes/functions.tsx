@@ -42,6 +42,7 @@ export function toFunctionDetails(fn: Function): FunctionDetailsProps | null {
   const ready = fn.runtime.value
   return {
     arguments: ready.arguments.map(({ dataType, name }) => ({ dataType, name })),
+    body: ready.sqlBody,
     description: ready.description || ready.tableFunction?.description || '',
     name: fn.name,
     resultColumns: ready.resultColumns.map(({ dataType, name, nullable }) => ({
