@@ -1,11 +1,10 @@
-import { TruncatedList } from '@/components/truncated-list'
 import { IconButton } from '@/wax/components/button'
-import { Pill } from '@/wax/components/pill'
 import { Table } from '@/wax/components/table'
 import { Tooltip } from '@/wax/components/tooltip'
 import { Typography } from '@/wax/components/typography'
 
 import * as styles from './function-list.css'
+import { FunctionSources } from './function-sources'
 
 export interface FunctionListItem {
   description: string
@@ -68,31 +67,5 @@ export function FunctionList({ functions, onDelete }: FunctionListProps) {
         </Table.Body>
       </Table.Root>
     </Table.Wrapper>
-  )
-}
-
-function FunctionSources({ sources }: { sources: string[] }) {
-  if (sources.length === 0) {
-    return <Typography.Body variant="tertiary">—</Typography.Body>
-  }
-
-  return (
-    <TruncatedList
-      getKey={(source) => source}
-      items={sources}
-      renderItem={(source) => <Pill color="gray">{source}</Pill>}
-      renderOverflowContent={(hiddenSources) =>
-        hiddenSources.map((source) => (
-          <Pill color="gray" key={source}>
-            {source}
-          </Pill>
-        ))
-      }
-      renderOverflowTrigger={(hiddenCount) => (
-        <Pill as="button" color="gray">
-          +{hiddenCount}
-        </Pill>
-      )}
-    />
   )
 }
