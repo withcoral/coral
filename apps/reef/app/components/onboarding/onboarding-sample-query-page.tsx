@@ -7,7 +7,7 @@ import {
   type QueryDetailStatusTone,
 } from '@/components/query-detail'
 import type { SourceCatalogEntry } from '@/components/sources'
-import { formatSQL } from '@/lib/sql-highlight'
+import { formatSQL } from '@/lib/sql-format'
 import { ONBOARDING_SAMPLE_QUERY, type OnboardingSampleQueryRow } from '@/lib/onboarding-query'
 import { Table, Typography } from '@/wax/components'
 import { Icon } from '@/wax/components/icon'

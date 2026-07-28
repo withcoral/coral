@@ -1,8 +1,6 @@
-import { globalStyle, style } from '@vanilla-extract/css'
+import { style } from '@vanilla-extract/css'
 
 import { breakpoints } from '@/styles/theme.css'
-import { fontFamily } from '@/wax/theme/font.css'
-import { lightTheme } from '@/wax/theme/theme-light.css'
 import { theme } from '@/wax/theme/theme.css'
 
 export const root = style({
@@ -86,15 +84,6 @@ export const content = style({
   padding: 16,
 })
 
-export const sqlBlock = style({
-  backgroundColor: theme.surface.main,
-  border: `1px solid ${theme.stroke.primary}`,
-  borderRadius: 8,
-  flexShrink: 0,
-  overflow: 'hidden',
-  position: 'relative',
-})
-
 export const statGrid = style({
   display: 'flex',
   flexWrap: 'wrap',
@@ -112,28 +101,3 @@ export const statCard = style({
   paddingBlock: 12,
   paddingInline: 16,
 })
-
-globalStyle(`${sqlBlock} pre`, {
-  color: theme.content.primary,
-  fontFamily: fontFamily.dmMono,
-  fontSize: 14,
-  lineHeight: 1.65,
-  margin: 0,
-  overflowX: 'auto',
-  padding: 12,
-  whiteSpace: 'pre-wrap',
-  wordBreak: 'break-all',
-})
-
-globalStyle(`${sqlBlock} .sql-keyword`, { color: '#569CD6', fontWeight: 600 })
-globalStyle(`body.${lightTheme} ${sqlBlock} .sql-keyword`, { color: '#0000FF' })
-globalStyle(`${sqlBlock} .sql-function`, { color: '#4EC9B0' })
-globalStyle(`body.${lightTheme} ${sqlBlock} .sql-function`, { color: '#795E26' })
-globalStyle(`${sqlBlock} .sql-string`, { color: '#CE9178' })
-globalStyle(`body.${lightTheme} ${sqlBlock} .sql-string`, { color: '#A31515' })
-globalStyle(`${sqlBlock} .sql-number`, { color: '#CE9178' })
-globalStyle(`body.${lightTheme} ${sqlBlock} .sql-number`, { color: '#098658' })
-globalStyle(`${sqlBlock} .sql-comment`, { color: '#6A9955', fontStyle: 'italic' })
-globalStyle(`body.${lightTheme} ${sqlBlock} .sql-comment`, { color: '#008000' })
-globalStyle(`${sqlBlock} .sql-identifier`, { color: '#9CDCFE' })
-globalStyle(`body.${lightTheme} ${sqlBlock} .sql-identifier`, { color: '#001080' })
