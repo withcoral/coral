@@ -262,6 +262,10 @@ impl AuthorizationServerSettings {
 const DEFAULT_PROVIDER_SCOPES: &[&str] = &["openid", "email", "profile"];
 const RESERVED_PROVIDER_AUTH_PARAMS: &[&str] = &[
     "response_type",
+    // `fragment` and `form_post` both stop the authorization code from ever
+    // reaching the GET callback route, so a login started with either simply
+    // never completes and leaves nothing in this server's logs.
+    "response_mode",
     "client_id",
     "redirect_uri",
     "scope",
@@ -559,10 +563,16 @@ fn provider_claim(field: &str, value: &str, default: &str) -> Result<String, Aut
     Ok(value.to_string())
 }
 
+/// Rejects a key that cannot name a claim or an authorization query parameter.
+///
+/// Interior whitespace matters as much as surrounding whitespace: a claim name
+/// carrying it can never be found in an ID token, and validating it here is
+/// what makes `provider_claim`'s startup guarantee real rather than reporting
+/// it as a missing claim on every login.
 fn validate_provider_key(field: &str, key: &str) -> Result<(), AuthServerError> {
-    if key.is_empty() || key.trim() != key {
+    if key.is_empty() || key.chars().any(char::is_whitespace) {
         return Err(invalid_provider(format!(
-            "{field} keys must be nonempty and have no surrounding whitespace"
+            "{field} keys must be nonempty and contain no whitespace"
         )));
     }
     Ok(())
@@ -820,6 +830,17 @@ mod tests {
         assert!(reject(&reserved).contains("reserved parameter `CLIENT_ID`"));
         let invalid_claim = valid("") + "\n[auth.provider.required_claims]\n' spaced ' = true\n";
         assert!(reject(&invalid_claim).contains("required_claims"));
+        let response_mode =
+            valid("") + "\n[auth.provider.auth_params]\nresponse_mode = 'fragment'\n";
+        assert!(reject(&response_mode).contains("reserved parameter `response_mode`"));
+        let spaced_claim = valid("").replace(
+            "client_id = 'upstream-client'",
+            "client_id = 'upstream-client'\nprincipal_claim = 'user id'",
+        );
+        assert!(
+            reject(&spaced_claim)
+                .contains("principal_claim keys must be nonempty and contain no whitespace")
+        );
     }
 
     #[test]
