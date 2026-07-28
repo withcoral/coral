@@ -2306,3 +2306,141 @@ paths:
     );
     assert_eq!(operation.output.cardinality, OutputCardinality::Unknown);
 }
+
+/// A body field holding a whole next-page URL is a stronger signal than a
+/// guessed cursor parameter, so it outranks cursor-query and offset detection —
+/// but only for names that actually denote a URL.
+#[test]
+fn importer_detects_body_next_url_pagination_above_cursor_and_offset() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: nexturl
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.0.3
+paths:
+  /next-url:
+    get:
+      operationId: nextUrlList
+      parameters:
+        - {name: skip, in: query, schema: {type: integer, default: 0}}
+        - {name: limit, in: query, schema: {type: integer, default: 25}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  next_page_url: {type: string}
+                  data:
+                    type: array
+                    items: {type: object, properties: {id: {type: string}}}
+  /next-token:
+    get:
+      operationId: nextTokenList
+      parameters:
+        - {name: cursor, in: query, schema: {type: string}}
+        - {name: limit, in: query, schema: {type: integer, default: 25}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  next_cursor: {type: string}
+                  data:
+                    type: array
+                    items: {type: object, properties: {id: {type: string}}}
+"
+        .as_bytes(),
+    )
+    .expect("import");
+
+    let next_url = imported_rest_pagination(&ir, "nexturllist");
+    assert_eq!(next_url.mode, PaginationMode::NextUrlBody);
+    assert_eq!(next_url.next_url_path, ["next_page_url"]);
+    assert_eq!(
+        next_url
+            .page_size
+            .as_ref()
+            .and_then(|size| size.query_param.as_deref()),
+        Some("limit"),
+        "page one still asks for a page size; later pages inherit it from the URL"
+    );
+    assert!(
+        next_url.offset_param.is_none(),
+        "a whole next URL must beat offset detection, which would drive `skip` the server may reject"
+    );
+    assert_eq!(imported_row_path(&ir, "nexturllist"), ["data"]);
+
+    // `next_cursor` is a token, not a URL: it belongs in the request parameter
+    // that expects it, so it must keep falling through to cursor-query.
+    let next_token = imported_rest_pagination(&ir, "nexttokenlist");
+    assert_eq!(next_token.mode, PaginationMode::CursorQuery);
+    assert_eq!(next_token.cursor_param.as_deref(), Some("cursor"));
+    assert!(next_token.next_url_path.is_empty());
+}
+
+/// A declared `Link` header is cheaper and more standard than reading the body,
+/// so it stays ahead of body next-URL detection.
+#[test]
+fn importer_prefers_a_declared_link_header_over_a_body_next_url() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: linkfirst
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.0.3
+paths:
+  /both:
+    get:
+      operationId: bothList
+      parameters:
+        - {name: per_page, in: query, schema: {type: integer, default: 30}}
+      responses:
+        '200':
+          headers:
+            Link:
+              schema: {type: string}
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  next_link: {type: string}
+                  data:
+                    type: array
+                    items: {type: object, properties: {id: {type: string}}}
+"
+        .as_bytes(),
+    )
+    .expect("import");
+
+    let pagination = imported_rest_pagination(&ir, "bothlist");
+    assert_eq!(pagination.mode, PaginationMode::LinkHeader);
+    assert!(pagination.next_url_path.is_empty());
+}

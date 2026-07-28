@@ -1133,9 +1133,10 @@ The `pagination` object controls how Coral fetches additional pages of results.
 
 | Field                         | Type            | Default | Description                                                                                            |
 | ----------------------------- | --------------- | ------- | ------------------------------------------------------------------------------------------------------ |
-| `mode`                        | string          | `none`  | Pagination strategy: `none`, `auto`, `cursor_query`, `cursor_body`, `page`, `offset`, or `link_header` |
+| `mode`                        | string          | `none`  | Pagination strategy: `none`, `auto`, `cursor_query`, `cursor_body`, `page`, `offset`, `link_header`, or `next_url_body` |
 | `cursor_param`                | string          | —       | Query parameter name for the cursor (`cursor_query` mode)                                              |
 | `response_cursor_path`        | list of strings | `[]`    | JSON path in the response to the next cursor value                                                     |
+| `next_url_path`               | list of strings | `[]`    | JSON path in the response to the next page's full URL (`next_url_body` mode)                            |
 | `cursor_body_path`            | list of strings | `[]`    | JSON path in the request body for the cursor (`cursor_body` mode)                                      |
 | `page_param`                  | string          | —       | Query parameter name for the page number (`page` mode)                                                 |
 | `page_start`                  | integer         | `0`     | Starting page number                                                                                   |
@@ -1190,6 +1191,28 @@ pagination:
     max: 100
     query_param: per_page
 ```
+
+Example using a next-page URL embedded in the response body (common with OData
+APIs such as Microsoft Graph):
+
+```yaml
+pagination:
+  mode: next_url_body
+  next_url_path:
+    - "@odata.nextLink"
+  page_size:
+    default: 50
+    max: 999
+    query_param: $top
+```
+
+<Note>
+  Use `next_url_body` when the response hands back a complete **URL** for the
+  next page, and `cursor_query` when it hands back a **token** you have to place
+  into a request parameter yourself. Coral requests a `next_url_body` URL exactly
+  as given, so it must stay on the same origin as the request it came from — a
+  cross-origin next link fails the query rather than following it.
+</Note>
 
 ## Source inputs
 

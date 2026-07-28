@@ -2417,6 +2417,88 @@ async fn pagination_next_url_header() {
     assert_eq!(rows, users_rows());
 }
 
+/// The `OData` shape: the next page's URL arrives in the response body rather
+/// than a header, and the server expects it requested verbatim.
+///
+/// This is the test that catches a `next_url_body` contract whose URL is never
+/// actually followed — the artifact would still read `mode: next_url_body`, and
+/// every unit test would still pass, while the crawl silently stopped at page
+/// one. Page two is keyed on the `$skiptoken` only the body link carries.
+#[tokio::test]
+async fn pagination_next_url_body() {
+    let server = MockServer::start().await;
+    let rows = users_rows();
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .and(query_param_is_missing("$skiptoken"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "@odata.nextLink": "?$skiptoken=page-2",
+            "data": &rows[..2],
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .and(query_param("$skiptoken", "page-2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": &rows[2..] })))
+        .mount(&server)
+        .await;
+
+    let mut manifest = base_http_manifest("http_next_url_body", &server.uri());
+    manifest["tables"][0]["pagination"] = json!({
+        "mode": "next_url_body",
+        "next_url_path": ["@odata.nextLink"],
+    });
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT id, name, email FROM http_next_url_body.users ORDER BY id",
+        )
+        .await
+        .expect("query should succeed"),
+    );
+
+    assert_eq!(rows, users_rows());
+}
+
+/// The next URL is attacker-controllable in a way a request Coral built is not,
+/// so leaving the origin must fail loudly rather than send credentials onward.
+#[tokio::test]
+async fn pagination_next_url_body_cross_origin_surfaces_structured_error() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "@odata.nextLink": "https://attacker.example/steal",
+            "data": &users_rows()[..2],
+        })))
+        .mount(&server)
+        .await;
+
+    let mut manifest = base_http_manifest("http_next_url_body_evil", &server.uri());
+    manifest["tables"][0]["pagination"] = json!({
+        "mode": "next_url_body",
+        "next_url_path": ["@odata.nextLink"],
+    });
+    let source = build_source(manifest);
+
+    let error = CoralQuery::execute_sql(
+        &[source],
+        test_runtime(),
+        "SELECT id FROM http_next_url_body_evil.users",
+    )
+    .await
+    .expect_err("cross-origin next link should fail");
+
+    assert!(
+        error.to_string().contains("Source pagination failed"),
+        "{error}"
+    );
+}
+
 #[tokio::test]
 async fn auth_headers_sent_correctly() {
     let server = MockServer::start().await;

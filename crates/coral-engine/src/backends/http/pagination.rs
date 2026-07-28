@@ -67,7 +67,11 @@ pub(super) fn apply_pagination_query_pairs(
     match &pagination.mode {
         ValidatedPaginationMode::None
         | ValidatedPaginationMode::Auto
-        | ValidatedPaginationMode::CursorBody => {}
+        | ValidatedPaginationMode::CursorBody
+        // The next URL carries the whole query the server wants repeated, so
+        // page two onwards contributes nothing here. Page one still gets the
+        // page-size parameter applied above.
+        | ValidatedPaginationMode::NextUrlBody(_) => {}
         ValidatedPaginationMode::LinkHeader => {
             if let Some(name) = &pagination.page_param {
                 params.push((name.clone(), state.page.to_string()));
@@ -226,6 +230,26 @@ pub(super) fn advance_pagination_state(
             match hints.next_url {
                 Some(next) => {
                     state.next_url = Some(next);
+                    Ok(PageAdvance::Continue)
+                }
+                None => Ok(PageAdvance::Stop),
+            }
+        }
+        ValidatedPaginationMode::NextUrlBody(next_url_body) => {
+            // Read here rather than in `extract_response_pagination_hints`,
+            // which is a header-only helper and is not given the body.
+            let next_raw = get_path_value(context.payload, next_url_body.path())
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|next| !next.is_empty());
+            match next_raw {
+                Some(next_raw) => {
+                    let base = pagination_request_url(context.request_url)?;
+                    state.next_url = Some(resolve_pagination_next_url(
+                        &base,
+                        next_raw,
+                        "next URL body value",
+                    )?);
                     Ok(PageAdvance::Continue)
                 }
                 None => Ok(PageAdvance::Stop),
@@ -395,7 +419,7 @@ fn link_param_matches(item: &str, name: &str, expected: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use reqwest::header::{HeaderMap, HeaderValue};
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     use super::{
         PageAdvance, PageAdvanceContext, PageState, advance_pagination_state,
@@ -751,5 +775,113 @@ mod tests {
         {
             assert_eq!(page_is_exhausted(rows_on_page, page_size), expected);
         }
+    }
+
+    fn next_url_body_pagination(path: &[&str]) -> coral_spec::ValidatedPagination {
+        PaginationSpec {
+            mode: PaginationMode::NextUrlBody,
+            next_url_path: path.iter().map(|segment| (*segment).to_string()).collect(),
+            ..PaginationSpec::default()
+        }
+        .validated("demo", "items")
+        .unwrap()
+    }
+
+    fn advance_next_url_body(
+        path: &[&str],
+        payload: &Value,
+    ) -> datafusion::error::Result<(PageAdvance, PageState)> {
+        let pagination = next_url_body_pagination(path);
+        let mut state = PageState::default();
+        let advance = advance_pagination_state(
+            &mut state,
+            &pagination,
+            PageAdvanceContext {
+                payload,
+                response_headers: &HeaderMap::new(),
+                request_url: "https://api.example.com/v1.0/me/chats",
+                rows_on_page: 10,
+                page_size: Some(10),
+                source_schema: "demo",
+                table_name: "items",
+            },
+        )?;
+        Ok((advance, state))
+    }
+
+    #[test]
+    fn advance_next_url_body_follows_absolute_and_relative_values() {
+        // OData nests the link under a dotted key, which is one path segment.
+        let (advance, state) = advance_next_url_body(
+            &["@odata.nextLink"],
+            &json!({"@odata.nextLink": "https://api.example.com/v1.0/me/chats?$skiptoken=abc"}),
+        )
+        .unwrap();
+        assert_eq!(advance, PageAdvance::Continue);
+        assert_eq!(
+            state.next_url.as_deref(),
+            Some("https://api.example.com/v1.0/me/chats?$skiptoken=abc")
+        );
+
+        // A bare query string resolves against the request path, matching the
+        // Link-header behaviour.
+        let (advance, state) =
+            advance_next_url_body(&["next_page_url"], &json!({"next_page_url": "?page=2"}))
+                .unwrap();
+        assert_eq!(advance, PageAdvance::Continue);
+        assert_eq!(
+            state.next_url.as_deref(),
+            Some("https://api.example.com/v1.0/me/chats?page=2")
+        );
+    }
+
+    #[test]
+    fn advance_next_url_body_stops_when_the_link_is_absent_or_blank() {
+        for payload in [
+            json!({"value": []}),
+            json!({"@odata.nextLink": ""}),
+            json!({"@odata.nextLink": "   "}),
+            json!({"@odata.nextLink": null}),
+        ] {
+            let (advance, state) = advance_next_url_body(&["@odata.nextLink"], &payload).unwrap();
+            assert_eq!(
+                advance,
+                PageAdvance::Stop,
+                "a missing next link ends the crawl: {payload}"
+            );
+            assert!(state.next_url.is_none());
+        }
+    }
+
+    #[test]
+    fn advance_next_url_body_rejects_cross_origin_values() {
+        // The URL comes from the response body, so an origin check is the only
+        // thing standing between a compromised response and an exfiltrated
+        // Authorization header.
+        let err = advance_next_url_body(
+            &["@odata.nextLink"],
+            &json!({"@odata.nextLink": "https://attacker.example/steal"}),
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("pagination next URL body value must stay on origin"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn apply_pagination_query_pairs_adds_nothing_for_next_url_body() {
+        let pagination = next_url_body_pagination(&["@odata.nextLink"]);
+        let mut params = Vec::new();
+
+        apply_pagination_query_pairs(&mut params, &pagination, &PageState::default(), None)
+            .unwrap();
+
+        assert!(
+            params.is_empty(),
+            "the next URL carries the server's own query; Coral must not add to it"
+        );
     }
 }

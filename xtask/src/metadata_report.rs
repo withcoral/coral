@@ -301,11 +301,9 @@ fn import_source_rows(
                 next_url_header: pagination
                     .and_then(|spec| spec.next_url_header.clone())
                     .unwrap_or_default(),
-                // Always empty today: no pagination contract reads a next URL
-                // out of the response body yet. The column exists so the
-                // baseline captured before that lands has the same shape as the
-                // reports compared against it.
-                next_url_path: String::new(),
+                next_url_path: pagination
+                    .map(|spec| join_path(&spec.next_url_path))
+                    .unwrap_or_default(),
             }
         })
         .collect())
@@ -429,6 +427,7 @@ fn mode_name(mode: PaginationMode) -> String {
         PaginationMode::Page => "page",
         PaginationMode::Offset => "offset",
         PaginationMode::LinkHeader => "link_header",
+        PaginationMode::NextUrlBody => "next_url_body",
     }
     .to_owned()
 }

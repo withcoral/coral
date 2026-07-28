@@ -19,7 +19,7 @@ use crate::backends::http::url::{join_url, normalize_base_url};
 use crate::backends::shared::json_path::get_path_value;
 use crate::backends::shared::response_rows::extract_rows;
 use crate::backends::shared::template::{RenderContext, render_template};
-use coral_spec::{HttpMethod, ValidatedPaginationMode};
+use coral_spec::HttpMethod;
 
 const DEFAULT_MAX_PAGES: usize = 10_000;
 
@@ -94,23 +94,21 @@ pub(super) async fn fetch_rows(
         );
         let base_url = render_template(&client.base_url, &render_context)?;
         let base_url = normalize_base_url(&base_url);
-        let following_link_header = matches!(
-            pagination.mode,
-            ValidatedPaginationMode::LinkHeader | ValidatedPaginationMode::Auto
-        ) && state.next_url.is_some();
+        // Asked once, of the mode itself: a mode that advances by URL must
+        // both request that URL and skip rebuilding the request Coral would
+        // otherwise have made. Two independent `matches!` tests here is how a
+        // new mode silently stops after page one.
+        let follows_next_url = pagination.mode.follows_response_next_url();
+        let following_next_url = follows_next_url && state.next_url.is_some();
 
-        let url = if matches!(
-            pagination.mode,
-            ValidatedPaginationMode::LinkHeader | ValidatedPaginationMode::Auto
-        ) && let Some(next) = state.next_url.clone()
-        {
+        let url = if let Some(next) = state.next_url.clone().filter(|_| follows_next_url) {
             next
         } else {
             let rendered_path = render_template(&active_request.path, &render_context)?;
             join_url(&base_url, &rendered_path)?
         };
 
-        let (query_pairs, body) = if following_link_header {
+        let (query_pairs, body) = if following_next_url {
             (Vec::new(), None)
         } else {
             let mut query_pairs = build_query_pairs(active_request, &render_context)?;

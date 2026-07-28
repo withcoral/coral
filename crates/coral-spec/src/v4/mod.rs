@@ -7,8 +7,8 @@ pub const V4_ARTIFACT_SCHEMA_VERSION: u32 = 5;
 pub const SURFACE_IMPORTER_VERSION: &str = "surface-import-v3";
 pub const OPENAPI_IMPORTER_VERSION: &str = "openapi-v7";
 pub const MCP_IMPORTER_VERSION: &str = "mcp-tools-v3";
-pub const OPERATION_METADATA_GENERATOR_VERSION: &str = "operation-metadata-v2";
-pub const PROJECTION_GENERATOR_VERSION: &str = "derive-read-v11";
+pub const OPERATION_METADATA_GENERATOR_VERSION: &str = "operation-metadata-v3";
+pub const PROJECTION_GENERATOR_VERSION: &str = "derive-read-v12";
 
 mod artifacts;
 mod diagnostics;

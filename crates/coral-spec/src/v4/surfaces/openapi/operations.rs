@@ -361,6 +361,7 @@ fn detect_pagination_contract(
     context: &OpenApiResponsePaginationContext,
 ) -> Option<PaginationSpec> {
     detect_link_header_pagination(inputs, context)
+        .or_else(|| detect_next_url_body_pagination(document, inputs, context))
         .or_else(|| detect_cursor_query_pagination(document, inputs, context))
         .or_else(|| detect_offset_pagination(inputs))
         .or_else(|| detect_page_pagination(inputs))
@@ -396,6 +397,48 @@ fn detect_link_header_pagination(
         page_param: page_input.map(|input| input.name.clone()),
         page_start: page_input.and_then(numeric_input_default).unwrap_or(1),
         next_url_header,
+        ..PaginationSpec::default()
+    })
+}
+
+/// Detects a response body that hands back the complete URL of the next page,
+/// as `OData` does with `@odata.nextLink`.
+///
+/// Ranked above cursor-query and offset detection because a whole URL is
+/// unambiguous: there is no guessing which request parameter a token belongs
+/// in, and no risk of driving the endpoint with a parameter it rejects. It
+/// stays below `Link` header detection, which is a declared, cheaper signal.
+fn detect_next_url_body_pagination(
+    document: &Value,
+    inputs: &[IrOperationInput],
+    context: &OpenApiResponsePaginationContext,
+) -> Option<PaginationSpec> {
+    /// Response property names that carry a whole URL rather than a token.
+    ///
+    /// Deliberately narrower than `RESPONSE_NEXT_URL_HEADER_TOKENS`, which
+    /// accepts bare `next`/`nextpage`. A *header* called `Next` is nearly
+    /// always a URL; a *body field* called `next` is very often a continuation
+    /// token, and those must keep falling through to cursor-query detection so
+    /// they end up in the request parameter that expects them. Resist
+    /// harmonising the two lists.
+    const RESPONSE_NEXT_URL_BODY_TOKENS: &[&str] = &[
+        "odatanextlink",
+        "nextlink",
+        "nexturl",
+        "nexturi",
+        "nextpageurl",
+        "nextpageuri",
+        "nextpagelink",
+        "nextpagehref",
+        "nexthref",
+    ];
+
+    let next_url_path =
+        find_response_cursor_path(document, &context.schema, RESPONSE_NEXT_URL_BODY_TOKENS)?;
+    Some(PaginationSpec {
+        mode: PaginationMode::NextUrlBody,
+        page_size: detect_page_size(inputs),
+        next_url_path,
         ..PaginationSpec::default()
     })
 }

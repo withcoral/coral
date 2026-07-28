@@ -177,6 +177,7 @@ fn validate_rest_pagination(
     for path in [
         pagination.cursor_body_path.as_slice(),
         pagination.response_cursor_path.as_slice(),
+        pagination.next_url_path.as_slice(),
         pagination
             .page_size
             .as_ref()
