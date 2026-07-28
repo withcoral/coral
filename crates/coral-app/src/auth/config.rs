@@ -36,9 +36,9 @@ const CONFLICTING_KEY_SOURCES: &str = "configure only one of signing_key_env or 
 /// nothing downstream revalidates. This type performs no `config.toml`
 /// filesystem reads.
 ///
-/// The settings are read through [`ResolvedAuthSettings`], which
-/// [`AuthSettings::resolve_runtime_dependencies`] produces once the secrets
-/// the config only points at have actually been fetched.
+/// The settings are read through the crate-internal `ResolvedAuthSettings`,
+/// which `resolve_runtime_dependencies` produces once the secrets the config
+/// only points at have actually been fetched.
 pub struct AuthSettings(RawAuthSettings);
 
 #[derive(Deserialize)]
