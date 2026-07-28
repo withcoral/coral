@@ -1,6 +1,6 @@
 #![cfg_attr(not(test), expect(dead_code, reason = "wired by OAuth descendants"))]
 use super::config::ResolvedOidcProvider;
-use crate::outbound_url_policy::{ConfiguredEndpointUrl, read_bounded_body};
+use crate::outbound_url_policy::{ConfiguredEndpointUrl, DiscoveredEndpointUrl, read_bounded_body};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use reqwest::header::ACCEPT;
@@ -26,14 +26,14 @@ pub(super) struct OidcAuthorizationRequest {
 }
 pub(super) struct OidcCodeExchange {
     id_token: Zeroizing<String>,
-    jwks_uri: ConfiguredEndpointUrl,
+    jwks_uri: DiscoveredEndpointUrl,
     signing_algorithms: Vec<String>,
 }
 impl OidcCodeExchange {
     pub(super) fn id_token(&self) -> &str {
         self.id_token.as_str()
     }
-    pub(super) fn jwks_uri(&self) -> &ConfiguredEndpointUrl {
+    pub(super) fn jwks_uri(&self) -> &DiscoveredEndpointUrl {
         &self.jwks_uri
     }
     pub(super) fn signing_algorithms(&self) -> &[String] {
@@ -144,6 +144,8 @@ impl OidcProviderClient {
         &self,
         provider: &ResolvedOidcProvider,
     ) -> Result<ValidatedDiscovery, OidcProviderClientError> {
+        let issuer = ConfiguredEndpointUrl::parse(&provider.issuer)
+            .map_err(|_error| OidcProviderClientError::Discovery)?;
         let url = discovery_url(&provider.issuer)?;
         let response = self
             .http
@@ -174,17 +176,22 @@ impl OidcProviderClient {
             authorization_endpoint: discovered_endpoint(
                 "authorization_endpoint",
                 &document.authorization_endpoint,
+                &issuer,
             )?,
-            token_endpoint: discovered_endpoint("token_endpoint", &document.token_endpoint)?,
-            jwks_uri: discovered_endpoint("jwks_uri", &document.jwks_uri)?,
+            token_endpoint: discovered_endpoint(
+                "token_endpoint",
+                &document.token_endpoint,
+                &issuer,
+            )?,
+            jwks_uri: discovered_endpoint("jwks_uri", &document.jwks_uri, &issuer)?,
             signing_algorithms: document.id_token_signing_alg_values_supported,
         })
     }
 }
 struct ValidatedDiscovery {
-    authorization_endpoint: ConfiguredEndpointUrl,
-    token_endpoint: ConfiguredEndpointUrl,
-    jwks_uri: ConfiguredEndpointUrl,
+    authorization_endpoint: DiscoveredEndpointUrl,
+    token_endpoint: DiscoveredEndpointUrl,
+    jwks_uri: DiscoveredEndpointUrl,
     signing_algorithms: Vec<String>,
 }
 #[derive(Deserialize)]
@@ -209,11 +216,12 @@ fn discovery_url(issuer: &str) -> Result<ConfiguredEndpointUrl, OidcProviderClie
 fn discovered_endpoint(
     label: &'static str,
     value: &str,
-) -> Result<ConfiguredEndpointUrl, OidcProviderClientError> {
+    issuer: &ConfiguredEndpointUrl,
+) -> Result<DiscoveredEndpointUrl, OidcProviderClientError> {
     if value.trim() != value {
         return Err(OidcProviderClientError::InvalidEndpoint(label));
     }
-    let url = ConfiguredEndpointUrl::parse(value)
+    let url = DiscoveredEndpointUrl::parse(value, issuer)
         .map_err(|_error| OidcProviderClientError::InvalidEndpoint(label))?;
     let reserved = url.as_url().query_pairs().any(|(key, _value)| {
         let key = key.to_ascii_lowercase();
@@ -328,6 +336,22 @@ mod tests {
             &format!("{}/token?tenant=one", server.uri()),
             &format!("{}/jwks", server.uri()),
         )
+    }
+
+    #[test]
+    fn remote_issuer_cannot_discover_loopback_http_endpoints() {
+        let issuer =
+            ConfiguredEndpointUrl::parse("https://accounts.example.test/tenant").expect("issuer");
+        for (label, endpoint) in [
+            ("authorization_endpoint", "http://127.0.0.1:9000/authorize"),
+            ("token_endpoint", "http://127.0.0.1:9000/token"),
+            ("jwks_uri", "http://127.0.0.1:9000/jwks"),
+        ] {
+            assert_eq!(
+                discovered_endpoint(label, endpoint, &issuer).expect_err("loopback downgrade"),
+                OidcProviderClientError::InvalidEndpoint(label)
+            );
+        }
     }
 
     #[tokio::test]
