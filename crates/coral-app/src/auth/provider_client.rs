@@ -19,6 +19,8 @@
 
 #![cfg_attr(not(test), expect(dead_code, reason = "wired by OAuth descendants"))]
 
+use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use base64::Engine as _;
@@ -28,6 +30,8 @@ use ring::rand::{SecureRandom as _, SystemRandom};
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 use thiserror::Error;
+use tokio::sync::{Mutex, RwLock};
+use tokio::time::Instant;
 use url::Url;
 use zeroize::Zeroizing;
 
@@ -67,6 +71,7 @@ const RESERVED_TOKEN_PARAMS: &[&str] = &[
 pub(super) struct OidcProviderClient {
     http: reqwest::Client,
     random: SystemRandom,
+    discovery: Arc<DiscoveryCache>,
 }
 
 /// An authorization URL and the per-login values that must outlive it.
@@ -159,6 +164,7 @@ impl OidcProviderClient {
         Ok(Self {
             http,
             random: SystemRandom::new(),
+            discovery: Arc::new(DiscoveryCache::default()),
         })
     }
 
@@ -279,8 +285,37 @@ impl OidcProviderClient {
         identity.map_err(|_error| OidcProviderClientError::IdTokenValidation)
     }
 
-    /// Fetches and validates the provider's discovery document.
+    /// Returns the provider's validated discovery document, reusing a cached
+    /// copy while one is live.
+    ///
+    /// Only successes are cached, so a provider outage never outlives itself:
+    /// a failed discovery leaves the previous entry expired and the next call
+    /// retries. Concurrent misses are collapsed behind a single refresh, so a
+    /// burst of authorization requests makes one outbound call rather than one
+    /// per request.
     async fn discover(
+        &self,
+        provider: &ResolvedOidcProvider,
+    ) -> Result<ValidatedDiscovery, OidcProviderClientError> {
+        let ttl = provider.discovery_cache_ttl();
+        if let Some(cached) = self.discovery.get(&provider.issuer).await {
+            return Ok(cached);
+        }
+        let _refresh = self.discovery.refresh.lock().await;
+        // Another task may have populated the entry while this one waited for
+        // the refresh lock.
+        if let Some(cached) = self.discovery.get(&provider.issuer).await {
+            return Ok(cached);
+        }
+        let discovery = self.fetch_discovery(provider).await?;
+        self.discovery
+            .insert(&provider.issuer, &discovery, ttl)
+            .await;
+        Ok(discovery)
+    }
+
+    /// Fetches and validates the provider's discovery document.
+    async fn fetch_discovery(
         &self,
         provider: &ResolvedOidcProvider,
     ) -> Result<ValidatedDiscovery, OidcProviderClientError> {
@@ -341,12 +376,66 @@ impl OidcProviderClient {
     }
 }
 
-/// A discovery document that passed every check in [`OidcProviderClient::discover`].
+/// A discovery document that passed every check in
+/// [`OidcProviderClient::fetch_discovery`].
+///
+/// Only a validated document is cached, so a copy handed back by
+/// [`OidcProviderClient::discover`] carries the same guarantees as a freshly
+/// fetched one.
+#[derive(Clone)]
 struct ValidatedDiscovery {
     authorization_endpoint: EndpointUrl<Discovered>,
     token_endpoint: EndpointUrl<Discovered>,
     jwks_uri: EndpointUrl<Discovered>,
     signing_algorithms: Vec<String>,
+}
+
+/// Live discovery documents, keyed by the configured issuer they were fetched
+/// for.
+///
+/// The key space is the set of configured providers, so the map is bounded by
+/// configuration rather than by request traffic. `refresh` serializes cache
+/// misses: it is held across the outbound call so that concurrent misses
+/// produce one request, not one per caller.
+#[derive(Default)]
+struct DiscoveryCache {
+    entries: RwLock<HashMap<String, CachedDiscovery>>,
+    refresh: Mutex<()>,
+}
+
+struct CachedDiscovery {
+    discovery: ValidatedDiscovery,
+    expires_at: Instant,
+}
+
+impl DiscoveryCache {
+    async fn get(&self, issuer: &str) -> Option<ValidatedDiscovery> {
+        let now = Instant::now();
+        self.entries
+            .read()
+            .await
+            .get(issuer)
+            .filter(|entry| entry.expires_at > now)
+            .map(|entry| entry.discovery.clone())
+    }
+
+    /// Stores `discovery` for `ttl`, dropping it when the deadline cannot be
+    /// represented or has already passed.
+    ///
+    /// A zero `ttl` therefore disables caching without a separate code path.
+    async fn insert(&self, issuer: &str, discovery: &ValidatedDiscovery, ttl: Duration) {
+        let now = Instant::now();
+        let Some(expires_at) = now.checked_add(ttl).filter(|deadline| *deadline > now) else {
+            return;
+        };
+        self.entries.write().await.insert(
+            issuer.to_string(),
+            CachedDiscovery {
+                discovery: discovery.clone(),
+                expires_at,
+            },
+        );
+    }
 }
 
 /// The fields this module reads from a provider's discovery document.
@@ -476,6 +565,10 @@ mod tests {
     const CLIENT_SECRET: &str = "client-secret-must-not-leak";
 
     fn provider(issuer: &str) -> ResolvedOidcProvider {
+        provider_with(issuer, "")
+    }
+
+    fn provider_with(issuer: &str, extra: &str) -> ResolvedOidcProvider {
         let settings = AuthSettings::from_toml(&format!(
             "[auth]
              [auth.session]
@@ -487,6 +580,7 @@ mod tests {
              client_secret = '{CLIENT_SECRET}'
              redirect_uri = 'http://localhost/auth/oidc/callback'
              scopes = ['openid', 'email']
+             {extra}
              [auth.provider.auth_params]
              prompt = 'login'"
         ))
@@ -615,6 +709,153 @@ mod tests {
         assert_eq!(query.get("nonce"), Some(&request.nonce));
         let expected = URL_SAFE_NO_PAD.encode(Sha256::digest(request.code_verifier.as_bytes()));
         assert_eq!(query.get("code_challenge"), Some(&expected));
+    }
+
+    async fn discovery_requests(server: &MockServer) -> usize {
+        server
+            .received_requests()
+            .await
+            .expect("requests")
+            .iter()
+            .filter(|request| {
+                request
+                    .url
+                    .path()
+                    .ends_with("/.well-known/openid-configuration")
+            })
+            .count()
+    }
+
+    async fn mount_valid_discovery(server: &MockServer, issuer: &str) {
+        mount_discovery(
+            server,
+            "/tenant/.well-known/openid-configuration",
+            valid_document(server, issuer).to_string(),
+        )
+        .await;
+    }
+
+    fn validated_discovery() -> ValidatedDiscovery {
+        let issuer =
+            EndpointUrl::<Configured>::parse("https://accounts.example.test").expect("issuer");
+        let endpoint = |label, path: &str| {
+            discovered_endpoint(
+                label,
+                &format!("https://accounts.example.test{path}"),
+                &issuer,
+            )
+            .expect(label)
+        };
+        ValidatedDiscovery {
+            authorization_endpoint: endpoint("authorization_endpoint", "/authorize"),
+            token_endpoint: endpoint("token_endpoint", "/token"),
+            jwks_uri: endpoint("jwks_uri", "/jwks"),
+            signing_algorithms: vec!["RS256".to_string()],
+        }
+    }
+
+    #[tokio::test]
+    async fn discovery_is_reused_across_authorization_requests() {
+        let server = MockServer::start().await;
+        let issuer = format!("{}/tenant/", server.uri());
+        mount_valid_discovery(&server, &issuer).await;
+        let client = OidcProviderClient::new().expect("client");
+        let provider = provider(&issuer);
+
+        for _ in 0..3 {
+            client
+                .authorization_request(&provider)
+                .await
+                .expect("authorization request");
+        }
+        assert_eq!(discovery_requests(&server).await, 1);
+    }
+
+    /// Expiry is checked against the cache directly: `start_paused` auto-advances
+    /// while a real socket read is pending, which would trip the client's own
+    /// request timeout in an end-to-end test.
+    #[tokio::test(start_paused = true)]
+    async fn cached_discovery_is_dropped_once_its_ttl_expires() {
+        let cache = DiscoveryCache::default();
+        let issuer = "https://accounts.example.test";
+        let ttl = Duration::from_mins(5);
+        cache.insert(issuer, &validated_discovery(), ttl).await;
+        assert!(cache.get("https://other.example.test").await.is_none());
+
+        tokio::time::advance(Duration::from_mins(4)).await;
+        assert!(cache.get(issuer).await.is_some(), "expired before its TTL");
+
+        tokio::time::advance(Duration::from_mins(2)).await;
+        assert!(cache.get(issuer).await.is_none(), "outlived its TTL");
+    }
+
+    /// A cached failure would turn a provider blip into an outage lasting a
+    /// whole TTL, so only successes are stored.
+    #[tokio::test]
+    async fn discovery_failures_are_never_cached() {
+        let server = MockServer::start().await;
+        let issuer = format!("{}/tenant/", server.uri());
+        Mock::given(method("GET"))
+            .and(path("/tenant/.well-known/openid-configuration"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let client = OidcProviderClient::new().expect("client");
+        let provider = provider(&issuer);
+        let Err(error) = client.authorization_request(&provider).await else {
+            panic!("expected the provider outage to fail discovery");
+        };
+        assert_eq!(error, OidcProviderClientError::Discovery);
+
+        server.reset().await;
+        mount_valid_discovery(&server, &issuer).await;
+        client
+            .authorization_request(&provider)
+            .await
+            .expect("recovers without waiting out a TTL");
+    }
+
+    /// The cache exists so that a burst of authorization requests cannot be
+    /// amplified into a burst of provider requests.
+    #[tokio::test]
+    async fn concurrent_discovery_misses_collapse_into_one_request() {
+        let server = MockServer::start().await;
+        let issuer = format!("{}/tenant/", server.uri());
+        mount_valid_discovery(&server, &issuer).await;
+        let client = OidcProviderClient::new().expect("client");
+        let provider = provider(&issuer);
+
+        let requests = (0..16)
+            .map(|_index| {
+                let client = client.clone();
+                let provider = provider.clone();
+                tokio::spawn(async move { client.authorization_request(&provider).await })
+            })
+            .collect::<Vec<_>>();
+        for request in requests {
+            request
+                .await
+                .expect("join")
+                .expect("concurrent authorization request");
+        }
+        assert_eq!(discovery_requests(&server).await, 1);
+    }
+
+    #[tokio::test]
+    async fn zero_discovery_cache_ttl_disables_reuse() {
+        let server = MockServer::start().await;
+        let issuer = format!("{}/tenant/", server.uri());
+        mount_valid_discovery(&server, &issuer).await;
+        let client = OidcProviderClient::new().expect("client");
+        let provider = provider_with(&issuer, "discovery_cache_ttl_seconds = 0");
+
+        for _ in 0..2 {
+            client
+                .authorization_request(&provider)
+                .await
+                .expect("authorization request");
+        }
+        assert_eq!(discovery_requests(&server).await, 2);
     }
 
     #[tokio::test]

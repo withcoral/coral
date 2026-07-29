@@ -25,6 +25,8 @@ const DEFAULT_BIND_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCAL
 const DEFAULT_SIGNING_KEY_ENV: &str = "CORAL_SESSION_SIGNING_KEY";
 const DEFAULT_TOKEN_TTL: Duration = Duration::from_hours(720);
 const MAX_TOKEN_TTL: Duration = Duration::from_hours(24 * 365);
+const DEFAULT_DISCOVERY_CACHE_TTL: Duration = Duration::from_mins(5);
+const MAX_DISCOVERY_CACHE_TTL: Duration = Duration::from_hours(1);
 const CONFLICTING_KEY_SOURCES: &str = "configure only one of signing_key_env or signing_key_file";
 
 /// Validated settings for the top-level `[auth]` configuration section.
@@ -323,6 +325,11 @@ struct OidcProviderSettings {
     display_name_claim: String,
     auth_params: BTreeMap<String, String>,
     required_claims: BTreeMap<String, Value>,
+    /// How long a validated discovery document stays reusable.
+    ///
+    /// Unset means [`DEFAULT_DISCOVERY_CACHE_TTL`]. Zero disables caching, at
+    /// the cost of one outbound discovery request per authorization request.
+    discovery_cache_ttl_seconds: Option<u64>,
 }
 
 impl OidcProviderSettings {
@@ -433,6 +440,15 @@ impl OidcProviderSettings {
                 )));
             }
         }
+        if self
+            .discovery_cache_ttl_seconds
+            .is_some_and(|ttl| ttl > MAX_DISCOVERY_CACHE_TTL.as_secs())
+        {
+            return Err(invalid_provider(format!(
+                "discovery_cache_ttl_seconds must not exceed {}",
+                MAX_DISCOVERY_CACHE_TTL.as_secs()
+            )));
+        }
         Ok(())
     }
 
@@ -477,6 +493,9 @@ impl OidcProviderSettings {
             display_name_claim: self.display_name_claim,
             auth_params: self.auth_params,
             required_claims: self.required_claims,
+            discovery_cache_ttl: self
+                .discovery_cache_ttl_seconds
+                .map_or(DEFAULT_DISCOVERY_CACHE_TTL, Duration::from_secs),
             client_secret,
         })
     }
@@ -502,12 +521,21 @@ pub(super) struct ResolvedOidcProvider {
     pub(super) display_name_claim: String,
     pub(super) auth_params: BTreeMap<String, String>,
     pub(super) required_claims: BTreeMap<String, Value>,
+    discovery_cache_ttl: Duration,
     client_secret: ProviderSecret,
 }
 
 impl ResolvedOidcProvider {
     pub(super) fn client_secret(&self) -> &str {
         self.client_secret.as_str()
+    }
+
+    /// How long a validated discovery document may be reused.
+    ///
+    /// A zero duration disables caching: every authorization request then makes
+    /// its own discovery call to the provider.
+    pub(super) fn discovery_cache_ttl(&self) -> Duration {
+        self.discovery_cache_ttl
     }
 }
 
@@ -862,9 +890,24 @@ mod tests {
         assert_eq!(provider.scopes, ["openid", "email", "profile"]);
         assert_eq!(provider.principal_claim, "sub");
         assert_eq!(provider.display_name_claim, "email");
+        assert_eq!(provider.discovery_cache_ttl(), DEFAULT_DISCOVERY_CACHE_TTL);
         let debug = format!("{provider:?}");
         assert!(debug.contains("<redacted>"));
         assert!(!debug.contains("inline-secret"));
+    }
+
+    #[test]
+    fn honors_a_configured_discovery_cache_ttl() {
+        for seconds in [0, 30, MAX_DISCOVERY_CACHE_TTL.as_secs()] {
+            let raw = valid("").replace(
+                "client_id = 'upstream-client'",
+                &format!("client_id = 'upstream-client'\ndiscovery_cache_ttl_seconds = {seconds}"),
+            );
+            assert_eq!(
+                resolved(&raw).provider().discovery_cache_ttl(),
+                Duration::from_secs(seconds)
+            );
+        }
     }
 
     #[test]
@@ -1083,6 +1126,16 @@ mod tests {
                     "redirect_uri = 'http://localhost:9080/auth/oidc/callback'\nscopes = ['openid', 'two scopes']",
                 ),
                 "scopes must contain valid OAuth scope tokens",
+            ),
+            (
+                valid("").replace(
+                    "client_id = 'upstream-client'",
+                    &format!(
+                        "client_id = 'upstream-client'\ndiscovery_cache_ttl_seconds = {}",
+                        MAX_DISCOVERY_CACHE_TTL.as_secs() + 1
+                    ),
+                ),
+                "discovery_cache_ttl_seconds must not exceed",
             ),
             (
                 valid("").replace(
