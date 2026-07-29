@@ -110,18 +110,13 @@ impl Principal {
         }
     }
 
-    pub(crate) fn for_federated(provider: &str, subject: &str) -> Self {
-        let mut identity = Vec::with_capacity(provider.len() + subject.len() + 32);
+    pub(crate) fn for_federated(subject: &str) -> Self {
+        let mut identity = Vec::with_capacity(subject.len() + 32);
         identity.extend_from_slice(b"coral-federated-user-v1\0");
-        identity.extend_from_slice(&(provider.len() as u64).to_be_bytes());
-        identity.extend_from_slice(provider.as_bytes());
         identity.extend_from_slice(&(subject.len() as u64).to_be_bytes());
         identity.extend_from_slice(subject.as_bytes());
         Self {
-            id: PrincipalId(format!(
-                "federated-{}",
-                crate::hash::sha256_hex(&identity)
-            )),
+            id: PrincipalId(format!("federated-{}", crate::hash::sha256_hex(&identity))),
             kind: PrincipalKind::User,
             token_id: None,
             audience: None,
@@ -372,15 +367,10 @@ mod tests {
     }
 
     #[test]
-    fn federated_principal_is_stable_and_namespaces_provider_and_subject() {
-        let principal = Principal::for_federated("oidc", "alice");
-        assert_eq!(principal, Principal::for_federated("oidc", "alice"));
-        assert_ne!(principal, Principal::for_federated("saml", "alice"));
-        assert_ne!(principal, Principal::for_federated("oidc", "bob"));
-        assert_ne!(
-            Principal::for_federated("ab", "c"),
-            Principal::for_federated("a", "bc")
-        );
+    fn federated_principal_is_stable_and_namespaces_subject() {
+        let principal = Principal::for_federated("alice");
+        assert_eq!(principal, Principal::for_federated("alice"));
+        assert_ne!(principal, Principal::for_federated("bob"));
         PrincipalId::parse(principal.id().as_str()).expect("generated id is canonical");
         assert_eq!(principal.kind(), PrincipalKind::User);
     }

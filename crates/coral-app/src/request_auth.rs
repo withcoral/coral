@@ -54,7 +54,7 @@ impl PrincipalProvider for SessionPrincipalProvider {
             .validate_access_token(token, &accepted_audiences)
             .map_err(|_error| unauthenticated())?;
         Ok(
-            Principal::for_federated(&session.provider, &session.subject)
+            Principal::for_federated(&session.subject)
                 .with_access_token_attribution(
                     session.token_id,
                     session.audience,
@@ -118,11 +118,10 @@ mod tests {
         let signing_key = test_signing_key();
         let config = session(&signing_key);
         let token = config
-            .issue_access_token("oidc", "raw/subject with spaces", CLIENT_ID, MCP_AUDIENCE)
+            .issue_access_token("raw/subject with spaces", CLIENT_ID, MCP_AUDIENCE)
             .expect("session token")
             .access_token;
-        let provider =
-            SessionPrincipalProvider::new(config.verifier(), [MCP_AUDIENCE.to_string()]);
+        let provider = SessionPrincipalProvider::new(config.verifier(), [MCP_AUDIENCE.to_string()]);
 
         let principal = provider
             .principal_for_metadata(&bearer_metadata(&token))
@@ -146,15 +145,14 @@ mod tests {
         let config = session(&signing_key);
         let wrong_signing_key = test_signing_key();
         let wrong_key = session(&wrong_signing_key)
-            .issue_access_token("oidc", "alice", CLIENT_ID, MCP_AUDIENCE)
+            .issue_access_token("alice", CLIENT_ID, MCP_AUDIENCE)
             .expect("wrong-key token")
             .access_token;
         let wrong_audience = config
-            .issue_access_token("oidc", "alice", CLIENT_ID, "https://other.example/mcp")
+            .issue_access_token("alice", CLIENT_ID, "https://other.example/mcp")
             .expect("wrong-audience token")
             .access_token;
-        let provider =
-            SessionPrincipalProvider::new(config.verifier(), [MCP_AUDIENCE.to_string()]);
+        let provider = SessionPrincipalProvider::new(config.verifier(), [MCP_AUDIENCE.to_string()]);
 
         let mut duplicate = bearer_metadata(&wrong_key);
         duplicate.append(
@@ -195,7 +193,7 @@ mod tests {
 
         for audience in [MCP_AUDIENCE, BFF_AUDIENCE] {
             let token = config
-                .issue_access_token("oidc", "alice", CLIENT_ID, audience)
+                .issue_access_token("alice", CLIENT_ID, audience)
                 .expect("token")
                 .access_token;
             grpc_provider
@@ -211,7 +209,7 @@ mod tests {
         }
 
         let token = config
-            .issue_access_token("oidc", "alice", CLIENT_ID, "https://unapproved.example")
+            .issue_access_token("alice", CLIENT_ID, "https://unapproved.example")
             .expect("token")
             .access_token;
         grpc_provider

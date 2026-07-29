@@ -86,9 +86,8 @@ impl LoadedServerConfig {
     }
 
     pub(crate) fn companion_config(&self) -> Result<ServeCompanionConfig, AppError> {
-        let auth_settings =
-            AuthSettings::from_toml(&self.raw)
-                .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
+        let auth_settings = AuthSettings::from_toml(&self.raw)
+            .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
         let Some(auth_settings) = auth_settings else {
             return Ok(ServeCompanionConfig {
                 mcp_http: self.resolve_mcp_http(None)?,
