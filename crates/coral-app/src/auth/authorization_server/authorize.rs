@@ -9,6 +9,7 @@ use super::super::PROVIDER_ID;
 use super::super::provider_client::OidcAuthorizationRequest;
 use super::super::state_store::OAuthAuthorizationSessionRecord;
 use super::{AuthorizationServerHttpState, canonical_authorization_resource};
+use crate::outbound_url_policy::{BrowserRedirect, EndpointUrl};
 
 const MAX_QUERY_BYTES: usize = 8 * 1024;
 const MAX_PARAMETERS: usize = 32;
@@ -149,6 +150,13 @@ fn parse_query(raw: &str) -> Result<AuthorizeQuery, ()> {
     Ok(query)
 }
 
+/// Resolves the registered redirect URI a request names, under
+/// [`BrowserRedirect`].
+///
+/// The registry is remote input once client metadata documents populate it, so
+/// the policy is applied here rather than trusted to have been applied at
+/// registration: a URI the policy rejects resolves to `None`, and the request
+/// fails with a direct error instead of becoming a redirect.
 fn registered_redirect(
     registered_clients: &BTreeMap<String, Vec<String>>,
     client_id: &str,
@@ -158,7 +166,8 @@ fn registered_redirect(
         .get(client_id)?
         .iter()
         .find(|uri| uri.as_str() == redirect_uri)
-        .and_then(|uri| Url::parse(uri).ok())
+        .and_then(|uri| EndpointUrl::<BrowserRedirect>::parse(uri).ok())
+        .map(EndpointUrl::into_url)
 }
 
 fn valid_s256_challenge(value: &str) -> bool {
@@ -405,6 +414,25 @@ mod tests {
         assert!(location(&response).is_none());
         let body = to_bytes(response.into_body(), 4096).await.expect("body");
         assert!(!String::from_utf8_lossy(&body).contains("raw-secret"));
+    }
+
+    #[tokio::test]
+    async fn registered_redirect_outside_browser_policy_never_becomes_a_redirect() {
+        let store = Arc::new(InMemoryStateStore::new());
+        for uri in [
+            "javascript:alert(1)",
+            "data:text/html,<script>alert(1)</script>",
+            "http://client.example.test/callback",
+        ] {
+            let mut auth_state = state("https://provider.invalid", store.clone());
+            auth_state.registered_clients =
+                Arc::new(BTreeMap::from([(CLIENT_ID.into(), vec![uri.into()])]));
+            let mut request_pairs = pairs();
+            replace(&mut request_pairs, "redirect_uri", Some(uri));
+            let response = request(auth_state, &request_pairs).await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "accepted {uri}");
+            assert!(location(&response).is_none(), "redirected to {uri}");
+        }
     }
 
     #[tokio::test]
