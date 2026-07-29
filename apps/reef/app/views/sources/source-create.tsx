@@ -162,14 +162,14 @@ function SourceCreateDialogContent({
     const result = discovery.data
     if (!result || result === appliedDiscovery.current || result.status !== 'success') return
     appliedDiscovery.current = result
-    if (step !== 0) return
+    if (step !== 0 || result.url !== draft.url.trim()) return
     const detectedAuth = authChoiceFromDiscovery(result.auth)
     setDraft((current) => ({
       ...current,
       ...(detectedAuth ? { auth: detectedAuth } : {}),
       description: result.description || current.description,
       headerName: result.auth.headerName || current.headerName,
-      name: result.name || current.name,
+      name: result.name,
       surfaceType:
         result.format === 'mcp'
           ? 'mcp'
@@ -178,9 +178,13 @@ function SourceCreateDialogContent({
             : 'openapi',
     }))
     setStep(1)
-  }, [discovery.data, step])
+  }, [discovery.data, draft.url, step])
 
   const update = (patch: Partial<Draft>) => setDraft((prev) => ({ ...prev, ...patch }))
+  const updateUrl = (url: string) =>
+    setDraft((current) =>
+      url.trim() === current.url.trim() ? { ...current, url } : { ...EMPTY_DRAFT, url },
+    )
   const inspectUrl = () =>
     discovery.load(`${discoveryPath}?url=${encodeURIComponent(draft.url.trim())}`)
   const requestCancel = () => {
@@ -248,7 +252,7 @@ function SourceCreateDialogContent({
       ) : null}
 
       <StepHeader step={0} />
-      <UrlStep draft={draft} update={update} />
+      <UrlStep draft={draft} updateUrl={updateUrl} />
 
       {discoveryError ? <SourceError>{discoveryError}</SourceError> : null}
 
@@ -423,7 +427,7 @@ function StepHeader({ step }: { step: number }) {
   )
 }
 
-function UrlStep({ draft, update }: { draft: Draft; update: (patch: Partial<Draft>) => void }) {
+function UrlStep({ draft, updateUrl }: { draft: Draft; updateUrl: (url: string) => void }) {
   const idUrl = useId()
   return (
     <div className={styles.fieldGroup}>
@@ -440,7 +444,7 @@ function UrlStep({ draft, update }: { draft: Draft; update: (patch: Partial<Draf
         <TextInput
           id={idUrl}
           value={draft.url}
-          onChange={(value) => update({ url: value })}
+          onChange={updateUrl}
           placeholder="https://example.com/openapi.yaml"
         />
       </SourceField>

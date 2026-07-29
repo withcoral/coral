@@ -9,6 +9,7 @@ import type { SourcesActionData } from '@/routes/sources-action'
 import { SourceCreateDialog } from './source-create'
 
 type SuccessfulDiscovery = Extract<SourceDiscoveryData, { status: 'success' }>
+type DiscoveryLoader = (request: Request) => SourceDiscoveryData | Promise<SourceDiscoveryData>
 
 const DISCOVERY: SuccessfulDiscovery = {
   auth: { kind: 'bearer', label: 'Bearer token' },
@@ -35,7 +36,7 @@ function RoutedSourceCreateDialog() {
 }
 
 async function renderSourceCreate(
-  discovery: SuccessfulDiscovery = DISCOVERY,
+  discovery: SuccessfulDiscovery | DiscoveryLoader = DISCOVERY,
   action?: () => Promise<SourcesActionData>,
 ) {
   const router = createMemoryRouter(
@@ -50,7 +51,10 @@ async function renderSourceCreate(
         path: '/workspaces/:workspaceId/sources',
       },
       {
-        loader: () => ({ ...discovery, auth: { ...discovery.auth } }),
+        loader: ({ request }) =>
+          typeof discovery === 'function'
+            ? discovery(request)
+            : { ...discovery, auth: { ...discovery.auth } },
         path: '/workspaces/:workspaceId/sources/discover',
       },
     ],
@@ -141,6 +145,80 @@ describe('SourceCreateDialog', () => {
 
     await expect.element(screen.getByText('Step 2/3')).toBeVisible()
     await expect.poll(activeDialogCount).toBe(2)
+  })
+
+  it('resets source-specific draft state when the URL changes', async () => {
+    const discovery: SuccessfulDiscovery = {
+      ...DISCOVERY,
+      auth: { headerName: 'X-Weather-Key', kind: 'header', label: 'Header X-Weather-Key' },
+    }
+    const { screen } = await renderSourceCreate(discovery)
+
+    await screen.getByLabelText('Source URL').fill(discovery.url)
+    await screen.getByRole('button', { name: 'Next' }).click()
+    await expect
+      .element(screen.getByLabelText('Description (optional)'))
+      .toHaveValue(discovery.description)
+
+    await screen.getByRole('button', { name: 'Next' }).click()
+    await expect.element(screen.getByLabelText('Header name')).toHaveValue('X-Weather-Key')
+    activeTokenInput().focus()
+    await userEvent.keyboard('weather-secret')
+
+    await screen.getByRole('button', { name: 'Back' }).click()
+    await expect.element(screen.getByText('Step 3/3')).not.toBeInTheDocument()
+    await screen.getByRole('button', { name: 'Back' }).click()
+    await expect.element(screen.getByText('Step 2/3')).not.toBeInTheDocument()
+    const replacementUrl = 'https://status.example/openapi.yaml'
+    Object.assign(discovery, {
+      auth: { kind: 'unknown', label: '' },
+      description: '',
+      name: 'status_api',
+      url: replacementUrl,
+    })
+    await screen.getByLabelText('Source URL').fill(replacementUrl)
+    await screen.getByRole('button', { name: 'Next' }).click()
+
+    await expect.element(screen.getByLabelText('Name')).toHaveValue('status_api')
+    await expect.element(screen.getByLabelText('Description (optional)')).toHaveValue('')
+
+    await screen.getByRole('button', { name: 'Next' }).click()
+    await expect.element(screen.getByRole('radio', { name: 'Bearer token' })).toBeChecked()
+    expect(activeTokenInput().value).toBe('')
+    await screen.getByRole('radio', { name: 'Custom header' }).click()
+    await expect.element(screen.getByLabelText('Header name')).toHaveValue('')
+  })
+
+  it('ignores a discovery response after the URL changes', async () => {
+    const replacement: SuccessfulDiscovery = {
+      auth: { kind: 'unknown', label: '' },
+      description: '',
+      format: 'unknown',
+      name: 'status_api',
+      status: 'success',
+      url: 'https://status.example/openapi.yaml',
+    }
+    let resolveFirst: ((result: SourceDiscoveryData) => void) | undefined
+    const firstRequest = new Promise<SourceDiscoveryData>((resolve) => {
+      resolveFirst = resolve
+    })
+    const { screen } = await renderSourceCreate((request) => {
+      const url = new URL(request.url).searchParams.get('url')
+      return url === DISCOVERY.url ? firstRequest : replacement
+    })
+
+    await screen.getByLabelText('Source URL').fill(DISCOVERY.url)
+    await screen.getByRole('button', { name: 'Next' }).click()
+    await expect.element(screen.getByRole('button', { name: 'Inspecting…' })).toBeVisible()
+    await screen.getByLabelText('Source URL').fill(replacement.url)
+    if (!resolveFirst) throw new Error('First discovery request did not start')
+    resolveFirst(DISCOVERY)
+
+    await expect.element(screen.getByRole('button', { name: 'Next' })).toBeVisible()
+    await expect.element(screen.getByText('Step 2/3')).not.toBeInTheDocument()
+    await screen.getByRole('button', { name: 'Next' }).click()
+
+    await expect.element(screen.getByLabelText('Name')).toHaveValue('status_api')
   })
 
   it.each(['coral', 'coral_admin', 'public'])('rejects reserved source name %s', async (name) => {
@@ -333,4 +411,12 @@ function activeDialogHeight() {
   )
   if (!dialog) throw new Error('Active dialog not found')
   return dialog.offsetHeight
+}
+
+function activeTokenInput() {
+  const input = [
+    ...document.querySelectorAll<HTMLInputElement>('input[placeholder="Paste token"]'),
+  ].find((candidate) => !candidate.disabled)
+  if (!input) throw new Error('Active token input not found')
+  return input
 }
