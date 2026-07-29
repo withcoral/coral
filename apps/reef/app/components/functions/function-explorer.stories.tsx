@@ -82,7 +82,7 @@ const meta = {
     functions,
     onDelete: fn(),
     onSelect: fn(),
-    selectedName: functions[0].name,
+    selectedName: undefined,
   },
   component: FunctionExplorer,
   parameters: {
@@ -106,7 +106,9 @@ export const Default: Story = {
       'aria-expanded',
       'false',
     )
+    await expect(canvas.getByText('Select a function to inspect it.')).toBeVisible()
     await userEvent.click(canvas.getByRole('button', { name: /engineering/ }))
+    await userEvent.click(canvas.getByRole('button', { name: 'review_queue' }))
     await expect(canvas.getByRole('button', { name: 'review_queue' })).toHaveAttribute(
       'aria-pressed',
       'true',

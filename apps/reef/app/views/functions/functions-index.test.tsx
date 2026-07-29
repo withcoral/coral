@@ -59,6 +59,14 @@ describe('FunctionsIndex', () => {
     await expect
       .element(screen.getByRole('button', { name: 'deployment_failures' }))
       .not.toBeInTheDocument()
+    await expect.element(screen.getByText('Select a function to inspect it.')).toBeVisible()
+    await expect
+      .element(screen.getByRole('heading', { name: 'review_queue' }))
+      .not.toBeInTheDocument()
+
+    await screen.getByRole('button', { name: /engineering/ }).click()
+    await screen.getByRole('button', { name: 'review_queue' }).click()
+
     await expect.element(screen.getByRole('heading', { name: 'review_queue' })).toBeVisible()
     await expect.element(screen.getByText('Pull requests waiting for review.')).toBeVisible()
     await expect.element(screen.getByText('owner')).toBeVisible()
@@ -95,6 +103,8 @@ describe('FunctionsIndex', () => {
       deleteAction,
     )
 
+    await screen.getByRole('button', { name: /engineering/ }).click()
+    await screen.getByRole('button', { name: 'review_queue' }).click()
     await screen.getByRole('button', { name: 'Delete' }).click()
     const confirmation = screen.getByRole('dialog', { name: 'Delete review_queue?' })
     await confirmation.getByRole('button', { name: 'Delete function' }).click()
@@ -115,6 +125,8 @@ describe('FunctionsIndex', () => {
       deleteAction,
     )
 
+    await screen.getByRole('button', { name: /engineering/ }).click()
+    await screen.getByRole('button', { name: 'review_queue' }).click()
     await screen.getByRole('button', { name: 'Delete' }).click()
     const confirmation = screen.getByRole('dialog', { name: 'Delete review_queue?' })
     await expect

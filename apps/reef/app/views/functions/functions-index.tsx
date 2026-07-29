@@ -21,9 +21,6 @@ export function FunctionsIndex({
   const [deleteName, setDeleteName] = useState<string>()
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const deleteFetcher = useFetcher<FunctionsActionData>()
-  const activeName = functions.some((fn) => fn.name === selectedName)
-    ? selectedName
-    : functions[0]?.name
   const deleting = deleteFetcher.state !== 'idle'
   const deleteError =
     deleteFetcher.data?.status === 'error' && deleteFetcher.data.name === deleteName
@@ -47,7 +44,7 @@ export function FunctionsIndex({
             setDeleteDialogOpen(true)
           }}
           onSelect={setSelectedName}
-          selectedName={activeName}
+          selectedName={selectedName}
         />
         <Dialog.Root
           onOpenChange={(open) => {
