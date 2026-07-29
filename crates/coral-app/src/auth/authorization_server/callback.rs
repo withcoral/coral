@@ -265,7 +265,7 @@ mod tests {
              issuer = '{issuer}'
              client_id = 'provider-client'
              client_secret = '{PROVIDER_SECRET}'
-             redirect_uri = 'http://localhost/provider-callback'"
+             redirect_uri = '{AUTH_ISSUER}/auth/oidc/callback'"
         ))
         .expect("valid auth config")
         .expect("auth settings");
@@ -326,10 +326,7 @@ mod tests {
         oidc_callback(State(state), RawQuery(Some(raw))).await
     }
 
-    async fn callback(
-        state: AuthorizationServerHttpState,
-        pairs: &[(&str, &str)],
-    ) -> Response {
+    async fn callback(state: AuthorizationServerHttpState, pairs: &[(&str, &str)]) -> Response {
         callback_raw(state, query(pairs)).await
     }
 

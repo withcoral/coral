@@ -498,10 +498,6 @@ pub(super) struct ResolvedOidcProvider {
 }
 
 impl ResolvedOidcProvider {
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "used by the OIDC federation descendant")
-    )]
     pub(super) fn client_secret(&self) -> &str {
         self.client_secret.as_str()
     }
