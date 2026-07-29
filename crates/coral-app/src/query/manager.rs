@@ -4642,6 +4642,7 @@ surface:
                     q => 'ordinary',
                     exact => false
                 ) LIMIT 1",
+                None,
                 &QueryAttribution::default(),
             )
             .await
