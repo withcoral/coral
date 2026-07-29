@@ -104,10 +104,12 @@ Additional hint guidance:
   with no default. Every other exposed input must already have a
   type-compatible default in the imported OpenAPI or MCP operation. These
   defaults are imported facts, not fields authored in the DSL v4 manifest.
-- Use optional `result` mapping only for identity and display. DSL v4 mappings
-  use RFC 6901 JSON Pointers to original imported output fields. Pointers must
-  be syntactically valid in the manifest and resolve exactly once during route
-  resolution; identity/display fields must be scalar.
+- Use optional `result` mapping only for identity, display, and explicitly
+  selected `result.attributes`. DSL v4 mappings use RFC 6901 JSON Pointers to
+  original imported output fields. Pointers must be syntactically valid in the
+  manifest and resolve exactly once during route resolution. Identity and
+  display fields must be scalar; an attribute may select a structured value
+  only when its schema permits bounded canonical JSON.
 - Use `execute: false` for a denial. A denied DSL v4 route keeps its target and
   omits `query_input`. If the source contains any authored Universal Search
   policy, treat unlisted routes as unauthorized.

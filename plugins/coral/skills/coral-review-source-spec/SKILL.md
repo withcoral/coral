@@ -69,8 +69,9 @@ These checks should be based on the authoritative API docs for the API the sourc
   authorization by themselves. Legacy `mode: search` filters never authorize a
   route.
 - Universal Search fan-out is DSL v4-only. Flag
-  `functions[].universal_search` in a DSL v3 source as unsupported; DSL v3
-  sources do not participate in native fan-out.
+  `functions[].universal_search` and `functions[].args[].default` in a DSL v3
+  source as unsupported authoring; DSL v3 sources do not participate in native
+  fan-out.
 - For DSL v4, verify each top-level route map key matches `[a-z][a-z0-9_]*` and
   is the stable authored ID, targets one exact `operation_id` on the source's
   singular surface, and selects the original input by allowed location plus

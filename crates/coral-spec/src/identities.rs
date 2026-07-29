@@ -14,6 +14,7 @@ use crate::inputs::{
     collect_declared_inputs, parse_identity_oauth_method,
     validate_oauth_endpoint_templates_for_method,
 };
+use crate::parser::parse_yaml_value;
 use crate::{
     ManifestError, ManifestInputKind, ManifestInputSpec, ManifestOAuthCredentialSpec, Result,
     validate_identifier,
@@ -152,7 +153,7 @@ enum IdentityManifestKind {
 
 /// Parse and validate one identity manifest from YAML.
 pub fn parse_identity_manifest_yaml(raw: &str) -> Result<IdentityManifest> {
-    let manifest_value = serde_yaml::from_str(raw).map_err(ManifestError::parse_yaml)?;
+    let manifest_value = parse_yaml_value(raw)?;
     parse_identity_manifest_value(manifest_value)
 }
 
@@ -602,6 +603,34 @@ oauth:
                 .as_ref()
                 .map(|secret| secret.input.as_str()),
             Some("CLIENT_SECRET")
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_identity_oauth_mapping_keys() {
+        let raw = identity(
+            "oauth",
+            r"
+oauth:
+  method:
+    flow: {type: device_code}
+    endpoints:
+      device_authorization_url: https://provider.example.com/device
+      token_url: https://provider.example.com/first-token
+      token_url: https://provider.example.com/second-token
+    client:
+      id: {default: demo-client}
+",
+        );
+
+        let error = parse_identity_manifest_yaml(&raw)
+            .expect_err("a duplicate OAuth endpoint must not override an earlier value");
+
+        assert!(
+            error
+                .to_string()
+                .contains("duplicate entry with key \"token_url\""),
+            "unexpected duplicate-key error: {error}"
         );
     }
 

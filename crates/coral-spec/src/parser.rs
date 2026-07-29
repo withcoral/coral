@@ -207,13 +207,16 @@ impl ValidatedSourceManifest {
 /// Returns a [`ManifestError`] if the `YAML` cannot be parsed or the source
 /// spec violates any validation rules.
 pub fn parse_source_manifest_yaml(raw: &str) -> Result<ValidatedSourceManifest> {
+    let manifest_value = parse_yaml_value(raw)?;
+    parse_source_manifest_value(manifest_value)
+}
+
+pub(crate) fn parse_yaml_value(raw: &str) -> Result<Value> {
     // Deserialize through serde_yaml's mapping representation first because it
     // rejects duplicate keys instead of silently keeping the last value.
     let yaml_value: serde_yaml::Value =
         serde_yaml::from_str(raw).map_err(ManifestError::parse_yaml)?;
-    let manifest_value: Value =
-        serde_yaml::from_value(yaml_value).map_err(ManifestError::parse_yaml)?;
-    parse_source_manifest_value(manifest_value)
+    serde_yaml::from_value(yaml_value).map_err(ManifestError::parse_yaml)
 }
 
 /// Parse and validate a source spec from structured source-spec data.
