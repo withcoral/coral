@@ -533,9 +533,16 @@ mod tests {
             client_id: &str,
             redirect_uri: &str,
             challenge: &str,
+            resource: &str,
         ) -> Result<Option<OAuthAuthorizationCodeRecord>, StateStoreError> {
             self.0
-                .take_authorization_code_for_request(code, client_id, redirect_uri, challenge)
+                .take_authorization_code_for_request(
+                    code,
+                    client_id,
+                    redirect_uri,
+                    challenge,
+                    resource,
+                )
                 .await
         }
     }
