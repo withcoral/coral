@@ -31,7 +31,7 @@ use crate::sources::model::InstalledSource;
 use crate::state::AppStateLayout;
 use crate::workspaces::WorkspaceName;
 
-const RUNTIME_CONTRACT_FINGERPRINT_VERSION: u32 = 3;
+const RUNTIME_CONTRACT_FINGERPRINT_VERSION: u32 = 4;
 
 /// Versioned, non-secret identity for the installed runtime contract used by
 /// query execution and derived local state.
@@ -275,8 +275,8 @@ fn http_manifest_for_surface(
                 let table_name = projection_table_name(projection)?;
                 tables.push(HttpTableSpec {
                     common: TableCommon {
-                        catalog_name: "datafusion".to_string(),
-                        schema_name: manifest.common.name.clone(),
+                        catalog_name: projection.catalog_name.clone(),
+                        schema_name: projection.schema_name.clone(),
                         table_name: table_name.to_string(),
                         description: projection.description.clone(),
                         guide: projection.guide.clone(),
@@ -295,8 +295,8 @@ fn http_manifest_for_surface(
             ProjectionKind::TableFunction { function_kind } => {
                 let function_name = projection_function_name(projection)?;
                 functions.push(SourceTableFunctionSpec {
-                    catalog_name: "datafusion".to_string(),
-                    schema_name: manifest.common.name.clone(),
+                    catalog_name: projection.catalog_name.clone(),
+                    schema_name: projection.schema_name.clone(),
                     function_name: function_name.to_string(),
                     kind: *function_kind,
                     description: projection.description.clone(),
@@ -388,7 +388,6 @@ fn mcp_manifest_for_surface(
             ProjectionKind::Table => {
                 let table_name = projection_table_name(projection)?;
                 tables.push(mcp_table_spec(
-                    &manifest.common.name,
                     table_name,
                     projection,
                     mcp,
@@ -399,7 +398,6 @@ fn mcp_manifest_for_surface(
             ProjectionKind::TableFunction { function_kind } => {
                 let function_name = projection_function_name(projection)?;
                 functions.push(mcp_table_function_spec(
-                    &manifest.common.name,
                     function_name,
                     projection,
                     *function_kind,
@@ -426,7 +424,6 @@ fn mcp_manifest_for_surface(
 }
 
 fn mcp_table_spec(
-    source_name: &str,
     table_name: &str,
     projection: &Projection,
     mcp: &coral_spec::v4::McpExecutionAttachment,
@@ -435,8 +432,8 @@ fn mcp_table_spec(
 ) -> McpTableSpec {
     McpTableSpec {
         common: TableCommon {
-            catalog_name: "datafusion".to_string(),
-            schema_name: source_name.to_string(),
+            catalog_name: projection.catalog_name.clone(),
+            schema_name: projection.schema_name.clone(),
             table_name: table_name.to_string(),
             description: projection.description.clone(),
             guide: projection.guide.clone(),
@@ -457,7 +454,6 @@ fn mcp_table_spec(
 }
 
 fn mcp_table_function_spec(
-    source_name: &str,
     function_name: &str,
     projection: &Projection,
     function_kind: SourceTableFunctionKind,
@@ -470,8 +466,8 @@ fn mcp_table_function_spec(
         pagination,
         offset_pagination,
         common: SourceTableFunctionSpec {
-            catalog_name: "datafusion".to_string(),
-            schema_name: source_name.to_string(),
+            catalog_name: projection.catalog_name.clone(),
+            schema_name: projection.schema_name.clone(),
             function_name: function_name.to_string(),
             kind: function_kind,
             description: projection.description.clone(),
@@ -587,7 +583,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::path::PathBuf;
 
-    use coral_engine::RuntimeSourceComponent;
+    use coral_engine::{QuerySource, RuntimeSourceComponent, RuntimeSourcePackage};
     use coral_spec::backends::http::{AuthSpec, RateLimitSpec};
     use coral_spec::backends::mcp::{McpOffsetPaginationSpec, McpPaginationSpec, McpServerSpec};
     use coral_spec::v4::{
@@ -1051,6 +1047,22 @@ surface:
 
         let component =
             runtime_component_for_v4_database_source(v4).expect("database runtime component");
+        let source = QuerySource::from_runtime_components(
+            RuntimeSourcePackage {
+                source_name: "coral_db".to_string(),
+                authored_version: None,
+                description: String::new(),
+                declared_inputs: Vec::new(),
+                test_queries: Vec::new(),
+                identity_requirements: None,
+                components: vec![component.clone()],
+            },
+            BTreeMap::new(),
+            BTreeMap::new(),
+        )
+        .expect("database query source");
+        assert!(source.schema_names().is_empty());
+        assert_eq!(source.catalog_names(), ["coral_db"]);
         let RuntimeSourceComponent::Database(database) = component else {
             panic!("database component");
         };
@@ -1090,7 +1102,7 @@ surface:
         )
         .expect("variable fingerprint");
 
-        assert!(first.as_str().starts_with("v3:"));
+        assert!(first.as_str().starts_with("v4:"));
         assert_ne!(first, different_literal);
         assert_ne!(first, different_variable);
     }
@@ -1163,7 +1175,7 @@ surface:
         )
         .expect("fingerprint without optional provenance");
         assert_eq!(first, without_optional_provenance);
-        assert!(without_optional_provenance.as_str().starts_with("v3:"));
+        assert!(without_optional_provenance.as_str().starts_with("v4:"));
     }
 
     #[test]
@@ -1268,7 +1280,11 @@ surface:
             panic!("expected HTTP component");
         };
         assert_eq!(http.common.name, "github_v4");
-        let table_pagination = &http.tables.first().expect("http table").pagination;
+        let table = http.tables.first().expect("http table");
+        assert_eq!(table.common.catalog_name, "github_v4");
+        assert_eq!(table.common.schema_name, "public");
+        assert_eq!(table.common.table_name, "list_issues");
+        let table_pagination = &table.pagination;
 
         assert_eq!(table_pagination.mode, PaginationMode::Page);
         assert_eq!(table_pagination.page_param.as_deref(), Some("page"));
@@ -1319,10 +1335,11 @@ surface:
             panic!("expected HTTP component");
         };
 
-        assert_eq!(
-            http.functions.first().expect("http function").guide,
-            "Prefer this function for issue lookup."
-        );
+        let function = http.functions.first().expect("http function");
+        assert_eq!(function.catalog_name, "github_v4");
+        assert_eq!(function.schema_name, "public");
+        assert_eq!(function.function_name, "search_issues");
+        assert_eq!(function.guide, "Prefer this function for issue lookup.");
     }
 
     #[test]
@@ -1450,10 +1467,11 @@ surface:
             panic!("expected MCP component");
         };
 
-        assert_eq!(
-            mcp.tables.first().expect("mcp table").pagination.as_ref(),
-            Some(&pagination)
-        );
+        let table = mcp.tables.first().expect("mcp table");
+        assert_eq!(table.common.catalog_name, "github_v4");
+        assert_eq!(table.common.schema_name, "public");
+        assert_eq!(table.common.table_name, "list_issues");
+        assert_eq!(table.pagination.as_ref(), Some(&pagination));
     }
 
     #[test]
@@ -1489,10 +1507,11 @@ surface:
             panic!("expected MCP component");
         };
 
-        assert_eq!(
-            mcp.functions.first().expect("mcp function").common.guide,
-            "Prefer this function for issue lookup."
-        );
+        let function = &mcp.functions.first().expect("mcp function").common;
+        assert_eq!(function.catalog_name, "github_v4");
+        assert_eq!(function.schema_name, "public");
+        assert_eq!(function.function_name, "search_issues");
+        assert_eq!(function.guide, "Prefer this function for issue lookup.");
     }
 
     #[test]

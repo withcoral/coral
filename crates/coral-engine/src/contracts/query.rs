@@ -241,20 +241,66 @@ impl QuerySource {
     }
 
     #[must_use]
-    /// Returns the SQL schema names published by this source's two-part
-    /// components. Database components publish catalogs instead; see
-    /// [`Self::catalog_names`]. A source with no components claims its source
-    /// name as a schema. Schema and catalog names of all selected sources
-    /// share one flat namespace.
+    /// Returns the SQL schema names published in `DataFusion`'s default catalog.
+    /// A source with no components claims its source name as a schema.
     pub fn schema_names(&self) -> Vec<&str> {
         let mut names = Vec::new();
         for component in &self.components {
-            if matches!(component, RuntimeSourceComponent::Database(_)) {
-                continue;
+            let before = names.len();
+            match component {
+                RuntimeSourceComponent::Database(_) => {}
+                RuntimeSourceComponent::Http(manifest) => {
+                    for (catalog_name, schema_name) in manifest
+                        .tables
+                        .iter()
+                        .map(|table| {
+                            (
+                                table.common.catalog_name.as_str(),
+                                table.common.schema_name.as_str(),
+                            )
+                        })
+                        .chain(manifest.functions.iter().map(|function| {
+                            (
+                                function.catalog_name.as_str(),
+                                function.schema_name.as_str(),
+                            )
+                        }))
+                    {
+                        push_default_catalog_schema(&mut names, catalog_name, schema_name);
+                    }
+                }
+                RuntimeSourceComponent::File(manifest) => {
+                    for table in &manifest.tables {
+                        push_default_catalog_schema(
+                            &mut names,
+                            &table.common.catalog_name,
+                            &table.common.schema_name,
+                        );
+                    }
+                }
+                RuntimeSourceComponent::Mcp(manifest) => {
+                    for (catalog_name, schema_name) in manifest
+                        .tables
+                        .iter()
+                        .map(|table| {
+                            (
+                                table.common.catalog_name.as_str(),
+                                table.common.schema_name.as_str(),
+                            )
+                        })
+                        .chain(manifest.functions.iter().map(|function| {
+                            (
+                                function.common.catalog_name.as_str(),
+                                function.common.schema_name.as_str(),
+                            )
+                        }))
+                    {
+                        push_default_catalog_schema(&mut names, catalog_name, schema_name);
+                    }
+                }
             }
-            let name = component.source_name();
-            if !names.contains(&name) {
-                names.push(name);
+            if before == names.len() && component.relation_count() == 0 {
+                push_unique_name(&mut names, component.source_name());
             }
         }
         if self.components.is_empty() {
@@ -264,18 +310,49 @@ impl QuerySource {
     }
 
     #[must_use]
-    /// Returns the SQL catalog names published by this source's database
-    /// components. Tables of these components resolve as
-    /// `catalog.schema.table`, with schemas discovered at registration time.
+    /// Returns the non-default SQL catalog names published by this source.
     pub fn catalog_names(&self) -> Vec<&str> {
         let mut names = Vec::new();
         for component in &self.components {
-            let RuntimeSourceComponent::Database(manifest) = component else {
-                continue;
-            };
-            let name = manifest.common.name.as_str();
-            if !names.contains(&name) {
-                names.push(name);
+            match component {
+                RuntimeSourceComponent::Database(manifest) => {
+                    push_unique_name(&mut names, &manifest.common.name);
+                }
+                RuntimeSourceComponent::Http(manifest) => {
+                    for catalog_name in manifest
+                        .tables
+                        .iter()
+                        .map(|table| table.common.catalog_name.as_str())
+                        .chain(
+                            manifest
+                                .functions
+                                .iter()
+                                .map(|function| function.catalog_name.as_str()),
+                        )
+                    {
+                        push_non_default_catalog(&mut names, catalog_name);
+                    }
+                }
+                RuntimeSourceComponent::File(manifest) => {
+                    for table in &manifest.tables {
+                        push_non_default_catalog(&mut names, &table.common.catalog_name);
+                    }
+                }
+                RuntimeSourceComponent::Mcp(manifest) => {
+                    for catalog_name in manifest
+                        .tables
+                        .iter()
+                        .map(|table| table.common.catalog_name.as_str())
+                        .chain(
+                            manifest
+                                .functions
+                                .iter()
+                                .map(|function| function.common.catalog_name.as_str()),
+                        )
+                    {
+                        push_non_default_catalog(&mut names, catalog_name);
+                    }
+                }
             }
         }
         names
@@ -305,6 +382,37 @@ impl RuntimeSourceComponent {
             Self::File(manifest) => &manifest.common.name,
             Self::Mcp(manifest) => &manifest.common.name,
         }
+    }
+
+    fn relation_count(&self) -> usize {
+        match self {
+            Self::Database(_) => 1,
+            Self::Http(manifest) => manifest.tables.len() + manifest.functions.len(),
+            Self::File(manifest) => manifest.tables.len(),
+            Self::Mcp(manifest) => manifest.tables.len() + manifest.functions.len(),
+        }
+    }
+}
+
+fn push_default_catalog_schema<'a>(
+    names: &mut Vec<&'a str>,
+    catalog_name: &str,
+    schema_name: &'a str,
+) {
+    if catalog_name == "datafusion" {
+        push_unique_name(names, schema_name);
+    }
+}
+
+fn push_non_default_catalog<'a>(names: &mut Vec<&'a str>, catalog_name: &'a str) {
+    if catalog_name != "datafusion" {
+        push_unique_name(names, catalog_name);
+    }
+}
+
+fn push_unique_name<'a>(names: &mut Vec<&'a str>, name: &'a str) {
+    if !names.contains(&name) {
+        names.push(name);
     }
 }
 
@@ -1322,10 +1430,38 @@ mod tests {
 
         assert!(source.identity_requirements().is_none());
         assert!(source.identity_selection_context().is_none());
+        assert_eq!(source.schema_names(), ["github"]);
+        assert!(source.catalog_names().is_empty());
         assert!(matches!(
             source.components(),
             [RuntimeSourceComponent::Http(http)] if http.common.dsl_version == 3
         ));
+    }
+
+    #[test]
+    fn catalog_runtime_source_reports_backend_ready_catalog_identity() {
+        let mut manifest = http_manifest();
+        manifest.common.dsl_version = 4;
+        let table = manifest.tables.first_mut().expect("HTTP table");
+        table.common.catalog_name = "github_v4".to_string();
+        table.common.schema_name = "public".to_string();
+        let source = QuerySource::from_runtime_components(
+            RuntimeSourcePackage {
+                source_name: "github_v4".to_string(),
+                authored_version: None,
+                description: String::new(),
+                declared_inputs: Vec::new(),
+                test_queries: Vec::new(),
+                identity_requirements: None,
+                components: vec![RuntimeSourceComponent::Http(manifest)],
+            },
+            BTreeMap::new(),
+            BTreeMap::new(),
+        )
+        .expect("catalog runtime source");
+
+        assert!(source.schema_names().is_empty());
+        assert_eq!(source.catalog_names(), ["github_v4"]);
     }
 
     fn http_manifest() -> coral_spec::backends::http::HttpSourceManifest {

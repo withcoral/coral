@@ -1726,6 +1726,250 @@ mod tests {
         serde_json::from_slice(&bytes).expect("json rows should decode")
     }
 
+    async fn mount_v4_openapi_catalog_server(server: &MockServer) {
+        for (path_value, id, title) in [
+            ("/tagged", 1, "Tagged"),
+            ("/public", 2, "Public"),
+            ("/search", 3, "Search"),
+        ] {
+            Mock::given(method("GET"))
+                .and(path(path_value))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(json!([{"id": id, "title": title}])),
+                )
+                .mount(server)
+                .await;
+        }
+    }
+
+    fn import_v4_openapi_catalog_source(
+        manager: &QueryManager,
+        workspace_name: &WorkspaceName,
+        source_name: &str,
+        server_uri: &str,
+    ) -> SourceName {
+        let source_manager = SourceManager::new_for_tests(
+            manager.config_store.clone(),
+            manager.credential_manager.clone(),
+            manager.layout.clone(),
+        );
+        let descriptor_temp = tempfile::tempdir().expect("descriptor temp dir");
+        let openapi_file = descriptor_temp.path().join("catalog-openapi.yaml");
+        std::fs::write(
+            &openapi_file,
+            format!(
+                r"
+openapi: 3.0.3
+info:
+  title: Catalog runtime
+servers:
+  - url: {server_uri}
+paths:
+  /tagged:
+    get:
+      tags: [issues]
+      operationId: issues/list_tagged
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Item'
+  /public:
+    get:
+      operationId: list_public
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Item'
+  /search:
+    get:
+      operationId: search_public
+      parameters:
+        - name: query
+          in: query
+          required: true
+          schema: {{type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Item'
+components:
+  schemas:
+    Item:
+      type: object
+      properties:
+        id: {{type: integer}}
+        title: {{type: string}}
+"
+            ),
+        )
+        .expect("write OpenAPI fixture");
+        let source_name = SourceName::parse(source_name).expect("source name");
+        source_manager
+            .import_source(
+                workspace_name,
+                &ImportSourceCommand {
+                    manifest_yaml: format!(
+                        r"
+name: {source_name}
+dsl_version: 4
+surface:
+  type: openapi
+  file: {}
+",
+                        openapi_file.display()
+                    ),
+                    bindings: SourceBindings::default(),
+                },
+            )
+            .expect("import v4 OpenAPI source");
+        source_name
+    }
+
+    fn v4_mcp_rpc_result(request: &wiremock::Request, result: &Value) -> ResponseTemplate {
+        let body: Value = request.body_json().expect("JSON-RPC request body");
+        let id = body.get("id").cloned().expect("JSON-RPC request id");
+        ResponseTemplate::new(200)
+            .append_header("Content-Type", "application/json")
+            .set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": result
+            }))
+    }
+
+    async fn mount_v4_mcp_catalog_server(server: &MockServer) {
+        Mock::given(method("POST"))
+            .respond_with(|request: &wiremock::Request| {
+                let body: Value = request.body_json().expect("JSON-RPC request body");
+                match body.get("method").and_then(Value::as_str) {
+                    Some("initialize") => v4_mcp_rpc_result(
+                        request,
+                        &json!({
+                            "protocolVersion": "2025-03-26",
+                            "capabilities": {"tools": {}},
+                            "serverInfo": {"name": "catalog-runtime", "version": "1.0.0"}
+                        }),
+                    ),
+                    Some("notifications/initialized") => ResponseTemplate::new(202),
+                    Some("tools/list") => v4_mcp_rpc_result(
+                        request,
+                        &json!({
+                            "tools": [
+                                {
+                                    "name": "list_items",
+                                    "description": "List items",
+                                    "inputSchema": {
+                                        "type": "object",
+                                        "properties": {}
+                                    },
+                                    "outputSchema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "items": {
+                                                "type": "array",
+                                                "items": {"type": "object"}
+                                            }
+                                        }
+                                    },
+                                    "annotations": {"readOnlyHint": true}
+                                },
+                                {
+                                    "name": "search_items",
+                                    "description": "Search items",
+                                    "inputSchema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "query": {"type": "string"}
+                                        },
+                                        "required": ["query"]
+                                    },
+                                    "outputSchema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "items": {
+                                                "type": "array",
+                                                "items": {"type": "object"}
+                                            }
+                                        }
+                                    },
+                                    "annotations": {"readOnlyHint": true}
+                                }
+                            ]
+                        }),
+                    ),
+                    Some("tools/call") => {
+                        let tool_name = body
+                            .pointer("/params/name")
+                            .and_then(Value::as_str)
+                            .expect("tool name");
+                        let arguments = body
+                            .pointer("/params/arguments")
+                            .cloned()
+                            .unwrap_or_else(|| json!({}));
+                        v4_mcp_rpc_result(
+                            request,
+                            &json!({
+                                "structuredContent": {
+                                    "tool": tool_name,
+                                    "arguments": arguments
+                                }
+                            }),
+                        )
+                    }
+                    other => ResponseTemplate::new(404)
+                        .set_body_string(format!("unexpected MCP method {other:?}")),
+                }
+            })
+            .mount(server)
+            .await;
+    }
+
+    fn import_v4_mcp_catalog_source(
+        manager: &QueryManager,
+        workspace_name: &WorkspaceName,
+        source_name: &str,
+        server_uri: &str,
+    ) -> SourceName {
+        let source_manager = SourceManager::new_for_tests(
+            manager.config_store.clone(),
+            manager.credential_manager.clone(),
+            manager.layout.clone(),
+        );
+        let source_name = SourceName::parse(source_name).expect("source name");
+        source_manager
+            .import_source(
+                workspace_name,
+                &ImportSourceCommand {
+                    manifest_yaml: format!(
+                        r#"
+name: {source_name}
+dsl_version: 4
+surface:
+  type: mcp
+  server:
+    transport: streamable_http
+    url: "{server_uri}"
+"#
+                    ),
+                    bindings: SourceBindings::default(),
+                },
+            )
+            .expect("import v4 MCP source");
+        source_name
+    }
+
     #[tokio::test]
     async fn runtime_config_preserves_app_owned_body_capture_max_bytes() {
         let fixture = query_manager_with(
@@ -1947,88 +2191,166 @@ tables:
     }
 
     #[tokio::test]
-    async fn installed_v4_source_queries_through_app_assembled_runtime_component() {
+    async fn v4_openapi_catalog_runtime_queries_tagged_and_public_relations() {
         let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/issues"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
-                {"id": 1, "title": "Generated runtime package"}
-            ])))
-            .mount(&server)
-            .await;
+        mount_v4_openapi_catalog_server(&server).await;
 
         let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
         fixture.manager.layout.ensure().expect("ensure layout");
-        let source_manager = SourceManager::new_for_tests(
-            fixture.manager.config_store.clone(),
-            fixture.manager.credential_manager.clone(),
-            fixture.manager.layout.clone(),
-        );
         let workspace_name = WorkspaceName::default();
-        let descriptor_temp = tempfile::tempdir().expect("descriptor temp dir");
-        let openapi_file = descriptor_temp.path().join("github-openapi.yaml");
-        std::fs::write(
-            &openapi_file,
-            format!(
-                r"
-openapi: 3.0.3
-info:
-  title: GitHub
-servers:
-  - url: {}
-paths:
-  /issues:
-    get:
-      operationId: issues/list
-      responses:
-        '200':
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  type: object
-                  properties:
-                    id: {{type: integer}}
-                    title: {{type: string}}
-",
-                server.uri()
-            ),
-        )
-        .expect("write OpenAPI fixture");
-        source_manager
-            .import_source(
-                &workspace_name,
-                &ImportSourceCommand {
-                    manifest_yaml: format!(
-                        r"
-name: github_v4_query
-dsl_version: 4
-surface:
-    type: openapi
-    file: {}
-",
-                        openapi_file.display()
-                    ),
-                    bindings: SourceBindings::default(),
-                },
-            )
-            .expect("import v4 source");
-        std::fs::remove_file(&openapi_file).expect("remove authored descriptor after import");
+        let source_name = import_v4_openapi_catalog_source(
+            &fixture.manager,
+            &workspace_name,
+            "github_v4_openapi",
+            &server.uri(),
+        );
 
-        let execution = fixture
+        let validated = fixture
+            .manager
+            .validate_source(&workspace_name, &source_name)
+            .await
+            .expect("validate source");
+        let table_identities = validated
+            .report
+            .tables
+            .iter()
+            .map(|table| {
+                (
+                    table.catalog_name.as_deref(),
+                    table.schema_name.as_str(),
+                    table.table_name.as_str(),
+                )
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            table_identities,
+            std::collections::BTreeSet::from([
+                (Some("github_v4_openapi"), "issues", "list_tagged"),
+                (Some("github_v4_openapi"), "public", "list_public"),
+            ])
+        );
+        let function = validated
+            .report
+            .table_functions
+            .first()
+            .expect("OpenAPI table function");
+        assert_eq!(function.catalog_name.as_deref(), Some("github_v4_openapi"));
+        assert_eq!(function.schema_name, "public");
+        assert_eq!(function.function_name, "search_public");
+
+        for (sql, expected_id) in [
+            ("SELECT id FROM github_v4_openapi.issues.list_tagged", 1),
+            ("SELECT id FROM github_v4_openapi.public.list_public", 2),
+            (
+                "SELECT id FROM github_v4_openapi.public.search_public(query => 'needle')",
+                3,
+            ),
+        ] {
+            let execution = fixture
+                .manager
+                .execute_sql(&workspace_name, sql, &QueryAttribution::default())
+                .await
+                .expect("three-part OpenAPI query executes");
+            assert_eq!(
+                execution_to_rows(&execution),
+                vec![json!({"id": expected_id})]
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn v4_mcp_catalog_runtime_queries_table_and_function() {
+        let server = MockServer::start().await;
+        mount_v4_mcp_catalog_server(&server).await;
+
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
+        fixture.manager.layout.ensure().expect("ensure layout");
+        let workspace_name = WorkspaceName::default();
+        let source_name = import_v4_mcp_catalog_source(
+            &fixture.manager,
+            &workspace_name,
+            "github_v4_mcp",
+            &server.uri(),
+        );
+
+        let validated = fixture
+            .manager
+            .validate_source(&workspace_name, &source_name)
+            .await
+            .expect("validate MCP source");
+        let table = validated.report.tables.first().expect("MCP table");
+        assert_eq!(table.catalog_name.as_deref(), Some("github_v4_mcp"));
+        assert_eq!(table.schema_name, "public");
+        assert_eq!(table.table_name, "list_items");
+        let function = validated
+            .report
+            .table_functions
+            .first()
+            .expect("MCP table function");
+        assert_eq!(function.catalog_name.as_deref(), Some("github_v4_mcp"));
+        assert_eq!(function.schema_name, "public");
+        assert_eq!(function.function_name, "search_items");
+
+        for sql in [
+            "SELECT result_json FROM github_v4_mcp.public.list_items LIMIT 1",
+            "SELECT result_json FROM github_v4_mcp.public.search_items(query => 'needle') LIMIT 1",
+        ] {
+            let execution = fixture
+                .manager
+                .execute_sql(&workspace_name, sql, &QueryAttribution::default())
+                .await
+                .expect("three-part MCP query executes");
+            assert_eq!(execution.row_count(), 1);
+        }
+
+        let called_tools = server
+            .received_requests()
+            .await
+            .expect("request recording")
+            .iter()
+            .filter_map(|request| request.body_json::<Value>().ok())
+            .filter(|body| body.get("method").and_then(Value::as_str) == Some("tools/call"))
+            .filter_map(|body| {
+                body.pointer("/params/name")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(called_tools, ["list_items", "search_items"]);
+    }
+
+    #[tokio::test]
+    async fn v4_two_part_alias_is_absent() {
+        let server = MockServer::start().await;
+        mount_v4_openapi_catalog_server(&server).await;
+
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
+        fixture.manager.layout.ensure().expect("ensure layout");
+        let workspace_name = WorkspaceName::default();
+        import_v4_openapi_catalog_source(
+            &fixture.manager,
+            &workspace_name,
+            "github_v4_no_alias",
+            &server.uri(),
+        );
+
+        let error = fixture
             .manager
             .execute_sql(
                 &workspace_name,
-                "SELECT id, title FROM github_v4_query.list",
+                "SELECT id FROM github_v4_no_alias.list_public",
                 &QueryAttribution::default(),
             )
             .await
-            .expect("query executes");
+            .expect_err("v4 two-part aliases must not be registered");
+        let message = match &error {
+            QueryManagerError::App(error) => error.to_string(),
+            QueryManagerError::Core(error) => error.to_string(),
+        };
 
-        assert_eq!(
-            execution_to_rows(&execution),
-            vec![json!({"id": 1, "title": "Generated runtime package"})]
+        assert!(
+            message.contains("github_v4_no_alias.list_public"),
+            "missing-table error should preserve the rejected alias: {error:?}"
         );
     }
 
@@ -2171,7 +2493,7 @@ surface:
             .manager
             .execute_sql(
                 &workspace_name,
-                "SELECT id FROM github_v4_pagination_override.list LIMIT 3",
+                "SELECT id FROM github_v4_pagination_override.public.list LIMIT 3",
                 &QueryAttribution::default(),
             )
             .await

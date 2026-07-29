@@ -629,7 +629,10 @@ impl QueryRuntimeAdapter {
             table_functions: self
                 .table_functions
                 .iter()
-                .filter(|function| schema_names.contains(&function.schema_name.as_str()))
+                .filter(|function| match function.catalog_name.as_deref() {
+                    Some(catalog_name) => catalog_names.contains(&catalog_name),
+                    None => schema_names.contains(&function.schema_name.as_str()),
+                })
                 .cloned()
                 .collect(),
         })
