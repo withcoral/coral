@@ -53,7 +53,7 @@ impl OpenApiImporter<'_> {
         let contract = detect_pagination_contract(self.document, &parameters, &pagination_context);
         let row_path = self.infer_row_path(
             raw_operation_id.unwrap_or(&operation_id),
-            contract.as_ref().is_some_and(binds_pagination_input),
+            contract.as_ref().is_some_and(signals_page_envelope),
             &pagination_context,
             &output,
         );
@@ -367,18 +367,28 @@ fn detect_pagination_contract(
         .or_else(|| detect_page_pagination(inputs))
 }
 
-/// Whether a detected contract binds any request input.
+/// Whether a detected contract is evidence that the response is a page
+/// envelope.
 ///
-/// Only this narrower question is envelope evidence. `Link` header detection
-/// reads no input at all, and providers declare that header on singleton
-/// resources too — GitHub does, on `GET /orgs/{org}/actions/hosted-runners/{id}`
-/// among others. Treating a bare header as evidence would promote a resource's
-/// incidental array, such as that runner's `public_ips`, to the whole relation.
-fn binds_pagination_input(contract: &PaginationSpec) -> bool {
+/// Two signals qualify. Binding a request input — a cursor, offset, page, or
+/// page-size parameter — says the caller can ask for another page. A response
+/// path holding a whole next-page URL says the response hands one back
+/// unprompted; that path comes out of this operation's own response schema, so
+/// it is evidence about this response rather than about the API at large. Graph
+/// needs the second signal: `{"@odata.nextLink": ..., "value": [...]}` on an
+/// operation that declares no `$top` binds nothing at all.
+///
+/// A bare `Link` header is neither. It reads no input, and providers declare
+/// that header on singleton resources too — GitHub does, on
+/// `GET /orgs/{org}/actions/hosted-runners/{id}` among others. Treating it as
+/// evidence would promote a resource's incidental array, such as that runner's
+/// `public_ips`, to the whole relation.
+fn signals_page_envelope(contract: &PaginationSpec) -> bool {
     contract.cursor_param.is_some()
         || contract.offset_param.is_some()
         || contract.page_param.is_some()
         || contract.page_size.is_some()
+        || !contract.next_url_path.is_empty()
 }
 
 fn detect_link_header_pagination(

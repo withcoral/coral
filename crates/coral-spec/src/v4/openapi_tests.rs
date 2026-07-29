@@ -2002,7 +2002,7 @@ components:
 
 /// Row-path inference asks the pagination detectors whether an operation is
 /// paginated rather than predicting their answer, so a contract binding any
-/// request input is envelope evidence — one case per way `binds_pagination_input`
+/// request input is envelope evidence — one case per way `signals_page_envelope`
 /// can be satisfied. Predicting the answer used to deadlock the two inferences:
 /// no row path because an alias was unknown, and no pagination because the gate
 /// needs a row path. `skip`/`take` and `$skip`/`$top` are the aliases that
@@ -2125,7 +2125,7 @@ components:
         ("cursorlist", PaginationMode::CursorQuery),
         ("pagelist", PaginationMode::Page),
         // Link-header detection is tried first, so this reaches
-        // `binds_pagination_input` by a different route than `pagelist` does —
+        // `signals_page_envelope` by a different route than `pagelist` does —
         // and it is the shape most real paginated endpoints use.
         ("linkheaderlist", PaginationMode::LinkHeader),
     ] {
@@ -2443,4 +2443,61 @@ paths:
     let pagination = imported_rest_pagination(&ir, "bothlist");
     assert_eq!(pagination.mode, PaginationMode::LinkHeader);
     assert!(pagination.next_url_path.is_empty());
+}
+
+/// A next-page URL in the response body is envelope evidence in its own right.
+///
+/// Graph is the shape that needs it: `{"@odata.nextLink": ..., "value": [...]}`
+/// on an operation that declares no `$top`. The response names no conventional
+/// row property and carries no metadata sibling the lexicon recognizes, so
+/// without the next-URL path there is nothing to unwrap `value` on — and a
+/// contract only survives once the response reads as a list, so the pagination
+/// would have been discarded along with the row path.
+#[test]
+fn importer_treats_a_body_next_url_as_envelope_evidence_without_page_inputs() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: odata
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://graph.microsoft.com/v1.0
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.0.3
+paths:
+  /users:
+    get:
+      operationId: listUsers
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  '@odata.nextLink': {type: string}
+                  value:
+                    type: array
+                    items: {type: object, properties: {id: {type: string}}}
+"
+        .as_bytes(),
+    )
+    .expect("import");
+
+    assert_eq!(imported_row_path(&ir, "listusers"), ["value"]);
+    let pagination = imported_rest_pagination(&ir, "listusers");
+    assert_eq!(pagination.mode, PaginationMode::NextUrlBody);
+    assert_eq!(pagination.next_url_path, ["@odata.nextLink"]);
+    assert!(
+        pagination.page_size.is_none(),
+        "nothing declares a page size here; the next URL carries the paging state"
+    );
 }
