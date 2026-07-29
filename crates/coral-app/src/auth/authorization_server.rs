@@ -20,7 +20,7 @@ use super::error::AuthServerError;
 use super::provider_client::OidcProviderClient;
 use super::session::SessionTokenIssuer;
 use super::state_store::{InMemoryStateStore, StateStore};
-use crate::outbound_url_policy::ConfiguredEndpointUrl;
+use crate::outbound_url_policy::{EndpointUrl, ResourceIdentifier};
 
 mod authorize;
 
@@ -226,7 +226,7 @@ struct AuthorizationServerHttpState {
 }
 
 fn canonical_authorization_resource(value: &str) -> Result<String, String> {
-    let resource = ConfiguredEndpointUrl::parse(value)
+    let resource = EndpointUrl::<ResourceIdentifier>::parse(value)
         .map_err(|error| format!("authorization resource is invalid: {error}"))?
         .into_url();
     if resource.query().is_some() {

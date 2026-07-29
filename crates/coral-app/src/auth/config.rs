@@ -19,7 +19,7 @@ use zeroize::Zeroizing;
 use super::error::AuthServerError;
 use super::session::SessionTokenIssuer;
 use crate::bootstrap::is_loopback_ip;
-use crate::outbound_url_policy::ConfiguredEndpointUrl;
+use crate::outbound_url_policy::{Configured, EndpointUrl};
 
 const DEFAULT_BIND_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
 const DEFAULT_SIGNING_KEY_ENV: &str = "CORAL_SESSION_SIGNING_KEY";
@@ -593,7 +593,7 @@ fn provider_required(field: &str, value: &str) -> Result<String, AuthServerError
 fn provider_literal_endpoint(
     field: &str,
     value: &str,
-) -> Result<ConfiguredEndpointUrl, AuthServerError> {
+) -> Result<EndpointUrl<Configured>, AuthServerError> {
     let syntax_violation = Cell::new(None);
     let record_violation = |violation| syntax_violation.set(Some(violation));
     let url = Url::options()
@@ -603,7 +603,7 @@ fn provider_literal_endpoint(
     if let Some(violation) = syntax_violation.get() {
         return Err(invalid_provider(format!("{field} is invalid: {violation}")));
     }
-    ConfiguredEndpointUrl::from_parsed(url)
+    EndpointUrl::<Configured>::from_parsed(url)
         .map_err(|error| invalid_provider(format!("{field} is invalid: {error}")))
 }
 
@@ -620,7 +620,7 @@ fn provider_literal_endpoint(
 /// both are accepted — the parser appends one only to a root-path URL.
 fn validate_canonical_issuer(
     configured: &str,
-    parsed: &ConfiguredEndpointUrl,
+    parsed: &EndpointUrl<Configured>,
 ) -> Result<(), AuthServerError> {
     let canonical = parsed.as_url().as_str();
     if configured == canonical || format!("{configured}/") == canonical {
@@ -710,8 +710,8 @@ fn validate_issuer(label: &str, raw: &str, root_only: bool) -> Result<String, Au
     Ok(url.as_url().as_str().trim_end_matches('/').to_string())
 }
 
-fn validate_endpoint(label: &str, raw: &str) -> Result<ConfiguredEndpointUrl, AuthServerError> {
-    ConfiguredEndpointUrl::parse(raw.trim())
+fn validate_endpoint(label: &str, raw: &str) -> Result<EndpointUrl<Configured>, AuthServerError> {
+    EndpointUrl::<Configured>::parse(raw.trim())
         .map_err(|error| config_error(format!("{label} is invalid: {error}")))
 }
 
