@@ -167,11 +167,12 @@ signing_key_file = 'session.key'
 [auth.authorization_server]
 issuer = 'https://auth.example'
 
-[auth.providers.test]
+[auth.provider]
+type = 'oidc'
 issuer = 'https://accounts.example'
 client_id = 'upstream-client'
 client_secret = 'test-secret'
-redirect_uri = 'https://auth.example/auth/oidc/test/callback'
+redirect_uri = 'https://auth.example/auth/oidc/callback'
 ",
     );
     let server = start(
