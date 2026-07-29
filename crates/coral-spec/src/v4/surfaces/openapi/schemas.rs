@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use serde_json::Value;
 
@@ -6,11 +6,31 @@ use crate::v4::diagnostics::Diagnostic;
 use crate::v4::ir::{IrField, IrType, IrTypeShape};
 use crate::v4::naming::normalize_identifier;
 use crate::v4::surfaces::json_schema::{
-    JsonSchemaComparisonError, direct_json_object_shape, json_schema_required_fields,
-    json_schema_scalar_type, merge_json_schema_properties_exact,
+    JsonObjectShape, JsonSchemaComparisonError, direct_json_object_shape,
+    json_schema_required_fields, json_schema_scalar_type,
+    merge_json_object_shape_annotation_insensitive,
 };
 
 use super::import::OpenApiImporter;
+
+/// Ceiling on nested `allOf` composition, matching the depth the inference
+/// passes walk to. A cyclic `$ref` chain — `A: {allOf: [$ref A]}` — is a schema
+/// this recursion would otherwise follow forever.
+const MAX_ALL_OF_DEPTH: usize = 8;
+
+/// Ceiling on the walk that compares two declarations of the same property.
+/// Separate from [`MAX_ALL_OF_DEPTH`], which bounds composition nesting: this
+/// one bounds the property schema itself, and exceeding it discards the whole
+/// type. Matches the MCP importer's ceiling for the same comparison.
+const MAX_PROPERTY_COMPARISON_DEPTH: usize = 64;
+
+/// Why folding a schema's `allOf` tree stopped.
+enum AllOfMergeError {
+    /// A branch could not be resolved. `resolve_ref` has already recorded a
+    /// diagnostic for it.
+    UnresolvedRef,
+    Comparison(JsonSchemaComparisonError),
+}
 
 impl OpenApiImporter<'_> {
     #[expect(
@@ -50,32 +70,42 @@ impl OpenApiImporter<'_> {
                 description: description.clone(),
             },
         );
-        let shape = if let Some(all_of) = resolved.get("allOf").and_then(Value::as_array) {
-            let mut merged = BTreeMap::new();
-            for item in all_of {
-                let item = self.resolve_ref(item, operation_id, diagnostics)?;
-                let properties = direct_json_object_shape(&item).properties;
-                match merge_json_schema_properties_exact(&mut merged, properties) {
-                    Ok(()) => {}
-                    Err(JsonSchemaComparisonError::PropertyConflict(property)) => {
-                        diagnostics.push(Diagnostic::new(
-                            format!("allOf property '{property}' conflicts in operation '{operation_id}'"),
-                            Some(operation_id.to_string()),
-                        ));
-                        return None;
-                    }
-                    Err(JsonSchemaComparisonError::DepthExceeded) => {
-                        diagnostics.push(Diagnostic::new(
-                            format!("allOf schema exceeds maximum comparison depth in operation '{operation_id}'"),
-                            Some(operation_id.to_string()),
-                        ));
-                        return None;
-                    }
+        let shape = if resolved.get("allOf").and_then(Value::as_array).is_some() {
+            let mut merged = JsonObjectShape::default();
+            match self.merge_all_of_properties(&resolved, &mut merged, operation_id, 0, diagnostics)
+            {
+                Ok(()) => {}
+                // `resolve_ref` has already reported the branch it could not
+                // reach.
+                Err(AllOfMergeError::UnresolvedRef) => return None,
+                Err(AllOfMergeError::Comparison(JsonSchemaComparisonError::PropertyConflict(
+                    property,
+                ))) => {
+                    diagnostics.push(Diagnostic::new(
+                        format!(
+                            "allOf property '{property}' conflicts in operation '{operation_id}'"
+                        ),
+                        Some(operation_id.to_string()),
+                    ));
+                    return None;
+                }
+                Err(AllOfMergeError::Comparison(JsonSchemaComparisonError::DepthExceeded)) => {
+                    diagnostics.push(Diagnostic::new(
+                        format!(
+                            "allOf schema exceeds maximum comparison depth in operation '{operation_id}'"
+                        ),
+                        Some(operation_id.to_string()),
+                    ));
+                    return None;
                 }
             }
             IrTypeShape::Object {
+                // The merged `required` set is deliberately dropped, as it was
+                // before this folded the whole tree: honouring it here would
+                // flip the nullability of every field of every composed type,
+                // which is a change for its own commit.
                 fields: self.import_object_fields(
-                    merged.iter(),
+                    merged.properties.iter(),
                     &BTreeSet::new(),
                     &type_id,
                     operation_id,
@@ -148,6 +178,69 @@ impl OpenApiImporter<'_> {
             },
         );
         Some(type_id)
+    }
+
+    /// Folds a schema's own properties together with those of every `allOf`
+    /// branch, recursively.
+    ///
+    /// Providers compose envelopes out of already-composed bases: a Graph delta
+    /// collection response is an `allOf` over `BaseDeltaFunctionResponse`, which
+    /// is itself an `allOf` over `BaseCollectionPaginationCountResponse`.
+    /// Merging only the immediate branches drops everything the nested ones
+    /// declare, which does two things. It silently loses fields from the
+    /// imported type, and — because row-path inference folds the whole tree —
+    /// it makes a path inference found in a nested branch look absent here, so
+    /// `infer_row_path` discards it and the relation collapses to a single JSON
+    /// row.
+    ///
+    /// A schema's own `properties` are merged alongside its branches for the
+    /// same reason: `{type: object, properties: {...}, allOf: [...]}` is legal,
+    /// and reading only the branches drops the properties declared in place.
+    ///
+    /// Deliberately not `merged_all_of_object_view`, which answers heuristic
+    /// shape questions and lets the first branch win on a duplicate property.
+    /// Type import has the opposite need: a genuine disagreement between
+    /// branches must still be reported rather than resolved by ordering.
+    ///
+    /// Properties are compared on validation semantics, not raw equality. A
+    /// derived type routinely re-declares an inherited property to narrow an
+    /// annotation — every Graph subtype re-declares the `@odata.type`
+    /// discriminator with its own `default` — and folding the full chain under
+    /// exact equality would read those as conflicts and discard the type
+    /// entirely. A property that genuinely disagrees about type or constraints
+    /// is still a conflict.
+    fn merge_all_of_properties(
+        &self,
+        schema: &Value,
+        merged: &mut JsonObjectShape,
+        operation_id: &str,
+        depth: usize,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) -> Result<(), AllOfMergeError> {
+        if depth > MAX_ALL_OF_DEPTH {
+            return Err(AllOfMergeError::Comparison(
+                JsonSchemaComparisonError::DepthExceeded,
+            ));
+        }
+        merge_json_object_shape_annotation_insensitive(
+            merged,
+            direct_json_object_shape(schema),
+            0,
+            MAX_PROPERTY_COMPARISON_DEPTH,
+        )
+        .map_err(AllOfMergeError::Comparison)?;
+        for branch in schema
+            .get("allOf")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let branch = self
+                .resolve_ref(branch, operation_id, diagnostics)
+                .ok_or(AllOfMergeError::UnresolvedRef)?;
+            self.merge_all_of_properties(&branch, merged, operation_id, depth + 1, diagnostics)?;
+        }
+        Ok(())
     }
 
     fn import_object_fields<'a>(

@@ -272,22 +272,6 @@ pub(crate) fn json_schema_default_to_string(value: &Value) -> String {
     }
 }
 
-pub(crate) fn merge_json_schema_properties_exact(
-    target: &mut BTreeMap<String, Value>,
-    source: BTreeMap<String, Value>,
-) -> Result<(), JsonSchemaComparisonError> {
-    for (name, property) in source {
-        if let Some(existing) = target.get(&name) {
-            if existing != &property {
-                return Err(JsonSchemaComparisonError::PropertyConflict(name));
-            }
-        } else {
-            target.insert(name, property);
-        }
-    }
-    Ok(())
-}
-
 pub(crate) fn merge_json_object_shape_annotation_insensitive(
     target: &mut JsonObjectShape,
     source: JsonObjectShape,
@@ -867,31 +851,6 @@ mod tests {
             Some("integer")
         );
         assert!(resolving_refs.is_empty());
-    }
-
-    #[test]
-    fn exact_property_merge_reports_conflict() {
-        let mut target = direct_json_object_shape(&json!({
-            "type": "object",
-            "properties": {
-                "query": {"type": "string"}
-            }
-        }))
-        .properties;
-        let source = direct_json_object_shape(&json!({
-            "type": "object",
-            "properties": {
-                "query": {"type": "integer"}
-            }
-        }))
-        .properties;
-
-        assert_eq!(
-            merge_json_schema_properties_exact(&mut target, source),
-            Err(JsonSchemaComparisonError::PropertyConflict(
-                "query".to_string()
-            ))
-        );
     }
 
     #[test]

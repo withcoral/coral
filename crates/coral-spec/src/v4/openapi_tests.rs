@@ -2710,3 +2710,248 @@ components:
         "Graph rejects $skip on several collections; the next link is the only contract that works"
     );
 }
+
+/// Graph nests its envelope bases: a delta collection response composes
+/// `BaseDeltaFunctionResponse`, which is itself an `allOf` over
+/// `BaseCollectionPaginationCountResponse`. Row-path inference folds that whole
+/// tree, so type import has to fold it too — otherwise the imported type is
+/// missing the properties the inferred path names and the path is discarded.
+#[test]
+fn importer_folds_nested_all_of_envelope_bases() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: graph
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://graph.microsoft.com/v1.0
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.0.3
+paths:
+  /me/chats/delta:
+    get:
+      operationId: me.chats.delta
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/microsoft.graph.chatDeltaCollectionResponse'
+components:
+  schemas:
+    BaseCollectionPaginationCountResponse:
+      type: object
+      properties:
+        '@odata.count': {type: integer, format: int64, nullable: true}
+        '@odata.nextLink': {type: string, nullable: true}
+    BaseDeltaFunctionResponse:
+      type: object
+      allOf:
+        - $ref: '#/components/schemas/BaseCollectionPaginationCountResponse'
+        - type: object
+          properties:
+            '@odata.deltaLink': {type: string, nullable: true}
+    microsoft.graph.chat:
+      type: object
+      properties:
+        id: {type: string}
+    microsoft.graph.chatDeltaCollectionResponse:
+      type: object
+      allOf:
+        - $ref: '#/components/schemas/BaseDeltaFunctionResponse'
+        - type: object
+          properties:
+            value:
+              type: array
+              items:
+                $ref: '#/components/schemas/microsoft.graph.chat'
+"
+        .as_bytes(),
+    )
+    .expect("import");
+
+    assert_eq!(imported_row_path(&ir, "me_chats_delta"), ["value"]);
+
+    let pagination = imported_rest_pagination(&ir, "me_chats_delta");
+    assert_eq!(pagination.mode, PaginationMode::NextUrlBody);
+    assert_eq!(pagination.next_url_path, ["@odata.nextLink"]);
+
+    // The nested base contributes `@odata.count`/`@odata.nextLink` and the
+    // intermediate one `@odata.deltaLink`. Folding only the immediate branches
+    // kept `value` alone.
+    let IrTypeShape::Object { fields } = &ir
+        .semantic_ir
+        .types
+        .iter()
+        .find(|ty| ty.id == "me_chats_delta_row")
+        .expect("response type")
+        .shape
+    else {
+        panic!("expected an object response type");
+    };
+    let names: Vec<&str> = fields.iter().map(|field| field.name.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "@odata.count",
+            "@odata.deltaLink",
+            "@odata.nextLink",
+            "value"
+        ]
+    );
+}
+
+/// `properties` declared alongside `allOf` are as much part of the schema as
+/// the branches are.
+///
+/// Row-path inference reads both, so before type import did too, the inferred
+/// `value` path was rejected as absent from the imported type and the whole
+/// collection collapsed to a single JSON row.
+#[test]
+fn importer_keeps_properties_declared_beside_all_of() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: graph
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://graph.microsoft.com/v1.0
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.0.3
+paths:
+  /me/chats:
+    get:
+      operationId: me.listChats
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/microsoft.graph.chatCollectionResponse'
+components:
+  schemas:
+    BaseCollectionPaginationCountResponse:
+      type: object
+      properties:
+        '@odata.count': {type: integer, format: int64, nullable: true}
+        '@odata.nextLink': {type: string, nullable: true}
+    microsoft.graph.chat:
+      type: object
+      properties:
+        id: {type: string}
+    microsoft.graph.chatCollectionResponse:
+      type: object
+      properties:
+        value:
+          type: array
+          items:
+            $ref: '#/components/schemas/microsoft.graph.chat'
+      allOf:
+        - $ref: '#/components/schemas/BaseCollectionPaginationCountResponse'
+"
+        .as_bytes(),
+    )
+    .expect("import");
+
+    assert_eq!(imported_row_path(&ir, "me_listchats"), ["value"]);
+}
+
+/// A subtype re-declaring an inherited property to pin an annotation is not a
+/// conflict.
+///
+/// Every Graph type re-declares the `@odata.type` discriminator with its own
+/// `default`. Comparing declarations byte-for-byte reads that as two branches
+/// disagreeing and discards the whole type, which costs every column rather
+/// than the one property — so the comparison is on validation semantics, and
+/// [`importer_warns_for_openapi_all_of_property_conflicts`] still holds for branches
+/// that genuinely disagree.
+#[test]
+fn importer_accepts_annotation_only_redeclaration_across_all_of_levels() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: graph
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://graph.microsoft.com/v1.0
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.0.3
+paths:
+  /me/drive:
+    get:
+      operationId: me.getDrive
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/microsoft.graph.drive'
+components:
+  schemas:
+    microsoft.graph.entity:
+      type: object
+      properties:
+        id: {type: string}
+        '@odata.type': {type: string}
+    microsoft.graph.baseItem:
+      type: object
+      allOf:
+        - $ref: '#/components/schemas/microsoft.graph.entity'
+        - type: object
+          properties:
+            name: {type: string}
+            webUrl: {type: string}
+    microsoft.graph.drive:
+      type: object
+      allOf:
+        - $ref: '#/components/schemas/microsoft.graph.baseItem'
+        - type: object
+          properties:
+            driveType: {type: string}
+            '@odata.type': {type: string, default: '#microsoft.graph.drive'}
+"
+        .as_bytes(),
+    )
+    .expect("import");
+
+    let IrTypeShape::Object { fields } = &ir
+        .semantic_ir
+        .types
+        .iter()
+        .find(|ty| ty.id == "me_getdrive_row")
+        .expect("drive response type")
+        .shape
+    else {
+        panic!("a conflict would have left the type as opaque JSON");
+    };
+    let names: Vec<&str> = fields.iter().map(|field| field.name.as_str()).collect();
+    assert_eq!(
+        names,
+        ["@odata.type", "driveType", "id", "name", "webUrl"],
+        "the inherited columns must survive two levels of composition"
+    );
+}
