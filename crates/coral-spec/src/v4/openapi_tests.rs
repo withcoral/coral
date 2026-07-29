@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
+use serde_json::json;
+
 use super::*;
 use crate::{
     ManifestDataType, PaginationMode, PaginationSpec, SourceTableFunctionKind,
@@ -621,7 +623,7 @@ components:
         .iter()
         .map(|column| (column.name.as_str(), column.data_type))
         .collect::<BTreeMap<_, _>>();
-    assert_eq!(projection.columns.len(), 11);
+    assert_eq!(projection.columns.len(), 12);
     assert_eq!(column_types.get("id"), Some(&ManifestDataType::Float64));
     assert_eq!(
         column_types.get("content_type"),
@@ -632,6 +634,14 @@ components:
         Some(&ManifestDataType::Timestamp)
     );
     assert_eq!(column_types.get("fields"), Some(&ManifestDataType::Json));
+    assert_eq!(
+        projection
+            .columns
+            .iter()
+            .find(|column| column.name == "creator__login")
+            .map(|column| column.source_path.as_slice()),
+        Some(["creator".to_string(), "login".to_string()].as_slice())
+    );
 }
 
 #[test]
@@ -1475,10 +1485,18 @@ paths:
     let defaults = operation
         .inputs
         .iter()
-        .map(|input| (input.name.as_str(), input.default_value.as_deref()))
+        .map(|input| {
+            (
+                input.name.as_str(),
+                input
+                    .default_value
+                    .as_ref()
+                    .map(|default| default.value().clone()),
+            )
+        })
         .collect::<BTreeMap<_, _>>();
-    assert_eq!(defaults.get("per_page"), Some(&Some("30")));
-    assert_eq!(defaults.get("archived"), Some(&Some("false")));
+    assert_eq!(defaults.get("per_page"), Some(&Some(json!(30))));
+    assert_eq!(defaults.get("archived"), Some(&Some(json!(false))));
 }
 
 #[test]

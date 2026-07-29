@@ -1,11 +1,9 @@
 use std::collections::HashSet;
 
-use serde_json::Value;
-
 use crate::v4::ir::{IrExecutionAttachment, IrInputLocation, IrOperation};
 use crate::{
-    ColumnSpec, ExprSpec, FilterMode, FilterSpec, FunctionArgBinding, ParsedTemplate, RequestSpec,
-    Result, TableFunctionArgSpec,
+    ColumnSpec, DeclaredDefaultValue, ExprSpec, FilterMode, FilterSpec, FunctionArgBinding,
+    ParsedTemplate, RequestSpec, Result, TableFunctionArgSpec,
 };
 
 use super::model::{Projection, SqlInputExposure};
@@ -36,7 +34,7 @@ pub fn projection_arg_specs(projection: &Projection) -> Vec<TableFunctionArgSpec
             data_type: input.data_type,
             required: input.required,
             values: Vec::new(),
-            default: None,
+            default: input.default_value.clone(),
             bind: FunctionArgBinding {
                 arg: input.name.clone(),
             },
@@ -54,7 +52,7 @@ pub fn mcp_projection_arg_specs(projection: &Projection) -> Vec<TableFunctionArg
             data_type: input.data_type,
             required: input.required,
             values: Vec::new(),
-            default: None,
+            default: input.default_value.clone(),
             bind: FunctionArgBinding {
                 arg: input.wire_name.clone(),
             },
@@ -118,10 +116,10 @@ pub fn request_spec_for_projection(
         if input.source_location == IrInputLocation::Path {
             let replacement = match input.sql_exposure {
                 SqlInputExposure::Filter => {
-                    path_template_token("filter", &input.name, input.default_value.as_deref())
+                    path_template_token("filter", &input.name, input.default_value.as_ref())
                 }
                 SqlInputExposure::FunctionArg => {
-                    path_template_token("arg", &input.name, input.default_value.as_deref())
+                    path_template_token("arg", &input.name, input.default_value.as_ref())
                 }
                 SqlInputExposure::Internal => continue,
             };
@@ -139,14 +137,14 @@ pub fn request_spec_for_projection(
                     default: input
                         .default_value
                         .as_ref()
-                        .map(|value| Value::String(value.clone())),
+                        .map(|value| value.value().clone()),
                 },
                 SqlInputExposure::FunctionArg => crate::ValueSourceSpec::Arg {
                     key: input.name.clone(),
                     default: input
                         .default_value
                         .as_ref()
-                        .map(|value| Value::String(value.clone())),
+                        .map(|value| value.value().clone()),
                 },
                 SqlInputExposure::Internal => return None,
             };
@@ -165,11 +163,19 @@ pub fn request_spec_for_projection(
     })
 }
 
-fn path_template_token(namespace: &str, key: &str, default: Option<&str>) -> String {
+fn path_template_token(
+    namespace: &str,
+    key: &str,
+    default: Option<&DeclaredDefaultValue>,
+) -> String {
     default.map_or_else(
         || format!("{{{{{namespace}.{key}}}}}"),
         |default| {
-            let encoded_default = encode_path_segment_default(default);
+            let rendered_default = match default.value() {
+                serde_json::Value::String(value) => value.clone(),
+                value => value.to_string(),
+            };
+            let encoded_default = encode_path_segment_default(&rendered_default);
             format!("{{{{{namespace}.{key}|{encoded_default}}}}}")
         },
     )

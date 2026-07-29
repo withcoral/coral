@@ -165,6 +165,7 @@ surface:
             input_schema,
             output_schema,
             read_only_hint,
+            idempotent_hint: None,
         }
     }
 
@@ -233,6 +234,25 @@ surface:
     }
 
     #[test]
+    fn preserves_mcp_read_only_and_idempotent_evidence() {
+        let mut descriptor = tool("search-items", Some(true));
+        descriptor.idempotent_hint = Some(true);
+        let catalog = McpToolCatalog {
+            tools: vec![descriptor],
+        };
+
+        let normalized = normalize_mcp_tool_catalog(&catalog).expect("normalize catalog");
+        let normalized = String::from_utf8(normalized).expect("catalog YAML");
+        assert!(normalized.contains("read_only_hint: true"));
+        assert!(normalized.contains("idempotent_hint: true"));
+
+        let ir = import_catalog(&catalog);
+        let operation = operation(&ir, "search_items");
+        assert!(operation.read_only);
+        assert!(operation.idempotent);
+    }
+
+    #[test]
     fn imports_input_schema_types_required_flags_and_defaults() {
         let catalog = McpToolCatalog {
             tools: vec![tool_with_schemas(
@@ -274,7 +294,13 @@ surface:
             .find(|input| input.name == "limit")
             .expect("limit input");
         assert_eq!(limit.data_type, IrScalarType::Integer);
-        assert_eq!(limit.default_value.as_deref(), Some("10"));
+        assert_eq!(
+            limit
+                .default_value
+                .as_ref()
+                .map(crate::DeclaredDefaultValue::value),
+            Some(&json!(10))
+        );
 
         let exact = operation
             .inputs
@@ -282,7 +308,13 @@ surface:
             .find(|input| input.name == "exact")
             .expect("exact input");
         assert_eq!(exact.data_type, IrScalarType::Boolean);
-        assert_eq!(exact.default_value.as_deref(), Some("true"));
+        assert_eq!(
+            exact
+                .default_value
+                .as_ref()
+                .map(crate::DeclaredDefaultValue::value),
+            Some(&json!(true))
+        );
 
         let since = operation
             .inputs
@@ -462,7 +494,13 @@ surface:
             .find(|input| input.name == "limit")
             .expect("limit input");
         assert_eq!(limit.data_type, IrScalarType::Integer);
-        assert_eq!(limit.default_value.as_deref(), Some("10"));
+        assert_eq!(
+            limit
+                .default_value
+                .as_ref()
+                .map(crate::DeclaredDefaultValue::value),
+            Some(&json!(10))
+        );
         assert_eq!(limit.description, "Page size");
     }
 
@@ -499,7 +537,13 @@ surface:
             .find(|input| input.name == "limit")
             .expect("limit input");
         assert_eq!(limit.data_type, IrScalarType::Integer);
-        assert_eq!(limit.default_value.as_deref(), Some("10"));
+        assert_eq!(
+            limit
+                .default_value
+                .as_ref()
+                .map(crate::DeclaredDefaultValue::value),
+            Some(&json!(10))
+        );
     }
 
     #[test]
@@ -773,7 +817,13 @@ surface:
             .find(|input| input.name == "limit")
             .expect("limit input");
         assert_eq!(limit.data_type, IrScalarType::Integer);
-        assert_eq!(limit.default_value.as_deref(), Some("10"));
+        assert_eq!(
+            limit
+                .default_value
+                .as_ref()
+                .map(crate::DeclaredDefaultValue::value),
+            Some(&json!(10))
+        );
     }
 
     #[test]
@@ -944,7 +994,19 @@ surface:
             ["items"]
         );
         let wrapped_fields = row_fields(&ir, "wrapped_items_row");
-        assert_eq!(field(wrapped_fields, "items").type_ref, "mcp_json");
+        let items = field(wrapped_fields, "items");
+        let items_type = ir
+            .types
+            .iter()
+            .find(|ty| ty.id == items.type_ref)
+            .expect("items list type");
+        let IrTypeShape::List { item_type_ref } = &items_type.shape else {
+            panic!("items should remain a nested list");
+        };
+        assert_eq!(
+            field(row_fields(&ir, item_type_ref), "enabled").type_ref,
+            "mcp_boolean"
+        );
         assert!(wrapped_fields.iter().any(|field| field.name == "raw"));
 
         let get_item = operation(&ir, "get_item");
@@ -957,6 +1019,93 @@ surface:
         let generic_fields = row_fields(&ir, "no_schema_row");
         assert_eq!(field(generic_fields, "result").type_ref, "mcp_json");
         assert_eq!(field(generic_fields, "raw").type_ref, "mcp_json");
+    }
+
+    #[test]
+    fn resolves_top_level_array_ref_and_defs_item_schema() {
+        let catalog = McpToolCatalog {
+            tools: vec![tool_with_schemas(
+                "list-items",
+                json!({"type": "object", "properties": {}}),
+                Some(json!({
+                    "$ref": "#/$defs/ItemList",
+                    "$defs": {
+                        "ItemList": {
+                            "type": "array",
+                            "items": {"$ref": "#/$defs/Item"}
+                        },
+                        "Item": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "string"},
+                                "count": {"type": "integer"}
+                            },
+                            "required": ["id"]
+                        }
+                    }
+                })),
+                Some(true),
+            )],
+        };
+
+        let ir = import_catalog(&catalog);
+        let operation = operation(&ir, "list_items");
+        assert_eq!(operation.output.cardinality, OutputCardinality::List);
+        let fields = row_fields(&ir, "list_items_row");
+        assert_eq!(field(fields, "id").type_ref, "mcp_string");
+        assert!(field(fields, "id").required);
+        assert_eq!(field(fields, "count").type_ref, "mcp_integer");
+        assert!(field(fields, "raw").synthetic);
+    }
+
+    #[test]
+    fn resolves_top_level_wrapped_list_ref_as_a_singleton_envelope() {
+        let catalog = McpToolCatalog {
+            tools: vec![tool_with_schemas(
+                "wrapped-items",
+                json!({"type": "object", "properties": {}}),
+                Some(json!({
+                    "$ref": "#/$defs/ItemEnvelope",
+                    "$defs": {
+                        "ItemEnvelope": {
+                            "type": "object",
+                            "properties": {
+                                "items": {
+                                    "type": "array",
+                                    "items": {"$ref": "#/$defs/Item"}
+                                }
+                            }
+                        },
+                        "Item": {
+                            "type": "object",
+                            "properties": {
+                                "enabled": {"type": "boolean"}
+                            }
+                        }
+                    }
+                })),
+                Some(true),
+            )],
+        };
+
+        let ir = import_catalog(&catalog);
+        let operation = operation(&ir, "wrapped_items");
+        assert_eq!(operation.output.cardinality, OutputCardinality::Singleton);
+        let fields = row_fields(&ir, "wrapped_items_row");
+        let items = field(fields, "items");
+        let items_type = ir
+            .types
+            .iter()
+            .find(|ty| ty.id == items.type_ref)
+            .expect("items list type");
+        let IrTypeShape::List { item_type_ref } = &items_type.shape else {
+            panic!("items should remain a nested list");
+        };
+        assert_eq!(
+            field(row_fields(&ir, item_type_ref), "enabled").type_ref,
+            "mcp_boolean"
+        );
+        assert!(field(fields, "raw").synthetic);
     }
 
     #[test]

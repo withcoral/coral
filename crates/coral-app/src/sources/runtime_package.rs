@@ -612,6 +612,7 @@ mod tests {
                 description: String::new(),
                 deprecated: false,
                 read_only: true,
+                idempotent: true,
                 naming: None,
                 inputs: pagination_inputs.clone(),
                 output: IrOperationOutput {
@@ -685,6 +686,7 @@ mod tests {
                 description: String::new(),
                 deprecated: false,
                 read_only: true,
+                idempotent: true,
                 naming: None,
                 inputs: inputs.clone(),
                 output: IrOperationOutput {
@@ -828,6 +830,7 @@ mod tests {
                 description: String::new(),
                 deprecated: false,
                 read_only: true,
+                idempotent: true,
                 naming: None,
                 inputs,
                 output: IrOperationOutput {
@@ -880,6 +883,7 @@ mod tests {
                 description: String::new(),
                 deprecated: false,
                 read_only: true,
+                idempotent: true,
                 naming: None,
                 inputs: Vec::new(),
                 output: IrOperationOutput {
@@ -919,6 +923,7 @@ mod tests {
                             required: true,
                             nullable: false,
                             description: String::new(),
+                            synthetic: false,
                         }],
                     },
                     nullable: false,
@@ -958,9 +963,38 @@ mod tests {
                 pagination: McpOperationPagination::default(),
             },
         );
-        surface.plan =
-            ValidatedSurfacePlan::new(surface.plan.semantic_ir().clone(), operation_metadata)
-                .expect("plan");
+        let mut semantic_ir = surface.plan.semantic_ir().clone();
+        let operation = semantic_ir.operations.first_mut().expect("MCP operation");
+        operation.output = IrOperationOutput {
+            cardinality: coral_spec::v4::OutputCardinality::Singleton,
+            type_ref: "envelope".to_string(),
+        };
+        semantic_ir.types.extend([
+            IrType {
+                id: "tool_result_list".to_string(),
+                shape: IrTypeShape::List {
+                    item_type_ref: "tool_result".to_string(),
+                },
+                nullable: false,
+                description: String::new(),
+            },
+            IrType {
+                id: "envelope".to_string(),
+                shape: IrTypeShape::Object {
+                    fields: vec![IrField {
+                        name: "items".to_string(),
+                        type_ref: "tool_result_list".to_string(),
+                        required: true,
+                        nullable: false,
+                        description: String::new(),
+                        synthetic: false,
+                    }],
+                },
+                nullable: false,
+                description: String::new(),
+            },
+        ]);
+        surface.plan = ValidatedSurfacePlan::new(semantic_ir, operation_metadata).expect("plan");
         surface
     }
 

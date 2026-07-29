@@ -2,13 +2,13 @@ use std::collections::BTreeSet;
 
 use serde_json::Value;
 
+use crate::DeclaredDefaultValue;
 use crate::v4::diagnostics::Diagnostic;
 use crate::v4::ir::{IrInputLocation, IrOperationInput, IrScalarType};
 use crate::v4::surfaces::json_schema::{
     JsonObjectShape, JsonSchemaComparisonError, JsonSchemaWalkError, direct_json_object_shape,
-    json_schema_default_to_string, json_schema_scalar_type,
-    merge_json_object_shape_annotation_insensitive, resolve_json_schema_ref_with_siblings,
-    with_resolved_json_schema,
+    json_schema_scalar_type, merge_json_object_shape_annotation_insensitive,
+    resolve_json_schema_ref_with_siblings, with_resolved_json_schema,
 };
 
 use super::import::McpImporter;
@@ -63,7 +63,10 @@ impl McpImporter<'_> {
                     location: IrInputLocation::ToolArg,
                     required: shape.required.contains(name.as_str()),
                     data_type,
-                    default_value: property.get("default").map(json_schema_default_to_string),
+                    default_value: property
+                        .get("default")
+                        .cloned()
+                        .map(DeclaredDefaultValue::new),
                     description: schema_description(property),
                 }
             })

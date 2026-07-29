@@ -33,9 +33,7 @@ pub fn validate_projection_compatibility(
                 projection.name, projection.operation_id
             )));
         };
-        if matches!(operation.execution, IrExecutionAttachment::Rest(_)) {
-            validate_projection_columns(plan, &types, projection, &operation.id)?;
-        }
+        validate_projection_columns(plan, &types, projection, &operation.id)?;
         validate_projection_inputs(plan, projection, operation)?;
     }
     Ok(())
@@ -139,7 +137,7 @@ fn validate_projection_inputs(
     Ok(())
 }
 
-/// Checks that a REST projection's columns describe the rows the effective
+/// Checks that a projection's columns describe the rows the effective
 /// operation policy actually yields.
 ///
 /// The projection catalog is a snapshot: an operation-metadata override that
@@ -153,7 +151,7 @@ fn validate_projection_columns(
     projection: &Projection,
     operation_id: &str,
 ) -> Result<()> {
-    let row_type_ref = plan.rest_output_type_ref(operation_id);
+    let row_type_ref = plan.output_row_type_ref(operation_id);
     // Only an object row type names its fields. Every other shape is projected
     // whole, as a single column with no source path — including a `json` row,
     // which the semantic IR carries no entry for at all.

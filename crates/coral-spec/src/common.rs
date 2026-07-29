@@ -461,7 +461,7 @@ impl DeclaredDefaultValue {
     }
 }
 
-fn deserialize_declared_default<'de, D>(
+pub(crate) fn deserialize_declared_default<'de, D>(
     deserializer: D,
 ) -> std::result::Result<Option<DeclaredDefaultValue>, D::Error>
 where
