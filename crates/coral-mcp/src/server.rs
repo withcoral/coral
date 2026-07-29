@@ -416,6 +416,7 @@ impl CoralMcpServer {
             search,
             options,
             startup_context,
+            guide_block,
             search_capabilities,
         )
     }
@@ -432,6 +433,7 @@ impl CoralMcpServer {
             app.search_client(),
             options,
             startup_context,
+            Arc::new(GuideBlockState::default()),
             search_capabilities,
         )
     }
@@ -441,6 +443,7 @@ impl CoralMcpServer {
         search: SearchClient,
         options: McpOptions,
         startup_context: McpStartupContext,
+        guide_block: Arc<GuideBlockState>,
         search_capabilities: Arc<dyn SearchCapabilityLoader>,
     ) -> Self {
         let startup_provider_fanout =
