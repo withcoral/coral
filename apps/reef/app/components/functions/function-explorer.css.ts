@@ -87,8 +87,20 @@ export const listEmpty = style({
 export const detailPanel = style({
   display: 'flex',
   flex: 1,
+  flexDirection: 'column',
+  minHeight: 0,
   minWidth: 0,
   overflow: 'hidden',
+})
+
+export const actionBar = style({
+  alignItems: 'center',
+  borderBlockStart: `1px solid ${theme.stroke.primary}`,
+  display: 'flex',
+  flexShrink: 0,
+  height: 56,
+  justifyContent: 'flex-end',
+  paddingInline: 16,
 })
 
 export const detailEmpty = style({

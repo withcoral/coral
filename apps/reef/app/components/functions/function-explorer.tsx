@@ -1,7 +1,7 @@
 import { useState } from 'react'
 
 import { PageHeader } from '@/views/traces/page-header'
-import { Container as ButtonContainer } from '@/wax/components/button'
+import { Container as ButtonContainer, Text as ButtonText } from '@/wax/components/button'
 import { Icon } from '@/wax/components/icon'
 import { Container as ScrollArea } from '@/wax/components/scroll-area'
 import { Typography } from '@/wax/components/typography'
@@ -11,6 +11,7 @@ import * as styles from './function-explorer.css'
 
 export interface FunctionExplorerProps {
   functions: FunctionDetailsProps[]
+  onDelete?: (name: string) => void
   onSelect: (name: string) => void
   selectedName?: string
 }
@@ -20,7 +21,12 @@ interface FunctionNamespace {
   name: string
 }
 
-export function FunctionExplorer({ functions, onSelect, selectedName }: FunctionExplorerProps) {
+export function FunctionExplorer({
+  functions,
+  onDelete,
+  onSelect,
+  selectedName,
+}: FunctionExplorerProps) {
   const selectedFunction = functions.find((fn) => fn.name === selectedName)
   const namespaces = groupFunctionsByNamespace(functions)
   const [expandedNamespaces, setExpandedNamespaces] = useState<Set<string>>(() => new Set())
@@ -112,7 +118,20 @@ export function FunctionExplorer({ functions, onSelect, selectedName }: Function
 
         <div className={styles.detailPanel}>
           {selectedFunction ? (
-            <FunctionDetails {...selectedFunction} />
+            <>
+              <FunctionDetails {...selectedFunction} />
+              {onDelete ? (
+                <footer className={styles.actionBar}>
+                  <ButtonContainer
+                    onClick={() => onDelete(selectedFunction.name)}
+                    size="32"
+                    variant="secondary"
+                  >
+                    <ButtonText>Delete</ButtonText>
+                  </ButtonContainer>
+                </footer>
+              ) : null}
+            </>
           ) : (
             <div className={styles.detailEmpty}>
               <Typography.Body variant="secondary">

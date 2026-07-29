@@ -1,12 +1,24 @@
-import { createMemoryRouter, RouterProvider } from 'react-router'
-import { describe, expect, it } from 'vitest'
+import { createMemoryRouter, RouterProvider, type ActionFunction } from 'react-router'
+import { describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 
 import { FunctionsIndex } from './functions-index'
 
-function renderFunctions(props: React.ComponentProps<typeof FunctionsIndex>) {
+const reviewQueue = {
+  arguments: [{ dataType: 'Utf8', name: 'owner' }],
+  description: 'Pull requests waiting for review.',
+  name: 'review_queue',
+  namespace: 'engineering',
+  resultColumns: [{ dataType: 'Int64', name: 'number', nullable: false }],
+  sources: [],
+}
+
+function renderFunctions(
+  props: React.ComponentProps<typeof FunctionsIndex>,
+  action?: ActionFunction,
+) {
   const router = createMemoryRouter(
-    [{ element: <FunctionsIndex {...props} />, path: '/functions' }],
+    [{ action, element: <FunctionsIndex {...props} />, path: '/functions' }],
     { initialEntries: ['/functions'] },
   )
   return render(<RouterProvider router={router} />)
@@ -16,14 +28,7 @@ describe('FunctionsIndex', () => {
   it('renders available function details and changes the selection', async () => {
     const screen = await renderFunctions({
       functions: [
-        {
-          arguments: [{ dataType: 'Utf8', name: 'owner' }],
-          description: 'Pull requests waiting for review.',
-          name: 'review_queue',
-          namespace: 'engineering',
-          resultColumns: [{ dataType: 'Int64', name: 'number', nullable: false }],
-          sources: [],
-        },
+        reviewQueue,
         {
           arguments: [],
           description: 'Failed deployments requiring investigation.',
@@ -74,6 +79,48 @@ describe('FunctionsIndex', () => {
     await expect
       .element(screen.getByRole('button', { name: 'recent_incidents' }))
       .not.toBeInTheDocument()
+  })
+
+  it('keeps the confirmation open when deletion fails', async () => {
+    const deleteAction = vi.fn(async () => ({
+      message: 'function not found',
+      name: 'review_queue',
+      status: 'error',
+    }))
+    const screen = await renderFunctions(
+      { functions: [reviewQueue], loadError: null },
+      deleteAction,
+    )
+
+    await screen.getByRole('button', { name: 'Delete' }).click()
+    const confirmation = screen.getByRole('dialog', { name: 'Delete review_queue?' })
+    await confirmation.getByRole('button', { name: 'Delete function' }).click()
+
+    await expect.element(confirmation.getByRole('alert')).toHaveTextContent('function not found')
+    await expect.element(confirmation).toBeVisible()
+    expect(deleteAction).toHaveBeenCalledOnce()
+  })
+
+  it('closes the confirmation after deletion succeeds', async () => {
+    const deleteAction = vi.fn(async ({ request }: Parameters<ActionFunction>[0]) => {
+      const formData = await request.formData()
+      expect(formData.get('name')).toBe('review_queue')
+      return { name: 'review_queue', status: 'success' }
+    })
+    const screen = await renderFunctions(
+      { functions: [reviewQueue], loadError: null },
+      deleteAction,
+    )
+
+    await screen.getByRole('button', { name: 'Delete' }).click()
+    const confirmation = screen.getByRole('dialog', { name: 'Delete review_queue?' })
+    await expect
+      .element(confirmation.getByText('Queries that call it will stop working.', { exact: false }))
+      .toBeVisible()
+    await confirmation.getByRole('button', { name: 'Delete function' }).click()
+
+    await expect.element(confirmation).not.toBeInTheDocument()
+    expect(deleteAction).toHaveBeenCalledOnce()
   })
 
   it('renders empty and error states', async () => {

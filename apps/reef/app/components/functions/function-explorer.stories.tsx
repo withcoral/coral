@@ -80,6 +80,7 @@ function StatefulExplorer({
 const meta = {
   args: {
     functions,
+    onDelete: fn(),
     onSelect: fn(),
     selectedName: functions[0].name,
   },

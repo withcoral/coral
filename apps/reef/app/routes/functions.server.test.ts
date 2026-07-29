@@ -1,5 +1,11 @@
 import { create } from '@bufbuild/protobuf'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+
+const { deleteFunction } = vi.hoisted(() => ({ deleteFunction: vi.fn() }))
+
+vi.mock('@/lib/coral-request.server', () => ({
+  functionClientForRequest: () => ({ deleteFunction }),
+}))
 
 import {
   FunctionRuntimeInvalidSchema,
@@ -8,7 +14,7 @@ import {
   FunctionTableFunctionPublishSchema,
 } from '@/generated/coral/v1/functions_pb'
 
-import { toFunctionDetails } from './functions'
+import { action, toFunctionDetails } from './functions'
 
 describe('functions route mapping', () => {
   it('maps available runtime metadata to function details', () => {
@@ -76,3 +82,30 @@ describe('functions route mapping', () => {
     expect(toFunctionDetails(fn)).toBeNull()
   })
 })
+
+describe('functions route action', () => {
+  it('deletes a function from the route workspace', async () => {
+    deleteFunction.mockResolvedValue({})
+
+    const result = await action({
+      params: { workspaceId: 'analytics' },
+      request: deleteRequest('review_queue'),
+    } as Parameters<typeof action>[0])
+
+    expect(deleteFunction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'review_queue',
+        workspace: expect.objectContaining({ name: 'analytics' }),
+      }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    )
+    expect(result).toEqual({ name: 'review_queue', status: 'success' })
+  })
+})
+
+function deleteRequest(name: string) {
+  return new Request('http://reef.test/workspaces/analytics/functions', {
+    body: new URLSearchParams({ name }),
+    method: 'POST',
+  })
+}
