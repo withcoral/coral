@@ -883,6 +883,7 @@ async fn mcp_task_tools_are_always_available() {
         vec![
             "start_task",
             "sql",
+            "add_function",
             "search",
             "list_catalog",
             "describe_table",
@@ -892,6 +893,7 @@ async fn mcp_task_tools_are_always_available() {
     );
     for name in [
         "sql",
+        "add_function",
         "search",
         "list_catalog",
         "describe_table",
@@ -1955,7 +1957,7 @@ async fn add_function_is_create_only_by_default_and_replaces_explicitly() {
         .expect("add_function annotations");
     assert_eq!(annotations.read_only_hint, Some(false));
     assert_eq!(annotations.destructive_hint, Some(true));
-    assert_eq!(annotations.idempotent_hint, Some(true));
+    assert_eq!(annotations.idempotent_hint, Some(false));
     assert_eq!(annotations.open_world_hint, Some(false));
     let required = add_function_tool.input_schema["required"]
         .as_array()

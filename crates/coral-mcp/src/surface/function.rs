@@ -109,7 +109,7 @@ pub(crate) fn add_function_tool() -> Tool {
         ToolAnnotations::with_title("Add Function")
             .read_only(false)
             .destructive(true)
-            .idempotent(true)
+            .idempotent(false)
             .open_world(false),
     )
 }

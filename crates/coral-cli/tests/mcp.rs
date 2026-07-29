@@ -748,25 +748,17 @@ async fn mcp_stdio_lists_tools_and_resources() -> Result<(), Box<dyn std::error:
             "end_task"
         ]
     );
+    let tool_description = |name: &str| {
+        tools
+            .iter()
+            .find(|tool| tool.name.as_ref() == name)
+            .and_then(|tool| tool.description.as_deref())
+            .unwrap_or_else(|| panic!("{name} description"))
+    };
+    assert!(tool_description("sql").contains("3 table(s) are currently visible"));
+    assert!(tool_description("search").contains("Returns typed results plus provider statuses"));
     assert!(
-        tools[1]
-            .description
-            .as_deref()
-            .expect("sql description")
-            .contains("3 table(s) are currently visible")
-    );
-    assert!(
-        tools[2]
-            .description
-            .as_deref()
-            .expect("search description")
-            .contains("Returns typed results plus provider statuses")
-    );
-    assert!(
-        tools[3]
-            .description
-            .as_deref()
-            .expect("list_catalog description")
+        tool_description("list_catalog")
             .contains("3 table(s) and 0 table function(s) are currently visible")
     );
     let catalog_requests = server.list_catalog_requests();
