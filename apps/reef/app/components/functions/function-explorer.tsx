@@ -1,8 +1,10 @@
-import { useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 
 import { PageHeader } from '@/views/traces/page-header'
 import { Container as ButtonContainer } from '@/wax/components/button'
 import { Icon } from '@/wax/components/icon'
+import { TextInput } from '@/wax/components/inputs/text'
+import { KeyboardShortcut } from '@/wax/components/keyboard-shortcut'
 import { Container as ScrollArea } from '@/wax/components/scroll-area'
 import { Typography } from '@/wax/components/typography'
 
@@ -22,8 +24,23 @@ interface FunctionNamespace {
 
 export function FunctionExplorer({ functions, onSelect, selectedName }: FunctionExplorerProps) {
   const selectedFunction = functions.find((fn) => fn.name === selectedName)
-  const namespaces = groupFunctionsByNamespace(functions)
+  const [search, setSearch] = useState('')
+  const searchInputRef = useRef<HTMLInputElement>(null)
   const [expandedNamespaces, setExpandedNamespaces] = useState<Set<string>>(() => new Set())
+  const normalizedSearch = search.trim().toLowerCase()
+  const filteredFunctions = functions.filter((fn) =>
+    fn.name.toLowerCase().includes(normalizedSearch),
+  )
+  const namespaces = groupFunctionsByNamespace(filteredFunctions)
+
+  const onSearchShortcut = useCallback((event: KeyboardEvent) => {
+    const input = searchInputRef.current
+    if (!input) return
+
+    event.preventDefault()
+    input.focus()
+    input.select()
+  }, [])
 
   const toggleNamespace = (name: string) => {
     setExpandedNamespaces((previous) => {
@@ -36,21 +53,31 @@ export function FunctionExplorer({ functions, onSelect, selectedName }: Function
 
   return (
     <section aria-label="Functions explorer" className={styles.root}>
-      <PageHeader title="Functions" />
+      <KeyboardShortcut handler={onSearchShortcut} shortcut="$mod+f" />
+      <PageHeader title="Functions">
+        <TextInput
+          ariaLabel="Filter functions"
+          icon="Search"
+          onChange={setSearch}
+          placeholder="Filter functions"
+          ref={searchInputRef}
+          value={search}
+        />
+      </PageHeader>
 
       <div className={styles.body}>
         <nav aria-label="Functions" className={styles.listPanel}>
           <ScrollArea className={styles.listContent} constrainWidth>
-            {functions.length === 0 ? (
+            {filteredFunctions.length === 0 ? (
               <div className={styles.listEmpty}>
                 <Typography.BodySmall variant="tertiary">
-                  No functions available.
+                  {normalizedSearch ? `No results for "${search}"` : 'No functions available.'}
                 </Typography.BodySmall>
               </div>
             ) : (
               <div className={styles.list}>
                 {namespaces.map((namespace) => {
-                  const expanded = expandedNamespaces.has(namespace.name)
+                  const expanded = normalizedSearch !== '' || expandedNamespaces.has(namespace.name)
                   const namespaceChildrenId = `function-namespace-${namespace.name}-items`
                   return (
                     <div key={namespace.name}>
@@ -59,7 +86,9 @@ export function FunctionExplorer({ functions, onSelect, selectedName }: Function
                         aria-expanded={expanded}
                         className={styles.listRow}
                         fullWidth
-                        onClick={() => toggleNamespace(namespace.name)}
+                        onClick={() => {
+                          if (!normalizedSearch) toggleNamespace(namespace.name)
+                        }}
                         size="22"
                         variant="bare"
                       >
