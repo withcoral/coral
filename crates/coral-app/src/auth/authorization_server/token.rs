@@ -80,7 +80,6 @@ pub(super) async fn oauth_token(
         Err(_error) => return token_error(TokenError::ServerError),
     };
     let issued = match state.session_tokens.issue_access_token(
-        &authorization.provider_id,
         &authorization.user_id,
         &authorization.client_id,
         &authorization.resource,
@@ -298,7 +297,6 @@ mod tests {
     use url::form_urlencoded;
 
     use super::*;
-    use crate::auth::PROVIDER_ID;
     use crate::auth::config::AuthSettings;
     use crate::auth::provider_client::OidcProviderClient;
     use crate::auth::session::SessionTokenIssuer;
@@ -334,7 +332,7 @@ type = "oidc"
 issuer = "https://accounts.example.test"
 client_id = "upstream-client"
 client_secret = "test-secret"
-redirect_uri = "http://127.0.0.1:14554/auth/oidc/alpha/callback"
+redirect_uri = "{AUTH_ISSUER}/auth/oidc/callback"
 "#
         );
         let settings = AuthSettings::from_toml(&raw)
@@ -366,7 +364,6 @@ redirect_uri = "http://127.0.0.1:14554/auth/oidc/alpha/callback"
             .store_authorization_code(
                 code,
                 OAuthAuthorizationCodeRecord {
-                    provider_id: PROVIDER_ID.into(),
                     user_id: "raw/provider/subject".into(),
                     client_id: CLIENT.into(),
                     redirect_uri: REDIRECT.into(),
@@ -672,7 +669,6 @@ redirect_uri = "http://127.0.0.1:14554/auth/oidc/alpha/callback"
             .expect("valid access token");
         assert_eq!(validated.audience, RESOURCE);
         assert_eq!(validated.client_id, CLIENT);
-        assert_eq!(validated.provider, PROVIDER_ID);
         assert_eq!(validated.subject, "raw/provider/subject");
         invalid_grant(state.clone(), "success-code").await;
 
