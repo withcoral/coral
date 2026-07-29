@@ -16,8 +16,8 @@ use thiserror::Error;
 use zeroize::Zeroizing;
 
 use crate::outbound_url_policy::{
-    ConfiguredEndpointUrl, OutboundUrlPolicyError, PublicMetadataUrl, public_metadata_http_client,
-    read_bounded_body,
+    BrowserRedirect, EndpointUrl, OutboundUrlPolicyError, PublicMetadata,
+    public_metadata_http_client, read_bounded_body,
 };
 
 const CLIENT_METADATA_MAX_BYTES: usize = 5 * 1024;
@@ -74,7 +74,7 @@ impl ClientMetadataResolver for HttpClientMetadataResolver {
         &self,
         client_id: &str,
     ) -> Result<OAuthClientRegistration, ClientMetadataError> {
-        let metadata_url = PublicMetadataUrl::parse(client_id)
+        let metadata_url = EndpointUrl::<PublicMetadata>::parse(client_id)
             .map_err(|_error| ClientMetadataError::InvalidClientId)?;
         let response = self.fetcher.fetch(&metadata_url).await?;
         registration_from_response(client_id, response).await
@@ -85,7 +85,7 @@ impl ClientMetadataResolver for HttpClientMetadataResolver {
 trait MetadataFetcher: Send + Sync {
     async fn fetch(
         &self,
-        metadata_url: &PublicMetadataUrl,
+        metadata_url: &EndpointUrl<PublicMetadata>,
     ) -> Result<reqwest::Response, ClientMetadataError>;
 }
 
@@ -97,10 +97,10 @@ struct ReqwestMetadataFetcher {
 impl MetadataFetcher for ReqwestMetadataFetcher {
     async fn fetch(
         &self,
-        metadata_url: &PublicMetadataUrl,
+        metadata_url: &EndpointUrl<PublicMetadata>,
     ) -> Result<reqwest::Response, ClientMetadataError> {
-        self.http
-            .get(metadata_url.as_url().clone())
+        metadata_url
+            .get(&self.http)
             .send()
             .await
             .map_err(|_error| ClientMetadataError::Fetch)
@@ -191,7 +191,7 @@ fn validate_oauth_redirect_uri(uri: &str) -> Result<(), String> {
     if uri.trim() != uri {
         return Err("redirect URI has surrounding whitespace".to_string());
     }
-    let url = ConfiguredEndpointUrl::parse(uri)
+    let url = EndpointUrl::<BrowserRedirect>::parse(uri)
         .map_err(|error| format!("OAuth client redirect URI is invalid: {error}"))?;
     if url.as_url().query_pairs().any(|(key, _value)| {
         matches!(
@@ -262,7 +262,7 @@ mod tests {
     impl MetadataFetcher for LocalFetcher {
         async fn fetch(
             &self,
-            _metadata_url: &PublicMetadataUrl,
+            _metadata_url: &EndpointUrl<PublicMetadata>,
         ) -> Result<reqwest::Response, ClientMetadataError> {
             self.http
                 .get(&self.endpoint)
@@ -278,7 +278,7 @@ mod tests {
     impl MetadataFetcher for PanicFetcher {
         async fn fetch(
             &self,
-            _metadata_url: &PublicMetadataUrl,
+            _metadata_url: &EndpointUrl<PublicMetadata>,
         ) -> Result<reqwest::Response, ClientMetadataError> {
             panic!("invalid client IDs must be rejected before fetching")
         }
