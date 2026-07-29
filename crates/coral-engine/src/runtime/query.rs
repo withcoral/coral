@@ -21,7 +21,7 @@ use tokio::sync::OnceCell;
 use tracing::{Instrument as _, info_span};
 
 use crate::backends::http::ProviderQueryError;
-use crate::backends::{CatalogColumnFetcher, RegisteredSource, compile_query_source};
+use crate::backends::{CatalogColumnFetcher, CatalogPublication, compile_query_source};
 use crate::runtime::catalog;
 use crate::runtime::dependent_join::error::resolver_rows_exceeded;
 use crate::runtime::dependent_join::optimizer;
@@ -60,7 +60,7 @@ pub(crate) struct QueryRuntimeAdapter {
     ctx: Arc<SessionContext>,
     fallback_runtime: Option<FallbackRuntime>,
     memory: QueryMemoryConfig,
-    active_sources: Vec<RegisteredSource>,
+    active_publications: Vec<CatalogPublication>,
     column_fetchers: Vec<CatalogColumnFetcher>,
     source_function_names: HashSet<TableFunctionIdentity>,
     udfs_installed: bool,
@@ -108,7 +108,7 @@ struct FallbackRuntimeConfig {
 
 struct RegisteredRuntime {
     ctx: Arc<SessionContext>,
-    active_sources: Vec<RegisteredSource>,
+    active_publications: Vec<CatalogPublication>,
     column_fetchers: Vec<CatalogColumnFetcher>,
     source_function_names: HashSet<TableFunctionIdentity>,
     tables: Vec<TableInfo>,
@@ -205,7 +205,7 @@ async fn build_runtime_inner(
         ctx: primary.ctx,
         fallback_runtime,
         memory,
-        active_sources: primary.active_sources,
+        active_publications: primary.active_publications,
         column_fetchers: primary.column_fetchers,
         source_function_names: primary.source_function_names,
         udfs_installed,
@@ -329,25 +329,20 @@ async fn build_registered_runtime(
         config.source_decorators,
     )
     .await?;
-    let source_functions = SourceFunctionRegistry::new(
-        registration
-            .active_sources
-            .iter()
-            .flat_map(|source| source.table_functions.iter()),
-    );
+    let source_functions = SourceFunctionRegistry::new(&registration.active_publications);
     let source_function_names = source_functions.names();
     let udf_table_functions = published_table_functions(config.udfs, &source_function_names)
         .map_err(|err| datafusion_to_core(&err, &[]))?;
     catalog::register(
         &ctx,
-        &registration.active_sources,
+        &registration.active_publications,
         &registration.column_fetchers,
         &udf_table_functions,
     )
     .map_err(|err| datafusion_to_core(&err, &[]))?;
-    let tables = catalog::collect_static_tables(&registration.active_sources);
+    let tables = catalog::collect_static_tables(&registration.active_publications);
     let table_functions =
-        catalog::collect_table_functions(&registration.active_sources, &udf_table_functions);
+        catalog::collect_table_functions(&registration.active_publications, &udf_table_functions);
     install_table_function_call_planners(
         &ctx,
         source_functions,
@@ -366,7 +361,7 @@ async fn build_registered_runtime(
 
     Ok(RegisteredRuntime {
         ctx,
-        active_sources: registration.active_sources,
+        active_publications: registration.active_publications,
         column_fetchers: registration.column_fetchers,
         source_function_names,
         tables,
@@ -540,7 +535,7 @@ impl QueryRuntimeAdapter {
         .map_err(|err| datafusion_to_core(&err, &self.tables))?;
         catalog::register(
             &self.ctx,
-            &self.active_sources,
+            &self.active_publications,
             &self.column_fetchers,
             &udf_table_functions,
         )
@@ -550,7 +545,7 @@ impl QueryRuntimeAdapter {
             .map_err(|err| datafusion_to_core(&err, &self.tables))?;
 
         self.table_functions =
-            catalog::collect_table_functions(&self.active_sources, &udf_table_functions);
+            catalog::collect_table_functions(&self.active_publications, &udf_table_functions);
         if let Some(fallback_runtime) = &mut self.fallback_runtime {
             fallback_runtime.config.udfs = udfs;
         }
@@ -1504,26 +1499,31 @@ mod tests {
     use std::str::FromStr as _;
 
     use coral_spec::v4::IdentityRequirements;
+    use datafusion::datasource::TableProvider;
+    use datafusion::datasource::empty::EmptyTable;
     use datafusion::execution::memory_pool::MemoryConsumer;
 
     use super::*;
-    use crate::backends::common::{RegisteredColumn, test_support::StubSourceFunctionFactory};
-    use crate::backends::{RegisteredTable, RegisteredTableFunction, SourceQualifiedName};
+    use crate::backends::CatalogPublication;
+    use crate::backends::common::{
+        RegisteredColumn, RegisteredTableFunctionMetadata, RegisteredTableMetadata,
+        test_support::StubSourceFunctionFactory,
+    };
     use crate::{
         DependentJoinConfig, MemorySize, QueryMemoryConfig, QueryRuntimeContext,
         UdfRuntimeImplementation, UdfRuntimePublish, UdfRuntimeResultColumn,
         UdfRuntimeTableFunctionPublish,
     };
 
-    fn adapter_with_sources(active_sources: Vec<RegisteredSource>) -> QueryRuntimeAdapter {
+    fn adapter_with_sources(active_publications: Vec<CatalogPublication>) -> QueryRuntimeAdapter {
         let ctx = Arc::new(SessionContext::new());
-        catalog::register(&ctx, &active_sources, &[], &[]).expect("catalog should register");
-        let tables = catalog::collect_static_tables(&active_sources);
+        catalog::register(&ctx, &active_publications, &[], &[]).expect("catalog should register");
+        let tables = catalog::collect_static_tables(&active_publications);
         QueryRuntimeAdapter {
             ctx,
             fallback_runtime: None,
             memory: QueryMemoryConfig::default(),
-            active_sources,
+            active_publications,
             column_fetchers: Vec::new(),
             source_function_names: HashSet::new(),
             udfs_installed: false,
@@ -1535,48 +1535,52 @@ mod tests {
         }
     }
 
-    fn demo_source() -> RegisteredSource {
-        RegisteredSource {
-            qualified_name: SourceQualifiedName::Schema("demo".to_string()),
-            tables: vec![RegisteredTable {
-                schema_name: None,
-                table_name: "events".to_string(),
-                description: "Event rows".to_string(),
-                guide: "Query event rows.".to_string(),
-                columns: vec![RegisteredColumn {
-                    name: "event_id".to_string(),
-                    data_type: "Utf8".to_string(),
-                    nullable: false,
-                    is_virtual: false,
-                    is_required_filter: false,
-                    filter_mode: None,
-                    description: "Event ID".to_string(),
-                }],
-                filters: Vec::new(),
-                required_filters: vec!["owner".to_string()],
-                search_limits: None,
-            }],
-            table_functions: Vec::new(),
-            inputs: Vec::new(),
-        }
+    fn empty_table() -> Arc<dyn TableProvider> {
+        Arc::new(EmptyTable::new(Arc::new(
+            datafusion::arrow::datatypes::Schema::empty(),
+        )))
     }
 
-    fn catalog_source(catalog_name: &str, schema_name: &str) -> RegisteredSource {
-        RegisteredSource {
-            qualified_name: SourceQualifiedName::Catalog(catalog_name.to_string()),
-            tables: vec![RegisteredTable {
-                schema_name: Some(schema_name.to_string()),
-                table_name: "events".to_string(),
-                description: String::new(),
-                guide: String::new(),
-                columns: Vec::new(),
-                filters: Vec::new(),
-                required_filters: Vec::new(),
-                search_limits: None,
-            }],
-            table_functions: Vec::new(),
-            inputs: Vec::new(),
-        }
+    fn demo_source() -> CatalogPublication {
+        let mut publication =
+            CatalogPublication::new(crate::runtime::DATAFUSION_DEFAULT_CATALOG, Vec::new());
+        publication
+            .publish_table(
+                "demo",
+                "events",
+                empty_table(),
+                RegisteredTableMetadata {
+                    description: "Event rows".to_string(),
+                    guide: "Query event rows.".to_string(),
+                    columns: vec![RegisteredColumn {
+                        name: "event_id".to_string(),
+                        data_type: "Utf8".to_string(),
+                        nullable: false,
+                        is_virtual: false,
+                        is_required_filter: false,
+                        filter_mode: None,
+                        description: "Event ID".to_string(),
+                    }],
+                    filters: Vec::new(),
+                    required_filters: vec!["owner".to_string()],
+                    search_limits: None,
+                },
+            )
+            .expect("demo publication");
+        publication
+    }
+
+    fn catalog_source(catalog_name: &str, schema_name: &str) -> CatalogPublication {
+        let mut publication = CatalogPublication::new(catalog_name, Vec::new());
+        publication
+            .publish_table(
+                schema_name,
+                "events",
+                empty_table(),
+                RegisteredTableMetadata::default(),
+            )
+            .expect("catalog publication");
+        publication
     }
 
     fn adapter_with_source_function(
@@ -1585,31 +1589,24 @@ mod tests {
         function_name: &str,
     ) -> QueryRuntimeAdapter {
         let top_level_name = catalog_name.unwrap_or(schema_name);
-        let source = RegisteredSource {
-            qualified_name: catalog_name.map_or_else(
-                || SourceQualifiedName::Schema(schema_name.to_string()),
-                |catalog_name| SourceQualifiedName::Catalog(catalog_name.to_string()),
-            ),
-            tables: Vec::new(),
-            table_functions: vec![RegisteredTableFunction {
-                catalog_name: catalog_name.map(str::to_string),
-                schema_name: schema_name.to_string(),
-                function_name: function_name.to_string(),
-                factory: Arc::new(StubSourceFunctionFactory::default()),
-                kind: coral_spec::SourceTableFunctionKind::Table,
-                description: String::new(),
-                guide: String::new(),
-                arguments: Vec::new(),
-                result_columns: Vec::new(),
-                search_limits: None,
-            }],
-            inputs: Vec::new(),
-        };
-        let mut adapter = adapter_with_sources(vec![source.clone()]);
-        SourceFunctionRegistry::new(source.table_functions.iter())
+        let mut publication = CatalogPublication::new(
+            catalog_name.unwrap_or(crate::runtime::DATAFUSION_DEFAULT_CATALOG),
+            Vec::new(),
+        );
+        publication
+            .publish_table_function(
+                schema_name,
+                function_name,
+                Arc::new(StubSourceFunctionFactory::default()),
+                RegisteredTableFunctionMetadata::default(),
+            )
+            .expect("function publication");
+        let mut adapter = adapter_with_sources(vec![publication]);
+        SourceFunctionRegistry::new(&adapter.active_publications)
             .install(&adapter.ctx)
             .expect("source function planner");
-        adapter.table_functions = catalog::collect_table_functions(&[source], &[]);
+        adapter.table_functions =
+            catalog::collect_table_functions(&adapter.active_publications, &[]);
         adapter
             .name_to_source
             .insert(top_level_name.to_string(), top_level_name.to_string());
@@ -1847,21 +1844,16 @@ mod tests {
 
     #[tokio::test]
     async fn catalog_info_for_source_schema_excludes_database_internal_schema() {
-        let schema_source = RegisteredSource {
-            qualified_name: SourceQualifiedName::Schema("public".to_string()),
-            tables: vec![RegisteredTable {
-                schema_name: None,
-                table_name: "events".to_string(),
-                description: String::new(),
-                guide: String::new(),
-                columns: Vec::new(),
-                filters: Vec::new(),
-                required_filters: Vec::new(),
-                search_limits: None,
-            }],
-            table_functions: Vec::new(),
-            inputs: Vec::new(),
-        };
+        let mut schema_source =
+            CatalogPublication::new(crate::runtime::DATAFUSION_DEFAULT_CATALOG, Vec::new());
+        schema_source
+            .publish_table(
+                "public",
+                "events",
+                empty_table(),
+                RegisteredTableMetadata::default(),
+            )
+            .expect("schema publication");
         let catalog =
             adapter_with_sources(vec![schema_source, catalog_source("warehouse", "public")])
                 .catalog_info_for_sources(&["public"], &[])

@@ -4,11 +4,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use coral_spec::ParsedTemplate;
 use coral_spec::backends::database::{
     DatabaseConnectionSpec, DatabaseSourceManifest, MySqlConnectionSpec, PostgresConnectionSpec,
     SqliteConnectionSpec,
 };
-use coral_spec::{ParsedTemplate, SourceManifestCommon};
 use datafusion::error::{DataFusionError, Result as DataFusionResult};
 use datafusion::prelude::SessionContext;
 use datafusion::sql::unparser::dialect::{MySqlDialect, PostgreSqlDialect, SqliteDialect};
@@ -19,14 +19,13 @@ use datafusion_table_providers::sql::db_connection_pool::postgrespool::PostgresC
 use datafusion_table_providers::sql::db_connection_pool::sqlitepool::SqliteConnectionPoolFactory;
 use datafusion_table_providers::util::secrets::to_secret_map;
 
-use super::catalog::{DatabaseCatalog, DatabaseRelation, build_database_catalog, provider_error};
+use super::catalog::{DatabaseCatalog, build_database_catalog, provider_error};
 use super::columns::{MYSQL_COLUMNS_SQL, POSTGRES_COLUMNS_SQL, SQLITE_COLUMNS_SQL};
 use super::registry::{DatabasePool, DatabasePoolRegistry};
 use crate::backends::shared::template::{RenderContext, render_template};
 use crate::backends::{
-    BackendCatalogRegistration, BackendCompileRequest, BackendRegistration,
-    BackendRegistrationContext, CompiledBackendSource, RegisteredSource, RegisteredTable,
-    SourceQualifiedName, build_registered_inputs,
+    BackendCompileRequest, BackendRegistration, BackendRegistrationContext, CatalogPublication,
+    CompiledBackendSource, RegisteredTableMetadata, build_registered_inputs,
 };
 
 /// Budget for building or obtaining a remote pool and loading its inventory.
@@ -105,10 +104,6 @@ async fn register_database_catalog(
 
 #[async_trait]
 impl CompiledBackendSource for CompiledDatabaseSource {
-    fn qualified_name(&self) -> SourceQualifiedName {
-        SourceQualifiedName::Catalog(self.manifest.common.name.clone())
-    }
-
     fn source_name(&self) -> &str {
         &self.manifest.common.name
     }
@@ -133,22 +128,40 @@ impl CompiledBackendSource for CompiledDatabaseSource {
         let database_catalog =
             register_database_catalog(strategy, catalog_name, &context, &self.pool_registry)
                 .await?;
-        let source = registered_source_for_catalog(
-            &self.manifest.common,
+        let secret_keys = self.source_secrets.keys().cloned().collect::<BTreeSet<_>>();
+        let inputs = build_registered_inputs(
             &self.manifest.declared_inputs,
-            &self.source_secrets,
             &self.source_variables,
-            &database_catalog.relations,
+            &secret_keys,
         );
-
-        Ok(BackendRegistration::legacy(
-            Vec::new(),
-            vec![BackendCatalogRegistration {
-                catalog: database_catalog.provider,
-                source,
-                column_fetcher: database_catalog.column_fetcher,
-            }],
-        ))
+        let mut publication = CatalogPublication::new(catalog_name, inputs);
+        publication.column_fetcher = Some(database_catalog.column_fetcher);
+        let mut tables_by_schema =
+            BTreeMap::<String, BTreeMap<String, RegisteredTableMetadata>>::new();
+        for relation in database_catalog.relations {
+            tables_by_schema
+                .entry(relation.schema_name)
+                .or_default()
+                .insert(relation.table_name, RegisteredTableMetadata::default());
+        }
+        for schema_name in database_catalog.provider.schema_names() {
+            let tables = tables_by_schema.remove(&schema_name).unwrap_or_default();
+            let provider = database_catalog
+                .provider
+                .schema(&schema_name)
+                .ok_or_else(|| {
+                    DataFusionError::Internal(format!(
+                        "database catalog '{catalog_name}' inventory contains missing schema '{schema_name}'"
+                    ))
+                })?;
+            publication.publish_lazy_schema(schema_name, provider, tables)?;
+        }
+        if let Some((schema_name, _tables)) = tables_by_schema.into_iter().next() {
+            return Err(DataFusionError::Internal(format!(
+                "database catalog '{catalog_name}' inventory contains missing schema '{schema_name}'"
+            )));
+        }
+        Ok(BackendRegistration::single(publication))
     }
 }
 
@@ -356,40 +369,6 @@ SELECT 'main' AS schema_name,
 FROM sqlite_master
 WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%'";
 
-fn registered_source_for_catalog(
-    common: &SourceManifestCommon,
-    declared_inputs: &[coral_spec::ManifestInputSpec],
-    source_secrets: &BTreeMap<String, String>,
-    source_variables: &BTreeMap<String, String>,
-    relations: &[DatabaseRelation],
-) -> RegisteredSource {
-    let secret_keys = source_secrets.keys().cloned().collect::<BTreeSet<_>>();
-    RegisteredSource {
-        qualified_name: SourceQualifiedName::Catalog(common.name.clone()),
-        tables: database_relation_inventory(relations),
-        table_functions: Vec::new(),
-        inputs: build_registered_inputs(declared_inputs, source_variables, &secret_keys),
-    }
-}
-
-/// Project the Coral-owned relation inventory into public catalog metadata
-/// without constructing table providers or fetching column schemas.
-fn database_relation_inventory(relations: &[DatabaseRelation]) -> Vec<RegisteredTable> {
-    relations
-        .iter()
-        .map(|relation| RegisteredTable {
-            schema_name: Some(relation.schema_name.clone()),
-            table_name: relation.table_name.clone(),
-            description: String::new(),
-            guide: String::new(),
-            columns: Vec::new(),
-            filters: Vec::new(),
-            required_filters: Vec::new(),
-            search_limits: None,
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -500,7 +479,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sqlite_database_source_registers_catalog_and_queries_three_part_table() {
+    async fn unified_backend_catalog_publication_database_preserves_three_part_table() {
         let temp = tempfile::tempdir().expect("temp dir");
         let db_path = temp.path().join("coral.sqlite");
         let conn = rusqlite::Connection::open(&db_path).expect("sqlite db");
@@ -584,7 +563,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn database_catalog_registration_rejects_source_decorators() {
+    async fn empty_database_catalog_does_not_require_lazy_schema_decorator_support() {
         let temp = tempfile::tempdir().expect("temp dir");
         let db_path = temp.path().join("coral.sqlite");
         drop(rusqlite::Connection::open(&db_path).expect("sqlite db"));
@@ -595,7 +574,7 @@ mod tests {
             .extensions
             .source_decorators
             .push(Box::new(AbortOnSourceFailureDecorator));
-        let error = CoralQuery::list_tables(
+        let tables = CoralQuery::list_tables(
             &sources,
             decorated_config,
             Some("coral_db"),
@@ -603,13 +582,7 @@ mod tests {
             Some("users"),
         )
         .await
-        .expect_err("catalog registrations must reject source decorators");
-        assert!(
-            error.to_string().contains(
-                "registers database catalogs, which source decorator \
-                     'abort-on-source-failure' does not support"
-            ),
-            "unexpected error: {error}"
-        );
+        .expect("an empty catalog has no lazy providers to decorate");
+        assert!(tables.is_empty());
     }
 }

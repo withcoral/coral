@@ -12,7 +12,7 @@ mod transport;
 
 pub(crate) use error::McpProviderQueryError;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -30,11 +30,11 @@ use crate::backends::shared::source_observation::{
     SourceObservationPublishers, source_observation_publishers,
 };
 use crate::backends::{
-    BackendCompileRequest, BackendRegistration, BackendRegistrationContext,
-    BackendSchemaRegistration, CompiledBackendSource, RegisteredSource,
-    SourceFunctionProviderFactory, SourceQualifiedName, build_registered_inputs,
-    build_registered_table, build_registered_table_function, registered_columns_from_specs,
-    required_filter_names, validate_lookup_key_filter_backend_support,
+    BackendCompileRequest, BackendRegistration, BackendRegistrationContext, CatalogPublication,
+    CompiledBackendSource, SourceFunctionProviderFactory, build_registered_inputs,
+    build_registered_table_function_metadata, build_registered_table_metadata,
+    registered_columns_from_specs, required_filter_names,
+    validate_lookup_key_filter_backend_support,
 };
 use crate::runtime::error::datafusion_to_core;
 use crate::{
@@ -178,10 +178,6 @@ fn compile_source_with_caller(
 
 #[async_trait]
 impl CompiledBackendSource for McpCompiledSource {
-    fn qualified_name(&self) -> SourceQualifiedName {
-        SourceQualifiedName::Schema(self.manifest.common.name.clone())
-    }
-
     fn source_name(&self) -> &str {
         &self.manifest.common.name
     }
@@ -203,43 +199,6 @@ impl CompiledBackendSource for McpCompiledSource {
         _ctx: &datafusion::prelude::SessionContext,
         _registration: &BackendRegistrationContext,
     ) -> Result<BackendRegistration> {
-        let mut table_function_infos = Vec::with_capacity(self.manifest.functions.len());
-
-        for function in &self.manifest.functions {
-            let factory: Arc<dyn SourceFunctionProviderFactory> =
-                Arc::new(McpSourceTableFunction::new(
-                    self.caller.clone(),
-                    self.manifest.common.name.clone(),
-                    function.clone(),
-                    Arc::clone(&self.source_observation_publishers),
-                )?);
-            table_function_infos.push(build_registered_table_function(
-                &self.manifest.common.name,
-                &function.common,
-                factory,
-            ));
-        }
-
-        let mut tables: HashMap<String, Arc<dyn TableProvider>> = HashMap::new();
-        let mut table_infos = Vec::with_capacity(self.manifest.tables.len());
-        for table in &self.manifest.tables {
-            let provider: Arc<dyn TableProvider> = Arc::new(McpTableProvider::new(
-                self.caller.clone(),
-                self.manifest.common.name.clone(),
-                Arc::clone(&self.source_inputs),
-                table.clone(),
-                Arc::clone(&self.source_observation_publishers),
-            )?);
-            tables.insert(table.table_name().to_string(), provider);
-            let required_filters = required_filter_names(table.filters());
-            let columns = registered_columns_from_specs(table.columns(), table.filters());
-            table_infos.push(build_registered_table(
-                &table.common,
-                columns,
-                required_filters,
-            ));
-        }
-
         let secret_keys = self
             .source_input_resolution
             .secrets()
@@ -251,18 +210,54 @@ impl CompiledBackendSource for McpCompiledSource {
             self.source_input_resolution.variables(),
             &secret_keys,
         );
+        let mut publications = BTreeMap::<String, CatalogPublication>::new();
 
-        Ok(BackendRegistration::legacy(
-            vec![BackendSchemaRegistration {
-                tables,
-                source: RegisteredSource {
-                    qualified_name: SourceQualifiedName::Schema(self.manifest.common.name.clone()),
-                    tables: table_infos,
-                    table_functions: table_function_infos,
-                    inputs,
-                },
-            }],
-            Vec::new(),
+        for function in &self.manifest.functions {
+            let factory: Arc<dyn SourceFunctionProviderFactory> =
+                Arc::new(McpSourceTableFunction::new(
+                    self.caller.clone(),
+                    self.manifest.common.name.clone(),
+                    function.clone(),
+                    Arc::clone(&self.source_observation_publishers),
+                )?);
+            publications
+                .entry(function.common.catalog_name.clone())
+                .or_insert_with(|| {
+                    CatalogPublication::new(function.common.catalog_name.clone(), inputs.clone())
+                })
+                .publish_table_function(
+                    function.common.schema_name.clone(),
+                    function.common.function_name.clone(),
+                    factory,
+                    build_registered_table_function_metadata(&function.common),
+                )?;
+        }
+
+        for table in &self.manifest.tables {
+            let provider: Arc<dyn TableProvider> = Arc::new(McpTableProvider::new(
+                self.caller.clone(),
+                self.manifest.common.name.clone(),
+                Arc::clone(&self.source_inputs),
+                table.clone(),
+                Arc::clone(&self.source_observation_publishers),
+            )?);
+            let required_filters = required_filter_names(table.filters());
+            let columns = registered_columns_from_specs(table.columns(), table.filters());
+            publications
+                .entry(table.common.catalog_name.clone())
+                .or_insert_with(|| {
+                    CatalogPublication::new(table.common.catalog_name.clone(), inputs.clone())
+                })
+                .publish_table(
+                    table.common.schema_name.clone(),
+                    table.table_name(),
+                    provider,
+                    build_registered_table_metadata(&table.common, columns, required_filters),
+                )?;
+        }
+
+        Ok(BackendRegistration::from_publications(
+            publications.into_values().collect(),
         ))
     }
 }

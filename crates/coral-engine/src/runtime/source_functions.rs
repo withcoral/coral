@@ -35,7 +35,7 @@ use datafusion::prelude::SessionContext;
 use crate::backends::shared::filter_expr::literal_to_string;
 use crate::backends::shared::scalar::timestamp_to_rfc3339;
 use crate::backends::{
-    BoundSourceFunctionArg, BoundSourceFunctionValue, RegisteredTableFunction,
+    BoundSourceFunctionArg, BoundSourceFunctionValue, CatalogPublication,
     RegisteredTableFunctionArgument, SourceFunctionProviderFactory,
 };
 use crate::runtime::literal_scalar_value;
@@ -58,21 +58,43 @@ pub(crate) struct SourceFunctionRegistry {
 }
 
 impl SourceFunctionRegistry {
-    pub(crate) fn new<'a>(
-        functions: impl IntoIterator<Item = &'a RegisteredTableFunction>,
-    ) -> Self {
+    pub(crate) fn new(publications: &[CatalogPublication]) -> Self {
         let mut scopes = HashSet::new();
         let mut functions_by_name = HashMap::new();
 
-        for function in functions {
-            let lookup_key = TableFunctionIdentity::from_registered(function);
-            let catalog_qualified = function.catalog_name.is_some();
-            scopes.insert((
-                lookup_key.catalog_name.clone(),
-                lookup_key.schema_name.clone(),
-                catalog_qualified,
-            ));
-            functions_by_name.insert(lookup_key, SourceFunction::from_registered(function));
+        for publication in publications {
+            let catalog_qualified =
+                publication.catalog_name != crate::runtime::DATAFUSION_DEFAULT_CATALOG;
+            for schema in publication.schema_publications() {
+                for (function_name, function) in &schema.table_functions {
+                    let lookup_key = if catalog_qualified {
+                        TableFunctionIdentity::from_parts(
+                            &publication.catalog_name,
+                            &schema.schema_name,
+                            function_name,
+                        )
+                    } else {
+                        TableFunctionIdentity::from_legacy_source_parts(
+                            &schema.schema_name,
+                            function_name,
+                        )
+                    };
+                    scopes.insert((
+                        lookup_key.catalog_name.clone(),
+                        lookup_key.schema_name.clone(),
+                        catalog_qualified,
+                    ));
+                    functions_by_name.insert(
+                        lookup_key,
+                        SourceFunction::from_publication(
+                            catalog_qualified.then_some(publication.catalog_name.as_str()),
+                            &schema.schema_name,
+                            function_name,
+                            function,
+                        ),
+                    );
+                }
+            }
         }
 
         Self {
@@ -202,39 +224,34 @@ struct SourceFunction {
 }
 
 impl SourceFunction {
-    fn from_registered(function: &RegisteredTableFunction) -> Self {
+    fn from_publication(
+        catalog_name: Option<&str>,
+        schema_name: &str,
+        function_name: &str,
+        function: &crate::backends::common::TableFunctionPublication,
+    ) -> Self {
         let arguments = function
+            .metadata
             .arguments
             .iter()
             .map(SourceFunctionArgument::from_registered)
             .collect::<Vec<_>>();
         Self {
-            display_name: function.catalog_name.as_deref().map_or_else(
-                || qualified_name(&function.schema_name, &function.function_name),
-                |catalog_name| {
-                    catalog_qualified_name(
-                        catalog_name,
-                        &function.schema_name,
-                        &function.function_name,
-                    )
-                },
+            display_name: catalog_name.map_or_else(
+                || qualified_name(schema_name, function_name),
+                |catalog_name| catalog_qualified_name(catalog_name, schema_name, function_name),
             ),
-            table_reference: function.catalog_name.as_deref().map_or_else(
-                || {
-                    TableReference::partial(
-                        function.schema_name.clone(),
-                        function.function_name.clone(),
-                    )
-                },
+            table_reference: catalog_name.map_or_else(
+                || TableReference::partial(schema_name.to_string(), function_name.to_string()),
                 |catalog_name| {
                     TableReference::full(
                         catalog_name.to_string(),
-                        function.schema_name.clone(),
-                        function.function_name.clone(),
+                        schema_name.to_string(),
+                        function_name.to_string(),
                     )
                 },
             ),
-            catalog_qualified: function.catalog_name.is_some(),
+            catalog_qualified: catalog_name.is_some(),
             arguments,
             factory: Arc::clone(&function.factory),
         }

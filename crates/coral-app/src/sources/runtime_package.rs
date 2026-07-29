@@ -982,7 +982,7 @@ mod tests {
     }
 
     #[test]
-    fn database_runtime_component_preserves_connection_and_declared_inputs() {
+    fn unified_backend_catalog_publication_database_component_preserves_inputs() {
         let manifest = parse_source_manifest_yaml(
             r#"
 name: coral_db

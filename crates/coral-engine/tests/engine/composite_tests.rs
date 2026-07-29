@@ -319,8 +319,7 @@ async fn identity_gated_sources_reject_duplicate_source_names_before_binding() {
 #[tokio::test]
 async fn identity_gated_source_binds_identity_once_for_all_http_components() {
     let first = identity_http_component();
-    let mut second = identity_http_component();
-    second.common.name = "github_v4_graphql".to_string();
+    let second = identity_http_component_named("github_v4_graphql");
     let source = identity_runtime_source_with_components(vec![first, second]);
     let factory_called = Arc::new(AtomicBool::new(false));
     let runtime = identity_runtime(
@@ -445,12 +444,13 @@ tables:
 }
 
 fn identity_http_component() -> coral_spec::backends::http::HttpSourceManifest {
-    let mut manifest = http_component(
-        "https://api.example.com",
-        "github_v4_rest",
-        "issues",
-        "/issues",
-    );
+    identity_http_component_named("github_v4_rest")
+}
+
+fn identity_http_component_named(
+    schema_name: &str,
+) -> coral_spec::backends::http::HttpSourceManifest {
+    let mut manifest = http_component("https://api.example.com", schema_name, "issues", "/issues");
     manifest.common.dsl_version = 4;
     manifest
 }

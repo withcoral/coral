@@ -12,7 +12,6 @@ use datafusion::logical_expr::sqlparser::ast::{
     TableFunctionArgs,
 };
 
-use crate::backends::RegisteredTableFunction;
 use crate::runtime::DATAFUSION_DEFAULT_CATALOG;
 
 pub(crate) trait ScopedTableFunctionSignature {
@@ -55,17 +54,12 @@ impl TableFunctionIdentity {
         Self::from_parts(DATAFUSION_DEFAULT_CATALOG, schema_name, function_name)
     }
 
-    pub(crate) fn from_registered(function: &RegisteredTableFunction) -> Self {
-        function.catalog_name.as_deref().map_or_else(
-            || Self {
-                catalog_name: DATAFUSION_DEFAULT_CATALOG.to_string(),
-                schema_name: function.schema_name.clone(),
-                function_name: function.function_name.clone(),
-            },
-            |catalog_name| {
-                Self::from_parts(catalog_name, &function.schema_name, &function.function_name)
-            },
-        )
+    pub(crate) fn from_legacy_source_parts(schema_name: &str, function_name: &str) -> Self {
+        Self {
+            catalog_name: DATAFUSION_DEFAULT_CATALOG.to_string(),
+            schema_name: schema_name.to_string(),
+            function_name: function_name.to_string(),
+        }
     }
 
     fn from_sql_parts(

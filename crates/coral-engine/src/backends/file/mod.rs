@@ -12,7 +12,7 @@ mod provider;
 #[cfg(test)]
 mod tests;
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -23,11 +23,10 @@ use datafusion::error::Result;
 use datafusion::prelude::SessionContext;
 
 use crate::backends::{
-    BackendCompileRequest, BackendRegistration, BackendRegistrationContext,
-    BackendSchemaRegistration, CompiledBackendSource, RegisteredSource, RegisteredTable,
-    SourceQualifiedName, build_registered_inputs, build_registered_table,
-    registered_columns_from_schema, registered_columns_from_specs, required_filter_names,
-    validate_lookup_key_filter_backend_support,
+    BackendCompileRequest, BackendRegistration, BackendRegistrationContext, CatalogPublication,
+    CompiledBackendSource, RegisteredTableMetadata, build_registered_inputs,
+    build_registered_table_metadata, registered_columns_from_schema, registered_columns_from_specs,
+    required_filter_names, validate_lookup_key_filter_backend_support,
 };
 use coral_spec::SourceBackend;
 use coral_spec::backends::file::{FileFormat, FileSourceManifest, FileTableSpec};
@@ -71,10 +70,6 @@ pub(crate) fn compile_manifest(
 
 #[async_trait]
 impl CompiledBackendSource for FileCompiledSource {
-    fn qualified_name(&self) -> SourceQualifiedName {
-        SourceQualifiedName::Schema(self.manifest.common.name.clone())
-    }
-
     fn source_name(&self) -> &str {
         &self.manifest.common.name
     }
@@ -96,13 +91,18 @@ impl CompiledBackendSource for FileCompiledSource {
         ctx: &SessionContext,
         _registration: &BackendRegistrationContext,
     ) -> Result<BackendRegistration> {
-        let mut tables: HashMap<String, Arc<dyn TableProvider>> = HashMap::new();
-        let mut table_infos = Vec::with_capacity(self.manifest.tables.len());
         let resolved_inputs = coral_spec::resolve_inputs(
             &self.manifest.declared_inputs,
             &self.source_secrets,
             &self.source_variables,
         );
+        let secret_keys = self.source_secrets.keys().cloned().collect();
+        let inputs = build_registered_inputs(
+            &self.manifest.declared_inputs,
+            &self.source_variables,
+            &secret_keys,
+        );
+        let mut publications = BTreeMap::<String, CatalogPublication>::new();
 
         for table in &self.manifest.tables {
             let provider: Arc<dyn TableProvider> = match table.format {
@@ -132,35 +132,27 @@ impl CompiledBackendSource for FileCompiledSource {
                 }
             };
             let schema = provider.schema();
-            let table_name = table.table_name().to_string();
             let metadata = registered_table(table, &schema);
-            tables.insert(table_name, provider);
-            table_infos.push(metadata);
+            publications
+                .entry(table.common.catalog_name.clone())
+                .or_insert_with(|| {
+                    CatalogPublication::new(table.common.catalog_name.clone(), inputs.clone())
+                })
+                .publish_table(
+                    table.common.schema_name.clone(),
+                    table.table_name(),
+                    provider,
+                    metadata,
+                )?;
         }
 
-        let secret_keys = self.source_secrets.keys().cloned().collect();
-        let inputs = build_registered_inputs(
-            &self.manifest.declared_inputs,
-            &self.source_variables,
-            &secret_keys,
-        );
-
-        Ok(BackendRegistration::legacy(
-            vec![BackendSchemaRegistration {
-                tables,
-                source: RegisteredSource {
-                    qualified_name: SourceQualifiedName::Schema(self.manifest.common.name.clone()),
-                    tables: table_infos,
-                    table_functions: vec![],
-                    inputs,
-                },
-            }],
-            Vec::new(),
+        Ok(BackendRegistration::from_publications(
+            publications.into_values().collect(),
         ))
     }
 }
 
-fn registered_table(table: &FileTableSpec, inferred_schema: &SchemaRef) -> RegisteredTable {
+fn registered_table(table: &FileTableSpec, inferred_schema: &SchemaRef) -> RegisteredTableMetadata {
     let filters = table.filters();
     let required_filters = required_filter_names(filters);
     let columns = if table.columns().is_empty() {
@@ -180,5 +172,5 @@ fn registered_table(table: &FileTableSpec, inferred_schema: &SchemaRef) -> Regis
         columns
     };
 
-    build_registered_table(&table.common, columns, required_filters)
+    build_registered_table_metadata(&table.common, columns, required_filters)
 }

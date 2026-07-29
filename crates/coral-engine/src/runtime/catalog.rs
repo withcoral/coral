@@ -19,11 +19,11 @@ use serde::Serialize;
 
 use crate::backends::shared::filter_expr::literal_to_string;
 use crate::backends::{
-    CatalogColumnFetcher, ColumnInventoryFilter, DatabaseColumnRow, RegisteredSource,
-    RegisteredTable, SourceQualifiedName,
+    CatalogColumnFetcher, CatalogPublication, ColumnInventoryFilter, DatabaseColumnRow,
+    PublishedTables,
 };
-use crate::runtime::normalize_catalog_name;
 use crate::runtime::schema_provider::StaticSchemaProvider;
+use crate::runtime::{DATAFUSION_DEFAULT_CATALOG, normalize_catalog_name};
 use crate::{
     ColumnInfo, TableFunctionArgumentInfo, TableFunctionInfo, TableFunctionResultColumnInfo,
     TableInfo,
@@ -74,16 +74,16 @@ pub(crate) struct CatalogTableFunctionResultColumn {
 /// tables cannot be materialized.
 pub(crate) fn register(
     ctx: &SessionContext,
-    active_sources: &[RegisteredSource],
+    active_publications: &[CatalogPublication],
     column_fetchers: &[CatalogColumnFetcher],
     catalog_only_table_functions: &[CatalogTableFunction],
 ) -> Result<()> {
-    let tables_table = build_tables_table(active_sources)?;
-    let columns_table = build_columns_table(active_sources, column_fetchers)?;
-    let filters_table = build_filters_table(active_sources)?;
-    let inputs_table = build_inputs_table(active_sources)?;
+    let tables_table = build_tables_table(active_publications)?;
+    let columns_table = build_columns_table(active_publications, column_fetchers)?;
+    let filters_table = build_filters_table(active_publications)?;
+    let inputs_table = build_inputs_table(active_publications)?;
     let table_functions_table =
-        build_table_functions_table(active_sources, catalog_only_table_functions)?;
+        build_table_functions_table(active_publications, catalog_only_table_functions)?;
 
     let mut meta_tables: HashMap<String, Arc<dyn datafusion::datasource::TableProvider>> =
         HashMap::new();
@@ -112,7 +112,7 @@ fn sql_string_literal(value: &str) -> String {
 }
 
 fn build_table_functions_table(
-    active_sources: &[RegisteredSource],
+    active_publications: &[CatalogPublication],
     catalog_only_table_functions: &[CatalogTableFunction],
 ) -> Result<MemTable> {
     let schema = Arc::new(Schema::new(vec![
@@ -126,7 +126,7 @@ fn build_table_functions_table(
         Field::new("guide", DataType::Utf8, false),
     ]));
 
-    let rows = catalog_table_functions(active_sources, catalog_only_table_functions);
+    let rows = catalog_table_functions(active_publications, catalog_only_table_functions);
 
     let arguments_json = rows
         .iter()
@@ -575,37 +575,79 @@ fn system_table_infos() -> Vec<TableInfo> {
         .collect()
 }
 
-/// Collect static query-visible table metadata for the active source set.
+struct PublishedTableMetadata<'a> {
+    catalog_name: &'a str,
+    schema_name: &'a str,
+    table_name: &'a str,
+    metadata: &'a crate::backends::common::RegisteredTableMetadata,
+}
+
+fn published_tables(publications: &[CatalogPublication]) -> Vec<PublishedTableMetadata<'_>> {
+    let mut published = Vec::new();
+    for publication in publications {
+        for schema in publication.schema_publications() {
+            match &schema.tables {
+                PublishedTables::Static(tables) => {
+                    published.extend(tables.iter().map(|(table_name, table)| {
+                        PublishedTableMetadata {
+                            catalog_name: &publication.catalog_name,
+                            schema_name: &schema.schema_name,
+                            table_name,
+                            metadata: &table.metadata,
+                        }
+                    }));
+                }
+                PublishedTables::Lazy { tables, .. } => {
+                    published.extend(tables.iter().map(|(table_name, metadata)| {
+                        PublishedTableMetadata {
+                            catalog_name: &publication.catalog_name,
+                            schema_name: &schema.schema_name,
+                            table_name,
+                            metadata,
+                        }
+                    }));
+                }
+            }
+        }
+    }
+    published
+}
+
+fn public_catalog_name(catalog_name: &str) -> Option<&str> {
+    (catalog_name != DATAFUSION_DEFAULT_CATALOG).then_some(catalog_name)
+}
+
+/// Collect query-visible table metadata for the active publication set.
 #[must_use]
-pub(crate) fn collect_static_tables(active_sources: &[RegisteredSource]) -> Vec<TableInfo> {
+pub(crate) fn collect_static_tables(active_publications: &[CatalogPublication]) -> Vec<TableInfo> {
     let mut tables = system_table_infos();
-    tables.extend(active_sources.iter().flat_map(|source| {
-        source.tables.iter().map(move |table| TableInfo {
-            catalog_name: source
-                .qualified_name
-                .catalog_name()
-                .map(ToString::to_string),
-            schema_name: registered_table_schema_name(source, table),
-            table_name: table.table_name.clone(),
-            description: table.description.clone(),
-            guide: table.guide.clone(),
-            columns: table
-                .columns
-                .iter()
-                .enumerate()
-                .map(|(position, column)| ColumnInfo {
-                    name: column.name.clone(),
-                    data_type: column.data_type.clone(),
-                    nullable: column.nullable,
-                    is_virtual: column.is_virtual,
-                    is_required_filter: column.is_required_filter,
-                    description: column.description.clone(),
-                    ordinal_position: u32::try_from(position).unwrap_or(u32::MAX),
-                })
-                .collect(),
-            required_filters: table.required_filters.clone(),
-        })
-    }));
+    tables.extend(
+        published_tables(active_publications)
+            .into_iter()
+            .map(|table| TableInfo {
+                catalog_name: public_catalog_name(table.catalog_name).map(ToString::to_string),
+                schema_name: table.schema_name.to_string(),
+                table_name: table.table_name.to_string(),
+                description: table.metadata.description.clone(),
+                guide: table.metadata.guide.clone(),
+                columns: table
+                    .metadata
+                    .columns
+                    .iter()
+                    .enumerate()
+                    .map(|(position, column)| ColumnInfo {
+                        name: column.name.clone(),
+                        data_type: column.data_type.clone(),
+                        nullable: column.nullable,
+                        is_virtual: column.is_virtual,
+                        is_required_filter: column.is_required_filter,
+                        description: column.description.clone(),
+                        ordinal_position: u32::try_from(position).unwrap_or(u32::MAX),
+                    })
+                    .collect(),
+                required_filters: table.metadata.required_filters.clone(),
+            }),
+    );
     tables.sort_by(|left, right| {
         (&left.catalog_name, &left.schema_name, &left.table_name).cmp(&(
             &right.catalog_name,
@@ -824,29 +866,13 @@ fn sort_tables(tables: &mut [TableInfo]) {
     });
 }
 
-fn registered_table_schema_name(source: &RegisteredSource, table: &RegisteredTable) -> String {
-    match (&source.qualified_name, &table.schema_name) {
-        (_, Some(schema_name)) | (SourceQualifiedName::Schema(schema_name), None) => {
-            schema_name.clone()
-        }
-        (SourceQualifiedName::Catalog(catalog_name), None) => {
-            debug_assert!(
-                false,
-                "catalog-backed table '{}.{}' must record its SQL schema",
-                catalog_name, table.table_name
-            );
-            catalog_name.clone()
-        }
-    }
-}
-
 /// Collect typed table function metadata for the active runtime.
 #[must_use]
 pub(crate) fn collect_table_functions(
-    active_sources: &[RegisteredSource],
+    active_publications: &[CatalogPublication],
     catalog_only_table_functions: &[CatalogTableFunction],
 ) -> Vec<TableFunctionInfo> {
-    catalog_table_functions(active_sources, catalog_only_table_functions)
+    catalog_table_functions(active_publications, catalog_only_table_functions)
         .into_iter()
         .map(|function| TableFunctionInfo {
             catalog_name: function.catalog_name,
@@ -880,43 +906,48 @@ pub(crate) fn collect_table_functions(
 }
 
 fn catalog_table_functions(
-    active_sources: &[RegisteredSource],
+    active_publications: &[CatalogPublication],
     catalog_only_table_functions: &[CatalogTableFunction],
 ) -> Vec<CatalogTableFunction> {
-    let mut functions = active_sources
+    let mut functions = active_publications
         .iter()
-        .flat_map(|source| {
-            source
-                .table_functions
-                .iter()
-                .map(|function| CatalogTableFunction {
-                    catalog_name: function.catalog_name.clone(),
-                    schema_name: function.schema_name.clone(),
-                    function_name: function.function_name.clone(),
-                    description: function.description.clone(),
-                    guide: function.guide.clone(),
-                    arguments: function
-                        .arguments
-                        .iter()
-                        .map(|argument| CatalogTableFunctionArgument {
-                            name: argument.name.clone(),
-                            required: argument.required,
-                            values: argument.values.clone(),
-                        })
-                        .collect(),
-                    result_columns: function
-                        .result_columns
-                        .iter()
-                        .map(|column| CatalogTableFunctionResultColumn {
-                            name: column.name.clone(),
-                            data_type: column.data_type.clone(),
-                            nullable: column.nullable,
-                            description: column.description.clone(),
-                        })
-                        .collect(),
-                    kind: function.kind,
-                    search_limits: function.search_limits.clone(),
-                })
+        .flat_map(|publication| {
+            publication.schema_publications().flat_map(move |schema| {
+                schema
+                    .table_functions
+                    .iter()
+                    .map(move |(function_name, function)| CatalogTableFunction {
+                        catalog_name: public_catalog_name(&publication.catalog_name)
+                            .map(ToString::to_string),
+                        schema_name: schema.schema_name.clone(),
+                        function_name: function_name.clone(),
+                        description: function.metadata.description.clone(),
+                        guide: function.metadata.guide.clone(),
+                        arguments: function
+                            .metadata
+                            .arguments
+                            .iter()
+                            .map(|argument| CatalogTableFunctionArgument {
+                                name: argument.name.clone(),
+                                required: argument.required,
+                                values: argument.values.clone(),
+                            })
+                            .collect(),
+                        result_columns: function
+                            .metadata
+                            .result_columns
+                            .iter()
+                            .map(|column| CatalogTableFunctionResultColumn {
+                                name: column.name.clone(),
+                                data_type: column.data_type.clone(),
+                                nullable: column.nullable,
+                                description: column.description.clone(),
+                            })
+                            .collect(),
+                        kind: function.metadata.kind,
+                        search_limits: function.metadata.search_limits.clone(),
+                    })
+            })
         })
         .chain(catalog_only_table_functions.iter().cloned())
         .collect::<Vec<_>>();
@@ -940,7 +971,7 @@ struct CatalogTable {
     search_limits: Option<SearchLimitsSpec>,
 }
 
-fn build_tables_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
+fn build_tables_table(active_publications: &[CatalogPublication]) -> Result<MemTable> {
     let schema = Arc::new(Schema::new(vec![
         Field::new("schema_name", DataType::Utf8, false),
         Field::new("table_name", DataType::Utf8, false),
@@ -962,21 +993,21 @@ fn build_tables_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
             required_filters: String::new(),
             search_limits: None,
         })
-        .chain(active_sources.iter().flat_map(|source| {
-            source.tables.iter().map(move |table| CatalogTable {
-                catalog_name: source
-                    .qualified_name
-                    .catalog_name()
-                    .unwrap_or_default()
-                    .to_string(),
-                schema_name: registered_table_schema_name(source, table),
-                table_name: table.table_name.clone(),
-                description: table.description.clone(),
-                guide: table.guide.clone(),
-                required_filters: table.required_filters.join(","),
-                search_limits: table.search_limits.clone(),
-            })
-        }))
+        .chain(
+            published_tables(active_publications)
+                .into_iter()
+                .map(|table| CatalogTable {
+                    catalog_name: public_catalog_name(table.catalog_name)
+                        .unwrap_or_default()
+                        .to_string(),
+                    schema_name: table.schema_name.to_string(),
+                    table_name: table.table_name.to_string(),
+                    description: table.metadata.description.clone(),
+                    guide: table.metadata.guide.clone(),
+                    required_filters: table.metadata.required_filters.join(","),
+                    search_limits: table.metadata.search_limits.clone(),
+                }),
+        )
         .collect::<Vec<_>>();
 
     rows.sort_by(|left, right| {
@@ -1020,7 +1051,7 @@ struct CatalogFilter {
     description: String,
 }
 
-fn build_filters_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
+fn build_filters_table(active_publications: &[CatalogPublication]) -> Result<MemTable> {
     let schema = Arc::new(Schema::new(vec![
         Field::new("schema_name", DataType::Utf8, false),
         Field::new("table_name", DataType::Utf8, false),
@@ -1032,7 +1063,7 @@ fn build_filters_table(active_sources: &[RegisteredSource]) -> Result<MemTable> 
         Field::new("catalog_name", DataType::Utf8, false),
     ]));
 
-    let rows = catalog_filter_rows(active_sources);
+    let rows = catalog_filter_rows(active_publications);
 
     let batch = RecordBatch::try_new(
         schema.clone(),
@@ -1056,26 +1087,26 @@ fn build_filters_table(active_sources: &[RegisteredSource]) -> Result<MemTable> 
     MemTable::try_new(schema, vec![vec![batch]])
 }
 
-fn catalog_filter_rows(active_sources: &[RegisteredSource]) -> Vec<CatalogFilter> {
-    let mut rows = active_sources
-        .iter()
-        .flat_map(|source| {
-            source.tables.iter().flat_map(move |table| {
-                table.filters.iter().map(move |filter| CatalogFilter {
-                    catalog_name: source
-                        .qualified_name
-                        .catalog_name()
+fn catalog_filter_rows(active_publications: &[CatalogPublication]) -> Vec<CatalogFilter> {
+    let mut rows = published_tables(active_publications)
+        .into_iter()
+        .flat_map(|table| {
+            table
+                .metadata
+                .filters
+                .iter()
+                .map(move |filter| CatalogFilter {
+                    catalog_name: public_catalog_name(table.catalog_name)
                         .unwrap_or_default()
                         .to_string(),
-                    schema_name: registered_table_schema_name(source, table),
-                    table_name: table.table_name.clone(),
+                    schema_name: table.schema_name.to_string(),
+                    table_name: table.table_name.to_string(),
                     filter_name: filter.name.clone(),
                     filter_mode: filter.mode.clone(),
                     is_required: filter.required,
                     data_type: filter.data_type.clone(),
                     description: filter.description.clone(),
                 })
-            })
         })
         .collect::<Vec<_>>();
 
@@ -1109,30 +1140,32 @@ struct CatalogInput {
     is_set: bool,
 }
 
-fn catalog_input_rows(active_sources: &[RegisteredSource]) -> Vec<CatalogInput> {
-    let mut rows: Vec<CatalogInput> = active_sources
+fn catalog_input_rows(active_publications: &[CatalogPublication]) -> Vec<CatalogInput> {
+    let mut rows: Vec<CatalogInput> = active_publications
         .iter()
-        .flat_map(|source| {
-            source.inputs.iter().map(move |input| CatalogInput {
-                schema_name: match &source.qualified_name {
-                    SourceQualifiedName::Schema(name) => name.clone(),
-                    SourceQualifiedName::Catalog(_) => String::new(),
-                },
-                catalog_name: source
-                    .qualified_name
-                    .catalog_name()
-                    .unwrap_or_default()
-                    .to_string(),
-                key: input.key.clone(),
-                kind: match input.kind {
-                    ManifestInputKind::Variable => "variable",
-                    ManifestInputKind::Secret => "secret",
-                },
-                value: input.resolved_value.clone(),
-                default_value: input.default_value.clone(),
-                hint: input.hint.clone(),
-                required: input.required,
-                is_set: input.is_set,
+        .flat_map(|publication| {
+            let schema_names = if publication.catalog_name == DATAFUSION_DEFAULT_CATALOG {
+                publication.schema_names().collect::<Vec<_>>()
+            } else {
+                vec![""]
+            };
+            schema_names.into_iter().flat_map(move |schema_name| {
+                publication.inputs.iter().map(move |input| CatalogInput {
+                    schema_name: schema_name.to_string(),
+                    catalog_name: public_catalog_name(&publication.catalog_name)
+                        .unwrap_or_default()
+                        .to_string(),
+                    key: input.key.clone(),
+                    kind: match input.kind {
+                        ManifestInputKind::Variable => "variable",
+                        ManifestInputKind::Secret => "secret",
+                    },
+                    value: input.resolved_value.clone(),
+                    default_value: input.default_value.clone(),
+                    hint: input.hint.clone(),
+                    required: input.required,
+                    is_set: input.is_set,
+                })
             })
         })
         .collect();
@@ -1147,7 +1180,7 @@ fn catalog_input_rows(active_sources: &[RegisteredSource]) -> Vec<CatalogInput> 
     rows
 }
 
-fn build_inputs_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
+fn build_inputs_table(active_publications: &[CatalogPublication]) -> Result<MemTable> {
     let schema = Arc::new(Schema::new(vec![
         Field::new("schema_name", DataType::Utf8, false),
         Field::new("key", DataType::Utf8, false),
@@ -1160,7 +1193,7 @@ fn build_inputs_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
         Field::new("catalog_name", DataType::Utf8, false),
     ]));
 
-    let rows = catalog_input_rows(active_sources);
+    let rows = catalog_input_rows(active_publications);
 
     let batch = RecordBatch::try_new(
         schema.clone(),
@@ -1238,7 +1271,7 @@ struct CatalogColumn {
 }
 
 fn build_columns_table(
-    active_sources: &[RegisteredSource],
+    active_publications: &[CatalogPublication],
     column_fetchers: &[CatalogColumnFetcher],
 ) -> Result<CoralColumnsTable> {
     let schema = Arc::new(Schema::new(vec![
@@ -1255,7 +1288,7 @@ fn build_columns_table(
         Field::new("catalog_name", DataType::Utf8, false),
     ]));
 
-    let rows = catalog_column_rows(active_sources);
+    let rows = catalog_column_rows(active_publications);
     let static_batch = catalog_columns_batch(schema.clone(), &rows)?;
 
     Ok(CoralColumnsTable {
@@ -1498,9 +1531,9 @@ fn column_equality(column_side: &Expr, literal_side: &Expr) -> Option<(PinColumn
     Some((pin_column(column.name())?, literal_to_string(literal_side)?))
 }
 
-fn catalog_column_rows(active_sources: &[RegisteredSource]) -> Vec<CatalogColumn> {
+fn catalog_column_rows(active_publications: &[CatalogPublication]) -> Vec<CatalogColumn> {
     let mut rows = system_catalog_column_rows();
-    rows.extend(source_catalog_column_rows(active_sources));
+    rows.extend(source_catalog_column_rows(active_publications));
     rows.sort_by(|left, right| {
         (
             &left.catalog_name,
@@ -1543,35 +1576,32 @@ fn system_catalog_column_rows() -> Vec<CatalogColumn> {
         .collect()
 }
 
-fn source_catalog_column_rows(active_sources: &[RegisteredSource]) -> Vec<CatalogColumn> {
-    active_sources
-        .iter()
-        .flat_map(|source| {
-            source.tables.iter().flat_map(move |table| {
-                let catalog_name = source
-                    .qualified_name
-                    .catalog_name()
-                    .unwrap_or_default()
-                    .to_string();
-                let schema_name = registered_table_schema_name(source, table);
-                table
-                    .columns
-                    .iter()
-                    .enumerate()
-                    .map(move |(position, column)| CatalogColumn {
-                        catalog_name: catalog_name.clone(),
-                        schema_name: schema_name.clone(),
-                        table_name: table.table_name.clone(),
-                        column_name: column.name.clone(),
-                        data_type: column.data_type.clone(),
-                        is_nullable: column.nullable,
-                        is_virtual: column.is_virtual,
-                        is_required_filter: column.is_required_filter,
-                        filter_mode: column.filter_mode.clone(),
-                        description: column.description.clone(),
-                        ordinal_position: position,
-                    })
-            })
+fn source_catalog_column_rows(active_publications: &[CatalogPublication]) -> Vec<CatalogColumn> {
+    published_tables(active_publications)
+        .into_iter()
+        .flat_map(|table| {
+            let catalog_name = public_catalog_name(table.catalog_name)
+                .unwrap_or_default()
+                .to_string();
+            let schema_name = table.schema_name.to_string();
+            table
+                .metadata
+                .columns
+                .iter()
+                .enumerate()
+                .map(move |(position, column)| CatalogColumn {
+                    catalog_name: catalog_name.clone(),
+                    schema_name: schema_name.clone(),
+                    table_name: table.table_name.to_string(),
+                    column_name: column.name.clone(),
+                    data_type: column.data_type.clone(),
+                    is_nullable: column.nullable,
+                    is_virtual: column.is_virtual,
+                    is_required_filter: column.is_required_filter,
+                    filter_mode: column.filter_mode.clone(),
+                    description: column.description.clone(),
+                    ordinal_position: position,
+                })
         })
         .collect()
 }
@@ -1644,17 +1674,19 @@ mod tests {
 
     use async_trait::async_trait;
     use coral_spec::ManifestInputKind;
+    use datafusion::arrow::datatypes::Schema;
     use datafusion::datasource::TableProvider as _;
+    use datafusion::datasource::empty::EmptyTable;
     use datafusion::error::DataFusionError;
     use datafusion::prelude::{SessionContext, col, lit};
 
     use crate::backends::common::{
-        RegisteredColumn, RegisteredFilter, test_support::StubSourceFunctionFactory,
+        RegisteredColumn, RegisteredFilter, RegisteredInput, RegisteredTableFunctionMetadata,
+        RegisteredTableMetadata, test_support::StubSourceFunctionFactory,
     };
     use crate::backends::{
-        CatalogColumnFetcher, ColumnInventoryFilter, DatabaseColumnFetcher, DatabaseColumnRow,
-        RegisteredInput, RegisteredSource, RegisteredTable, RegisteredTableFunction,
-        SourceQualifiedName,
+        CatalogColumnFetcher, CatalogPublication, ColumnInventoryFilter, DatabaseColumnFetcher,
+        DatabaseColumnRow,
     };
 
     use super::{
@@ -1842,35 +1874,10 @@ mod tests {
         assert_eq!(stalled.calls().len(), 1);
     }
 
-    fn catalog_source() -> RegisteredSource {
-        RegisteredSource {
-            qualified_name: SourceQualifiedName::Catalog("warehouse".to_string()),
-            tables: vec![RegisteredTable {
-                schema_name: Some("public".to_string()),
-                table_name: "orders".to_string(),
-                description: String::new(),
-                guide: String::new(),
-                columns: vec![RegisteredColumn {
-                    name: "id".to_string(),
-                    data_type: "Int64".to_string(),
-                    nullable: false,
-                    is_virtual: false,
-                    is_required_filter: true,
-                    filter_mode: Some("exact".to_string()),
-                    description: String::new(),
-                }],
-                filters: vec![RegisteredFilter {
-                    name: "id".to_string(),
-                    mode: "exact".to_string(),
-                    required: true,
-                    data_type: "Int64".to_string(),
-                    description: String::new(),
-                }],
-                required_filters: vec!["id".to_string()],
-                search_limits: None,
-            }],
-            table_functions: Vec::new(),
-            inputs: vec![RegisteredInput {
+    fn catalog_source() -> CatalogPublication {
+        let mut publication = CatalogPublication::new(
+            "warehouse",
+            vec![RegisteredInput {
                 key: "REGION".to_string(),
                 kind: ManifestInputKind::Variable,
                 required: false,
@@ -1879,7 +1886,37 @@ mod tests {
                 resolved_value: Some("us".to_string()),
                 is_set: true,
             }],
-        }
+        );
+        publication
+            .publish_table(
+                "public",
+                "orders",
+                Arc::new(EmptyTable::new(Arc::new(Schema::empty()))),
+                RegisteredTableMetadata {
+                    description: String::new(),
+                    guide: String::new(),
+                    columns: vec![RegisteredColumn {
+                        name: "id".to_string(),
+                        data_type: "Int64".to_string(),
+                        nullable: false,
+                        is_virtual: false,
+                        is_required_filter: true,
+                        filter_mode: Some("exact".to_string()),
+                        description: String::new(),
+                    }],
+                    filters: vec![RegisteredFilter {
+                        name: "id".to_string(),
+                        mode: "exact".to_string(),
+                        required: true,
+                        data_type: "Int64".to_string(),
+                        description: String::new(),
+                    }],
+                    required_filters: vec!["id".to_string()],
+                    search_limits: None,
+                },
+            )
+            .expect("catalog source publication");
+        publication
     }
 
     #[test]
@@ -1914,26 +1951,24 @@ mod tests {
 
     #[test]
     fn collect_table_functions_preserves_registered_function_schema() {
-        let functions = collect_table_functions(
-            &[RegisteredSource {
-                qualified_name: SourceQualifiedName::Schema("source_schema".to_string()),
-                tables: Vec::new(),
-                table_functions: vec![RegisteredTableFunction {
-                    catalog_name: None,
-                    schema_name: "function_schema".to_string(),
-                    function_name: "search".to_string(),
-                    factory: Arc::new(StubSourceFunctionFactory::default()),
+        let mut publication =
+            CatalogPublication::new(super::DATAFUSION_DEFAULT_CATALOG, Vec::new());
+        publication
+            .publish_table_function(
+                "function_schema",
+                "search",
+                Arc::new(StubSourceFunctionFactory::default()),
+                RegisteredTableFunctionMetadata {
                     kind: coral_spec::SourceTableFunctionKind::Search,
                     description: String::new(),
                     guide: "Prefer this function for lookup.".to_string(),
                     arguments: Vec::new(),
                     result_columns: Vec::new(),
                     search_limits: None,
-                }],
-                inputs: Vec::new(),
-            }],
-            &[],
-        );
+                },
+            )
+            .expect("table-function publication");
+        let functions = collect_table_functions(&[publication], &[]);
 
         assert_eq!(functions.len(), 1);
         assert_eq!(

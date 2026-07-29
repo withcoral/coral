@@ -14,7 +14,7 @@ use coral_spec::{
     SourceTableFunctionSpec, TableCommon,
 };
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
-use datafusion::catalog::{CatalogProvider, SchemaProvider};
+use datafusion::catalog::SchemaProvider;
 use datafusion::datasource::TableProvider;
 use datafusion::error::{DataFusionError, Result as DataFusionResult};
 use datafusion::prelude::SessionContext;
@@ -62,34 +62,6 @@ pub(crate) struct RegisteredColumn {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct RegisteredTable {
-    /// SQL schema containing this table when it differs from the source's
-    /// default schema. Database tables set this to their remote schema.
-    pub(crate) schema_name: Option<String>,
-    pub(crate) table_name: String,
-    pub(crate) description: String,
-    pub(crate) guide: String,
-    pub(crate) columns: Vec<RegisteredColumn>,
-    pub(crate) filters: Vec<RegisteredFilter>,
-    pub(crate) required_filters: Vec<String>,
-    pub(crate) search_limits: Option<SearchLimitsSpec>,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct RegisteredTableFunction {
-    pub(crate) catalog_name: Option<String>,
-    pub(crate) schema_name: String,
-    pub(crate) function_name: String,
-    pub(crate) factory: Arc<dyn SourceFunctionProviderFactory>,
-    pub(crate) kind: SourceTableFunctionKind,
-    pub(crate) description: String,
-    pub(crate) guide: String,
-    pub(crate) arguments: Vec<RegisteredTableFunctionArgument>,
-    pub(crate) result_columns: Vec<RegisteredTableFunctionResultColumn>,
-    pub(crate) search_limits: Option<SearchLimitsSpec>,
-}
-
-#[derive(Debug, Clone)]
 pub(crate) struct RegisteredFilter {
     pub(crate) name: String,
     pub(crate) mode: String,
@@ -114,7 +86,7 @@ pub(crate) struct RegisteredTableFunctionResultColumn {
     pub(crate) description: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RegisteredInput {
     pub(crate) key: String,
     pub(crate) kind: ManifestInputKind,
@@ -156,94 +128,21 @@ pub(crate) struct RegisteredTableFunctionMetadata {
     pub(crate) search_limits: Option<SearchLimitsSpec>,
 }
 
-/// The source's portion of a fully qualified table name
-/// (`catalog.schema.table`): which position its name occupies and what that
-/// name is. Names for all selected sources share one flat namespace
-/// regardless of variant.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum SourceQualifiedName {
-    /// Two-part source: tables resolve as `datafusion.<name>.<table>`.
-    Schema(String),
-    /// Catalog-backed source: tables resolve as `<name>.<db_schema>.<table>`,
-    /// with the SQL schema recorded per table.
-    Catalog(String),
-}
-
-impl SourceQualifiedName {
-    pub(crate) fn name(&self) -> &str {
-        match self {
-            Self::Schema(name) | Self::Catalog(name) => name,
-        }
-    }
-
-    pub(crate) fn catalog_name(&self) -> Option<&str> {
-        match self {
-            Self::Catalog(name) => Some(name),
-            Self::Schema(_) => None,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct RegisteredSource {
-    pub(crate) qualified_name: SourceQualifiedName,
-    pub(crate) tables: Vec<RegisteredTable>,
-    pub(crate) table_functions: Vec<RegisteredTableFunction>,
-    pub(crate) inputs: Vec<RegisteredInput>,
-}
-
 pub(crate) struct BackendRegistration {
-    /// Unified catalog publications. Real backends migrate to this field in
-    /// Slice 5; Slice 4 exercises the final registry contract with mocks.
     pub(crate) catalog_publications: Vec<CatalogPublication>,
-    legacy: Option<LegacyBackendRegistration>,
-}
-
-/// Transitional payload for real backends that migrate in Slice 5.
-pub(crate) struct LegacyBackendRegistration {
-    pub(crate) schemas: Vec<BackendSchemaRegistration>,
-    pub(crate) catalogs: Vec<BackendCatalogRegistration>,
 }
 
 impl BackendRegistration {
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Slice 4 exercises the unified constructor in registry tests before real backends adopt it in Slice 5."
-        )
-    )]
     pub(crate) fn single(publication: CatalogPublication) -> Self {
         Self {
             catalog_publications: vec![publication],
-            legacy: None,
         }
     }
 
-    pub(crate) fn legacy(
-        schemas: Vec<BackendSchemaRegistration>,
-        catalogs: Vec<BackendCatalogRegistration>,
-    ) -> Self {
+    pub(crate) fn from_publications(catalog_publications: Vec<CatalogPublication>) -> Self {
         Self {
-            catalog_publications: Vec::new(),
-            legacy: Some(LegacyBackendRegistration { schemas, catalogs }),
+            catalog_publications,
         }
-    }
-
-    pub(crate) fn legacy_registration(&self) -> Option<&LegacyBackendRegistration> {
-        self.legacy.as_ref()
-    }
-
-    pub(crate) fn into_parts(self) -> (Vec<CatalogPublication>, Option<LegacyBackendRegistration>) {
-        (self.catalog_publications, self.legacy)
-    }
-
-    pub(crate) fn into_legacy(self) -> DataFusionResult<LegacyBackendRegistration> {
-        self.legacy.ok_or_else(|| {
-            DataFusionError::Internal(
-                "composite legacy backend received a unified catalog publication".to_string(),
-            )
-        })
     }
 }
 
@@ -256,13 +155,6 @@ pub(crate) struct CatalogPublication {
 }
 
 impl CatalogPublication {
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Slice 4 exercises publication builders in registry tests before real backends adopt them in Slice 5."
-        )
-    )]
     pub(crate) fn new(catalog_name: impl Into<String>, inputs: Vec<RegisteredInput>) -> Self {
         Self {
             catalog_name: catalog_name.into(),
@@ -292,13 +184,6 @@ impl CatalogPublication {
         self.schemas.values_mut()
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Slice 4 exercises publication builders in registry tests before real backends adopt them in Slice 5."
-        )
-    )]
     pub(crate) fn publish_table(
         &mut self,
         schema_name: impl Into<String>,
@@ -328,13 +213,6 @@ impl CatalogPublication {
         Ok(())
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Slice 4 exercises publication builders in registry tests before real backends adopt them in Slice 5."
-        )
-    )]
     pub(crate) fn publish_table_function(
         &mut self,
         schema_name: impl Into<String>,
@@ -361,13 +239,6 @@ impl CatalogPublication {
         Ok(())
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Slice 4 exercises publication builders in registry tests before real backends adopt them in Slice 5."
-        )
-    )]
     pub(crate) fn publish_lazy_schema(
         &mut self,
         schema_name: impl Into<String>,
@@ -406,6 +277,107 @@ impl CatalogPublication {
         }
         Ok(())
     }
+
+    pub(crate) fn merge(&mut self, other: Self) -> DataFusionResult<()> {
+        if self.catalog_name != other.catalog_name {
+            return Err(DataFusionError::Internal(format!(
+                "cannot merge catalog publication '{}' into '{}'",
+                other.catalog_name, self.catalog_name
+            )));
+        }
+
+        for input in other.inputs {
+            match self
+                .inputs
+                .iter()
+                .find(|candidate| candidate.key == input.key)
+            {
+                Some(existing) if existing != &input => {
+                    return Err(DataFusionError::Execution(format!(
+                        "catalog '{}' publishes conflicting input '{}'",
+                        self.catalog_name, input.key
+                    )));
+                }
+                Some(_) => {}
+                None => self.inputs.push(input),
+            }
+        }
+
+        match (&self.column_fetcher, other.column_fetcher) {
+            (Some(_), Some(_)) => {
+                return Err(DataFusionError::Execution(format!(
+                    "catalog '{}' publishes more than one column fetcher",
+                    self.catalog_name
+                )));
+            }
+            (None, Some(fetcher)) => self.column_fetcher = Some(fetcher),
+            _ => {}
+        }
+
+        for (schema_name, incoming) in other.schemas {
+            match self.schemas.entry(schema_name.clone()) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert(incoming);
+                }
+                std::collections::btree_map::Entry::Occupied(mut entry) => {
+                    let current = entry.get_mut();
+                    match (&mut current.tables, incoming.tables) {
+                        (
+                            PublishedTables::Static(current_tables),
+                            PublishedTables::Static(incoming_tables),
+                        ) => {
+                            for (table_name, table) in incoming_tables {
+                                if current_tables.insert(table_name.clone(), table).is_some() {
+                                    return Err(DataFusionError::Execution(format!(
+                                        "duplicate table publication '{}.{schema_name}.{table_name}'",
+                                        self.catalog_name
+                                    )));
+                                }
+                            }
+                        }
+                        (
+                            PublishedTables::Static(current_tables),
+                            PublishedTables::Lazy { provider, tables },
+                        ) if current_tables.is_empty() => {
+                            current.tables = PublishedTables::Lazy { provider, tables };
+                        }
+                        (
+                            PublishedTables::Lazy { .. },
+                            PublishedTables::Static(incoming_tables),
+                        ) if incoming_tables.is_empty() => {}
+                        (PublishedTables::Static(_), PublishedTables::Lazy { .. })
+                        | (PublishedTables::Lazy { .. }, PublishedTables::Static(_)) => {
+                            return Err(DataFusionError::Execution(format!(
+                                "catalog '{}' schema '{schema_name}' cannot merge lazy and static table publications",
+                                self.catalog_name
+                            )));
+                        }
+                        (PublishedTables::Lazy { .. }, PublishedTables::Lazy { .. }) => {
+                            return Err(DataFusionError::Execution(format!(
+                                "duplicate lazy schema publication '{}.{schema_name}'",
+                                self.catalog_name
+                            )));
+                        }
+                    }
+
+                    for (function_name, function) in incoming.table_functions {
+                        if current
+                            .table_functions
+                            .insert(function_name.clone(), function)
+                            .is_some()
+                        {
+                            return Err(DataFusionError::Execution(format!(
+                                "duplicate table-function publication '{}.{schema_name}.{function_name}'",
+                                self.catalog_name
+                            )));
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
 
 /// One schema within a catalog publication.
@@ -416,13 +388,6 @@ pub(crate) struct SchemaPublication {
 }
 
 impl SchemaPublication {
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Slice 4 exercises publication builders in registry tests before real backends adopt them in Slice 5."
-        )
-    )]
     fn new(schema_name: String) -> Self {
         Self {
             schema_name,
@@ -434,21 +399,7 @@ impl SchemaPublication {
 
 /// Static or lazily resolved table providers for one published schema.
 pub(crate) enum PublishedTables {
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Slice 4 exercises this variant in registry tests before real backends adopt it in Slice 5."
-        )
-    )]
     Static(BTreeMap<String, StaticTablePublication>),
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Slice 4 exercises this variant in registry tests before real backends adopt it in Slice 5."
-        )
-    )]
     Lazy {
         provider: Arc<dyn SchemaProvider>,
         tables: BTreeMap<String, RegisteredTableMetadata>,
@@ -465,17 +416,6 @@ pub(crate) struct StaticTablePublication {
 pub(crate) struct TableFunctionPublication {
     pub(crate) factory: Arc<dyn SourceFunctionProviderFactory>,
     pub(crate) metadata: RegisteredTableFunctionMetadata,
-}
-
-pub(crate) struct BackendSchemaRegistration {
-    pub(crate) tables: HashMap<String, Arc<dyn TableProvider>>,
-    pub(crate) source: RegisteredSource,
-}
-
-pub(crate) struct BackendCatalogRegistration {
-    pub(crate) catalog: Arc<dyn CatalogProvider>,
-    pub(crate) source: RegisteredSource,
-    pub(crate) column_fetcher: Arc<dyn DatabaseColumnFetcher>,
 }
 
 /// Row-set restriction for one lazy database column-metadata fetch.
@@ -565,10 +505,6 @@ impl BackendRegistrationContext {
 
 #[async_trait]
 pub(crate) trait CompiledBackendSource: Send + Sync {
-    /// Runtime qualified name: the SQL schema for two-part sources, the SQL
-    /// catalog for catalog-backed sources.
-    fn qualified_name(&self) -> SourceQualifiedName;
-
     fn source_name(&self) -> &str;
 
     fn validate_runtime_capabilities(&self) -> datafusion::error::Result<()>;
@@ -725,14 +661,12 @@ pub(crate) fn build_registered_inputs(
         .collect()
 }
 
-pub(crate) fn build_registered_table(
+pub(crate) fn build_registered_table_metadata(
     common: &TableCommon,
     columns: Vec<RegisteredColumn>,
     required_filters: Vec<String>,
-) -> RegisteredTable {
-    RegisteredTable {
-        schema_name: None,
-        table_name: common.table_name.clone(),
+) -> RegisteredTableMetadata {
+    RegisteredTableMetadata {
         description: common.description.clone(),
         guide: common.guide.clone(),
         columns,
@@ -742,11 +676,9 @@ pub(crate) fn build_registered_table(
     }
 }
 
-pub(crate) fn build_registered_table_function(
-    schema_name: &str,
+pub(crate) fn build_registered_table_function_metadata(
     function: &SourceTableFunctionSpec,
-    factory: Arc<dyn SourceFunctionProviderFactory>,
-) -> RegisteredTableFunction {
+) -> RegisteredTableFunctionMetadata {
     let arguments = function
         .args
         .iter()
@@ -767,11 +699,7 @@ pub(crate) fn build_registered_table_function(
         })
         .collect::<Vec<_>>();
 
-    RegisteredTableFunction {
-        catalog_name: None,
-        schema_name: schema_name.to_string(),
-        function_name: function.function_name.clone(),
-        factory,
+    RegisteredTableFunctionMetadata {
         kind: function.kind,
         description: function.description.clone(),
         guide: function.guide.clone(),
@@ -814,7 +742,7 @@ pub(crate) mod test_support {
     use super::*;
     use datafusion::datasource::empty::EmptyTable;
 
-    /// Minimal factory for tests that need `RegisteredTableFunction` metadata
+    /// Minimal factory for tests that need table-function publication metadata
     /// without a live backend.
     #[derive(Debug)]
     pub(crate) struct StubSourceFunctionFactory {
