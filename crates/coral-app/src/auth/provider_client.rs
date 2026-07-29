@@ -485,7 +485,7 @@ mod tests {
              issuer = '{issuer}'
              client_id = 'provider-client'
              client_secret = '{CLIENT_SECRET}'
-             redirect_uri = 'http://localhost/callback'
+             redirect_uri = 'http://localhost/auth/oidc/callback'
              scopes = ['openid', 'email']
              [auth.provider.auth_params]
              prompt = 'login'"
@@ -604,7 +604,7 @@ mod tests {
             ("tenant", "one"),
             ("response_type", "code"),
             ("client_id", "provider-client"),
-            ("redirect_uri", "http://localhost/callback"),
+            ("redirect_uri", "http://localhost/auth/oidc/callback"),
             ("scope", "openid email"),
             ("code_challenge_method", "S256"),
             ("prompt", "login"),
@@ -802,7 +802,10 @@ mod tests {
             vec![
                 ("grant_type".into(), "authorization_code".into()),
                 ("code".into(), "provider-code".into()),
-                ("redirect_uri".into(), "http://localhost/callback".into()),
+                (
+                    "redirect_uri".into(),
+                    "http://localhost/auth/oidc/callback".into(),
+                ),
                 ("client_id".into(), "provider-client".into()),
                 ("client_secret".into(), CLIENT_SECRET.into()),
                 ("code_verifier".into(), "pkce-verifier".into()),

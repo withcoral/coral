@@ -273,7 +273,7 @@ pub(in crate::auth) mod tests {
              issuer = 'http://localhost/issuer'
              client_id = 'provider-client'
              client_secret = 'secret'
-             redirect_uri = 'http://localhost:9080/callback'
+             redirect_uri = 'http://localhost:9080/auth/oidc/callback'
              {extra}"
         ))
         .expect("valid auth config")

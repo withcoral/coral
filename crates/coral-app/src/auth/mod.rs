@@ -21,6 +21,15 @@ pub use authorization_server::{CoralAuthorizationServer, RunningCoralAuthorizati
 pub use config::AuthSettings;
 pub use error::AuthServerError;
 
+/// Path the authorization server answers the upstream provider's callback on.
+///
+/// The router registers exactly this path, and configuration validation pins
+/// `auth.provider.redirect_uri` to it. Both sides read the constant so an
+/// accepted redirect URI is always one this server actually serves: without the
+/// pin, a redirect URI on the right origin but a different path passes startup
+/// and then strands every login on a 404 the provider reports, not Coral.
+pub(crate) const OIDC_CALLBACK_PATH: &str = "/auth/oidc/callback";
+
 /// Minimal `[auth]` TOML sections shared by this module's tests.
 ///
 /// `config` and `authorization_server` both build configs from the same

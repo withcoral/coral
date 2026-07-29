@@ -71,7 +71,6 @@ pub(super) async fn oidc_callback(
         return trusted.error("server_error", "authorization failed");
     };
     let authorization = OAuthAuthorizationCodeRecord {
-        provider_id: session.provider_id,
         user_id: identity.principal,
         client_id: session.client_id,
         redirect_uri: session.redirect_uri,
@@ -236,7 +235,6 @@ mod tests {
 
     use super::super::AuthorizationServerHttpState;
     use super::*;
-    use crate::auth::PROVIDER_ID;
     use crate::auth::config::{AuthSettings, ResolvedAuthSettings};
     use crate::auth::id_token::tests::{
         claims as id_token_claims, rsa_key, set_claim, token as id_token,
@@ -303,7 +301,6 @@ mod tests {
 
     fn session() -> OAuthAuthorizationSessionRecord {
         OAuthAuthorizationSessionRecord {
-            provider_id: PROVIDER_ID.into(),
             client_id: "https://client.example.test/oauth/client.json".into(),
             redirect_uri: REDIRECT_URI.into(),
             client_state: Some(CLIENT_STATE.into()),
@@ -517,7 +514,6 @@ mod tests {
             .await
             .expect("store")
             .expect("authorization");
-        assert_eq!(authorization.provider_id, PROVIDER_ID);
         assert_eq!(authorization.user_id, "raw-principal");
         assert_eq!(authorization.resource, RESOURCE);
         let requests = server.received_requests().await.expect("requests");

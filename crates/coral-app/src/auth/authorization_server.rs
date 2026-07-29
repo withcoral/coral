@@ -15,6 +15,7 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use url::Position;
 
+use super::OIDC_CALLBACK_PATH;
 use super::config::{AuthSettings, ResolvedAuthSettings, signing_key_env_error};
 use super::error::AuthServerError;
 use super::provider_client::OidcProviderClient;
@@ -129,7 +130,7 @@ impl CoralAuthorizationServer {
                 get(authorization_server_metadata),
             )
             .route("/oauth/authorize", get(authorize::oauth_authorize))
-            .route("/auth/oidc/callback", get(callback::oidc_callback))
+            .route(OIDC_CALLBACK_PATH, get(callback::oidc_callback))
             .with_state(state);
         let listener =
             TcpListener::bind(bind_addr)
