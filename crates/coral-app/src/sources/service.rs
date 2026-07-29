@@ -329,7 +329,7 @@ impl SourceServiceApi for SourceService {
         let span = grpc_span(&request);
         let queries = self.queries.clone();
         let workspaces = self.workspaces.clone();
-        instrument_grpc(span, async move {
+        Box::pin(instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             require_workspace(&workspaces, &workspace_name).await?;
@@ -345,7 +345,7 @@ impl SourceServiceApi for SourceService {
                 &workspace_name,
                 report,
             )))
-        })
+        }))
         .await
     }
 }
