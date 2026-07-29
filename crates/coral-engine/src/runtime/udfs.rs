@@ -63,6 +63,7 @@ pub(crate) async fn infer_udf_signature(
     Ok(UdfRuntimeSignature {
         arguments,
         result_columns: result_columns(signature.planned_schema.as_ref()),
+        source_names: signature.source_names,
     })
 }
 
@@ -504,6 +505,7 @@ mod tests {
                 },
             },
             result_columns: Vec::new(),
+            source_names: vec!["github".to_string()],
         }
     }
 

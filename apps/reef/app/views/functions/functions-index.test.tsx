@@ -10,7 +10,7 @@ const reviewQueue = {
   name: 'review_queue',
   namespace: 'engineering',
   resultColumns: [{ dataType: 'Int64', name: 'number', nullable: false }],
-  sources: [],
+  sources: ['github'],
 }
 
 function renderFunctions(
@@ -43,7 +43,7 @@ describe('FunctionsIndex', () => {
           name: 'recent_incidents',
           namespace: 'operations',
           resultColumns: [{ dataType: 'Utf8', name: 'id', nullable: false }],
-          sources: [],
+          sources: ['pagerduty'],
         },
       ],
       loadError: null,
@@ -63,6 +63,7 @@ describe('FunctionsIndex', () => {
     await expect.element(screen.getByText('Pull requests waiting for review.')).toBeVisible()
     await expect.element(screen.getByText('owner')).toBeVisible()
     await expect.element(screen.getByText('number')).toBeVisible()
+    await expect.element(screen.getByText('github')).toBeVisible()
 
     await screen.getByRole('button', { name: /operations/ }).click()
     await expect
@@ -74,6 +75,8 @@ describe('FunctionsIndex', () => {
 
     await expect.element(screen.getByText('Recently opened incidents.')).toBeVisible()
     await expect.element(screen.getByRole('heading', { name: 'recent_incidents' })).toBeVisible()
+    await expect.element(screen.getByText('pagerduty')).toBeVisible()
+    await expect.element(screen.getByText('github')).not.toBeInTheDocument()
 
     await screen.getByRole('button', { name: /operations/ }).click()
     await expect

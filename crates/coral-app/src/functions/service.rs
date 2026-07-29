@@ -100,7 +100,7 @@ impl FunctionServiceApi for FunctionService {
 fn function_listing_to_proto(workspace_name: &WorkspaceName, listing: FunctionListing) -> Function {
     match listing.runtime {
         FunctionRuntimeStatus::Ready(definition) => {
-            runtime_function_to_proto(workspace_name, definition)
+            runtime_function_to_proto(workspace_name, *definition)
         }
         FunctionRuntimeStatus::Invalid(reason) => Function {
             name: listing.name.to_string(),
@@ -147,6 +147,7 @@ fn runtime_function_to_proto(
                 })
                 .collect(),
             sql_body,
+            source_names: function.source_names,
         })),
     }
 }

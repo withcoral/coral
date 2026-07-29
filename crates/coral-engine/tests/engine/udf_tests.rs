@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -7,9 +8,9 @@ use arrow::record_batch::RecordBatch;
 use coral_engine::{
     CoralQuery, CoreError, EngineExtensions, QueryExecutionProvenance, QueryParameterValue,
     QueryParameters, QueryResultObserver, QueryResultObserverError, QueryRuntimeConfig,
-    QueryRuntimeContext, StatusCode, UdfRuntimeArgument, UdfRuntimeDefinition,
-    UdfRuntimeImplementation, UdfRuntimePublish, UdfRuntimeResultColumn, UdfRuntimeSignature,
-    UdfRuntimeSqlDefinition, UdfRuntimeTableFunctionPublish,
+    QueryRuntimeContext, QuerySource, RuntimeSourcePackage, StatusCode, UdfRuntimeArgument,
+    UdfRuntimeDefinition, UdfRuntimeImplementation, UdfRuntimePublish, UdfRuntimeResultColumn,
+    UdfRuntimeSignature, UdfRuntimeSqlDefinition, UdfRuntimeTableFunctionPublish,
 };
 use coral_spec::ManifestDataType;
 use serde_json::{Value, json};
@@ -240,6 +241,7 @@ fn min_id_udf(source_name: &str) -> UdfRuntimeDefinition {
         },
         publish: udf_publish("min_id_events"),
         result_columns: vec![udf_result_column("id", DataType::Int64)],
+        source_names: vec![source_name.to_string()],
     }
 }
 
@@ -301,6 +303,7 @@ fn published_limited_events_udf(source_name: &str) -> UdfRuntimeDefinition {
         },
         publish: udf_publish("limited_events"),
         result_columns: vec![udf_result_column("id", DataType::Int64)],
+        source_names: vec![source_name.to_string()],
     }
 }
 
@@ -338,6 +341,7 @@ fn review_queue_udf(source_name: &str) -> UdfRuntimeDefinition {
         },
         publish: udf_publish("review_queue"),
         result_columns: Vec::new(),
+        source_names: vec![source_name.to_string()],
     }
 }
 
@@ -444,6 +448,7 @@ async fn infer_udf_signature_uses_source_function_schema_with_parameters() {
             ("since", ManifestDataType::Timestamp),
         ]
     );
+    assert_eq!(signature.source_names, ["signature_param_search"]);
 
     let columns = column_types(&signature);
     assert!(matches!(
@@ -474,6 +479,7 @@ async fn infer_udf_signature_uses_explicit_cast_for_argument_type() {
         panic!("expected label result column");
     };
     assert!(matches!(column_type, DataType::Utf8 | DataType::Utf8View));
+    assert!(signature.source_names.is_empty());
 }
 
 #[tokio::test]
@@ -522,7 +528,74 @@ async fn infer_udf_signature_uses_column_comparison_for_argument_type() {
         column_types(&signature).as_slice(),
         [("id", DataType::Int64)]
     ));
+    assert_eq!(signature.source_names, ["schema_udf_events"]);
     assert_eq!(observer.calls(), 0);
+}
+
+#[tokio::test]
+async fn infer_udf_signature_maps_component_schema_to_canonical_source_name() {
+    let (_temp, component_source) = events_source("github_rest");
+    let source = QuerySource::from_runtime_components(
+        RuntimeSourcePackage {
+            source_name: "github".to_string(),
+            authored_version: None,
+            description: String::new(),
+            declared_inputs: Vec::new(),
+            test_queries: Vec::new(),
+            identity_requirements: None,
+            components: component_source.components().to_vec(),
+        },
+        BTreeMap::new(),
+        BTreeMap::new(),
+    )
+    .expect("composite runtime source");
+
+    let signature = CoralQuery::infer_udf_signature(
+        &[source],
+        test_runtime(),
+        udf_sql("github_events", "select id from github_rest.events"),
+    )
+    .await
+    .expect("udf signature inference should resolve the installed source name");
+
+    assert_eq!(signature.source_names, ["github"]);
+}
+
+#[tokio::test]
+async fn infer_udf_signature_sorts_and_deduplicates_source_names() {
+    let (_zeta_temp, zeta_source) = events_source("zeta_events");
+    let (_alpha_temp, alpha_source) = events_source("alpha_events");
+
+    let signature = CoralQuery::infer_udf_signature(
+        &[zeta_source, alpha_source],
+        test_runtime(),
+        udf_sql(
+            "combined_events",
+            "select id from zeta_events.events \
+             union all select id from alpha_events.events \
+             union all select id from zeta_events.events",
+        ),
+    )
+    .await
+    .expect("udf signature inference should collect every source once");
+
+    assert_eq!(signature.source_names, ["alpha_events", "zeta_events"]);
+}
+
+#[tokio::test]
+async fn infer_udf_signature_excludes_system_catalog_tables() {
+    let signature = CoralQuery::infer_udf_signature(
+        &[],
+        test_runtime(),
+        udf_sql(
+            "catalog_tables",
+            "select schema_name, table_name from coral.tables",
+        ),
+    )
+    .await
+    .expect("system catalog query should plan");
+
+    assert!(signature.source_names.is_empty());
 }
 
 #[tokio::test]
@@ -656,6 +729,7 @@ async fn published_udf_table_function_coerces_arguments_in_the_expanded_body() {
         },
         publish: udf_publish("format_id"),
         result_columns: vec![udf_result_column("formatted_id", DataType::Utf8View)],
+        source_names: Vec::new(),
     };
     let runtime = CoralQuery::prepare(&[], test_runtime())
         .await

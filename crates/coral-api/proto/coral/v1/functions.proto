@@ -38,6 +38,8 @@ message FunctionRuntimeReady {
   repeated TableFunctionResultColumn result_columns = 4;
   // Executable SQL body parsed from the installed artifact.
   string sql_body = 5;
+  // Canonical installed sources referenced by the planned function SQL.
+  repeated string source_names = 6;
 }
 
 // Validation failure for an installed function that is not currently queryable.

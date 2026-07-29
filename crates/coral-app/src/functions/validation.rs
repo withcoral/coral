@@ -199,6 +199,7 @@ tables:
                 },
             },
             result_columns: Vec::new(),
+            source_names: Vec::new(),
         }
     }
 

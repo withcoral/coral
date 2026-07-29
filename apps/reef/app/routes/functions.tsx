@@ -78,6 +78,6 @@ export function toFunctionDetails(fn: Function): FunctionDetailsProps | null {
       name,
       nullable,
     })),
-    sources: [],
+    sources: ready.sourceNames,
   }
 }

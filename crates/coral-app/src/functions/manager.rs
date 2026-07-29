@@ -47,7 +47,7 @@ pub(crate) struct FunctionListing {
 }
 
 pub(crate) enum FunctionRuntimeStatus {
-    Ready(UdfRuntimeDefinition),
+    Ready(Box<UdfRuntimeDefinition>),
     Invalid(String),
 }
 
@@ -60,7 +60,7 @@ enum FunctionCandidate {
     Listing(FunctionListing),
     Pending {
         name: FunctionName,
-        definition: UdfRuntimeDefinition,
+        definition: Box<UdfRuntimeDefinition>,
     },
 }
 
@@ -209,7 +209,7 @@ impl FunctionManager {
         let mut definitions = Vec::new();
         for listing in listings {
             match listing.runtime {
-                FunctionRuntimeStatus::Ready(definition) => definitions.push(definition),
+                FunctionRuntimeStatus::Ready(definition) => definitions.push(*definition),
                 FunctionRuntimeStatus::Invalid(error) => tracing::warn!(
                     function = %listing.name,
                     detail = %error,
@@ -261,14 +261,14 @@ impl FunctionManager {
             }
             candidates.push(FunctionCandidate::Pending {
                 name: artifact.name,
-                definition: runtime_function,
+                definition: Box::new(runtime_function),
             });
         }
 
         let pending = candidates
             .iter()
             .filter_map(|candidate| match candidate {
-                FunctionCandidate::Pending { definition, .. } => Some(definition.clone()),
+                FunctionCandidate::Pending { definition, .. } => Some(definition.as_ref().clone()),
                 FunctionCandidate::Listing(_) => None,
             })
             .collect::<Vec<_>>();
@@ -426,7 +426,7 @@ fn parse_function_artifact(artifact: &FunctionArtifact) -> Result<FunctionSpec, 
 fn ready_listing(name: FunctionName, definition: UdfRuntimeDefinition) -> FunctionListing {
     FunctionListing {
         name,
-        runtime: FunctionRuntimeStatus::Ready(definition),
+        runtime: FunctionRuntimeStatus::Ready(Box::new(definition)),
     }
 }
 

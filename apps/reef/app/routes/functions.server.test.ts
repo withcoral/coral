@@ -32,6 +32,7 @@ describe('functions route mapping', () => {
             { dataType: 'Int64', name: 'number', nullable: false },
             { dataType: 'Utf8', name: 'title', nullable: true },
           ],
+          sourceNames: ['github', 'slack'],
           sqlBody: 'select * from github.pull_requests',
           tableFunction: create(FunctionTableFunctionPublishSchema, {
             name: 'review_queue',
@@ -54,7 +55,7 @@ describe('functions route mapping', () => {
         { dataType: 'Int64', name: 'number', nullable: false },
         { dataType: 'Utf8', name: 'title', nullable: true },
       ],
-      sources: [],
+      sources: ['github', 'slack'],
     })
   })
 

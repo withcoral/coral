@@ -73,6 +73,7 @@ pub(crate) struct InferredSqlSignature {
     pub(crate) parameter_fields: HashMap<String, Option<FieldRef>>,
     pub(crate) declared_parameter_types: HashMap<String, ManifestDataType>,
     pub(crate) planned_schema: Arc<arrow::datatypes::Schema>,
+    pub(crate) source_names: Vec<String>,
 }
 
 pub(crate) struct PreparedSql {
@@ -740,11 +741,24 @@ impl QueryRuntimeAdapter {
             &mut declared_parameter_types,
         )
         .map_err(plan_error)?;
+        let source_names = self
+            .resolve_query_resources(df.logical_plan())
+            .map_err(plan_error)?
+            .sources()
+            .iter()
+            .filter(|source_name| {
+                self.schema_to_source
+                    .values()
+                    .any(|installed_name| installed_name == *source_name)
+            })
+            .cloned()
+            .collect();
 
         Ok(InferredSqlSignature {
             parameter_fields,
             declared_parameter_types,
             planned_schema: Arc::new(df.logical_plan().schema().as_arrow().clone()),
+            source_names,
         })
     }
 
@@ -1568,6 +1582,7 @@ mod tests {
                     data_type: DataType::Int64,
                     nullable: false,
                 }],
+                source_names: Vec::new(),
             }])
             .await
             .expect("late UDF install");

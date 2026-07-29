@@ -69,6 +69,7 @@ fn apply_signatures(
             let signature = signature.map_err(|error| runtime_validation_error(&error))?;
             function.arguments = signature.arguments;
             function.result_columns = signature.result_columns;
+            function.source_names = signature.source_names;
             Ok(function)
         })
         .collect()
@@ -86,6 +87,7 @@ pub(crate) fn runtime_function_without_signature(spec: &FunctionSpec) -> UdfRunt
         implementation: runtime_implementation(spec.implementation()),
         publish: runtime_publish(spec),
         result_columns: Vec::new(),
+        source_names: Vec::new(),
     }
 }
 
