@@ -848,6 +848,7 @@ pub(crate) fn collect_table_functions(
     catalog_table_functions(active_sources, catalog_only_table_functions)
         .into_iter()
         .map(|function| TableFunctionInfo {
+            catalog_name: None,
             schema_name: function.schema_name,
             function_name: function.function_name,
             description: function.description,

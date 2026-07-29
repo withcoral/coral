@@ -189,6 +189,7 @@ impl<'a> From<&'a TableSummary> for TableSummaryDetailsValue<'a> {
 #[schemars(deny_unknown_fields)]
 struct TableFunctionValue<'a> {
     kind: &'static str,
+    catalog_name: &'a str,
     schema_name: &'a str,
     name: String,
     sql_reference: String,
@@ -201,10 +202,15 @@ impl<'a> From<&'a TableFunction> for TableFunctionValue<'a> {
     fn from(function: &'a TableFunction) -> Self {
         Self {
             kind: "table_function",
+            catalog_name: &function.catalog_name,
             schema_name: &function.schema_name,
-            name: format!("{}.{}", function.schema_name, function.name),
+            name: format_table_name(
+                &function.catalog_name,
+                &function.schema_name,
+                &function.name,
+            ),
             sql_reference: format_schema_table_equivalent(
-                "",
+                &function.catalog_name,
                 &function.schema_name,
                 &function.name,
             ),
@@ -596,12 +602,20 @@ fn catalog_metadata_text_lines(
         Some(catalog_item::Item::TableFunction(function)) => {
             let mut lines = vec![
                 format!(
-                    "{index}. [{provider}] table function {}.{}",
-                    function.schema_name, function.name
+                    "{index}. [{provider}] table function {}",
+                    format_table_name(
+                        &function.catalog_name,
+                        &function.schema_name,
+                        &function.name
+                    )
                 ),
                 format!(
                     "   SQL reference: {}",
-                    format_schema_table_equivalent("", &function.schema_name, &function.name)
+                    format_schema_table_equivalent(
+                        &function.catalog_name,
+                        &function.schema_name,
+                        &function.name
+                    )
                 ),
                 format!("   Call: {}", minimal_table_function_call_example(function)),
             ];
@@ -724,7 +738,11 @@ fn preview_text(preview: &SearchTableColumnPreview) -> Option<String> {
 /// Formats the shortest SQL call example for a table function.
 #[must_use]
 pub fn minimal_table_function_call_example(function: &TableFunction) -> String {
-    let reference = format_schema_table_equivalent("", &function.schema_name, &function.name);
+    let reference = format_schema_table_equivalent(
+        &function.catalog_name,
+        &function.schema_name,
+        &function.name,
+    );
     let required_arguments = function
         .arguments
         .iter()
@@ -839,6 +857,58 @@ fn table_function_kind_name(kind: i32) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn catalog_qualified_table_function_formats_json_text_and_minimal_call() {
+        let function = TableFunction {
+            catalog_name: "github_v4".to_string(),
+            schema_name: "issues".to_string(),
+            name: "list".to_string(),
+            arguments: vec![TableFunctionArgument {
+                name: "owner".to_string(),
+                required: true,
+                values: Vec::new(),
+            }],
+            ..Default::default()
+        };
+        let response = SearchResponse {
+            results: vec![SearchResult {
+                provider: SearchProvider::CatalogMetadata as i32,
+                payload: Some(search_result::Payload::CatalogMetadata(CatalogMetadata {
+                    item: Some(CatalogItem {
+                        item: Some(catalog_item::Item::TableFunction(function.clone())),
+                    }),
+                    ..Default::default()
+                })),
+            }],
+            provider_statuses: Vec::new(),
+            truncation: None,
+        };
+
+        let json = search_response_json_value(&response);
+        let item = &json["results"][0]["catalog_metadata"]["item"];
+        assert_eq!(item["catalog_name"], "github_v4");
+        assert_eq!(item["name"], "github_v4.issues.list");
+        assert_eq!(item["sql_reference"], "github_v4.issues.list");
+        assert_eq!(
+            item["sql_call_example"],
+            "github_v4.issues.list(owner => '<value>')"
+        );
+
+        let text = format_search_response_text(&response);
+        assert!(text.contains("table function github_v4.issues.list"));
+        assert!(text.contains("SQL reference: github_v4.issues.list"));
+        assert!(text.contains("Call: github_v4.issues.list(owner => '<value>')"));
+
+        assert_eq!(
+            minimal_table_function_call_example(&TableFunction {
+                schema_name: "github".to_string(),
+                name: "search_issues".to_string(),
+                ..Default::default()
+            }),
+            "github.search_issues()"
+        );
+    }
 
     #[test]
     fn text_output_renders_table_function_guide() {

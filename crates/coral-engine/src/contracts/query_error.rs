@@ -713,6 +713,7 @@ mod tests {
 
     fn table_function(schema: &str, name: &str) -> TableFunctionInfo {
         TableFunctionInfo {
+            catalog_name: None,
             schema_name: schema.to_string(),
             function_name: name.to_string(),
             description: String::new(),
