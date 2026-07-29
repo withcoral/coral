@@ -42,3 +42,7 @@ discovery, and normalized source-definition models.
   metadata. Consumers must pair both through `ValidatedSurfacePlan`, and
   runtime structural validation must accept a valid source with zero
   operations and zero projections.
+- Row-path and pagination inference are heuristics over vendor descriptors, so
+  changing either can quietly reshape relations in unrelated sources. Diff
+  `cargo run --locked -p xtask -- v4-metadata-report` across the change before
+  submitting.
