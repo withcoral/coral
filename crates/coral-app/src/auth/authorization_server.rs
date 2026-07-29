@@ -270,6 +270,9 @@ mod tests {
             .expect("prepared from snapshot");
     }
 
+    /// `AuthSettings` has no public constructor other than `from_toml`, so the
+    /// unsafe-bind guard cannot be bypassed by building a value directly; the
+    /// parsing boundary is the only place it needs to hold.
     #[test]
     fn rejects_unsafe_bind_at_the_only_construction_site() {
         let raw = format!(

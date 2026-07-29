@@ -4,7 +4,6 @@ use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -99,7 +98,7 @@ impl AuthSettings {
         config_path: &Path,
         get_var: &impl Fn(&str) -> Result<Option<String>, String>,
     ) -> Result<(ResolvedAuthSettings, SessionTokenIssuer), AuthServerError> {
-        let client_secret = self.0.provider.resolve_secret(get_var)?;
+        let provider = self.0.provider.resolve(get_var)?;
         let key = self.0.session.load_signing_key(config_path, get_var)?;
         let access_token_ttl = Duration::from_secs(self.0.session.access_token_ttl_seconds);
         let session_tokens = SessionTokenIssuer::new(
@@ -113,10 +112,7 @@ impl AuthSettings {
                 http_bind_addr: self.0.http_bind_addr,
                 authorization_server: self.0.authorization_server,
                 access_token_ttl,
-                provider: ResolvedOidcProvider {
-                    client_secret,
-                    settings: self.0.provider,
-                },
+                provider,
             },
             session_tokens,
         ))
@@ -305,25 +301,27 @@ const RESERVED_PROVIDER_AUTH_PARAMS: &[&str] = &[
     "code_challenge_method",
 ];
 
-/// Validated settings for one upstream OIDC provider.
+/// Deserialize-and-validate target for the `[auth.provider]` section.
 ///
-/// The derived `Debug` is safe to print: the only secret-bearing field is a
-/// [`ProviderSecret`], which redacts itself.
-#[derive(Clone, Debug, Default, Deserialize)]
+/// This shape exists only between parsing and
+/// [`resolve`](Self::resolve): it is the one place a client secret and a
+/// name pointing at one coexist, and it does not outlive the resolution that
+/// settles which of them the provider actually uses.
+#[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub(super) struct OidcProviderSettings {
+struct OidcProviderSettings {
     #[serde(rename = "type")]
     provider_type: Option<String>,
-    pub(super) issuer: String,
-    pub(super) client_id: String,
+    issuer: String,
+    client_id: String,
     client_secret: Option<ProviderSecret>,
     client_secret_env: Option<String>,
-    pub(super) redirect_uri: String,
-    pub(super) scopes: Vec<String>,
-    pub(super) principal_claim: String,
-    pub(super) display_name_claim: String,
-    pub(super) auth_params: BTreeMap<String, String>,
-    pub(super) required_claims: BTreeMap<String, Value>,
+    redirect_uri: String,
+    scopes: Vec<String>,
+    principal_claim: String,
+    display_name_claim: String,
+    auth_params: BTreeMap<String, String>,
+    required_claims: BTreeMap<String, Value>,
 }
 
 impl OidcProviderSettings {
@@ -341,13 +339,14 @@ impl OidcProviderSettings {
         }
 
         self.issuer = provider_required("issuer", &self.issuer)?;
-        let issuer = provider_issuer_endpoint(&self.issuer)?;
+        let issuer = provider_literal_endpoint("issuer", &self.issuer)?;
         if issuer.as_url().query().is_some() {
             return Err(invalid_provider("issuer must not include a query"));
         }
+        validate_canonical_issuer(&self.issuer, &issuer)?;
         self.client_id = provider_required("client_id", &self.client_id)?;
         self.redirect_uri = provider_required("redirect_uri", &self.redirect_uri)?;
-        let redirect_uri = provider_endpoint("redirect_uri", &self.redirect_uri)?;
+        let redirect_uri = provider_literal_endpoint("redirect_uri", &self.redirect_uri)?;
         // The upstream IdP sends the browser back to a callback route under
         // this server's origin, so a redirect URI pointing anywhere else can
         // only fail later, at the IdP or in the browser — far from Coral's own
@@ -381,6 +380,10 @@ impl OidcProviderSettings {
             }
         }
 
+        // An omitted `scopes` and an explicit `scopes = []` both land here, and
+        // both take the defaults. Separating them would only let an empty list
+        // report `scopes must include openid` instead, which is the same
+        // startup failure for a request that could never authenticate.
         if self.scopes.is_empty() {
             self.scopes = DEFAULT_PROVIDER_SCOPES
                 .iter()
@@ -399,8 +402,9 @@ impl OidcProviderSettings {
         self.principal_claim = provider_claim("principal_claim", &self.principal_claim, "sub")?;
         self.display_name_claim =
             provider_claim("display_name_claim", &self.display_name_claim, "email")?;
-        for key in self.required_claims.keys() {
+        for (key, value) in &self.required_claims {
             validate_provider_key("required_claims", key)?;
+            validate_required_claim_value(key, value)?;
         }
         for key in self.auth_params.keys() {
             validate_provider_key("auth_params", key)?;
@@ -416,16 +420,20 @@ impl OidcProviderSettings {
         Ok(())
     }
 
-    /// Reads the client secret from whichever source the config names.
-    fn resolve_secret(
-        &self,
+    /// Reads the client secret from whichever source the config names and
+    /// hands the validated fields to the provider that will serve logins.
+    ///
+    /// The fields move rather than copy, so the two ways of naming a secret do
+    /// not survive into the resolved value alongside the secret itself.
+    fn resolve(
+        self,
         get_var: &impl Fn(&str) -> Result<Option<String>, String>,
-    ) -> Result<ProviderSecret, AuthServerError> {
-        match (&self.client_secret, &self.client_secret_env) {
-            (Some(secret), _) => Ok(secret.clone()),
+    ) -> Result<ResolvedOidcProvider, AuthServerError> {
+        let client_secret = match (self.client_secret, self.client_secret_env) {
+            (Some(secret), _) => secret,
             (None, Some(env_name)) => {
                 let value = Zeroizing::new(
-                    get_var(env_name)
+                    get_var(&env_name)
                         .map_err(|_error| invalid_provider("client_secret_env could not be read"))?
                         .ok_or_else(|| {
                             invalid_provider(format!(
@@ -433,27 +441,55 @@ impl OidcProviderSettings {
                             ))
                         })?,
                 );
-                ProviderSecret::from_trimmed("client_secret_env", &value)
+                ProviderSecret::from_trimmed("client_secret_env", &value)?
             }
             // Defense in depth: `validate` requires exactly one source before
             // any call reaches here, so this arm only guards a future caller
             // that skips it.
-            (None, None) => Err(invalid_provider(
-                "client_secret or client_secret_env is required",
-            )),
-        }
+            (None, None) => {
+                return Err(invalid_provider(
+                    "client_secret or client_secret_env is required",
+                ));
+            }
+        };
+        Ok(ResolvedOidcProvider {
+            issuer: self.issuer,
+            client_id: self.client_id,
+            redirect_uri: self.redirect_uri,
+            scopes: self.scopes,
+            principal_claim: self.principal_claim,
+            display_name_claim: self.display_name_claim,
+            auth_params: self.auth_params,
+            required_claims: self.required_claims,
+            client_secret,
+        })
     }
 }
 
-/// Provider settings whose client secret has been read from its source.
+/// One upstream OIDC provider, validated and ready to serve logins.
 ///
-/// [`OidcProviderSettings::resolve_secret`] is the only way to build one, so
-/// holding one is proof the secret is present. The configured fields are
-/// reached through [`Deref`]; only the secret needs an accessor, because it is
-/// the one value the config may merely have pointed at.
+/// [`OidcProviderSettings::resolve`] is the only way to build one, and it moves
+/// the validated fields out of the configured shape, so this type carries no
+/// `client_secret_env` still pointing at a secret and no empty `client_secret`
+/// to disagree with the one it holds. Holding one is therefore proof the secret
+/// was fetched, which is why reading it cannot fail.
+///
+/// The derived `Debug` is safe to print: the only secret-bearing field is a
+/// [`ProviderSecret`], which redacts itself.
 #[derive(Clone, Debug)]
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "read by the OIDC federation descendant")
+)]
 pub(super) struct ResolvedOidcProvider {
-    settings: OidcProviderSettings,
+    pub(super) issuer: String,
+    pub(super) client_id: String,
+    pub(super) redirect_uri: String,
+    pub(super) scopes: Vec<String>,
+    pub(super) principal_claim: String,
+    pub(super) display_name_claim: String,
+    pub(super) auth_params: BTreeMap<String, String>,
+    pub(super) required_claims: BTreeMap<String, Value>,
     client_secret: ProviderSecret,
 }
 
@@ -464,14 +500,6 @@ impl ResolvedOidcProvider {
     )]
     pub(super) fn client_secret(&self) -> &str {
         self.client_secret.as_str()
-    }
-}
-
-impl Deref for ResolvedOidcProvider {
-    type Target = OidcProviderSettings;
-
-    fn deref(&self) -> &Self::Target {
-        &self.settings
     }
 }
 
@@ -548,22 +576,55 @@ fn provider_required(field: &str, value: &str) -> Result<String, AuthServerError
     }
 }
 
-fn provider_endpoint(field: &str, value: &str) -> Result<ConfiguredEndpointUrl, AuthServerError> {
-    ConfiguredEndpointUrl::parse(value)
+/// Parses a provider endpoint whose configured spelling is sent verbatim.
+///
+/// `issuer` and `redirect_uri` are both retained as written and later compared
+/// byte for byte — the issuer against the one in the discovery document, the
+/// redirect URI against the registration held by the provider. The parser
+/// silently rewrites a few spellings for a special scheme, so the value that
+/// passes validation is not always the value that goes on the wire:
+/// `.../auth\oidc/callback` parses as if it were written with a slash, and the
+/// backslash then travels to the provider intact. Recording the parser's syntax
+/// violations turns those into a startup error rather than a failed login.
+fn provider_literal_endpoint(
+    field: &str,
+    value: &str,
+) -> Result<ConfiguredEndpointUrl, AuthServerError> {
+    let syntax_violation = Cell::new(None);
+    let record_violation = |violation| syntax_violation.set(Some(violation));
+    let url = Url::options()
+        .syntax_violation_callback(Some(&record_violation))
+        .parse(value)
+        .map_err(|error| invalid_provider(format!("{field} is invalid: {error}")))?;
+    if let Some(violation) = syntax_violation.get() {
+        return Err(invalid_provider(format!("{field} is invalid: {violation}")));
+    }
+    ConfiguredEndpointUrl::from_parsed(url)
         .map_err(|error| invalid_provider(format!("{field} is invalid: {error}")))
 }
 
-fn provider_issuer_endpoint(value: &str) -> Result<ConfiguredEndpointUrl, AuthServerError> {
-    let syntax_violation = Cell::new(None);
-    let record_violation = |violation| syntax_violation.set(Some(violation));
-    Url::options()
-        .syntax_violation_callback(Some(&record_violation))
-        .parse(value)
-        .map_err(|error| invalid_provider(format!("issuer is invalid: {error}")))?;
-    if let Some(violation) = syntax_violation.get() {
-        return Err(invalid_provider(format!("issuer is invalid: {violation}")));
+/// Rejects a provider issuer the URL parser would rewrite.
+///
+/// The issuer is retained exactly as configured, because an `OpenID` Connect
+/// discovery document's `issuer` must equal the configured one byte for byte.
+/// `OpenID` Connect Discovery 1.0 §3 and RFC 8414 §2 both require a published
+/// issuer to be a normalized URL, so a spelling the parser rewrites is one no
+/// compliant provider can publish. Accepting it would not make it work: it
+/// would trade a startup error for a discovery mismatch on every login.
+///
+/// Providers publish issuers both with a trailing slash and without one, so
+/// both are accepted — the parser appends one only to a root-path URL.
+fn validate_canonical_issuer(
+    configured: &str,
+    parsed: &ConfiguredEndpointUrl,
+) -> Result<(), AuthServerError> {
+    let canonical = parsed.as_url().as_str();
+    if configured == canonical || format!("{configured}/") == canonical {
+        return Ok(());
     }
-    provider_endpoint("issuer", value)
+    Err(invalid_provider(format!(
+        "issuer must be copied exactly as the provider publishes it; `{configured}` is not a canonical URL (its canonical form is `{canonical}`)"
+    )))
 }
 
 fn valid_scope_token(scope: &str) -> bool {
@@ -581,6 +642,36 @@ fn provider_claim(field: &str, value: &str, default: &str) -> Result<String, Aut
     };
     validate_provider_key(field, value)?;
     Ok(value.to_string())
+}
+
+/// Rejects a `required_claims` value no ID token could carry.
+///
+/// These values are held as JSON so the check against a decoded ID token is a
+/// plain equality, but they are written in TOML, and the two languages do not
+/// describe the same values. TOML has a datetime that JSON does not, and `toml`
+/// hands one over as an object carrying a private marker key — accepted in
+/// silence today, then unmatchable against every ID token a provider can send.
+/// A date belongs in quotes, where it compares as the string the provider
+/// actually sends.
+///
+/// Numbers are accepted as written and compared as written: `serde_json` holds
+/// integers and floats apart, so `3` does not equal `3.0`. That distinction is
+/// the provider's to make, not something this can settle at startup — the value
+/// has to be spelled the way the ID token spells it.
+fn validate_required_claim_value(key: &str, value: &Value) -> Result<(), AuthServerError> {
+    let is_scalar =
+        |value: &Value| matches!(value, Value::String(_) | Value::Bool(_) | Value::Number(_));
+    let supported = match value {
+        Value::Array(values) => values.iter().all(is_scalar),
+        value => is_scalar(value),
+    };
+    if supported {
+        Ok(())
+    } else {
+        Err(invalid_provider(format!(
+            "required_claims `{key}` must be a string, boolean, number, or an array of those; quote a date or time so it is compared as the string the provider sends"
+        )))
+    }
 }
 
 /// Rejects a key that cannot name a claim or an authorization query parameter.
@@ -773,6 +864,10 @@ mod tests {
                 "client_secret_env = ' PROVIDER_SECRET '",
             )
             .replace(
+                "issuer = 'https://accounts.example.test'",
+                "type = ' oidc '\nissuer = 'https://accounts.example.test'",
+            )
+            .replace(
                 "redirect_uri = 'http://localhost:9080/auth/oidc/callback'",
                 "redirect_uri = 'http://localhost:9080/auth/oidc/callback'\nscopes = ['openid', 'groups']\nprincipal_claim = 'uid'\ndisplay_name_claim = 'name'",
             )
@@ -781,6 +876,14 @@ mod tests {
         let (settings, _issuer) = resolve(&raw, &|name| {
             Ok((name == "PROVIDER_SECRET").then(|| " env-secret ".to_string()))
         });
+        // `type` is a validation discriminant that the resolved provider has no
+        // reason to carry, so the accept path is asserted where it survives. A
+        // comparison that never matched would fail here rather than passing
+        // unnoticed beside the reject table.
+        assert_eq!(
+            parse(&raw).0.provider.provider_type.as_deref(),
+            Some("oidc")
+        );
         let provider = settings.provider();
         assert_eq!(provider.client_secret(), "env-secret");
         assert_eq!(provider.scopes, ["openid", "groups"]);
@@ -829,8 +932,8 @@ mod tests {
     }
 
     /// A provider issuer is compared byte for byte against the issuer in the
-    /// discovery document, so every valid spelling a provider publishes has to
-    /// survive validation unchanged.
+    /// discovery document, so every form a provider can publish has to survive
+    /// validation unchanged — including both trailing-slash spellings.
     #[test]
     fn retains_every_issuer_spelling_a_provider_can_publish() {
         for issuer in [
@@ -838,25 +941,57 @@ mod tests {
             "https://accounts.example.test/",
             "https://accounts.example.test/tenant",
             "https://accounts.example.test/tenant/",
-            "https://ACCOUNTS.example.test/tenant",
-            "https://accounts.example.test:443/tenant",
-            "https://accounts.example.test/tenant/../other",
             "http://127.0.0.1:9080/tenant/",
         ] {
             assert_eq!(resolved(&provider_issuer(issuer)).provider().issuer, issuer);
         }
     }
 
+    /// Discovery 1.0 §3 and RFC 8414 §2 require a published issuer to be a
+    /// normalized URL, so these spellings can only ever mismatch the discovery
+    /// document. Rejecting them at startup costs nothing a login would have
+    /// kept.
     #[test]
-    fn rejects_invalid_provider_fields() {
-        let cases = vec![
+    fn rejects_provider_issuers_no_provider_could_publish() {
+        for (issuer, canonical) in [
             (
-                valid("").replace(
-                    "issuer = 'https://accounts.example.test'",
-                    "type = 'oauth'\nissuer = 'https://accounts.example.test'",
-                ),
-                "type must be `oidc`",
+                "https://ACCOUNTS.example.test/tenant",
+                "https://accounts.example.test/tenant",
             ),
+            (
+                "https://accounts.example.test:443/tenant",
+                "https://accounts.example.test/tenant",
+            ),
+            (
+                "https://accounts.example.test/tenant/../other",
+                "https://accounts.example.test/other",
+            ),
+        ] {
+            let error = reject(&provider_issuer(issuer));
+            assert!(
+                error.contains("copied exactly as the provider publishes it"),
+                "{error}"
+            );
+            assert!(error.contains(canonical), "{error}");
+        }
+    }
+
+    fn reject_all(cases: Vec<(String, &str)>) {
+        for (raw, expected) in cases {
+            assert!(
+                reject(&raw).contains(expected),
+                "expected `{expected}` for {raw}"
+            );
+        }
+    }
+
+    /// Both endpoints reach the provider as written — the issuer to be compared
+    /// against the discovery document, the redirect URI against the
+    /// registration — so a spelling the parser would quietly rewrite has to
+    /// fail here rather than on every login.
+    #[test]
+    fn rejects_invalid_provider_endpoints() {
+        reject_all(vec![
             (
                 valid("").replace(
                     "https://accounts.example.test",
@@ -878,6 +1013,27 @@ mod tests {
             ),
             (
                 valid("").replace(
+                    "http://localhost:9080/auth/oidc/callback",
+                    r"http://localhost:9080/auth\oidc/callback",
+                ),
+                "redirect_uri is invalid: backslash",
+            ),
+            (
+                valid("").replace(
+                    "http://localhost:9080/auth/oidc/callback",
+                    "http://localhost:9080/auth/oidc/callback%1",
+                ),
+                "redirect_uri is invalid: expected 2 hex digits after %",
+            ),
+            (
+                valid("").replace(
+                    "http://localhost:9080/auth/oidc/callback",
+                    "http://localhost:9080/auth/oidc/callback^",
+                ),
+                "redirect_uri is invalid: non-URL code point",
+            ),
+            (
+                valid("").replace(
                     "https://accounts.example.test",
                     "https://accounts.example.test?q=1",
                 ),
@@ -889,6 +1045,19 @@ mod tests {
                     "https://remote.test/callback",
                 ),
                 "must share the origin",
+            ),
+        ]);
+    }
+
+    #[test]
+    fn rejects_invalid_provider_fields() {
+        reject_all(vec![
+            (
+                valid("").replace(
+                    "issuer = 'https://accounts.example.test'",
+                    "type = 'oauth'\nissuer = 'https://accounts.example.test'",
+                ),
+                "type must be `oidc`",
             ),
             (
                 valid("").replace(
@@ -923,13 +1092,46 @@ mod tests {
                 valid("") + "\n[auth.provider.required_claims]\n' spaced ' = true\n",
                 "required_claims keys must be nonempty and contain no whitespace",
             ),
-        ];
-        for (raw, expected) in cases {
-            assert!(
-                reject(&raw).contains(expected),
-                "expected `{expected}` for {raw}"
-            );
-        }
+        ]);
+    }
+
+    /// A TOML datetime deserializes into a marker object rather than failing,
+    /// so without this guard `expires = 2030-01-01` starts the server and then
+    /// fails to match on every login.
+    #[test]
+    fn rejects_required_claims_no_id_token_could_carry() {
+        reject_all(vec![
+            (
+                valid("") + "\n[auth.provider.required_claims]\nexpires = 2030-01-01\n",
+                "required_claims `expires` must be a string, boolean, number, or an array",
+            ),
+            (
+                valid("") + "\n[auth.provider.required_claims]\nissued = 09:30:00\n",
+                "required_claims `issued` must be a string, boolean, number, or an array",
+            ),
+            (
+                valid("") + "\n[auth.provider.required_claims]\nnested = { tier = 'gold' }\n",
+                "required_claims `nested` must be a string, boolean, number, or an array",
+            ),
+            (
+                valid("") + "\n[auth.provider.required_claims]\nwindows = [2030-01-01]\n",
+                "required_claims `windows` must be a string, boolean, number, or an array",
+            ),
+        ]);
+    }
+
+    #[test]
+    fn retains_every_required_claim_shape_an_id_token_can_carry() {
+        let raw = valid("")
+            + "\n[auth.provider.required_claims]\nhd = 'example.test'\nverified = true\n\
+               level = 3\nratio = 1.5\ngroups = ['staff', 'admin']\n";
+        let settings = resolved(&raw);
+        let claims = &settings.provider().required_claims;
+        assert_eq!(claims.get("hd"), Some(&json!("example.test")));
+        assert_eq!(claims.get("verified"), Some(&json!(true)));
+        assert_eq!(claims.get("level"), Some(&json!(3)));
+        assert_eq!(claims.get("ratio"), Some(&json!(1.5)));
+        assert_eq!(claims.get("groups"), Some(&json!(["staff", "admin"])));
     }
 
     #[test]

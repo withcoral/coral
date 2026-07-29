@@ -47,7 +47,15 @@ pub(crate) struct ConfiguredEndpointUrl(Url);
 impl ConfiguredEndpointUrl {
     /// Parses an HTTPS endpoint or an explicit loopback HTTP endpoint.
     pub(crate) fn parse(value: &str) -> Result<Self, OutboundUrlPolicyError> {
-        let url = Url::parse(value).map_err(OutboundUrlPolicyError::InvalidUrl)?;
+        Self::from_parsed(Url::parse(value).map_err(OutboundUrlPolicyError::InvalidUrl)?)
+    }
+
+    /// Applies the profile to an already-parsed URL.
+    ///
+    /// The checks are the same ones [`parse`](Self::parse) runs; this entry
+    /// point exists for a caller that already needed the [`Url`] — parsing with
+    /// a syntax-violation callback, say — and would otherwise parse it twice.
+    pub(crate) fn from_parsed(url: Url) -> Result<Self, OutboundUrlPolicyError> {
         if url.host().is_none() {
             return Err(OutboundUrlPolicyError::MissingHost);
         }
