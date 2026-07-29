@@ -84,12 +84,13 @@ pub use contracts::{
     QueryExecutionProvenance, QueryMemoryConfig, QueryParameterValue, QueryParameters, QueryPlan,
     QueryRuntimeConfig, QueryRuntimeContext, QuerySource, QueryTableFunctionUsage, QueryTableUsage,
     QueryTestFailure, QueryTestResult, QueryTestSuccess, ResolvedQueryResources,
-    RuntimeSourceComponent, RuntimeSourcePackage, SourceValidationReport, StatusCode,
-    StructuredQueryError, TableFunctionArgumentInfo, TableFunctionInfo,
-    TableFunctionResultColumnInfo, TableInfo, UdfRuntimeArgument, UdfRuntimeDefinition,
-    UdfRuntimeImplementation, UdfRuntimePublish, UdfRuntimeResultColumn, UdfRuntimeSignature,
-    UdfRuntimeSqlDefinition, UdfRuntimeTableFunctionPublish, UniversalSearchAuthorizationDecision,
-    UniversalSearchAuthorizationInfo, UniversalSearchAuthorizationOrigin,
+    RuntimeSourceComponent, RuntimeSourcePackage, RuntimeTableFunctionAuthorizationInfo,
+    SourceValidationReport, StatusCode, StructuredQueryError, TableFunctionArgumentInfo,
+    TableFunctionInfo, TableFunctionResultColumnInfo, TableInfo, UdfRuntimeArgument,
+    UdfRuntimeDefinition, UdfRuntimeImplementation, UdfRuntimePublish, UdfRuntimeResultColumn,
+    UdfRuntimeSignature, UdfRuntimeSqlDefinition, UdfRuntimeTableFunctionPublish,
+    UniversalSearchAuthorizationDecision, UniversalSearchAuthorizationInfo,
+    UniversalSearchAuthorizationOrigin,
 };
 pub use runtime::normalize_catalog_name;
 

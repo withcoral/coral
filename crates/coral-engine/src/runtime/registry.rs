@@ -142,7 +142,8 @@ async fn register_sources_inner(
                 )
                 .await
                 {
-                    Ok(registration) => {
+                    Ok(mut registration) => {
+                        attach_universal_search_authorizations(query_source, &mut registration);
                         register_backend_registration(
                             ctx,
                             catalog.as_ref(),
@@ -189,6 +190,24 @@ async fn register_sources_inner(
     finish_source_decorators(source_decorators)?;
 
     Ok(result)
+}
+
+fn attach_universal_search_authorizations(
+    query_source: &QuerySource,
+    registration: &mut BackendRegistration,
+) {
+    for schema in &mut registration.schemas {
+        for function in &mut schema.source.table_functions {
+            function.universal_search = query_source
+                .universal_search_authorizations()
+                .iter()
+                .find(|candidate| {
+                    candidate.schema_name == function.schema_name
+                        && candidate.function_name == function.function_name
+                })
+                .map(|candidate| candidate.authorization.clone());
+        }
+    }
 }
 
 fn validate_selected_source_names(sources: &[QuerySource]) -> std::result::Result<(), CoreError> {
@@ -548,6 +567,7 @@ mod tests {
                 test_queries: Vec::new(),
                 identity_requirements: None,
                 components: Vec::new(),
+                universal_search_authorizations: Vec::new(),
             },
             BTreeMap::new(),
             BTreeMap::new(),

@@ -13,6 +13,7 @@ use coral_api::v1::{
     PaginationRequest, RebuildSearchIndexRequest, SearchClearTarget, SearchDataScope,
     SearchFieldRole, SearchIndexProvider, SearchMaintenanceState, SearchProvider,
     SearchProviderState, SearchRequest, SearchSurfaceKind, TableFunctionKind,
+    UniversalSearchAuthorizationDecision, UniversalSearchAuthorizationOrigin,
     ValidateSourceRequest, Workspace, catalog_item, search_clear_target, search_maintenance_result,
     search_result,
 };
@@ -893,6 +894,103 @@ surface:
 }
 
 #[tokio::test]
+async fn eligible_passive_route_does_not_enable_or_execute_native_fanout() {
+    let harness = GrpcHarness::new().await;
+    let descriptor_temp = tempfile::tempdir().expect("descriptor temp dir");
+    let openapi_file = descriptor_temp.path().join("searchable-openapi.yaml");
+    fs::write(
+        &openapi_file,
+        r"
+openapi: 3.0.3
+info: {title: Searchable}
+servers:
+  - url: http://127.0.0.1:1
+paths:
+  /messages:
+    get:
+      operationId: search_messages
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema: {type: string}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    title: {type: string}
+",
+    )
+    .expect("write searchable OpenAPI fixture");
+    harness
+        .import_source(
+            eligible_searchable_manifest_yaml(&openapi_file),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await;
+
+    let response = harness
+        .search_client()
+        .search(Request::new(SearchRequest {
+            workspace: Some(default_workspace()),
+            query: "search messages".to_string(),
+            limit: 10,
+        }))
+        .await
+        .expect("passive route search must not call its unreachable upstream")
+        .into_inner();
+
+    let native = assert_provider_state(
+        &response,
+        SearchProvider::NativeFanout,
+        SearchProviderState::NotEnabled,
+    );
+    assert_no_coverage(native);
+    let function = response
+        .results
+        .iter()
+        .find_map(|result| match result.payload.as_ref()? {
+            search_result::Payload::CatalogMetadata(metadata) => {
+                match metadata.item.as_ref()?.item.as_ref()? {
+                    catalog_item::Item::TableFunction(function)
+                        if function.name == "search_messages" =>
+                    {
+                        Some(function)
+                    }
+                    catalog_item::Item::TableFunction(_) | catalog_item::Item::Table(_) => None,
+                }
+            }
+            search_result::Payload::ColumnHint(_) | search_result::Payload::ObservedValue(_) => {
+                None
+            }
+        })
+        .expect("eligible table function metadata");
+    let authorization = function
+        .universal_search
+        .as_ref()
+        .expect("passive authorization metadata");
+    assert_eq!(authorization.source_name, "searchable_eligible");
+    assert_eq!(authorization.route_id.as_deref(), Some("message_search"));
+    assert_eq!(
+        UniversalSearchAuthorizationOrigin::try_from(authorization.origin)
+            .expect("authorization origin"),
+        UniversalSearchAuthorizationOrigin::Explicit
+    );
+    assert_eq!(
+        UniversalSearchAuthorizationDecision::try_from(authorization.decision)
+            .expect("authorization decision"),
+        UniversalSearchAuthorizationDecision::Eligible
+    );
+    assert_eq!(authorization.operation_id, "search_messages");
+}
+
+#[tokio::test]
 async fn rebuild_search_index_forces_catalog_projection_refresh() {
     let harness = GrpcHarness::new().await;
     harness
@@ -1677,6 +1775,28 @@ fn searchable_manifest_yaml() -> String {
             }
         }]
     }))
+}
+
+fn eligible_searchable_manifest_yaml(openapi_file: &std::path::Path) -> String {
+    format!(
+        r"
+name: searchable_eligible
+dsl_version: 4
+universal_search:
+  routes:
+    message_search:
+      execute: true
+      target:
+        operation_id: search_messages
+      query_input:
+        location: query
+        name: q
+surface:
+  type: openapi
+  file: {}
+",
+        openapi_file.display()
+    )
 }
 
 fn table_preview_manifest_yaml() -> String {

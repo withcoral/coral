@@ -27,6 +27,7 @@ use crate::sources::materialization::{
     load_v4_materialization_with_reporter,
 };
 use crate::sources::model::InstalledSource;
+use crate::sources::universal_search::{UniversalSearchResolution, resolve_universal_search};
 use crate::state::AppStateLayout;
 use crate::workspaces::WorkspaceName;
 
@@ -52,6 +53,7 @@ impl RuntimeContractFingerprint {
 pub(crate) struct LoadedRuntimeSource {
     pub(crate) query_source: QuerySource,
     pub(crate) runtime_contract_fingerprint: RuntimeContractFingerprint,
+    pub(crate) universal_search_resolution: UniversalSearchResolution,
 }
 
 #[derive(Serialize)]
@@ -123,7 +125,8 @@ pub(crate) fn query_source_from_installed_manifest(
     resolved_secrets: BTreeMap<String, String>,
 ) -> Result<LoadedRuntimeSource, AppError> {
     let source_spec = &installed.source_spec;
-    let (query_source, runtime_contract_fingerprint) = if let Some(v4) = source_spec.as_v4() {
+
+    if let Some(v4) = source_spec.as_v4() {
         let materialized = load_v4_materialization_with_reporter(
             layout,
             workspace_name,
@@ -145,31 +148,47 @@ pub(crate) fn query_source_from_installed_manifest(
             &source.variables,
             component.as_ref(),
         )?;
+        let universal_search_resolution = resolve_universal_search(
+            source.name.as_str(),
+            source_spec,
+            Some(&materialized),
+            &runtime_contract_fingerprint,
+        );
         let query_source = QuerySource::from_runtime_components(
             RuntimeSourcePackage {
-                source_name: source_spec.schema_name().to_string(),
+                source_name: source.name.as_str().to_string(),
                 authored_version: source_spec.source_version().map(ToString::to_string),
                 description: source_spec.description().to_string(),
                 declared_inputs: source_spec.declared_inputs().to_vec(),
                 test_queries: source_spec.test_queries().to_vec(),
                 identity_requirements: None,
                 components: component.into_iter().collect(),
+                universal_search_authorizations: universal_search_resolution
+                    .engine_authorizations(),
             },
             source.variables.clone(),
             resolved_secrets,
         )
         .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
-        (query_source, runtime_contract_fingerprint)
-    } else {
-        let runtime_contract_fingerprint =
-            runtime_contract_fingerprint(&installed.manifest_yaml, &source.variables, None)?;
-        let query_source =
-            QuerySource::from_manifest(source_spec, source.variables.clone(), resolved_secrets);
-        (query_source, runtime_contract_fingerprint)
-    };
+
+        return Ok(LoadedRuntimeSource {
+            query_source,
+            runtime_contract_fingerprint,
+            universal_search_resolution,
+        });
+    }
+
+    // DSL v3 remains on its established runtime path and never contributes
+    // provider-fanout routes.
+    let runtime_contract_fingerprint =
+        runtime_contract_fingerprint(&installed.manifest_yaml, &source.variables, None)?;
+    let query_source =
+        QuerySource::from_manifest(source_spec, source.variables.clone(), resolved_secrets);
+
     Ok(LoadedRuntimeSource {
         query_source,
         runtime_contract_fingerprint,
+        universal_search_resolution: UniversalSearchResolution::empty(source.name.as_str()),
     })
 }
 
@@ -955,14 +974,6 @@ mod tests {
 
     fn mcp_wrapped_list_materialized_surface(operation_id: &str) -> MaterializedSurface {
         let mut surface = mcp_materialized_surface_with_pagination(operation_id, None);
-        let mut operation_metadata = surface.plan.operation_metadata().clone();
-        operation_metadata.operations.insert(
-            operation_id.to_string(),
-            OperationMetadata::Mcp {
-                row_path: vec!["items".to_string()],
-                pagination: McpOperationPagination::default(),
-            },
-        );
         let mut semantic_ir = surface.plan.semantic_ir().clone();
         let operation = semantic_ir.operations.first_mut().expect("MCP operation");
         operation.output = IrOperationOutput {
@@ -994,6 +1005,14 @@ mod tests {
                 description: String::new(),
             },
         ]);
+        let mut operation_metadata = surface.plan.operation_metadata().clone();
+        operation_metadata.operations.insert(
+            operation_id.to_string(),
+            OperationMetadata::Mcp {
+                row_path: vec!["items".to_string()],
+                pagination: McpOperationPagination::default(),
+            },
+        );
         surface.plan = ValidatedSurfacePlan::new(semantic_ir, operation_metadata).expect("plan");
         surface
     }

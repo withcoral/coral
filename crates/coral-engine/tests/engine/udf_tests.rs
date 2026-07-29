@@ -544,6 +544,7 @@ async fn infer_udf_signature_maps_component_schema_to_canonical_source_name() {
             test_queries: Vec::new(),
             identity_requirements: None,
             components: component_source.components().to_vec(),
+            universal_search_authorizations: Vec::new(),
         },
         BTreeMap::new(),
         BTreeMap::new(),

@@ -464,6 +464,7 @@ fn build_materialized_v4_runtime_source_with_function() -> QuerySource {
             test_queries: parsed.test_queries().to_vec(),
             identity_requirements: None,
             components: vec![RuntimeSourceComponent::Http(runtime_manifest)],
+            universal_search_authorizations: Vec::new(),
         },
         BTreeMap::new(),
         BTreeMap::new(),
