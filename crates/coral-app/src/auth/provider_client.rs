@@ -738,18 +738,19 @@ mod tests {
     fn validated_discovery() -> ValidatedDiscovery {
         let issuer =
             EndpointUrl::<Configured>::parse("https://accounts.example.test").expect("issuer");
-        let endpoint = |label, path: &str| {
+        let endpoint = |endpoint: DiscoveredEndpoint, path: &str| {
+            let label = endpoint.label();
             discovered_endpoint(
-                label,
+                endpoint,
                 &format!("https://accounts.example.test{path}"),
                 &issuer,
             )
             .expect(label)
         };
         ValidatedDiscovery {
-            authorization_endpoint: endpoint("authorization_endpoint", "/authorize"),
-            token_endpoint: endpoint("token_endpoint", "/token"),
-            jwks_uri: endpoint("jwks_uri", "/jwks"),
+            authorization_endpoint: endpoint(DiscoveredEndpoint::Authorization, "/authorize"),
+            token_endpoint: endpoint(DiscoveredEndpoint::Token, "/token"),
+            jwks_uri: endpoint(DiscoveredEndpoint::Jwks, "/jwks"),
             signing_algorithms: vec!["RS256".to_string()],
         }
     }
