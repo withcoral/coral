@@ -1,61 +1,150 @@
+//! Client for the external `OpenID` Connect provider that authenticates users.
+//!
+//! # Trust
+//!
+//! The discovery document is fetched from the operator-configured issuer, but
+//! it is not treated as operator-authored: a provider that is compromised, or
+//! merely misconfigured, can put anything in it. Two checks bound what it can
+//! do. Every endpoint is re-parsed as a [`DiscoveredEndpointUrl`], which refuses
+//! a plain-HTTP downgrade the configured issuer did not already permit; and no
+//! endpoint may pre-set a query parameter this module reserves, so the document
+//! cannot pin `state`, swap `client_id`, or choose a `response_mode` that
+//! strands the authorization code short of the callback route.
+//!
+//! # Errors
+//!
+//! Failures name the stage that failed and nothing else. No status code, body,
+//! or URL from the provider travels in an error, so nothing a provider sends
+//! can reach a log or an HTTP response by that route.
+
 #![cfg_attr(not(test), expect(dead_code, reason = "wired by OAuth descendants"))]
-use super::config::ResolvedOidcProvider;
-use crate::outbound_url_policy::{ConfiguredEndpointUrl, DiscoveredEndpointUrl, read_bounded_body};
+
+use std::time::Duration;
+
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use reqwest::header::ACCEPT;
 use ring::rand::{SecureRandom as _, SystemRandom};
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
-use std::time::Duration;
 use thiserror::Error;
 use url::Url;
 use zeroize::Zeroizing;
+
+use super::config::{RESERVED_PROVIDER_AUTH_PARAMS, ResolvedOidcProvider};
+use crate::outbound_url_policy::{ConfiguredEndpointUrl, DiscoveredEndpointUrl, read_bounded_body};
+
+/// Timeout applied to establishing a connection to the provider.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Timeout applied to a complete discovery or token request.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Ceiling on a provider response body, applied while it is read.
 const RESPONSE_MAX_BYTES: usize = 64 * 1024;
+
+/// The token endpoint authentication method this client uses.
+const TOKEN_ENDPOINT_AUTH_METHOD: &str = "client_secret_post";
+
+/// Form parameters the token request supplies for itself.
+///
+/// The authorization endpoint's counterpart is
+/// [`RESERVED_PROVIDER_AUTH_PARAMS`], which is shared with the config
+/// validation that applies the same rule to operator-supplied `auth_params`.
+const RESERVED_TOKEN_PARAMS: &[&str] = &[
+    "grant_type",
+    "code",
+    "redirect_uri",
+    "client_id",
+    "client_secret",
+    "code_verifier",
+];
+
+/// Performs discovery, authorization requests, and code exchange for one
+/// configured provider.
 #[derive(Clone)]
 pub(super) struct OidcProviderClient {
     http: reqwest::Client,
+    random: SystemRandom,
 }
+
+/// An authorization URL and the per-login values that must outlive it.
+///
+/// The three values are held until the callback arrives: `state` and `nonce`
+/// are compared against what the provider echoes back, and `code_verifier` is
+/// sent to the token endpoint to prove this server started the login.
 pub(super) struct OidcAuthorizationRequest {
     pub(super) url: Url,
     pub(super) state: String,
     pub(super) nonce: String,
-    pub(super) code_verifier: String,
+    pub(super) code_verifier: Zeroizing<String>,
 }
+
+/// The result of redeeming an authorization code.
+///
+/// The ID token is unverified at this point; the fields beside it are what a
+/// caller needs to verify it, carried from the same discovery document that
+/// named the token endpoint.
 pub(super) struct OidcCodeExchange {
     id_token: Zeroizing<String>,
     jwks_uri: DiscoveredEndpointUrl,
     signing_algorithms: Vec<String>,
 }
+
 impl OidcCodeExchange {
+    /// Returns the unverified ID token as received from the provider.
     pub(super) fn id_token(&self) -> &str {
         self.id_token.as_str()
     }
+
+    /// Returns the JWKS endpoint that publishes the ID token's verification
+    /// keys.
     pub(super) fn jwks_uri(&self) -> &DiscoveredEndpointUrl {
         &self.jwks_uri
     }
+
+    /// Returns the signing algorithms the provider advertises.
     pub(super) fn signing_algorithms(&self) -> &[String] {
         &self.signing_algorithms
     }
 }
+
+/// A failure talking to the provider, carrying no provider-supplied data.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub(super) enum OidcProviderClientError {
+    /// The HTTP client could not be built from this module's settings.
     #[error("failed to initialize OIDC provider HTTP client")]
     ClientInitialization,
+    /// Discovery could not be fetched, parsed, or satisfied.
     #[error("OIDC provider discovery failed")]
     Discovery,
+    /// The document's `issuer` differs from the configured one.
     #[error("OIDC provider discovery issuer did not match configured issuer")]
     IssuerMismatch,
+    /// A discovered endpoint failed the trust policy or pre-set a parameter
+    /// this module reserves. The field names the endpoint, never its value.
     #[error("OIDC provider discovery contained an invalid {0}")]
     InvalidEndpoint(&'static str),
+    /// The provider does not offer the token endpoint authentication method
+    /// this client uses.
+    #[error(
+        "OIDC provider does not offer the client_secret_post token endpoint authentication method"
+    )]
+    UnsupportedTokenEndpointAuth,
+    /// The system random number generator failed.
     #[error("failed to generate OIDC authorization parameters")]
     Randomness,
+    /// The token request failed, or its response was unusable.
     #[error("OIDC provider token exchange failed")]
     TokenExchange,
 }
+
 impl OidcProviderClient {
+    /// Builds a client that refuses redirects and ignores proxy settings.
+    ///
+    /// Refusing redirects keeps a credential-bearing token request from being
+    /// replayed to a destination the discovery document did not name and this
+    /// module never validated.
     pub(super) fn new() -> Result<Self, OidcProviderClientError> {
         let http = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
@@ -64,17 +153,21 @@ impl OidcProviderClient {
             .timeout(REQUEST_TIMEOUT)
             .build()
             .map_err(|_error| OidcProviderClientError::ClientInitialization)?;
-        Ok(Self { http })
+        Ok(Self {
+            http,
+            random: SystemRandom::new(),
+        })
     }
 
+    /// Builds the URL that starts a login, with the secrets it commits to.
     pub(super) async fn authorization_request(
         &self,
         provider: &ResolvedOidcProvider,
     ) -> Result<OidcAuthorizationRequest, OidcProviderClientError> {
         let discovery = self.discover(provider).await?;
-        let state = random_url_token()?;
-        let nonce = random_url_token()?;
-        let code_verifier = random_url_token()?;
+        let state = self.random_url_token()?;
+        let nonce = self.random_url_token()?;
+        let code_verifier = Zeroizing::new(self.random_url_token()?);
         let code_challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(code_verifier.as_bytes()));
         let mut url = discovery.authorization_endpoint.into_url();
         {
@@ -99,6 +192,12 @@ impl OidcProviderClient {
             code_verifier,
         })
     }
+
+    /// Redeems an authorization code for an ID token.
+    ///
+    /// The body is read into a [`Zeroizing`] buffer because it carries the ID
+    /// token; the discovery body read below is not, because a discovery
+    /// document is public.
     pub(super) async fn exchange_code(
         &self,
         provider: &ResolvedOidcProvider,
@@ -140,6 +239,8 @@ impl OidcProviderClient {
             signing_algorithms: discovery.signing_algorithms,
         })
     }
+
+    /// Fetches and validates the provider's discovery document.
     async fn discover(
         &self,
         provider: &ResolvedOidcProvider,
@@ -172,28 +273,45 @@ impl OidcProviderClient {
         {
             return Err(OidcProviderClientError::Discovery);
         }
+        if !document.offers_token_endpoint_auth_method(TOKEN_ENDPOINT_AUTH_METHOD) {
+            return Err(OidcProviderClientError::UnsupportedTokenEndpointAuth);
+        }
+
         Ok(ValidatedDiscovery {
             authorization_endpoint: discovered_endpoint(
-                "authorization_endpoint",
+                DiscoveredEndpoint::Authorization,
                 &document.authorization_endpoint,
                 &issuer,
             )?,
             token_endpoint: discovered_endpoint(
-                "token_endpoint",
+                DiscoveredEndpoint::Token,
                 &document.token_endpoint,
                 &issuer,
             )?,
-            jwks_uri: discovered_endpoint("jwks_uri", &document.jwks_uri, &issuer)?,
+            jwks_uri: discovered_endpoint(DiscoveredEndpoint::Jwks, &document.jwks_uri, &issuer)?,
             signing_algorithms: document.id_token_signing_alg_values_supported,
         })
     }
+
+    /// Returns a fresh URL-safe 256-bit token.
+    fn random_url_token(&self) -> Result<String, OidcProviderClientError> {
+        let mut bytes = Zeroizing::new([0_u8; 32]);
+        self.random
+            .fill(&mut *bytes)
+            .map_err(|_error| OidcProviderClientError::Randomness)?;
+        Ok(URL_SAFE_NO_PAD.encode(bytes.as_slice()))
+    }
 }
+
+/// A discovery document that passed every check in [`OidcProviderClient::discover`].
 struct ValidatedDiscovery {
     authorization_endpoint: DiscoveredEndpointUrl,
     token_endpoint: DiscoveredEndpointUrl,
     jwks_uri: DiscoveredEndpointUrl,
     signing_algorithms: Vec<String>,
 }
+
+/// The fields this module reads from a provider's discovery document.
 #[derive(Deserialize)]
 struct DiscoveryDocument {
     issuer: String,
@@ -201,11 +319,71 @@ struct DiscoveryDocument {
     token_endpoint: String,
     jwks_uri: String,
     id_token_signing_alg_values_supported: Vec<String>,
+    token_endpoint_auth_methods_supported: Option<Vec<String>>,
 }
+
+impl DiscoveryDocument {
+    /// Reports whether the document leaves `method` available at the token
+    /// endpoint.
+    ///
+    /// `OpenID` Connect Discovery 1.0 §3 makes
+    /// `token_endpoint_auth_methods_supported` optional and defaults an omitted
+    /// value to `client_secret_basic`. Applying that default would reject the
+    /// providers that accept `client_secret_post` without advertising it, so an
+    /// omitted list is treated as unknown and left for the token request to
+    /// settle. A list that is present is believed, which surfaces a provider
+    /// this client cannot authenticate to as a named failure before the
+    /// operator's user is sent anywhere, rather than an opaque one after they
+    /// return.
+    fn offers_token_endpoint_auth_method(&self, method: &str) -> bool {
+        self.token_endpoint_auth_methods_supported
+            .as_ref()
+            .is_none_or(|methods| methods.iter().any(|supported| supported == method))
+    }
+}
+
+/// The one field this module reads from a token response.
 #[derive(Deserialize)]
 struct TokenResponse {
     id_token: Zeroizing<String>,
 }
+
+/// An endpoint this module reads out of a discovery document.
+///
+/// Naming the endpoints in a type rather than by string keeps
+/// [`DiscoveredEndpoint::reserved_params`] exhaustive: an endpoint added later
+/// does not compile until it declares which parameters it reserves, instead of
+/// silently reserving none.
+#[derive(Clone, Copy)]
+enum DiscoveredEndpoint {
+    Authorization,
+    Token,
+    Jwks,
+}
+
+impl DiscoveredEndpoint {
+    /// Returns the discovery document field this endpoint is read from.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Authorization => "authorization_endpoint",
+            Self::Token => "token_endpoint",
+            Self::Jwks => "jwks_uri",
+        }
+    }
+
+    /// Returns the parameters this module reserves for its request to the
+    /// endpoint, which a discovery document therefore may not pre-set.
+    fn reserved_params(self) -> &'static [&'static str] {
+        match self {
+            Self::Authorization => RESERVED_PROVIDER_AUTH_PARAMS,
+            Self::Token => RESERVED_TOKEN_PARAMS,
+            // The JWKS endpoint is fetched with no query of this module's own.
+            Self::Jwks => &[],
+        }
+    }
+}
+
+/// Builds the well-known discovery URL for a configured issuer.
 fn discovery_url(issuer: &str) -> Result<ConfiguredEndpointUrl, OidcProviderClientError> {
     ConfiguredEndpointUrl::parse(&format!(
         "{}/.well-known/openid-configuration",
@@ -213,53 +391,32 @@ fn discovery_url(issuer: &str) -> Result<ConfiguredEndpointUrl, OidcProviderClie
     ))
     .map_err(|_error| OidcProviderClientError::Discovery)
 }
+
+/// Validates one endpoint out of a discovery document.
+///
+/// Beyond the transport policy [`DiscoveredEndpointUrl`] applies, the endpoint
+/// may not arrive with surrounding whitespace, nor carry a query parameter this
+/// module reserves for the request to it.
 fn discovered_endpoint(
-    label: &'static str,
+    endpoint: DiscoveredEndpoint,
     value: &str,
     issuer: &ConfiguredEndpointUrl,
 ) -> Result<DiscoveredEndpointUrl, OidcProviderClientError> {
+    let label = endpoint.label();
     if value.trim() != value {
         return Err(OidcProviderClientError::InvalidEndpoint(label));
     }
     let url = DiscoveredEndpointUrl::parse(value, issuer)
         .map_err(|_error| OidcProviderClientError::InvalidEndpoint(label))?;
     let reserved = url.as_url().query_pairs().any(|(key, _value)| {
-        let key = key.to_ascii_lowercase();
-        match label {
-            "authorization_endpoint" => matches!(
-                key.as_str(),
-                "response_type"
-                    | "client_id"
-                    | "redirect_uri"
-                    | "scope"
-                    | "state"
-                    | "nonce"
-                    | "code_challenge"
-                    | "code_challenge_method"
-            ),
-            "token_endpoint" => matches!(
-                key.as_str(),
-                "grant_type"
-                    | "code"
-                    | "redirect_uri"
-                    | "client_id"
-                    | "client_secret"
-                    | "code_verifier"
-            ),
-            _ => false,
-        }
+        endpoint
+            .reserved_params()
+            .iter()
+            .any(|reserved| key.eq_ignore_ascii_case(reserved))
     });
     (!reserved)
         .then_some(url)
         .ok_or(OidcProviderClientError::InvalidEndpoint(label))
-}
-
-fn random_url_token() -> Result<String, OidcProviderClientError> {
-    let mut bytes = Zeroizing::new([0_u8; 32]);
-    SystemRandom::new()
-        .fill(&mut *bytes)
-        .map_err(|_error| OidcProviderClientError::Randomness)?;
-    Ok(URL_SAFE_NO_PAD.encode(bytes.as_slice()))
 }
 
 #[cfg(test)]
@@ -342,14 +499,17 @@ mod tests {
     fn remote_issuer_cannot_discover_loopback_http_endpoints() {
         let issuer =
             ConfiguredEndpointUrl::parse("https://accounts.example.test/tenant").expect("issuer");
-        for (label, endpoint) in [
-            ("authorization_endpoint", "http://127.0.0.1:9000/authorize"),
-            ("token_endpoint", "http://127.0.0.1:9000/token"),
-            ("jwks_uri", "http://127.0.0.1:9000/jwks"),
+        for (endpoint, value) in [
+            (
+                DiscoveredEndpoint::Authorization,
+                "http://127.0.0.1:9000/authorize",
+            ),
+            (DiscoveredEndpoint::Token, "http://127.0.0.1:9000/token"),
+            (DiscoveredEndpoint::Jwks, "http://127.0.0.1:9000/jwks"),
         ] {
             assert_eq!(
-                discovered_endpoint(label, endpoint, &issuer).expect_err("loopback downgrade"),
-                OidcProviderClientError::InvalidEndpoint(label)
+                discovered_endpoint(endpoint, value, &issuer).expect_err("loopback downgrade"),
+                OidcProviderClientError::InvalidEndpoint(endpoint.label())
             );
         }
     }
@@ -369,7 +529,10 @@ mod tests {
             .authorization_request(&provider(&issuer))
             .await
             .expect("authorization request");
-        for value in [&request.state, &request.nonce, &request.code_verifier] {
+        let state = request.state.as_str();
+        let nonce = request.nonce.as_str();
+        let code_verifier = request.code_verifier.as_str();
+        for value in [state, nonce, code_verifier] {
             assert_eq!(value.len(), 43);
             assert!(
                 value
@@ -377,8 +540,9 @@ mod tests {
                     .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
             );
         }
-        assert_ne!(request.state, request.nonce);
-        assert_ne!(request.nonce, request.code_verifier);
+        assert_ne!(state, nonce);
+        assert_ne!(nonce, code_verifier);
+        assert_ne!(state, code_verifier);
         let query = request
             .url
             .query_pairs()
@@ -402,7 +566,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn discovery_requires_exact_issuer_and_validates_every_endpoint() {
+    async fn discovery_rejects_mismatched_issuer_and_untrusted_endpoints() {
         for (field, invalid) in [
             ("issuer", "http://127.0.0.1:1/"),
             ("authorization_endpoint", "http://remote.test/authorize"),
@@ -411,6 +575,13 @@ mod tests {
             (
                 "authorization_endpoint",
                 "http://localhost:1/authorize?StAtE=evil",
+            ),
+            // `form_post` and `fragment` both keep the authorization code away
+            // from the GET callback route, so a document that pre-sets either
+            // strands every login it starts.
+            (
+                "authorization_endpoint",
+                "http://localhost:1/authorize?response_mode=form_post",
             ),
             (
                 "token_endpoint",
@@ -441,7 +612,13 @@ mod tests {
             assert_eq!(error, expected);
             assert!(!format!("{error:?} {error}").contains(invalid));
         }
+    }
 
+    /// HTTPS to a private host is accepted: an issuer reachable over HTTPS is
+    /// entitled to name endpoints anywhere, and it is the transport, not the
+    /// destination, that is policed.
+    #[tokio::test]
+    async fn discovery_accepts_private_https_endpoints() {
         let server = MockServer::start().await;
         let issuer = server.uri();
         mount_discovery(
@@ -461,7 +638,10 @@ mod tests {
             .discover(&provider(&issuer))
             .await
             .expect("private HTTPS endpoints");
+    }
 
+    #[tokio::test]
+    async fn discovery_requires_rs256_signing_support() {
         for algorithms in [json!([]), json!(["ES256", "rs256"])] {
             let server = MockServer::start().await;
             let issuer = server.uri();
@@ -484,6 +664,49 @@ mod tests {
                     .expect("missing RS256"),
                 OidcProviderClientError::Discovery
             );
+        }
+    }
+
+    /// An advertised list that excludes `client_secret_post` is believed, and
+    /// an omitted list is not read as the spec's `client_secret_basic` default.
+    #[tokio::test]
+    async fn discovery_believes_an_advertised_token_endpoint_auth_method() {
+        for (methods, expected) in [
+            (Some(json!(["client_secret_basic"])), false),
+            (Some(json!([])), false),
+            (
+                Some(json!(["client_secret_basic", "client_secret_post"])),
+                true,
+            ),
+            (None, true),
+        ] {
+            let server = MockServer::start().await;
+            let issuer = server.uri();
+            let mut document = valid_document(&server, &issuer);
+            if let Some(methods) = methods {
+                document
+                    .as_object_mut()
+                    .expect("discovery object")
+                    .insert("token_endpoint_auth_methods_supported".into(), methods);
+            }
+            mount_discovery(
+                &server,
+                "/.well-known/openid-configuration",
+                document.to_string(),
+            )
+            .await;
+            let result = OidcProviderClient::new()
+                .expect("client")
+                .discover(&provider(&issuer))
+                .await;
+            if expected {
+                result.expect("client_secret_post available");
+            } else {
+                assert_eq!(
+                    result.err().expect("client_secret_post unavailable"),
+                    OidcProviderClientError::UnsupportedTokenEndpointAuth
+                );
+            }
         }
     }
 

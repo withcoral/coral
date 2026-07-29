@@ -285,6 +285,20 @@ pub(crate) fn public_metadata_http_client() -> Result<reqwest::Client, OutboundU
 }
 
 /// Reads a response body without buffering more than `limit` bytes.
+///
+/// # Secret handling
+///
+/// The buffer is [`Zeroizing`] while it fills, so the accumulated copy of a
+/// body abandoned part-read — over the limit, or a read error — is wiped rather
+/// than left in the allocator. On success the buffer is *moved* to the caller
+/// by [`std::mem::take`], which is deliberate: zeroizing at that point would
+/// wipe only the empty `Vec` left behind, and the caller is the one that knows
+/// whether the bytes are secret.
+///
+/// Reserving `limit` up front is the guarantee that survives that move: a `Vec`
+/// that grew while filling would strand copies of already-read bytes in freed
+/// allocations, which no later wipe can reach. Keep the reserve, and do not
+/// turn the move into a copy.
 pub(crate) async fn read_bounded_body(
     mut response: reqwest::Response,
     limit: usize,
@@ -851,10 +865,13 @@ mod tests {
         let response = reqwest::get(format!("{}/metadata", server.uri()))
             .await
             .expect("response");
-        let body = read_bounded_body(response, 5).await.expect("body");
+        // The limit sits well above the body so the capacity below can only
+        // come from the reserve, not from the five bytes that were read.
+        let body = read_bounded_body(response, 4096).await.expect("body");
         assert_eq!(body, b"hello");
-        assert!(
-            body.capacity() >= 5,
+        assert_eq!(
+            body.capacity(),
+            4096,
             "the bounded buffer must reserve its full limit to avoid reallocating secret data"
         );
 

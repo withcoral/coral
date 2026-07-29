@@ -286,7 +286,15 @@ impl AuthorizationServerSettings {
 }
 
 const DEFAULT_PROVIDER_SCOPES: &[&str] = &["openid", "email", "profile"];
-const RESERVED_PROVIDER_AUTH_PARAMS: &[&str] = &[
+
+/// Query parameters reserved to the authorization request.
+///
+/// No outside input may pre-set one. Operator-supplied `auth_params` are
+/// checked against this list here, and the provider client checks the
+/// `authorization_endpoint` it reads out of the discovery document against the
+/// same list, so the two paths cannot drift apart and leave the less trusted
+/// source — the discovery document — the more permissive one.
+pub(super) const RESERVED_PROVIDER_AUTH_PARAMS: &[&str] = &[
     "response_type",
     // `fragment` and `form_post` both stop the authorization code from ever
     // reaching the GET callback route, so a login started with either simply
