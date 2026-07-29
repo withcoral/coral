@@ -130,10 +130,18 @@ fn generate_projection(
         })
         .collect::<Vec<_>>();
     let columns = projection_columns(type_by_id, operation);
-    let name = generated_projection_name(operation, is_search);
+    let schema_name = projection_schema_name(operation);
+    let relation_name = generated_projection_name(operation, is_search);
+    let (table_name, function_name) = match kind {
+        ProjectionKind::Table => (Some(relation_name), None),
+        ProjectionKind::TableFunction { .. } => (None, Some(relation_name)),
+    };
     let guide = projection_guide(&kind, &inputs, is_search);
     let projection = Projection {
-        name,
+        catalog_name: plan.semantic_ir().source_name.clone(),
+        schema_name,
+        table_name,
+        function_name,
         kind,
         description: operation.description.clone(),
         guide,
@@ -232,6 +240,19 @@ fn generated_projection_name(operation: &IrOperation, is_search: bool) -> String
         normalize_identifier(&operation.id, "projection")
     } else {
         name
+    }
+}
+
+pub(crate) fn projection_schema_name(operation: &IrOperation) -> String {
+    match &operation.execution {
+        IrExecutionAttachment::Rest(_) => operation
+            .naming
+            .as_ref()
+            .and_then(|naming| naming.group.as_deref())
+            .filter(|group| !group.is_empty())
+            .unwrap_or("public")
+            .to_string(),
+        IrExecutionAttachment::Mcp(_) => "public".to_string(),
     }
 }
 

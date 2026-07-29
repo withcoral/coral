@@ -21,10 +21,11 @@ pub fn validate_projection_compatibility(
         .map(|operation| (operation.id.as_str(), operation))
         .collect::<BTreeMap<_, _>>();
     for projection in &projections.projections {
+        let projection_name = projection.sql_reference();
         let Some(operation) = operations.get(projection.operation_id.as_str()) else {
             return Err(ManifestError::validation(format!(
                 "projection '{}' references missing operation '{}'",
-                projection.name, projection.operation_id
+                projection_name, projection.operation_id
             )));
         };
         let public_exposure = public_exposure_for_kind(&projection.kind);
@@ -35,7 +36,7 @@ pub fn validate_projection_compatibility(
             }) else {
                 return Err(ManifestError::validation(format!(
                     "projection '{}' input '{}' does not match a {:?} input named '{}' on operation '{}'",
-                    projection.name,
+                    projection_name,
                     input.name,
                     input.source_location,
                     input.wire_name,
@@ -48,7 +49,7 @@ pub fn validate_projection_compatibility(
             if pagination_owned && input.sql_exposure != SqlInputExposure::Internal {
                 return Err(ManifestError::validation(format!(
                     "projection '{}' input '{}' on operation '{}' is owned by pagination but has sql_exposure '{}'; pagination-owned inputs must be internal",
-                    projection.name,
+                    projection_name,
                     input.name,
                     operation.id,
                     sql_exposure_name(input.sql_exposure)
@@ -59,7 +60,7 @@ pub fn validate_projection_compatibility(
                 if !matches!(operation.execution, IrExecutionAttachment::Rest(_)) {
                     return Err(ManifestError::validation(format!(
                         "projection '{}' input '{}' on operation '{}' has lookup_key=true, but lookup keys are only valid for REST inputs",
-                        projection.name, input.name, operation.id
+                        projection_name, input.name, operation.id
                     )));
                 }
                 // The metadata allowlist is keyed by wire name alone, and only
@@ -69,13 +70,13 @@ pub fn validate_projection_compatibility(
                 if input.source_location != IrInputLocation::Query {
                     return Err(ManifestError::validation(format!(
                         "projection '{}' input '{}' on operation '{}' has lookup_key=true with source location {:?}; lookup keys are only valid for query inputs",
-                        projection.name, input.name, operation.id, input.source_location
+                        projection_name, input.name, operation.id, input.source_location
                     )));
                 }
                 if input.sql_exposure != SqlInputExposure::Filter {
                     return Err(ManifestError::validation(format!(
                         "projection '{}' input '{}' on operation '{}' has lookup_key=true with sql_exposure '{}'; lookup keys must be exposed as filters",
-                        projection.name,
+                        projection_name,
                         input.name,
                         operation.id,
                         sql_exposure_name(input.sql_exposure)
@@ -84,7 +85,7 @@ pub fn validate_projection_compatibility(
                 if !plan.input_is_lookup_key(&operation.id, &input.wire_name) {
                     return Err(ManifestError::validation(format!(
                         "projection '{}' input '{}' on operation '{}' has lookup_key=true, but wire input '{}' is not authorised by the operation metadata lookup-key allowlist",
-                        projection.name, input.name, operation.id, input.wire_name
+                        projection_name, input.name, operation.id, input.wire_name
                     )));
                 }
             }
@@ -97,7 +98,7 @@ pub fn validate_projection_compatibility(
             {
                 return Err(ManifestError::validation(format!(
                     "projection '{}' input '{}' on operation '{}' has sql_exposure '{}'; {} projections expose non-internal inputs as {}",
-                    projection.name,
+                    projection_name,
                     input.name,
                     operation.id,
                     sql_exposure_name(input.sql_exposure),
@@ -116,7 +117,7 @@ pub fn validate_projection_compatibility(
             {
                 return Err(ManifestError::validation(format!(
                     "projection '{}' input '{}' on operation '{}' is required by the operation but has sql_exposure 'internal'; published projections cannot internalize required inputs",
-                    projection.name, input.name, operation.id
+                    projection_name, input.name, operation.id
                 )));
             }
         }

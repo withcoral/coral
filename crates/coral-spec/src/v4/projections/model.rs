@@ -16,7 +16,12 @@ pub struct ProjectionCatalog {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Projection {
-    pub name: String,
+    pub catalog_name: String,
+    pub schema_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub table_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub function_name: Option<String>,
     pub kind: ProjectionKind,
     pub description: String,
     pub guide: String,
@@ -27,6 +32,32 @@ pub struct Projection {
     pub search_limits: Option<SearchLimitsSpec>,
     pub detail_hints: Vec<DetailHintSpec>,
     pub diagnostics: Vec<Diagnostic>,
+}
+
+impl Projection {
+    #[must_use]
+    pub fn relation_name(&self) -> Option<&str> {
+        match (&self.table_name, &self.function_name) {
+            (Some(name), None) | (None, Some(name)) => Some(name),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn set_relation_name(&mut self, name: String) {
+        match (&mut self.table_name, &mut self.function_name) {
+            (Some(table_name), None) => *table_name = name,
+            (None, Some(function_name)) => *function_name = name,
+            _ => {}
+        }
+    }
+
+    #[must_use]
+    pub fn sql_reference(&self) -> String {
+        self.relation_name().map_or_else(
+            || format!("{}.{}.<invalid>", self.catalog_name, self.schema_name),
+            |name| format!("{}.{}.{name}", self.catalog_name, self.schema_name),
+        )
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,7 +129,10 @@ mod tests {
             source_name: "demo".to_string(),
             generator_version: Some(PROJECTION_GENERATOR_VERSION.to_string()),
             projections: vec![Projection {
-                name: "search_issues".to_string(),
+                catalog_name: "demo".to_string(),
+                schema_name: "issues".to_string(),
+                table_name: None,
+                function_name: Some("search".to_string()),
                 kind: ProjectionKind::TableFunction {
                     function_kind: SourceTableFunctionKind::Search,
                 },
@@ -138,6 +172,13 @@ mod tests {
         assert!(
             yaml.contains("function_kind: search"),
             "missing function kind: {yaml}"
+        );
+        assert!(
+            yaml.contains("catalog_name: demo")
+                && yaml.contains("schema_name: issues")
+                && yaml.contains("function_name: search")
+                && !yaml.contains("table_name:"),
+            "projection SQL identity is not canonical: {yaml}"
         );
         assert!(
             !yaml.contains("pagination:"),
@@ -188,7 +229,9 @@ diagnostics: []
 artifact_schema_version: {V4_ARTIFACT_SCHEMA_VERSION}
 source_name: demo
 projections:
-  - name: items
+  - catalog_name: demo
+    schema_name: public
+    table_name: items
     kind:
       type: table
     description: ""
@@ -210,8 +253,12 @@ diagnostics: []
             serde_yaml::from_str(&raw).expect("unknown future fields should be advisory");
 
         assert_eq!(
-            catalog.projections.first().expect("projection").name,
-            "items"
+            catalog
+                .projections
+                .first()
+                .expect("projection")
+                .relation_name(),
+            Some("items")
         );
     }
 

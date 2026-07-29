@@ -2020,7 +2020,7 @@ surface:
             .manager
             .execute_sql(
                 &workspace_name,
-                "SELECT id, title FROM github_v4_query.issues",
+                "SELECT id, title FROM github_v4_query.list",
                 &QueryAttribution::default(),
             )
             .await
@@ -2171,7 +2171,7 @@ surface:
             .manager
             .execute_sql(
                 &workspace_name,
-                "SELECT id FROM github_v4_pagination_override.widgets LIMIT 3",
+                "SELECT id FROM github_v4_pagination_override.list LIMIT 3",
                 &QueryAttribution::default(),
             )
             .await

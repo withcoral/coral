@@ -271,6 +271,10 @@ mod tests {
     use super::parse_source_manifest_yaml;
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one compatibility test covers every DSL v3 backend identity adapter"
+    )]
     fn v3_runtime_sql_identity_adapts_authored_backend_names() {
         let http = parse_source_manifest_yaml(
             r"
@@ -317,11 +321,25 @@ functions:
             ("datafusion", "github", "search_issues")
         );
         let serialized_table = serde_json::to_value(table).expect("serialize HTTP table");
-        assert_eq!(serialized_table["common"]["name"], "issues");
-        assert!(serialized_table["common"].get("catalog_name").is_none());
-        assert!(serialized_table["common"].get("schema_name").is_none());
+        let serialized_common = serialized_table
+            .get("common")
+            .and_then(serde_json::Value::as_object)
+            .expect("serialized HTTP table common fields");
+        assert_eq!(
+            serialized_common
+                .get("name")
+                .and_then(serde_json::Value::as_str),
+            Some("issues")
+        );
+        assert!(serialized_common.get("catalog_name").is_none());
+        assert!(serialized_common.get("schema_name").is_none());
         let serialized_function = serde_json::to_value(function).expect("serialize HTTP function");
-        assert_eq!(serialized_function["name"], "search_issues");
+        assert_eq!(
+            serialized_function
+                .get("name")
+                .and_then(serde_json::Value::as_str),
+            Some("search_issues")
+        );
         assert!(serialized_function.get("catalog_name").is_none());
         assert!(serialized_function.get("schema_name").is_none());
 

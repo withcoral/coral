@@ -9,6 +9,19 @@ use super::model::{
     Projection, ProjectionInput, ProjectionKind, ProjectionVisibility, SqlInputExposure,
 };
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct ProjectionNamespace {
+    catalog_name: String,
+    schema_name: String,
+    kind: ProjectionNamespaceKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum ProjectionNamespaceKind {
+    Table,
+    TableFunction,
+}
+
 pub(super) fn resolve_projection_name_collisions(
     manifest: &V4SourceManifest,
     surface: &SemanticIr,
@@ -19,10 +32,13 @@ pub(super) fn resolve_projection_name_collisions(
         .iter()
         .map(|operation| (operation.id.as_str(), operation))
         .collect::<HashMap<_, _>>();
-    let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    let mut groups: BTreeMap<(ProjectionNamespace, String), Vec<usize>> = BTreeMap::new();
     for (index, projection) in projections.iter().enumerate() {
+        let Some(name) = projection.relation_name() else {
+            continue;
+        };
         groups
-            .entry(projection.name.clone())
+            .entry((projection_namespace(projection), name.to_string()))
             .or_default()
             .push(index);
     }
@@ -43,10 +59,16 @@ pub(super) fn resolve_projection_name_collisions(
         keep_base_name.insert(keep);
     }
 
-    let mut used_names = HashSet::new();
+    let mut used_names = BTreeMap::<ProjectionNamespace, HashSet<String>>::new();
     for index in keep_base_name.iter().copied() {
         if let Some(projection) = projections.get(index) {
-            used_names.insert(projection.name.clone());
+            let namespace = projection_namespace(projection);
+            if let Some(name) = projection.relation_name() {
+                used_names
+                    .entry(namespace)
+                    .or_default()
+                    .insert(name.to_string());
+            }
         }
     }
 
@@ -60,13 +82,19 @@ pub(super) fn resolve_projection_name_collisions(
                 .get(*index)
                 .expect("projection index came from projections");
             let operation = operations.get(projection.operation_id.as_str()).copied();
-            let name =
-                collision_resolved_projection_name(manifest, projection, operation, &used_names);
-            used_names.insert(name.clone());
+            let namespace = projection_namespace(projection);
+            let namespace_names = used_names.entry(namespace).or_default();
+            let name = collision_resolved_projection_name(
+                manifest,
+                projection,
+                operation,
+                namespace_names,
+            );
+            namespace_names.insert(name.clone());
             let projection = projections
                 .get_mut(*index)
                 .expect("projection index came from projections");
-            projection.name.clone_from(&name);
+            projection.set_relation_name(name.clone());
             let diagnostic = Diagnostic::new(
                 format!("projection name collision resolved as '{name}'"),
                 Some(projection.operation_id.clone()),
@@ -98,7 +126,9 @@ fn collision_resolved_projection_name(
     operation: Option<&IrOperation>,
     used_names: &HashSet<String>,
 ) -> String {
-    let base_name = projection.name.as_str();
+    let base_name = projection
+        .relation_name()
+        .expect("generated projections have exactly one relation name");
     let contextual_name = operation.map_or_else(
         || normalize_identifier(&projection.operation_id, "projection"),
         |operation| contextual_projection_name(base_name, operation),
@@ -112,6 +142,17 @@ fn collision_resolved_projection_name(
         manifest.common.name, projection.operation_id
     ));
     format!("{contextual_name}__{suffix}")
+}
+
+fn projection_namespace(projection: &Projection) -> ProjectionNamespace {
+    ProjectionNamespace {
+        catalog_name: projection.catalog_name.clone(),
+        schema_name: projection.schema_name.clone(),
+        kind: match projection.kind {
+            ProjectionKind::Table => ProjectionNamespaceKind::Table,
+            ProjectionKind::TableFunction { .. } => ProjectionNamespaceKind::TableFunction,
+        },
+    }
 }
 
 fn required_input_count(operation: &IrOperation) -> usize {
@@ -242,9 +283,17 @@ pub(super) fn projection_name(operation: &IrOperation, is_search: bool) -> Strin
 
 pub(super) fn projection_name_from_operation_naming(operation: &IrOperation) -> Option<String> {
     let naming = operation.naming.as_ref()?;
-    let group = non_empty_naming_part(naming.group.as_deref())?;
     let operation = non_empty_naming_part(naming.operation.as_deref())?;
-    Some(format!("{group}_{operation}"))
+    let Some(group) = non_empty_naming_part(naming.group.as_deref()) else {
+        return Some(operation.to_string());
+    };
+    Some(
+        operation
+            .strip_prefix(&format!("{group}_"))
+            .filter(|leaf| !leaf.is_empty())
+            .unwrap_or(operation)
+            .to_string(),
+    )
 }
 
 fn non_empty_naming_part(part: Option<&str>) -> Option<&str> {

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::v4::diagnostics::Diagnostic;
 use crate::v4::manifest::{SurfaceType, V4SourceManifest};
-use crate::v4::projections::ProjectionCatalog;
+use crate::v4::projections::{ProjectionCatalog, ProjectionKind, projection_schema_name};
 use crate::v4::{
     OPERATION_METADATA_GENERATOR_VERSION, PROJECTION_GENERATOR_VERSION, SURFACE_IMPORTER_VERSION,
     V4_ARTIFACT_SCHEMA_VERSION, ValidatedSurfacePlan,
@@ -94,12 +94,79 @@ pub fn validate_materialized_source_structure(
             "DSL v4 materialized surface type does not match the manifest",
         ));
     }
+    if materialized.projections.source_name != manifest.common.name {
+        return Err(ManifestError::validation(
+            "DSL v4 projection catalog source name does not match the installed manifest",
+        ));
+    }
     let mut projection_names = BTreeSet::new();
     for projection in &materialized.projections.projections {
-        if !projection_names.insert(projection.name.as_str()) {
+        if projection.catalog_name != manifest.common.name {
             return Err(ManifestError::validation(format!(
-                "DSL v4 projection '{}' is repeated",
-                projection.name
+                "DSL v4 projection '{}' remaps catalog_name from '{}' to '{}'",
+                projection.sql_reference(),
+                manifest.common.name,
+                projection.catalog_name
+            )));
+        }
+        let (kind, relation_name) = match (
+            &projection.kind,
+            projection.table_name.as_deref(),
+            projection.function_name.as_deref(),
+        ) {
+            (ProjectionKind::Table, Some(table_name), None) => ("table", table_name),
+            (ProjectionKind::TableFunction { .. }, None, Some(function_name)) => {
+                ("table_function", function_name)
+            }
+            (ProjectionKind::Table, _, _) => {
+                return Err(ManifestError::validation(format!(
+                    "DSL v4 table projection for operation '{}' must define exactly one table_name and no function_name",
+                    projection.operation_id
+                )));
+            }
+            (ProjectionKind::TableFunction { .. }, _, _) => {
+                return Err(ManifestError::validation(format!(
+                    "DSL v4 table-function projection for operation '{}' must define exactly one function_name and no table_name",
+                    projection.operation_id
+                )));
+            }
+        };
+        if !projection_names.insert((
+            projection.catalog_name.as_str(),
+            projection.schema_name.as_str(),
+            kind,
+            relation_name,
+        )) {
+            return Err(ManifestError::validation(format!(
+                "DSL v4 {kind} projection '{}' is repeated",
+                projection.sql_reference()
+            )));
+        }
+    }
+    let operations = materialized
+        .surface
+        .plan
+        .semantic_ir()
+        .operations
+        .iter()
+        .map(|operation| (operation.id.as_str(), operation))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    for projection in &materialized.projections.projections {
+        let operation = operations
+            .get(projection.operation_id.as_str())
+            .ok_or_else(|| {
+                ManifestError::validation(format!(
+                    "DSL v4 projection '{}' references missing operation '{}'",
+                    projection.sql_reference(),
+                    projection.operation_id
+                ))
+            })?;
+        let expected_schema = projection_schema_name(operation);
+        if projection.schema_name != expected_schema {
+            return Err(ManifestError::validation(format!(
+                "DSL v4 projection '{}' remaps schema_name from '{expected_schema}' to '{}'",
+                projection.sql_reference(),
+                projection.schema_name
             )));
         }
     }
@@ -207,7 +274,10 @@ surface:
 
     fn projection(name: &str) -> Projection {
         Projection {
-            name: name.to_string(),
+            catalog_name: "demo".to_string(),
+            schema_name: "public".to_string(),
+            table_name: Some(name.to_string()),
+            function_name: None,
             kind: ProjectionKind::Table,
             description: String::new(),
             guide: String::new(),
@@ -309,14 +379,17 @@ surface:
     }
 
     #[test]
-    fn structural_validation_rejects_duplicate_projection_names() {
+    fn structural_validation_rejects_duplicate_projection_identities() {
         let mut materialized = materialized_source();
         materialized.projections.projections = vec![projection("items"), projection("items")];
 
         let error = validate_materialized_source_structure(&manifest(), &materialized)
             .expect_err("duplicate projection names should fail validation");
 
-        assert_eq!(error.to_string(), "DSL v4 projection 'items' is repeated");
+        assert_eq!(
+            error.to_string(),
+            "DSL v4 table projection 'demo.public.items' is repeated"
+        );
     }
 
     #[test]

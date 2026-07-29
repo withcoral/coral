@@ -261,7 +261,8 @@ fn http_manifest_for_surface(
             .ok_or_else(|| {
                 AppError::FailedPrecondition(format!(
                     "DSL v4 projection '{}' references missing operation '{}'",
-                    projection.name, projection.operation_id
+                    projection.sql_reference(),
+                    projection.operation_id
                 ))
             })?;
         let rest = rest_execution_for_operation(operation)?;
@@ -271,11 +272,12 @@ fn http_manifest_for_surface(
         let columns = projection_column_specs(projection);
         match &projection.kind {
             ProjectionKind::Table => {
+                let table_name = projection_table_name(projection)?;
                 tables.push(HttpTableSpec {
                     common: TableCommon {
                         catalog_name: "datafusion".to_string(),
                         schema_name: manifest.common.name.clone(),
-                        table_name: projection.name.clone(),
+                        table_name: table_name.to_string(),
                         description: projection.description.clone(),
                         guide: projection.guide.clone(),
                         filters: projection_filter_specs(projection),
@@ -291,10 +293,11 @@ fn http_manifest_for_surface(
                 });
             }
             ProjectionKind::TableFunction { function_kind } => {
+                let function_name = projection_function_name(projection)?;
                 functions.push(SourceTableFunctionSpec {
                     catalog_name: "datafusion".to_string(),
                     schema_name: manifest.common.name.clone(),
-                    function_name: projection.name.clone(),
+                    function_name: function_name.to_string(),
                     kind: *function_kind,
                     description: projection.description.clone(),
                     guide: projection.guide.clone(),
@@ -369,21 +372,24 @@ fn mcp_manifest_for_surface(
             .ok_or_else(|| {
                 AppError::FailedPrecondition(format!(
                     "DSL v4 projection '{}' references missing operation '{}'",
-                    projection.name, projection.operation_id
+                    projection.sql_reference(),
+                    projection.operation_id
                 ))
             })?;
         let IrExecutionAttachment::Mcp(mcp) = &operation.execution else {
             return Err(AppError::FailedPrecondition(format!(
                 "DSL v4 projection '{}' is not backed by an MCP operation",
-                projection.name
+                projection.sql_reference()
             )));
         };
         let (cursor_pagination, offset_pagination) =
             materialized_surface.plan.mcp_pagination(&operation.id);
         match &projection.kind {
             ProjectionKind::Table => {
+                let table_name = projection_table_name(projection)?;
                 tables.push(mcp_table_spec(
                     &manifest.common.name,
+                    table_name,
                     projection,
                     mcp,
                     cursor_pagination.cloned(),
@@ -391,8 +397,10 @@ fn mcp_manifest_for_surface(
                 ));
             }
             ProjectionKind::TableFunction { function_kind } => {
+                let function_name = projection_function_name(projection)?;
                 functions.push(mcp_table_function_spec(
                     &manifest.common.name,
+                    function_name,
                     projection,
                     *function_kind,
                     mcp,
@@ -419,6 +427,7 @@ fn mcp_manifest_for_surface(
 
 fn mcp_table_spec(
     source_name: &str,
+    table_name: &str,
     projection: &Projection,
     mcp: &coral_spec::v4::McpExecutionAttachment,
     pagination: Option<coral_spec::backends::mcp::McpPaginationSpec>,
@@ -428,7 +437,7 @@ fn mcp_table_spec(
         common: TableCommon {
             catalog_name: "datafusion".to_string(),
             schema_name: source_name.to_string(),
-            table_name: projection.name.clone(),
+            table_name: table_name.to_string(),
             description: projection.description.clone(),
             guide: projection.guide.clone(),
             filters: projection_filter_specs(projection),
@@ -449,6 +458,7 @@ fn mcp_table_spec(
 
 fn mcp_table_function_spec(
     source_name: &str,
+    function_name: &str,
     projection: &Projection,
     function_kind: SourceTableFunctionKind,
     mcp: &coral_spec::v4::McpExecutionAttachment,
@@ -462,7 +472,7 @@ fn mcp_table_function_spec(
         common: SourceTableFunctionSpec {
             catalog_name: "datafusion".to_string(),
             schema_name: source_name.to_string(),
-            function_name: projection.name.clone(),
+            function_name: function_name.to_string(),
             kind: function_kind,
             description: projection.description.clone(),
             guide: projection.guide.clone(),
@@ -475,6 +485,32 @@ fn mcp_table_function_spec(
             pagination: PaginationSpec::default(),
             columns: projection_column_specs(projection),
         },
+    }
+}
+
+fn projection_table_name(projection: &Projection) -> Result<&str, AppError> {
+    match (
+        projection.table_name.as_deref(),
+        projection.function_name.as_deref(),
+    ) {
+        (Some(table_name), None) => Ok(table_name),
+        _ => Err(AppError::FailedPrecondition(format!(
+            "DSL v4 table projection for operation '{}' has an invalid SQL identity",
+            projection.operation_id
+        ))),
+    }
+}
+
+fn projection_function_name(projection: &Projection) -> Result<&str, AppError> {
+    match (
+        projection.table_name.as_deref(),
+        projection.function_name.as_deref(),
+    ) {
+        (None, Some(function_name)) => Ok(function_name),
+        _ => Err(AppError::FailedPrecondition(format!(
+            "DSL v4 table-function projection for operation '{}' has an invalid SQL identity",
+            projection.operation_id
+        ))),
     }
 }
 
@@ -909,7 +945,10 @@ mod tests {
 
     fn published_projection(operation_id: &str) -> Projection {
         Projection {
-            name: "list_issues".to_string(),
+            catalog_name: "github_v4".to_string(),
+            schema_name: "public".to_string(),
+            table_name: Some("list_issues".to_string()),
+            function_name: None,
             kind: ProjectionKind::Table,
             description: String::new(),
             guide: String::new(),
@@ -925,7 +964,10 @@ mod tests {
 
     fn published_function_projection(operation_id: &str) -> Projection {
         Projection {
-            name: "search_issues".to_string(),
+            catalog_name: "github_v4".to_string(),
+            schema_name: "public".to_string(),
+            table_name: None,
+            function_name: Some("search_issues".to_string()),
             kind: ProjectionKind::TableFunction {
                 function_kind: SourceTableFunctionKind::Search,
             },
@@ -1297,13 +1339,14 @@ surface:
             surface: openapi_surface(),
         };
         let mut table = published_projection("items_list");
-        table.name = "items".to_string();
+        table.table_name = Some("items".to_string());
         table.inputs = vec![
             persisted_projection_input("q", SqlInputExposure::Filter, true),
             persisted_projection_input("state", SqlInputExposure::Internal, false),
         ];
         let mut function = published_projection("items_list");
-        function.name = "search_items".to_string();
+        function.table_name = None;
+        function.function_name = Some("search_items".to_string());
         function.kind = ProjectionKind::TableFunction {
             function_kind: SourceTableFunctionKind::Search,
         };

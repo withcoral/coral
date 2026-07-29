@@ -247,7 +247,9 @@ components:
         .iter()
         .find(|projection| projection.operation_id == "get_quotes")
         .expect("quotes projection");
-    assert_eq!(quotes_projection.name, "forex_get_quotes");
+    assert_eq!(quotes_projection.catalog_name, "github");
+    assert_eq!(quotes_projection.schema_name, "forex");
+    assert_eq!(quotes_projection.relation_name(), Some("get_quotes"));
     assert!(matches!(quotes_projection.kind, ProjectionKind::Table));
 }
 
@@ -866,7 +868,8 @@ components:
         .iter()
         .find(|projection| projection.operation_id == "issues_list_for_repo")
         .expect("projection");
-    assert_eq!(projection.name, "issue");
+    assert_eq!(projection.schema_name, "public");
+    assert_eq!(projection.relation_name(), Some("list_for_repo"));
     assert_eq!(projection.visibility, ProjectionVisibility::Published);
     assert!(matches!(
         projection.kind,

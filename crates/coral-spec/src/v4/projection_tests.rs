@@ -9,7 +9,7 @@ use crate::{
 };
 
 #[test]
-fn imports_and_generates_github_issue_slice() {
+fn v4_projection_sql_identity_openapi_without_tag_uses_public_schema() {
     let manifest = parse_source_manifest_yaml(
         r#"
 name: github
@@ -34,11 +34,17 @@ surface:
         .projections
         .iter()
         .filter(|projection| projection.visibility == ProjectionVisibility::Published)
-        .map(|projection| projection.name.as_str())
+        .filter_map(Projection::relation_name)
         .collect::<Vec<_>>();
-    assert!(published.contains(&"issue"), "{published:?}");
-    assert!(published.contains(&"search_issues"), "{published:?}");
-    assert!(published.contains(&"get_issues"), "{published:?}");
+    assert!(catalog.projections.iter().all(|projection| {
+        projection.catalog_name == "github" && projection.schema_name == "public"
+    }));
+    assert!(published.contains(&"list_for_repo"), "{published:?}");
+    assert!(
+        published.contains(&"issues_and_pull_requests"),
+        "{published:?}"
+    );
+    assert!(published.contains(&"get"), "{published:?}");
 }
 
 fn items_api_catalog(lookup_keys: Option<(bool, &[&str])>) -> ProjectionCatalog {
@@ -251,7 +257,7 @@ paths:
     clippy::too_many_lines,
     reason = "The OpenAPI fixture keeps issue regression cases together."
 )]
-fn tagged_openapi_operations_use_grouped_operation_names() {
+fn v4_projection_sql_identity_openapi_uses_tag_schema_and_operation_leaf() {
     let manifest = parse_source_manifest_yaml(
         r"
 name: github
@@ -273,7 +279,7 @@ openapi: 3.0.3
 paths:
   /orgs/{org}/settings/billing/ai-credit-usage:
     get:
-      tags: [billing]
+      tags: ['', billing, ignored]
       operationId: billing/get-github-billing-ai-credit-usage-report-org
       parameters:
         - {name: org, in: path, required: true, schema: {type: string}}
@@ -296,7 +302,7 @@ paths:
   /users/{username}/repos:
     get:
       tags: [repos]
-      operationId: repos/list-for-user
+      operationId: repos_list_for_user
       parameters:
         - {name: username, in: path, required: true, schema: {type: string}}
       responses:
@@ -396,17 +402,17 @@ components:
     let names = catalog
         .projections
         .iter()
-        .map(|projection| projection.name.as_str())
+        .map(Projection::sql_reference)
         .collect::<BTreeSet<_>>();
     let expected = [
-        "billing_get_github_billing_ai_credit_usage_report_org",
-        "billing_get_github_billing_ai_credit_usage_report_user",
-        "repos_list_for_user",
-        "activity_list_repos_watched_by_user",
-        "projects_list_items_for_org",
-        "projects_list_items_for_user",
-        "projects_list_view_items_for_org",
-        "projects_list_view_items_for_user",
+        "github.billing.get_github_billing_ai_credit_usage_report_org",
+        "github.billing.get_github_billing_ai_credit_usage_report_user",
+        "github.repos.list_for_user",
+        "github.activity.list_repos_watched_by_user",
+        "github.projects.list_items_for_org",
+        "github.projects.list_items_for_user",
+        "github.projects.list_view_items_for_org",
+        "github.projects.list_view_items_for_user",
     ];
     for name in expected {
         assert!(names.contains(name), "missing {name}: {names:?}");
@@ -1038,7 +1044,7 @@ components:
     clippy::too_many_lines,
     reason = "The OpenAPI fixture keeps related collision cases together."
 )]
-fn projection_names_use_path_context_for_collisions() {
+fn v4_projection_identity_collision_is_scoped_to_exact_namespace() {
     let manifest = parse_source_manifest_yaml(
         r"
 name: github
@@ -1060,6 +1066,7 @@ openapi: 3.0.3
 paths:
   /issues:
     get:
+      tags: [issues]
       operationId: issues/list
       responses:
         '200':
@@ -1068,6 +1075,7 @@ paths:
               schema: {type: array, items: {$ref: '#/components/schemas/Issue'}}
   /orgs/{org}/issues:
     get:
+      tags: [issues]
       operationId: issues/list-for-org
       parameters:
         - {name: org, in: path, required: true, schema: {type: string}}
@@ -1078,6 +1086,7 @@ paths:
               schema: {type: array, items: {$ref: '#/components/schemas/Issue'}}
   /repos/{owner}/{repo}/issues:
     get:
+      tags: [issues]
       operationId: issues/list-for-repo
       parameters:
         - {name: owner, in: path, required: true, schema: {type: string}}
@@ -1089,6 +1098,7 @@ paths:
               schema: {type: array, items: {$ref: '#/components/schemas/Issue'}}
   /repos/{owner}/{repo}/pulls:
     get:
+      tags: [pulls]
       operationId: pulls/list
       parameters:
         - {name: owner, in: path, required: true, schema: {type: string}}
@@ -1147,7 +1157,13 @@ components:
         .map(|projection| {
             (
                 projection.operation_id.as_str(),
-                (projection.name.as_str(), &projection.kind),
+                (
+                    projection.schema_name.as_str(),
+                    projection
+                        .relation_name()
+                        .expect("projection relation name"),
+                    &projection.kind,
+                ),
             )
         })
         .collect::<HashMap<_, _>>();
@@ -1155,21 +1171,21 @@ components:
     let issues_list = names_by_operation
         .get("issues_list")
         .expect("issues_list projection");
-    assert_eq!(issues_list.0, "issue");
+    assert_eq!((issues_list.0, issues_list.1), ("issues", "list"));
     let org_issues = names_by_operation
         .get("issues_list_for_org")
         .expect("issues_list_for_org projection");
-    assert_eq!(org_issues.0, "orgs_issue");
+    assert_eq!((org_issues.0, org_issues.1), ("issues", "list_for_org"));
     let repo_issues = names_by_operation
         .get("issues_list_for_repo")
         .expect("issues_list_for_repo projection");
-    assert_eq!(repo_issues.0, "repos_issue");
+    assert_eq!((repo_issues.0, repo_issues.1), ("issues", "list_for_repo"));
     let pulls = names_by_operation
         .get("pulls_list")
         .expect("pulls_list projection");
-    assert_eq!(pulls.0, "pull_request");
+    assert_eq!((pulls.0, pulls.1), ("pulls", "list"));
     assert!(matches!(
-        pulls.1,
+        pulls.2,
         ProjectionKind::TableFunction {
             function_kind: SourceTableFunctionKind::Table
         }
@@ -1177,11 +1193,14 @@ components:
     let commits = names_by_operation
         .get("repos_list_commits")
         .expect("repos_list_commits projection");
-    assert_eq!(commits.0, "commit");
+    assert_eq!((commits.0, commits.1), ("public", "list_commits"));
     let pull_commits = names_by_operation
         .get("pulls_list_commits")
         .expect("pulls_list_commits projection");
-    assert_eq!(pull_commits.0, "repos_pulls_commit");
+    assert_eq!(
+        (pull_commits.0, pull_commits.1),
+        ("public", "repos_pulls_list_commits")
+    );
     let pull_commits_projection = catalog
         .projections
         .iter()
@@ -1198,7 +1217,7 @@ components:
         .iter()
         .filter(|diagnostic| diagnostic.message.contains("projection name collision"))
         .collect::<Vec<_>>();
-    assert_eq!(catalog_collision_diagnostics.len(), 3);
+    assert_eq!(catalog_collision_diagnostics.len(), 1);
     let projection_collision_diagnostics = catalog
         .projections
         .iter()
@@ -1314,7 +1333,7 @@ paths:
 }
 
 #[test]
-fn generated_mcp_projection_exposes_current_row_result_columns() {
+fn v4_projection_sql_identity_mcp_uses_public_schema() {
     let manifest = mcp_manifest();
     let v4 = manifest.as_v4().expect("v4");
     let mcp_surface = &v4.surface;
@@ -1328,6 +1347,10 @@ fn generated_mcp_projection_exposes_current_row_result_columns() {
         .iter()
         .find(|projection| projection.operation_id == "search_issues")
         .expect("mcp search projection");
+    assert_eq!(projection.catalog_name, "github_mcp");
+    assert_eq!(projection.schema_name, "public");
+    assert_eq!(projection.function_name.as_deref(), Some("search_issues"));
+    assert_eq!(projection.table_name, None);
 
     let columns = projection
         .columns
@@ -1742,7 +1765,7 @@ fn projection_compatibility_rejects_missing_operation() {
     let mut catalog = generate_projection_catalog(&manifest, &plan).expect("projections");
     let projection = catalog.projections.first_mut().expect("projection");
     projection.operation_id = "items/missing".to_string();
-    let projection_name = projection.name.clone();
+    let projection_name = projection.sql_reference();
 
     let error = validate_projection_compatibility(&plan, &catalog)
         .expect_err("missing operation must fail");
@@ -1904,7 +1927,7 @@ fn projection_compatibility_accepts_conservative_choices_without_mutation() {
     let plan = imported.validated_plan().expect("plan");
     let mut catalog = generate_projection_catalog(&manifest, &plan).expect("projections");
     let projection = catalog.projections.first_mut().expect("projection");
-    projection.name = "authored_items".to_string();
+    projection.set_relation_name("authored_items".to_string());
     projection.guide = "Keep this guide".to_string();
     let input = projection
         .inputs
