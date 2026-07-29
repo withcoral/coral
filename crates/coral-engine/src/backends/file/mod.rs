@@ -132,7 +132,7 @@ impl CompiledBackendSource for FileCompiledSource {
                 }
             };
             let schema = provider.schema();
-            let table_name = table.name().to_string();
+            let table_name = table.table_name().to_string();
             let metadata = registered_table(table, &schema);
             tables.insert(table_name, provider);
             table_infos.push(metadata);

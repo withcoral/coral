@@ -65,9 +65,10 @@ impl HttpSourceTableFunction {
         function: SourceTableFunctionSpec,
         source_observation_publishers: SourceObservationPublishers,
     ) -> Result<Self> {
-        let schema = schema_from_columns(&function.columns, &source_schema, &function.name)?;
+        let schema =
+            schema_from_columns(&function.columns, &source_schema, &function.function_name)?;
         let target = HttpFetchTarget::from_function(&function);
-        let function_name = function.name.clone();
+        let function_name = function.function_name.clone();
         Ok(Self {
             spec: Arc::new(function),
             state: Arc::new(HttpSourceFunctionState {
@@ -167,7 +168,7 @@ fn bind_function_args(
 ) -> Result<HashMap<String, String>> {
     let context = FunctionCallContext {
         source_schema,
-        function_name: function.name.as_str(),
+        function_name: function.function_name.as_str(),
     };
     ensure_no_extra_args(&context, function.args.len(), args.len())?;
 

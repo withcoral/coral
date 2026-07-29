@@ -90,7 +90,7 @@ pub(super) fn source_surface_scopes(
                         source,
                         manifest.common.name.as_str(),
                         ObservedValuesSurfaceKind::Table,
-                        table.name(),
+                        table.table_name(),
                         seed,
                     )
                 }));
@@ -99,7 +99,7 @@ pub(super) fn source_surface_scopes(
                         source,
                         manifest.common.name.as_str(),
                         ObservedValuesSurfaceKind::Function,
-                        function.name.as_str(),
+                        function.function_name.as_str(),
                         seed,
                     )
                 }));
@@ -110,7 +110,7 @@ pub(super) fn source_surface_scopes(
                         source,
                         manifest.common.name.as_str(),
                         ObservedValuesSurfaceKind::Table,
-                        table.name(),
+                        table.table_name(),
                         seed,
                     )
                 }));
@@ -121,7 +121,7 @@ pub(super) fn source_surface_scopes(
                         source,
                         manifest.common.name.as_str(),
                         ObservedValuesSurfaceKind::Table,
-                        table.name(),
+                        table.table_name(),
                         seed,
                     )
                 }));
@@ -130,7 +130,7 @@ pub(super) fn source_surface_scopes(
                         source,
                         manifest.common.name.as_str(),
                         ObservedValuesSurfaceKind::Function,
-                        function.name(),
+                        function.function_name(),
                         seed,
                     )
                 }));

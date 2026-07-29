@@ -162,8 +162,8 @@ pub struct FileTableSpec {
 impl FileTableSpec {
     #[must_use]
     /// Returns the stable table name.
-    pub fn name(&self) -> &str {
-        &self.common.name
+    pub fn table_name(&self) -> &str {
+        &self.common.table_name
     }
 
     #[must_use]
@@ -602,6 +602,8 @@ impl RawFileTableSpec {
 
         Ok(FileTableSpec {
             common: TableCommon::new(
+                "datafusion".to_string(),
+                schema.to_string(),
                 self.name,
                 self.description,
                 self.guide,

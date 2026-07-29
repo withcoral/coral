@@ -290,7 +290,7 @@ mod tests {
     use super::{SearchObservationHandle, SearchObservationSource};
     use crate::search::observed::source_scope::{SourceScopeSeed, source_surface_scopes};
     use crate::search::observed::sqlite_queue::{
-        ObservedValueCandidate, ObservedValuesQueuePayload,
+        ObservedValueCandidate, ObservedValuesQueuePayload, ObservedValuesSurfaceKind,
     };
     use crate::search::observed::sqlite_store::SqliteObservedValuesStore;
     use crate::search::observed::writer::payload_json_with_budget;
@@ -298,7 +298,7 @@ mod tests {
     use crate::workspaces::WorkspaceName;
 
     #[test]
-    fn opaque_scope_seed_is_deterministic() {
+    fn v3_runtime_sql_identity_preserves_observation_scope_labels() {
         let source = http_query_source("/issues");
 
         let first_scope = source_surface_scopes(&source, SourceScopeSeed::PRE_ACTIVATION)
@@ -309,6 +309,10 @@ mod tests {
             .expect("second scope");
 
         assert_eq!(first_scope.source_scope_id, second_scope.source_scope_id);
+        let key = first_scope.key();
+        assert_eq!(key.source_name, "github");
+        assert_eq!(key.surface_kind, ObservedValuesSurfaceKind::Table);
+        assert_eq!(key.surface_name, "issues");
     }
 
     #[test]

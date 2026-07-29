@@ -434,7 +434,7 @@ pub(crate) fn build_registered_table(
 ) -> RegisteredTable {
     RegisteredTable {
         schema_name: None,
-        table_name: common.name.clone(),
+        table_name: common.table_name.clone(),
         description: common.description.clone(),
         guide: common.guide.clone(),
         columns,
@@ -472,7 +472,7 @@ pub(crate) fn build_registered_table_function(
     RegisteredTableFunction {
         catalog_name: None,
         schema_name: schema_name.to_string(),
-        function_name: function.name.clone(),
+        function_name: function.function_name.clone(),
         factory,
         kind: function.kind,
         description: function.description.clone(),

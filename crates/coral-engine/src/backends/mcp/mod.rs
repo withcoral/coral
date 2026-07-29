@@ -230,7 +230,7 @@ impl CompiledBackendSource for McpCompiledSource {
                 table.clone(),
                 Arc::clone(&self.source_observation_publishers),
             )?);
-            tables.insert(table.name().to_string(), provider);
+            tables.insert(table.table_name().to_string(), provider);
             let required_filters = required_filter_names(table.filters());
             let columns = registered_columns_from_specs(table.columns(), table.filters());
             table_infos.push(build_registered_table(

@@ -194,7 +194,12 @@ pub struct HeaderSpec {
 /// Shared table metadata used by all backend-specific table specs.
 #[derive(Debug, Clone, Serialize)]
 pub struct TableCommon {
-    pub name: String,
+    #[serde(skip)]
+    pub catalog_name: String,
+    #[serde(skip)]
+    pub schema_name: String,
+    #[serde(rename = "name")]
+    pub table_name: String,
     pub description: String,
     pub guide: String,
     pub filters: Vec<FilterSpec>,
@@ -210,7 +215,9 @@ impl TableCommon {
         reason = "Field-heavy source-spec table metadata stays explicit at construction sites."
     )]
     pub(crate) fn new(
-        name: String,
+        catalog_name: String,
+        schema_name: String,
+        table_name: String,
         description: String,
         guide: String,
         filters: Vec<FilterSpec>,
@@ -220,7 +227,9 @@ impl TableCommon {
         columns: Vec<ColumnSpec>,
     ) -> Self {
         Self {
-            name,
+            catalog_name,
+            schema_name,
+            table_name,
             description,
             guide,
             filters,
@@ -372,9 +381,14 @@ pub struct DetailHintSpec {
 }
 
 /// Declarative source-scoped table-valued function.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct SourceTableFunctionSpec {
-    pub name: String,
+    #[serde(skip)]
+    pub catalog_name: String,
+    #[serde(skip)]
+    pub schema_name: String,
+    #[serde(rename = "name")]
+    pub function_name: String,
     #[serde(default)]
     pub kind: SourceTableFunctionKind,
     #[serde(default)]
@@ -397,6 +411,59 @@ pub struct SourceTableFunctionSpec {
     pub pagination: PaginationSpec,
     #[serde(default)]
     pub columns: Vec<ColumnSpec>,
+}
+
+/// Authored table-function shape before its runtime SQL identity is attached.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct RawSourceTableFunctionSpec {
+    pub(crate) name: String,
+    #[serde(default)]
+    pub(crate) kind: SourceTableFunctionKind,
+    #[serde(default)]
+    pub(crate) description: String,
+    #[serde(default)]
+    pub(crate) guide: String,
+    #[serde(default)]
+    pub(crate) fetch_limit_default: Option<usize>,
+    #[serde(default)]
+    pub(crate) search_limits: Option<SearchLimitsSpec>,
+    #[serde(default)]
+    pub(crate) detail_hints: Vec<DetailHintSpec>,
+    #[serde(default)]
+    pub(crate) args: Vec<TableFunctionArgSpec>,
+    #[serde(default)]
+    pub(crate) request: RequestSpec,
+    #[serde(default)]
+    pub(crate) response: ResponseSpec,
+    #[serde(default)]
+    pub(crate) pagination: PaginationSpec,
+    #[serde(default)]
+    pub(crate) columns: Vec<ColumnSpec>,
+}
+
+impl RawSourceTableFunctionSpec {
+    pub(crate) fn into_validated(
+        self,
+        catalog_name: impl Into<String>,
+        schema_name: impl Into<String>,
+    ) -> SourceTableFunctionSpec {
+        SourceTableFunctionSpec {
+            catalog_name: catalog_name.into(),
+            schema_name: schema_name.into(),
+            function_name: self.name,
+            kind: self.kind,
+            description: self.description,
+            guide: self.guide,
+            fetch_limit_default: self.fetch_limit_default,
+            search_limits: self.search_limits,
+            detail_hints: self.detail_hints,
+            args: self.args,
+            request: self.request,
+            response: self.response,
+            pagination: self.pagination,
+            columns: self.columns,
+        }
+    }
 }
 
 /// One argument accepted by a source-scoped table-valued function.
@@ -1354,7 +1421,7 @@ mod tests {
 
     #[test]
     fn table_function_kind_defaults_to_table() {
-        let spec: SourceTableFunctionSpec = serde_json::from_value(serde_json::json!({
+        let spec: RawSourceTableFunctionSpec = serde_json::from_value(serde_json::json!({
             "name": "issues",
             "request": { "path": "/issues" }
         }))
@@ -1364,7 +1431,7 @@ mod tests {
 
     #[test]
     fn table_function_kind_deserializes_search() {
-        let spec: SourceTableFunctionSpec = serde_json::from_value(serde_json::json!({
+        let spec: RawSourceTableFunctionSpec = serde_json::from_value(serde_json::json!({
             "name": "search_issues",
             "kind": "search",
             "request": { "path": "/search/issues" },
@@ -1381,7 +1448,7 @@ mod tests {
 
     #[test]
     fn table_function_arg_data_type_defaults_to_utf8_and_deserializes() {
-        let spec: SourceTableFunctionSpec = serde_json::from_value(serde_json::json!({
+        let spec: RawSourceTableFunctionSpec = serde_json::from_value(serde_json::json!({
             "name": "search_issues",
             "args": [
                 { "name": "q", "bind": { "arg": "query" } },

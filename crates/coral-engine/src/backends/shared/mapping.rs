@@ -614,7 +614,7 @@ mod tests {
                 }),
             },
         );
-        let schema = schema_from_columns(table.columns(), "test", table.name()).unwrap();
+        let schema = schema_from_columns(table.columns(), "test", table.table_name()).unwrap();
         let items = vec![serde_json::json!({
             "created_time": "2026-03-11T12:34:56.123456Z"
         })];
@@ -656,7 +656,7 @@ mod tests {
                 then_value: "has_status".into(),
             },
         );
-        let schema = schema_from_columns(table.columns(), "test", table.name()).unwrap();
+        let schema = schema_from_columns(table.columns(), "test", table.table_name()).unwrap();
         let items = vec![
             serde_json::json!({"status": "ok"}),
             serde_json::json!({"other": "field"}),
@@ -691,7 +691,7 @@ mod tests {
                 then_value: "present".into(),
             },
         );
-        let schema = schema_from_columns(table.columns(), "test", table.name()).unwrap();
+        let schema = schema_from_columns(table.columns(), "test", table.table_name()).unwrap();
         let items = vec![serde_json::json!({"status": null})];
         let batch = convert_items(
             table.columns(),
@@ -722,7 +722,7 @@ mod tests {
                 separator: "|".into(),
             },
         );
-        let schema = schema_from_columns(table.columns(), "test", table.name()).unwrap();
+        let schema = schema_from_columns(table.columns(), "test", table.table_name()).unwrap();
         let items = vec![
             serde_json::json!({
                 "content": [
@@ -766,7 +766,7 @@ mod tests {
                 separator: "|".into(),
             },
         );
-        let schema = schema_from_columns(table.columns(), "test", table.name()).unwrap();
+        let schema = schema_from_columns(table.columns(), "test", table.table_name()).unwrap();
         let items = vec![serde_json::json!({
             "content": [{"type": "text", "text": "only one"}]
         })];
@@ -798,7 +798,7 @@ mod tests {
                 separator: ",".into(),
             },
         );
-        let schema = schema_from_columns(table.columns(), "test", table.name()).unwrap();
+        let schema = schema_from_columns(table.columns(), "test", table.table_name()).unwrap();
         let items = vec![
             serde_json::json!({
                 "labels": {
@@ -840,7 +840,7 @@ mod tests {
                 path: vec!["enabled".into()],
             },
         );
-        let schema = schema_from_columns(table.columns(), "test", table.name()).unwrap();
+        let schema = schema_from_columns(table.columns(), "test", table.table_name()).unwrap();
         let items = vec![
             serde_json::json!({"enabled": true}),
             serde_json::json!({"enabled": false}),
@@ -878,7 +878,7 @@ mod tests {
                 path: vec!["id".into()],
             },
         );
-        let schema = schema_from_columns(table.columns(), "test", table.name()).unwrap();
+        let schema = schema_from_columns(table.columns(), "test", table.table_name()).unwrap();
         let items = vec![
             serde_json::from_str(r#"{"id": 1.9}"#).unwrap(),
             serde_json::from_str(r#"{"id": -1.9}"#).unwrap(),
@@ -940,7 +940,7 @@ mod tests {
                 to: "-".into(),
             },
         );
-        let schema = schema_from_columns(table.columns(), "test", table.name()).unwrap();
+        let schema = schema_from_columns(table.columns(), "test", table.table_name()).unwrap();
         let items = vec![serde_json::json!({"title": "hello world"})];
         let batch = convert_items(
             table.columns(),
@@ -969,7 +969,7 @@ mod tests {
                 }),
             },
         );
-        let schema = schema_from_columns(table.columns(), "test", table.name()).unwrap();
+        let schema = schema_from_columns(table.columns(), "test", table.table_name()).unwrap();
         let items = vec![
             serde_json::json!({"content": "aGVs\nbG8="}),
             serde_json::json!({"content": "not base64"}),
@@ -1104,7 +1104,7 @@ mod tests {
                 path: vec!["properties".into()],
             },
         );
-        let schema = schema_from_columns(table.columns(), "test", table.name()).unwrap();
+        let schema = schema_from_columns(table.columns(), "test", table.table_name()).unwrap();
         let items = vec![
             json!({"properties": {"country": "US", "count": 3}}),
             json!({"properties": "hello"}),
@@ -1155,7 +1155,7 @@ mod tests {
     #[test]
     fn json_type_serializes_current_row_strings_as_json_strings() {
         let table = table_with_expr("result_json", "Json", &ExprSpec::Path { path: Vec::new() });
-        let schema = schema_from_columns(table.columns(), "test", table.name()).unwrap();
+        let schema = schema_from_columns(table.columns(), "test", table.table_name()).unwrap();
         let items = vec![json!("plain text"), json!({"login": "simonwhitaker"})];
         let batch = convert_items(
             table.columns(),

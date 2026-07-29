@@ -136,7 +136,7 @@ impl CompiledBackendSource for HttpCompiledSource {
                 table.clone(),
                 Arc::clone(&self.source_observation_publishers),
             )?);
-            tables.insert(table.name().to_string(), provider);
+            tables.insert(table.table_name().to_string(), provider);
             table_infos.push(registered_table(table));
         }
         let mut table_function_infos = Vec::with_capacity(self.manifest.functions.len());

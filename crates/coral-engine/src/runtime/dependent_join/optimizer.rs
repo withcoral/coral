@@ -303,7 +303,7 @@ fn analyze_dependent_bindings(
     DependentJoinAnalysis::Candidate(DependentJoinCandidate {
         dependent_side,
         source_name: dependent.source_name.clone(),
-        table_name: dependent.table.name().to_string(),
+        table_name: dependent.table.table_name().to_string(),
         binding_filters,
     })
 }

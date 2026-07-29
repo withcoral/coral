@@ -127,7 +127,7 @@ impl JsonFileTableProvider {
             partition_columns,
         } = prepare_listing_table(ctx, source_schema, &table, home_dir, resolved_inputs).await?;
 
-        let file_schema = schema_from_columns(table.columns(), source_schema, table.name())?;
+        let file_schema = schema_from_columns(table.columns(), source_schema, table.table_name())?;
         let table_schema = TableSchema::new(file_schema, partition_columns.arrow_fields());
 
         let metadata_columns = FileMetadataColumns::try_new(&table.source.metadata)?;
@@ -137,7 +137,7 @@ impl JsonFileTableProvider {
 
         Ok(Self {
             source_schema: source_schema.to_string(),
-            table_name: table.name().to_string(),
+            table_name: table.table_name().to_string(),
             table_path,
             object_store,
             file_extension: listing_options.file_extension,

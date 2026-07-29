@@ -77,18 +77,18 @@ fn check_request_site_inputs(
 fn http_request_sites(manifest: &HttpSourceManifest) -> Vec<HttpRequestSite<'_>> {
     let table_sites = manifest.tables.iter().flat_map(|table| {
         let default = std::iter::once(HttpRequestSite {
-            label: format!("table '{}' request", table.name()),
+            label: format!("table '{}' request", table.table_name()),
             request: &table.request,
         });
         let routes = table.requests.iter().map(move |route| HttpRequestSite {
-            label: table_request_route_label(table.name(), route),
+            label: table_request_route_label(table.table_name(), route),
             request: &route.request,
         });
         default.chain(routes)
     });
 
     let function_sites = manifest.functions.iter().map(|function| HttpRequestSite {
-        label: format!("function '{}' request", function.name),
+        label: format!("function '{}' request", function.function_name),
         request: &function.request,
     });
 

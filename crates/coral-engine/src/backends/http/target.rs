@@ -40,7 +40,7 @@ impl HttpFetchTarget {
         resolved_request: RequestSpec,
     ) -> Self {
         Self {
-            name: Arc::from(table.name()),
+            name: Arc::from(table.table_name()),
             columns: Arc::from(table.columns().to_vec()),
             fetch_limit_default: table.fetch_limit_default(),
             search_limits: table.common.search_limits.clone(),
@@ -64,7 +64,7 @@ impl HttpFetchTarget {
 
     pub(crate) fn from_function(function: &SourceTableFunctionSpec) -> Self {
         Self {
-            name: Arc::from(function.name.as_str()),
+            name: Arc::from(function.function_name.as_str()),
             columns: Arc::from(function.columns.clone()),
             fetch_limit_default: function.fetch_limit_default,
             search_limits: function.search_limits.clone(),

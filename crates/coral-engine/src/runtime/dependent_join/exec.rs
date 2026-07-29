@@ -179,7 +179,7 @@ impl fmt::Debug for DependentJoinExec {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("DependentJoinExec")
             .field("source", &self.dependent_source_schema)
-            .field("table", &self.table.name())
+            .field("table", &self.table.table_name())
             .finish_non_exhaustive()
     }
 }
@@ -190,7 +190,7 @@ impl DisplayAs for DependentJoinExec {
             f,
             "DependentJoinExec: table={}.{}, binding_keys={}, literal_filters={}, max_bindings={}, max_resolver_rows={}, max_rows_per_binding={}, max_resolver_rows_per_binding={}, max_concurrency={}, page_hint={}",
             self.dependent_source_schema,
-            self.table.name(),
+            self.table.table_name(),
             format_binding_keys(&self.binding_keys),
             format_literal_filters(&self.literal_filters),
             self.max_bindings,
@@ -298,7 +298,7 @@ impl ExecutionPlan for DependentJoinExec {
         let dependent_first = self.dependent_first;
         let caps = ResolverCaps {
             source_schema: dependent_source_schema.clone(),
-            table: table.name().to_string(),
+            table: table.table_name().to_string(),
             max_bindings: self.max_bindings,
             max_resolver_rows: self.max_resolver_rows,
             max_resolver_rows_per_binding: self.max_resolver_rows_per_binding,
@@ -317,7 +317,7 @@ impl ExecutionPlan for DependentJoinExec {
             format!(
                 "DependentJoinExec({}.{})",
                 self.dependent_source_schema,
-                self.table.name()
+                self.table.table_name()
             ),
         );
 

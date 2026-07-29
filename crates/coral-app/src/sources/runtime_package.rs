@@ -273,7 +273,9 @@ fn http_manifest_for_surface(
             ProjectionKind::Table => {
                 tables.push(HttpTableSpec {
                     common: TableCommon {
-                        name: projection.name.clone(),
+                        catalog_name: "datafusion".to_string(),
+                        schema_name: manifest.common.name.clone(),
+                        table_name: projection.name.clone(),
                         description: projection.description.clone(),
                         guide: projection.guide.clone(),
                         filters: projection_filter_specs(projection),
@@ -290,7 +292,9 @@ fn http_manifest_for_surface(
             }
             ProjectionKind::TableFunction { function_kind } => {
                 functions.push(SourceTableFunctionSpec {
-                    name: projection.name.clone(),
+                    catalog_name: "datafusion".to_string(),
+                    schema_name: manifest.common.name.clone(),
+                    function_name: projection.name.clone(),
                     kind: *function_kind,
                     description: projection.description.clone(),
                     guide: projection.guide.clone(),
@@ -379,6 +383,7 @@ fn mcp_manifest_for_surface(
         match &projection.kind {
             ProjectionKind::Table => {
                 tables.push(mcp_table_spec(
+                    &manifest.common.name,
                     projection,
                     mcp,
                     cursor_pagination.cloned(),
@@ -387,6 +392,7 @@ fn mcp_manifest_for_surface(
             }
             ProjectionKind::TableFunction { function_kind } => {
                 functions.push(mcp_table_function_spec(
+                    &manifest.common.name,
                     projection,
                     *function_kind,
                     mcp,
@@ -412,6 +418,7 @@ fn mcp_manifest_for_surface(
 }
 
 fn mcp_table_spec(
+    source_name: &str,
     projection: &Projection,
     mcp: &coral_spec::v4::McpExecutionAttachment,
     pagination: Option<coral_spec::backends::mcp::McpPaginationSpec>,
@@ -419,7 +426,9 @@ fn mcp_table_spec(
 ) -> McpTableSpec {
     McpTableSpec {
         common: TableCommon {
-            name: projection.name.clone(),
+            catalog_name: "datafusion".to_string(),
+            schema_name: source_name.to_string(),
+            table_name: projection.name.clone(),
             description: projection.description.clone(),
             guide: projection.guide.clone(),
             filters: projection_filter_specs(projection),
@@ -439,6 +448,7 @@ fn mcp_table_spec(
 }
 
 fn mcp_table_function_spec(
+    source_name: &str,
     projection: &Projection,
     function_kind: SourceTableFunctionKind,
     mcp: &coral_spec::v4::McpExecutionAttachment,
@@ -450,7 +460,9 @@ fn mcp_table_function_spec(
         pagination,
         offset_pagination,
         common: SourceTableFunctionSpec {
-            name: projection.name.clone(),
+            catalog_name: "datafusion".to_string(),
+            schema_name: source_name.to_string(),
+            function_name: projection.name.clone(),
             kind: function_kind,
             description: projection.description.clone(),
             guide: projection.guide.clone(),
