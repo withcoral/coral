@@ -309,15 +309,34 @@ fn table_function_for_ref<'a>(
 ) -> Option<&'a TableFunctionInfo> {
     let parts = reference.parts.as_slice();
 
-    resolve_table_function(parts, table_functions).or_else(|| {
-        let without_catalog = without_default_catalog(parts);
-        (without_catalog.len() != parts.len())
-            .then(|| resolve_table_function(without_catalog, table_functions))
-            .flatten()
+    resolve_catalog_table_function(parts, table_functions)
+        .or_else(|| resolve_legacy_table_function(parts, table_functions))
+        .or_else(|| {
+            let without_catalog = without_default_catalog(parts);
+            (without_catalog.len() != parts.len())
+                .then(|| resolve_legacy_table_function(without_catalog, table_functions))
+                .flatten()
+        })
+}
+
+fn resolve_catalog_table_function<'a>(
+    parts: &[String],
+    table_functions: &'a [TableFunctionInfo],
+) -> Option<&'a TableFunctionInfo> {
+    let [catalog_name, schema_name, function_name] = parts else {
+        return None;
+    };
+    table_functions.iter().find(|function| {
+        function
+            .catalog_name
+            .as_deref()
+            .is_some_and(|value| value.eq_ignore_ascii_case(catalog_name))
+            && function.schema_name.eq_ignore_ascii_case(schema_name)
+            && function.function_name.eq_ignore_ascii_case(function_name)
     })
 }
 
-fn resolve_table_function<'a>(
+fn resolve_legacy_table_function<'a>(
     parts: &[String],
     table_functions: &'a [TableFunctionInfo],
 ) -> Option<&'a TableFunctionInfo> {
@@ -362,7 +381,8 @@ impl SchemaQualifiedName {
     }
 
     fn matches(&self, function: &TableFunctionInfo) -> bool {
-        function.schema_name.eq_ignore_ascii_case(&self.schema)
+        function.catalog_name.is_none()
+            && function.schema_name.eq_ignore_ascii_case(&self.schema)
             && function.function_name.eq_ignore_ascii_case(&self.name)
     }
 }

@@ -1549,6 +1549,7 @@ mod tests {
             vec![QueryTableUsage::new("github", "github", "issues")],
             vec![QueryTableFunctionUsage::new(
                 "github",
+                "datafusion",
                 "github",
                 "search_issues",
             )],

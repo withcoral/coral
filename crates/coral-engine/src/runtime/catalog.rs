@@ -40,6 +40,7 @@ const DATABASE_COLUMN_FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 /// Catalog-only metadata for one SQL table-function surface.
 #[derive(Debug, Clone)]
 pub(crate) struct CatalogTableFunction {
+    pub(crate) catalog_name: Option<String>,
     pub(crate) schema_name: String,
     pub(crate) function_name: String,
     pub(crate) description: String,
@@ -848,7 +849,7 @@ pub(crate) fn collect_table_functions(
     catalog_table_functions(active_sources, catalog_only_table_functions)
         .into_iter()
         .map(|function| TableFunctionInfo {
-            catalog_name: None,
+            catalog_name: function.catalog_name,
             schema_name: function.schema_name,
             function_name: function.function_name,
             description: function.description,
@@ -889,6 +890,7 @@ fn catalog_table_functions(
                 .table_functions
                 .iter()
                 .map(|function| CatalogTableFunction {
+                    catalog_name: function.catalog_name.clone(),
                     schema_name: function.schema_name.clone(),
                     function_name: function.function_name.clone(),
                     description: function.description.clone(),
@@ -919,7 +921,11 @@ fn catalog_table_functions(
         .chain(catalog_only_table_functions.iter().cloned())
         .collect::<Vec<_>>();
     functions.sort_by(|left, right| {
-        (&left.schema_name, &left.function_name).cmp(&(&right.schema_name, &right.function_name))
+        (&left.catalog_name, &left.schema_name, &left.function_name).cmp(&(
+            &right.catalog_name,
+            &right.schema_name,
+            &right.function_name,
+        ))
     });
     functions
 }
@@ -1913,6 +1919,7 @@ mod tests {
                 qualified_name: SourceQualifiedName::Schema("source_schema".to_string()),
                 tables: Vec::new(),
                 table_functions: vec![RegisteredTableFunction {
+                    catalog_name: None,
                     schema_name: "function_schema".to_string(),
                     function_name: "search".to_string(),
                     factory: Arc::new(StubSourceFunctionFactory::default()),

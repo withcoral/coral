@@ -13,6 +13,7 @@ use datafusion::logical_expr::sqlparser::ast::{
 };
 
 use crate::backends::RegisteredTableFunction;
+use crate::runtime::DATAFUSION_DEFAULT_CATALOG;
 
 pub(crate) trait ScopedTableFunctionSignature {
     fn display_name(&self) -> &str;
@@ -31,30 +32,61 @@ pub(crate) trait ScopedTableFunctionSignature {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct ScopedTableFunctionName {
-    pub(crate) schema: String,
-    pub(crate) function: String,
+pub(crate) struct TableFunctionIdentity {
+    pub(crate) catalog_name: String,
+    pub(crate) schema_name: String,
+    pub(crate) function_name: String,
 }
 
-impl ScopedTableFunctionName {
-    pub(crate) fn from_parts(schema: &str, function: &str) -> Self {
+impl TableFunctionIdentity {
+    pub(crate) fn from_parts(catalog_name: &str, schema_name: &str, function_name: &str) -> Self {
         Self {
-            schema: normalize_runtime_identifier(schema),
-            function: normalize_runtime_identifier(function),
+            catalog_name: normalize_runtime_identifier(catalog_name),
+            schema_name: normalize_runtime_identifier(schema_name),
+            function_name: normalize_runtime_identifier(function_name),
         }
     }
 
-    pub(crate) fn from_manifest(function: &RegisteredTableFunction) -> Self {
+    pub(crate) fn from_default_catalog_parts(schema_name: &str, function_name: &str) -> Self {
+        Self::from_parts(DATAFUSION_DEFAULT_CATALOG, schema_name, function_name)
+    }
+
+    pub(crate) fn from_registered(function: &RegisteredTableFunction) -> Self {
+        function.catalog_name.as_deref().map_or_else(
+            || Self {
+                catalog_name: DATAFUSION_DEFAULT_CATALOG.to_string(),
+                schema_name: function.schema_name.clone(),
+                function_name: function.function_name.clone(),
+            },
+            |catalog_name| {
+                Self::from_parts(catalog_name, &function.schema_name, &function.function_name)
+            },
+        )
+    }
+
+    fn from_sql_parts(
+        catalog_name: &str,
+        schema: Ident,
+        function: Ident,
+        context: &dyn RelationPlannerContext,
+    ) -> Self {
         Self {
-            schema: function.schema_name.clone(),
-            function: function.function_name.clone(),
+            catalog_name: normalize_runtime_identifier(catalog_name),
+            schema_name: context.normalize_ident(schema),
+            function_name: context.normalize_ident(function),
         }
     }
 
-    fn from_sql(schema: Ident, function: Ident, context: &dyn RelationPlannerContext) -> Self {
+    fn from_sql(
+        catalog: Ident,
+        schema: Ident,
+        function: Ident,
+        context: &dyn RelationPlannerContext,
+    ) -> Self {
         Self {
-            schema: context.normalize_ident(schema),
-            function: context.normalize_ident(function),
+            catalog_name: context.normalize_ident(catalog),
+            schema_name: context.normalize_ident(schema),
+            function_name: context.normalize_ident(function),
         }
     }
 }
@@ -64,12 +96,13 @@ fn normalize_runtime_identifier(identifier: &str) -> String {
 }
 
 #[derive(Debug)]
-pub(crate) struct ScopedTableFunctionCall {
-    pub(crate) lookup_key: ScopedTableFunctionName,
+pub(crate) struct TableFunctionCall {
+    pub(crate) lookup_key: TableFunctionIdentity,
     pub(crate) display_name: String,
+    catalog_qualified: bool,
 }
 
-impl ScopedTableFunctionCall {
+impl TableFunctionCall {
     pub(crate) fn parse(
         relation: &TableFactor,
         context: &dyn RelationPlannerContext,
@@ -83,25 +116,54 @@ impl ScopedTableFunctionCall {
             return None;
         };
 
-        // Coral function surfaces are exactly `schema.function(...)`. Longer
-        // names belong to DataFusion's normal relation/function planner.
-        let [schema, function] = name.0.as_slice() else {
-            return None;
-        };
+        match name.0.as_slice() {
+            [schema, function] => {
+                let schema = schema.as_ident()?.clone();
+                let function = function.as_ident()?.clone();
+                let display_name = qualified_name(&schema.value, &function.value);
+                let lookup_key = TableFunctionIdentity::from_sql_parts(
+                    DATAFUSION_DEFAULT_CATALOG,
+                    schema,
+                    function,
+                    context,
+                );
+                Some(Self {
+                    lookup_key,
+                    display_name,
+                    catalog_qualified: false,
+                })
+            }
+            [catalog, schema, function] => {
+                let catalog = catalog.as_ident()?.clone();
+                let schema = schema.as_ident()?.clone();
+                let function = function.as_ident()?.clone();
+                let display_name =
+                    catalog_qualified_name(&catalog.value, &schema.value, &function.value);
+                let lookup_key =
+                    TableFunctionIdentity::from_sql(catalog, schema, function, context);
+                Some(Self {
+                    lookup_key,
+                    display_name,
+                    catalog_qualified: true,
+                })
+            }
+            _ => None,
+        }
+    }
 
-        let schema = schema.as_ident()?.clone();
-        let function = function.as_ident()?.clone();
-        let display_name = qualified_name(&schema.value, &function.value);
-        let lookup_key = ScopedTableFunctionName::from_sql(schema, function, context);
+    pub(crate) fn parse_legacy(
+        relation: &TableFactor,
+        context: &dyn RelationPlannerContext,
+    ) -> Option<Self> {
+        Self::parse(relation, context).filter(|call| !call.catalog_qualified)
+    }
 
-        Some(Self {
-            lookup_key,
-            display_name,
-        })
+    pub(crate) fn is_catalog_qualified(&self) -> bool {
+        self.catalog_qualified
     }
 
     pub(crate) fn unknown_function_error(&self, kind: &str, hint: &str) -> DataFusionError {
-        DataFusionError::Plan(format!("unknown {kind} {}{}", self.display_name, hint))
+        DataFusionError::Plan(format!("unknown {kind} {}{hint}", self.display_name))
     }
 }
 
@@ -122,13 +184,20 @@ pub(crate) fn qualified_name(schema: &str, function: &str) -> String {
     format!("{schema}.{function}")
 }
 
+pub(crate) fn catalog_qualified_name(catalog: &str, schema: &str, function: &str) -> String {
+    format!("{catalog}.{schema}.{function}")
+}
+
 pub(crate) fn available_functions_hint<'a>(
-    schema: &str,
-    functions: impl IntoIterator<Item = (&'a ScopedTableFunctionName, &'a str)>,
+    scope: &TableFunctionIdentity,
+    functions: impl IntoIterator<Item = (&'a TableFunctionIdentity, &'a str)>,
 ) -> String {
     let mut names: Vec<&str> = functions
         .into_iter()
-        .filter_map(|(key, display_name)| (key.schema == schema).then_some(display_name))
+        .filter_map(|(key, display_name)| {
+            (key.catalog_name == scope.catalog_name && key.schema_name == scope.schema_name)
+                .then_some(display_name)
+        })
         .collect();
     names.sort_unstable();
 
@@ -161,7 +230,7 @@ pub(crate) fn original_relation(relation: TableFactor) -> RelationPlanning {
 /// Takes ownership of a committed call's argument list and alias.
 ///
 /// Shape-checking and destructuring are split on purpose:
-/// [`ScopedTableFunctionCall::parse`] inspects the relation by reference because
+/// [`TableFunctionCall::parse`] inspects the relation by reference because
 /// the not-our-function fallthroughs must hand the relation back to
 /// `DataFusion` untouched. Only once the call is committed may the relation
 /// be consumed, which is what makes the `unreachable!` here truly so.
@@ -172,7 +241,7 @@ pub(crate) fn call_parts(relation: TableFactor) -> (TableFunctionArgs, Option<Ta
         ..
     } = relation
     else {
-        unreachable!("ScopedTableFunctionCall::parse only matches table function calls");
+        unreachable!("TableFunctionCall::parse only matches table function calls");
     };
     (args, alias)
 }
@@ -184,7 +253,7 @@ pub(crate) fn call_parts(relation: TableFactor) -> (TableFunctionArgs, Option<Ta
 /// adds a new modifier must fail compilation here and force a decision, instead
 /// of executing while ignoring the modifier.
 pub(crate) fn reject_unsupported_modifiers(
-    call: &ScopedTableFunctionCall,
+    display_name: &str,
     relation: &TableFactor,
 ) -> Result<()> {
     let TableFactor::Table {
@@ -200,7 +269,7 @@ pub(crate) fn reject_unsupported_modifiers(
         index_hints,
     } = relation
     else {
-        unreachable!("ScopedTableFunctionCall::parse only matches table relations");
+        unreachable!("TableFunctionCall::parse only matches table relations");
     };
 
     let unsupported_modifiers = [
@@ -216,21 +285,17 @@ pub(crate) fn reject_unsupported_modifiers(
         if present {
             return Err(DataFusionError::Plan(format!(
                 "table function {} does not support {modifier}",
-                call.display_name
+                display_name
             )));
         }
     }
     Ok(())
 }
 
-pub(crate) fn reject_settings(
-    call: &ScopedTableFunctionCall,
-    args: &TableFunctionArgs,
-) -> Result<()> {
+pub(crate) fn reject_settings(display_name: &str, args: &TableFunctionArgs) -> Result<()> {
     if args.settings.is_some() {
         return Err(DataFusionError::Plan(format!(
-            "table function {} does not support SETTINGS",
-            call.display_name
+            "table function {display_name} does not support SETTINGS"
         )));
     }
     Ok(())

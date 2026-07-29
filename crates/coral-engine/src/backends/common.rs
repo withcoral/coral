@@ -77,6 +77,7 @@ pub(crate) struct RegisteredTable {
 
 #[derive(Debug, Clone)]
 pub(crate) struct RegisteredTableFunction {
+    pub(crate) catalog_name: Option<String>,
     pub(crate) schema_name: String,
     pub(crate) function_name: String,
     pub(crate) factory: Arc<dyn SourceFunctionProviderFactory>,
@@ -469,6 +470,7 @@ pub(crate) fn build_registered_table_function(
         .collect::<Vec<_>>();
 
     RegisteredTableFunction {
+        catalog_name: None,
         schema_name: schema_name.to_string(),
         function_name: function.name.clone(),
         factory,
@@ -512,6 +514,7 @@ pub(crate) fn schema_from_columns(
 #[cfg(test)]
 pub(crate) mod test_support {
     use super::*;
+    use datafusion::datasource::empty::EmptyTable;
 
     /// Minimal factory for tests that need `RegisteredTableFunction` metadata
     /// without a live backend.
@@ -537,9 +540,7 @@ pub(crate) mod test_support {
             &self,
             _args: &[BoundSourceFunctionArg],
         ) -> datafusion::error::Result<Arc<dyn TableProvider>> {
-            Err(DataFusionError::Internal(
-                "stub source function factory cannot bind arguments".to_string(),
-            ))
+            Ok(Arc::new(EmptyTable::new(Arc::clone(&self.schema))))
         }
     }
 }

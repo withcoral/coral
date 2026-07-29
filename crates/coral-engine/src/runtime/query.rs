@@ -36,7 +36,7 @@ use crate::runtime::query_planner::CoralQueryPlanner;
 use crate::runtime::registry::{
     CompiledQuerySource, SourceRegistrationCandidate, SourceRegistrationFailure, register_sources,
 };
-use crate::runtime::scoped_table_functions::ScopedTableFunctionName;
+use crate::runtime::scoped_table_functions::TableFunctionIdentity;
 use crate::runtime::source_functions::{
     SOURCE_FUNCTION_NODE_NAME, SourceFunctionNode, SourceFunctionRegistry,
 };
@@ -62,7 +62,7 @@ pub(crate) struct QueryRuntimeAdapter {
     memory: QueryMemoryConfig,
     active_sources: Vec<RegisteredSource>,
     column_fetchers: Vec<CatalogColumnFetcher>,
-    source_function_names: HashSet<ScopedTableFunctionName>,
+    source_function_names: HashSet<TableFunctionIdentity>,
     udfs_installed: bool,
     tables: Vec<TableInfo>,
     table_functions: Vec<TableFunctionInfo>,
@@ -110,7 +110,7 @@ struct RegisteredRuntime {
     ctx: Arc<SessionContext>,
     active_sources: Vec<RegisteredSource>,
     column_fetchers: Vec<CatalogColumnFetcher>,
-    source_function_names: HashSet<ScopedTableFunctionName>,
+    source_function_names: HashSet<TableFunctionIdentity>,
     tables: Vec<TableInfo>,
     table_functions: Vec<TableFunctionInfo>,
     failures: Vec<SourceRegistrationFailure>,
@@ -378,7 +378,7 @@ async fn build_registered_runtime(
 async fn install_table_function_call_planners(
     ctx: &SessionContext,
     source_functions: SourceFunctionRegistry,
-    source_table_function_names: HashSet<ScopedTableFunctionName>,
+    source_table_function_names: HashSet<TableFunctionIdentity>,
     udfs: &[UdfRuntimeDefinition],
     tables: &[TableInfo],
 ) -> Result<(), CoreError> {
@@ -406,7 +406,7 @@ async fn install_table_function_call_planners(
 async fn install_udf_call_planner(
     ctx: &SessionContext,
     udfs: &[UdfRuntimeDefinition],
-    source_table_function_names: HashSet<ScopedTableFunctionName>,
+    source_table_function_names: HashSet<TableFunctionIdentity>,
     tables: &[TableInfo],
 ) -> Result<(), CoreError> {
     let udf_calls = Box::pin(UdfCallRegistry::new(ctx, udfs, source_table_function_names))
@@ -935,7 +935,11 @@ impl QueryRuntimeAdapter {
         sources.extend(
             table_functions
                 .iter()
-                .filter(|usage| self.name_to_source.contains_key(usage.schema_name()))
+                .filter(|usage| {
+                    let top_level_name = normalize_catalog_name(Some(usage.catalog_name()))
+                        .unwrap_or(usage.schema_name());
+                    self.name_to_source.contains_key(top_level_name)
+                })
                 .map(|usage| usage.source_name().to_string()),
         );
 
@@ -1017,8 +1021,11 @@ impl QueryRuntimeAdapter {
         let Some((schema_name, function_name)) = relation_parts(table_reference) else {
             return false;
         };
+        let catalog_name = normalize_catalog_name(table_reference.catalog());
         if self.table_functions.iter().any(|function| {
-            function.schema_name == schema_name && function.function_name == function_name
+            function.catalog_name.as_deref() == catalog_name
+                && function.schema_name == schema_name
+                && function.function_name == function_name
         }) {
             return self.record_table_function_usage(table_reference, table_functions);
         }
@@ -1033,8 +1040,13 @@ impl QueryRuntimeAdapter {
         let Some((schema_name, function_name)) = relation_parts(table_reference) else {
             return false;
         };
+        let catalog_name = table_reference
+            .catalog()
+            .unwrap_or(crate::runtime::DATAFUSION_DEFAULT_CATALOG);
+        let source_namespace = normalize_catalog_name(Some(catalog_name)).unwrap_or(schema_name);
         table_functions.insert(QueryTableFunctionUsage::new(
-            self.source_name_for(schema_name),
+            self.source_name_for(source_namespace),
+            catalog_name,
             schema_name,
             function_name,
         ));
@@ -1495,8 +1507,8 @@ mod tests {
     use datafusion::execution::memory_pool::MemoryConsumer;
 
     use super::*;
-    use crate::backends::common::RegisteredColumn;
-    use crate::backends::{RegisteredTable, SourceQualifiedName};
+    use crate::backends::common::{RegisteredColumn, test_support::StubSourceFunctionFactory};
+    use crate::backends::{RegisteredTable, RegisteredTableFunction, SourceQualifiedName};
     use crate::{
         DependentJoinConfig, MemorySize, QueryMemoryConfig, QueryRuntimeContext,
         UdfRuntimeImplementation, UdfRuntimePublish, UdfRuntimeResultColumn,
@@ -1565,6 +1577,140 @@ mod tests {
             table_functions: Vec::new(),
             inputs: Vec::new(),
         }
+    }
+
+    fn adapter_with_source_function(
+        catalog_name: Option<&str>,
+        schema_name: &str,
+        function_name: &str,
+    ) -> QueryRuntimeAdapter {
+        let top_level_name = catalog_name.unwrap_or(schema_name);
+        let source = RegisteredSource {
+            qualified_name: catalog_name.map_or_else(
+                || SourceQualifiedName::Schema(schema_name.to_string()),
+                |catalog_name| SourceQualifiedName::Catalog(catalog_name.to_string()),
+            ),
+            tables: Vec::new(),
+            table_functions: vec![RegisteredTableFunction {
+                catalog_name: catalog_name.map(str::to_string),
+                schema_name: schema_name.to_string(),
+                function_name: function_name.to_string(),
+                factory: Arc::new(StubSourceFunctionFactory::default()),
+                kind: coral_spec::SourceTableFunctionKind::Table,
+                description: String::new(),
+                guide: String::new(),
+                arguments: Vec::new(),
+                result_columns: Vec::new(),
+                search_limits: None,
+            }],
+            inputs: Vec::new(),
+        };
+        let mut adapter = adapter_with_sources(vec![source.clone()]);
+        SourceFunctionRegistry::new(source.table_functions.iter())
+            .install(&adapter.ctx)
+            .expect("source function planner");
+        adapter.table_functions = catalog::collect_table_functions(&[source], &[]);
+        adapter
+            .name_to_source
+            .insert(top_level_name.to_string(), top_level_name.to_string());
+        adapter
+    }
+
+    async fn assert_query_error_contains(adapter: &QueryRuntimeAdapter, sql: &str, expected: &str) {
+        let error = adapter
+            .execute_sql(sql, &QueryParameters::default())
+            .await
+            .expect_err("query should fail");
+        assert!(
+            error.to_string().contains(expected),
+            "{expected:?} missing from error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn catalog_source_function_executes_with_full_qualifiers_and_provenance() {
+        let adapter = adapter_with_source_function(Some("github_v4"), "issues", "list");
+        let sql = "SELECT github_v4.issues.list.value \
+                   FROM github_v4.issues.list()";
+
+        let execution = adapter
+            .execute_sql(sql, &QueryParameters::default())
+            .await
+            .expect("catalog source function");
+
+        assert_eq!(execution.row_count(), 0);
+        assert_eq!(execution.provenance().sources(), ["github_v4"]);
+        let usage = execution
+            .provenance()
+            .table_functions()
+            .first()
+            .expect("function provenance");
+        assert_eq!(usage.source_name(), "github_v4");
+        assert_eq!(usage.catalog_name(), "github_v4");
+        assert_eq!(usage.schema_name(), "issues");
+        assert_eq!(usage.function_name(), "list");
+
+        adapter
+            .execute_sql("SELECT * FROM issues.list()", &QueryParameters::default())
+            .await
+            .expect_err("catalog source function must not gain a two-part alias");
+    }
+
+    #[tokio::test]
+    async fn catalog_source_function_errors_preserve_complete_identity() {
+        let adapter = adapter_with_source_function(Some("github_v4"), "issues", "list");
+
+        for (sql, expected) in [
+            (
+                "SELECT * FROM github_v4.issues.missing()",
+                "unknown source table function github_v4.issues.missing; \
+                 available functions: github_v4.issues.list",
+            ),
+            (
+                "SELECT * FROM github_v4.issues.list",
+                "`github_v4.issues.list` is a table function, not a table",
+            ),
+            ("SELECT * FROM other.issues.list()", "other.issues.list"),
+            (
+                "SELECT * FROM github_v4.other.list()",
+                "github_v4.other.list",
+            ),
+            (
+                "SELECT * FROM github_v4.issues.extra.list()",
+                "github_v4.issues.extra.list",
+            ),
+        ] {
+            assert_query_error_contains(&adapter, sql, expected).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn legacy_source_function_remains_two_part() {
+        let adapter = adapter_with_source_function(None, "github", "search_issues");
+        let execution = adapter
+            .execute_sql(
+                "SELECT github.search_issues.value \
+                 FROM github.search_issues()",
+                &QueryParameters::default(),
+            )
+            .await
+            .expect("legacy source function");
+
+        let usage = execution
+            .provenance()
+            .table_functions()
+            .first()
+            .expect("function provenance");
+        assert_eq!(usage.catalog_name(), "datafusion");
+        assert_eq!(usage.schema_name(), "github");
+        assert_eq!(usage.function_name(), "search_issues");
+
+        assert_query_error_contains(
+            &adapter,
+            "SELECT * FROM datafusion.github.search_issues()",
+            "unknown source table function datafusion.github.search_issues",
+        )
+        .await;
     }
 
     #[tokio::test]

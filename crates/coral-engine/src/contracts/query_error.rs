@@ -220,6 +220,9 @@ impl StructuredQueryError {
         let display_ref = format_schema_function(function);
         let mut metadata = HashMap::new();
         metadata.insert("object_kind".to_string(), "table_function".to_string());
+        if let Some(catalog_name) = &function.catalog_name {
+            metadata.insert("catalog".to_string(), catalog_name.clone());
+        }
         metadata.insert("schema".to_string(), function.schema_name.clone());
         metadata.insert("function".to_string(), function.function_name.clone());
 
@@ -539,10 +542,22 @@ fn format_schema_table_fully_quoted(info: &TableInfo) -> String {
 }
 
 fn format_schema_function(info: &TableFunctionInfo) -> String {
-    format!(
-        "{}.{}",
-        quote_dotted_identifier(&info.schema_name),
-        quote_identifier(&info.function_name)
+    info.catalog_name.as_deref().map_or_else(
+        || {
+            format!(
+                "{}.{}",
+                quote_dotted_identifier(&info.schema_name),
+                quote_identifier(&info.function_name)
+            )
+        },
+        |catalog_name| {
+            format!(
+                "{}.{}.{}",
+                quote_identifier(catalog_name),
+                quote_identifier(&info.schema_name),
+                quote_identifier(&info.function_name)
+            )
+        },
     )
 }
 

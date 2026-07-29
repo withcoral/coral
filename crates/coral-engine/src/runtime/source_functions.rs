@@ -40,9 +40,9 @@ use crate::backends::{
 };
 use crate::runtime::literal_scalar_value;
 use crate::runtime::scoped_table_functions::{
-    ScopedTableFunctionCall, ScopedTableFunctionName, ScopedTableFunctionSignature,
-    available_functions_hint, call_parts, find_placeholder, lower_named_args_to_positional_exprs,
-    original_relation, qualified_name, reject_settings,
+    ScopedTableFunctionSignature, TableFunctionCall, TableFunctionIdentity,
+    available_functions_hint, call_parts, catalog_qualified_name, find_placeholder,
+    lower_named_args_to_positional_exprs, original_relation, qualified_name, reject_settings,
     reject_unbound_parameters as reject_unbound_table_function_parameters,
     reject_unsupported_modifiers,
 };
@@ -53,26 +53,31 @@ const SOURCE_FUNCTION_ANALYZER_RULE_NAME: &str = "coral_source_functions";
 
 #[derive(Debug)]
 pub(crate) struct SourceFunctionRegistry {
-    functions: HashMap<ScopedTableFunctionName, SourceFunction>,
-    source_schemas: HashSet<String>,
+    functions: HashMap<TableFunctionIdentity, SourceFunction>,
+    scopes: HashSet<(String, String, bool)>,
 }
 
 impl SourceFunctionRegistry {
     pub(crate) fn new<'a>(
         functions: impl IntoIterator<Item = &'a RegisteredTableFunction>,
     ) -> Self {
-        let mut source_schemas = HashSet::new();
+        let mut scopes = HashSet::new();
         let mut functions_by_name = HashMap::new();
 
         for function in functions {
-            let lookup_key = ScopedTableFunctionName::from_manifest(function);
-            source_schemas.insert(lookup_key.schema.clone());
+            let lookup_key = TableFunctionIdentity::from_registered(function);
+            let catalog_qualified = function.catalog_name.is_some();
+            scopes.insert((
+                lookup_key.catalog_name.clone(),
+                lookup_key.schema_name.clone(),
+                catalog_qualified,
+            ));
             functions_by_name.insert(lookup_key, SourceFunction::from_registered(function));
         }
 
         Self {
             functions: functions_by_name,
-            source_schemas,
+            scopes,
         }
     }
 
@@ -80,7 +85,7 @@ impl SourceFunctionRegistry {
         self.functions.is_empty()
     }
 
-    pub(crate) fn names(&self) -> HashSet<ScopedTableFunctionName> {
+    pub(crate) fn names(&self) -> HashSet<TableFunctionIdentity> {
         self.functions.keys().cloned().collect()
     }
 
@@ -120,20 +125,27 @@ impl SourceFunctionRegistry {
         state.add_analyzer_rule(Arc::new(SourceFunctionAnalyzerRule));
     }
 
-    fn find(&self, call: &ScopedTableFunctionCall) -> Option<&SourceFunction> {
-        self.functions.get(&call.lookup_key)
+    fn find(&self, call: &TableFunctionCall) -> Option<&SourceFunction> {
+        self.functions
+            .get(&call.lookup_key)
+            .filter(|function| function.catalog_qualified == call.is_catalog_qualified())
     }
 
-    fn owns_schema(&self, call: &ScopedTableFunctionCall) -> bool {
-        self.source_schemas.contains(&call.lookup_key.schema)
+    fn owns_scope(&self, call: &TableFunctionCall) -> bool {
+        self.scopes.contains(&(
+            call.lookup_key.catalog_name.clone(),
+            call.lookup_key.schema_name.clone(),
+            call.is_catalog_qualified(),
+        ))
     }
 
-    fn available_functions_hint(&self, schema: &str) -> String {
+    fn available_functions_hint(&self, call: &TableFunctionCall) -> String {
         available_functions_hint(
-            schema,
-            self.functions
-                .iter()
-                .map(|(key, function)| (key, function.display_name.as_str())),
+            &call.lookup_key,
+            self.functions.iter().filter_map(|(key, function)| {
+                (function.catalog_qualified == call.is_catalog_qualified())
+                    .then_some((key, function.display_name.as_str()))
+            }),
         )
     }
 }
@@ -144,21 +156,21 @@ impl RelationPlanner for SourceFunctionRegistry {
         relation: TableFactor,
         context: &mut dyn RelationPlannerContext,
     ) -> Result<RelationPlanning> {
-        let Some(call) = ScopedTableFunctionCall::parse(&relation, context) else {
+        let Some(call) = TableFunctionCall::parse(&relation, context) else {
             return Ok(original_relation(relation));
         };
 
         let Some(function) = self.find(&call) else {
-            if self.owns_schema(&call) {
-                let hint = self.available_functions_hint(&call.lookup_key.schema);
+            if call.is_catalog_qualified() || self.owns_scope(&call) {
+                let hint = self.available_functions_hint(&call);
                 return Err(call.unknown_function_error("source table function", &hint));
             }
             return Ok(original_relation(relation));
         };
 
-        reject_unsupported_modifiers(&call, &relation)?;
+        reject_unsupported_modifiers(&call.display_name, &relation)?;
         let (call_args, alias) = call_parts(relation);
-        reject_settings(&call, &call_args)?;
+        reject_settings(&call.display_name, &call_args)?;
 
         let lowered_args = lower_named_args_to_positional_exprs(function, &call_args, context)?;
         let node = SourceFunctionNode::new(function, lowered_args)?;
@@ -184,6 +196,7 @@ impl RelationPlanner for SourceFunctionRegistry {
 struct SourceFunction {
     display_name: String,
     table_reference: TableReference,
+    catalog_qualified: bool,
     arguments: Vec<SourceFunctionArgument>,
     factory: Arc<dyn SourceFunctionProviderFactory>,
 }
@@ -196,11 +209,32 @@ impl SourceFunction {
             .map(SourceFunctionArgument::from_registered)
             .collect::<Vec<_>>();
         Self {
-            display_name: qualified_name(&function.schema_name, &function.function_name),
-            table_reference: TableReference::partial(
-                function.schema_name.clone(),
-                function.function_name.clone(),
+            display_name: function.catalog_name.as_deref().map_or_else(
+                || qualified_name(&function.schema_name, &function.function_name),
+                |catalog_name| {
+                    catalog_qualified_name(
+                        catalog_name,
+                        &function.schema_name,
+                        &function.function_name,
+                    )
+                },
             ),
+            table_reference: function.catalog_name.as_deref().map_or_else(
+                || {
+                    TableReference::partial(
+                        function.schema_name.clone(),
+                        function.function_name.clone(),
+                    )
+                },
+                |catalog_name| {
+                    TableReference::full(
+                        catalog_name.to_string(),
+                        function.schema_name.clone(),
+                        function.function_name.clone(),
+                    )
+                },
+            ),
+            catalog_qualified: function.catalog_name.is_some(),
             arguments,
             factory: Arc::clone(&function.factory),
         }
@@ -251,8 +285,8 @@ impl ScopedTableFunctionSignature for SourceFunction {
 #[derive(Debug, Clone)]
 pub(crate) struct SourceFunctionNode {
     display_name: String,
-    /// Two-part `schema.function` reference, so result columns qualify the
-    /// same way table columns do (`github.pulls.id`, `pulls.id`).
+    /// Complete SQL reference, so result columns retain the same qualifier as
+    /// the invoked legacy or catalog-qualified function.
     table_reference: TableReference,
     declared_args: Vec<SourceFunctionArgument>,
     call_args: Vec<Expr>,

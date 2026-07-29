@@ -1176,6 +1176,7 @@ impl QueryTableUsage {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct QueryTableFunctionUsage {
     source: String,
+    catalog: String,
     schema: String,
     function: String,
 }
@@ -1185,11 +1186,13 @@ impl QueryTableFunctionUsage {
     /// Builds one source-scoped table function usage entry.
     pub fn new(
         source_name: impl Into<String>,
+        catalog_name: impl Into<String>,
         schema_name: impl Into<String>,
         function_name: impl Into<String>,
     ) -> Self {
         Self {
             source: source_name.into(),
+            catalog: catalog_name.into(),
             schema: schema_name.into(),
             function: function_name.into(),
         }
@@ -1199,6 +1202,12 @@ impl QueryTableFunctionUsage {
     /// Returns the installed source name that owns this table function.
     pub fn source_name(&self) -> &str {
         &self.source
+    }
+
+    #[must_use]
+    /// Returns the internal SQL catalog name for this table function.
+    pub fn catalog_name(&self) -> &str {
+        &self.catalog
     }
 
     #[must_use]
