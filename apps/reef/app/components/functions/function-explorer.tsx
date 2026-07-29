@@ -55,7 +55,7 @@ export function FunctionExplorer({ functions, onSelect, selectedName }: Function
                   return (
                     <div key={namespace.name}>
                       <ButtonContainer
-                        aria-controls={namespaceChildrenId}
+                        aria-controls={expanded ? namespaceChildrenId : undefined}
                         aria-expanded={expanded}
                         className={styles.listRow}
                         fullWidth
