@@ -49,7 +49,7 @@ const FETCH_TIMEOUT: Duration = Duration::from_mins(2);
 /// the report cannot see.
 const HEADER: &str = "source,operation_id,row_path,mode,\
     page_size_param,page_size_default,page_size_max,\
-    page_param,page_start,\
+    page_param,page_start,page_step,\
     cursor_param,response_cursor_path,response_cursor_header,\
     offset_param,offset_start,offset_step,\
     next_url_header,next_url_path";
@@ -90,6 +90,7 @@ struct OperationRow {
     page_size_max: String,
     page_param: String,
     page_start: String,
+    page_step: String,
     cursor_param: String,
     response_cursor_path: String,
     response_cursor_header: String,
@@ -102,7 +103,7 @@ struct OperationRow {
 
 impl OperationRow {
     /// The fields in header order.
-    fn fields(&self) -> [&str; 17] {
+    fn fields(&self) -> [&str; 18] {
         [
             &self.source,
             &self.operation_id,
@@ -113,6 +114,7 @@ impl OperationRow {
             &self.page_size_max,
             &self.page_param,
             &self.page_start,
+            &self.page_step,
             &self.cursor_param,
             &self.response_cursor_path,
             &self.response_cursor_header,
@@ -254,6 +256,7 @@ fn import_source_rows(
                 // The start and step columns describe how their parameter is
                 // walked, so they only carry meaning when it is set.
                 page_start: option_number(pagination.map(|spec| spec.page_start), &page_param),
+                page_step: option_number(pagination.map(|spec| spec.page_step), &page_param),
                 page_param,
                 cursor_param: pagination
                     .and_then(|spec| spec.cursor_param.clone())
@@ -408,6 +411,7 @@ mod tests {
             page_size_max: "100".to_owned(),
             page_param: "page".to_owned(),
             page_start: "1".to_owned(),
+            page_step: "1".to_owned(),
             cursor_param: String::new(),
             response_cursor_path: String::new(),
             response_cursor_header: String::new(),
