@@ -14,9 +14,9 @@ use coral_spec::{
     SourceTableFunctionSpec, TableCommon,
 };
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
-use datafusion::catalog::CatalogProvider;
+use datafusion::catalog::{CatalogProvider, SchemaProvider};
 use datafusion::datasource::TableProvider;
-use datafusion::error::DataFusionError;
+use datafusion::error::{DataFusionError, Result as DataFusionResult};
 use datafusion::prelude::SessionContext;
 use serde_json::Value;
 
@@ -128,6 +128,34 @@ pub(crate) struct RegisteredInput {
     pub(crate) is_set: bool,
 }
 
+/// Descriptive metadata paired with one published table provider.
+///
+/// Catalog, schema, and table identity are owned by the enclosing publication
+/// map keys so provider metadata cannot drift from its registered identity.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct RegisteredTableMetadata {
+    pub(crate) description: String,
+    pub(crate) guide: String,
+    pub(crate) columns: Vec<RegisteredColumn>,
+    pub(crate) filters: Vec<RegisteredFilter>,
+    pub(crate) required_filters: Vec<String>,
+    pub(crate) search_limits: Option<SearchLimitsSpec>,
+}
+
+/// Descriptive metadata paired with one published table-function factory.
+///
+/// Catalog, schema, and function identity are owned by the enclosing
+/// publication map keys.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct RegisteredTableFunctionMetadata {
+    pub(crate) kind: SourceTableFunctionKind,
+    pub(crate) description: String,
+    pub(crate) guide: String,
+    pub(crate) arguments: Vec<RegisteredTableFunctionArgument>,
+    pub(crate) result_columns: Vec<RegisteredTableFunctionResultColumn>,
+    pub(crate) search_limits: Option<SearchLimitsSpec>,
+}
+
 /// The source's portion of a fully qualified table name
 /// (`catalog.schema.table`): which position its name occupies and what that
 /// name is. Names for all selected sources share one flat namespace
@@ -165,8 +193,278 @@ pub(crate) struct RegisteredSource {
 }
 
 pub(crate) struct BackendRegistration {
+    /// Unified catalog publications. Real backends migrate to this field in
+    /// Slice 5; Slice 4 exercises the final registry contract with mocks.
+    pub(crate) catalog_publications: Vec<CatalogPublication>,
+    legacy: Option<LegacyBackendRegistration>,
+}
+
+/// Transitional payload for real backends that migrate in Slice 5.
+pub(crate) struct LegacyBackendRegistration {
     pub(crate) schemas: Vec<BackendSchemaRegistration>,
     pub(crate) catalogs: Vec<BackendCatalogRegistration>,
+}
+
+impl BackendRegistration {
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Slice 4 exercises the unified constructor in registry tests before real backends adopt it in Slice 5."
+        )
+    )]
+    pub(crate) fn single(publication: CatalogPublication) -> Self {
+        Self {
+            catalog_publications: vec![publication],
+            legacy: None,
+        }
+    }
+
+    pub(crate) fn legacy(
+        schemas: Vec<BackendSchemaRegistration>,
+        catalogs: Vec<BackendCatalogRegistration>,
+    ) -> Self {
+        Self {
+            catalog_publications: Vec::new(),
+            legacy: Some(LegacyBackendRegistration { schemas, catalogs }),
+        }
+    }
+
+    pub(crate) fn legacy_registration(&self) -> Option<&LegacyBackendRegistration> {
+        self.legacy.as_ref()
+    }
+
+    pub(crate) fn into_parts(self) -> (Vec<CatalogPublication>, Option<LegacyBackendRegistration>) {
+        (self.catalog_publications, self.legacy)
+    }
+
+    pub(crate) fn into_legacy(self) -> DataFusionResult<LegacyBackendRegistration> {
+        self.legacy.ok_or_else(|| {
+            DataFusionError::Internal(
+                "composite legacy backend received a unified catalog publication".to_string(),
+            )
+        })
+    }
+}
+
+/// One catalog and all schemas a backend intends to publish atomically.
+pub(crate) struct CatalogPublication {
+    pub(crate) catalog_name: String,
+    schemas: BTreeMap<String, SchemaPublication>,
+    pub(crate) inputs: Vec<RegisteredInput>,
+    pub(crate) column_fetcher: Option<Arc<dyn DatabaseColumnFetcher>>,
+}
+
+impl CatalogPublication {
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Slice 4 exercises publication builders in registry tests before real backends adopt them in Slice 5."
+        )
+    )]
+    pub(crate) fn new(catalog_name: impl Into<String>, inputs: Vec<RegisteredInput>) -> Self {
+        Self {
+            catalog_name: catalog_name.into(),
+            schemas: BTreeMap::new(),
+            inputs,
+            column_fetcher: None,
+        }
+    }
+
+    pub(crate) fn schema_names(&self) -> impl Iterator<Item = &str> {
+        self.schemas.keys().map(String::as_str)
+    }
+
+    pub(crate) fn schema_entries(&self) -> impl Iterator<Item = (&str, &SchemaPublication)> {
+        self.schemas
+            .iter()
+            .map(|(name, schema)| (name.as_str(), schema))
+    }
+
+    pub(crate) fn schema_publications(&self) -> impl Iterator<Item = &SchemaPublication> {
+        self.schemas.values()
+    }
+
+    pub(crate) fn schema_publications_mut(
+        &mut self,
+    ) -> impl Iterator<Item = &mut SchemaPublication> {
+        self.schemas.values_mut()
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Slice 4 exercises publication builders in registry tests before real backends adopt them in Slice 5."
+        )
+    )]
+    pub(crate) fn publish_table(
+        &mut self,
+        schema_name: impl Into<String>,
+        table_name: impl Into<String>,
+        provider: Arc<dyn TableProvider>,
+        metadata: RegisteredTableMetadata,
+    ) -> DataFusionResult<()> {
+        let schema_name = schema_name.into();
+        let table_name = table_name.into();
+        let schema = self
+            .schemas
+            .entry(schema_name.clone())
+            .or_insert_with(|| SchemaPublication::new(schema_name.clone()));
+        let PublishedTables::Static(tables) = &mut schema.tables else {
+            return Err(DataFusionError::Execution(format!(
+                "catalog '{}' schema '{schema_name}' cannot publish static table '{table_name}' after a lazy schema provider",
+                self.catalog_name
+            )));
+        };
+        if tables.contains_key(&table_name) {
+            return Err(DataFusionError::Execution(format!(
+                "duplicate table publication '{}.{schema_name}.{table_name}'",
+                self.catalog_name
+            )));
+        }
+        tables.insert(table_name, StaticTablePublication { provider, metadata });
+        Ok(())
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Slice 4 exercises publication builders in registry tests before real backends adopt them in Slice 5."
+        )
+    )]
+    pub(crate) fn publish_table_function(
+        &mut self,
+        schema_name: impl Into<String>,
+        function_name: impl Into<String>,
+        factory: Arc<dyn SourceFunctionProviderFactory>,
+        metadata: RegisteredTableFunctionMetadata,
+    ) -> DataFusionResult<()> {
+        let schema_name = schema_name.into();
+        let function_name = function_name.into();
+        let schema = self
+            .schemas
+            .entry(schema_name.clone())
+            .or_insert_with(|| SchemaPublication::new(schema_name.clone()));
+        if schema.table_functions.contains_key(&function_name) {
+            return Err(DataFusionError::Execution(format!(
+                "duplicate table-function publication '{}.{schema_name}.{function_name}'",
+                self.catalog_name
+            )));
+        }
+        schema.table_functions.insert(
+            function_name,
+            TableFunctionPublication { factory, metadata },
+        );
+        Ok(())
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Slice 4 exercises publication builders in registry tests before real backends adopt them in Slice 5."
+        )
+    )]
+    pub(crate) fn publish_lazy_schema(
+        &mut self,
+        schema_name: impl Into<String>,
+        provider: Arc<dyn SchemaProvider>,
+        tables: BTreeMap<String, RegisteredTableMetadata>,
+    ) -> DataFusionResult<()> {
+        let schema_name = schema_name.into();
+        match self.schemas.entry(schema_name.clone()) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(SchemaPublication {
+                    schema_name,
+                    tables: PublishedTables::Lazy { provider, tables },
+                    table_functions: BTreeMap::new(),
+                });
+            }
+            std::collections::btree_map::Entry::Occupied(mut entry) => {
+                let schema = entry.get_mut();
+                match &schema.tables {
+                    PublishedTables::Static(static_tables) if static_tables.is_empty() => {
+                        schema.tables = PublishedTables::Lazy { provider, tables };
+                    }
+                    PublishedTables::Static(_) => {
+                        return Err(DataFusionError::Execution(format!(
+                            "catalog '{}' schema '{schema_name}' cannot publish a lazy schema after static tables",
+                            self.catalog_name
+                        )));
+                    }
+                    PublishedTables::Lazy { .. } => {
+                        return Err(DataFusionError::Execution(format!(
+                            "duplicate lazy schema publication '{}.{schema_name}'",
+                            self.catalog_name
+                        )));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// One schema within a catalog publication.
+pub(crate) struct SchemaPublication {
+    pub(crate) schema_name: String,
+    pub(crate) tables: PublishedTables,
+    pub(crate) table_functions: BTreeMap<String, TableFunctionPublication>,
+}
+
+impl SchemaPublication {
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Slice 4 exercises publication builders in registry tests before real backends adopt them in Slice 5."
+        )
+    )]
+    fn new(schema_name: String) -> Self {
+        Self {
+            schema_name,
+            tables: PublishedTables::Static(BTreeMap::new()),
+            table_functions: BTreeMap::new(),
+        }
+    }
+}
+
+/// Static or lazily resolved table providers for one published schema.
+pub(crate) enum PublishedTables {
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Slice 4 exercises this variant in registry tests before real backends adopt it in Slice 5."
+        )
+    )]
+    Static(BTreeMap<String, StaticTablePublication>),
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Slice 4 exercises this variant in registry tests before real backends adopt it in Slice 5."
+        )
+    )]
+    Lazy {
+        provider: Arc<dyn SchemaProvider>,
+        tables: BTreeMap<String, RegisteredTableMetadata>,
+    },
+}
+
+/// One static provider paired with its descriptive catalog metadata.
+pub(crate) struct StaticTablePublication {
+    pub(crate) provider: Arc<dyn TableProvider>,
+    pub(crate) metadata: RegisteredTableMetadata,
+}
+
+/// One table-function factory paired with its descriptive catalog metadata.
+pub(crate) struct TableFunctionPublication {
+    pub(crate) factory: Arc<dyn SourceFunctionProviderFactory>,
+    pub(crate) metadata: RegisteredTableFunctionMetadata,
 }
 
 pub(crate) struct BackendSchemaRegistration {

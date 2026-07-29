@@ -82,9 +82,10 @@ mod composite;
 pub(crate) use common::{
     BackendCatalogRegistration, BackendCompileRequest, BackendRegistration,
     BackendRegistrationContext, BackendSchemaRegistration, BoundSourceFunctionArg,
-    BoundSourceFunctionValue, CatalogColumnFetcher, ColumnInventoryFilter, CompiledBackendSource,
-    DatabaseColumnFetcher, DatabaseColumnRow, RegisteredInput, RegisteredSource, RegisteredTable,
-    RegisteredTableFunction, RegisteredTableFunctionArgument, SourceFunctionProviderFactory,
+    BoundSourceFunctionValue, CatalogColumnFetcher, CatalogPublication, ColumnInventoryFilter,
+    CompiledBackendSource, DatabaseColumnFetcher, DatabaseColumnRow, LegacyBackendRegistration,
+    PublishedTables, RegisteredInput, RegisteredSource, RegisteredTable, RegisteredTableFunction,
+    RegisteredTableFunctionArgument, SchemaPublication, SourceFunctionProviderFactory,
     SourceQualifiedName, build_registered_inputs, build_registered_table,
     build_registered_table_function, registered_columns_from_schema, registered_columns_from_specs,
     required_filter_names, schema_from_columns, validate_lookup_key_filter_backend_support,

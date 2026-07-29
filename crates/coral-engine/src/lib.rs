@@ -77,7 +77,8 @@ pub use composition::{
     RequestIdentitySelectionContext, RequestIdentitySelectionError, RequestIdentitySelector,
     SelectedRequestIdentity, SourceDecorator, SourceDecoratorError, SourceFailurePolicy,
     SourceInputResolutionContext, SourceInputResolver, SourceInputResolverError,
-    SourceObservationPublisher, SourceObservationSurfaceKind, SourceScanObservation, SourceTables,
+    SourceObservationPublisher, SourceObservationSurfaceKind, SourceScanObservation,
+    SourceSchemaDecorationContext, SourceTableDecoratorTarget,
 };
 pub use contracts::{
     CatalogInfo, ColumnInfo, CoreError, DependentJoinConfig, DependentJoinSourceConfig,

@@ -8,7 +8,7 @@ use std::time::Instant;
 use coral_engine::{
     CatalogInfo, CoralQuery, CoreError, DescribeTableInfo, PreparedQueryRuntime, QueryExecution,
     QueryExecutionProvenance, QueryPlan, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,
-    SourceDecorator, SourceDecoratorError, SourceFailurePolicy, SourceInputResolver, SourceTables,
+    SourceDecorator, SourceDecoratorError, SourceFailurePolicy, SourceInputResolver,
     SourceValidationReport, StatusCode, TableInfo, UdfRuntimeDefinition,
 };
 use coral_spec::{ManifestInputKind, ManifestInputSpec};
@@ -118,16 +118,8 @@ impl SourceDecorator for CatalogFailureRecorder {
         "catalog_failure_recorder"
     }
 
-    fn supports_catalog_sources(&self) -> bool {
+    fn supports_lazy_schemas(&self) -> bool {
         true
-    }
-
-    fn decorate_source(
-        &mut self,
-        _source: &QuerySource,
-        tables: SourceTables,
-    ) -> Result<SourceTables, SourceDecoratorError> {
-        Ok(tables)
     }
 
     fn source_failed(
@@ -1260,7 +1252,7 @@ mod tests {
     use coral_engine::{
         EngineExtensions, QueryExecution, QueryExecutionProvenance, QueryTableFunctionUsage,
         QueryTableUsage, SourceDecorator, SourceDecoratorError, SourceInputResolutionContext,
-        SourceInputResolver, SourceInputResolverError, SourceTables,
+        SourceInputResolver, SourceInputResolverError,
     };
     use coral_spec::parse_source_manifest_yaml;
     use serde_json::{Value, json};
@@ -2765,14 +2757,6 @@ select 1 as value
                 on_first_prepare();
             }
             Ok(())
-        }
-
-        fn decorate_source(
-            &mut self,
-            _source: &QuerySource,
-            tables: SourceTables,
-        ) -> Result<SourceTables, SourceDecoratorError> {
-            Ok(tables)
         }
     }
 

@@ -18,9 +18,7 @@ use coral_api::v1::{
 };
 use coral_app::EngineExtensionsProvider;
 use coral_client::default_workspace;
-use coral_engine::{
-    EngineExtensions, QuerySource, SourceDecorator, SourceDecoratorError, SourceTables,
-};
+use coral_engine::{EngineExtensions, QuerySource, SourceDecorator, SourceDecoratorError};
 use serde_json::json;
 use tonic::{Code, Request};
 
@@ -50,7 +48,7 @@ impl SourceDecorator for PausingCatalogDecorator {
         "pausing_catalog_resolution"
     }
 
-    fn supports_catalog_sources(&self) -> bool {
+    fn supports_lazy_schemas(&self) -> bool {
         true
     }
 
@@ -69,14 +67,6 @@ impl SourceDecorator for PausingCatalogDecorator {
             .map_err(|_receive_error| {
                 SourceDecoratorError::failed_precondition("catalog pause sender closed")
             })
-    }
-
-    fn decorate_source(
-        &mut self,
-        _source: &QuerySource,
-        tables: SourceTables,
-    ) -> Result<SourceTables, SourceDecoratorError> {
-        Ok(tables)
     }
 }
 

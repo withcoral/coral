@@ -141,14 +141,14 @@ impl CompiledBackendSource for CompiledDatabaseSource {
             &database_catalog.relations,
         );
 
-        Ok(BackendRegistration {
-            schemas: Vec::new(),
-            catalogs: vec![BackendCatalogRegistration {
+        Ok(BackendRegistration::legacy(
+            Vec::new(),
+            vec![BackendCatalogRegistration {
                 catalog: database_catalog.provider,
                 source,
                 column_fetcher: database_catalog.column_fetcher,
             }],
-        })
+        ))
     }
 }
 
@@ -403,7 +403,7 @@ mod tests {
     use crate::backends::shared::template::RenderContext;
     use crate::{
         CoralQuery, QueryRuntimeConfig, QuerySource, RuntimeSourceComponent, RuntimeSourcePackage,
-        SourceDecorator, SourceDecoratorError, SourceFailurePolicy, SourceTables,
+        SourceDecorator, SourceDecoratorError, SourceFailurePolicy,
     };
 
     struct AbortOnSourceFailureDecorator;
@@ -412,15 +412,6 @@ mod tests {
         fn name(&self) -> &'static str {
             "abort-on-source-failure"
         }
-
-        fn decorate_source(
-            &mut self,
-            _source: &QuerySource,
-            tables: SourceTables,
-        ) -> Result<SourceTables, SourceDecoratorError> {
-            Ok(tables)
-        }
-
         fn source_failed(
             &mut self,
             _source: &QuerySource,

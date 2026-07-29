@@ -55,7 +55,10 @@ impl CompiledBackendSource for CompositeCompiledSource {
         let mut catalogs: Vec<BackendCatalogRegistration> = Vec::new();
 
         for component in &self.components {
-            let registration = component.register(ctx, registration_context).await?;
+            let registration = component
+                .register(ctx, registration_context)
+                .await?
+                .into_legacy()?;
             catalogs.extend(registration.catalogs);
             for schema in registration.schemas {
                 let schema_name = schema.source.qualified_name.name().to_string();
@@ -89,13 +92,13 @@ impl CompiledBackendSource for CompositeCompiledSource {
             }
         }
 
-        Ok(BackendRegistration {
-            schemas: schemas
+        Ok(BackendRegistration::legacy(
+            schemas
                 .into_values()
                 .map(CompositeSchemaRegistration::into_registration)
                 .collect(),
             catalogs,
-        })
+        ))
     }
 }
 

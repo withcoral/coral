@@ -167,8 +167,8 @@ impl CompiledBackendSource for HttpCompiledSource {
             &secret_keys,
         );
 
-        Ok(BackendRegistration {
-            schemas: vec![BackendSchemaRegistration {
+        Ok(BackendRegistration::legacy(
+            vec![BackendSchemaRegistration {
                 tables,
                 source: RegisteredSource {
                     qualified_name: SourceQualifiedName::Schema(self.manifest.common.name.clone()),
@@ -177,8 +177,8 @@ impl CompiledBackendSource for HttpCompiledSource {
                     inputs,
                 },
             }],
-            catalogs: Vec::new(),
-        })
+            Vec::new(),
+        ))
     }
 }
 

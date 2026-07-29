@@ -32,6 +32,10 @@ pub(crate) trait ScopedTableFunctionSignature {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "The repeated suffix makes each component of the SQL catalog/schema/function identity explicit."
+)]
 pub(crate) struct TableFunctionIdentity {
     pub(crate) catalog_name: String,
     pub(crate) schema_name: String,
@@ -284,8 +288,7 @@ pub(crate) fn reject_unsupported_modifiers(
     for (present, modifier) in unsupported_modifiers {
         if present {
             return Err(DataFusionError::Plan(format!(
-                "table function {} does not support {modifier}",
-                display_name
+                "table function {display_name} does not support {modifier}"
             )));
         }
     }
