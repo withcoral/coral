@@ -1,11 +1,19 @@
-import { Notification, app, dialog } from 'electron'
+import { Notification, app, autoUpdater as nativeAutoUpdater, dialog } from 'electron'
 import { createRequire } from 'node:module'
+import { join } from 'node:path'
 import type { AppUpdater } from 'electron-updater'
 
 import { createDesktopUpdater, type DesktopUpdater } from './auto-update-core'
+import {
+  clearUpdateIntent,
+  discardUpdateIntent,
+  shouldExitForUpdateIntent,
+  writeUpdateIntent,
+} from './update-intent'
 
 const require = createRequire(import.meta.url)
 const RELEASE_UPDATER_BUNDLE_MARKER = '[coral-updater] release updater enabled'
+const UPDATE_INTENT_FILENAME = 'update-intent.json'
 
 // Baked in at build time by electron.vite.config.ts (true only when
 // CORAL_DESKTOP_RELEASE=1). `typeof` guard keeps it safe if the define is ever
@@ -23,6 +31,11 @@ export function desktopUpdatesSupported(): boolean {
 }
 
 let updater: DesktopUpdater | null = null
+let installFailureHandler = () => app.exit(0)
+
+function updateIntentPath(): string {
+  return join(app.getPath('userData'), UPDATE_INTENT_FILENAME)
+}
 
 function desktopUpdater(): DesktopUpdater {
   if (!updater) {
@@ -39,15 +52,48 @@ function desktopUpdater(): DesktopUpdater {
       showNotification: (title, body) => {
         new Notification({ title, body }).show()
       },
+      recordUpdateIntent: (targetVersion) => {
+        writeUpdateIntent(updateIntentPath(), targetVersion)
+      },
+      clearUpdateIntent: () => {
+        clearUpdateIntent(updateIntentPath())
+      },
+      // Core clears the marker before this callback; the lifecycle handler then
+      // allows a normal quit from the already-stopped state.
+      onInstallFailure: () => installFailureHandler(),
     })
   }
   return updater
 }
 
-export function installAutoUpdater(): void {
+export function shouldExitForPendingDesktopUpdate(): boolean {
+  if (!desktopUpdatesSupported()) return false
+  return shouldExitForUpdateIntent(updateIntentPath(), app.getVersion())
+}
+
+export function clearPendingDesktopUpdateIntent(): void {
   if (!desktopUpdatesSupported()) return
+  discardUpdateIntent(updateIntentPath())
+}
+
+export function installAutoUpdater({
+  allowUpdateQuit,
+  onInstallFailure,
+}: {
+  allowUpdateQuit: () => void
+  onInstallFailure: () => void
+}): void {
+  if (!desktopUpdatesSupported()) return
+
+  installFailureHandler = onInstallFailure
+  nativeAutoUpdater.once('before-quit-for-update', allowUpdateQuit)
   console.info(RELEASE_UPDATER_BUNDLE_MARKER)
   desktopUpdater().install()
+}
+
+export function quitAndInstallDesktopUpdate(): boolean {
+  if (!desktopUpdatesSupported()) return false
+  return desktopUpdater().quitAndInstall()
 }
 
 export async function checkForDesktopUpdates({

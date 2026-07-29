@@ -21,6 +21,7 @@ function createFakeUpdater() {
       return fake
     },
     checkForUpdates: vi.fn(async (): Promise<UpdateCheckResultLike | null> => null),
+    quitAndInstall: vi.fn(),
     emit(event: string, ...args: unknown[]) {
       for (const listener of listeners.get(event) ?? []) listener(...args)
     },
@@ -54,6 +55,9 @@ function createDeps(updater: UpdaterLike): DesktopUpdaterDeps & {
     showNotification: (title, body) => {
       notifications.push({ title, body })
     },
+    recordUpdateIntent: vi.fn(),
+    clearUpdateIntent: vi.fn(),
+    onInstallFailure: vi.fn(),
     notifications,
     infoDialogs,
     errorDialogs,
@@ -97,11 +101,11 @@ afterEach(() => {
 })
 
 describe('install', () => {
-  it('configures auto download and install-on-quit', () => {
+  it('configures auto download without automatic install-on-quit', () => {
     const updater = createFakeUpdater()
     createDesktopUpdater(createDeps(updater)).install()
     expect(updater.autoDownload).toBe(true)
-    expect(updater.autoInstallOnAppQuit).toBe(true)
+    expect(updater.autoInstallOnAppQuit).toBe(false)
   })
 
   it('checks shortly after startup and again every interval', async () => {
@@ -130,8 +134,88 @@ describe('install', () => {
   })
 })
 
+describe('explicit install hand-off', () => {
+  it('waits for the local update payload and hands off only once', async () => {
+    const events: string[] = []
+    const updater = createFakeUpdater()
+    const download = deferredPromise()
+    vi.mocked(updater.checkForUpdates).mockResolvedValue(
+      availableUpdate('1.2.4', download.promise),
+    )
+    const deps = createDeps(updater)
+    vi.mocked(deps.recordUpdateIntent).mockImplementation((version) => {
+      events.push(`intent:write:${version}`)
+    })
+    updater.quitAndInstall.mockImplementation(() => {
+      events.push('updater:quitAndInstall')
+    })
+    const desktopUpdater = createDesktopUpdater(deps)
+    desktopUpdater.install()
+
+    const check = desktopUpdater.check({ interactive: false })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(desktopUpdater.quitAndInstall()).toBe(false)
+    expect(deps.recordUpdateIntent).not.toHaveBeenCalled()
+    expect(updater.quitAndInstall).not.toHaveBeenCalled()
+
+    download.resolve()
+    await check
+    expect(desktopUpdater.quitAndInstall()).toBe(true)
+    expect(desktopUpdater.quitAndInstall()).toBe(true)
+    expect(updater.quitAndInstall).toHaveBeenCalledOnce()
+    expect(events).toEqual(['intent:write:1.2.4', 'updater:quitAndInstall'])
+  })
+
+  it('clears intent before finishing quit on an updater failure', async () => {
+    const events: string[] = []
+    const updater = createFakeUpdater()
+    vi.mocked(updater.checkForUpdates).mockResolvedValue(availableUpdate())
+    const deps = createDeps(updater)
+    vi.mocked(deps.clearUpdateIntent).mockImplementation(() => {
+      events.push('intent:clear')
+    })
+    vi.mocked(deps.onInstallFailure).mockImplementation(() => {
+      events.push('app:quit')
+    })
+    const desktopUpdater = createDesktopUpdater(deps)
+    desktopUpdater.install()
+    await desktopUpdater.check({ interactive: false })
+    expect(desktopUpdater.quitAndInstall()).toBe(true)
+
+    updater.emit('error', new Error('ShipIt hand-off failed'))
+
+    expect(events).toEqual(['intent:clear', 'app:quit'])
+  })
+
+  it('does not start installation when the intent marker cannot be written', async () => {
+    const updater = createFakeUpdater()
+    vi.mocked(updater.checkForUpdates).mockResolvedValue(availableUpdate())
+    const deps = createDeps(updater)
+    vi.mocked(deps.recordUpdateIntent).mockImplementation(() => {
+      throw new Error('disk full')
+    })
+    const desktopUpdater = createDesktopUpdater(deps)
+    desktopUpdater.install()
+    await desktopUpdater.check({ interactive: false })
+
+    expect(desktopUpdater.quitAndInstall()).toBe(false)
+    expect(updater.quitAndInstall).not.toHaveBeenCalled()
+  })
+
+  it('does not treat an updater error before hand-off as an install failure', () => {
+    const updater = createFakeUpdater()
+    const deps = createDeps(updater)
+    createDesktopUpdater(deps).install()
+
+    updater.emit('error', new Error('background check failed'))
+
+    expect(deps.clearUpdateIntent).not.toHaveBeenCalled()
+    expect(deps.onInstallFailure).not.toHaveBeenCalled()
+  })
+})
+
 describe('download completion notifications', () => {
-  it('waits for the download handoff promise instead of the earlier event', async () => {
+  it('waits for the local proxy promise instead of the earlier event', async () => {
     const updater = createFakeUpdater()
     const download = deferredPromise()
     vi.mocked(updater.checkForUpdates).mockResolvedValue(
@@ -155,7 +239,7 @@ describe('download completion notifications', () => {
     })
   })
 
-  it('notifies once when overlapping checks share a download promise', async () => {
+  it('serializes overlapping checks and notifies once', async () => {
     const updater = createFakeUpdater()
     const download = deferredPromise()
     vi.mocked(updater.checkForUpdates).mockResolvedValue(
@@ -170,27 +254,12 @@ describe('download completion notifications', () => {
     download.resolve()
     await Promise.all([firstCheck, secondCheck])
 
+    expect(updater.checkForUpdates).toHaveBeenCalledOnce()
     expect(deps.notifications).toEqual([
       {
         title: 'Coral update ready',
         body: 'Coral 1.2.4 will install when you quit the app.',
       },
-    ])
-  })
-
-  it('notifies again when a newer version is staged', async () => {
-    const updater = createFakeUpdater()
-    vi.mocked(updater.checkForUpdates)
-      .mockResolvedValueOnce(availableUpdate('1.2.4'))
-      .mockResolvedValueOnce(availableUpdate('1.2.5'))
-    const deps = createDeps(updater)
-    const desktopUpdater = createDesktopUpdater(deps)
-
-    await desktopUpdater.check({ interactive: false })
-    await desktopUpdater.check({ interactive: false })
-    expect(deps.notifications.map((n) => n.body)).toEqual([
-      'Coral 1.2.4 will install when you quit the app.',
-      'Coral 1.2.5 will install when you quit the app.',
     ])
   })
 })
@@ -210,11 +279,46 @@ describe('interactive checks', () => {
     ])
   })
 
-  it('reports the downloading version when an update is available', async () => {
+  it('reuses an in-flight background result', async () => {
     const updater = createFakeUpdater()
-    vi.mocked(updater.checkForUpdates).mockResolvedValue(availableUpdate())
+    const feed = deferredPromise()
+    vi.mocked(updater.checkForUpdates)
+      .mockImplementationOnce(async () => {
+        await feed.promise
+        return {
+          isUpdateAvailable: false,
+          updateInfo: { version: '1.2.3' },
+        }
+      })
+      .mockRejectedValueOnce(new Error('transient second request failure'))
     const deps = createDeps(updater)
-    await createDesktopUpdater(deps).check({ interactive: true })
+    const desktopUpdater = createDesktopUpdater(deps)
+
+    const background = desktopUpdater.check({ interactive: false })
+    const interactive = desktopUpdater.check({ interactive: true })
+    feed.resolve()
+    await Promise.all([background, interactive])
+
+    expect(updater.checkForUpdates).toHaveBeenCalledOnce()
+    expect(deps.infoDialogs).toEqual([
+      { message: 'Coral is up to date', detail: 'You are running Coral 1.2.3.' },
+    ])
+    expect(deps.errorDialogs).toHaveLength(0)
+  })
+
+  it('shows a background result before its download completes', async () => {
+    const updater = createFakeUpdater()
+    const download = deferredPromise()
+    vi.mocked(updater.checkForUpdates).mockResolvedValue(
+      availableUpdate('1.2.4', download.promise),
+    )
+    const deps = createDeps(updater)
+    const desktopUpdater = createDesktopUpdater(deps)
+
+    const background = desktopUpdater.check({ interactive: false })
+    await vi.advanceTimersByTimeAsync(0)
+    const interactive = desktopUpdater.check({ interactive: true })
+    await vi.advanceTimersByTimeAsync(0)
 
     expect(deps.infoDialogs).toEqual([
       {
@@ -223,6 +327,32 @@ describe('interactive checks', () => {
           'You will be notified when the update is ready. It will install after Coral quits.',
       },
     ])
+    expect(updater.checkForUpdates).toHaveBeenCalledOnce()
+
+    download.resolve()
+    await Promise.all([background, interactive])
+  })
+
+  it('reports the downloading version when an update is available', async () => {
+    const updater = createFakeUpdater()
+    const download = deferredPromise()
+    vi.mocked(updater.checkForUpdates).mockResolvedValue(
+      availableUpdate('1.2.4', download.promise),
+    )
+    const deps = createDeps(updater)
+    const check = createDesktopUpdater(deps).check({ interactive: true })
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(deps.infoDialogs).toEqual([
+      {
+        message: 'Coral 1.2.4 is downloading',
+        detail:
+          'You will be notified when the update is ready. It will install after Coral quits.',
+      },
+    ])
+
+    download.resolve()
+    await check
   })
 
   it('reports the update as ready (not downloading) once it has been staged', async () => {
@@ -240,6 +370,7 @@ describe('interactive checks', () => {
         detail: 'The update will install when you quit Coral.',
       },
     ])
+    expect(updater.checkForUpdates).toHaveBeenCalledOnce()
     // The staged-version notification must not fire a second time.
     expect(deps.notifications).toHaveLength(1)
   })

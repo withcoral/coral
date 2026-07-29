@@ -6,7 +6,7 @@
 export const STARTUP_UPDATE_CHECK_DELAY_MS = 5000
 // Long-running desktop sessions would otherwise only see new releases after a
 // restart; re-check periodically so a release ships to open apps too. The
-// downloaded update still installs on quit.
+// downloaded update is handed to the installer explicitly after app teardown.
 export const PERIODIC_UPDATE_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000
 
 interface UpdateInfoLike {
@@ -33,6 +33,7 @@ export interface UpdaterLike {
   on(event: 'update-downloaded', listener: (info: UpdateInfoLike) => void): unknown
   on(event: 'error', listener: (error: Error) => void): unknown
   checkForUpdates(): Promise<UpdateCheckResultLike | null>
+  quitAndInstall(): void
 }
 
 export interface DesktopUpdaterDeps {
@@ -41,11 +42,15 @@ export interface DesktopUpdaterDeps {
   showInfoDialog: (message: string, detail: string) => Promise<void>
   showErrorDialog: (message: string, detail: string) => Promise<void>
   showNotification: (title: string, body: string) => void
+  recordUpdateIntent: (targetVersion: string) => void
+  clearUpdateIntent: () => void
+  onInstallFailure: (error: Error) => void
 }
 
 export interface DesktopUpdater {
   install: () => void
   check: (options: { interactive: boolean }) => Promise<void>
+  quitAndInstall: () => boolean
 }
 
 function errorMessage(error: unknown): string {
@@ -56,12 +61,25 @@ function errorMessage(error: unknown): string {
 export function createDesktopUpdater(deps: DesktopUpdaterDeps): DesktopUpdater {
   const { updater } = deps
   let installed = false
-  // The version whose download promise completed successfully. On macOS,
-  // electron-updater emits `update-downloaded` before Squirrel has fetched the
-  // archive from its local proxy; the promise resolves after that handoff.
-  // Only the latter is safe to describe as ready for install-on-quit.
+  let installing = false
+  // With automatic install disabled on macOS, the promise resolves once the
+  // complete archive is available through electron-updater's local proxy.
+  // Explicit quitAndInstall() starts the subsequent Squirrel hand-off.
   let readyVersion: string | null = null
-  const trackedDownloads = new WeakMap<Promise<unknown>, Promise<DownloadOutcome>>()
+  let activeCheck:
+    | {
+        result: Promise<CheckOutcome>
+        completion: Promise<void>
+      }
+    | null = null
+
+  function clearInstallIntent(): void {
+    try {
+      deps.clearUpdateIntent()
+    } catch (error) {
+      console.error(`[coral-updater] failed to clear update intent: ${errorMessage(error)}`)
+    }
+  }
 
   function installListeners(): void {
     updater.on('checking-for-update', () => {
@@ -81,6 +99,18 @@ export function createDesktopUpdater(deps: DesktopUpdaterDeps): DesktopUpdater {
     })
     updater.on('error', (error) => {
       console.error(`[coral-updater] updater error: ${errorMessage(error)}`)
+      if (!installing) return
+
+      installing = false
+      readyVersion = null
+      clearInstallIntent()
+      try {
+        deps.onInstallFailure(error)
+      } catch (failureError) {
+        console.error(
+          `[coral-updater] install failure handler failed: ${errorMessage(failureError)}`,
+        )
+      }
     })
   }
 
@@ -122,14 +152,8 @@ export function createDesktopUpdater(deps: DesktopUpdaterDeps): DesktopUpdater {
     const downloadPromise = result.downloadPromise
     if (!downloadPromise) return null
 
-    const existing = trackedDownloads.get(downloadPromise)
-    if (existing) return existing
-
-    // electron-updater returns the same in-flight download promise to
-    // overlapping checks. Track it once so every caller observes failures but
-    // one completed version produces one notification.
     const version = result.updateInfo.version
-    const outcome = downloadPromise.then<DownloadOutcome, DownloadOutcome>(
+    return downloadPromise.then<DownloadOutcome, DownloadOutcome>(
       () => {
         if (readyVersion !== version) {
           readyVersion = version
@@ -149,8 +173,6 @@ export function createDesktopUpdater(deps: DesktopUpdaterDeps): DesktopUpdater {
         return { ok: false, error }
       },
     )
-    trackedDownloads.set(downloadPromise, outcome)
-    return outcome
   }
 
   function install(): void {
@@ -158,45 +180,112 @@ export function createDesktopUpdater(deps: DesktopUpdaterDeps): DesktopUpdater {
 
     installed = true
     updater.autoDownload = true
-    updater.autoInstallOnAppQuit = true
+    updater.autoInstallOnAppQuit = false
     installListeners()
 
     setTimeout(() => {
       void check({ interactive: false })
     }, STARTUP_UPDATE_CHECK_DELAY_MS)
-    // The check and download layers each reuse their own in-flight promise;
-    // trackDownload() also observes a shared download only once.
     setInterval(() => {
       void check({ interactive: false })
     }, PERIODIC_UPDATE_CHECK_INTERVAL_MS)
   }
 
-  async function check({ interactive }: { interactive: boolean }): Promise<void> {
+  async function performCheck(): Promise<CheckOutcome> {
     let result: UpdateCheckResultLike | null
     try {
       result = await updater.checkForUpdates()
     } catch (error) {
       console.error(`[coral-updater] update check failed: ${errorMessage(error)}`)
+      return { ok: false, error }
+    }
+
+    // Attach before exposing the result. The download starts inside
+    // checkForUpdates() and can fail while an interactive dialog is open;
+    // attaching now prevents an unhandled rejection.
+    const download = result?.isUpdateAvailable ? trackDownload(result) : null
+    return { ok: true, result, download }
+  }
+
+  async function observeCheck(
+    resultPromise: Promise<CheckOutcome>,
+    { interactive }: { interactive: boolean },
+  ): Promise<void> {
+    const result = await resultPromise
+    if (!result.ok) {
       if (interactive) {
-        await deps.showErrorDialog('Update check failed', errorMessage(error))
+        await deps.showErrorDialog('Update check failed', errorMessage(result.error))
       }
       return
     }
 
-    // Attach to the auto-download before opening an interactive dialog. The
-    // download starts inside checkForUpdates() and can fail while that dialog
-    // is still open; attaching now prevents an unhandled rejection.
-    const download = result?.isUpdateAvailable ? trackDownload(result) : null
-    if (interactive) await showManualResult(result)
-    if (!download) return
+    if (interactive) await showManualResult(result.result)
+    if (!result.download) return
 
-    const outcome = await download
-    if (!outcome.ok && interactive) {
-      await deps.showErrorDialog('Update download failed', errorMessage(outcome.error))
+    const download = await result.download
+    if (!download.ok && interactive) {
+      await deps.showErrorDialog('Update download failed', errorMessage(download.error))
     }
   }
 
-  return { check, install }
+  function check({ interactive }: { interactive: boolean }): Promise<void> {
+    // MacUpdater owns one local proxy for the staged ZIP. Serialize the whole
+    // check and download, then stop checking once ready, so no later operation
+    // can replace that proxy while Squirrel fetches from it.
+    if (readyVersion) {
+      return interactive
+        ? deps.showInfoDialog(
+            `Coral ${readyVersion} is ready`,
+            'The update will install when you quit Coral.',
+          )
+        : Promise.resolve()
+    }
+
+    if (activeCheck) {
+      return interactive
+        ? observeCheck(activeCheck.result, { interactive: true })
+        : activeCheck.completion
+    }
+
+    const result = performCheck()
+    const completion = observeCheck(result, { interactive }).finally(() => {
+      if (activeCheck?.completion === completion) activeCheck = null
+    })
+    activeCheck = { result, completion }
+    return completion
+  }
+
+  function quitAndInstall(): boolean {
+    if (installing) return true
+    if (!readyVersion) return false
+
+    try {
+      deps.recordUpdateIntent(readyVersion)
+    } catch (error) {
+      console.error(`[coral-updater] failed to record update intent: ${errorMessage(error)}`)
+      return false
+    }
+
+    installing = true
+    try {
+      updater.quitAndInstall()
+      return true
+    } catch (error) {
+      installing = false
+      clearInstallIntent()
+      console.error(`[coral-updater] explicit install failed: ${errorMessage(error)}`)
+      return false
+    }
+  }
+
+  return { check, install, quitAndInstall }
 }
 
 type DownloadOutcome = { ok: true } | { ok: false; error: unknown }
+type CheckOutcome =
+  | { ok: false; error: unknown }
+  | {
+      ok: true
+      result: UpdateCheckResultLike | null
+      download: Promise<DownloadOutcome> | null
+    }
