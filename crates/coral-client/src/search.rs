@@ -356,6 +356,7 @@ impl<'a> From<&'a SearchTableColumnPreviewColumn> for TableColumnPreviewColumnVa
 #[derive(Serialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 struct ColumnHintValue<'a> {
+    catalog_name: &'a str,
     schema_name: &'a str,
     surface_name: &'a str,
     surface_kind: &'static str,
@@ -371,11 +372,12 @@ struct ColumnHintValue<'a> {
 impl<'a> From<&'a ColumnHint> for ColumnHintValue<'a> {
     fn from(hint: &'a ColumnHint) -> Self {
         Self {
+            catalog_name: &hint.catalog_name,
             schema_name: &hint.schema_name,
             surface_name: &hint.surface_name,
             surface_kind: surface_kind_name(hint.surface_kind),
             surface_sql_reference: format_schema_table_equivalent(
-                "",
+                &hint.catalog_name,
                 &hint.schema_name,
                 &hint.surface_name,
             ),
@@ -638,18 +640,18 @@ fn catalog_metadata_text_lines(
 }
 
 fn column_hint_text_lines(index: usize, provider: &str, hint: &ColumnHint) -> Vec<String> {
+    let surface_reference =
+        format_schema_table_equivalent(&hint.catalog_name, &hint.schema_name, &hint.surface_name);
     let mut lines = vec![
         format!(
-            "{index}. [{provider}] {} {}.{}.{}",
+            "{index}. [{provider}] {} {surface_reference}.{}",
             field_role_name(hint.field_role),
-            hint.schema_name,
-            hint.surface_name,
             hint.name
         ),
         format!(
             "   Surface: {} {}",
             surface_kind_name(hint.surface_kind),
-            format_schema_table_equivalent("", &hint.schema_name, &hint.surface_name)
+            surface_reference
         ),
     ];
     if !hint.data_type.is_empty() {
@@ -886,7 +888,9 @@ mod tests {
         };
 
         let json = search_response_json_value(&response);
-        let item = &json["results"][0]["catalog_metadata"]["item"];
+        let item = json
+            .pointer("/results/0/catalog_metadata/item")
+            .expect("catalog table-function item");
         assert_eq!(item["catalog_name"], "github_v4");
         assert_eq!(item["name"], "github_v4.issues.list");
         assert_eq!(item["sql_reference"], "github_v4.issues.list");

@@ -198,6 +198,7 @@ pub(crate) struct TableColumnPreviewColumn {
 
 #[derive(Debug, Clone)]
 pub(crate) struct ColumnHintResult {
+    pub(crate) catalog_name: Option<String>,
     pub(crate) schema_name: String,
     pub(crate) surface_name: String,
     pub(crate) surface_kind: SearchSurfaceKind,

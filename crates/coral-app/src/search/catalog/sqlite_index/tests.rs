@@ -11,7 +11,11 @@ use crate::workspaces::WorkspaceName;
 fn refresh_and_search_catalog_metadata() {
     let temp = tempdir().expect("tempdir");
     let store = catalog_store(&temp);
-    let snapshot = catalog_index_snapshot();
+    let mut snapshot = catalog_index_snapshot();
+    for document in &mut snapshot.documents {
+        document.payload_json =
+            r#"{"catalog_name":"github_v4","schema_name":"deployments"}"#.to_string();
+    }
 
     let refresh = store
         .refresh_catalog_projection(&snapshot)
@@ -59,6 +63,8 @@ fn refresh_and_search_catalog_metadata() {
     assert_eq!(sha_hit.surface_kind, "table_function");
     assert_eq!(sha_hit.field_role, "table_function_result_column");
     assert_eq!(sha_hit.description, "Deployment commit SHA");
+    assert_eq!(sha_hit.catalog_name.as_deref(), Some("github_v4"));
+    assert_eq!(sha_hit.schema_name, "deployments");
 }
 
 #[test]

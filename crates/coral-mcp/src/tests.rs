@@ -31,6 +31,31 @@ use crate::{CoralMcpServerFactory, McpOptions};
 
 type McpServerTask = tokio::task::JoinHandle<Result<(), Box<dyn std::error::Error + Send + Sync>>>;
 
+#[test]
+fn canonical_catalog_identity_is_preserved_in_search_output() {
+    let response = coral_api::v1::SearchResponse {
+        results: vec![coral_api::v1::SearchResult {
+            provider: coral_api::v1::SearchProvider::CatalogMetadata as i32,
+            payload: Some(coral_api::v1::search_result::Payload::ColumnHint(
+                coral_api::v1::ColumnHint {
+                    catalog_name: "github_v4".to_string(),
+                    schema_name: "issues".to_string(),
+                    surface_name: "search".to_string(),
+                    name: "query".to_string(),
+                    ..coral_api::v1::ColumnHint::default()
+                },
+            )),
+        }],
+        ..coral_api::v1::SearchResponse::default()
+    };
+
+    let output = coral_client::search_response_json_value(&response);
+    let hint = &output["results"][0]["column_hint"];
+    assert_eq!(hint["catalog_name"], "github_v4");
+    assert_eq!(hint["schema_name"], "issues");
+    assert_eq!(hint["surface_sql_reference"], "github_v4.issues.search");
+}
+
 fn write_fixture_manifest(root: &Path) -> PathBuf {
     let source_dir = root.join("fixture-source");
     let data_dir = root.join("fixture-data");

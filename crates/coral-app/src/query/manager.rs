@@ -18,7 +18,7 @@ use tracing::Instrument as _;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
 use crate::bootstrap::AppError;
-use crate::catalog::model::CatalogResolution;
+use crate::catalog::model::{CatalogResolution, RuntimeRelationOwners};
 use crate::credentials::{CredentialManager, CredentialSetId};
 use crate::functions::manager::{FunctionListing, FunctionManager, ValidatedFunctionInstall};
 use crate::query::QueryAttribution;
@@ -63,7 +63,6 @@ enum CredentialResolutionMode {
 struct LoadedQuerySource {
     source: InstalledSource,
     query_source: QuerySource,
-    runtime_schema_name: String,
     runtime_contract_fingerprint: RuntimeContractFingerprint,
     credential_material: BTreeMap<String, String>,
 }
@@ -73,30 +72,75 @@ struct QuerySourceLoad {
     failed_source_names: BTreeSet<String>,
 }
 
-/// Maps each loaded runtime schema to its canonical installed source owner.
-fn runtime_schema_owners(
+/// Maps each loaded runtime catalog/schema identity to its installed source.
+fn runtime_relation_owners(
     loaded_sources: &[LoadedQuerySource],
-) -> Result<BTreeMap<String, String>, AppError> {
+    catalog: &CatalogInfo,
+) -> Result<RuntimeRelationOwners, AppError> {
     let mut owners = BTreeMap::new();
     for loaded in loaded_sources {
-        match owners.entry(loaded.runtime_schema_name.clone()) {
+        let schema_names = loaded.query_source.schema_names();
+        let catalog_names = loaded.query_source.catalog_names();
+        claim_runtime_relation_owners(
+            &mut owners,
+            loaded.source.name.as_str(),
+            &schema_names,
+            &catalog_names,
+            catalog,
+        )?;
+    }
+    Ok(owners)
+}
+
+fn claim_runtime_relation_owners(
+    owners: &mut RuntimeRelationOwners,
+    source_name: &str,
+    schema_names: &[&str],
+    catalog_names: &[&str],
+    catalog: &CatalogInfo,
+) -> Result<(), AppError> {
+    let relation_namespaces = catalog
+        .tables
+        .iter()
+        .map(|table| (table.catalog_name.as_deref(), table.schema_name.as_str()))
+        .chain(catalog.table_functions.iter().map(|function| {
+            (
+                function.catalog_name.as_deref(),
+                function.schema_name.as_str(),
+            )
+        }))
+        .filter(|(catalog_name, schema_name)| {
+            catalog_name.map_or_else(
+                || schema_names.contains(schema_name),
+                |catalog_name| catalog_names.contains(&catalog_name),
+            )
+        });
+    for (catalog_name, schema_name) in relation_namespaces {
+        let identity = (
+            catalog_name.map(ToString::to_string),
+            schema_name.to_string(),
+        );
+        match owners.entry(identity) {
             std::collections::btree_map::Entry::Vacant(entry) => {
-                entry.insert(loaded.source.name.as_str().to_string());
+                entry.insert(source_name.to_string());
             }
             std::collections::btree_map::Entry::Occupied(entry)
-                if entry.get().as_str() != loaded.source.name.as_str() =>
+                if entry.get().as_str() != source_name =>
             {
+                let (catalog_name, schema_name) = entry.key();
+                let namespace = catalog_name.as_ref().map_or_else(
+                    || schema_name.clone(),
+                    |catalog_name| format!("{catalog_name}.{schema_name}"),
+                );
                 return Err(AppError::InvalidInput(format!(
-                    "catalog runtime schema '{}' is owned by both '{}' and '{}'",
-                    entry.key(),
+                    "catalog runtime namespace '{namespace}' is owned by both '{}' and '{source_name}'",
                     entry.get(),
-                    loaded.source.name
                 )));
             }
             std::collections::btree_map::Entry::Occupied(_) => {}
         }
     }
-    Ok(owners)
+    Ok(())
 }
 
 #[derive(Clone, Default)]
@@ -323,15 +367,17 @@ impl QueryManager {
                     .await?;
                 let mut failed_source_names = source_load.failed_source_names;
                 failed_source_names.extend(failure_recorder.failed_source_names());
-                let runtime_schema_owners =
-                    runtime_schema_owners(&source_load.loaded).map_err(QueryManagerError::App)?;
+                let catalog = runtime
+                    .list_catalog(catalog_filter, schema_filter)
+                    .await
+                    .map_err(QueryManagerError::Core)?;
+                let runtime_relation_owners =
+                    runtime_relation_owners(&source_load.loaded, &catalog)
+                        .map_err(QueryManagerError::App)?;
                 Ok(CatalogResolution {
-                    catalog: runtime
-                        .list_catalog(catalog_filter, schema_filter)
-                        .await
-                        .map_err(QueryManagerError::Core)?,
+                    catalog,
                     failed_source_names,
-                    runtime_schema_owners,
+                    runtime_relation_owners,
                 })
             },
             |resolution| {
@@ -621,7 +667,6 @@ impl QueryManager {
             LoadedQuerySource {
                 source: source.clone(),
                 query_source: loaded_runtime.query_source,
-                runtime_schema_name: installed.source_spec.schema_name().to_string(),
                 runtime_contract_fingerprint: loaded_runtime.runtime_contract_fingerprint,
                 credential_material: stored_secrets,
             },
@@ -1274,6 +1319,59 @@ mod tests {
         _temp: TempDir,
         manager: QueryManager,
         db: Arc<CoralDb>,
+    }
+
+    #[test]
+    fn runtime_relation_owners_distinguish_catalogs_with_the_same_schema() {
+        let catalog = CatalogInfo {
+            tables: vec![
+                TableInfo {
+                    catalog_name: Some("warehouse".to_string()),
+                    schema_name: "public".to_string(),
+                    table_name: "orders".to_string(),
+                    description: String::new(),
+                    guide: String::new(),
+                    columns: Vec::new(),
+                    required_filters: Vec::new(),
+                },
+                TableInfo {
+                    catalog_name: Some("analytics".to_string()),
+                    schema_name: "public".to_string(),
+                    table_name: "events".to_string(),
+                    description: String::new(),
+                    guide: String::new(),
+                    columns: Vec::new(),
+                    required_filters: Vec::new(),
+                },
+            ],
+            table_functions: Vec::new(),
+        };
+        let mut owners = RuntimeRelationOwners::new();
+        claim_runtime_relation_owners(
+            &mut owners,
+            "warehouse_source",
+            &[],
+            &["warehouse"],
+            &catalog,
+        )
+        .expect("claim warehouse");
+        claim_runtime_relation_owners(
+            &mut owners,
+            "analytics_source",
+            &[],
+            &["analytics"],
+            &catalog,
+        )
+        .expect("claim analytics");
+
+        assert_eq!(
+            owners.get(&(Some("warehouse".to_string()), "public".to_string())),
+            Some(&"warehouse_source".to_string())
+        );
+        assert_eq!(
+            owners.get(&(Some("analytics".to_string()), "public".to_string())),
+            Some(&"analytics_source".to_string())
+        );
     }
 
     async fn query_manager_with(
@@ -3235,11 +3333,9 @@ tables:
 ",
         )
         .expect("parse source manifest");
-        let runtime_schema_name = source_spec.schema_name().to_string();
         let loaded_source = LoadedQuerySource {
             source: installed_source,
             query_source: QuerySource::new(source_spec, BTreeMap::new(), BTreeMap::new()),
-            runtime_schema_name,
             runtime_contract_fingerprint: RuntimeContractFingerprint::for_test("contract"),
             credential_material: BTreeMap::from([(
                 "API_TOKEN".to_string(),
@@ -3416,7 +3512,6 @@ tables:
                 credential_revision: uuid::Uuid::default(),
                 origin: SourceOrigin::Bundled,
             },
-            runtime_schema_name: source_spec.schema_name().to_string(),
             query_source: QuerySource::new(source_spec.clone(), BTreeMap::new(), BTreeMap::new()),
             runtime_contract_fingerprint: RuntimeContractFingerprint::for_test("contract"),
             credential_material: BTreeMap::from([(
@@ -3495,7 +3590,6 @@ tables:
                 credential_revision: uuid::Uuid::default(),
                 origin: SourceOrigin::Bundled,
             },
-            runtime_schema_name: source_spec.schema_name().to_string(),
             query_source: QuerySource::new(source_spec.clone(), BTreeMap::new(), BTreeMap::new()),
             runtime_contract_fingerprint: RuntimeContractFingerprint::for_test("contract"),
             credential_material: BTreeMap::new(),

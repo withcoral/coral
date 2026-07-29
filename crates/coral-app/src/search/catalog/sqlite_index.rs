@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use rusqlite::{
     Connection, OptionalExtension as _, Transaction, TransactionBehavior, params, types::Type,
 };
+use serde::Deserialize;
 
 use crate::search::sqlite_store::SqliteSearchError;
 use crate::workspaces::WorkspaceName;
@@ -288,6 +289,8 @@ pub(crate) struct CatalogSearchHit {
     pub(crate) doc_id: String,
     pub(crate) doc_kind: CatalogIndexDocumentKind,
     pub(crate) source_name: String,
+    pub(crate) catalog_name: Option<String>,
+    pub(crate) schema_name: String,
     pub(crate) surface_kind: String,
     pub(crate) surface_name: String,
     pub(crate) field_name: String,
@@ -628,7 +631,8 @@ fn fts_search(
             f.title,
             f.qualified_name,
             f.description,
-            f.searchable_text
+            f.searchable_text,
+            d.payload_json
         FROM catalog_documents_fts f
         JOIN catalog_documents d
             ON d.workspace = f.workspace AND d.doc_id = f.doc_id
@@ -676,7 +680,8 @@ fn exact_prefix_search(
             d.title,
             d.qualified_name,
             d.description,
-            ''
+            '',
+            d.payload_json
         FROM catalog_documents d
         WHERE d.workspace = ?1
             AND (
@@ -768,6 +773,17 @@ fn hit_from_row(
     let surface_name: String = row.get(4)?;
     let field_role_raw: String = row.get(6)?;
     let field_role = field_role_from_storage(&field_role_raw)?;
+    let source_name: String = row.get(2)?;
+    let payload_json: String = row.get(14)?;
+    let identity =
+        serde_json::from_str::<CatalogDocumentIdentity>(&payload_json).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(14, Type::Text, Box::new(error))
+        })?;
+    let schema_name = if identity.schema_name.is_empty() {
+        source_name.clone()
+    } else {
+        identity.schema_name
+    };
     let matched_fields = matched_fields(
         terms,
         &[
@@ -783,7 +799,9 @@ fn hit_from_row(
     Ok(CatalogSearchHit {
         doc_id: row.get(0)?,
         doc_kind,
-        source_name: row.get(2)?,
+        source_name,
+        catalog_name: identity.catalog_name,
+        schema_name,
         surface_kind,
         surface_name,
         field_name,
@@ -792,6 +810,14 @@ fn hit_from_row(
         matched_fields,
         retrieval_score: base_score,
     })
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct CatalogDocumentIdentity {
+    #[serde(default)]
+    catalog_name: Option<String>,
+    #[serde(default)]
+    schema_name: String,
 }
 
 fn surface_kind_from_storage(value: &str) -> rusqlite::Result<String> {

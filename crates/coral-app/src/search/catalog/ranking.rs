@@ -58,6 +58,12 @@ pub(crate) fn rank_catalog_hits(
 
 fn catalog_relevance_score(hit: &CatalogSearchHit, terms: &[String]) -> u32 {
     let source_name = hit.source_name.to_lowercase();
+    let catalog_name = hit
+        .catalog_name
+        .as_deref()
+        .unwrap_or_default()
+        .to_lowercase();
+    let schema_name = hit.schema_name.to_lowercase();
     let surface_name = hit.surface_name.to_lowercase();
     let field_name = hit.field_name.to_lowercase();
     let title = if field_name.is_empty() {
@@ -83,11 +89,19 @@ fn catalog_relevance_score(hit: &CatalogSearchHit, terms: &[String]) -> u32 {
         if source_name == *term {
             term_score = term_score.saturating_add(EXACT_SOURCE_NAME_TERM_RELEVANCE_BOOST);
         }
+        if catalog_name == *term || schema_name == *term {
+            term_score = term_score.saturating_add(EXACT_SOURCE_NAME_TERM_RELEVANCE_BOOST);
+        }
         if title == term || surface_name == *term || field_name == *term {
             term_score =
                 term_score.saturating_add(EXACT_TITLE_SURFACE_OR_FIELD_TERM_RELEVANCE_BOOST);
         }
         if identifier_token_matches(&source_name, term) {
+            term_score = term_score.saturating_add(SOURCE_IDENTIFIER_TOKEN_TERM_RELEVANCE_BOOST);
+        }
+        if identifier_token_matches(&catalog_name, term)
+            || identifier_token_matches(&schema_name, term)
+        {
             term_score = term_score.saturating_add(SOURCE_IDENTIFIER_TOKEN_TERM_RELEVANCE_BOOST);
         }
         if identifier_token_matches(&surface_name, term)
@@ -105,6 +119,9 @@ fn catalog_relevance_score(hit: &CatalogSearchHit, terms: &[String]) -> u32 {
             term_score = term_score.saturating_add(QUALIFIED_NAME_PREFIX_TERM_RELEVANCE_BOOST);
         }
         if source_name.starts_with(term) {
+            term_score = term_score.saturating_add(SOURCE_NAME_PREFIX_TERM_RELEVANCE_BOOST);
+        }
+        if catalog_name.starts_with(term) || schema_name.starts_with(term) {
             term_score = term_score.saturating_add(SOURCE_NAME_PREFIX_TERM_RELEVANCE_BOOST);
         }
         if identifier_token_starts_with(&surface_name, term)
@@ -141,21 +158,28 @@ fn catalog_relevance_score(hit: &CatalogSearchHit, terms: &[String]) -> u32 {
 }
 
 fn qualified_name(hit: &CatalogSearchHit) -> String {
-    if hit.field_name.is_empty() {
-        format!("{}.{}", hit.source_name, hit.surface_name).to_lowercase()
-    } else {
-        format!(
-            "{}.{}.{}",
-            hit.source_name, hit.surface_name, hit.field_name
-        )
-        .to_lowercase()
+    let mut parts = Vec::with_capacity(4);
+    if let Some(catalog_name) = &hit.catalog_name {
+        parts.push(catalog_name.as_str());
     }
+    parts.push(&hit.schema_name);
+    parts.push(&hit.surface_name);
+    if !hit.field_name.is_empty() {
+        parts.push(&hit.field_name);
+    }
+    parts.join(".").to_lowercase()
 }
 
 fn searchable_text(hit: &CatalogSearchHit, description: &str) -> String {
     format!(
-        "{} {} {} {} {}",
-        hit.source_name, hit.surface_name, hit.field_name, hit.surface_kind, description
+        "{} {} {} {} {} {} {}",
+        hit.source_name,
+        hit.catalog_name.as_deref().unwrap_or_default(),
+        hit.schema_name,
+        hit.surface_name,
+        hit.field_name,
+        hit.surface_kind,
+        description
     )
     .to_lowercase()
 }
@@ -492,6 +516,8 @@ mod tests {
             doc_id: input.doc_id.to_string(),
             doc_kind: input.doc_kind,
             source_name: input.source_name.to_string(),
+            catalog_name: None,
+            schema_name: input.source_name.to_string(),
             surface_kind: input.surface_kind.to_string(),
             surface_name: input.surface_name.to_string(),
             field_name: input.field_name.to_string(),

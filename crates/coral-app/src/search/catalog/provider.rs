@@ -97,9 +97,9 @@ impl CatalogMetadataProvider {
         resolution: &CatalogResolution,
     ) -> Result<CatalogProjection, SqliteSearchError> {
         let catalog_fingerprint =
-            CatalogSearchSnapshot::fingerprint_catalog_with_runtime_schema_owners(
+            CatalogSearchSnapshot::fingerprint_catalog_with_runtime_relation_owners(
                 &resolution.catalog,
-                &resolution.runtime_schema_owners,
+                &resolution.runtime_relation_owners,
             );
         let store = SqliteSearchStore::open_workspace(&self.layout, &request.workspace_name)?;
         let capabilities = store.capabilities();
@@ -147,9 +147,9 @@ impl CatalogMetadataProvider {
             });
         }
 
-        let snapshot = CatalogSearchSnapshot::from_catalog_with_runtime_schema_owners(
+        let snapshot = CatalogSearchSnapshot::from_catalog_with_runtime_relation_owners(
             &resolution.catalog,
-            &resolution.runtime_schema_owners,
+            &resolution.runtime_relation_owners,
         );
         let expected_document_count = u32::try_from(snapshot.documents.len()).unwrap_or(u32::MAX);
         let index_snapshot = snapshot.index_snapshot();
@@ -200,9 +200,9 @@ impl CatalogMetadataProvider {
         resolution: &CatalogResolution,
         force: bool,
     ) -> Result<SearchMaintenanceResult, SearchManagerError> {
-        let snapshot = CatalogSearchSnapshot::from_catalog_with_runtime_schema_owners(
+        let snapshot = CatalogSearchSnapshot::from_catalog_with_runtime_relation_owners(
             &resolution.catalog,
-            &resolution.runtime_schema_owners,
+            &resolution.runtime_relation_owners,
         )
         .index_snapshot();
         let store = SqliteSearchStore::open_workspace(&self.layout, workspace_name)
@@ -446,20 +446,30 @@ fn catalog_candidates_from_hits(
     hits: Vec<RankedCatalogHit>,
 ) -> CatalogCandidateSet {
     let mut candidates = Vec::new();
-    let mut column_hints_by_surface = BTreeMap::<(SearchSurfaceKind, String, String), usize>::new();
+    let mut column_hints_by_surface =
+        BTreeMap::<(SearchSurfaceKind, Option<String>, String, String), usize>::new();
     let mut omitted_column_hint_count = 0;
 
     for ranked_hit in hits {
         let hit = ranked_hit.hit;
         match hit.doc_kind {
             CatalogIndexDocumentKind::CatalogTable => {
-                if let Some(table) = find_table(catalog, &hit.source_name, &hit.surface_name) {
+                if let Some(table) = find_table(
+                    catalog,
+                    hit.catalog_name.as_deref(),
+                    &hit.schema_name,
+                    &hit.surface_name,
+                ) {
                     candidates.push(table_candidate(table, &hit, ranked_hit.score));
                 }
             }
             CatalogIndexDocumentKind::CatalogTableFunction => {
-                if let Some(function) = find_function(catalog, &hit.source_name, &hit.surface_name)
-                {
+                if let Some(function) = find_function(
+                    catalog,
+                    hit.catalog_name.as_deref(),
+                    &hit.schema_name,
+                    &hit.surface_name,
+                ) {
                     candidates.push(table_function_candidate(function, &hit, ranked_hit.score));
                 }
             }
@@ -469,7 +479,8 @@ fn catalog_candidates_from_hits(
                 };
                 let count_key = (
                     surface_kind,
-                    hit.source_name.clone(),
+                    hit.catalog_name.clone(),
+                    hit.schema_name.clone(),
                     hit.surface_name.clone(),
                 );
                 let count = column_hints_by_surface.entry(count_key).or_default();
@@ -541,7 +552,8 @@ fn column_hint_candidate(
         score,
         provider: SearchProviderKind::CatalogMetadata,
         payload: SearchPayload::ColumnHint(ColumnHintResult {
-            schema_name: hit.source_name.clone(),
+            catalog_name: hit.catalog_name.clone(),
+            schema_name: hit.schema_name.clone(),
             surface_name: hit.surface_name.clone(),
             surface_kind,
             name: hit.field_name.clone(),
@@ -572,32 +584,40 @@ fn column_hint_metadata(
     };
     let field_role = field_role_from_str(&hit.field_role).unwrap_or(fallback_role);
     match (surface_kind, field_role) {
-        (SearchSurfaceKind::Table, SearchFieldRole::TableColumn) => {
-            find_table(catalog, &hit.source_name, &hit.surface_name)
-                .and_then(|table| {
-                    table
-                        .columns
-                        .iter()
-                        .find(|column| column.name == hit.field_name)
-                })
-                .map_or_else(
-                    || fallback_column_hint_metadata(hit, field_role),
-                    |column| ColumnHintMetadata {
-                        data_type: column.data_type.clone(),
-                        required: column.is_required_filter,
-                        description: column.description.clone(),
-                        field_role,
-                    },
-                )
-        }
+        (SearchSurfaceKind::Table, SearchFieldRole::TableColumn) => find_table(
+            catalog,
+            hit.catalog_name.as_deref(),
+            &hit.schema_name,
+            &hit.surface_name,
+        )
+        .and_then(|table| {
+            table
+                .columns
+                .iter()
+                .find(|column| column.name == hit.field_name)
+        })
+        .map_or_else(
+            || fallback_column_hint_metadata(hit, field_role),
+            |column| ColumnHintMetadata {
+                data_type: column.data_type.clone(),
+                required: column.is_required_filter,
+                description: column.description.clone(),
+                field_role,
+            },
+        ),
         (SearchSurfaceKind::Table, SearchFieldRole::TableFilter) => {
-            let column =
-                find_table(catalog, &hit.source_name, &hit.surface_name).and_then(|table| {
-                    table
-                        .columns
-                        .iter()
-                        .find(|column| column.name == hit.field_name)
-                });
+            let column = find_table(
+                catalog,
+                hit.catalog_name.as_deref(),
+                &hit.schema_name,
+                &hit.surface_name,
+            )
+            .and_then(|table| {
+                table
+                    .columns
+                    .iter()
+                    .find(|column| column.name == hit.field_name)
+            });
             ColumnHintMetadata {
                 data_type: column.map_or_else(String::new, |column| column.data_type.clone()),
                 required: true,
@@ -609,40 +629,50 @@ fn column_hint_metadata(
             }
         }
         (SearchSurfaceKind::TableFunction, SearchFieldRole::TableFunctionArgument) => {
-            find_function(catalog, &hit.source_name, &hit.surface_name)
-                .and_then(|function| {
-                    function
-                        .arguments
-                        .iter()
-                        .find(|argument| argument.name == hit.field_name)
-                })
-                .map_or_else(
-                    || fallback_column_hint_metadata(hit, field_role),
-                    |argument| ColumnHintMetadata {
-                        data_type: String::new(),
-                        required: argument.required,
-                        description: "Table function argument".to_string(),
-                        field_role,
-                    },
-                )
+            find_function(
+                catalog,
+                hit.catalog_name.as_deref(),
+                &hit.schema_name,
+                &hit.surface_name,
+            )
+            .and_then(|function| {
+                function
+                    .arguments
+                    .iter()
+                    .find(|argument| argument.name == hit.field_name)
+            })
+            .map_or_else(
+                || fallback_column_hint_metadata(hit, field_role),
+                |argument| ColumnHintMetadata {
+                    data_type: String::new(),
+                    required: argument.required,
+                    description: "Table function argument".to_string(),
+                    field_role,
+                },
+            )
         }
         (SearchSurfaceKind::TableFunction, SearchFieldRole::TableFunctionResultColumn) => {
-            find_function(catalog, &hit.source_name, &hit.surface_name)
-                .and_then(|function| {
-                    function
-                        .result_columns
-                        .iter()
-                        .find(|column| column.name == hit.field_name)
-                })
-                .map_or_else(
-                    || fallback_column_hint_metadata(hit, field_role),
-                    |column| ColumnHintMetadata {
-                        data_type: column.data_type.clone(),
-                        required: false,
-                        description: column.description.clone(),
-                        field_role,
-                    },
-                )
+            find_function(
+                catalog,
+                hit.catalog_name.as_deref(),
+                &hit.schema_name,
+                &hit.surface_name,
+            )
+            .and_then(|function| {
+                function
+                    .result_columns
+                    .iter()
+                    .find(|column| column.name == hit.field_name)
+            })
+            .map_or_else(
+                || fallback_column_hint_metadata(hit, field_role),
+                |column| ColumnHintMetadata {
+                    data_type: column.data_type.clone(),
+                    required: false,
+                    description: column.description.clone(),
+                    field_role,
+                },
+            )
         }
         _ => fallback_column_hint_metadata(hit, field_role),
     }
@@ -688,22 +718,27 @@ fn table_column_preview(table: &TableInfo) -> TableColumnPreview {
 
 fn find_table<'a>(
     catalog: &'a CatalogInfo,
+    catalog_name: Option<&str>,
     schema_name: &str,
     table_name: &str,
 ) -> Option<&'a TableInfo> {
-    catalog
-        .tables
-        .iter()
-        .find(|table| table.schema_name == schema_name && table.table_name == table_name)
+    catalog.tables.iter().find(|table| {
+        table.catalog_name.as_deref() == catalog_name
+            && table.schema_name == schema_name
+            && table.table_name == table_name
+    })
 }
 
 fn find_function<'a>(
     catalog: &'a CatalogInfo,
+    catalog_name: Option<&str>,
     schema_name: &str,
     function_name: &str,
 ) -> Option<&'a TableFunctionInfo> {
     catalog.table_functions.iter().find(|function| {
-        function.schema_name == schema_name && function.function_name == function_name
+        function.catalog_name.as_deref() == catalog_name
+            && function.schema_name == schema_name
+            && function.function_name == function_name
     })
 }
 
@@ -1066,6 +1101,8 @@ mod tests {
                 doc_id: format!("column:table:fixture.payments:alpha_{index}"),
                 doc_kind: CatalogIndexDocumentKind::ColumnHint,
                 source_name: "fixture".to_string(),
+                catalog_name: None,
+                schema_name: "fixture".to_string(),
                 surface_kind: "table".to_string(),
                 surface_name: "payments".to_string(),
                 field_name: format!("alpha_{index}"),

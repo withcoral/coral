@@ -766,7 +766,7 @@ mod tests {
         };
 
         let value = list_catalog_value(&response);
-        let item = &value["items"][0];
+        let item = value.pointer("/items/0").expect("catalog item");
         assert_eq!(item["catalog_name"], "github_v4");
         assert_eq!(item["name"], "github_v4.issues.list");
         assert_eq!(item["sql_reference"], "github_v4.issues.list");

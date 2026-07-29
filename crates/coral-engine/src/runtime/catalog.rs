@@ -124,6 +124,7 @@ fn build_table_functions_table(
         Field::new("kind", DataType::Utf8, false),
         Field::new("search_limits_json", DataType::Utf8, true),
         Field::new("guide", DataType::Utf8, false),
+        Field::new("catalog_name", DataType::Utf8, false),
     ]));
 
     let rows = catalog_table_functions(active_publications, catalog_only_table_functions);
@@ -152,6 +153,10 @@ fn build_table_functions_table(
             utf8_column(rows.iter().map(|row| Some(row.kind.as_str()))),
             utf8_column(search_limits_json.iter().map(|value| value.as_deref())),
             utf8_column(rows.iter().map(|row| Some(row.guide.as_str()))),
+            utf8_column(
+                rows.iter()
+                    .map(|row| Some(row.catalog_name.as_deref().unwrap_or_default())),
+            ),
         ],
     )
     .map_err(|error| DataFusionError::ArrowError(Box::new(error), None))?;
@@ -511,6 +516,12 @@ const TABLE_FUNCTIONS_COLUMNS: &[SystemColumnDefinition] = &[
         data_type: "Utf8",
         nullable: false,
         description: "User-facing query guidance for the table function.",
+    },
+    SystemColumnDefinition {
+        name: "catalog_name",
+        data_type: "Utf8",
+        nullable: false,
+        description: "SQL catalog containing the table function. Empty for two-part functions.",
     },
 ];
 
@@ -1917,10 +1928,25 @@ mod tests {
             )
             .expect("catalog source publication");
         publication
+            .publish_table_function(
+                "public",
+                "search_orders",
+                Arc::new(StubSourceFunctionFactory::default()),
+                RegisteredTableFunctionMetadata {
+                    kind: coral_spec::SourceTableFunctionKind::Search,
+                    description: String::new(),
+                    guide: String::new(),
+                    arguments: Vec::new(),
+                    result_columns: Vec::new(),
+                    search_limits: None,
+                },
+            )
+            .expect("catalog source function publication");
+        publication
     }
 
     #[test]
-    fn catalog_source_metadata_keeps_catalog_and_schema_separate() {
+    fn catalog_views_canonical_identity() {
         let sources = [catalog_source()];
 
         let table = collect_static_tables(&sources)
@@ -1947,6 +1973,12 @@ mod tests {
         let input = inputs.first().expect("catalog input metadata");
         assert_eq!(input.catalog_name, "warehouse");
         assert_eq!(input.schema_name, "");
+
+        let functions = collect_table_functions(&sources, &[]);
+        assert_eq!(functions.len(), 1);
+        let function = functions.first().expect("catalog function metadata");
+        assert_eq!(function.catalog_name.as_deref(), Some("warehouse"));
+        assert_eq!(function.schema_name, "public");
     }
 
     #[test]
