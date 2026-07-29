@@ -85,10 +85,9 @@ export function FunctionExplorer({ functions, onSelect, selectedName }: Function
                         aria-controls={expanded ? namespaceChildrenId : undefined}
                         aria-expanded={expanded}
                         className={styles.listRow}
+                        disabled={normalizedSearch !== ''}
                         fullWidth
-                        onClick={() => {
-                          if (!normalizedSearch) toggleNamespace(namespace.name)
-                        }}
+                        onClick={() => toggleNamespace(namespace.name)}
                         size="22"
                         variant="bare"
                       >
