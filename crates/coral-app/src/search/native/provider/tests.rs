@@ -14,7 +14,7 @@ use arrow::array::{ArrayRef, StringArray};
 use arrow::datatypes::Schema;
 use arrow::record_batch::RecordBatch;
 use coral_engine::{
-    CatalogInfo, QueryExecution, QueryExecutionFailureKind, QueryExecutionProvenance,
+    CatalogInfo, QueryExecution, QueryExecutionFailureKind, ResolvedQueryResources,
 };
 use coral_spec::{ManifestDataType, SearchLimitsSpec};
 use tokio::sync::Barrier;
@@ -151,12 +151,8 @@ fn successful_execution(
         execution: QueryExecution::new(
             arrow_schema,
             batches,
-            QueryExecutionProvenance::new(
-                "sensitive SQL sentinel",
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-            ),
+            "sensitive SQL sentinel",
+            ResolvedQueryResources::new(Vec::new(), Vec::new(), Vec::new()),
         ),
         has_more,
         upstream_started: controls.upstream_started(),
