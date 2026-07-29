@@ -82,4 +82,5 @@ pub(in crate::state::db) enum IdentitySpecDocuments {
 pub(in crate::state::db) enum GuiOnboardingCompletions {
     Table,
     PrincipalId,
+    CompletedAtUnixNanos,
 }

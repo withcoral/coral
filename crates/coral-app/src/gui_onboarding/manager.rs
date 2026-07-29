@@ -1,8 +1,10 @@
+//! App-owned per-user GUI onboarding completion behavior.
+
 use std::sync::Arc;
 
 use crate::bootstrap::AppError;
 use crate::identity::Principal;
-use crate::state::db::{CoralDb, DbRepos};
+use crate::state::db::{CoralDb, DbRepos, now_unix_nanos_i64};
 
 #[derive(Clone)]
 pub(crate) struct GuiOnboardingManager {
@@ -27,7 +29,7 @@ impl GuiOnboardingManager {
         let mut session = self.db.as_ref();
         session
             .gui_onboarding()
-            .complete(principal.id().as_str())
+            .complete(principal.id().as_str(), now_unix_nanos_i64()?)
             .await?;
         Ok(())
     }

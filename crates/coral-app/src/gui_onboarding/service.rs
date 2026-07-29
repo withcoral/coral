@@ -1,3 +1,5 @@
+//! Implements the gRPC `GuiOnboardingService`.
+
 use coral_api::v1::gui_onboarding_service_server::GuiOnboardingService as GuiOnboardingServiceApi;
 use coral_api::v1::{
     CompleteGuiOnboardingRequest, CompleteGuiOnboardingResponse, GetGuiOnboardingStateRequest,
@@ -7,9 +9,8 @@ use tonic::{Request, Response, Status};
 
 use crate::bootstrap::app_status;
 use crate::gui_onboarding::manager::GuiOnboardingManager;
-use crate::identity::Principal;
-use crate::request_context::RequestContext;
-use crate::transport::{grpc_span, instrument_grpc};
+use crate::identity::{Principal, PrincipalKind};
+use crate::transport::{grpc_span, instrument_grpc, request_context};
 
 #[derive(Clone)]
 pub(crate) struct GuiOnboardingService {
@@ -29,9 +30,9 @@ impl GuiOnboardingServiceApi for GuiOnboardingService {
         request: Request<GetGuiOnboardingStateRequest>,
     ) -> Result<Response<GetGuiOnboardingStateResponse>, Status> {
         let span = grpc_span(&request);
-        let principal = request_principal(&request)?;
         let gui_onboarding = self.gui_onboarding.clone();
         instrument_grpc(span, async move {
+            let principal = request_user_principal(&request)?;
             let completed = gui_onboarding
                 .is_completed(&principal)
                 .await
@@ -46,9 +47,9 @@ impl GuiOnboardingServiceApi for GuiOnboardingService {
         request: Request<CompleteGuiOnboardingRequest>,
     ) -> Result<Response<CompleteGuiOnboardingResponse>, Status> {
         let span = grpc_span(&request);
-        let principal = request_principal(&request)?;
         let gui_onboarding = self.gui_onboarding.clone();
         instrument_grpc(span, async move {
+            let principal = request_user_principal(&request)?;
             gui_onboarding
                 .complete(&principal)
                 .await
@@ -59,10 +60,12 @@ impl GuiOnboardingServiceApi for GuiOnboardingService {
     }
 }
 
-fn request_principal<T>(request: &Request<T>) -> Result<Principal, Status> {
-    request
-        .extensions()
-        .get::<RequestContext>()
-        .map(|context| context.principal().clone())
-        .ok_or_else(|| Status::internal("missing authenticated request context"))
+fn request_user_principal<T>(request: &Request<T>) -> Result<Principal, Status> {
+    let principal = request_context(request)?.principal().clone();
+    if principal.kind() != PrincipalKind::User {
+        return Err(Status::permission_denied(
+            "GUI onboarding is only available to user principals",
+        ));
+    }
+    Ok(principal)
 }

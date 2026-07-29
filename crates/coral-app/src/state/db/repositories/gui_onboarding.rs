@@ -25,11 +25,21 @@ where
         Ok(completion.is_some())
     }
 
-    pub(crate) async fn complete(&mut self, principal_id: &str) -> Result<(), DbError> {
+    pub(crate) async fn complete(
+        &mut self,
+        principal_id: &str,
+        completed_at_unix_nanos: i64,
+    ) -> Result<(), DbError> {
         let statement = Query::insert()
             .into_table(GuiOnboardingCompletions::Table)
-            .columns([GuiOnboardingCompletions::PrincipalId])
-            .values_panic([Expr::val(principal_id.to_string())])
+            .columns([
+                GuiOnboardingCompletions::PrincipalId,
+                GuiOnboardingCompletions::CompletedAtUnixNanos,
+            ])
+            .values_panic([
+                Expr::val(principal_id.to_string()),
+                Expr::val(completed_at_unix_nanos),
+            ])
             .on_conflict(
                 OnConflict::column(GuiOnboardingCompletions::PrincipalId)
                     .do_nothing()
@@ -37,6 +47,20 @@ where
             )
             .to_owned();
         self.session.execute(statement).await
+    }
+
+    #[cfg(test)]
+    async fn completed_at_unix_nanos(
+        &mut self,
+        principal_id: &str,
+    ) -> Result<Option<i64>, DbError> {
+        let statement = Query::select()
+            .column(GuiOnboardingCompletions::CompletedAtUnixNanos)
+            .from(GuiOnboardingCompletions::Table)
+            .and_where(Expr::col(GuiOnboardingCompletions::PrincipalId).eq(principal_id))
+            .to_owned();
+        let completion: Option<(i64,)> = self.session.fetch_optional(statement).await?;
+        Ok(completion.map(|(completed_at_unix_nanos,)| completed_at_unix_nanos))
     }
 
     #[cfg(test)]
@@ -58,9 +82,6 @@ mod tests {
     use crate::state::db::session::DbRepos;
     use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig};
 
-    const ALICE_PRINCIPAL_ID: &str = "alice";
-    const BOB_PRINCIPAL_ID: &str = "bob";
-
     #[tokio::test]
     async fn gui_onboarding_repository_round_trips_against_sqlite() {
         let temp = tempdir().expect("temp dir");
@@ -72,7 +93,7 @@ mod tests {
         assert!(
             !fresh_session
                 .gui_onboarding()
-                .is_completed(ALICE_PRINCIPAL_ID)
+                .is_completed("fresh_sqlite_principal")
                 .await
                 .expect("get completion from freshly migrated SQLite database"),
             "the migration must create an empty completion table"
@@ -109,49 +130,82 @@ mod tests {
     async fn assert_gui_onboarding_repository_round_trip(db: &CoralDb) {
         db.ping().await.expect("ping database");
 
-        let mut tx = db.begin().await.expect("begin state transition tx");
-        tx.gui_onboarding()
-            .delete_completion(ALICE_PRINCIPAL_ID)
-            .await
-            .expect("clear Alice completion in test transaction");
-        tx.gui_onboarding()
-            .delete_completion(BOB_PRINCIPAL_ID)
-            .await
-            .expect("clear Bob completion in test transaction");
-        assert!(
-            !tx.gui_onboarding()
-                .is_completed(ALICE_PRINCIPAL_ID)
+        let test_id = uuid::Uuid::new_v4();
+        let alice_principal_id = format!("gui_onboarding_alice_{test_id}");
+        let bob_principal_id = format!("gui_onboarding_bob_{test_id}");
+        {
+            let mut session = db;
+            assert!(
+                !session
+                    .gui_onboarding()
+                    .is_completed(&alice_principal_id)
+                    .await
+                    .expect("get missing Alice completion")
+            );
+            assert!(
+                !session
+                    .gui_onboarding()
+                    .is_completed(&bob_principal_id)
+                    .await
+                    .expect("get missing Bob completion")
+            );
+
+            session
+                .gui_onboarding()
+                .complete(&alice_principal_id, 42)
                 .await
-                .expect("get missing Alice completion")
+                .expect("complete Alice onboarding");
+            session
+                .gui_onboarding()
+                .complete(&alice_principal_id, 99)
+                .await
+                .expect("complete Alice onboarding again");
+        }
+
+        let mut session = db;
+        assert!(
+            session
+                .gui_onboarding()
+                .is_completed(&alice_principal_id)
+                .await
+                .expect("get committed Alice completion")
         );
         assert!(
-            !tx.gui_onboarding()
-                .is_completed(BOB_PRINCIPAL_ID)
+            !session
+                .gui_onboarding()
+                .is_completed(&bob_principal_id)
                 .await
-                .expect("get missing Bob completion")
+                .expect("get missing Bob completion after commit")
+        );
+        assert_eq!(
+            session
+                .gui_onboarding()
+                .completed_at_unix_nanos(&alice_principal_id)
+                .await
+                .expect("get Alice completion timestamp"),
+            Some(42),
+            "idempotent completion must preserve the first timestamp"
         );
 
-        tx.gui_onboarding()
-            .complete(ALICE_PRINCIPAL_ID)
+        let mut cleanup_tx = db.begin().await.expect("begin cleanup tx");
+        cleanup_tx
+            .gui_onboarding()
+            .delete_completion(&alice_principal_id)
             .await
-            .expect("complete Alice onboarding");
-        tx.gui_onboarding()
-            .complete(ALICE_PRINCIPAL_ID)
+            .expect("clean up Alice completion");
+        cleanup_tx
+            .gui_onboarding()
+            .delete_completion(&bob_principal_id)
             .await
-            .expect("complete Alice onboarding again");
+            .expect("clean up Bob completion");
+        cleanup_tx.commit().await.expect("commit cleanup tx");
         assert!(
-            tx.gui_onboarding()
-                .is_completed(ALICE_PRINCIPAL_ID)
+            !session
+                .gui_onboarding()
+                .is_completed(&alice_principal_id)
                 .await
-                .expect("get Alice completion")
+                .expect("get cleaned-up Alice completion")
         );
-        assert!(
-            !tx.gui_onboarding()
-                .is_completed(BOB_PRINCIPAL_ID)
-                .await
-                .expect("get Bob completion")
-        );
-        tx.rollback().await.expect("roll back state transition tx");
     }
 
     fn postgres_test_url() -> Option<String> {
