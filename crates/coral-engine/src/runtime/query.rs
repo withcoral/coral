@@ -1479,6 +1479,7 @@ mod tests {
                 result_columns: Vec::new(),
                 kind: coral_spec::SourceTableFunctionKind::Table,
                 search_limits: None,
+                universal_search: None,
             }],
             failures: Vec::new(),
             name_to_source: HashMap::from([("demo".to_string(), "demo".to_string())]),

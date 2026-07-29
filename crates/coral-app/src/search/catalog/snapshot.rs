@@ -4,7 +4,8 @@ use std::collections::BTreeMap;
 
 use coral_engine::{
     CatalogInfo, ColumnInfo, TableFunctionArgumentInfo, TableFunctionInfo,
-    TableFunctionResultColumnInfo, TableInfo,
+    TableFunctionResultColumnInfo, TableInfo, UniversalSearchAuthorizationDecision,
+    UniversalSearchAuthorizationInfo, UniversalSearchAuthorizationOrigin,
 };
 use coral_spec::SourceTableFunctionKind;
 use sha2::{Digest as _, Sha256};
@@ -14,7 +15,7 @@ use crate::search::catalog::sqlite_index::{
 };
 use crate::search::result::{SearchFieldRole, SearchSurfaceKind};
 
-const CATALOG_SEARCH_SNAPSHOT_VERSION: &str = "catalog-search-snapshot-v3";
+const CATALOG_SEARCH_SNAPSHOT_VERSION: &str = "catalog-search-snapshot-v4";
 
 #[derive(Debug, Clone)]
 pub(crate) struct CatalogSearchSnapshot {
@@ -492,10 +493,12 @@ fn catalog_snapshot_fingerprint(
         for argument in arguments {
             update_hash(&mut hasher, "argument");
             update_hash(&mut hasher, &argument.name);
+            update_hash(&mut hasher, &argument.data_type);
             update_hash_bool(&mut hasher, argument.required);
             for value in &argument.values {
                 update_hash(&mut hasher, value);
             }
+            update_optional_hash(&mut hasher, argument.default_json.as_deref());
         }
         let mut result_columns = function.result_columns.iter().collect::<Vec<_>>();
         result_columns.sort_by(|left, right| left.name.cmp(&right.name));
@@ -506,9 +509,51 @@ fn catalog_snapshot_fingerprint(
             update_hash_bool(&mut hasher, column.nullable);
             update_hash(&mut hasher, &column.description);
         }
+        update_universal_search_hash(&mut hasher, function.universal_search.as_ref());
     }
 
     format!("{:x}", hasher.finalize())
+}
+
+fn update_universal_search_hash(
+    hasher: &mut Sha256,
+    authorization: Option<&UniversalSearchAuthorizationInfo>,
+) {
+    let Some(authorization) = authorization else {
+        update_hash(hasher, "universal_search_absent");
+        return;
+    };
+    update_hash(hasher, "universal_search");
+    update_hash(hasher, &authorization.source_name);
+    update_optional_hash(hasher, authorization.route_id.as_deref());
+    update_hash(
+        hasher,
+        match authorization.origin {
+            UniversalSearchAuthorizationOrigin::Unspecified => "unspecified",
+            UniversalSearchAuthorizationOrigin::Explicit => "explicit",
+            UniversalSearchAuthorizationOrigin::Inferred => "inferred",
+        },
+    );
+    update_hash(
+        hasher,
+        match authorization.decision {
+            UniversalSearchAuthorizationDecision::Unspecified => "unspecified",
+            UniversalSearchAuthorizationDecision::Eligible => "eligible",
+            UniversalSearchAuthorizationDecision::Denied => "denied",
+        },
+    );
+    update_optional_hash(hasher, authorization.query_argument.as_deref());
+    update_hash(hasher, &authorization.operation_id);
+}
+
+fn update_optional_hash(hasher: &mut Sha256, value: Option<&str>) {
+    match value {
+        Some(value) => {
+            update_hash(hasher, "some");
+            update_hash(hasher, value);
+        }
+        None => update_hash(hasher, "none"),
+    }
 }
 
 fn update_column_hash(hasher: &mut Sha256, column: &ColumnInfo) {
@@ -535,7 +580,12 @@ fn update_hash(hasher: &mut Sha256, value: &str) {
 mod tests {
     use std::collections::BTreeMap;
 
-    use coral_engine::{CatalogInfo, TableInfo};
+    use coral_engine::{
+        CatalogInfo, TableFunctionArgumentInfo, TableFunctionInfo, TableInfo,
+        UniversalSearchAuthorizationDecision, UniversalSearchAuthorizationInfo,
+        UniversalSearchAuthorizationOrigin,
+    };
+    use coral_spec::SourceTableFunctionKind;
 
     use super::{CatalogDocumentKind, CatalogSearchSnapshot};
 
@@ -591,6 +641,28 @@ mod tests {
             && doc.field_name == "title"));
     }
 
+    #[test]
+    fn snapshot_fingerprint_tracks_typed_defaults_and_passive_authorization() {
+        let without_default =
+            CatalogSearchSnapshot::from_catalog(&catalog_with_function(None, None));
+        let explicit_null =
+            CatalogSearchSnapshot::from_catalog(&catalog_with_function(Some("null"), None));
+        let authorized = CatalogSearchSnapshot::from_catalog(&catalog_with_function(
+            Some("null"),
+            Some(UniversalSearchAuthorizationInfo {
+                source_name: "installed_fixture".to_string(),
+                route_id: Some("primary".to_string()),
+                origin: UniversalSearchAuthorizationOrigin::Explicit,
+                decision: UniversalSearchAuthorizationDecision::Eligible,
+                query_argument: Some("query".to_string()),
+                operation_id: "search".to_string(),
+            }),
+        ));
+
+        assert_ne!(without_default.fingerprint, explicit_null.fingerprint);
+        assert_ne!(explicit_null.fingerprint, authorized.fingerprint);
+    }
+
     fn catalog_with_table(table_name: &str) -> CatalogInfo {
         CatalogInfo {
             tables: vec![TableInfo {
@@ -612,6 +684,33 @@ mod tests {
                 required_filters: Vec::new(),
             }],
             table_functions: Vec::new(),
+        }
+    }
+
+    fn catalog_with_function(
+        default_json: Option<&str>,
+        universal_search: Option<UniversalSearchAuthorizationInfo>,
+    ) -> CatalogInfo {
+        CatalogInfo {
+            tables: Vec::new(),
+            table_functions: vec![TableFunctionInfo {
+                schema_name: "fixture_schema".to_string(),
+                function_name: "search".to_string(),
+                description: String::new(),
+                guide: String::new(),
+                require_guide_read: false,
+                arguments: vec![TableFunctionArgumentInfo {
+                    name: "query".to_string(),
+                    data_type: "Utf8".to_string(),
+                    required: true,
+                    values: Vec::new(),
+                    default_json: default_json.map(str::to_string),
+                }],
+                result_columns: Vec::new(),
+                kind: SourceTableFunctionKind::Search,
+                search_limits: None,
+                universal_search,
+            }],
         }
     }
 }

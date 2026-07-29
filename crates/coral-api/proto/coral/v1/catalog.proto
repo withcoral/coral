@@ -94,6 +94,11 @@ message TableFunctionArgument {
   bool required = 2;
   // Allowed values, if the source declares an enum-like value set.
   repeated string values = 3;
+  // Argument type in source-manifest spelling.
+  string data_type = 4;
+  // Authored typed default encoded as JSON. Presence distinguishes no default
+  // from an explicit JSON null.
+  optional string default_json = 5;
 }
 
 // A result column returned by a query-visible table function.
@@ -128,6 +133,43 @@ message SearchLimits {
   uint32 max_calls_per_query = 3;
 }
 
+// How a passive Universal Search authorization was selected.
+enum UniversalSearchAuthorizationOrigin {
+  // No origin was supplied.
+  UNIVERSAL_SEARCH_AUTHORIZATION_ORIGIN_UNSPECIFIED = 0;
+  // The source authored an explicit Universal Search route.
+  UNIVERSAL_SEARCH_AUTHORIZATION_ORIGIN_EXPLICIT = 1;
+  // Coral selected the route through canonical inference.
+  UNIVERSAL_SEARCH_AUTHORIZATION_ORIGIN_INFERRED = 2;
+}
+
+// Passive authorization decision for one provider-native search route.
+enum UniversalSearchAuthorizationDecision {
+  // No decision was supplied.
+  UNIVERSAL_SEARCH_AUTHORIZATION_DECISION_UNSPECIFIED = 0;
+  // The route is eligible if the independent runtime feature is enabled.
+  UNIVERSAL_SEARCH_AUTHORIZATION_DECISION_ELIGIBLE = 1;
+  // The source explicitly denied execution of the route.
+  UNIVERSAL_SEARCH_AUTHORIZATION_DECISION_DENIED = 2;
+}
+
+// Passive source authorization attached to one query-visible table function.
+// This metadata does not represent effective execution state.
+message UniversalSearchAuthorization {
+  // Canonical installed source identity, separate from the SQL schema.
+  string source_name = 1;
+  // Stable source-authored route id. Absent for inferred routes.
+  optional string route_id = 2;
+  // How the route was selected.
+  UniversalSearchAuthorizationOrigin origin = 3;
+  // Whether the route is eligible or explicitly denied.
+  UniversalSearchAuthorizationDecision decision = 4;
+  // Query-visible argument receiving the Universal Search query, when present.
+  optional string query_argument = 5;
+  // Original DSL v4 operation identity.
+  string operation_id = 6;
+}
+
 // A query-visible table function in one workspace.
 message TableFunction {
   // Workspace whose query catalog makes this function visible.
@@ -148,6 +190,8 @@ message TableFunction {
   SearchLimits search_limits = 8;
   // User-facing query guidance.
   string guide = 9;
+  // Passive source authorization for provider-native Universal Search.
+  UniversalSearchAuthorization universal_search = 10;
 }
 
 // Catalog item kind filter for unified discovery.

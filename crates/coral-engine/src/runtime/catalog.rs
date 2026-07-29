@@ -10,12 +10,14 @@ use datafusion::datasource::MemTable;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::prelude::SessionContext;
 use serde::Serialize;
+use serde_json::Value;
 
 use crate::backends::{RegisteredSource, SourceQualifiedName};
 use crate::runtime::schema_provider::StaticSchemaProvider;
 use crate::{
     ColumnInfo, TableFunctionArgumentInfo, TableFunctionInfo, TableFunctionResultColumnInfo,
-    TableInfo,
+    TableInfo, UniversalSearchAuthorizationDecision, UniversalSearchAuthorizationInfo,
+    UniversalSearchAuthorizationOrigin,
 };
 
 /// Schema name for source metadata tables such as `coral.tables`.
@@ -33,13 +35,16 @@ pub(crate) struct CatalogTableFunction {
     pub(crate) result_columns: Vec<CatalogTableFunctionResultColumn>,
     pub(crate) kind: SourceTableFunctionKind,
     pub(crate) search_limits: Option<SearchLimitsSpec>,
+    pub(crate) universal_search: Option<UniversalSearchAuthorizationInfo>,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct CatalogTableFunctionArgument {
     pub(crate) name: String,
+    pub(crate) data_type: String,
     pub(crate) required: bool,
     pub(crate) values: Vec<String>,
+    pub(crate) default: Option<Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -103,6 +108,7 @@ fn build_table_functions_table(
         Field::new("kind", DataType::Utf8, false),
         Field::new("search_limits_json", DataType::Utf8, true),
         Field::new("guide", DataType::Utf8, false),
+        Field::new("universal_search_json", DataType::Utf8, true),
     ]));
 
     let rows = catalog_table_functions(active_sources, catalog_only_table_functions);
@@ -119,6 +125,10 @@ fn build_table_functions_table(
         .iter()
         .map(|row| search_limits_json(row.search_limits.as_ref()))
         .collect::<Result<Vec<_>>>()?;
+    let universal_search_json = rows
+        .iter()
+        .map(|row| universal_search_json(row.universal_search.as_ref()))
+        .collect::<Result<Vec<_>>>()?;
 
     let batch = RecordBatch::try_new(
         schema.clone(),
@@ -131,6 +141,7 @@ fn build_table_functions_table(
             utf8_column(rows.iter().map(|row| Some(row.kind.as_str()))),
             utf8_column(search_limits_json.iter().map(|value| value.as_deref())),
             utf8_column(rows.iter().map(|row| Some(row.guide.as_str()))),
+            utf8_column(universal_search_json.iter().map(|value| value.as_deref())),
         ],
     )
     .map_err(|error| DataFusionError::ArrowError(Box::new(error), None))?;
@@ -168,16 +179,66 @@ fn search_limits_json(limits: Option<&SearchLimitsSpec>) -> Result<Option<String
 #[derive(Serialize)]
 struct TableFunctionArgumentJson<'a> {
     name: &'a str,
+    #[serde(rename = "type")]
+    data_type: &'a str,
     required: bool,
     values: &'a [String],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    default: Option<&'a Value>,
 }
 
 impl<'a> From<&'a CatalogTableFunctionArgument> for TableFunctionArgumentJson<'a> {
     fn from(argument: &'a CatalogTableFunctionArgument) -> Self {
         Self {
             name: &argument.name,
+            data_type: &argument.data_type,
             required: argument.required,
             values: &argument.values,
+            default: argument.default.as_ref(),
+        }
+    }
+}
+
+fn universal_search_json(
+    authorization: Option<&UniversalSearchAuthorizationInfo>,
+) -> Result<Option<String>> {
+    authorization
+        .map(|authorization| {
+            serde_json::to_string(&UniversalSearchAuthorizationJson::from(authorization))
+                .map_err(|error| DataFusionError::External(Box::new(error)))
+        })
+        .transpose()
+}
+
+#[derive(Serialize)]
+struct UniversalSearchAuthorizationJson<'a> {
+    source_name: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    route_id: Option<&'a str>,
+    origin: &'static str,
+    decision: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    query_argument: Option<&'a str>,
+    operation_id: &'a str,
+}
+
+impl<'a> From<&'a UniversalSearchAuthorizationInfo> for UniversalSearchAuthorizationJson<'a> {
+    fn from(authorization: &'a UniversalSearchAuthorizationInfo) -> Self {
+        Self {
+            source_name: &authorization.source_name,
+            route_id: authorization.route_id.as_deref(),
+            origin: match authorization.origin {
+                UniversalSearchAuthorizationOrigin::Unspecified => "unspecified",
+                UniversalSearchAuthorizationOrigin::Explicit => "explicit",
+                UniversalSearchAuthorizationOrigin::Inferred => "inferred",
+            },
+            decision: match authorization.decision {
+                UniversalSearchAuthorizationDecision::Unspecified => "unspecified",
+                UniversalSearchAuthorizationDecision::Eligible => "eligible",
+                UniversalSearchAuthorizationDecision::Denied => "denied",
+            },
+            query_argument: authorization.query_argument.as_deref(),
+            operation_id: &authorization.operation_id,
         }
     }
 }
@@ -491,6 +552,12 @@ const TABLE_FUNCTIONS_COLUMNS: &[SystemColumnDefinition] = &[
         nullable: false,
         description: "User-facing query guidance for the table function.",
     },
+    SystemColumnDefinition {
+        name: "universal_search_json",
+        data_type: "Utf8",
+        nullable: true,
+        description: "Passive Universal Search authorization metadata when the function resolves to a source route.",
+    },
 ];
 
 const SYSTEM_TABLE_DEFINITIONS: &[SystemTableDefinition] = &[
@@ -619,8 +686,12 @@ pub(crate) fn collect_table_functions(
                 .into_iter()
                 .map(|argument| TableFunctionArgumentInfo {
                     name: argument.name,
+                    data_type: argument.data_type,
                     required: argument.required,
                     values: argument.values,
+                    default_json: argument
+                        .default
+                        .map(|value| serde_json::to_string(&value).expect("JSON value serializes")),
                 })
                 .collect(),
             result_columns: function
@@ -635,6 +706,7 @@ pub(crate) fn collect_table_functions(
                 .collect(),
             kind: function.kind,
             search_limits: function.search_limits,
+            universal_search: function.universal_search,
         })
         .collect()
 }
@@ -660,8 +732,13 @@ fn catalog_table_functions(
                         .iter()
                         .map(|argument| CatalogTableFunctionArgument {
                             name: argument.name.clone(),
+                            data_type: argument.data_type.as_manifest_str().to_string(),
                             required: argument.required,
                             values: argument.values.clone(),
+                            default: argument
+                                .default
+                                .as_ref()
+                                .map(|default| default.value().clone()),
                         })
                         .collect(),
                     result_columns: function
@@ -676,6 +753,7 @@ fn catalog_table_functions(
                         .collect(),
                     kind: function.kind,
                     search_limits: function.search_limits.clone(),
+                    universal_search: function.universal_search.clone(),
                 })
         })
         .chain(catalog_only_table_functions.iter().cloned())
@@ -1186,6 +1264,7 @@ mod tests {
                     arguments: Vec::new(),
                     result_columns: Vec::new(),
                     search_limits: None,
+                    universal_search: None,
                 }],
                 inputs: Vec::new(),
             }],

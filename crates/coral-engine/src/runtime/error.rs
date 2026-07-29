@@ -381,6 +381,7 @@ mod tests {
             result_columns: vec![],
             kind: coral_spec::SourceTableFunctionKind::Table,
             search_limits: None,
+            universal_search: None,
         }
     }
 

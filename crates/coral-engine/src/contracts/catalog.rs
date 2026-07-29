@@ -65,10 +65,56 @@ pub struct DescribeTableInfo {
 pub struct TableFunctionArgumentInfo {
     /// Argument name as used in a named SQL function call.
     pub name: String,
+    /// Argument type in source-manifest spelling.
+    pub data_type: String,
     /// Whether callers must provide this argument.
     pub required: bool,
     /// Allowed values, if the source declares an enum-like value set.
     pub values: Vec<String>,
+    /// Authored typed default encoded as JSON, or `None` when no default was declared.
+    pub default_json: Option<String>,
+}
+
+/// How a passive Universal Search authorization was selected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UniversalSearchAuthorizationOrigin {
+    /// No origin was supplied.
+    Unspecified,
+    /// The source authored an explicit Universal Search route.
+    Explicit,
+    /// Coral selected the route through canonical inference.
+    Inferred,
+}
+
+/// Passive authorization decision for one source table function.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UniversalSearchAuthorizationDecision {
+    /// No decision was supplied.
+    Unspecified,
+    /// The route is eligible if the independent runtime feature is enabled.
+    Eligible,
+    /// The source explicitly denied execution of the route.
+    Denied,
+}
+
+/// Passive Universal Search authorization attached to one query-visible function.
+///
+/// This metadata does not enable execution. The app owns policy resolution and
+/// the independent runtime feature gate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UniversalSearchAuthorizationInfo {
+    /// Canonical installed source identity, separate from the SQL schema.
+    pub source_name: String,
+    /// Stable source-authored route id, when the route was explicit.
+    pub route_id: Option<String>,
+    /// Whether the route was explicitly authored or canonically inferred.
+    pub origin: UniversalSearchAuthorizationOrigin,
+    /// Passive eligibility or explicit-denial decision.
+    pub decision: UniversalSearchAuthorizationDecision,
+    /// Query-visible argument receiving the Universal Search query, when present.
+    pub query_argument: Option<String>,
+    /// Original DSL v4 operation identity.
+    pub operation_id: String,
 }
 
 /// Describes one result column returned by a table function.
@@ -105,4 +151,6 @@ pub struct TableFunctionInfo {
     pub kind: SourceTableFunctionKind,
     /// Provider search limit metadata, when declared by the source.
     pub search_limits: Option<SearchLimitsSpec>,
+    /// Passive Universal Search authorization, when one resolves to this function.
+    pub universal_search: Option<UniversalSearchAuthorizationInfo>,
 }
