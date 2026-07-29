@@ -1097,6 +1097,7 @@ mod tests {
             },
             declared_inputs: Vec::new(),
             identity_requirements: None,
+            universal_search: None,
             surface: openapi_surface(),
         };
         let mut materialized = V4MaterializedSource {
@@ -1189,6 +1190,7 @@ mod tests {
             },
             declared_inputs: Vec::new(),
             identity_requirements: None,
+            universal_search: None,
             surface: openapi_surface(),
         };
         let first_materialized = materialized(1);
@@ -1285,6 +1287,7 @@ mod tests {
                 test_queries: Vec::new(),
             },
             identity_requirements: None,
+            universal_search: None,
             declared_inputs: Vec::new(),
             surface: openapi_surface(),
         };
@@ -1333,6 +1336,7 @@ mod tests {
                 test_queries: Vec::new(),
             },
             identity_requirements: None,
+            universal_search: None,
             declared_inputs: Vec::new(),
             surface: openapi_surface(),
         };
@@ -1561,6 +1565,7 @@ mod tests {
                 test_queries: Vec::new(),
             },
             identity_requirements: None,
+            universal_search: None,
             declared_inputs: Vec::new(),
             surface: mcp_surface(),
         };
