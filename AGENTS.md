@@ -157,10 +157,10 @@
   tool in-process, report without enforcing a token budget, and keep
   benchmark-only code out of production crates.
 - Use `cargo run --locked -p xtask -- v4-metadata-report` before and after a
-  change to DSL v4 row-path or pagination inference, and diff the two reports.
-  It imports every non-MCP v4 source under `sources/v4` and emits one CSV row
-  per operation, so an unintended reshape in a source nobody was thinking about
-  shows up as a diff hunk. Pass `--cache-dir` so a before/after pair fetches
+  change to DSL v4 row-path, pagination, or lookup-key inference, and diff the
+  two reports. It imports every non-MCP v4 source under `sources/v4` and emits
+  one CSV row per operation, so an unintended reshape in a source nobody was
+  thinking about shows up as a diff hunk. Pass `--cache-dir` so a before/after pair fetches
   each descriptor once. It is deliberately not wired into CI: it fetches
   multi-megabyte vendor descriptors over the network, and vendor descriptors
   change under us, so a green run proves nothing about the commit that produced

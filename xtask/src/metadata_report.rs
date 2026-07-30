@@ -1,13 +1,15 @@
 //! `v4-metadata-report` xtask subcommand.
 //!
 //! Emits one deterministic line per imported v4 operation describing the
-//! inference outcomes that are opinions rather than facts: where the rows live
-//! and what pagination contract the operation was given.
+//! inference outcomes that are opinions rather than facts: where the rows live,
+//! what pagination contract the operation was given, and which of its query
+//! parameters are trusted to anchor a dependent join.
 //!
-//! The point is diffing. Row-path and pagination inference are heuristics over
-//! vendor descriptors, so a change to either can quietly reshape a relation in
-//! a source nobody was thinking about. Running this before and after such a
-//! change turns "did anything else move?" from a question into a `diff`.
+//! The point is diffing. Row-path, pagination and lookup-key inference are all
+//! heuristics over vendor descriptors, so a change to any of them can quietly
+//! reshape a relation in a source nobody was thinking about. Running this
+//! before and after such a change turns "did anything else move?" from a
+//! question into a `diff`.
 //!
 //! Deliberately not wired into CI: it fetches multi-megabyte descriptors over
 //! the network, and vendor descriptors change under us, so a green run proves
@@ -40,14 +42,23 @@ const MAX_DESCRIPTOR_BYTES: u64 = 64 * 1024 * 1024;
 const FETCH_TIMEOUT: Duration = Duration::from_mins(2);
 
 /// Every `PaginationSpec` field the `OpenAPI` importer can populate, plus the
-/// row path.
+/// row path and the lookup-key allowlist.
 ///
 /// The narrower set this started with hid real inference changes: swapping the
 /// `page` query parameter an operation is bound to, or the response path a
 /// cursor is read from, leaves `mode` untouched and so would not show up in the
 /// diff at all. A field the importer writes but this report drops is a change
 /// the report cannot see.
-const HEADER: &str = "source,operation_id,row_path,mode,\
+///
+/// `lookup_keys` is the clearest example of that, because it moves for reasons
+/// that have nothing to do with lookup keys. The allowlist is whatever query
+/// parameters pagination did not claim, so changing which detector wins a mode
+/// hands its displaced parameters to the join planner: an operation that loses
+/// `offset_param: skip` gains `skip` as a joinable key, and a dependent join on
+/// it then attributes every row from that offset onward to one value. That is a
+/// wrong-rows bug reached entirely through a pagination edit, and without this
+/// column the report shows only the pagination half of it.
+const HEADER: &str = "source,operation_id,row_path,lookup_keys,mode,\
     page_size_param,page_size_default,page_size_max,\
     page_param,page_start,page_step,\
     cursor_param,response_cursor_path,response_cursor_header,\
@@ -84,6 +95,7 @@ struct OperationRow {
     source: String,
     operation_id: String,
     row_path: String,
+    lookup_keys: String,
     mode: String,
     page_size_param: String,
     page_size_default: String,
@@ -103,11 +115,12 @@ struct OperationRow {
 
 impl OperationRow {
     /// The fields in header order.
-    fn fields(&self) -> [&str; 18] {
+    fn fields(&self) -> [&str; 19] {
         [
             &self.source,
             &self.operation_id,
             &self.row_path,
+            &self.lookup_keys,
             &self.mode,
             &self.page_size_param,
             &self.page_size_default,
@@ -226,14 +239,23 @@ fn import_source_rows(
         .iter()
         .map(|operation| {
             let entry = metadata.get(operation.id.as_str());
-            let (row_path, pagination) = match entry {
+            // MCP operations have no lookup-key allowlist at all: the heuristic
+            // is REST-only, so their column is empty rather than "none of the
+            // inputs qualified".
+            let (row_path, lookup_keys, pagination) = match entry {
                 Some(OperationMetadata::Rest {
                     row_path,
                     pagination,
-                    ..
-                }) => (join_path(row_path), Some(pagination)),
-                Some(OperationMetadata::Mcp { row_path, .. }) => (join_path(row_path), None),
-                None => (String::new(), None),
+                    lookup_keys,
+                }) => (
+                    join_path(row_path),
+                    join_lookup_keys(lookup_keys),
+                    Some(pagination),
+                ),
+                Some(OperationMetadata::Mcp { row_path, .. }) => {
+                    (join_path(row_path), String::new(), None)
+                }
+                None => (String::new(), String::new(), None),
             };
             let page_size = pagination.and_then(|spec| spec.page_size.as_ref());
             let page_param = pagination
@@ -246,6 +268,7 @@ fn import_source_rows(
                 source: schema_name.to_owned(),
                 operation_id: operation.id.clone(),
                 row_path,
+                lookup_keys,
                 mode: pagination.map_or_else(|| "-".to_owned(), |spec| mode_name(spec.mode)),
                 page_size_param: page_size
                     .and_then(|size| size.query_param.clone())
@@ -367,6 +390,20 @@ fn join_path(path: &[String]) -> String {
     path.join(".")
 }
 
+/// Renders the lookup-key allowlist as a sorted, space-separated list.
+///
+/// Sorted because the allowlist is a set — `plan.rs` membership-tests it — but
+/// it is built by walking the operation's inputs in descriptor order, so a
+/// vendor reordering two unrelated parameters would otherwise show up as a
+/// change to every operation that declares both. Space-separated so the field
+/// needs no CSV quoting: parameter names come from descriptors and can hold a
+/// comma, but none of the sources hold one with a space.
+fn join_lookup_keys(keys: &[String]) -> String {
+    let mut sorted: Vec<&str> = keys.iter().map(String::as_str).collect();
+    sorted.sort_unstable();
+    sorted.join(" ")
+}
+
 /// Renders a pagination cursor's start or step, blank unless `param` binds it.
 ///
 /// `PaginationSpec` defaults these to `0`, so an operation with no offset
@@ -398,13 +435,16 @@ fn mode_name(mode: PaginationMode) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{HEADER, OperationRow, escape_csv_field, join_path, option_number};
+    use super::{
+        HEADER, OperationRow, escape_csv_field, join_lookup_keys, join_path, option_number,
+    };
 
     fn row() -> OperationRow {
         OperationRow {
             source: "github_v4".to_owned(),
             operation_id: "issues_list".to_owned(),
             row_path: "items".to_owned(),
+            lookup_keys: "labels state".to_owned(),
             mode: "link_header".to_owned(),
             page_size_param: "per_page".to_owned(),
             page_size_default: "30".to_owned(),
@@ -447,6 +487,40 @@ mod tests {
         assert_eq!(
             field, "page",
             "rebinding the page parameter must show up in the diff even though the mode is unchanged"
+        );
+    }
+
+    #[test]
+    fn reports_the_parameters_an_operation_will_let_a_dependent_join_anchor_on() {
+        let mut row = row();
+        // What a pagination change looks like from the join planner's side: the
+        // detector that owned `skip` lost, so nothing claims it and it becomes
+        // joinable.
+        row.lookup_keys = "labels skip state".to_owned();
+        let rendered = row.render();
+        let column = HEADER
+            .split(',')
+            .position(|column| column == "lookup_keys")
+            .expect("lookup_keys is a reported column");
+        let field = rendered
+            .split(',')
+            .nth(column)
+            .expect("a row carries every header column");
+
+        assert_eq!(
+            field, "labels skip state",
+            "a paging parameter displaced into the lookup-key allowlist must be visible in the diff"
+        );
+    }
+
+    #[test]
+    fn orders_lookup_keys_so_only_membership_changes_show_up() {
+        assert_eq!(join_lookup_keys(&[]), "");
+        assert_eq!(join_lookup_keys(&["state".to_owned()]), "state");
+        assert_eq!(
+            join_lookup_keys(&["state".to_owned(), "labels".to_owned()]),
+            join_lookup_keys(&["labels".to_owned(), "state".to_owned()]),
+            "the allowlist is a set, so a descriptor reordering its parameters is not a change"
         );
     }
 
