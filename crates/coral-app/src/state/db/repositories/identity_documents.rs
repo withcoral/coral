@@ -183,7 +183,7 @@ impl IdentityDocumentsRepo<'_, CoralTx<'_>> {
                 .to_owned(),
             )
             .to_owned();
-        match self.session.execute_affected(statement).await? {
+        match self.session.execute_rows_affected(statement).await? {
             1 => {}
             0 => {
                 return Err(AppError::FailedPrecondition(format!(
@@ -247,7 +247,7 @@ mod tests {
     use super::IdentityDocumentRecord;
     use crate::encrypted_document::EncryptedEnvelopeDocument;
     use crate::identities::model::{IdentityName, IdentityOwner};
-    use crate::identity::UserPrincipal;
+    use crate::identity::Principal;
 
     #[test]
     fn identity_document_debug_omits_envelope_material() {
@@ -263,7 +263,7 @@ mod tests {
         .expect("valid document");
         assert_eq!(envelope.binding_version, 1);
         let record = IdentityDocumentRecord {
-            owner: IdentityOwner::for_user(UserPrincipal::local()),
+            owner: IdentityOwner::for_user(Principal::local()),
             name: IdentityName::parse("github").expect("identity name"),
             document_version: 1,
             envelope,

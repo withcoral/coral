@@ -275,7 +275,8 @@ mod tests {
             owner
         );
         assert_eq!(
-            IdentityOwner::from_key_storage_parts("user", "local").expect("stored local owner"),
+            IdentityOwner::from_key_storage_parts("user", "coral:local")
+                .expect("stored local owner"),
             local
         );
         IdentityOwner::from_key_storage_parts("unknown", "team-1")
