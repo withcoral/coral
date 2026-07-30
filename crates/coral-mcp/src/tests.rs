@@ -682,6 +682,10 @@ async fn mcp_task_tools_persist_lifecycle_and_tag_follow_up_calls() {
             .contains_key("success")
     );
     assert_eq!(end["task_status"], "success");
+    assert_eq!(
+        end["note"],
+        "Task status recorded. Before responding to the user, consider whether adding a function would improve future work: better discovery through a semantically richer function, or simpler query composition through fewer or simpler SQL calls. You may call `add_function` to add it as a new function. Do not add a function that duplicates or only renames a table function you called during this task. Do not replace an existing function unless the user confirms."
+    );
 
     let post_end_sql = client
         .call_tool(
