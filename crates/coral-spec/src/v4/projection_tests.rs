@@ -1071,7 +1071,7 @@ components:
   schemas:
     LimitParameter: {type: integer, default: 25}
     ExactParameter: {type: boolean, default: false}
-    ScopeParameter: {type: [string, 'null'], default: null}
+    ScopeParameter: {type: string, nullable: true, default: null}
 paths:
   /search:
     get:
@@ -1165,11 +1165,11 @@ paths:
         - name: scope
           in: path
           required: true
-          schema: {type: [string, 'null'], default: null}
+          schema: {type: string, nullable: true, default: null}
         - name: cursor
           in: query
           required: true
-          schema: {type: [string, 'null'], default: null}
+          schema: {type: string, nullable: true, default: null}
       responses:
         '200':
           content:
@@ -1537,8 +1537,8 @@ fn generated_mcp_projection_projects_authored_top_level_raw_field() {
         .expect("authored raw field");
     assert!(!raw_field.synthetic);
 
-    let catalog =
-        generate_projection_catalog(v4, &mcp_ir.validated_plan().expect("plan")).expect("catalog");
+    let plan = mcp_ir.validated_plan().expect("plan");
+    let catalog = generate_projection_catalog(v4, &plan).expect("catalog");
     let projection = catalog.projections.first().expect("projection");
     let raw_column = projection
         .columns
@@ -1547,6 +1547,44 @@ fn generated_mcp_projection_projects_authored_top_level_raw_field() {
         .expect("authored raw projection column");
     assert_eq!(raw_column.data_type, ManifestDataType::Utf8);
     assert_eq!(raw_column.source_path, ["raw"]);
+    validate_projection_compatibility(&plan, &catalog)
+        .expect("provider-authored raw fields must remain addressable");
+}
+
+#[test]
+fn projection_compatibility_rejects_synthetic_mcp_raw_field() {
+    let manifest = mcp_manifest();
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_mcp_surface(
+        v4,
+        &v4.surface,
+        &McpToolCatalog {
+            tools: vec![McpToolDescriptor {
+                name: "get_item".to_string(),
+                title: None,
+                description: None,
+                input_schema: json!({"type": "object", "properties": {}}),
+                output_schema: Some(json!({
+                    "type": "object",
+                    "properties": {"id": {"type": "string"}}
+                })),
+                read_only_hint: Some(true),
+                idempotent_hint: Some(true),
+            }],
+        },
+    )
+    .expect("MCP import");
+    let plan = ir.validated_plan().expect("plan");
+    let generated = generate_projection_catalog(v4, &plan).expect("catalog");
+    let catalog = compatibility_of_source_path(&generated, &["raw"]);
+
+    let error = validate_projection_compatibility(&plan, &catalog)
+        .expect_err("the importer-only raw field is not present in runtime rows");
+
+    assert!(
+        error.to_string().contains("reads synthetic field 'raw'"),
+        "unexpected error: {error}"
+    );
 }
 
 #[test]
@@ -1774,6 +1812,96 @@ paths:
         assert_eq!(leaf.name, "repository__owner_name");
         assert_eq!(leaf.data_type, ManifestDataType::Utf8);
     }
+}
+
+#[test]
+fn nested_column_names_do_not_reuse_collision_resolved_top_level_names() {
+    let manifest = openapi_manifest();
+    let v4 = manifest.as_v4().expect("v4");
+    let suffix = crate::v4::naming::stable_suffix("foo_bar");
+    let literal_name = format!("foo_bar__{suffix}");
+    let openapi = format!(
+        r"
+openapi: 3.0.3
+components:
+  schemas:
+    FooBarObject:
+      type: object
+      properties:
+        {suffix}: {{type: string}}
+paths:
+  /items:
+    get:
+      operationId: items/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    foo-bar: {{type: string}}
+                    foo_bar: {{$ref: '#/components/schemas/FooBarObject'}}
+                    {literal_name}: {{type: string}}
+"
+    );
+    let ir = import_openapi_surface(v4, &v4.surface, openapi.as_bytes()).expect("REST import");
+    let plan = ir.validated_plan().expect("plan");
+    let catalog = generate_projection_catalog(v4, &plan).expect("catalog");
+    let projection = catalog.projections.first().expect("projection");
+
+    let names = projection
+        .columns
+        .iter()
+        .map(|column| column.name.as_str())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        names.len(),
+        projection.columns.len(),
+        "every emitted column name must be unique"
+    );
+
+    for source_path in [
+        vec!["foo-bar"],
+        vec!["foo_bar"],
+        vec![literal_name.as_str()],
+        vec!["foo_bar", suffix.as_str()],
+    ] {
+        assert!(
+            projection.columns.iter().any(|column| {
+                column
+                    .source_path
+                    .iter()
+                    .map(String::as_str)
+                    .eq(source_path.iter().copied())
+            }),
+            "missing source path {source_path:?}; columns: {:?}",
+            projection.columns
+        );
+    }
+
+    let top_level = projection
+        .columns
+        .iter()
+        .find(|column| column.source_path == ["foo_bar"])
+        .expect("collision-resolved top-level column");
+    let nested = projection
+        .columns
+        .iter()
+        .find(|column| {
+            column
+                .source_path
+                .iter()
+                .map(String::as_str)
+                .eq(["foo_bar", suffix.as_str()])
+        })
+        .expect("nested scalar column");
+    assert_ne!(top_level.name, nested.name);
+
+    validate_projection_compatibility(&plan, &catalog)
+        .expect("generated collision-safe columns must remain compatible");
 }
 
 #[test]
@@ -2210,6 +2338,32 @@ paths:
         - {name: page, in: query, schema: {type: integer, default: 1}}
         - {name: per_page, in: query, schema: {type: integer, default: 25, maximum: 100}}
         - {name: state, in: query, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {type: array, items: {type: object}}
+",
+    )
+    .expect("import");
+    (manifest, imported)
+}
+
+fn imported_defaulted_inputs_surface() -> (V4SourceManifest, ImportedSurface) {
+    let manifest = openapi_manifest().as_v4().expect("v4").clone();
+    let imported = import_openapi_surface(
+        &manifest,
+        &manifest.surface,
+        br"
+openapi: 3.0.3
+paths:
+  /items:
+    get:
+      operationId: items/list
+      parameters:
+        - {name: missing_default, in: query, schema: {type: string}}
+        - {name: null_default, in: query, schema: {type: string, nullable: true, default: null}}
+        - {name: value_default, in: query, schema: {type: integer, default: 7}}
       responses:
         '200':
           content:
@@ -2793,6 +2947,40 @@ fn projection_compatibility_rejects_input_missing_from_operation() {
             .contains("input 'stale' does not match a Query input named 'renamed_upstream'"),
         "unexpected error: {error}"
     );
+}
+
+#[test]
+fn projection_compatibility_rejects_changed_imported_defaults() {
+    let (manifest, imported) = imported_defaulted_inputs_surface();
+    let plan = imported.validated_plan().expect("plan");
+    let generated = generate_projection_catalog(&manifest, &plan).expect("projections");
+    validate_projection_compatibility(&plan, &generated)
+        .expect("an unmodified generated catalog must remain compatible");
+
+    for (wire_name, replacement) in [
+        (
+            "missing_default",
+            Some(crate::DeclaredDefaultValue::new(serde_json::Value::Null)),
+        ),
+        ("null_default", None),
+        (
+            "value_default",
+            Some(crate::DeclaredDefaultValue::new(json!(8))),
+        ),
+    ] {
+        let mut catalog = generated.clone();
+        projection_input_mut(&mut catalog, wire_name).default_value = replacement;
+
+        let error = validate_projection_compatibility(&plan, &catalog)
+            .expect_err("a projection override must not change request defaults");
+
+        assert!(
+            error.to_string().contains(&format!(
+                "input '{wire_name}' on operation 'items_list' changes the imported default_value"
+            )),
+            "unexpected error: {error}"
+        );
+    }
 }
 
 #[test]

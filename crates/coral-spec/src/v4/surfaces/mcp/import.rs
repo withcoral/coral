@@ -265,6 +265,22 @@ surface:
     }
 
     #[test]
+    fn normalized_mcp_catalog_preserves_explicit_false_behavior_hints() {
+        let mut descriptor = tool("search-items", Some(false));
+        descriptor.idempotent_hint = Some(false);
+        let catalog = McpToolCatalog {
+            tools: vec![descriptor],
+        };
+
+        let normalized = normalize_mcp_tool_catalog(&catalog).expect("normalize catalog");
+        let normalized: McpToolCatalog =
+            serde_yaml::from_slice(&normalized).expect("normalized catalog YAML");
+        let descriptor = normalized.tools.first().expect("normalized tool");
+        assert_eq!(descriptor.read_only_hint, Some(false));
+        assert_eq!(descriptor.idempotent_hint, Some(false));
+    }
+
+    #[test]
     fn imports_input_schema_types_required_flags_and_defaults() {
         let catalog = McpToolCatalog {
             tools: vec![tool_with_schemas(

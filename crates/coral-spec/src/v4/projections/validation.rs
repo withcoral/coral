@@ -57,6 +57,12 @@ fn validate_projection_inputs(
                 projection.name, input.name, input.source_location, input.wire_name, operation.id
             )));
         };
+        if input.default_value != operation_input.default_value {
+            return Err(ManifestError::validation(format!(
+                "projection '{}' input '{}' on operation '{}' changes the imported default_value; projection overrides cannot change operation defaults",
+                projection.name, input.name, operation.id
+            )));
+        }
 
         let pagination_owned =
             plan.pagination_owns_input(operation, &input.wire_name, input.source_location);
@@ -183,6 +189,12 @@ fn validate_projection_columns(
                 projection.name, column.name
             )));
         };
+        if field.synthetic {
+            return Err(ManifestError::validation(format!(
+                "projection '{}' column '{}' reads synthetic field '{field_name}' on rows operation '{operation_id}'; synthetic compatibility fields are not addressable response fields",
+                projection.name, column.name
+            )));
+        }
         // Generated and authored columns may both nest, and runtime follows
         // every segment it is given.
         let nested = column.source_path.get(1..).unwrap_or_default();
@@ -229,6 +241,11 @@ fn walk_source_path(
                 let Some(field) = fields.iter().find(|field| field.name == *segment) else {
                     return Err(format!("type '{type_ref}' has no field '{segment}'"));
                 };
+                if field.synthetic {
+                    return Err(format!(
+                        "field '{segment}' on type '{type_ref}' is synthetic and is not an addressable response field"
+                    ));
+                }
                 field.type_ref.as_str()
             }
             // Any key selects a map value, so only a numeric one is ruled out.

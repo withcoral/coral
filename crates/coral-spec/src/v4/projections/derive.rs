@@ -334,20 +334,20 @@ fn projection_columns(
                 do_not_index: false,
             },
         ];
-        let mut names = HashSet::from(["result".to_string(), "result_json".to_string()]);
         // The runtime applies the operation row path before it projects
         // columns. Derive structured columns from that effective row type so
         // their source paths are relative to the row rather than the response
         // envelope.
-        append_scalar_leaf_columns(
-            type_by_id,
-            plan.output_row_type_ref(&operation.id),
-            &mut Vec::new(),
-            false,
-            "",
-            &mut names,
-            &mut columns,
-        );
+        {
+            let mut collector = ScalarLeafCollector::new(type_by_id, &mut columns);
+            collector.append(
+                plan.output_row_type_ref(&operation.id),
+                &mut Vec::new(),
+                false,
+                "",
+                0,
+            );
+        }
         return columns;
     }
     // A wrapped-list operation declares an envelope but yields the rows nested
@@ -375,11 +375,7 @@ fn projection_columns(
     let mut columns = Vec::new();
     let mut names = HashSet::new();
     for field in fields {
-        let mut name = normalize_identifier(&field.name, "column");
-        if !names.insert(name.clone()) {
-            let suffix = stable_suffix(&field.name);
-            name = format!("{name}__{suffix}");
-        }
+        let name = unique_top_level_column_name(&field.name, &mut names);
         let data_type = type_by_id
             .get(field.type_ref.as_str())
             .map_or(ManifestDataType::Json, |ty| projection_data_type(ty));
@@ -394,59 +390,75 @@ fn projection_columns(
     }
     // Preserve every established top-level REST column above, including JSON
     // object columns, and add addressable scalar descendants beside them.
-    for field in fields {
-        let Some(field_type) = type_by_id.get(field.type_ref.as_str()) else {
-            continue;
-        };
-        if !matches!(field_type.shape, IrTypeShape::Object { .. }) {
-            continue;
+    {
+        // Seed the collector once from every emitted top-level column. Besides
+        // keeping derivation linear, this reserves collision-resolved names
+        // before nested leaves choose theirs.
+        let mut collector = ScalarLeafCollector::new(type_by_id, &mut columns);
+        for field in fields {
+            let Some(field_type) = type_by_id.get(field.type_ref.as_str()) else {
+                continue;
+            };
+            if !matches!(field_type.shape, IrTypeShape::Object { .. }) {
+                continue;
+            }
+            collector.append(
+                field.type_ref.as_str(),
+                &mut vec![field.name.clone()],
+                field.nullable || field_type.nullable,
+                &field.description,
+                0,
+            );
         }
-        append_scalar_leaf_columns(
-            type_by_id,
-            field.type_ref.as_str(),
-            &mut vec![field.name.clone()],
-            field.nullable || field_type.nullable,
-            &field.description,
-            &mut names,
-            &mut columns,
-        );
     }
     columns
 }
 
-fn append_scalar_leaf_columns(
-    type_by_id: &TypeIndex<'_>,
-    type_ref: &str,
-    path: &mut Vec<String>,
-    inherited_nullable: bool,
-    description: &str,
-    names: &mut HashSet<String>,
-    columns: &mut Vec<ProjectionColumn>,
-) {
-    let source_paths = columns
-        .iter()
-        .filter(|column| !column.source_path.is_empty())
-        .map(|column| column.source_path.clone())
-        .collect();
-    let mut collector = ScalarLeafCollector {
-        type_by_id,
-        names,
-        columns,
-        source_paths,
-        type_stack: HashSet::new(),
-    };
-    collector.append(type_ref, path, inherited_nullable, description, 0);
+fn unique_top_level_column_name(field_name: &str, names: &mut HashSet<String>) -> String {
+    let base = normalize_identifier(field_name, "column");
+    if names.insert(base.clone()) {
+        return base;
+    }
+    let mut attempt = 0_u32;
+    loop {
+        let suffix_key = if attempt == 0 {
+            field_name.to_string()
+        } else {
+            format!("{field_name}:{attempt}")
+        };
+        let candidate = format!("{base}__{}", stable_suffix(&suffix_key));
+        if names.insert(candidate.clone()) {
+            return candidate;
+        }
+        attempt += 1;
+    }
 }
 
 struct ScalarLeafCollector<'a, 'ir> {
     type_by_id: &'a TypeIndex<'ir>,
-    names: &'a mut HashSet<String>,
+    names: HashSet<String>,
     columns: &'a mut Vec<ProjectionColumn>,
     source_paths: HashSet<Vec<String>>,
     type_stack: HashSet<String>,
 }
 
-impl ScalarLeafCollector<'_, '_> {
+impl<'a, 'ir> ScalarLeafCollector<'a, 'ir> {
+    fn new(type_by_id: &'a TypeIndex<'ir>, columns: &'a mut Vec<ProjectionColumn>) -> Self {
+        let names = columns.iter().map(|column| column.name.clone()).collect();
+        let source_paths = columns
+            .iter()
+            .filter(|column| !column.source_path.is_empty())
+            .map(|column| column.source_path.clone())
+            .collect();
+        ScalarLeafCollector {
+            type_by_id,
+            names,
+            columns,
+            source_paths,
+            type_stack: HashSet::new(),
+        }
+    }
+
     fn append(
         &mut self,
         type_ref: &str,
@@ -537,7 +549,7 @@ impl ScalarLeafCollector<'_, '_> {
             .map(|segment| normalize_identifier(segment, "column"))
             .collect::<Vec<_>>()
             .join("__");
-        let name = unique_leaf_column_name(&base, path, self.names);
+        let name = unique_leaf_column_name(&base, path, &mut self.names);
         self.columns.push(ProjectionColumn {
             name,
             data_type,
