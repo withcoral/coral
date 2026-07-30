@@ -5,9 +5,9 @@ import { render } from 'vitest-browser-react'
 
 import { Sidebar } from './sidebar'
 import { SIDEBAR_COOKIE_NAME } from './sidebar-state'
-import type { CoralDesktopApi } from '@/lib/coral-desktop'
 import { validateWorkspaceName } from '@/lib/workspace-name'
 import { routePath, routePattern } from '@/routing/routemap'
+import { createDesktopApi } from '@/test-utils/desktop-api'
 
 const WORKSPACES = [{ name: 'default' }, { name: 'analytics' }]
 
@@ -231,7 +231,7 @@ describe('Sidebar', () => {
   })
 
   it('shows no settings navigation items on the web', async () => {
-    window.coralDesktop = desktopApi({
+    window.coralDesktop = createDesktopApi({
       getUpdateState: vi.fn(async () => ({ status: 'ready' as const, version: '0.9.0' })),
     })
     const screen = await renderSidebar(false, routePath('settings'), WORKSPACES)
@@ -255,7 +255,7 @@ describe('Sidebar', () => {
   })
 
   it('shows desktop update state persistently in the sidebar footer', async () => {
-    window.coralDesktop = desktopApi({
+    window.coralDesktop = createDesktopApi({
       getUpdateState: vi.fn(async () => ({ status: 'available' as const, version: '0.9.0' })),
     })
     vi.stubEnv('CORAL_DESKTOP_APP', 'true')
@@ -381,15 +381,3 @@ describe('Sidebar', () => {
       .toContain('Sources')
   })
 })
-
-function desktopApi(overrides: Partial<CoralDesktopApi> = {}): CoralDesktopApi {
-  return {
-    configureMcp: vi.fn(async () => {}),
-    getMcpLaunchConfig: vi.fn(async () => ({ args: [], command: 'coral' })),
-    getUpdateState: vi.fn(async () => ({ status: 'idle' as const })),
-    listMcpClients: vi.fn(async () => []),
-    onUpdateStateChange: vi.fn(() => () => {}),
-    removeMcp: vi.fn(async () => {}),
-    ...overrides,
-  }
-}

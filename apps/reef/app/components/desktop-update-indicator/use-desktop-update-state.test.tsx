@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { renderHook } from 'vitest-browser-react'
 
-import type { CoralDesktopApi, DesktopUpdateState } from '@/lib/coral-desktop'
+import type { DesktopUpdateState } from '@/lib/coral-desktop'
+import { createDesktopApi } from '@/test-utils/desktop-api'
 
 import { useDesktopUpdateState } from './use-desktop-update-state'
 
@@ -14,7 +15,7 @@ describe('useDesktopUpdateState', () => {
   it('subscribes before reading the current snapshot and cleans up the exact subscription', async () => {
     const calls: string[] = []
     const unsubscribe = vi.fn()
-    const api = desktopApi({
+    const api = createDesktopApi({
       getUpdateState: vi.fn(async () => {
         calls.push('snapshot')
         return { status: 'available' as const, version: '0.9.0' }
@@ -47,7 +48,7 @@ describe('useDesktopUpdateState', () => {
       resolveSnapshot = resolve
     })
     const unsubscribe = vi.fn()
-    window.coralDesktop = desktopApi({
+    window.coralDesktop = createDesktopApi({
       getUpdateState: vi.fn(() => snapshot),
       onUpdateStateChange: vi.fn((nextListener) => {
         listener = nextListener
@@ -77,7 +78,7 @@ describe('useDesktopUpdateState', () => {
   })
 
   it('does not access the Desktop bridge when disabled', async () => {
-    const api = desktopApi()
+    const api = createDesktopApi()
     window.coralDesktop = api
 
     const hook = await renderHook(() => useDesktopUpdateState(false))
@@ -87,15 +88,3 @@ describe('useDesktopUpdateState', () => {
     expect(api.onUpdateStateChange).not.toHaveBeenCalled()
   })
 })
-
-function desktopApi(overrides: Partial<CoralDesktopApi> = {}): CoralDesktopApi {
-  return {
-    configureMcp: vi.fn(async () => {}),
-    getMcpLaunchConfig: vi.fn(async () => ({ args: [], command: 'coral' })),
-    getUpdateState: vi.fn(async () => ({ status: 'idle' as const })),
-    listMcpClients: vi.fn(async () => []),
-    onUpdateStateChange: vi.fn(() => () => {}),
-    removeMcp: vi.fn(async () => {}),
-    ...overrides,
-  }
-}
