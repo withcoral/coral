@@ -12,8 +12,8 @@ use super::env::AppEnvironment;
 use super::{AppError, is_loopback_ip};
 use crate::auth::session::SessionTokenIssuer;
 use crate::auth::{AuthSettings, CoralAuthorizationServer, ResolvedAuthSettings};
-use crate::identity::{BearerAuthenticator, PrincipalProvider};
 use crate::oauth_resource::CanonicalOauthUrl;
+use crate::request_auth::SessionPrincipalProvider;
 use crate::state::AppStateLayout;
 
 #[derive(Debug, Default, Deserialize)]
@@ -72,30 +72,16 @@ impl LoadedServerConfig {
         reject_removed_auth(settings.removed_auth.as_ref())
     }
 
-    pub(crate) fn reject_unprepared_auth(&self) -> Result<(), AppError> {
-        if AuthSettings::from_toml(&self.raw)
-            .map_err(|error| AppError::FailedPrecondition(error.to_string()))?
-            .is_some()
-        {
-            return Err(AppError::FailedPrecondition(
-                "configured [auth] requires ServerBuilder::prepare_for_serve before starting standalone gRPC"
-                    .to_string(),
-            ));
-        }
-        Ok(())
-    }
-
     /// Resolves the settings `coral serve`'s companions are built from.
     ///
     /// This returns validated configuration and resolved key material only. The
-    /// services themselves are constructed by the composition root in
-    /// `bootstrap/server.rs`, so discovering configuration never owns a live
-    /// service or its state.
-    pub(crate) fn companion_settings(&self) -> Result<ResolvedCompanionSettings, AppError> {
+    /// caller constructs the services and owns their lifecycle, so resolving
+    /// configuration never produces a live service or its state.
+    pub(crate) fn companion_settings(&self) -> Result<ServeSettings, AppError> {
         let auth_settings = AuthSettings::from_toml(&self.raw)
             .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
         let Some(auth_settings) = auth_settings else {
-            return Ok(ResolvedCompanionSettings {
+            return Ok(ServeSettings {
                 mcp_http: self.resolve_mcp_http(None)?,
                 session_auth: None,
             });
@@ -120,9 +106,9 @@ impl LoadedServerConfig {
         )?;
         let mcp_http = self.resolve_mcp_http(Some(&authorization_server))?;
         let public_audiences = public_surface_audiences(mcp_http.as_ref())?;
-        Ok(ResolvedCompanionSettings {
+        Ok(ServeSettings {
             mcp_http,
-            session_auth: Some(ResolvedSessionAuth {
+            session_auth: Some(SessionAuthSettings {
                 settings: auth_settings,
                 session_tokens: session,
                 public_audiences,
@@ -277,80 +263,82 @@ impl McpHttpServeConfig {
     }
 }
 
-/// Settings the companion services are built from, with nothing live in them.
+/// Validated settings for the companions `coral serve` composes beside gRPC.
 ///
-/// The split from [`ServeCompanionConfig`] is what keeps service construction in
-/// the composition root: this type carries validated configuration and resolved
-/// key material, and `bootstrap/server.rs` turns it into services.
-pub(crate) struct ResolvedCompanionSettings {
+/// Nothing here is live. The gRPC server's bootstrap resolves configuration; the
+/// call site turns these settings into services and owns their lifecycle, so a
+/// server builder never constructs a transport it does not run. `coral serve`
+/// composes them in `coral-cli`'s `serve::compose_session_policies`.
+pub struct ServeSettings {
     pub(super) mcp_http: Option<McpHttpServeConfig>,
-    pub(super) session_auth: Option<ResolvedSessionAuth>,
+    pub(super) session_auth: Option<SessionAuthSettings>,
 }
 
-/// Resolved session-authentication inputs for one authenticated instance.
-pub(crate) struct ResolvedSessionAuth {
-    pub(super) settings: ResolvedAuthSettings,
-    pub(super) session_tokens: SessionTokenIssuer,
-    /// Resource identifiers of the instance's public surfaces, canonicalized.
-    ///
-    /// Each is an audience the private gRPC API accepts; a public surface accepts
-    /// only its own.
-    pub(super) public_audiences: Vec<String>,
-}
-
-/// Configuration for companions that `coral serve` starts beside gRPC.
-pub struct ServeCompanionConfig {
-    mcp_http: Option<McpHttpServeConfig>,
-    authorization_server: Option<CoralAuthorizationServer>,
-    grpc_principal_provider: Option<Arc<dyn PrincipalProvider>>,
-    mcp_principal_provider: Option<Arc<dyn BearerAuthenticator>>,
-}
-
-impl ServeCompanionConfig {
-    /// Assembles the companion handles the composition root has constructed.
-    pub(super) fn from_parts(
-        mcp_http: Option<McpHttpServeConfig>,
-        authorization_server: Option<CoralAuthorizationServer>,
-        grpc_principal_provider: Option<Arc<dyn PrincipalProvider>>,
-        mcp_principal_provider: Option<Arc<dyn BearerAuthenticator>>,
-    ) -> Self {
-        Self {
-            mcp_http,
-            authorization_server,
-            grpc_principal_provider,
-            mcp_principal_provider,
-        }
-    }
-
+impl ServeSettings {
     /// Returns the resolved MCP HTTP configuration, when enabled.
     #[must_use]
     pub fn mcp_http(&self) -> Option<&McpHttpServeConfig> {
         self.mcp_http.as_ref()
     }
 
-    /// Takes the prepared Coral authorization server, when enabled.
+    /// Takes the resolved session authentication, when `[auth]` is configured.
     #[must_use]
-    pub fn take_authorization_server(&mut self) -> Option<CoralAuthorizationServer> {
-        self.authorization_server.take()
+    pub fn take_session_auth(&mut self) -> Option<SessionAuthSettings> {
+        self.session_auth.take()
+    }
+}
+
+/// Resolved session authentication for one authenticated instance.
+///
+/// Holding one is proof the signing key and provider secret were fetched from
+/// their configured sources.
+pub struct SessionAuthSettings {
+    pub(super) settings: ResolvedAuthSettings,
+    pub(super) session_tokens: SessionTokenIssuer,
+    pub(super) public_audiences: Vec<String>,
+}
+
+impl SessionAuthSettings {
+    /// Resource identifiers of the instance's public surfaces, canonicalized.
+    #[must_use]
+    pub fn public_audiences(&self) -> &[String] {
+        &self.public_audiences
     }
 
-    /// Returns the session policy the private gRPC API authenticates with.
+    /// Builds a provider admitting session tokens for exactly `audiences`.
     ///
-    /// A different policy from [`Self::mcp_principal_provider`]: the gRPC API is
-    /// private and accepts the audience of every public surface that fronts it,
-    /// while a public surface accepts only its own. See `build_companions`.
+    /// The caller chooses the allowlist because it depends on the surface: a
+    /// public surface admits only its own audience, while the private gRPC API
+    /// admits every audience that fronts it.
     #[must_use]
-    pub fn grpc_principal_provider(&self) -> Option<Arc<dyn PrincipalProvider>> {
-        self.grpc_principal_provider.as_ref().map(Arc::clone)
+    pub fn principal_provider(
+        &self,
+        audiences: impl IntoIterator<Item = String>,
+    ) -> Arc<SessionPrincipalProvider> {
+        Arc::new(SessionPrincipalProvider::new(
+            self.session_tokens.verifier(),
+            audiences,
+        ))
     }
 
-    /// Returns the session policy authenticated MCP HTTP admits tokens with.
+    /// Consumes these settings into the authorization server for the instance.
     ///
-    /// MCP HTTP holds the bearer token itself rather than gRPC metadata, so this
-    /// is a [`BearerAuthenticator`] instead of a [`PrincipalProvider`].
-    #[must_use]
-    pub fn mcp_principal_provider(&self) -> Option<Arc<dyn BearerAuthenticator>> {
-        self.mcp_principal_provider.as_ref().map(Arc::clone)
+    /// Every public surface is registered as an authorization resource clients
+    /// may request a token for.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError`] when the server cannot be built from these settings.
+    pub fn into_authorization_server(self) -> Result<CoralAuthorizationServer, AppError> {
+        let mut server =
+            CoralAuthorizationServer::from_resolved_settings(self.settings, self.session_tokens)
+                .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
+        for audience in self.public_audiences {
+            server = server
+                .with_authorization_resource(audience)
+                .map_err(AppError::FailedPrecondition)?;
+        }
+        Ok(server)
     }
 }
 

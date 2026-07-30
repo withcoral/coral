@@ -1,7 +1,7 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 
-use coral_app::McpHttpServeConfig;
+use coral_app::{BearerAuthenticator, McpHttpServeConfig, SessionAuthSettings};
 use coral_client::{
     AppClient, BearerToken, ClientError,
     local::{
@@ -49,7 +49,7 @@ enum ServeErrorKind {
 enum McpStartError {
     #[error("gRPC listener at {0} has no safe loopback route for MCP HTTP")]
     UnsafeGrpcAddress(SocketAddr),
-    #[error("authenticated MCP HTTP requires the prepared session principal provider")]
+    #[error("authenticated MCP HTTP requires a session authenticator")]
     MissingSessionProvider,
     #[error(transparent)]
     Client(#[from] ClientError),
@@ -100,17 +100,24 @@ impl RunningServer {
     }
 }
 
+/// Composes the served surfaces and runs them.
+///
+/// The gRPC bootstrap resolves configuration and starts a gRPC server; deciding
+/// what else runs beside it, and wiring the session policies each surface
+/// enforces, happens here — where the transports' lifecycles are already owned.
 pub(crate) async fn start(
     builder: ServerBuilder,
     mcp_options: McpOptions,
 ) -> Result<RunningServer, ServeError> {
-    let (grpc, companions) = builder
-        .prepare_for_serve()
+    let mut settings = builder
+        .serve_settings()
         .map_err(|error| ServeError(ServeErrorKind::Config(error)))?;
-    let mcp_config = companions.mcp_http().cloned();
-    let grpc_authentication_enabled = companions.grpc_principal_provider().is_some();
-    let mcp_principal_provider = companions.mcp_principal_provider();
-    let grpc = grpc
+    let mcp_config = settings.mcp_http().cloned();
+    let session_auth = settings.take_session_auth();
+    let grpc_authentication_enabled = session_auth.is_some();
+    let (builder, mcp_principal_provider) =
+        compose_session_policies(builder, session_auth.as_ref(), mcp_config.as_ref());
+    let grpc = builder
         .start()
         .await
         .map_err(|error| ServeError(ServeErrorKind::GrpcStart(error)))?;
@@ -133,9 +140,37 @@ pub(crate) async fn start(
     })
 }
 
+/// Installs the session policy each served surface enforces.
+///
+/// The two policies differ by design. The gRPC API is private — reached through
+/// the public surfaces in front of it — so it admits a token minted for any of
+/// them. MCP HTTP is a public surface and admits only its own audience, which is
+/// what stops a token minted for a sibling surface being replayed at it.
+fn compose_session_policies(
+    builder: ServerBuilder,
+    session_auth: Option<&SessionAuthSettings>,
+    mcp_config: Option<&McpHttpServeConfig>,
+) -> (ServerBuilder, Option<Arc<dyn BearerAuthenticator>>) {
+    let Some(session_auth) = session_auth else {
+        return (builder, None);
+    };
+    let private_api = session_auth.principal_provider(session_auth.public_audiences().to_vec());
+    let mcp_authenticator = match mcp_config {
+        Some(McpHttpServeConfig::Authenticated { public_url, .. }) => {
+            Some(session_auth.principal_provider([public_url.clone()])
+                as Arc<dyn BearerAuthenticator>)
+        }
+        _ => None,
+    };
+    (
+        builder.with_principal_provider(private_api),
+        mcp_authenticator,
+    )
+}
+
 async fn start_mcp_http(
     settings: Option<McpHttpServeConfig>,
-    mcp_principal_provider: Option<Arc<dyn coral_app::BearerAuthenticator>>,
+    mcp_principal_provider: Option<Arc<dyn BearerAuthenticator>>,
     grpc_addr: SocketAddr,
     mcp_options: McpOptions,
 ) -> Result<Option<RunningMcpHttpServer>, McpStartError> {

@@ -1,6 +1,8 @@
 use std::net::TcpListener;
 use std::time::Duration;
 
+use coral_api::v1::{CatalogItemKind, ListCatalogRequest, PaginationRequest};
+use coral_client::default_workspace;
 use ring::rand::SystemRandom;
 use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair};
 use rmcp::ServiceExt as _;
@@ -8,6 +10,7 @@ use rmcp::model::CallToolRequestParams;
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use tempfile::TempDir;
+use tonic::Request;
 
 use super::*;
 
@@ -83,6 +86,32 @@ async fn assert_unauthorized(base: &str, authorization: &str) {
         .await
         .expect("MCP response");
     assert_eq!(rejected.status(), reqwest::StatusCode::UNAUTHORIZED);
+}
+
+/// Asserts the private gRPC data plane refuses a call carrying no credentials.
+///
+/// This probes the listener rather than `grpc_authentication_enabled`, which is
+/// derived from configuration and so reports true even if nobody installed the
+/// session provider. It is the assertion that fails if composition stops gating
+/// gRPC and the listener quietly falls back to the local principal.
+async fn assert_grpc_rejects_unauthenticated(endpoint: &str) {
+    let unauthenticated = AppClient::connect(endpoint)
+        .await
+        .expect("unauthenticated gRPC client");
+    let denied = unauthenticated
+        .catalog_client()
+        .list_catalog(Request::new(ListCatalogRequest {
+            workspace: Some(default_workspace()),
+            schema_name: String::new(),
+            kind: CatalogItemKind::Unspecified as i32,
+            pagination: Some(PaginationRequest {
+                limit: 1,
+                offset: 0,
+            }),
+        }))
+        .await
+        .expect_err("the gRPC data plane must refuse an unauthenticated call");
+    assert_eq!(denied.code(), Code::Unauthenticated);
 }
 
 #[test]
@@ -234,6 +263,8 @@ redirect_uri = 'https://auth.example/auth/oidc/callback'
     };
     let wrong_audience = token("https://other.example/mcp");
     assert_unauthorized(&base, &format!("Bearer {wrong_audience}")).await;
+
+    assert_grpc_rejects_unauthenticated(server.endpoint_uri()).await;
 
     let token = token(&resource);
     assert_catalog_tool(format!("{base}/mcp"), Some(&token)).await;

@@ -41,12 +41,8 @@ use tower::{Layer, Service};
 use super::env::AppEnvironment;
 use super::error::AppError;
 use super::health::{AggregateHealthService, EngineReadiness};
-use super::server_config::{
-    LoadedServerConfig, McpHttpServeConfig, ResolvedCompanionSettings, ResolvedSessionAuth,
-    ServeCompanionConfig,
-};
+use super::server_config::{LoadedServerConfig, ServeSettings};
 use crate::EngineExtensionsProvider;
-use crate::auth::CoralAuthorizationServer;
 use crate::catalog::discovery::CatalogDiscovery;
 use crate::catalog::service::CatalogService;
 use crate::credentials::config::CredentialStorageConfig;
@@ -58,10 +54,9 @@ use crate::feedback::publisher::{
 };
 use crate::feedback::service::FeedbackService;
 use crate::functions::service::FunctionService;
-use crate::identity::{BearerAuthenticator, LocalPrincipalProvider, PrincipalProvider};
+use crate::identity::{LocalPrincipalProvider, PrincipalProvider};
 use crate::query::manager::QueryManager;
 use crate::query::service::QueryService;
-use crate::request_auth::SessionPrincipalProvider;
 use crate::search::manager::SearchManager;
 use crate::search::observed::SearchObservationHandle;
 use crate::search::service::SearchService;
@@ -152,19 +147,13 @@ impl ServerConfig {
     fn resolved_mode(&self, layout: &AppStateLayout) -> Result<ServerMode, AppError> {
         match &self.mode {
             ServerModeSelection::Explicit(mode @ ServerMode::StandaloneGrpc { .. }) => {
-                let loaded = LoadedServerConfig::load(layout)?;
-                loaded.reject_removed_auth()?;
-                loaded.reject_unprepared_auth()?;
+                LoadedServerConfig::load(layout)?.reject_removed_auth()?;
                 Ok(mode.clone())
             }
             ServerModeSelection::Explicit(mode) => Ok(mode.clone()),
-            ServerModeSelection::ConfiguredStandaloneGrpc => {
-                let loaded = LoadedServerConfig::load(layout)?;
-                loaded.reject_unprepared_auth()?;
-                Ok(ServerMode::StandaloneGrpc {
-                    bind: loaded.grpc_settings()?.bind_addr,
-                })
-            }
+            ServerModeSelection::ConfiguredStandaloneGrpc => Ok(ServerMode::StandaloneGrpc {
+                bind: LoadedServerConfig::load(layout)?.grpc_settings()?.bind_addr,
+            }),
         }
     }
 
@@ -282,55 +271,18 @@ impl ServerBuilder {
         self
     }
 
-    /// Prepares the gRPC server and companion configuration for `coral serve`.
+    /// Resolves the settings for companions served beside this gRPC server.
     ///
-    /// Configuration is read once into a fail-closed snapshot. The returned
-    /// gRPC handle remains independent from MCP HTTP and OAuth lifecycle
-    /// management, which belongs to the caller.
+    /// Only settings are returned. Constructing the session providers and the
+    /// authorization server, and running the transports they belong to, is the
+    /// caller's job: this builder starts a gRPC server and nothing else.
     ///
     /// # Errors
     ///
-    /// Returns [`AppError`] if configuration cannot be loaded or validated, if
-    /// configured session authentication conflicts with an injected principal
-    /// provider, or if companion serving cannot use the selected gRPC mode.
-    pub fn prepare_for_serve(
-        mut self,
-    ) -> Result<(PreparedGrpcServer, ServeCompanionConfig), AppError> {
+    /// Returns [`AppError`] if the configuration cannot be loaded or validated.
+    pub fn serve_settings(&self) -> Result<ServeSettings, AppError> {
         let layout = AppEnvironment::discover().app_state_layout(self.config.config_dir.clone())?;
-        let loaded = LoadedServerConfig::load(&layout)?;
-        let mode = match &self.config.mode {
-            ServerModeSelection::Explicit(mode @ ServerMode::EmbeddedUi { .. }) => {
-                return Err(AppError::FailedPrecondition(format!(
-                    "coral serve requires native gRPC, not {}",
-                    server_mode_name(mode)
-                )));
-            }
-            ServerModeSelection::Explicit(mode) => {
-                loaded.reject_removed_auth()?;
-                mode.clone()
-            }
-            ServerModeSelection::ConfiguredStandaloneGrpc => ServerMode::StandaloneGrpc {
-                bind: loaded.grpc_settings()?.bind_addr,
-            },
-        };
-        let companions = build_companions(loaded.companion_settings()?)?;
-        if companions.mcp_http().is_some() {
-            validate_mcp_http_grpc_mode(&mode)?;
-        }
-        if let Some(provider) = companions.grpc_principal_provider() {
-            // Configured `[auth]` is the deployment's intent, so it replaces any
-            // provider the embedder installed. Precedence runs this way because
-            // it is the fail-closed one: an injection cannot quietly switch off
-            // authentication the configuration asked for.
-            self.config.principal_provider = provider;
-        }
-        Ok((
-            PreparedGrpcServer {
-                builder: self,
-                mode,
-            },
-            companions,
-        ))
+        LoadedServerConfig::load(&layout)?.companion_settings()
     }
 
     #[must_use]
@@ -399,22 +351,9 @@ impl ServerBuilder {
     /// required directories cannot be created, the config or credential backends
     /// fail to initialize, or the gRPC server cannot be started.
     pub async fn start(self) -> Result<RunningServer, AppError> {
-        self.start_with_mode(None).await
-    }
-
-    /// Starts the server, optionally on a mode that has already been resolved.
-    ///
-    /// `prepared_mode` is `Some` only from [`PreparedGrpcServer::start`], which
-    /// resolved the mode and installed the configured principal provider before
-    /// this point. Resolving again there would re-read the configuration and
-    /// reject the very `[auth]` preparation just wired in.
-    async fn start_with_mode(
-        self,
-        prepared_mode: Option<ServerMode>,
-    ) -> Result<RunningServer, AppError> {
         let env = AppEnvironment::discover();
         let layout = env.app_state_layout(self.config.config_dir.clone())?;
-        let mode = prepared_mode.map_or_else(|| self.config.resolved_mode(&layout), Ok)?;
+        let mode = self.config.resolved_mode(&layout)?;
         let principal_provider = Arc::clone(&self.config.principal_provider);
         layout.ensure()?;
         let features = FeatureStore::from_layout(layout.clone())
@@ -509,111 +448,6 @@ impl ServerBuilder {
             mode,
         )
         .await
-    }
-}
-
-/// A gRPC server builder whose long-running serve configuration is resolved.
-///
-/// Companion transports are deliberately not stored here; `coral serve`
-/// receives them separately and owns their lifecycle.
-pub struct PreparedGrpcServer {
-    builder: ServerBuilder,
-    /// The mode `prepare_for_serve` settled on.
-    ///
-    /// Holding it here is what makes this type the only record that preparation
-    /// happened. The builder's own mode selection stays as the caller left it, so
-    /// there is no second copy of that fact to keep in step.
-    mode: ServerMode,
-}
-
-impl PreparedGrpcServer {
-    /// Starts only the prepared gRPC server.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AppError`] when the app runtime or gRPC listener cannot start.
-    pub async fn start(self) -> Result<RunningServer, AppError> {
-        self.builder.start_with_mode(Some(self.mode)).await
-    }
-}
-
-fn server_mode_name(mode: &ServerMode) -> &'static str {
-    match mode {
-        ServerMode::EphemeralGrpc => "ephemeral gRPC",
-        ServerMode::StandaloneGrpc { .. } => "standalone gRPC",
-        ServerMode::EmbeddedUi { .. } => "embedded UI",
-    }
-}
-
-/// Builds the companion services from resolved settings.
-///
-/// This is the composition root's half of the split: `companion_settings` decides
-/// *what* is configured, and this decides *what to construct* — including the
-/// authorization server's state store, which a configuration accessor has no
-/// business owning.
-fn build_companions(settings: ResolvedCompanionSettings) -> Result<ServeCompanionConfig, AppError> {
-    let ResolvedCompanionSettings {
-        mcp_http,
-        session_auth,
-    } = settings;
-    let Some(session_auth) = session_auth else {
-        return Ok(ServeCompanionConfig::from_parts(mcp_http, None, None, None));
-    };
-    let ResolvedSessionAuth {
-        settings: auth_settings,
-        session_tokens,
-        public_audiences,
-    } = session_auth;
-
-    // Two genuinely different policies. The gRPC API is private — it is reached
-    // through the public surfaces that front it — so it admits the audience of
-    // every one of them. A public surface admits only its own, which is what stops
-    // a token minted for one surface being replayed at a sibling.
-    let grpc_principal_provider = Some(Arc::new(SessionPrincipalProvider::new(
-        session_tokens.verifier(),
-        public_audiences.clone(),
-    )) as Arc<dyn PrincipalProvider>);
-    let mcp_principal_provider = match &mcp_http {
-        Some(McpHttpServeConfig::Authenticated { public_url, .. }) => Some(Arc::new(
-            SessionPrincipalProvider::new(session_tokens.verifier(), [public_url.clone()]),
-        )
-            as Arc<dyn BearerAuthenticator>),
-        _ => None,
-    };
-
-    // Every public surface is an authorization resource clients may request a
-    // token for; the authorization server holds them as a set.
-    let mut authorization_server =
-        CoralAuthorizationServer::from_resolved_settings(auth_settings, session_tokens)
-            .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
-    for audience in public_audiences {
-        authorization_server = authorization_server
-            .with_authorization_resource(audience)
-            .map_err(AppError::FailedPrecondition)?;
-    }
-
-    Ok(ServeCompanionConfig::from_parts(
-        mcp_http,
-        Some(authorization_server),
-        grpc_principal_provider,
-        mcp_principal_provider,
-    ))
-}
-
-fn validate_mcp_http_grpc_mode(mode: &ServerMode) -> Result<(), AppError> {
-    match mode {
-        ServerMode::EphemeralGrpc => Ok(()),
-        ServerMode::StandaloneGrpc { bind }
-            if bind.ip().is_loopback() || bind.ip().is_unspecified() =>
-        {
-            Ok(())
-        }
-        ServerMode::StandaloneGrpc { .. } => Err(AppError::FailedPrecondition(
-            "server.mcp_http requires a loopback or wildcard gRPC bind".to_string(),
-        )),
-        ServerMode::EmbeddedUi { .. } => Err(AppError::FailedPrecondition(
-            "server.mcp_http requires a native gRPC server".to_string(),
-        )),
     }
 }
 
@@ -1388,44 +1222,6 @@ enabled = false
     }
 
     #[test]
-    fn standalone_grpc_rejects_configured_auth_until_prepared() {
-        let temp = TempDir::new().expect("temp dir");
-        let config_dir = temp.path().join("coral-config");
-        std::fs::create_dir_all(&config_dir).expect("config dir");
-        std::fs::write(
-            config_dir.join("config.toml"),
-            r"
-[auth.session]
-
-[auth.authorization_server]
-issuer = 'https://auth.example'
-
-[auth.provider]
-issuer = 'https://accounts.example'
-client_id = 'upstream-client'
-client_secret = 'test-secret'
-redirect_uri = 'https://auth.example/auth/oidc/callback'
-",
-        )
-        .expect("config file");
-        let layout = AppStateLayout::discover(Some(config_dir)).expect("layout");
-
-        for builder in [
-            ServerBuilder::configured_standalone_grpc(),
-            ServerBuilder::standalone_grpc(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))),
-        ] {
-            let Err(error) = builder.config.resolved_mode(&layout) else {
-                panic!("unprepared standalone auth must fail closed");
-            };
-            assert!(
-                error
-                    .to_string()
-                    .contains("requires ServerBuilder::prepare_for_serve")
-            );
-        }
-    }
-
-    #[test]
     fn explicit_standalone_grpc_rejects_removed_static_auth_config() {
         let temp = TempDir::new().expect("temp dir");
         let config_dir = temp.path().join("coral-config");
@@ -1480,48 +1276,16 @@ redirect_uri = 'https://auth.example/auth/oidc/callback'
         )
         .expect("config file");
 
-        let (_grpc, companions) = ServerBuilder::configured_standalone_grpc()
+        let settings = ServerBuilder::configured_standalone_grpc()
             .with_config_dir(config_dir)
-            .prepare_for_serve()
+            .serve_settings()
             .expect("resolve MCP HTTP config");
-        let config = companions.mcp_http().expect("enabled MCP HTTP config");
+        let config = settings.mcp_http().expect("enabled MCP HTTP config");
 
         assert_eq!(
             config.bind_addr(),
             SocketAddr::from((Ipv4Addr::LOCALHOST, 14556))
         );
-    }
-
-    #[test]
-    fn mcp_http_resolution_accepts_wildcard_and_rejects_public_grpc_binds() {
-        let temp = TempDir::new().expect("temp dir");
-        let config_dir = temp.path().join("coral-config");
-        std::fs::create_dir_all(&config_dir).expect("config dir");
-        std::fs::write(
-            config_dir.join("config.toml"),
-            "[server.mcp_http]\nenabled = true\n",
-        )
-        .expect("config file");
-
-        ServerBuilder::standalone_grpc(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 14555)))
-            .with_config_dir(config_dir.clone())
-            .prepare_for_serve()
-            .expect("wildcard gRPC bind has a safe loopback route");
-
-        let error = ServerBuilder::standalone_grpc(SocketAddr::from(([192, 0, 2, 1], 14555)))
-            .with_config_dir(config_dir.clone())
-            .prepare_for_serve()
-            .err()
-            .expect("public gRPC address has no safe local route");
-
-        assert!(error.to_string().contains("loopback or wildcard gRPC bind"));
-
-        let mapped_loopback = SocketAddr::new(Ipv4Addr::LOCALHOST.to_ipv6_mapped().into(), 14555);
-        ServerBuilder::standalone_grpc(mapped_loopback)
-            .with_config_dir(config_dir)
-            .prepare_for_serve()
-            .err()
-            .expect("IPv4-mapped IPv6 must fail closed");
     }
 
     #[tokio::test]

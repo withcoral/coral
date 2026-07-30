@@ -19,7 +19,7 @@ const UNAUTHENTICATED_MESSAGE: &str = "authentication required";
 /// own — it is reached through the public surfaces that front it — so it accepts
 /// the audience of every one of them.
 #[derive(Clone)]
-pub(crate) struct SessionPrincipalProvider {
+pub struct SessionPrincipalProvider {
     verifier: SessionTokenVerifier,
     accepted_audiences: Arc<[String]>,
 }
