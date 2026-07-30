@@ -19,7 +19,11 @@ use serde_json::Value;
 
 use crate::{ManifestError, ParsedTemplate, Result};
 
-const RESERVED_SOURCE_SCHEMA_NAMES: &[&str] = &["coral", "coral_admin", "public"];
+/// Source SQL names the runtime owns. Kept in step with `RESERVED_SCHEMA_NAMES`
+/// in `coral-engine`'s registry: a name the engine refuses at registration has
+/// to fail manifest validation too, or the manifest validator accepts a source
+/// that can never register.
+const RESERVED_SOURCE_SCHEMA_NAMES: &[&str] = &["coral", "coral_admin", "datafusion", "public"];
 
 /// Arrow field metadata key marking a source-authored column as excluded from
 /// observed-value indexing.
@@ -58,7 +62,13 @@ pub(crate) fn validate_source_name(name: &str) -> Result<()> {
 }
 
 pub(crate) fn validate_reserved_source_schema_name(name: &str, label: &str) -> Result<()> {
-    if RESERVED_SOURCE_SCHEMA_NAMES.contains(&name) {
+    // Case-insensitive: legacy (pre-v4) manifests are not held to v4's
+    // `[a-z][a-z0-9_]*` rule, so `DataFusion` would otherwise pass validation
+    // while the runtime still treats that spelling as its default catalog.
+    if RESERVED_SOURCE_SCHEMA_NAMES
+        .iter()
+        .any(|reserved| reserved.eq_ignore_ascii_case(name))
+    {
         return Err(ManifestError::validation(format!(
             "{label} '{name}' is reserved and cannot be used by manifests"
         )));

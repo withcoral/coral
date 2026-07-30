@@ -15,6 +15,9 @@ use crate::runtime::error::{datafusion_to_core, source_decorator_error_to_core};
 use crate::runtime::schema_provider::StaticSchemaProvider;
 use crate::{CoreError, QuerySource, SourceDecorator, SourceFailurePolicy};
 
+/// Source SQL names the runtime owns. Mirrored by `RESERVED_SOURCE_SCHEMA_NAMES`
+/// in `coral-spec`, which rejects the same names during manifest validation so a
+/// source cannot pass validation and then fail here.
 const RESERVED_SCHEMA_NAMES: &[&str] = &["coral", "coral_admin", "datafusion", "public"];
 
 /// One selected query source together with its compiled backend artifact.
@@ -68,7 +71,12 @@ fn check_reserved_schema(schema: &str) -> DataFusionResult<()> {
 }
 
 fn is_reserved_schema(schema: &str) -> bool {
-    RESERVED_SCHEMA_NAMES.contains(&schema)
+    // Case-insensitive so this agrees with `non_default_catalog_name`, which
+    // folds the default catalog the same way: `DataFusion` must not register as
+    // a source while catalog filters read that spelling as the default catalog.
+    RESERVED_SCHEMA_NAMES
+        .iter()
+        .any(|reserved| reserved.eq_ignore_ascii_case(schema))
 }
 
 fn reserved_schema_detail(schema: &str) -> String {
@@ -497,6 +505,29 @@ mod tests {
             msg.contains("public"),
             "error message should mention the schema name"
         );
+    }
+
+    #[test]
+    fn reserved_schema_datafusion_is_rejected() {
+        let result = check_reserved_schema("datafusion");
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("datafusion"),
+            "error message should mention the schema name"
+        );
+    }
+
+    #[test]
+    fn reserved_schema_rejection_ignores_case() {
+        // `non_default_catalog_name` folds the default catalog
+        // case-insensitively, so an exact-match reservation would let
+        // `DataFusion` register and then be read as the default catalog by
+        // every catalog filter. Legacy manifests are not restricted to
+        // lowercase names, so this is reachable.
+        check_reserved_schema("DataFusion").expect_err("DataFusion is reserved");
+        check_reserved_schema("Coral").expect_err("Coral is reserved");
+        check_reserved_schema("PUBLIC").expect_err("PUBLIC is reserved");
     }
 
     #[test]
