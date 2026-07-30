@@ -972,6 +972,7 @@ impl QueryRuntimeAdapter {
         }) {
             tables.insert(QueryTableUsage::new(
                 self.source_name_for(catalog_name.unwrap_or(schema_name)),
+                catalog_name,
                 schema_name,
                 table_name,
             ));

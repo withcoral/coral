@@ -147,6 +147,7 @@ impl McpQueryHistoryEntry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpQueryTableUsage {
     source: String,
+    catalog: Option<String>,
     schema: String,
     table: String,
 }
@@ -156,6 +157,14 @@ impl McpQueryTableUsage {
     #[must_use]
     pub fn source_name(&self) -> &str {
         &self.source
+    }
+
+    /// SQL catalog used in the query, or `None` for a table addressed as
+    /// `schema.table`. Two catalogs can expose the same `schema.table`, so this
+    /// is part of the table's identity.
+    #[must_use]
+    pub fn catalog_name(&self) -> Option<&str> {
+        self.catalog.as_deref()
     }
 
     /// SQL schema name used in the query.
@@ -173,6 +182,7 @@ impl McpQueryTableUsage {
     fn from_trace(usage: TraceQueryTableUsage) -> Self {
         Self {
             source: usage.source,
+            catalog: usage.catalog,
             schema: usage.schema,
             table: usage.table,
         }
@@ -413,6 +423,7 @@ mod tests {
             tables: (0..table_count)
                 .map(|index| McpQueryTableUsage {
                     source: table_source.to_string(),
+                    catalog: None,
                     schema: "schema".to_string(),
                     table: format!("table_{index}"),
                 })

@@ -491,6 +491,10 @@ pub(crate) struct TraceQueryHistoryEntry {
 pub(crate) struct TraceQueryTableUsage {
     #[serde(rename = "source_name")]
     pub(crate) source: String,
+    /// Absent on spans recorded before query provenance carried the catalog, so
+    /// historical rows still parse.
+    #[serde(rename = "catalog_name", default)]
+    pub(crate) catalog: Option<String>,
     #[serde(rename = "schema_name")]
     pub(crate) schema: String,
     #[serde(rename = "table_name")]

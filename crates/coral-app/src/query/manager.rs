@@ -1170,6 +1170,7 @@ fn record_query_provenance(span: &tracing::Span, provenance: &QueryExecutionProv
             .map(|table| {
                 json!({
                     "source_name": table.source_name(),
+                    "catalog_name": table.catalog_name(),
                     "schema_name": table.schema_name(),
                     "table_name": table.table_name(),
                 })
@@ -1605,7 +1606,10 @@ mod tests {
         );
         let resources = ResolvedQueryResources::new(
             vec!["github".to_string()],
-            vec![QueryTableUsage::new("github", "github", "issues")],
+            vec![
+                QueryTableUsage::new("github", None, "github", "issues"),
+                QueryTableUsage::new("warehouse", Some("warehouse"), "public", "users"),
+            ],
             vec![QueryTableFunctionUsage::new(
                 "github",
                 "github",
@@ -1628,10 +1632,12 @@ mod tests {
             span_attr(query_span, crate::telemetry::QUERY_TRACE_SOURCES_ATTR),
             Some(r#"["github"]"#.to_string())
         );
+        // A catalog-backed table records its catalog: `(schema, table)` alone
+        // would merge two databases that both expose `public.users`.
         assert_eq!(
             span_attr(query_span, crate::telemetry::QUERY_TRACE_TABLES_ATTR),
             Some(
-                r#"[{"source_name":"github","schema_name":"github","table_name":"issues"}]"#
+                r#"[{"source_name":"github","catalog_name":null,"schema_name":"github","table_name":"issues"},{"source_name":"warehouse","catalog_name":"warehouse","schema_name":"public","table_name":"users"}]"#
                     .to_string()
             )
         );
