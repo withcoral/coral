@@ -615,11 +615,7 @@ describe('Architectural Tests', () => {
         'async function rendererEntryUrl()',
         'function urlOrigin',
       )
-      const readyHandler = sourceSection(
-        desktopIndex,
-        'app.whenReady().then',
-        "app.on('before-quit'",
-      )
+      const readyHandler = sourceSection(desktopIndex, 'app.whenReady().then', "app.on('activate'")
       const responseHandler = sourceSection(
         appRenderer,
         'async function reactRouterResponse',
