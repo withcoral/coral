@@ -483,12 +483,16 @@ function sourceName(title: string): string {
  *
  * Only 404/410 and a failed request rule the origin out. Anything else, 401 and
  * 403 included, means the host routes the path, which is what is being checked.
- * The probe reaches only the origin the caller already had us fetch.
+ * The probe reaches only the origin the caller already had us fetch: a path key
+ * is document-controlled, and a network-path one such as `//host/data` would
+ * otherwise resolve to a host of the document's choosing.
  */
 async function derivedServerUrl(sourceUrl: URL, probePath: string): Promise<string> {
   if (!probePath) return ''
   try {
-    const response = await fetch(new URL(probePath, sourceUrl.origin), {
+    const probeUrl = new URL(probePath, sourceUrl.origin)
+    if (probeUrl.origin !== sourceUrl.origin) return ''
+    const response = await fetch(probeUrl, {
       signal: AbortSignal.timeout(5_000),
     })
     return response.status === 404 || response.status === 410 ? '' : sourceUrl.origin

@@ -228,6 +228,28 @@ components:
     ).resolves.toMatchObject({ serverUrl: '' })
   })
 
+  it('does not probe a path key that resolves to another host', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          info: { title: 'Lords Votes API' },
+          openapi: '3.0.1',
+          paths: { '//attacker.example/data': {} },
+        }),
+        { status: 200 },
+      ),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(
+      loader({
+        request: discoverRequest('https://raw.githubusercontent.com/org/repo/openapi.json'),
+      } as Parameters<typeof loader>[0]),
+    ).resolves.toMatchObject({ serverUrl: '' })
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
   it('does not probe when a declared server URL cannot be resolved', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(
