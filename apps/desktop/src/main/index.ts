@@ -29,6 +29,10 @@ import { createShutdownCoordinator } from './shutdown'
 
 const SHUTDOWN_TIMEOUT_MS = 6000
 
+// Baked in by electron.vite.config.ts; the guard covers other build paths.
+declare const __CORAL_DESKTOP_COMMIT__: string
+const buildCommit = typeof __CORAL_DESKTOP_COMMIT__ === 'undefined' ? '' : __CORAL_DESKTOP_COMMIT__
+
 let mainWindow: BrowserWindow | null = null
 let sidecar: CoralSidecar | null = null
 let sidecarPromise: Promise<CoralSidecar> | null = null
@@ -279,11 +283,26 @@ function publishDesktopUpdateState(state: DesktopUpdateState): void {
   }
 }
 
+function installAboutPanel() {
+  app.setAboutPanelOptions({
+    applicationName: 'Coral',
+    applicationVersion: app.getVersion(),
+    // The panel always parenthesizes a build number, falling back to
+    // CFBundleVersion — which release-please keeps equal to the app version.
+    version: buildCommit,
+    // macOS draws the bundle icon and ignores iconPath.
+    ...(process.platform === 'darwin' ? {} : { iconPath: currentWindowIconPath() }),
+  })
+}
+
 function installMenu() {
   const template: Electron.MenuItemConstructorOptions[] = [
     {
       label: 'Coral',
       submenu: [
+        // `role: 'about'` would label itself from app.name, the package name in dev.
+        { label: 'About Coral', click: () => app.showAboutPanel() },
+        { type: 'separator' },
         ...(desktopUpdatesSupported()
           ? ([
               {
@@ -292,9 +311,9 @@ function installMenu() {
                   void checkForDesktopUpdates({ interactive: true })
                 },
               },
+              { type: 'separator' },
             ] satisfies Electron.MenuItemConstructorOptions[])
           : []),
-        { type: 'separator' },
         { role: 'quit' },
       ],
     },
@@ -368,6 +387,7 @@ function startApplication(): void {
     updatePlatformIcon()
     nativeTheme.on('updated', updatePlatformIcon)
     registerIpcHandlers()
+    installAboutPanel()
     installMenu()
     installAutoUpdater({
       allowUpdateQuit: shutdownCoordinator.allowQuit,
