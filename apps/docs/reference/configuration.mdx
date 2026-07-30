@@ -103,6 +103,9 @@ audience: the MCP listener's `public_url` when MCP HTTP is enabled, and
 `[server].public_url` when it is not. Setting both is rejected.
 
 ```toml
+[auth]
+http_bind_addr = "127.0.0.1:14557"
+
 [auth.authorization_server]
 issuer = "https://auth.example"
 
@@ -145,6 +148,15 @@ defaults to 30 days (`2592000`), which is a long life for a bearer token that
 grants everything — set it explicitly to the shortest value your clients can
 re-authenticate within. Both served surfaces accept only tokens whose audience is
 the instance's canonical identifier.
+
+`auth.http_bind_addr` is where Coral serves the OAuth endpoints — discovery,
+authorize, and token — that `auth.authorization_server.issuer` advertises. It
+defaults to `127.0.0.1:0`, an ephemeral port, which is fine only if nothing needs
+to reach it at a predictable address. Because clients resolve the issuer URL and
+must arrive at this listener, set a fixed port whenever the issuer is a public URL
+and point the TLS terminator for that hostname at it. Serving these endpoints
+cleartext outside loopback additionally requires
+`auth.allow_insecure_remote_http_bind = true`.
 
 The `grpc.health.v1.Health` service stays unauthenticated so probes work without a
 credential. It answers two different questions, and probes should ask for the one
