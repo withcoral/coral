@@ -9,10 +9,11 @@ use coral_spec::backends::mcp::{
     McpSourceManifest, McpTableFilterBinding, McpTableFunctionSpec, McpTableSpec,
 };
 use coral_spec::v4::{
-    IrExecutionAttachment, Projection, ProjectionKind, ProjectionVisibility, SqlInputExposure,
-    SurfaceType, V4MaterializedSource, V4SourceManifest, mcp_projection_arg_specs,
-    openapi_document_metadata, projection_arg_specs, projection_column_specs,
-    projection_filter_specs, request_spec_for_projection, validate_openapi_base_url_template,
+    IrExecutionAttachment, Projection, ProjectionKind, ProjectionSqlIdentity, ProjectionVisibility,
+    SqlInputExposure, SurfaceType, V4MaterializedSource, V4SourceManifest,
+    mcp_projection_arg_specs, openapi_document_metadata, projection_arg_specs,
+    projection_column_specs, projection_filter_specs, request_spec_for_projection,
+    validate_openapi_base_url_template,
 };
 use coral_spec::{
     PaginationSpec, ParsedTemplate, RequestSpec, ResponseSpec, SourceManifestCommon,
@@ -485,12 +486,9 @@ fn mcp_table_function_spec(
 }
 
 fn projection_table_name(projection: &Projection) -> Result<&str, AppError> {
-    match (
-        projection.table_name.as_deref(),
-        projection.function_name.as_deref(),
-    ) {
-        (Some(table_name), None) => Ok(table_name),
-        _ => Err(AppError::FailedPrecondition(format!(
+    match &projection.sql_identity {
+        ProjectionSqlIdentity::Table { table_name } => Ok(table_name),
+        ProjectionSqlIdentity::TableFunction { .. } => Err(AppError::FailedPrecondition(format!(
             "DSL v4 table projection for operation '{}' has an invalid SQL identity",
             projection.operation_id
         ))),
@@ -498,12 +496,9 @@ fn projection_table_name(projection: &Projection) -> Result<&str, AppError> {
 }
 
 fn projection_function_name(projection: &Projection) -> Result<&str, AppError> {
-    match (
-        projection.table_name.as_deref(),
-        projection.function_name.as_deref(),
-    ) {
-        (None, Some(function_name)) => Ok(function_name),
-        _ => Err(AppError::FailedPrecondition(format!(
+    match &projection.sql_identity {
+        ProjectionSqlIdentity::TableFunction { function_name } => Ok(function_name),
+        ProjectionSqlIdentity::Table { .. } => Err(AppError::FailedPrecondition(format!(
             "DSL v4 table-function projection for operation '{}' has an invalid SQL identity",
             projection.operation_id
         ))),
@@ -594,10 +589,11 @@ mod tests {
         McpRuntimeConfig, OPENAPI_IMPORTER_VERSION, OPERATION_METADATA_GENERATOR_VERSION,
         OpenApiRuntimeConfig, OperationMetadata, OperationMetadataCatalog,
         PROJECTION_GENERATOR_VERSION, Projection, ProjectionCatalog, ProjectionInput,
-        ProjectionKind, ProjectionVisibility, RestExecutionAttachment, RestParameterBinding,
-        RestResponseAttachment, SURFACE_IMPORTER_VERSION, SemanticIr, SqlInputExposure,
-        SurfaceDescriptor, SurfaceRuntimeConfig, SurfaceType, V4_ARTIFACT_SCHEMA_VERSION,
-        V4MaterializedSource, V4SourceCommon, V4SourceManifest, V4Surface, ValidatedSurfacePlan,
+        ProjectionKind, ProjectionSqlIdentity, ProjectionVisibility, RestExecutionAttachment,
+        RestParameterBinding, RestResponseAttachment, SURFACE_IMPORTER_VERSION, SemanticIr,
+        SqlInputExposure, SurfaceDescriptor, SurfaceRuntimeConfig, SurfaceType,
+        V4_ARTIFACT_SCHEMA_VERSION, V4MaterializedSource, V4SourceCommon, V4SourceManifest,
+        V4Surface, ValidatedSurfacePlan,
     };
     use coral_spec::{
         DatabaseConnectionSpec, ManifestDataType, ManifestInputKind, PageSizeSpec, PaginationMode,
@@ -943,8 +939,9 @@ mod tests {
         Projection {
             catalog_name: "github_v4".to_string(),
             schema_name: "public".to_string(),
-            table_name: Some("list_issues".to_string()),
-            function_name: None,
+            sql_identity: ProjectionSqlIdentity::Table {
+                table_name: "list_issues".to_string(),
+            },
             kind: ProjectionKind::Table,
             description: String::new(),
             guide: String::new(),
@@ -962,8 +959,9 @@ mod tests {
         Projection {
             catalog_name: "github_v4".to_string(),
             schema_name: "public".to_string(),
-            table_name: None,
-            function_name: Some("search_issues".to_string()),
+            sql_identity: ProjectionSqlIdentity::TableFunction {
+                function_name: "search_issues".to_string(),
+            },
             kind: ProjectionKind::TableFunction {
                 function_kind: SourceTableFunctionKind::Search,
             },
@@ -1356,14 +1354,17 @@ surface:
             surface: openapi_surface(),
         };
         let mut table = published_projection("items_list");
-        table.table_name = Some("items".to_string());
+        table.sql_identity = ProjectionSqlIdentity::Table {
+            table_name: "items".to_string(),
+        };
         table.inputs = vec![
             persisted_projection_input("q", SqlInputExposure::Filter, true),
             persisted_projection_input("state", SqlInputExposure::Internal, false),
         ];
         let mut function = published_projection("items_list");
-        function.table_name = None;
-        function.function_name = Some("search_items".to_string());
+        function.sql_identity = ProjectionSqlIdentity::TableFunction {
+            function_name: "search_items".to_string(),
+        };
         function.kind = ProjectionKind::TableFunction {
             function_kind: SourceTableFunctionKind::Search,
         };

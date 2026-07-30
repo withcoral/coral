@@ -34,11 +34,11 @@ pub(super) fn resolve_projection_name_collisions(
         .collect::<HashMap<_, _>>();
     let mut groups: BTreeMap<(ProjectionNamespace, String), Vec<usize>> = BTreeMap::new();
     for (index, projection) in projections.iter().enumerate() {
-        let Some(name) = projection.relation_name() else {
-            continue;
-        };
         groups
-            .entry((projection_namespace(projection), name.to_string()))
+            .entry((
+                projection_namespace(projection),
+                projection.relation_name().to_string(),
+            ))
             .or_default()
             .push(index);
     }
@@ -63,12 +63,10 @@ pub(super) fn resolve_projection_name_collisions(
     for index in keep_base_name.iter().copied() {
         if let Some(projection) = projections.get(index) {
             let namespace = projection_namespace(projection);
-            if let Some(name) = projection.relation_name() {
-                used_names
-                    .entry(namespace)
-                    .or_default()
-                    .insert(name.to_string());
-            }
+            used_names
+                .entry(namespace)
+                .or_default()
+                .insert(projection.relation_name().to_string());
         }
     }
 
@@ -126,9 +124,7 @@ fn collision_resolved_projection_name(
     operation: Option<&IrOperation>,
     used_names: &HashSet<String>,
 ) -> String {
-    let base_name = projection
-        .relation_name()
-        .expect("generated projections have exactly one relation name");
+    let base_name = projection.relation_name();
     let contextual_name = operation.map_or_else(
         || normalize_identifier(&projection.operation_id, "projection"),
         |operation| contextual_projection_name(base_name, operation),

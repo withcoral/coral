@@ -47,5 +47,5 @@ surface:
       key: GITHUB_TOKEN
 
 test_queries:
-  - SELECT result FROM github_mcp_v4.get_me LIMIT 1
-  - SELECT result, result_json FROM github_mcp_v4.list_pull_requests(owner => 'withcoral', repo => 'coral', state => 'open', per_page => 10) LIMIT 5
+  - SELECT result FROM github_mcp_v4.public.get_me LIMIT 1
+  - SELECT result, result_json FROM github_mcp_v4.public.list_pull_requests(owner => 'withcoral', repo => 'coral', state => 'open', per_page => 10) LIMIT 5

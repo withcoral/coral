@@ -12,7 +12,7 @@ use crate::{ManifestDataType, ManifestError, Result, SearchLimitsSpec, SourceTab
 
 use super::model::{
     Projection, ProjectionCatalog, ProjectionColumn, ProjectionInput, ProjectionKind,
-    ProjectionVisibility, SqlInputExposure,
+    ProjectionSqlIdentity, ProjectionVisibility, SqlInputExposure,
 };
 use super::names::{
     is_search_operation, projection_guide, projection_name, projection_name_from_operation_naming,
@@ -132,16 +132,19 @@ fn generate_projection(
     let columns = projection_columns(type_by_id, operation);
     let schema_name = projection_schema_name(operation);
     let relation_name = generated_projection_name(operation, is_search);
-    let (table_name, function_name) = match kind {
-        ProjectionKind::Table => (Some(relation_name), None),
-        ProjectionKind::TableFunction { .. } => (None, Some(relation_name)),
+    let sql_identity = match kind {
+        ProjectionKind::Table => ProjectionSqlIdentity::Table {
+            table_name: relation_name,
+        },
+        ProjectionKind::TableFunction { .. } => ProjectionSqlIdentity::TableFunction {
+            function_name: relation_name,
+        },
     };
     let guide = projection_guide(&kind, &inputs, is_search);
     let projection = Projection {
         catalog_name: plan.semantic_ir().source_name.clone(),
         schema_name,
-        table_name,
-        function_name,
+        sql_identity,
         kind,
         description: operation.description.clone(),
         guide,

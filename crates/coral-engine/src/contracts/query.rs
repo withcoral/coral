@@ -246,60 +246,14 @@ impl QuerySource {
     pub fn schema_names(&self) -> Vec<&str> {
         let mut names = Vec::new();
         for component in &self.components {
-            let before = names.len();
-            match component {
-                RuntimeSourceComponent::Database(_) => {}
-                RuntimeSourceComponent::Http(manifest) => {
-                    for (catalog_name, schema_name) in manifest
-                        .tables
-                        .iter()
-                        .map(|table| {
-                            (
-                                table.common.catalog_name.as_str(),
-                                table.common.schema_name.as_str(),
-                            )
-                        })
-                        .chain(manifest.functions.iter().map(|function| {
-                            (
-                                function.catalog_name.as_str(),
-                                function.schema_name.as_str(),
-                            )
-                        }))
-                    {
-                        push_default_catalog_schema(&mut names, catalog_name, schema_name);
-                    }
-                }
-                RuntimeSourceComponent::File(manifest) => {
-                    for table in &manifest.tables {
-                        push_default_catalog_schema(
-                            &mut names,
-                            &table.common.catalog_name,
-                            &table.common.schema_name,
-                        );
-                    }
-                }
-                RuntimeSourceComponent::Mcp(manifest) => {
-                    for (catalog_name, schema_name) in manifest
-                        .tables
-                        .iter()
-                        .map(|table| {
-                            (
-                                table.common.catalog_name.as_str(),
-                                table.common.schema_name.as_str(),
-                            )
-                        })
-                        .chain(manifest.functions.iter().map(|function| {
-                            (
-                                function.common.catalog_name.as_str(),
-                                function.common.schema_name.as_str(),
-                            )
-                        }))
-                    {
-                        push_default_catalog_schema(&mut names, catalog_name, schema_name);
-                    }
+            let mut has_relations = false;
+            for qualifier in component.relation_qualifiers() {
+                has_relations = true;
+                if let Some(schema_name) = qualifier.schema_name {
+                    push_default_catalog_schema(&mut names, qualifier.catalog_name, schema_name);
                 }
             }
-            if before == names.len() && component.relation_count() == 0 {
+            if !has_relations {
                 push_unique_name(&mut names, component.source_name());
             }
         }
@@ -314,45 +268,8 @@ impl QuerySource {
     pub fn catalog_names(&self) -> Vec<&str> {
         let mut names = Vec::new();
         for component in &self.components {
-            match component {
-                RuntimeSourceComponent::Database(manifest) => {
-                    push_unique_name(&mut names, &manifest.common.name);
-                }
-                RuntimeSourceComponent::Http(manifest) => {
-                    for catalog_name in manifest
-                        .tables
-                        .iter()
-                        .map(|table| table.common.catalog_name.as_str())
-                        .chain(
-                            manifest
-                                .functions
-                                .iter()
-                                .map(|function| function.catalog_name.as_str()),
-                        )
-                    {
-                        push_non_default_catalog(&mut names, catalog_name);
-                    }
-                }
-                RuntimeSourceComponent::File(manifest) => {
-                    for table in &manifest.tables {
-                        push_non_default_catalog(&mut names, &table.common.catalog_name);
-                    }
-                }
-                RuntimeSourceComponent::Mcp(manifest) => {
-                    for catalog_name in manifest
-                        .tables
-                        .iter()
-                        .map(|table| table.common.catalog_name.as_str())
-                        .chain(
-                            manifest
-                                .functions
-                                .iter()
-                                .map(|function| function.common.catalog_name.as_str()),
-                        )
-                    {
-                        push_non_default_catalog(&mut names, catalog_name);
-                    }
-                }
+            for qualifier in component.relation_qualifiers() {
+                push_non_default_catalog(&mut names, qualifier.catalog_name);
             }
         }
         names
@@ -384,13 +301,82 @@ impl RuntimeSourceComponent {
         }
     }
 
-    fn relation_count(&self) -> usize {
-        match self {
-            Self::Database(_) => 1,
-            Self::Http(manifest) => manifest.tables.len() + manifest.functions.len(),
-            Self::File(manifest) => manifest.tables.len(),
-            Self::Mcp(manifest) => manifest.tables.len() + manifest.functions.len(),
+    /// Returns the available SQL qualifiers for relations published by this
+    /// component.
+    ///
+    /// Database schemas are discovered at runtime, so database components
+    /// expose a catalog-only qualifier here.
+    fn relation_qualifiers(&self) -> impl Iterator<Item = RelationQualifier<'_>> {
+        let mut relation_index = 0_usize;
+        std::iter::from_fn(move || {
+            let index = relation_index;
+            relation_index = relation_index.saturating_add(1);
+            match self {
+                Self::Database(manifest) => {
+                    (index == 0).then(|| RelationQualifier::catalog_only(&manifest.common.name))
+                }
+                Self::Http(manifest) => manifest
+                    .tables
+                    .get(index)
+                    .map(|table| RelationQualifier::from_table_common(&table.common))
+                    .or_else(|| {
+                        index
+                            .checked_sub(manifest.tables.len())
+                            .and_then(|index| manifest.functions.get(index))
+                            .map(|function| {
+                                RelationQualifier::new(
+                                    &function.catalog_name,
+                                    &function.schema_name,
+                                )
+                            })
+                    }),
+                Self::File(manifest) => manifest
+                    .tables
+                    .get(index)
+                    .map(|table| RelationQualifier::from_table_common(&table.common)),
+                Self::Mcp(manifest) => manifest
+                    .tables
+                    .get(index)
+                    .map(|table| RelationQualifier::from_table_common(&table.common))
+                    .or_else(|| {
+                        index
+                            .checked_sub(manifest.tables.len())
+                            .and_then(|index| manifest.functions.get(index))
+                            .map(|function| {
+                                RelationQualifier::new(
+                                    &function.common.catalog_name,
+                                    &function.common.schema_name,
+                                )
+                            })
+                    }),
+            }
+        })
+    }
+}
+
+#[derive(Clone, Copy)]
+struct RelationQualifier<'a> {
+    catalog_name: &'a str,
+    schema_name: Option<&'a str>,
+}
+
+impl<'a> RelationQualifier<'a> {
+    fn new(catalog_name: &'a str, schema_name: &'a str) -> Self {
+        Self {
+            catalog_name,
+            schema_name: Some(schema_name),
         }
+    }
+
+    fn catalog_only(catalog_name: &'a str) -> Self {
+        Self {
+            catalog_name,
+            schema_name: None,
+        }
+    }
+
+    fn from_table_common(common: &'a coral_spec::TableCommon) -> Self {
+        Self::new(&common.catalog_name, &common.schema_name)
     }
 }
 
@@ -1445,6 +1431,9 @@ mod tests {
         let table = manifest.tables.first_mut().expect("HTTP table");
         table.common.catalog_name = "github_v4".to_string();
         table.common.schema_name = "public".to_string();
+        let function = manifest.functions.first_mut().expect("HTTP function");
+        function.catalog_name = "github_v4".to_string();
+        function.schema_name = "public".to_string();
         let source = QuerySource::from_runtime_components(
             RuntimeSourcePackage {
                 source_name: "github_v4".to_string(),
@@ -1464,6 +1453,55 @@ mod tests {
         assert_eq!(source.catalog_names(), ["github_v4"]);
     }
 
+    #[test]
+    fn runtime_source_derives_names_from_table_and_function_qualifiers() {
+        let mut manifest = http_manifest();
+        let function = manifest.functions.first_mut().expect("HTTP function");
+        function.catalog_name = "catalog_api".to_string();
+        function.schema_name = "public".to_string();
+        let source = QuerySource::from_runtime_components(
+            RuntimeSourcePackage {
+                source_name: "github".to_string(),
+                authored_version: None,
+                description: String::new(),
+                declared_inputs: Vec::new(),
+                test_queries: Vec::new(),
+                identity_requirements: None,
+                components: vec![RuntimeSourceComponent::Http(manifest)],
+            },
+            BTreeMap::new(),
+            BTreeMap::new(),
+        )
+        .expect("mixed-qualifier runtime source");
+
+        assert_eq!(source.schema_names(), ["github"]);
+        assert_eq!(source.catalog_names(), ["catalog_api"]);
+    }
+
+    #[test]
+    fn empty_runtime_component_claims_its_source_name_as_a_schema() {
+        let mut manifest = http_manifest();
+        manifest.tables.clear();
+        manifest.functions.clear();
+        let source = QuerySource::from_runtime_components(
+            RuntimeSourcePackage {
+                source_name: "github".to_string(),
+                authored_version: None,
+                description: String::new(),
+                declared_inputs: Vec::new(),
+                test_queries: Vec::new(),
+                identity_requirements: None,
+                components: vec![RuntimeSourceComponent::Http(manifest)],
+            },
+            BTreeMap::new(),
+            BTreeMap::new(),
+        )
+        .expect("empty-component runtime source");
+
+        assert_eq!(source.schema_names(), ["github"]);
+        assert!(source.catalog_names().is_empty());
+    }
+
     fn http_manifest() -> coral_spec::backends::http::HttpSourceManifest {
         source_manifest().as_http().expect("http manifest").clone()
     }
@@ -1481,6 +1519,30 @@ mod tests {
                 "request": {
                     "method": "GET",
                     "path": "/issues"
+                },
+                "response": {},
+                "columns": [{
+                    "name": "id",
+                    "type": "Utf8"
+                }]
+            }],
+            "functions": [{
+                "name": "search_issues",
+                "args": [{
+                    "name": "query",
+                    "required": true,
+                    "bind": {
+                        "arg": "query"
+                    }
+                }],
+                "request": {
+                    "method": "GET",
+                    "path": "/search",
+                    "query": [{
+                        "name": "q",
+                        "from": "arg",
+                        "key": "query"
+                    }]
                 },
                 "response": {},
                 "columns": [{

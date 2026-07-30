@@ -18,10 +18,8 @@ pub struct ProjectionCatalog {
 pub struct Projection {
     pub catalog_name: String,
     pub schema_name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub table_name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub function_name: Option<String>,
+    #[serde(flatten)]
+    pub sql_identity: ProjectionSqlIdentity,
     pub kind: ProjectionKind,
     pub description: String,
     pub guide: String,
@@ -36,27 +34,73 @@ pub struct Projection {
 
 impl Projection {
     #[must_use]
-    pub fn relation_name(&self) -> Option<&str> {
-        match (&self.table_name, &self.function_name) {
-            (Some(name), None) | (None, Some(name)) => Some(name),
-            _ => None,
-        }
+    pub fn relation_name(&self) -> &str {
+        self.sql_identity.relation_name()
     }
 
     pub(crate) fn set_relation_name(&mut self, name: String) {
-        match (&mut self.table_name, &mut self.function_name) {
-            (Some(table_name), None) => *table_name = name,
-            (None, Some(function_name)) => *function_name = name,
-            _ => {}
-        }
+        self.sql_identity.set_relation_name(name);
     }
 
     #[must_use]
     pub fn sql_reference(&self) -> String {
-        self.relation_name().map_or_else(
-            || format!("{}.{}.<invalid>", self.catalog_name, self.schema_name),
-            |name| format!("{}.{}.{name}", self.catalog_name, self.schema_name),
+        format!(
+            "{}.{}.{}",
+            self.catalog_name,
+            self.schema_name,
+            self.relation_name()
         )
+    }
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum ProjectionSqlIdentity {
+    Table { table_name: String },
+    TableFunction { function_name: String },
+}
+
+impl ProjectionSqlIdentity {
+    #[must_use]
+    pub fn relation_name(&self) -> &str {
+        match self {
+            Self::Table { table_name } => table_name,
+            Self::TableFunction { function_name } => function_name,
+        }
+    }
+
+    fn set_relation_name(&mut self, name: String) {
+        match self {
+            Self::Table { table_name } => *table_name = name,
+            Self::TableFunction { function_name } => *function_name = name,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ProjectionSqlIdentity {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct PersistedIdentity {
+            #[serde(default)]
+            table_name: Option<String>,
+            #[serde(default)]
+            function_name: Option<String>,
+        }
+
+        let identity = PersistedIdentity::deserialize(deserializer)?;
+        match (identity.table_name, identity.function_name) {
+            (Some(table_name), None) => Ok(Self::Table { table_name }),
+            (None, Some(function_name)) => Ok(Self::TableFunction { function_name }),
+            (Some(_), Some(_)) => Err(serde::de::Error::custom(
+                "projection SQL identity must not define both table_name and function_name",
+            )),
+            (None, None) => Err(serde::de::Error::custom(
+                "projection SQL identity must define table_name or function_name",
+            )),
+        }
     }
 }
 
@@ -116,8 +160,8 @@ pub struct ProjectionColumn {
 #[cfg(test)]
 mod tests {
     use super::{
-        Projection, ProjectionCatalog, ProjectionColumn, ProjectionKind, ProjectionVisibility,
-        SqlInputExposure,
+        Projection, ProjectionCatalog, ProjectionColumn, ProjectionKind, ProjectionSqlIdentity,
+        ProjectionVisibility, SqlInputExposure,
     };
     use crate::v4::{PROJECTION_GENERATOR_VERSION, V4_ARTIFACT_SCHEMA_VERSION};
     use crate::{ManifestDataType, SearchLimitsSpec, SourceTableFunctionKind};
@@ -131,8 +175,9 @@ mod tests {
             projections: vec![Projection {
                 catalog_name: "demo".to_string(),
                 schema_name: "issues".to_string(),
-                table_name: None,
-                function_name: Some("search".to_string()),
+                sql_identity: ProjectionSqlIdentity::TableFunction {
+                    function_name: "search".to_string(),
+                },
                 kind: ProjectionKind::TableFunction {
                     function_kind: SourceTableFunctionKind::Search,
                 },
@@ -258,8 +303,41 @@ diagnostics: []
                 .first()
                 .expect("projection")
                 .relation_name(),
-            Some("items")
+            "items"
         );
+    }
+
+    #[test]
+    fn projection_catalog_rejects_ambiguous_or_missing_sql_identity() {
+        for identity in [
+            "    table_name: items\n    function_name: search_items\n",
+            "",
+        ] {
+            let raw = format!(
+                r#"
+artifact_schema_version: {V4_ARTIFACT_SCHEMA_VERSION}
+source_name: demo
+projections:
+  - catalog_name: demo
+    schema_name: public
+{identity}    kind:
+      type: table
+    description: ""
+    guide: ""
+    operation_id: items/list
+    visibility: published
+    inputs: []
+    columns: []
+    search_limits: null
+    detail_hints: []
+    diagnostics: []
+diagnostics: []
+"#
+            );
+
+            serde_yaml::from_str::<ProjectionCatalog>(&raw)
+                .expect_err("ambiguous or missing projection SQL identity must be rejected");
+        }
     }
 
     #[test]

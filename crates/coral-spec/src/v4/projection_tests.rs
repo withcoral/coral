@@ -34,7 +34,7 @@ surface:
         .projections
         .iter()
         .filter(|projection| projection.visibility == ProjectionVisibility::Published)
-        .filter_map(Projection::relation_name)
+        .map(Projection::relation_name)
         .collect::<Vec<_>>();
     assert!(catalog.projections.iter().all(|projection| {
         projection.catalog_name == "github" && projection.schema_name == "public"
@@ -1159,9 +1159,7 @@ components:
                 projection.operation_id.as_str(),
                 (
                     projection.schema_name.as_str(),
-                    projection
-                        .relation_name()
-                        .expect("projection relation name"),
+                    projection.relation_name(),
                     &projection.kind,
                 ),
             )
@@ -1349,8 +1347,12 @@ fn v4_projection_sql_identity_mcp_uses_public_schema() {
         .expect("mcp search projection");
     assert_eq!(projection.catalog_name, "github_mcp");
     assert_eq!(projection.schema_name, "public");
-    assert_eq!(projection.function_name.as_deref(), Some("search_issues"));
-    assert_eq!(projection.table_name, None);
+    assert_eq!(
+        projection.sql_identity,
+        ProjectionSqlIdentity::TableFunction {
+            function_name: "search_issues".to_string(),
+        }
+    );
 
     let columns = projection
         .columns

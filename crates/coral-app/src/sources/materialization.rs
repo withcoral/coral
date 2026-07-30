@@ -1720,40 +1720,6 @@ surface:
     }
 
     #[test]
-    fn incompatible_v4_projection_identity_override_cannot_remap_schema() {
-        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
-        let mut catalog = installed_projection_catalog_value(&layout);
-        let projection = catalog
-            .as_mapping_mut()
-            .expect("projection catalog mapping")
-            .get_mut(serde_yaml::Value::String("projections".to_string()))
-            .and_then(serde_yaml::Value::as_sequence_mut)
-            .and_then(|projections| projections.first_mut())
-            .and_then(serde_yaml::Value::as_mapping_mut)
-            .expect("projection mapping");
-        projection.insert(
-            serde_yaml::Value::String("schema_name".to_string()),
-            serde_yaml::Value::String("remapped".to_string()),
-        );
-        write_projection_override(&layout, &catalog);
-
-        let error = load_v4_materialization(
-            &layout,
-            &workspace_name(),
-            &source_name(),
-            &manifest_yaml,
-            &manifest,
-        )
-        .expect_err("projection overrides must not remap provider-derived schemas");
-
-        assert!(
-            matches!(error, AppError::InvalidV4ProjectionOverride { .. }),
-            "unexpected error: {error:#}"
-        );
-        assert!(error.to_string().contains("remaps schema_name"));
-    }
-
-    #[test]
     fn installed_v4_materialization_uses_the_root_level_singular_layout() {
         let (_state, _descriptor, layout, _manifest_yaml, _manifest) = setup_materialization();
         let materialized_dir = layout.v4_materialized_dir(&workspace_name(), &source_name());

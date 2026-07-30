@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::v4::diagnostics::Diagnostic;
 use crate::v4::manifest::{SurfaceType, V4SourceManifest};
-use crate::v4::projections::{ProjectionCatalog, ProjectionKind, projection_schema_name};
+use crate::v4::projections::{
+    ProjectionCatalog, ProjectionKind, ProjectionSqlIdentity, projection_schema_name,
+};
 use crate::v4::{
     OPERATION_METADATA_GENERATOR_VERSION, PROJECTION_GENERATOR_VERSION, SURFACE_IMPORTER_VERSION,
     V4_ARTIFACT_SCHEMA_VERSION, ValidatedSurfacePlan,
@@ -109,24 +111,23 @@ pub fn validate_materialized_source_structure(
                 projection.catalog_name
             )));
         }
-        let (kind, relation_name) = match (
-            &projection.kind,
-            projection.table_name.as_deref(),
-            projection.function_name.as_deref(),
-        ) {
-            (ProjectionKind::Table, Some(table_name), None) => ("table", table_name),
-            (ProjectionKind::TableFunction { .. }, None, Some(function_name)) => {
-                ("table_function", function_name)
+        let (kind, relation_name) = match (&projection.kind, &projection.sql_identity) {
+            (ProjectionKind::Table, ProjectionSqlIdentity::Table { table_name }) => {
+                ("table", table_name.as_str())
             }
-            (ProjectionKind::Table, _, _) => {
+            (
+                ProjectionKind::TableFunction { .. },
+                ProjectionSqlIdentity::TableFunction { function_name },
+            ) => ("table_function", function_name.as_str()),
+            (ProjectionKind::Table, ProjectionSqlIdentity::TableFunction { .. }) => {
                 return Err(ManifestError::validation(format!(
-                    "DSL v4 table projection for operation '{}' must define exactly one table_name and no function_name",
+                    "DSL v4 table projection for operation '{}' must use a table_name SQL identity",
                     projection.operation_id
                 )));
             }
-            (ProjectionKind::TableFunction { .. }, _, _) => {
+            (ProjectionKind::TableFunction { .. }, ProjectionSqlIdentity::Table { .. }) => {
                 return Err(ManifestError::validation(format!(
-                    "DSL v4 table-function projection for operation '{}' must define exactly one function_name and no table_name",
+                    "DSL v4 table-function projection for operation '{}' must use a function_name SQL identity",
                     projection.operation_id
                 )));
             }
@@ -178,15 +179,21 @@ mod tests {
     use std::path::PathBuf;
 
     use crate::parse_source_manifest_yaml;
-    use crate::v4::ir::SemanticIr;
+    use crate::v4::ir::{
+        HttpMethod, IrExecutionAttachment, IrOperation, IrOperationNaming, IrOperationOutput,
+        IrType, IrTypeShape, OutputCardinality, RestExecutionAttachment, RestResponseAttachment,
+        SemanticIr,
+    };
     use crate::v4::projections::{
-        Projection, ProjectionCatalog, ProjectionKind, ProjectionVisibility,
+        Projection, ProjectionCatalog, ProjectionKind, ProjectionSqlIdentity, ProjectionVisibility,
     };
     use crate::v4::{
         MCP_IMPORTER_VERSION, OPENAPI_IMPORTER_VERSION, OPERATION_METADATA_GENERATOR_VERSION,
-        OperationMetadataCatalog, PROJECTION_GENERATOR_VERSION, SURFACE_IMPORTER_VERSION,
-        SurfaceType, V4_ARTIFACT_SCHEMA_VERSION, V4SourceManifest, ValidatedSurfacePlan,
+        OperationMetadata, OperationMetadataCatalog, PROJECTION_GENERATOR_VERSION,
+        SURFACE_IMPORTER_VERSION, SurfaceType, V4_ARTIFACT_SCHEMA_VERSION, V4SourceManifest,
+        ValidatedSurfacePlan,
     };
+    use crate::{PaginationSpec, ResponseSpec, SourceTableFunctionKind};
 
     use super::{
         Fingerprint, FingerprintSurface, MaterializedSurface, V4MaterializedSource,
@@ -272,12 +279,74 @@ surface:
         .expect("empty plan")
     }
 
+    fn openapi_plan_with_operation(group: Option<&str>) -> ValidatedSurfacePlan {
+        let operation_id = "items/list".to_string();
+        ValidatedSurfacePlan::new(
+            SemanticIr {
+                artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
+                source_name: "demo".to_string(),
+                surface_type: SurfaceType::OpenApi,
+                importer_version: OPENAPI_IMPORTER_VERSION.to_string(),
+                operations: vec![IrOperation {
+                    id: operation_id.clone(),
+                    method_name: "GET".to_string(),
+                    description: String::new(),
+                    deprecated: false,
+                    read_only: true,
+                    naming: Some(IrOperationNaming {
+                        group: group.map(ToString::to_string),
+                        operation: Some("list".to_string()),
+                    }),
+                    inputs: Vec::new(),
+                    output: IrOperationOutput {
+                        cardinality: OutputCardinality::List,
+                        type_ref: "item".to_string(),
+                    },
+                    entity: None,
+                    execution: IrExecutionAttachment::Rest(Box::new(RestExecutionAttachment {
+                        method: HttpMethod::Get,
+                        path_template: "/items".to_string(),
+                        parameters: Vec::new(),
+                        request_body: None,
+                        response: RestResponseAttachment {
+                            status_code: 200,
+                            media_type: "application/json".to_string(),
+                            response: ResponseSpec::default(),
+                        },
+                    })),
+                    diagnostics: Vec::new(),
+                }],
+                types: vec![IrType {
+                    id: "item".to_string(),
+                    shape: IrTypeShape::Object { fields: Vec::new() },
+                    nullable: false,
+                    description: String::new(),
+                }],
+                diagnostics: Vec::new(),
+            },
+            OperationMetadataCatalog {
+                artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
+                source_name: "demo".to_string(),
+                generator_version: Some(OPERATION_METADATA_GENERATOR_VERSION.to_string()),
+                operations: std::collections::BTreeMap::from([(
+                    operation_id,
+                    OperationMetadata::Rest {
+                        pagination: PaginationSpec::default(),
+                        lookup_keys: Vec::new(),
+                    },
+                )]),
+            },
+        )
+        .expect("OpenAPI plan")
+    }
+
     fn projection(name: &str) -> Projection {
         Projection {
             catalog_name: "demo".to_string(),
             schema_name: "public".to_string(),
-            table_name: Some(name.to_string()),
-            function_name: None,
+            sql_identity: ProjectionSqlIdentity::Table {
+                table_name: name.to_string(),
+            },
             kind: ProjectionKind::Table,
             description: String::new(),
             guide: String::new(),
@@ -390,6 +459,72 @@ surface:
             error.to_string(),
             "DSL v4 table projection 'demo.public.items' is repeated"
         );
+    }
+
+    #[test]
+    fn structural_validation_rejects_projection_catalog_remap() {
+        let mut materialized = materialized_source();
+        let mut remapped = projection("items");
+        remapped.catalog_name = "other".to_string();
+        materialized.projections.projections = vec![remapped];
+
+        let error = validate_materialized_source_structure(&manifest(), &materialized)
+            .expect_err("projection catalogs must match the installed source");
+
+        assert!(error.to_string().contains("remaps catalog_name"));
+    }
+
+    #[test]
+    fn structural_validation_rejects_projection_schema_remap() {
+        let mut materialized = materialized_source();
+        materialized.surface.plan = openapi_plan_with_operation(Some("items"));
+        materialized.projections.projections = vec![projection("list")];
+
+        let error = validate_materialized_source_structure(&manifest(), &materialized)
+            .expect_err("projection schemas must match the provider-derived group");
+
+        assert!(
+            error
+                .to_string()
+                .contains("remaps schema_name from 'items' to 'public'")
+        );
+    }
+
+    #[test]
+    fn structural_validation_rejects_projection_kind_leaf_mismatches() {
+        let cases = [
+            (
+                ProjectionKind::Table,
+                ProjectionSqlIdentity::TableFunction {
+                    function_name: "items".to_string(),
+                },
+                "must use a table_name SQL identity",
+            ),
+            (
+                ProjectionKind::TableFunction {
+                    function_kind: SourceTableFunctionKind::Table,
+                },
+                ProjectionSqlIdentity::Table {
+                    table_name: "items".to_string(),
+                },
+                "must use a function_name SQL identity",
+            ),
+        ];
+
+        for (kind, sql_identity, expected) in cases {
+            let mut materialized = materialized_source();
+            let mut invalid = projection("items");
+            invalid.kind = kind;
+            invalid.sql_identity = sql_identity;
+            materialized.projections.projections = vec![invalid];
+
+            let error = validate_materialized_source_structure(&manifest(), &materialized)
+                .expect_err("projection kind and leaf fields must agree");
+            assert!(
+                error.to_string().contains(expected),
+                "{expected:?} missing from {error}"
+            );
+        }
     }
 
     #[test]

@@ -83,7 +83,7 @@ List chats visible to the signed-in user:
 ```sql
 WITH chats AS (
   SELECT unnest(json_get_array(value)) AS chat
-  FROM microsoft_graph_v4.me_chat_me_listchats
+  FROM microsoft_graph_v4.me_chat.me_chat_me_listchats
   WHERE top = 20
 )
 SELECT
@@ -101,7 +101,7 @@ List recent messages from one chat:
 ```sql
 WITH raw AS (
   SELECT unnest(json_get_array(value)) AS msg
-  FROM microsoft_graph_v4.chats_chatmessage_chats_listmessages(
+  FROM microsoft_graph_v4.chats_chatmessage.chats_chatmessage_chats_listmessages(
     chat_id => '19:example@thread.v2',
     top => 50
   )
@@ -124,7 +124,7 @@ List joined Teams:
 ```sql
 WITH teams AS (
   SELECT unnest(json_get_array(value)) AS team
-  FROM microsoft_graph_v4.me_team_me_listjoinedteams
+  FROM microsoft_graph_v4.me_team.me_team_me_listjoinedteams
 )
 SELECT
   json_get_str(team, 'id') AS id,
@@ -139,7 +139,7 @@ Inspect OneDrive/SharePoint drives visible through `/me`:
 ```sql
 WITH drives AS (
   SELECT unnest(json_get_array(value)) AS drive
-  FROM microsoft_graph_v4.me_drive_me_listdrives
+  FROM microsoft_graph_v4.me_drive.me_drive_me_listdrives
 )
 SELECT
   json_get_str(drive, 'id') AS id,
@@ -153,9 +153,9 @@ ORDER BY name;
 Find generated Teams/SharePoint table names:
 
 ```sql
-SELECT table_name, description
+SELECT schema_name, table_name, description
 FROM coral.tables
-WHERE schema_name = 'microsoft_graph_v4'
+WHERE catalog_name = 'microsoft_graph_v4'
   AND (
     table_name LIKE '%chat%'
     OR table_name LIKE '%team%'
@@ -163,6 +163,6 @@ WHERE schema_name = 'microsoft_graph_v4'
     OR table_name LIKE '%drive%'
     OR table_name LIKE '%site%'
   )
-ORDER BY table_name
+ORDER BY schema_name, table_name
 LIMIT 100;
 ```

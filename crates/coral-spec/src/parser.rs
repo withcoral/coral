@@ -271,11 +271,7 @@ mod tests {
     use super::parse_source_manifest_yaml;
 
     #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one compatibility test covers every DSL v3 backend identity adapter"
-    )]
-    fn v3_runtime_sql_identity_adapts_authored_backend_names() {
+    fn v3_runtime_sql_identity_adapts_http_names_without_changing_serialization() {
         let http = parse_source_manifest_yaml(
             r"
 name: github
@@ -342,7 +338,10 @@ functions:
         );
         assert!(serialized_function.get("catalog_name").is_none());
         assert!(serialized_function.get("schema_name").is_none());
+    }
 
+    #[test]
+    fn v3_runtime_sql_identity_adapts_file_names() {
         let file = parse_source_manifest_yaml(
             r"
 name: logs
@@ -375,7 +374,10 @@ tables:
             ),
             ("datafusion", "logs", "events")
         );
+    }
 
+    #[test]
+    fn v3_runtime_sql_identity_adapts_mcp_names() {
         let mcp = parse_source_manifest_yaml(
             r"
 name: github_mcp
