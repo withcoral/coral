@@ -1,19 +1,14 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use axum::extract::{RawQuery, State};
-use axum::http::{StatusCode, header};
-use axum::response::{IntoResponse, Response};
-use url::{Url, form_urlencoded};
+use axum::response::Response;
+use url::Url;
 
 use super::super::provider_client::OidcAuthorizationRequest;
 use super::super::state_store::OAuthAuthorizationSessionRecord;
-use super::{AuthorizationServerHttpState, canonical_authorization_resource};
+use super::response::{TrustedRedirect, direct_error, redirect};
+use super::{AuthorizationServerHttpState, canonical_authorization_resource, query};
 use crate::outbound_url_policy::{BrowserRedirect, EndpointUrl};
-
-const MAX_QUERY_BYTES: usize = 8 * 1024;
-const MAX_PARAMETERS: usize = 32;
-const MAX_PARAMETER_NAME_BYTES: usize = 64;
-const MAX_PARAMETER_VALUE_BYTES: usize = 2 * 1024;
 
 pub(super) async fn oauth_authorize(
     State(state): State<AuthorizationServerHttpState>,
@@ -31,10 +26,7 @@ pub(super) async fn oauth_authorize(
     else {
         return direct_error("invalid_request", "client_id or redirect_uri is invalid");
     };
-    let trusted = TrustedRedirect {
-        url: callback,
-        client_state: query.state.clone(),
-    };
+    let trusted = TrustedRedirect::new(callback, query.state.clone());
 
     match query.response_type.as_deref() {
         Some("code") => {}
@@ -116,36 +108,22 @@ struct AuthorizeQuery {
 }
 
 fn parse_query(raw: &str) -> Result<AuthorizeQuery, ()> {
-    if raw.len() > MAX_QUERY_BYTES {
-        return Err(());
-    }
-    let mut query = AuthorizeQuery::default();
-    let mut seen = BTreeSet::new();
-    for (index, (name, value)) in form_urlencoded::parse(raw.as_bytes()).enumerate() {
-        if index >= MAX_PARAMETERS
-            || name.len() > MAX_PARAMETER_NAME_BYTES
-            || value.len() > MAX_PARAMETER_VALUE_BYTES
-        {
-            return Err(());
-        }
-        let name = name.into_owned();
-        if !seen.insert(name.clone()) {
-            return Err(());
-        }
-        let target = match name.as_str() {
-            "response_type" => &mut query.response_type,
-            "client_id" => &mut query.client_id,
-            "redirect_uri" => &mut query.redirect_uri,
-            "scope" => &mut query.scope,
-            "state" => &mut query.state,
-            "code_challenge" => &mut query.code_challenge,
-            "code_challenge_method" => &mut query.code_challenge_method,
-            "resource" => &mut query.resource,
-            _ => continue,
+    let mut parsed = AuthorizeQuery::default();
+    query::scan(raw, |name, value| {
+        let target = match name {
+            "response_type" => &mut parsed.response_type,
+            "client_id" => &mut parsed.client_id,
+            "redirect_uri" => &mut parsed.redirect_uri,
+            "scope" => &mut parsed.scope,
+            "state" => &mut parsed.state,
+            "code_challenge" => &mut parsed.code_challenge,
+            "code_challenge_method" => &mut parsed.code_challenge_method,
+            "resource" => &mut parsed.resource,
+            _ => return,
         };
         *target = Some(value.into_owned());
-    }
-    Ok(query)
+    })?;
+    Ok(parsed)
 }
 
 /// Resolves the registered redirect URI a request names, under
@@ -175,58 +153,6 @@ fn valid_s256_challenge(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
 }
 
-struct TrustedRedirect {
-    url: Url,
-    client_state: Option<String>,
-}
-
-impl TrustedRedirect {
-    fn error(&self, error: &'static str, description: &'static str) -> Response {
-        let mut url = self.url.clone();
-        let mut query = url.query_pairs_mut();
-        query
-            .append_pair("error", error)
-            .append_pair("error_description", description);
-        if let Some(state) = &self.client_state {
-            query.append_pair("state", state);
-        }
-        drop(query);
-        redirect(url.as_str())
-    }
-}
-
-fn direct_error(error: &'static str, description: &'static str) -> Response {
-    let body = serde_json::json!({
-        "error": error,
-        "error_description": description,
-    })
-    .to_string();
-    (
-        StatusCode::BAD_REQUEST,
-        [
-            (header::CONTENT_TYPE, "application/json"),
-            (header::CACHE_CONTROL, "no-store"),
-            (header::PRAGMA, "no-cache"),
-        ],
-        body,
-    )
-        .into_response()
-}
-
-fn redirect(location: &str) -> Response {
-    (
-        StatusCode::FOUND,
-        [
-            (header::LOCATION, location),
-            (header::CACHE_CONTROL, "no-store"),
-            (header::PRAGMA, "no-cache"),
-            (header::REFERRER_POLICY, "no-referrer"),
-        ],
-        "",
-    )
-        .into_response()
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
@@ -235,11 +161,13 @@ mod tests {
     use std::time::Duration;
 
     use axum::body::to_bytes;
+    use axum::http::{StatusCode, header};
     use base64::Engine as _;
     use base64::engine::general_purpose::STANDARD;
     use ring::rand::SystemRandom;
     use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair};
     use serde_json::json;
+    use url::form_urlencoded;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -364,19 +292,22 @@ mod tests {
             .await;
     }
 
+    /// Asserts the headers every response from this handler carries.
+    ///
+    /// The direct-error path is asserted as well as the redirect path: it is
+    /// the one that shipped without `referrer-policy` while its sibling
+    /// handler set it, and an unasserted header is how that went unnoticed.
+    fn assert_security(response: &Response) {
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        assert_eq!(response.headers()[header::PRAGMA], "no-cache");
+        assert_eq!(response.headers()[header::REFERRER_POLICY], "no-referrer");
+    }
+
     #[test]
     fn query_parser_bounds_and_rejects_decoded_duplicates() {
         let encoded = encode(&pairs());
-        let cases = [
-            format!("{encoded}&client%5Fid=duplicate"),
-            "x".repeat(MAX_QUERY_BYTES + 1),
-            format!("{}=value", "n".repeat(MAX_PARAMETER_NAME_BYTES + 1)),
-            format!("value={}", "v".repeat(MAX_PARAMETER_VALUE_BYTES + 1)),
-            (0..=MAX_PARAMETERS)
-                .map(|index| format!("x{index}=1"))
-                .collect::<Vec<_>>()
-                .join("&"),
-        ];
+        let mut cases = vec![format!("{encoded}&client%5Fid=duplicate")];
+        cases.extend(query::rejected_queries());
         for raw in cases {
             assert!(parse_query(&raw).is_err(), "accepted {raw}");
         }
@@ -400,6 +331,7 @@ mod tests {
             )
             .await;
             assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            assert_security(&response);
             assert!(location(&response).is_none());
         }
 
@@ -429,6 +361,7 @@ mod tests {
             replace(&mut request_pairs, "redirect_uri", Some(uri));
             let response = request(auth_state, &request_pairs).await;
             assert_eq!(response.status(), StatusCode::BAD_REQUEST, "accepted {uri}");
+            assert_security(&response);
             assert!(location(&response).is_none(), "redirected to {uri}");
         }
     }
@@ -454,8 +387,7 @@ mod tests {
             )
             .await;
             assert_eq!(response.status(), StatusCode::FOUND);
-            assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
-            assert_eq!(response.headers()[header::REFERRER_POLICY], "no-referrer");
+            assert_security(&response);
             let url = Url::parse(location(&response).expect("error redirect")).expect("URL");
             let query = url.query_pairs().into_owned().collect::<Vec<_>>();
             assert!(query.contains(&("tenant".into(), "one".into())));

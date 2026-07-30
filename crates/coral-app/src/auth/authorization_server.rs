@@ -25,6 +25,8 @@ use crate::outbound_url_policy::{EndpointUrl, ResourceIdentifier};
 
 mod authorize;
 mod callback;
+mod query;
+mod response;
 
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 

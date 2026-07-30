@@ -1,21 +1,15 @@
-use std::collections::BTreeSet;
-
 use axum::extract::{RawQuery, State};
-use axum::http::{StatusCode, header};
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ring::rand::{SecureRandom as _, SystemRandom};
-use url::{Url, form_urlencoded};
+use url::Url;
 use zeroize::Zeroizing;
 
 use super::super::state_store::{OAuthAuthorizationCodeRecord, OAuthAuthorizationSessionRecord};
 use super::AuthorizationServerHttpState;
-
-const MAX_QUERY_BYTES: usize = 8 * 1024;
-const MAX_PARAMETERS: usize = 32;
-const MAX_PARAMETER_NAME_BYTES: usize = 64;
-const MAX_PARAMETER_VALUE_BYTES: usize = 2 * 1024;
+use super::query;
+use super::response::{TrustedRedirect, direct_error};
 
 pub(super) async fn oidc_callback(
     State(state): State<AuthorizationServerHttpState>,
@@ -37,7 +31,7 @@ pub(super) async fn oidc_callback(
             "OIDC callback state is invalid or expired",
         );
     };
-    let Some(trusted) = TrustedRedirect::new(&session) else {
+    let Some(trusted) = trusted_redirect(&session) else {
         return direct_error("server_error", "authorization failed");
     };
     let provider_code = match classify_result(&query) {
@@ -53,21 +47,30 @@ pub(super) async fn oidc_callback(
         }
     };
     let provider = state.settings.provider();
-    let Ok(exchange) = state
+    let exchange = match state
         .provider_client
         .exchange_code(provider, &provider_code, &session.oidc_code_verifier)
         .await
-    else {
-        return trusted.error("server_error", "authorization failed");
+    {
+        Ok(exchange) => exchange,
+        Err(error) => {
+            tracing::warn!(%error, "OIDC callback could not exchange the provider code");
+            return trusted.error("server_error", "authorization failed");
+        }
     };
-    let Ok(identity) = state
+    let identity = match state
         .provider_client
         .validate_code_exchange(provider, exchange, &session.oidc_nonce)
         .await
-    else {
-        return trusted.error("server_error", "authorization failed");
+    {
+        Ok(identity) => identity,
+        Err(error) => {
+            tracing::warn!(%error, "OIDC callback could not validate the provider identity");
+            return trusted.error("server_error", "authorization failed");
+        }
     };
     let Ok(authorization_code) = random_code() else {
+        tracing::warn!("OIDC callback could not generate an authorization code");
         return trusted.error("server_error", "authorization failed");
     };
     let authorization = OAuthAuthorizationCodeRecord {
@@ -77,12 +80,12 @@ pub(super) async fn oidc_callback(
         code_challenge: session.code_challenge,
         resource: session.resource,
     };
-    if state
+    if let Err(error) = state
         .state_store
         .store_authorization_code(&authorization_code, authorization)
         .await
-        .is_err()
     {
+        tracing::warn!(%error, "OIDC callback could not store the authorization code");
         return trusted.error("server_error", "authorization failed");
     }
     trusted.success(&authorization_code)
@@ -97,31 +100,17 @@ struct CallbackQuery {
 }
 
 fn parse_query(raw: &str) -> Result<CallbackQuery, ()> {
-    if raw.len() > MAX_QUERY_BYTES {
-        return Err(());
-    }
     let mut query = CallbackQuery::default();
-    let mut seen = BTreeSet::new();
-    for (index, (name, value)) in form_urlencoded::parse(raw.as_bytes()).enumerate() {
-        if index >= MAX_PARAMETERS
-            || name.len() > MAX_PARAMETER_NAME_BYTES
-            || value.len() > MAX_PARAMETER_VALUE_BYTES
-        {
-            return Err(());
-        }
-        let name = name.into_owned();
-        if !seen.insert(name.clone()) {
-            return Err(());
-        }
-        let target = match name.as_str() {
+    query::scan(raw, |name, value| {
+        let target = match name {
             "state" => &mut query.state,
             "code" => &mut query.code,
             "error" => &mut query.error,
             "error_description" => &mut query.error_description,
-            _ => continue,
+            _ => return,
         };
         *target = Some(value.into_owned());
-    }
+    })?;
     Ok(query)
 }
 
@@ -150,73 +139,20 @@ fn random_code() -> Result<String, ()> {
     Ok(URL_SAFE_NO_PAD.encode(bytes.as_slice()))
 }
 
-struct TrustedRedirect {
-    url: Url,
-    client_state: Option<String>,
-}
-
-impl TrustedRedirect {
-    fn new(session: &OAuthAuthorizationSessionRecord) -> Option<Self> {
-        Some(Self {
-            url: Url::parse(&session.redirect_uri).ok()?,
-            client_state: session.client_state.clone(),
-        })
-    }
-
-    fn success(&self, code: &str) -> Response {
-        self.redirect("code", code, None)
-    }
-
-    fn error(&self, error: &'static str, description: &'static str) -> Response {
-        self.redirect("error", error, Some(description))
-    }
-
-    fn redirect(&self, key: &str, value: &str, description: Option<&str>) -> Response {
-        let mut url = self.url.clone();
-        let mut query = url.query_pairs_mut();
-        query.append_pair(key, value);
-        if let Some(description) = description {
-            query.append_pair("error_description", description);
-        }
-        if let Some(state) = &self.client_state {
-            query.append_pair("state", state);
-        }
-        drop(query);
-        redirect(url.as_str())
-    }
-}
-
-fn direct_error(error: &'static str, description: &'static str) -> Response {
-    let body = serde_json::json!({
-        "error": error,
-        "error_description": description,
-    })
-    .to_string();
-    (
-        StatusCode::BAD_REQUEST,
-        security_headers(),
-        [(header::CONTENT_TYPE, "application/json")],
-        body,
-    )
-        .into_response()
-}
-
-fn redirect(location: &str) -> Response {
-    (
-        StatusCode::FOUND,
-        security_headers(),
-        [(header::LOCATION, location)],
-        "",
-    )
-        .into_response()
-}
-
-fn security_headers() -> [(header::HeaderName, &'static str); 3] {
-    [
-        (header::CACHE_CONTROL, "no-store"),
-        (header::PRAGMA, "no-cache"),
-        (header::REFERRER_POLICY, "no-referrer"),
-    ]
+/// Rebuilds the client callback this login was started for.
+///
+/// The `None` arm is unreachable. `redirect_uri` is only ever stored after
+/// `authorize`'s `registered_redirect` matched it against a registered URI and
+/// parsed that URI under
+/// [`BrowserRedirect`](crate::outbound_url_policy::BrowserRedirect), so a value
+/// that reaches here has already parsed once. It is checked rather than
+/// unwrapped because the store sits between the two handlers, and a panic in a
+/// callback would be a worse answer than a failed login. Re-applying
+/// `BrowserRedirect` here would not add a check — it would only move where the
+/// same policy was applied.
+fn trusted_redirect(session: &OAuthAuthorizationSessionRecord) -> Option<TrustedRedirect> {
+    let url = Url::parse(&session.redirect_uri).ok()?;
+    Some(TrustedRedirect::new(url, session.client_state.clone()))
 }
 
 #[cfg(test)]
@@ -226,10 +162,12 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
+    use axum::http::{StatusCode, header};
     use base64::engine::general_purpose::STANDARD;
     use ring::rand::SystemRandom;
     use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair};
     use serde_json::{Value, json};
+    use url::form_urlencoded;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -392,15 +330,7 @@ mod tests {
 
     #[tokio::test]
     async fn malformed_queries_are_bounded_and_do_not_consume_state() {
-        for raw in [
-            "x".repeat(MAX_QUERY_BYTES + 1),
-            format!("{}=x", "n".repeat(MAX_PARAMETER_NAME_BYTES + 1)),
-            format!("x={}", "v".repeat(MAX_PARAMETER_VALUE_BYTES + 1)),
-            (0..=MAX_PARAMETERS)
-                .map(|index| format!("x{index}=1"))
-                .collect::<Vec<_>>()
-                .join("&"),
-        ] {
+        for raw in query::rejected_queries() {
             let Err(()) = parse_query(&raw) else {
                 panic!("malformed callback query must be rejected");
             };

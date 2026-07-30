@@ -28,7 +28,7 @@ pub use error::AuthServerError;
 /// accepted redirect URI is always one this server actually serves: without the
 /// pin, a redirect URI on the right origin but a different path passes startup
 /// and then strands every login on a 404 the provider reports, not Coral.
-pub(crate) const OIDC_CALLBACK_PATH: &str = "/auth/oidc/callback";
+pub(in crate::auth) const OIDC_CALLBACK_PATH: &str = "/auth/oidc/callback";
 
 /// Minimal `[auth]` TOML sections shared by this module's tests.
 ///
