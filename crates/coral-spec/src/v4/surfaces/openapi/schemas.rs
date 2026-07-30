@@ -6,16 +6,21 @@ use crate::v4::diagnostics::Diagnostic;
 use crate::v4::ir::{IrField, IrType, IrTypeShape};
 use crate::v4::naming::normalize_identifier;
 use crate::v4::surfaces::json_schema::{
-    JsonObjectShape, JsonSchemaComparisonError, direct_json_object_shape,
-    json_schema_required_fields, json_schema_scalar_type,
-    merge_json_object_shape_annotation_insensitive,
+    JsonObjectShape, JsonSchemaComparisonError, JsonSchemaWalkError, RefError,
+    direct_json_object_shape, json_schema_required_fields, json_schema_scalar_type,
+    merge_json_object_shape_annotation_insensitive, with_resolved_json_schema,
 };
 
-use super::import::OpenApiImporter;
+use super::import::{OpenApiImporter, RefDiagnosticContext};
 
-/// Ceiling on nested `allOf` composition, matching the depth the inference
-/// passes walk to. A cyclic `$ref` chain — `A: {allOf: [$ref A]}` — is a schema
-/// this recursion would otherwise follow forever.
+/// Ceiling on the `allOf` fold, matching the budget the inference passes walk
+/// to. Spent on composition nesting and `$ref` hops alike, because the fold
+/// resolves branches through the same shared walk — so both halves stop at the
+/// same schema rather than one seeing a tree the other cannot.
+///
+/// Not the cycle guard: the walk tracks the refs it is resolving, so
+/// `A: {allOf: [$ref A]}` is reported as a cycle rather than recursing until
+/// this stops it.
 const MAX_ALL_OF_DEPTH: usize = 8;
 
 /// Ceiling on the walk that compares two declarations of the same property.
@@ -26,9 +31,17 @@ const MAX_PROPERTY_COMPARISON_DEPTH: usize = 64;
 
 /// Why folding a schema's `allOf` tree stopped.
 enum AllOfMergeError {
-    /// A branch could not be resolved. `resolve_ref` has already recorded a
-    /// diagnostic for it.
+    /// A branch could not be resolved. A diagnostic naming it has already been
+    /// recorded.
     UnresolvedRef,
+    /// A branch references itself, directly or through a chain.
+    RefCycle(String),
+    /// Composition nests past [`MAX_ALL_OF_DEPTH`]. Distinct from
+    /// [`JsonSchemaComparisonError::DepthExceeded`], which is the much larger
+    /// ceiling on one property's own schema: reporting them with the same
+    /// wording sends whoever is debugging a deeply composed spec to the wrong
+    /// constant.
+    CompositionTooDeep,
     Comparison(JsonSchemaComparisonError),
 }
 
@@ -72,12 +85,35 @@ impl OpenApiImporter<'_> {
         );
         let shape = if resolved.get("allOf").and_then(Value::as_array).is_some() {
             let mut merged = JsonObjectShape::default();
-            match self.merge_all_of_properties(&resolved, &mut merged, operation_id, 0, diagnostics)
-            {
+            match self.merge_all_of_properties(
+                &resolved,
+                &mut merged,
+                operation_id,
+                &mut BTreeSet::new(),
+                0,
+                diagnostics,
+            ) {
                 Ok(()) => {}
-                // `resolve_ref` has already reported the branch it could not
-                // reach.
+                // The walk has already reported the branch it could not reach.
                 Err(AllOfMergeError::UnresolvedRef) => return None,
+                Err(AllOfMergeError::RefCycle(reference)) => {
+                    diagnostics.push(Diagnostic::new(
+                        format!(
+                            "allOf branch '{reference}' is cyclic in operation '{operation_id}'"
+                        ),
+                        Some(operation_id.to_string()),
+                    ));
+                    return None;
+                }
+                Err(AllOfMergeError::CompositionTooDeep) => {
+                    diagnostics.push(Diagnostic::new(
+                        format!(
+                            "allOf composition nests past {MAX_ALL_OF_DEPTH} levels in operation '{operation_id}'"
+                        ),
+                        Some(operation_id.to_string()),
+                    ));
+                    return None;
+                }
                 Err(AllOfMergeError::Comparison(JsonSchemaComparisonError::PropertyConflict(
                     property,
                 ))) => {
@@ -209,38 +245,115 @@ impl OpenApiImporter<'_> {
     /// exact equality would read those as conflicts and discard the type
     /// entirely. A property that genuinely disagrees about type or constraints
     /// is still a conflict.
+    /// Folds a schema's `allOf` chain into `merged`, resolving each branch
+    /// through the shared walk.
+    ///
+    /// `resolve_ref` follows exactly one hop, so an alias branch — `{$ref:
+    /// Alias}` where `Alias` is itself `{$ref: Base}` — came back still holding
+    /// a `$ref`, with no `properties` and no `allOf` to contribute. It was
+    /// dropped silently. Inference resolves chains, so it could find a row path
+    /// behind an alias that the imported type lacked, and `infer_row_path`
+    /// would then discard the path and collapse the collection to one JSON row
+    /// — the failure this whole pass exists to remove. Both halves have to fold
+    /// the same tree.
+    ///
+    /// The walk also tracks the refs it is resolving, so a self-referential
+    /// branch is reported as a cycle instead of recursing until the depth cap
+    /// stops it. That cap is now a shared budget: it bounds composition nesting
+    /// and `$ref` hops together, matching how the inference walk spends it.
     fn merge_all_of_properties(
         &self,
         schema: &Value,
         merged: &mut JsonObjectShape,
         operation_id: &str,
+        resolving_refs: &mut BTreeSet<String>,
         depth: usize,
         diagnostics: &mut Vec<Diagnostic>,
     ) -> Result<(), AllOfMergeError> {
-        if depth > MAX_ALL_OF_DEPTH {
-            return Err(AllOfMergeError::Comparison(
-                JsonSchemaComparisonError::DepthExceeded,
-            ));
+        let walked = with_resolved_json_schema(
+            self.document,
+            schema,
+            resolving_refs,
+            depth,
+            MAX_ALL_OF_DEPTH,
+            |resolved, resolving_refs, next_depth| {
+                // The merge's own failures ride inside `T`: the walk fixes the
+                // error type as `JsonSchemaWalkError`, and a property conflict
+                // has to stay distinguishable from a ref that would not resolve.
+                Ok(self.merge_resolved_all_of_properties(
+                    resolved,
+                    merged,
+                    operation_id,
+                    resolving_refs,
+                    next_depth,
+                    diagnostics,
+                ))
+            },
+        );
+        match walked {
+            Ok(merge_result) => merge_result,
+            // Converted rather than propagated: the walk error borrows from the
+            // schema it walked, and the top-level caller passes a local.
+            Err(error) => Err(Self::all_of_walk_error(error, operation_id, diagnostics)),
         }
+    }
+
+    /// The per-level half of [`Self::merge_all_of_properties`], after the walk
+    /// has resolved this branch to a concrete schema.
+    fn merge_resolved_all_of_properties(
+        &self,
+        resolved: &Value,
+        merged: &mut JsonObjectShape,
+        operation_id: &str,
+        resolving_refs: &mut BTreeSet<String>,
+        depth: usize,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) -> Result<(), AllOfMergeError> {
         merge_json_object_shape_annotation_insensitive(
             merged,
-            direct_json_object_shape(schema),
+            direct_json_object_shape(resolved),
             0,
             MAX_PROPERTY_COMPARISON_DEPTH,
         )
         .map_err(AllOfMergeError::Comparison)?;
-        for branch in schema
+        for branch in resolved
             .get("allOf")
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
         {
-            let branch = self
-                .resolve_ref(branch, operation_id, diagnostics)
-                .ok_or(AllOfMergeError::UnresolvedRef)?;
-            self.merge_all_of_properties(&branch, merged, operation_id, depth + 1, diagnostics)?;
+            self.merge_all_of_properties(
+                branch,
+                merged,
+                operation_id,
+                resolving_refs,
+                depth,
+                diagnostics,
+            )?;
         }
         Ok(())
+    }
+
+    /// Records the diagnostic a failed branch walk deserves and reduces it to a
+    /// lifetime-free error.
+    fn all_of_walk_error(
+        error: JsonSchemaWalkError<'_>,
+        operation_id: &str,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) -> AllOfMergeError {
+        let ref_error = match error {
+            JsonSchemaWalkError::ExternalRef(reference) => RefError::External(reference),
+            JsonSchemaWalkError::RefNotFound(reference) => RefError::NotFound(reference),
+            JsonSchemaWalkError::RefCycle(reference) => {
+                return AllOfMergeError::RefCycle(reference.to_string());
+            }
+            JsonSchemaWalkError::DepthExceeded => return AllOfMergeError::CompositionTooDeep,
+        };
+        diagnostics.push(OpenApiImporter::ref_error_diagnostic(
+            ref_error,
+            &RefDiagnosticContext::OperationId(operation_id),
+        ));
+        AllOfMergeError::UnresolvedRef
     }
 
     fn import_object_fields<'a>(

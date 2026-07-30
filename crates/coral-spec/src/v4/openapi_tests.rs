@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 
 use super::*;
 use crate::{
@@ -1231,6 +1232,198 @@ components:
             .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.message.contains("allOf property")),
+        "{:?}",
+        operation.diagnostics
+    );
+    assert_eq!(operation.output.type_ref, "json");
+}
+
+/// A branch may be an alias — `{$ref: Alias}` where `Alias` is itself
+/// `{$ref: Base}` — which one hop of resolution leaves still holding a `$ref`,
+/// with nothing to contribute.
+///
+/// Inference resolves chains, so a branch dropped here would make a row path it
+/// found look absent from the imported type, and `infer_row_path` would discard
+/// the path.
+#[test]
+fn importer_folds_all_of_branches_through_alias_refs() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: aliased_all_of
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.0.3
+paths:
+  /items:
+    get:
+      operationId: items/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Page'}
+components:
+  schemas:
+    Base:
+      type: object
+      properties:
+        next_cursor: {type: string}
+    Alias: {$ref: '#/components/schemas/Base'}
+    Page:
+      type: object
+      allOf:
+        - {$ref: '#/components/schemas/Alias'}
+        - type: object
+          properties:
+            items:
+              type: array
+              items: {type: object, properties: {id: {type: string}}}
+"
+        .as_bytes(),
+    )
+    .expect("import");
+
+    let operation = ir.operations.first().expect("operation");
+    let row_type = ir
+        .types
+        .iter()
+        .find(|ty| ty.id == operation.output.type_ref)
+        .expect("row type");
+    let IrTypeShape::Object { fields } = &row_type.shape else {
+        panic!("the composed page should import as an object: {row_type:?}");
+    };
+    let names = fields
+        .iter()
+        .map(|field| field.name.as_str())
+        .collect::<Vec<_>>();
+
+    assert!(
+        names.contains(&"next_cursor"),
+        "the aliased base contributes its properties: {names:?}"
+    );
+    assert!(names.contains(&"items"), "{names:?}");
+}
+
+/// The fold tracks the refs it is resolving, so a self-referential branch is
+/// named as a cycle rather than recursing until the depth cap stops it.
+#[test]
+fn importer_reports_a_cyclic_all_of_branch() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: cyclic_all_of
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.0.3
+paths:
+  /items:
+    get:
+      operationId: items/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Loop'}
+components:
+  schemas:
+    Loop:
+      type: object
+      allOf:
+        - {$ref: '#/components/schemas/Loop'}
+"
+        .as_bytes(),
+    )
+    .expect("a cyclic allOf imports with diagnostics rather than recursing");
+
+    let operation = ir.operations.first().expect("operation");
+    assert!(
+        operation
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("cyclic")),
+        "the diagnostic must name the cycle, not a depth ceiling: {:?}",
+        operation.diagnostics
+    );
+    assert_eq!(operation.output.type_ref, "json");
+}
+
+/// Composition past the cap reports its own ceiling. Reusing the property
+/// comparison error sent whoever read it to a constant eight times larger.
+#[test]
+fn importer_reports_all_of_composition_past_the_depth_cap() {
+    let mut schemas = String::from(
+        r"
+components:
+  schemas:
+    Deep0:
+      type: object
+      properties:
+        id: {type: string}
+",
+    );
+    for level in 1..=12 {
+        writeln!(
+            schemas,
+            "    Deep{level}:\n      type: object\n      allOf:\n        - {{$ref: '#/components/schemas/Deep{}'}}",
+            level - 1
+        )
+        .expect("writing to a String cannot fail");
+    }
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: deep_all_of
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let document = format!(
+        r"
+openapi: 3.0.3
+paths:
+  /items:
+    get:
+      operationId: items/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {{$ref: '#/components/schemas/Deep12'}}
+{schemas}"
+    );
+    let ir = import_openapi_surface(v4, &v4.surface, document.as_bytes()).expect("import");
+
+    let operation = ir.operations.first().expect("operation");
+    assert!(
+        operation
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("nests past")),
         "{:?}",
         operation.diagnostics
     );

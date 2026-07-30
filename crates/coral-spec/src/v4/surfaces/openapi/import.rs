@@ -41,7 +41,7 @@ pub(super) struct OpenApiImporter<'a> {
     pub(super) diagnostics: Vec<Diagnostic>,
 }
 
-enum RefDiagnosticContext<'a> {
+pub(super) enum RefDiagnosticContext<'a> {
     Operation { path: &'a str, method_name: &'a str },
     OperationId(&'a str),
 }
@@ -142,7 +142,10 @@ impl<'a> OpenApiImporter<'a> {
         }
     }
 
-    fn ref_error_diagnostic(error: RefError<'_>, context: &RefDiagnosticContext<'_>) -> Diagnostic {
+    pub(super) fn ref_error_diagnostic(
+        error: RefError<'_>,
+        context: &RefDiagnosticContext<'_>,
+    ) -> Diagnostic {
         let message = match error {
             RefError::External(reference) => {
                 format!(
