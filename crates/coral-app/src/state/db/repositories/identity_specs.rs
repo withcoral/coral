@@ -988,12 +988,14 @@ mod tests {
         assert_mutations_are_exact_and_transactional(&db, "sqlite").await;
     }
 
-    /// Runs the identity-spec mutation contract against a live Postgres backend.
+    /// Runs the identity-spec and document contracts against a live Postgres backend.
     ///
-    /// `upsert` selects its arbiter index through `ON CONFLICT ... WHERE`, which
-    /// each backend resolves against its own partial-index inference rules, so the
-    /// two tests above cannot stand in for this coverage. CI selects this test by
-    /// the shared `repository_round_trips_against_postgres` name filter.
+    /// Spec `upsert` selects its arbiter index through `ON CONFLICT ... WHERE`, which
+    /// each backend resolves against its own partial-index inference rules, and
+    /// document envelopes round-trip through a `BYTEA` column that `SQLite` stores
+    /// under a different type affinity, so the tests above cannot stand in for this
+    /// coverage. CI selects this test by the shared
+    /// `repository_round_trips_against_postgres` name filter.
     #[tokio::test]
     #[ignore = "set CORAL_TEST_POSTGRES_URL to run the shared repository harness against Postgres"]
     async fn identity_spec_repository_round_trips_against_postgres() {
@@ -1007,6 +1009,7 @@ mod tests {
 
         assert_upserts_preserve_creation_and_monotonic_update_time(&db, &unique_suffix()).await;
         assert_mutations_are_exact_and_transactional(&db, &unique_suffix()).await;
+        assert_encrypted_documents_round_trip(&db, &unique_suffix()).await;
     }
 
     async fn assert_upserts_preserve_creation_and_monotonic_update_time(
@@ -1136,7 +1139,11 @@ mod tests {
     #[tokio::test]
     async fn encrypted_documents_round_trip_by_exact_key() {
         let (_temp, db) = open_sqlite().await;
-        let (global, workspace) = seed_scoped_specs(&db, "sqlite").await;
+        assert_encrypted_documents_round_trip(&db, "sqlite").await;
+    }
+
+    async fn assert_encrypted_documents_round_trip(db: &CoralDb, suffix: &str) {
+        let (global, workspace) = seed_scoped_specs(db, suffix).await;
         let mut tx = db.begin().await.expect("begin document transaction");
         let mut invalid = valid_document(1, 1);
         invalid.binding_version = 0;
@@ -1190,7 +1197,7 @@ mod tests {
         );
         tx.commit().await.expect("commit documents");
 
-        let mut session = &db;
+        let mut session = db;
         assert!(
             session
                 .identity_spec_documents()
