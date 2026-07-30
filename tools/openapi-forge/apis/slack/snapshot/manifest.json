@@ -1,5 +1,5 @@
 {
-  "fetchedAt": "2026-07-30T10:42:41.528Z",
+  "fetchedAt": "2026-07-30T10:51:36.382Z",
   "inputs": [
     {
       "path": "docs/bots.info.md",
@@ -518,6 +518,104 @@
       "upstreamSha256": "cc4f49ee5d2861cfc5cb20e888454c75c5a018dba3422bbdcd2eff266995cf0f",
       "sha256": "7d7d3e7c898c429ccfa17fdea081066b3fea7152729ad8e82e5a996e4f092f75",
       "bytes": 1420
+    },
+    {
+      "path": "sdk/bots.ts",
+      "url": "https://raw.githubusercontent.com/slackapi/node-slack-sdk/main/packages/web-api/src/types/request/bots.ts",
+      "upstreamSha256": "8aeb4fd98ada3dfb7d6c87dbd735c8e1dfecea8fe13f470739cfaf1834d8fc2a",
+      "sha256": "8aeb4fd98ada3dfb7d6c87dbd735c8e1dfecea8fe13f470739cfaf1834d8fc2a",
+      "bytes": 401
+    },
+    {
+      "path": "sdk/common.ts",
+      "url": "https://raw.githubusercontent.com/slackapi/node-slack-sdk/main/packages/web-api/src/types/request/common.ts",
+      "upstreamSha256": "4578e459252571f06da78059592c450e1db2066126b628a4db1027e5eb0025b3",
+      "sha256": "4578e459252571f06da78059592c450e1db2066126b628a4db1027e5eb0025b3",
+      "bytes": 5007
+    },
+    {
+      "path": "sdk/conversations.ts",
+      "url": "https://raw.githubusercontent.com/slackapi/node-slack-sdk/main/packages/web-api/src/types/request/conversations.ts",
+      "upstreamSha256": "e213cbd3a696bcafb27caa4a67120beda44d5de53647210326506a1bca94b22e",
+      "sha256": "e213cbd3a696bcafb27caa4a67120beda44d5de53647210326506a1bca94b22e",
+      "bytes": 9758
+    },
+    {
+      "path": "sdk/dnd.ts",
+      "url": "https://raw.githubusercontent.com/slackapi/node-slack-sdk/main/packages/web-api/src/types/request/dnd.ts",
+      "upstreamSha256": "1e4884faef2771c2531b641ff95fa4f5ba9fc1ae89ab5bc8cddd9b6081060383",
+      "sha256": "1e4884faef2771c2531b641ff95fa4f5ba9fc1ae89ab5bc8cddd9b6081060383",
+      "bytes": 1113
+    },
+    {
+      "path": "sdk/emoji.ts",
+      "url": "https://raw.githubusercontent.com/slackapi/node-slack-sdk/main/packages/web-api/src/types/request/emoji.ts",
+      "upstreamSha256": "3a987c856ffefb9ef3d7c4b3cd3439d0c2d60b6c90bdd1a9d0d73d0440151952",
+      "sha256": "3a987c856ffefb9ef3d7c4b3cd3439d0c2d60b6c90bdd1a9d0d73d0440151952",
+      "bytes": 375
+    },
+    {
+      "path": "sdk/files.ts",
+      "url": "https://raw.githubusercontent.com/slackapi/node-slack-sdk/main/packages/web-api/src/types/request/files.ts",
+      "upstreamSha256": "7ffe3da822c0f86cf2bf8a2c6998aa5558f060face8ae27be844354a0f5b4988",
+      "sha256": "7ffe3da822c0f86cf2bf8a2c6998aa5558f060face8ae27be844354a0f5b4988",
+      "bytes": 10713
+    },
+    {
+      "path": "sdk/pins.ts",
+      "url": "https://raw.githubusercontent.com/slackapi/node-slack-sdk/main/packages/web-api/src/types/request/pins.ts",
+      "upstreamSha256": "53417c051d9309f0734f144a1311f70c8fd0e325e567709ad74e999280107894",
+      "sha256": "53417c051d9309f0734f144a1311f70c8fd0e325e567709ad74e999280107894",
+      "bytes": 530
+    },
+    {
+      "path": "sdk/reactions.ts",
+      "url": "https://raw.githubusercontent.com/slackapi/node-slack-sdk/main/packages/web-api/src/types/request/reactions.ts",
+      "upstreamSha256": "565958a4e66a5c8d64edfcc107705eaa9ddd0bd7dabae964878c4811b1594204",
+      "sha256": "565958a4e66a5c8d64edfcc107705eaa9ddd0bd7dabae964878c4811b1594204",
+      "bytes": 1367
+    },
+    {
+      "path": "sdk/reminders.ts",
+      "url": "https://raw.githubusercontent.com/slackapi/node-slack-sdk/main/packages/web-api/src/types/request/reminders.ts",
+      "upstreamSha256": "35bbe7786608a59d2f91ae5b4bf79dd9031d76ac78807d33beada6a0b16c8b6d",
+      "sha256": "35bbe7786608a59d2f91ae5b4bf79dd9031d76ac78807d33beada6a0b16c8b6d",
+      "bytes": 2718
+    },
+    {
+      "path": "sdk/search.ts",
+      "url": "https://raw.githubusercontent.com/slackapi/node-slack-sdk/main/packages/web-api/src/types/request/search.ts",
+      "upstreamSha256": "c9892be657d8db69c82a858efb08f5756bc92121d3cf545b3730d7957bd74bfd",
+      "sha256": "c9892be657d8db69c82a858efb08f5756bc92121d3cf545b3730d7957bd74bfd",
+      "bytes": 1604
+    },
+    {
+      "path": "sdk/stars.ts",
+      "url": "https://raw.githubusercontent.com/slackapi/node-slack-sdk/main/packages/web-api/src/types/request/stars.ts",
+      "upstreamSha256": "9b4085a12840d1a8d16105d59405d1238bcfa8c44351afd1beb2abc51de352f7",
+      "sha256": "9b4085a12840d1a8d16105d59405d1238bcfa8c44351afd1beb2abc51de352f7",
+      "bytes": 857
+    },
+    {
+      "path": "sdk/team.ts",
+      "url": "https://raw.githubusercontent.com/slackapi/node-slack-sdk/main/packages/web-api/src/types/request/team.ts",
+      "upstreamSha256": "c087bc914fd62ef09a3c932c259fcd74fa7005c4eb4531fc69d8a9978fcc4e44",
+      "sha256": "c087bc914fd62ef09a3c932c259fcd74fa7005c4eb4531fc69d8a9978fcc4e44",
+      "bytes": 4030
+    },
+    {
+      "path": "sdk/usergroups.ts",
+      "url": "https://raw.githubusercontent.com/slackapi/node-slack-sdk/main/packages/web-api/src/types/request/usergroups.ts",
+      "upstreamSha256": "abffbe3c2635dbbfd0360c5f069b66a607789ed8c01794112447a1f87735c8af",
+      "sha256": "abffbe3c2635dbbfd0360c5f069b66a607789ed8c01794112447a1f87735c8af",
+      "bytes": 2934
+    },
+    {
+      "path": "sdk/users.ts",
+      "url": "https://raw.githubusercontent.com/slackapi/node-slack-sdk/main/packages/web-api/src/types/request/users.ts",
+      "upstreamSha256": "8c7a754e82d8bb6444972ffaa91733b02f2fd69a6021737e662b2a185d75604b",
+      "sha256": "8c7a754e82d8bb6444972ffaa91733b02f2fd69a6021737e662b2a185d75604b",
+      "bytes": 4543
     }
   ]
 }

@@ -11,6 +11,7 @@ import type { Snapshot } from '../../core/snapshot.ts'
 import { inferSchema } from '../../core/infer.ts'
 import { pascalCase } from '../../core/emit.ts'
 import { parseDocsPage, parseSourceUrl } from './docs.ts'
+import { crossCheckArguments, parseSdkTypes } from './sdkTypes.ts'
 
 /** One method's inputs within the snapshot. */
 interface SnapshotEntry {
@@ -40,12 +41,13 @@ export async function extractApiModel(config: ForgeConfig, snapshot: Snapshot): 
     )
   }
 
+  const sdk = await readSdkTypes(snapshot)
   const operations: Operation[] = []
   for (const entry of entries) {
     if (!configured.has(entry.method.toLowerCase())) {
       continue
     }
-    operations.push(await buildOperation(entry, config, snapshot))
+    operations.push(await buildOperation(entry, config, snapshot, sdk))
   }
 
   return {
@@ -83,10 +85,20 @@ function indexSnapshot(snapshot: Snapshot): SnapshotEntry[] {
   })
 }
 
+/** The SDK's request types, or an empty map when none were snapshotted. */
+async function readSdkTypes(snapshot: Snapshot): Promise<Map<string, Set<string>>> {
+  const files = new Map<string, string>()
+  for (const input of snapshot.list('sdk/')) {
+    files.set(input.path.slice('sdk/'.length), await snapshot.readText(input.path))
+  }
+  return files.size === 0 ? new Map() : parseSdkTypes(files)
+}
+
 async function buildOperation(
   entry: SnapshotEntry,
   config: ForgeConfig,
   snapshot: Snapshot,
+  sdk: ReadonlyMap<string, Set<string>>,
 ): Promise<Operation> {
   const markdown = await snapshot.readText(entry.docsPath)
   const facts = parseDocsPage(markdown, config.serverUrl)
@@ -109,6 +121,8 @@ async function buildOperation(
   } else {
     response = nameRowComponents(inferSchema(await snapshot.readJson(entry.samplePath)))
   }
+
+  warnings.push(...crossCheckArguments(facts.method, facts.documentedArguments, sdk))
 
   const { group, leaf } = splitMethod(facts.method)
   const docsUrl = parseSourceUrl(markdown)

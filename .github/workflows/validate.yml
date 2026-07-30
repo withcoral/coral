@@ -42,6 +42,7 @@ jobs:
       desktop-checks: ${{ steps.filter.outputs.desktop-checks }}
       proto-lint: ${{ steps.filter.outputs.proto-lint }}
       source-lint: ${{ steps.filter.outputs.source-lint }}
+      slack-spec-freshness: ${{ steps.filter.outputs.slack-spec-freshness }}
       docs-freshness: ${{ steps.filter.outputs.docs-freshness }}
       schema-freshness: ${{ steps.filter.outputs.schema-freshness }}
       license-check: ${{ steps.filter.outputs.license-check }}
@@ -118,6 +119,13 @@ jobs:
               - 'Makefile'
               - 'sources/**/*.yaml'
               - 'sources/**/*.yml'
+            slack-spec-freshness:
+              - '.github/workflows/validate.yml'
+              - 'Makefile'
+              - 'tools/openapi-forge/**'
+              - 'sources/v4/slack/**'
+              - 'xtask/src/v4_preview.rs'
+              - 'crates/coral-spec/**'
             docs-freshness:
               - '.github/workflows/validate.yml'
               - 'Makefile'
@@ -599,6 +607,39 @@ jobs:
 
       - name: Run make lint-sources
         run: make lint-sources
+
+  slack-spec-freshness:
+    name: Slack descriptor freshness check
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    needs: changes
+    if: ${{ needs.changes.outputs.slack-spec-freshness == 'true' }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          shared-key: coral-slack-spec-${{ runner.os }}
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Set up Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: tools/openapi-forge/.node-version
+          package-manager-cache: false
+
+      # Rebuilds the descriptor from the committed snapshot and fails if it
+      # differs from what is checked in. The build never touches the network,
+      # so this is a pure freshness check: upstream changes only arrive through
+      # `make slack-spec-fetch`, as a reviewable snapshot diff.
+      - name: Run make slack-spec-check
+        run: make slack-spec-check
 
   docs-freshness:
     name: Docs freshness check

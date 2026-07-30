@@ -25,7 +25,11 @@ import {
   joinIndexes,
   parseMethodIndex,
   parseSampleIndex,
+  parseSdkIndex,
   SAMPLE_INDEX_URL,
+  SDK_INDEX_URL,
+  sdkFilesFor,
+  sdkUrlFor,
   selectScope,
   SITEMAP_URL,
   type DiscoveredMethod,
@@ -171,6 +175,17 @@ async function fetchSnapshot(): Promise<void> {
     sampleBytes += sample.length
     prunedBytes += pruned.length
     writer.add(samplePath(method), method.sampleUrl, sample, pruned)
+  }
+
+  const sdkFiles = sdkFilesFor(config.methods, parseSdkIndex(await fetchText(SDK_INDEX_URL)))
+  log(`downloading ${sdkFiles.length} @slack/web-api type files`)
+  const sdkBodies = await fetchAllBytes(sdkFiles.map((file) => sdkUrlFor(file)))
+  for (const file of sdkFiles) {
+    const body = sdkBodies.get(sdkUrlFor(file))
+    if (body === undefined) {
+      throw new Error(`no response for ${sdkUrlFor(file)}`)
+    }
+    writer.add(`sdk/${file}`, sdkUrlFor(file), body, new TextDecoder().decode(body))
   }
 
   const manifest = await writer.commit(new Date().toISOString())

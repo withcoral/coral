@@ -22,6 +22,47 @@ export const SAMPLE_INDEX_URL =
 export const SAMPLE_RAW_BASE =
   'https://raw.githubusercontent.com/slackapi/java-slack-sdk/main/json-logs/samples/api'
 
+/**
+ * `@slack/web-api`'s hand-maintained request types, used to cross-check the
+ * arguments read off the reference pages.
+ */
+export const SDK_INDEX_URL =
+  'https://api.github.com/repos/slackapi/node-slack-sdk/contents/packages/web-api/src/types/request?ref=main'
+export const SDK_RAW_BASE =
+  'https://raw.githubusercontent.com/slackapi/node-slack-sdk/main/packages/web-api/src/types/request'
+
+export function sdkUrlFor(file: string): string {
+  return `${SDK_RAW_BASE}/${file}`
+}
+
+/**
+ * SDK files worth fetching: the families in scope plus `common.ts`, which
+ * holds the mixins every request interface composes.
+ */
+export function sdkFilesFor(methods: readonly string[], available: readonly string[]): string[] {
+  const families = new Set(methods.map((method) => method.split('.')[0]?.toLowerCase()))
+  const wanted = new Set(['common.ts'])
+  for (const file of available) {
+    if (families.has(file.replace(/\.ts$/, '').toLowerCase())) {
+      wanted.add(file)
+    }
+  }
+  return [...wanted].toSorted((left, right) => left.localeCompare(right))
+}
+
+/** TypeScript filenames from a GitHub contents listing. */
+export function parseSdkIndex(listing: string): string[] {
+  const entries = JSON.parse(listing) as { name?: unknown; type?: unknown }[]
+  if (!Array.isArray(entries)) {
+    throw new Error('SDK index is not a GitHub contents listing')
+  }
+  return entries
+    .filter((entry) => entry.type === 'file' && typeof entry.name === 'string')
+    .map((entry) => String(entry.name))
+    .filter((name) => name.endsWith('.ts'))
+    .toSorted((left, right) => left.localeCompare(right))
+}
+
 const METHOD_PAGE = /https:\/\/docs\.slack\.dev\/reference\/methods\/([a-z0-9._]+)\.md/g
 
 /** One discovered method and the upstream inputs that describe it. */

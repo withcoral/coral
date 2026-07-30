@@ -40,6 +40,12 @@ export interface DocsFacts {
   /** The tier label Slack publishes, e.g. `Tier 2: 20+ per minute`. */
   rateLimitTier?: string
   parameters: Parameter[]
+  /**
+   * Every argument the page documents, including ones omitted from
+   * {@link parameters}. Comparing against this is what keeps a deliberate
+   * omission from reading as a documentation gap.
+   */
+  documentedArguments: string[]
   warnings: string[]
 }
 
@@ -84,7 +90,7 @@ export function parseDocsPage(markdown: string, serverUrl: string): DocsFacts {
   const method = path.replace(/^\//, '')
 
   const warnings: string[] = []
-  const { parameters, warnings: argumentWarnings } = parseArguments(markdown)
+  const { parameters, documentedArguments, warnings: argumentWarnings } = parseArguments(markdown)
   warnings.push(...argumentWarnings)
 
   const rateLimitTier = RATE_LIMIT.exec(markdown)?.[1]
@@ -96,6 +102,7 @@ export function parseDocsPage(markdown: string, serverUrl: string): DocsFacts {
     scopes: parseScopes(markdown),
     ...(rateLimitTier === undefined ? {} : { rateLimitTier }),
     parameters,
+    documentedArguments,
     warnings,
   }
 }
@@ -133,12 +140,17 @@ function scopeNames(text: string): string[] {
   return [...names].toSorted((left, right) => left.localeCompare(right))
 }
 
-function parseArguments(markdown: string): { parameters: Parameter[]; warnings: string[] } {
+function parseArguments(markdown: string): {
+  parameters: Parameter[]
+  documentedArguments: string[]
+  warnings: string[]
+} {
   const section = sliceBetween(markdown, '## Arguments', '\n## ')
   const parameters: Parameter[] = []
+  const documentedArguments: string[] = []
   const warnings: string[] = []
   if (section === undefined) {
-    return { parameters, warnings }
+    return { parameters, documentedArguments, warnings }
   }
 
   // Requiredness is stated on each argument heading, so the Required/Optional
@@ -154,6 +166,7 @@ function parseArguments(markdown: string): { parameters: Parameter[]; warnings: 
     if (name === AUTH_PARAMETER) {
       continue
     }
+    documentedArguments.push(name)
 
     const start = (heading.index ?? 0) + heading[0].length
     const end = headings[index + 1]?.index ?? section.length
@@ -182,6 +195,7 @@ function parseArguments(markdown: string): { parameters: Parameter[]; warnings: 
 
   return {
     parameters: parameters.toSorted((left, right) => left.name.localeCompare(right.name)),
+    documentedArguments: documentedArguments.toSorted((left, right) => left.localeCompare(right)),
     warnings,
   }
 }

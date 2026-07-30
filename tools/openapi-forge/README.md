@@ -20,7 +20,12 @@ discover → extract (per-API adapters) → ApiModel → emit OpenAPI 3.0.3 → 
 
 - **discover** — enumerate the provider's operations from an authoritative index.
 - **extract** — read each operation's facts from the best machine-readable
-  upstream source available. Adapter-specific.
+  upstream source available. Adapter-specific. For Slack that means three
+  sources, because no single one has everything: the reference pages state the
+  HTTP verb, arguments, requiredness and prose; the response samples recorded
+  in `slackapi/java-slack-sdk` are the only description of response shapes; and
+  `@slack/web-api`'s request types are a second opinion that catches pages
+  which have drifted.
 - **`ApiModel`** — the vendor-neutral intermediate in `src/core/model.ts`. This
   is the hinge: adapters produce it, the emitter consumes it, and neither knows
   about the other.
@@ -49,19 +54,22 @@ test/
 
 ## Usage
 
+From the repository root:
+
+```bash
+make slack-spec-fetch   # refresh the pinned snapshot from upstream
+make slack-spec         # regenerate the descriptor and its catalog preview
+make slack-spec-check   # fail if either is out of date (what CI runs)
+```
+
+Or directly:
+
 ```bash
 npm ci
-
-# Refresh the pinned upstream inputs. The only command that uses the network.
 npm run forge -- fetch --api slack
-
-# Regenerate the descriptor from the committed snapshot. Deterministic.
 npm run forge -- build --api slack
-
-# Fail if the committed descriptor is out of date.
 npm run forge -- build --api slack --check
-
-npm run check   # format, lint, typecheck, test
+npm run check           # format, lint, typecheck, test
 ```
 
 `fetch` and `build` are separate on purpose. Builds read only the committed
