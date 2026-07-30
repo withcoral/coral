@@ -724,4 +724,22 @@ mod tests {
 
         assert!(row_path(&schema, false).is_empty());
     }
+
+    /// Declaring `properties` is not a claim to be an object. In JSON Schema
+    /// `properties` constrains an instance only if it happens to be one, so
+    /// `{properties: {...}}` validates a string quite happily — treating it as
+    /// an envelope would promote a shape the author never asserted.
+    ///
+    /// Deliberate and load-bearing: the sole-array fallback below would make
+    /// `warnings` the whole relation, discarding the declared resource.
+    #[test]
+    fn refuses_a_response_that_declares_properties_without_a_type() {
+        let schema = json!({
+            "properties": {
+                "warnings": {"type": "array", "items": {"type": "string"}},
+            },
+        });
+
+        assert!(row_path(&schema, false).is_empty());
+    }
 }

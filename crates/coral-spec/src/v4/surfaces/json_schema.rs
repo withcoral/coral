@@ -358,12 +358,19 @@ pub(crate) fn merged_all_of_object_view<'a>(
         return None;
     }
 
-    // An explicit `type: object` on any branch settles it. Failing that, a
-    // schema that declares no type at all but does declare properties is an
-    // object by convention, which is how JSON Schema is usually written.
-    let object_like = view.declares_type("object")
-        || (view.declared_types.is_empty() && !view.properties.is_empty());
-    object_like.then_some(view)
+    // Some branch has to declare `type: object`. Declaring `properties` is not
+    // enough on its own: in JSON Schema `properties` constrains an instance
+    // only if it happens to be an object, and asserts nothing about whether it
+    // is one — `{properties: {...}}` validates a string quite happily. Reading
+    // that constraint as an assertion would promote schemas the author never
+    // said were objects, and the expensive failure of this walk is a *wrong*
+    // envelope, which silently discards the declared resource.
+    //
+    // Nothing in the ingested catalog would gain from the looser rule: every
+    // typeless response root across the six v4 sources is `allOf`, `anyOf`, or
+    // `oneOf`, never a bare property bag. Revisit if a real spec turns up where
+    // it would help.
+    view.declares_type("object").then_some(view)
 }
 
 /// Walks the schema and its `allOf` members, accumulating types and properties.
