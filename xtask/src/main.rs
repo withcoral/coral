@@ -18,6 +18,7 @@
 //!   - `openapi-hydrate` produces a self-contained JSON `OpenAPI` descriptor.
 //!   - `v4-metadata-report` reports inferred row paths and pagination contracts
 //!     for the v4 source catalog, for diffing across inference changes.
+//!   - `v4-preview` renders the SQL catalog a DSL v4 manifest would produce.
 
 #![allow(
     clippy::print_stderr,
@@ -45,6 +46,7 @@ mod release;
 mod schemas;
 mod skills;
 mod sources;
+mod v4_preview;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -78,6 +80,8 @@ enum Command {
     OpenapiHydrate(openapi::HydrateArgs),
     /// Report inferred row paths and pagination contracts for v4 sources.
     V4MetadataReport(metadata_report::Args),
+    /// Render the SQL catalog a DSL v4 manifest would produce.
+    V4Preview(v4_preview::PreviewArgs),
 }
 
 #[derive(Debug, clap::Args)]
@@ -131,5 +135,6 @@ fn run(command: &Command) -> Result<bool> {
         Command::ReleaseDesktopMacosPackage(args) => release::desktop_macos_package(args),
         Command::OpenapiHydrate(args) => openapi::hydrate(args),
         Command::V4MetadataReport(args) => metadata_report::run(args),
+        Command::V4Preview(args) => v4_preview::preview(args),
     }
 }
