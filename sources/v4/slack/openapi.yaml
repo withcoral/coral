@@ -59,7 +59,7 @@ paths:
           in: query
           required: false
           schema:
-            type: number
+            type: integer
             default: 100
           description: The maximum number of items to return. Fewer than the requested number of items may be returned, even if the end of the conversation history hasn't been reached. Maximum of 999.
           example: 20
@@ -304,7 +304,7 @@ paths:
           in: query
           required: false
           schema:
-            type: number
+            type: integer
             default: 100
           description: The maximum number of items to return. Fewer than the requested number of items may be returned, even if the end of the list hasn't been reached. Must be an integer under 1000.
           example: 20
@@ -378,7 +378,7 @@ paths:
           in: query
           required: false
           schema:
-            type: number
+            type: integer
             default: 100
           description: The maximum number of items to return. Fewer than the requested number of items may be returned, even if the end of the users list hasn't been reached.
           example: 20
@@ -455,7 +455,7 @@ paths:
           in: query
           required: false
           schema:
-            type: number
+            type: integer
             default: 1000
           description: The maximum number of items to return. Fewer than the requested number of items may be returned, even if the end of the users list hasn't been reached.
           example: 20
@@ -642,7 +642,7 @@ paths:
           in: query
           required: false
           schema:
-            type: number
+            type: integer
             default: 100
           description: The maximum number of items to return. Fewer than the requested number of items may be returned, even if the end of the list hasn't been reached. Must be an integer with a max value of 999.
           example: 20
@@ -912,7 +912,7 @@ paths:
           in: query
           required: false
           schema:
-            type: number
+            type: integer
           description: The maximum number of items to return. Fewer than the requested number of items may be returned, even if the end of the users list hasn't been reached. Providing no `limit` value will result in Slack attempting to deliver you the entire result set. If the collection is too large you may experience `limit_required` or HTTP 500 errors.
           example: 20
         - name: team_id

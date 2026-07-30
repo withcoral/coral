@@ -1,0 +1,21 @@
+# Hand-written corrections to the extracted Slack model.
+#
+# This is the only file here a human edits. Everything else under apis/slack is
+# fetched or generated, so regenerating never discards what is written below.
+#
+# Every entry must still match something. An override that applies to nothing
+# fails the build rather than being ignored: the reason an override exists is
+# that upstream was wrong, and once upstream is fixed or renamed, a dead
+# correction is indistinguishable from a live one.
+
+# Applied wherever the parameter appears.
+parameters:
+  limit:
+    type: integer
+    reason: >-
+      Slack's argument tables type `limit` as `number`, but it is an item count
+      and Slack rejects a fractional value. The docs contradict themselves on
+      this — `search.messages` types the equivalent `count` and `page` as
+      `integer` — so `number` here means "numeric", not "may be fractional".
+      Left uncorrected it becomes a Float64 column, and a page size expressed
+      as a float is wrong for every caller.

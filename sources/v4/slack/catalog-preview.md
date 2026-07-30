@@ -39,7 +39,7 @@ Inputs (7):
 | `include_all_metadata` | function arg | `include_all_metadata` | query | no | Boolean |  | Return all metadata associated with this message. |
 | `inclusive` | function arg | `inclusive` | query | no | Boolean |  | Include messages with `oldest` or `latest` timestamps in results. Ignored unless either timestamp is specified. |
 | `latest` | function arg | `latest` | query | no | Utf8 |  | Only messages before this Unix timestamp will be included in results. Default is the current time. |
-| `limit` | internal | `limit` | query | no | Float64 | `100` | The maximum number of items to return. Fewer than the requested number of items may be returned, even if the end of the conversation history hasn't been reached. Maximum of 999. |
+| `limit` | internal | `limit` | query | no | Int64 | `100` | The maximum number of items to return. Fewer than the requested number of items may be returned, even if the end of the conversation history hasn't been reached. Maximum of 999. |
 | `oldest` | function arg | `oldest` | query | no | Utf8 | `0` | Only messages after this Unix timestamp will be included in results. |
 
 Columns (34):
@@ -133,7 +133,7 @@ Inputs (5):
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `cursor` | internal | `cursor` | query | no | Utf8 |  | Paginate through collections of data by setting the `cursor` parameter to a `next_cursor` attribute returned by a previous request's `response_metadata`. Default value fetches the first "page" of the collection. See pagination for more detail. |
 | `exclude_archived` | filter | `exclude_archived` | query | no | Boolean | `false` | Set to `true` to exclude archived channels from the list. |
-| `limit` | internal | `limit` | query | no | Float64 | `100` | The maximum number of items to return. Fewer than the requested number of items may be returned, even if the end of the list hasn't been reached. Must be an integer under 1000. |
+| `limit` | internal | `limit` | query | no | Int64 | `100` | The maximum number of items to return. Fewer than the requested number of items may be returned, even if the end of the list hasn't been reached. Must be an integer under 1000. |
 | `team_id` | filter | `team_id` | query | no | Utf8 |  | encoded team id to list channels in, required if token belongs to org-wide app |
 | `types` | filter | `types` | query | no | Utf8 | `public_channel` | Mix and match channel types by providing a comma-separated list of any combination of `public_channel`, `private_channel`, `mpim`, `im` |
 
@@ -200,7 +200,7 @@ Inputs (3):
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `channel` | function arg | `channel` | query | yes | Utf8 |  | ID of the conversation to retrieve members for |
 | `cursor` | internal | `cursor` | query | no | Utf8 |  | Paginate through collections of data by setting the `cursor` parameter to a `next_cursor` attribute returned by a previous request's `response_metadata`. Default value fetches the first "page" of the collection. See pagination for more detail. |
-| `limit` | internal | `limit` | query | no | Float64 | `100` | The maximum number of items to return. Fewer than the requested number of items may be returned, even if the end of the users list hasn't been reached. |
+| `limit` | internal | `limit` | query | no | Int64 | `100` | The maximum number of items to return. Fewer than the requested number of items may be returned, even if the end of the users list hasn't been reached. |
 
 Columns (1):
 
@@ -232,7 +232,7 @@ Inputs (8):
 | `include_all_metadata` | function arg | `include_all_metadata` | query | no | Boolean |  | Return all metadata associated with this message. |
 | `inclusive` | function arg | `inclusive` | query | no | Boolean |  | Include messages with `oldest` or `latest` timestamps in results. Ignored unless either timestamp is specified. |
 | `latest` | function arg | `latest` | query | no | Utf8 | `now` | Only messages before this Unix timestamp will be included in results. |
-| `limit` | internal | `limit` | query | no | Float64 | `1000` | The maximum number of items to return. Fewer than the requested number of items may be returned, even if the end of the users list hasn't been reached. |
+| `limit` | internal | `limit` | query | no | Int64 | `1000` | The maximum number of items to return. Fewer than the requested number of items may be returned, even if the end of the users list hasn't been reached. |
 | `oldest` | function arg | `oldest` | query | no | Utf8 | `0` | Only messages after this Unix timestamp will be included in results. |
 | `ts` | function arg | `ts` | query | yes | Utf8 |  | Unique identifier of either a thread’s parent message or a message in the thread. `ts` must be the timestamp of an existing message with 0 or more replies. If there are no replies then just the single message referenced by `ts` will return - it is just an ordinary, unthreaded message. |
 
@@ -325,7 +325,7 @@ Inputs (6):
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `cursor` | internal | `cursor` | query | no | Utf8 |  | Paginate through collections of data by setting the `cursor` parameter to a `next_cursor` attribute returned by a previous request's `response_metadata`. Default value fetches the first "page" of the collection. See pagination for more detail. |
 | `exclude_archived` | filter | `exclude_archived` | query | no | Boolean | `false` | Set to `true` to exclude archived channels from the list |
-| `limit` | internal | `limit` | query | no | Float64 | `100` | The maximum number of items to return. Fewer than the requested number of items may be returned, even if the end of the list hasn't been reached. Must be an integer with a max value of 999. |
+| `limit` | internal | `limit` | query | no | Int64 | `100` | The maximum number of items to return. Fewer than the requested number of items may be returned, even if the end of the list hasn't been reached. Must be an integer with a max value of 999. |
 | `team_id` | filter | `team_id` | query | no | Utf8 |  | encoded team id to list conversations in, required if org token is used |
 | `types` | filter | `types` | query | no | Utf8 | `public_channel` | Mix and match channel types by providing a comma-separated list of any combination of `public_channel`, `private_channel`, `mpim`, `im` |
 | `user` | filter | `user` | query | no | Utf8 |  | Browse conversations by a specific user ID's membership. Non-public channels are restricted to those where the calling user shares membership. |
@@ -425,7 +425,7 @@ Inputs (4):
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `cursor` | internal | `cursor` | query | no | Utf8 |  | Paginate through collections of data by setting the `cursor` parameter to a `next_cursor` attribute returned by a previous request's `response_metadata`. Default value fetches the first "page" of the collection. See pagination for more detail. |
 | `include_locale` | filter | `include_locale` | query | no | Boolean |  | Set this to `true` to receive the locale for users. Defaults to `false` |
-| `limit` | internal | `limit` | query | no | Float64 |  | The maximum number of items to return. Fewer than the requested number of items may be returned, even if the end of the users list hasn't been reached. Providing no `limit` value will result in Slack attempting to deliver you the entire result set. If the collection is too large you may experience `limit_required` or HTTP 500 errors. |
+| `limit` | internal | `limit` | query | no | Int64 |  | The maximum number of items to return. Fewer than the requested number of items may be returned, even if the end of the users list hasn't been reached. Providing no `limit` value will result in Slack attempting to deliver you the entire result set. If the collection is too large you may experience `limit_required` or HTTP 500 errors. |
 | `team_id` | filter | `team_id` | query | no | Utf8 |  | encoded team id to list users in, required if org token is used |
 
 Columns (27):

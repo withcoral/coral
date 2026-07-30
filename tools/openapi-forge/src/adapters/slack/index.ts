@@ -15,7 +15,9 @@ import type { ApiModel } from '../../core/model.ts'
 import { collectWarnings } from '../../core/model.ts'
 import { emitOpenApi } from '../../core/emit.ts'
 import { fetchAllBytes, fetchText } from '../../core/http.ts'
+import type { ForgeConfig } from '../../core/config.ts'
 import { loadConfig } from '../../core/config.ts'
+import { applyOverlay, loadOverlay } from '../../core/overlay.ts'
 import { pruneSample } from '../../core/prune.ts'
 import { Snapshot, SnapshotWriter } from '../../core/snapshot.ts'
 import { extractApiModel } from './extract.ts'
@@ -37,8 +39,20 @@ export const SLACK_ADAPTER: Adapter = {
 }
 
 async function extractFromSnapshot(): Promise<ApiModel> {
-  const config = await loadConfig('slack')
-  return extractApiModel(config, await Snapshot.open(config.snapshotDir))
+  return loadModel(await loadConfig('slack'))
+}
+
+/**
+ * The snapshot read into a model, with hand-written corrections applied.
+ *
+ * The overlay lands here rather than at emission so that everything downstream
+ * — the descriptor, the tests, and anything that inspects the model — sees the
+ * same corrected picture.
+ */
+async function loadModel(config: ForgeConfig): Promise<ApiModel> {
+  const snapshot = await Snapshot.open(config.snapshotDir)
+  const model = await extractApiModel(config, snapshot)
+  return applyOverlay(model, await loadOverlay(config.overlayPath))
 }
 
 /**
@@ -50,7 +64,7 @@ async function extractFromSnapshot(): Promise<ApiModel> {
 async function buildDescriptor(options: BuildOptions): Promise<boolean> {
   const config = await loadConfig('slack')
   const snapshot = await Snapshot.open(config.snapshotDir)
-  const model = await extractApiModel(config, snapshot)
+  const model = await loadModel(config)
 
   const warnings = collectWarnings(model)
   for (const warning of warnings) {
