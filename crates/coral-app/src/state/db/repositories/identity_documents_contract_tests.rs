@@ -4,7 +4,7 @@ use super::identity_documents::IdentityDocumentRecord;
 use crate::bootstrap::AppError;
 use crate::encrypted_document::EncryptedEnvelopeDocument;
 use crate::identities::model::{IdentityName, IdentityOwner, IdentitySpecReference};
-use crate::identity::UserPrincipal;
+use crate::identity::{Principal, PrincipalKind};
 use crate::state::db::{CoralDb, CoralTx, DbRepos, IdentitySpecKey, ResolvedDatabaseConfig};
 use crate::workspaces::WorkspaceName;
 
@@ -26,7 +26,7 @@ async fn assert_identity_document_repository_contract(db: &CoralDb) {
     let workspace = parsed_workspace(&format!("document{suffix}"));
     let other_workspace = parsed_workspace(&format!("documentb{suffix}"));
     let user = IdentityOwner::for_user(
-        UserPrincipal::for_user(workspace.as_str()).expect("matching user principal"),
+        Principal::parse(workspace.as_str(), PrincipalKind::User).expect("matching user principal"),
     );
     let workspace_owner = IdentityOwner::workspace(workspace.clone());
     let other_workspace_owner = IdentityOwner::workspace(other_workspace.clone());
