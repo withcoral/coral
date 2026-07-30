@@ -102,12 +102,17 @@ export function inspectSourceDocument(document: string): {
       auth: inspectJsonAuth(json),
       description: stringValue(info?.description),
       format: 'openapi-json',
-      // OpenAPI defines an absent or empty `servers` block as one entry with a url
-      // of `/`, and a relative server url as relative to where the document is
-      // served. So that case, and only that case, gets a base URL derived from the
-      // document's own location. A declared entry that will not resolve points
+      // OpenAPI 3 defines an absent or empty `servers` block as one entry with a
+      // url of `/`, and a relative server url as relative to where the document
+      // is served. So that case, and only that case, gets a base URL derived from
+      // the document's own location. A declared entry that will not resolve points
       // somewhere we cannot infer, and is left for the user to fill in.
-      probePath: servers.length === 0 ? firstConcretePath(json) : '',
+      //
+      // Swagger 2 has no `servers` at all — it spells the base URL out in `host`,
+      // `basePath` and `schemes` — so an empty block there says nothing about
+      // where the API lives, and a derived origin would drop whatever `basePath`
+      // declared. Those documents are left for the user to fill in.
+      probePath: isOpenApi3(json) && servers.length === 0 ? firstConcretePath(json) : '',
       serverUrl: resolvedServerUrl(servers),
       title: stringValue(info?.title),
     }
@@ -441,6 +446,11 @@ function parseJsonObject(document: string): Record<string, unknown> | null {
 
 function hasOpenApiVersion(document: Record<string, unknown>): boolean {
   return typeof document.openapi === 'string' || typeof document.swagger === 'string'
+}
+
+/** `openapi` is OpenAPI 3's version key; a Swagger 2 document carries `swagger`. */
+function isOpenApi3(document: Record<string, unknown>): boolean {
+  return typeof document.openapi === 'string'
 }
 
 function objectValue(value: unknown): Record<string, unknown> | undefined {

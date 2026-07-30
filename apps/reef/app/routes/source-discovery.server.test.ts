@@ -283,6 +283,31 @@ components:
     ).resolves.toMatchObject({ serverUrl: '' })
   })
 
+  it('does not probe a Swagger 2 document, whose base URL is not in `servers`', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          basePath: '/v1',
+          host: 'api.status.example',
+          info: { title: 'Status API' },
+          paths: { '/data/divisions': {} },
+          schemes: ['https'],
+          swagger: '2.0',
+        }),
+        { status: 200 },
+      ),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(
+      loader({
+        request: discoverRequest('https://api.status.example/swagger/v1/swagger.json'),
+      } as Parameters<typeof loader>[0]),
+    ).resolves.toMatchObject({ serverUrl: '' })
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
   it('cancels the probe when the discovery request is aborted', async () => {
     const controller = new AbortController()
     const probeSignals: (AbortSignal | undefined)[] = []
