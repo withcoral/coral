@@ -54,12 +54,11 @@ impl PrincipalProvider for SessionPrincipalProvider {
             .validate_access_token(token, &accepted_audiences)
             .map_err(|_error| unauthenticated())?;
         Ok(
-            Principal::for_federated(&session.subject)
-                .with_access_token_attribution(
-                    session.token_id,
-                    session.audience,
-                    session.client_id,
-                ),
+            Principal::for_federated(&session.subject).with_access_token_attribution(
+                session.token_id,
+                session.audience,
+                session.client_id,
+            ),
         )
     }
 }
