@@ -157,7 +157,10 @@ mod tests {
         );
 
         for explicit in ["", "null"] {
-            let args = HashMap::from([("scope".to_string(), explicit.to_string())]);
+            let args = HashMap::from([(
+                "scope".to_string(),
+                serde_json::Value::String(explicit.to_string()),
+            )]);
             let context = RenderContext::new(&filters, &args, &state, &resolved_inputs);
             assert_eq!(
                 build_query_pairs(&request, &context).expect("query should render"),
