@@ -40,6 +40,7 @@ coral-spec.workspace = true
 
 [dev-dependencies]
 assert_cmd.workspace = true
+coral-app = { workspace = true, features = ["test-session-tokens"] }
 jsonwebtoken.workspace = true
 jsonschema.workspace = true
 regex.workspace = true

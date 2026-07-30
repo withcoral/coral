@@ -1,8 +1,6 @@
 use std::net::TcpListener;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
-use jsonwebtoken::jwk::{Jwk, ThumbprintHash};
-use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use ring::rand::SystemRandom;
 use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair};
 use rmcp::ServiceExt as _;
@@ -74,6 +72,19 @@ async fn assert_feedback_tool(endpoint: String) {
     client.cancel().await.expect("stop MCP client");
 }
 
+async fn assert_unauthorized(base: &str, authorization: &str) {
+    let rejected = reqwest::Client::new()
+        .post(format!("{base}/mcp"))
+        .header("accept", "application/json, text/event-stream")
+        .header("content-type", "application/json")
+        .header("authorization", authorization)
+        .body(INITIALIZE)
+        .send()
+        .await
+        .expect("MCP response");
+    assert_eq!(rejected.status(), reqwest::StatusCode::UNAUTHORIZED);
+}
+
 #[test]
 fn loopback_grpc_endpoint_maps_wildcards_and_rejects_public_addresses() {
     assert_eq!(
@@ -143,6 +154,10 @@ async fn companion_uses_supplied_mcp_options() {
     server.shutdown().await.expect("shutdown composite server");
 }
 
+/// The advertised protected-resource identifier and the minted token audience
+/// must be the same string, so this configures a `public_url` that
+/// canonicalization changes (an uppercase host) and mints against whatever the
+/// server advertises.
 #[tokio::test]
 async fn session_authenticated_companion_forwards_bearer() {
     let temp = TempDir::new().expect("temp dir");
@@ -159,7 +174,7 @@ enabled = false
 [server.mcp_http]
 enabled = true
 bind = '127.0.0.1:0'
-public_url = 'https://coral.example/mcp'
+public_url = 'https://CORAL.example/mcp'
 
 [auth.session]
 signing_key_file = 'session.key'
@@ -191,61 +206,59 @@ redirect_uri = 'https://auth.example/auth/oidc/callback'
         .await
         .expect("readiness response");
     assert_eq!(ready.status(), reqwest::StatusCode::NO_CONTENT);
-    let rejected = reqwest::Client::new()
-        .post(format!("{base}/mcp"))
-        .header("accept", "application/json, text/event-stream")
-        .header("content-type", "application/json")
-        .header("authorization", "Bearer wrong-token")
-        .body(INITIALIZE)
-        .send()
+    let advertised = reqwest::get(format!("{base}/.well-known/oauth-protected-resource/mcp"))
         .await
-        .expect("rejected request");
-    assert_eq!(rejected.status(), reqwest::StatusCode::UNAUTHORIZED);
+        .expect("metadata response")
+        .json::<serde_json::Value>()
+        .await
+        .expect("metadata document");
+    let resource = advertised
+        .get("resource")
+        .and_then(serde_json::Value::as_str)
+        .expect("advertised resource")
+        .to_string();
+    assert_eq!(resource, "https://coral.example/mcp");
 
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("current time")
-        .as_secs();
-    let encoding_key = EncodingKey::from_ec_der(signing_key.as_ref());
-    let key_id = Jwk::from_encoding_key(&encoding_key, Algorithm::ES256)
-        .expect("signing JWK")
-        .thumbprint(ThumbprintHash::SHA256);
-    let mut header = Header::new(Algorithm::ES256);
-    header.kid = Some(key_id);
-    header.typ = Some("at+jwt".to_string());
-    let token = |audience: &str, token_id: &str| {
-        encode(
-            &header,
-            &serde_json::json!({
-                "iss": "https://auth.example",
-                "aud": audience,
-                "sub": "alice",
-                "jti": token_id,
-                "client_id": "https://client.example/client.json",
-                "provider": "oidc",
-                "iat": now,
-                "nbf": now,
-                "exp": now + 300,
-            }),
-            &encoding_key,
+    assert_unauthorized(&base, "Bearer wrong-token").await;
+
+    let token = |audience: &str| {
+        coral_app::test_session_tokens::issue_access_token(
+            "https://auth.example",
+            signing_key.as_ref(),
+            Duration::from_mins(5),
+            "alice",
+            "https://client.example/client.json",
+            audience,
         )
         .expect("session token")
     };
-    let wrong_audience = token("https://other.example/mcp", "wrong-audience-token");
-    let rejected = reqwest::Client::new()
-        .post(format!("{base}/mcp"))
-        .header("accept", "application/json, text/event-stream")
-        .header("content-type", "application/json")
-        .header("authorization", format!("Bearer {wrong_audience}"))
-        .body(INITIALIZE)
-        .send()
-        .await
-        .expect("wrong-audience response");
-    assert_eq!(rejected.status(), reqwest::StatusCode::UNAUTHORIZED);
+    let wrong_audience = token("https://other.example/mcp");
+    assert_unauthorized(&base, &format!("Bearer {wrong_audience}")).await;
 
-    let token = token("https://coral.example/mcp", "valid-token");
+    let token = token(&resource);
     assert_catalog_tool(format!("{base}/mcp"), Some(&token)).await;
-    server.shutdown().await.expect("shutdown composite server");
+
+    // Readiness observes the backend, not just the port: stopping gRPC while MCP
+    // HTTP keeps serving must turn the authenticated probe unhealthy.
+    let RunningServer {
+        grpc,
+        mcp_http,
+        grpc_authentication_enabled: _,
+    } = server;
+    grpc.shutdown().await.expect("shutdown gRPC server");
+    let unready = reqwest::get(format!("{base}/readyz"))
+        .await
+        .expect("readiness response");
+    assert_eq!(
+        unready.status(),
+        reqwest::StatusCode::SERVICE_UNAVAILABLE,
+        "an unreachable engine must not report ready"
+    );
+    mcp_http
+        .expect("MCP HTTP server")
+        .shutdown()
+        .await
+        .expect("shutdown MCP HTTP server");
 }
 
 #[tokio::test]
