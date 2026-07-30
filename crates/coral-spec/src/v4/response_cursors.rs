@@ -178,8 +178,16 @@ fn declares_only_string(schema: &Value) -> bool {
     match schema.get("type") {
         Some(Value::String(value)) => value == "string",
         Some(Value::Array(values)) => {
-            let mut permitted = values.iter().filter_map(Value::as_str);
-            let all_readable = permitted.all(|value| value == "string" || value == "null");
+            // Every member must be one of the two readable names, and a member
+            // that is not even a string counts against that. Filtering
+            // non-strings out first would discard the evidence: `["string", 1]`
+            // is not a JSON Schema type union, and reading it as one lets a
+            // malformed descriptor buy the mode. `json_schema_type_contains`
+            // still has to confirm one member *is* `string`, because `all` is
+            // vacuously true on `[]` and `["null"]` alone declares no URL.
+            let all_readable = values
+                .iter()
+                .all(|value| matches!(value.as_str(), Some("string" | "null")));
             all_readable && json_schema_type_contains(schema, "string")
         }
         _ => false,
@@ -385,6 +393,27 @@ mod tests {
 
         assert_eq!(find_declared(&no_string, &no_string, TOKENS), None);
         assert_eq!(find_untyped(&no_string, &no_string, TOKENS), None);
+
+        // A member that is not even a type name means the descriptor is
+        // malformed, not that it declared a string. Skipping it would let
+        // `["string", 1]` read as a clean string-only union and buy the mode.
+        let malformed = json!({
+            "type": "object",
+            "properties": {"next_cursor": {"type": ["string", 1]}},
+        });
+
+        assert_eq!(find_declared(&malformed, &malformed, TOKENS), None);
+
+        // `null` alone declares no URL, and an empty union declares nothing —
+        // neither is vacuously acceptable.
+        for values in [json!(["null"]), json!([])] {
+            let schema = json!({
+                "type": "object",
+                "properties": {"next_cursor": {"type": values}},
+            });
+
+            assert_eq!(find_declared(&schema, &schema, TOKENS), None);
+        }
     }
 
     #[test]
