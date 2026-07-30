@@ -482,7 +482,7 @@ mod tests {
         IdentitySpecId, IdentitySpecKey, IdentitySpecRecord, identity_spec_columns,
         validate_identity_spec_write,
     };
-    use crate::bootstrap::AppError;
+    use crate::bootstrap::{self, AppError};
     use crate::state::db::schema::IdentitySpecs;
     use crate::state::db::{CoralDb, CoralTx, DbError, DbRepos, ResolvedDatabaseConfig};
     use crate::workspaces::WorkspaceName;
@@ -765,7 +765,41 @@ mod tests {
     #[tokio::test]
     async fn upserts_preserve_creation_and_monotonic_update_time() {
         let (_temp, db) = open_sqlite().await;
-        let global = IdentitySpecKey::global("github").expect("global key");
+        assert_upserts_preserve_creation_and_monotonic_update_time(&db, "sqlite").await;
+    }
+
+    #[tokio::test]
+    async fn mutations_are_exact_and_transactional_against_sqlite() {
+        let (_temp, db) = open_sqlite().await;
+        assert_mutations_are_exact_and_transactional(&db, "sqlite").await;
+    }
+
+    /// Runs the identity-spec mutation contract against a live Postgres backend.
+    ///
+    /// `upsert` selects its arbiter index through `ON CONFLICT ... WHERE`, which
+    /// each backend resolves against its own partial-index inference rules, so the
+    /// two tests above cannot stand in for this coverage. CI selects this test by
+    /// the shared `repository_round_trips_against_postgres` name filter.
+    #[tokio::test]
+    #[ignore = "set CORAL_TEST_POSTGRES_URL to run the shared repository harness against Postgres"]
+    async fn identity_spec_repository_round_trips_against_postgres() {
+        let Some(url) = postgres_test_url() else {
+            return;
+        };
+        let db = CoralDb::open(ResolvedDatabaseConfig::Postgres { url })
+            .await
+            .expect("open postgres");
+        db.migrate().await.expect("migrate postgres");
+
+        assert_upserts_preserve_creation_and_monotonic_update_time(&db, &unique_suffix()).await;
+        assert_mutations_are_exact_and_transactional(&db, &unique_suffix()).await;
+    }
+
+    async fn assert_upserts_preserve_creation_and_monotonic_update_time(
+        db: &CoralDb,
+        suffix: &str,
+    ) {
+        let global = IdentitySpecKey::global(&format!("github_{suffix}")).expect("global key");
         let mut tx = db.begin().await.expect("begin mutation transaction");
         let (manifest, manifest_yaml) = valid_manifest(global.name(), "1.0.0");
         let inserted = tx
@@ -803,7 +837,7 @@ mod tests {
         );
         tx.commit().await.expect("commit mutation transaction");
 
-        let mut session = &db;
+        let mut session = db;
         let persisted = session
             .identity_specs()
             .get(&global)
@@ -813,11 +847,10 @@ mod tests {
         assert_eq!(persisted, stale_clock_update);
     }
 
-    #[tokio::test]
-    async fn mutations_are_exact_and_transactional_against_sqlite() {
-        let (_temp, db) = open_sqlite().await;
-        let (global, workspace_key) = seed_scoped_specs(&db).await;
-        let negative_timestamp = IdentitySpecKey::global("negative_timestamp").expect("key");
+    async fn assert_mutations_are_exact_and_transactional(db: &CoralDb, suffix: &str) {
+        let (global, workspace_key) = seed_scoped_specs(db, suffix).await;
+        let negative_timestamp =
+            IdentitySpecKey::global(&format!("negative_timestamp_{suffix}")).expect("key");
         let mut tx = db.begin().await.expect("begin validation transaction");
         assert!(matches!(
             upsert_spec(&mut tx, &negative_timestamp, "1.0.0", -1).await,
@@ -825,7 +858,7 @@ mod tests {
         ));
         tx.commit().await.expect("commit validation transaction");
 
-        let rolled_back = IdentitySpecKey::global("rolled_back").expect("key");
+        let rolled_back = IdentitySpecKey::global(&format!("rolled_back_{suffix}")).expect("key");
         let mut tx = db.begin().await.expect("begin rollback transaction");
         upsert_spec(&mut tx, &rolled_back, "1.0.0", 40)
             .await
@@ -838,9 +871,10 @@ mod tests {
         );
         tx.rollback().await.expect("rollback mutation transaction");
 
-        let missing_workspace = WorkspaceName::parse("missing_team").expect("workspace");
+        let missing_workspace =
+            WorkspaceName::parse(&format!("missing_team_{suffix}")).expect("workspace");
         let missing_workspace_key =
-            IdentitySpecKey::workspace(missing_workspace, "github").expect("key");
+            IdentitySpecKey::workspace(missing_workspace, global.name()).expect("key");
         let mut tx = db.begin().await.expect("begin foreign-key transaction");
         assert!(matches!(
             upsert_spec(&mut tx, &missing_workspace_key, "1.0.0", 50).await,
@@ -863,7 +897,7 @@ mod tests {
         );
         tx.commit().await.expect("commit exact delete");
 
-        let mut session = &db;
+        let mut session = db;
         let persisted_global = session
             .identity_specs()
             .get(&global)
@@ -883,11 +917,12 @@ mod tests {
         }
     }
 
-    async fn seed_scoped_specs(db: &CoralDb) -> (IdentitySpecKey, IdentitySpecKey) {
-        let workspace = WorkspaceName::parse("team").expect("workspace");
-        let global = IdentitySpecKey::global("github").expect("global key");
+    async fn seed_scoped_specs(db: &CoralDb, suffix: &str) -> (IdentitySpecKey, IdentitySpecKey) {
+        let workspace = WorkspaceName::parse(&format!("team_{suffix}")).expect("workspace");
+        let spec_name = format!("github_{suffix}");
+        let global = IdentitySpecKey::global(&spec_name).expect("global key");
         let workspace_key =
-            IdentitySpecKey::workspace(workspace.clone(), "github").expect("workspace key");
+            IdentitySpecKey::workspace(workspace.clone(), &spec_name).expect("workspace key");
         let mut tx = db.begin().await.expect("begin seed transaction");
         tx.workspaces()
             .ensure(workspace.as_str(), 1)
@@ -912,6 +947,17 @@ mod tests {
         .expect("open sqlite");
         db.migrate().await.expect("migrate sqlite");
         (temp, db)
+    }
+
+    fn postgres_test_url() -> Option<String> {
+        bootstrap::env_var("CORAL_TEST_POSTGRES_URL")
+            .expect("read CORAL_TEST_POSTGRES_URL")
+            .filter(|value| !value.is_empty())
+    }
+
+    /// Keeps every Postgres run isolated inside CI's single shared database.
+    fn unique_suffix() -> String {
+        Uuid::new_v4().simple().to_string()
     }
 
     async fn insert_spec(
