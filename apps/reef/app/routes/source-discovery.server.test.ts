@@ -2,6 +2,15 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { inspectSourceDocument, loader } from './source-discovery'
 
+const serverlessSpec = JSON.stringify({
+  info: { title: 'Lords Votes API' },
+  openapi: '3.0.1',
+  paths: { '/data/Divisions/groupedbyparty': {}, '/data/Divisions/{divisionId}': {} },
+})
+
+const discoverRequest = (url: string) =>
+  new Request(`http://reef.test/workspaces/default/sources/discover?url=${encodeURIComponent(url)}`)
+
 describe('source discovery', () => {
   afterEach(() => vi.unstubAllGlobals())
 
@@ -17,12 +26,15 @@ describe('source discovery', () => {
           info: { description: 'Weather observations and forecasts', title: 'Weather API' },
           openapi: '3.1.0',
           security: [{ bearerAuth: [] }],
+          servers: [{ url: 'https://weather.example/v1' }],
         }),
       ),
     ).toEqual({
       auth: { kind: 'bearer', label: 'Bearer token' },
       description: 'Weather observations and forecasts',
       format: 'openapi-json',
+      probePath: '',
+      serverUrl: 'https://weather.example/v1',
       title: 'Weather API',
     })
   })
@@ -35,6 +47,9 @@ info:
   description: >
     Weather observations
     and forecasts
+servers:
+  - url: https://weather.example/v1
+    description: Production
 paths: {}
 components:
   securitySchemes:
@@ -47,6 +62,8 @@ components:
       auth: { headerName: 'X-Api-Key', kind: 'header', label: 'Header X-Api-Key' },
       description: 'Weather observations and forecasts',
       format: 'openapi-yaml',
+      probePath: '',
+      serverUrl: 'https://weather.example/v1',
       title: 'Weather API',
     })
   })
@@ -56,8 +73,28 @@ components:
       auth: { kind: 'unknown', label: '' },
       description: '',
       format: 'unknown',
+      probePath: '',
+      serverUrl: '',
       title: '',
     })
+  })
+
+  it('resolves server URL variables from their declared defaults', () => {
+    expect(
+      inspectSourceDocument(
+        JSON.stringify({
+          info: { title: 'Region API' },
+          openapi: '3.1.0',
+          servers: [
+            { url: 'https://{region}.example.com/{version}', variables: { region: {} } },
+            {
+              url: 'https://{region}.example.com/{version}',
+              variables: { region: { default: 'eu' }, version: { default: 'v2' } },
+            },
+          ],
+        }),
+      ).serverUrl,
+    ).toBe('https://eu.example.com/v2')
   })
 
   it('maps OAuth security schemes to a bearer credential', () => {
@@ -97,6 +134,7 @@ components:
             info: { description: 'Status checks', title: '123 Status API' },
             openapi: '3.0.3',
             security: [],
+            servers: [{ url: 'https://status.example/api' }],
           }),
           { status: 200 },
         ),
@@ -111,9 +149,129 @@ components:
       description: 'Status checks',
       format: 'openapi-json',
       name: 'source_123_status_api',
+      serverUrl: 'https://status.example/api',
       status: 'success',
       url: 'https://status.example/openapi.json',
     })
+  })
+
+  it('resolves a relative server URL against the document location', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            info: { title: 'Status API' },
+            openapi: '3.0.3',
+            servers: [{ url: '/v1' }],
+          }),
+          { status: 200 },
+        ),
+      ),
+    )
+    const request = new Request(
+      'http://reef.test/workspaces/default/sources/discover?url=https%3A%2F%2Fstatus.example%2Fdocs%2Fopenapi.json',
+    )
+
+    await expect(loader({ request } as Parameters<typeof loader>[0])).resolves.toMatchObject({
+      serverUrl: 'https://status.example/v1',
+    })
+  })
+
+  it('derives the server URL from the fetch origin when a probed path is served', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(serverlessSpec, { status: 200 }))
+      .mockResolvedValueOnce(new Response('[]', { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(
+      loader({
+        request: discoverRequest('https://lordsvotes-api.parliament.uk/swagger/v1/swagger.json'),
+      } as Parameters<typeof loader>[0]),
+    ).resolves.toMatchObject({ serverUrl: 'https://lordsvotes-api.parliament.uk' })
+
+    expect(fetchMock.mock.calls[1][0].toString()).toBe(
+      'https://lordsvotes-api.parliament.uk/data/Divisions/groupedbyparty',
+    )
+  })
+
+  it('keeps a credentialed API when the probe asks for authentication', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValueOnce(new Response(serverlessSpec, { status: 200 }))
+        .mockResolvedValueOnce(new Response('', { status: 401 })),
+    )
+
+    await expect(
+      loader({
+        request: discoverRequest('https://lordsvotes-api.parliament.uk/swagger/v1/swagger.json'),
+      } as Parameters<typeof loader>[0]),
+    ).resolves.toMatchObject({ serverUrl: 'https://lordsvotes-api.parliament.uk' })
+  })
+
+  it('leaves the server URL empty when the probed path is not served', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValueOnce(new Response(serverlessSpec, { status: 200 }))
+        .mockResolvedValueOnce(new Response('', { status: 404 })),
+    )
+
+    await expect(
+      loader({
+        request: discoverRequest('https://raw.githubusercontent.com/org/repo/openapi.json'),
+      } as Parameters<typeof loader>[0]),
+    ).resolves.toMatchObject({ serverUrl: '' })
+  })
+
+  it('does not probe when a declared server URL cannot be resolved', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          info: { title: 'Region API' },
+          openapi: '3.0.3',
+          paths: { '/status': {} },
+          servers: [{ url: 'https://{region}.example.com' }],
+        }),
+        { status: 200 },
+      ),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(
+      loader({
+        request: discoverRequest('https://docs.example.com/openapi.json'),
+      } as Parameters<typeof loader>[0]),
+    ).resolves.toMatchObject({ serverUrl: '' })
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not probe when the document declares its own servers', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          info: { title: 'Status API' },
+          openapi: '3.0.3',
+          paths: { '/status': {} },
+          servers: [{ url: 'https://status.example/api' }],
+        }),
+        { status: 200 },
+      ),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(
+      loader({
+        request: discoverRequest('https://mirror.example/specs/status.json'),
+      } as Parameters<typeof loader>[0]),
+    ).resolves.toMatchObject({ serverUrl: 'https://status.example/api' })
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
   it('rejects non-HTTPS discovery URLs without fetching them', async () => {
@@ -143,6 +301,7 @@ components:
       format: 'mcp',
       inspectionError: 'The URL returned HTTP 405',
       name: 'mcp',
+      serverUrl: '',
       status: 'success',
       url: 'https://tools.example/mcp',
     })
@@ -162,6 +321,7 @@ components:
       description: '',
       format: 'mcp',
       name: 'sse',
+      serverUrl: '',
       status: 'success',
       url: 'https://tools.example/events/sse/?token=secret',
     })

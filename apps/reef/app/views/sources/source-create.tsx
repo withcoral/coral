@@ -34,6 +34,7 @@ interface Draft {
   description: string
   surfaceType: SurfaceType
   url: string
+  baseUrl: string
   auth: AuthChoice
   headerName: string
   oauthClientId: string
@@ -48,6 +49,7 @@ const EMPTY_DRAFT: Draft = {
   description: '',
   surfaceType: 'openapi',
   url: '',
+  baseUrl: '',
   auth: 'bearer',
   headerName: '',
   oauthClientId: '',
@@ -167,6 +169,7 @@ function SourceCreateDialogContent({
     setDraft((current) => ({
       ...current,
       ...(detectedAuth ? { auth: detectedAuth } : {}),
+      baseUrl: result.serverUrl || current.baseUrl,
       description: result.description || current.description,
       headerName: result.auth.headerName || current.headerName,
       name: result.name,
@@ -202,6 +205,7 @@ function SourceCreateDialogContent({
     if (step === 0) return draft.url.trim().startsWith('https://')
     if (step === 1) {
       if (!sourceNameIsValid(draft.name.trim())) return false
+      if (draft.surfaceType === 'openapi' && baseUrlValidationError(draft.baseUrl)) return false
       return true
     }
     if (draft.auth === 'header' && draft.headerName.trim().length === 0) return false
@@ -463,9 +467,13 @@ function DetailsStep({
 }) {
   const idName = useId()
   const idDescription = useId()
+  const idBaseUrl = useId()
   const [nameTouched, setNameTouched] = useState(false)
+  const [baseUrlTouched, setBaseUrlTouched] = useState(false)
   const name = draft.name.trim()
   const nameError = nameTouched ? sourceNameValidationError(name) : null
+  const mcp = draft.surfaceType === 'mcp'
+  const baseUrlError = !mcp && baseUrlTouched ? baseUrlValidationError(draft.baseUrl) : null
 
   return (
     <div className={styles.fieldGroup}>
@@ -502,6 +510,27 @@ function DetailsStep({
           value={draft.description}
           onChange={(value) => update({ description: value })}
           placeholder="What this source connects to"
+        />
+      </SourceField>
+      <SourceField
+        className={styles.fieldItem}
+        hint={
+          <Typography.BodySmall variant={baseUrlError ? 'error' : 'tertiary'}>
+            {mcp
+              ? 'MCP servers are reached at the source URL, so they have no separate base URL.'
+              : (baseUrlError ?? 'Requests are sent to this URL.')}
+          </Typography.BodySmall>
+        }
+        htmlFor={idBaseUrl}
+        label="Base URL"
+      >
+        <TextInput
+          disabled={mcp}
+          id={idBaseUrl}
+          value={draft.baseUrl}
+          onBlur={() => setBaseUrlTouched(true)}
+          onChange={(value) => update({ baseUrl: value })}
+          placeholder="https://api.example.com/v1"
         />
       </SourceField>
       <SourceField className={styles.fieldItem} label="Type">
@@ -736,6 +765,20 @@ function isHttpsUrl(value: string): boolean {
   }
 }
 
+/** Base URLs also allow http:// so sources can point at a local API. */
+function baseUrlValidationError(value: string): string | null {
+  const baseUrl = value.trim()
+  if (!baseUrl) return 'Enter the base URL requests are sent to.'
+  let protocol: string
+  try {
+    protocol = new URL(baseUrl).protocol
+  } catch {
+    return 'Enter a valid URL, including the scheme.'
+  }
+  if (protocol !== 'https:' && protocol !== 'http:') return 'Use an http:// or https:// URL.'
+  return null
+}
+
 function sourceNameValidationError(name: string): string | null {
   if (!name) return 'Enter a source name.'
   if (RESERVED_SOURCE_NAMES.has(name)) {
@@ -801,6 +844,8 @@ function buildManifestYaml(draft: Draft): string {
 
   if (draft.surfaceType === 'openapi') {
     lines.push('  type: openapi', `  url: ${s(url)}`)
+    // Omitted base_url leaves coral-app to derive it from the document's servers block.
+    if (draft.baseUrl.trim()) lines.push(`  base_url: ${s(draft.baseUrl.trim())}`)
     if (draft.auth !== 'none') {
       const bearerAuth = draft.auth === 'bearer' || draft.auth === 'oauthDevice'
       const headerName = bearerAuth ? 'Authorization' : draft.headerName.trim()

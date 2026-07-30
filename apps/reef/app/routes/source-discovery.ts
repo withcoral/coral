@@ -18,6 +18,7 @@ export type SourceDiscoveryData =
       format: SourceDocumentFormat
       inspectionError?: string
       name: string
+      serverUrl: string
       status: 'success'
       url: string
     }
@@ -55,13 +56,17 @@ export async function loader({ request }: Route.LoaderArgs): Promise<SourceDisco
         description: '',
         format: 'unknown',
         inspectionError: `The URL returned HTTP ${response.status}`,
+        serverUrl: '',
         title: '',
       })
     }
 
     const document = await responseTextWithinLimit(response)
     const metadata = inspectSourceDocument(document)
-    return discoveredSource(rawUrl, sourceUrl, metadata)
+    return discoveredSource(rawUrl, sourceUrl, {
+      ...metadata,
+      serverUrl: metadata.serverUrl || (await derivedServerUrl(sourceUrl, metadata.probePath)),
+    })
   } catch (error) {
     if (request.signal.aborted) throw error
     let inspectionError = 'The source URL could not be loaded'
@@ -72,6 +77,7 @@ export async function loader({ request }: Route.LoaderArgs): Promise<SourceDisco
       description: '',
       format: 'unknown',
       inspectionError,
+      serverUrl: '',
       title: '',
     })
   }
@@ -81,23 +87,74 @@ export function inspectSourceDocument(document: string): {
   auth: SourceDetectedAuth
   description: string
   format: SourceDocumentFormat
+  probePath: string
+  serverUrl: string
   title: string
 } {
   const json = parseJsonObject(document)
   if (json && hasOpenApiVersion(json)) {
     const info = objectValue(json.info)
+    const servers = Array.isArray(json.servers) ? json.servers : []
     return {
       auth: inspectJsonAuth(json),
       description: stringValue(info?.description),
       format: 'openapi-json',
+      // OpenAPI defines an absent or empty `servers` block as one entry with a url
+      // of `/`, and a relative server url as relative to where the document is
+      // served. So that case, and only that case, gets a base URL derived from the
+      // document's own location. A declared entry that will not resolve points
+      // somewhere we cannot infer, and is left for the user to fill in.
+      probePath: servers.length === 0 ? firstConcretePath(json) : '',
+      serverUrl: resolvedServerUrl(servers),
       title: stringValue(info?.title),
     }
   }
 
+  // The YAML scanner is line-based, so a YAML document declaring no servers
+  // leaves the field empty for the user to fill rather than being probed.
   const yaml = inspectOpenApiYaml(document)
-  if (yaml) return { ...yaml, format: 'openapi-yaml' }
+  if (yaml) return { ...yaml, format: 'openapi-yaml', probePath: '' }
 
-  return { auth: unknownAuth(), description: '', format: 'unknown', title: '' }
+  return {
+    auth: unknownAuth(),
+    description: '',
+    format: 'unknown',
+    probePath: '',
+    serverUrl: '',
+    title: '',
+  }
+}
+
+/**
+ * An operation path that can be requested as written, for checking whether a host
+ * serves this API. A `{placeholder}` left in the URL would 404 on its own merits.
+ */
+function firstConcretePath(document: Record<string, unknown>): string {
+  const paths = objectValue(document.paths)
+  return Object.keys(paths ?? {}).find((path) => path.startsWith('/') && !path.includes('{')) ?? ''
+}
+
+/**
+ * First `servers[]` entry whose URL resolves, mirroring coral-spec's
+ * `openapi_server_url`: `{name}` placeholders come from `variables.<name>.default`,
+ * and an entry with an unresolvable placeholder is skipped rather than used raw.
+ */
+function resolvedServerUrl(servers: unknown[]): string {
+  for (const entry of servers) {
+    const server = objectValue(entry)
+    const url = stringValue(server?.url)
+    if (!url) continue
+    const resolved = resolveServerUrl(url, objectValue(server?.variables))
+    if (resolved) return resolved
+  }
+  return ''
+}
+
+function resolveServerUrl(url: string, variables: Record<string, unknown> | undefined): string {
+  const resolved = url.replace(/\{([^{}]*)\}/g, (placeholder, name: string) => {
+    return stringValue(objectValue(variables?.[name])?.default) || placeholder
+  })
+  return resolved.includes('{') ? '' : resolved
 }
 
 function inspectJsonAuth(document: Record<string, unknown>): SourceDetectedAuth {
@@ -217,6 +274,7 @@ async function responseTextWithinLimit(response: Response): Promise<string> {
 function inspectOpenApiYaml(document: string): {
   auth: SourceDetectedAuth
   description: string
+  serverUrl: string
   title: string
 } | null {
   const lines = document.replace(/^\uFEFF/, '').split(/\r?\n/)
@@ -228,9 +286,10 @@ function inspectOpenApiYaml(document: string): {
   if (!hasVersion) return null
 
   const infoIndex = lines.findIndex((line) => indentation(line) === 0 && yamlKey(line) === 'info')
-  if (infoIndex < 0) return { auth: inspectYamlAuth(lines), description: '', title: '' }
+  const serverUrl = inspectYamlServerUrl(lines)
+  if (infoIndex < 0) return { auth: inspectYamlAuth(lines), description: '', serverUrl, title: '' }
   const infoIndent = lines.slice(infoIndex + 1).find((line) => line.trim() && indentation(line) > 0)
-  if (!infoIndent) return { auth: inspectYamlAuth(lines), description: '', title: '' }
+  if (!infoIndent) return { auth: inspectYamlAuth(lines), description: '', serverUrl, title: '' }
   const fieldIndent = indentation(infoIndent)
 
   let title = ''
@@ -250,7 +309,26 @@ function inspectOpenApiYaml(document: string): {
       }
     }
   }
-  return { auth: inspectYamlAuth(lines), description, title }
+  return { auth: inspectYamlAuth(lines), description, serverUrl, title }
+}
+
+/**
+ * First plain `- url:` entry under a top-level `servers:` block. Unlike the JSON
+ * path this does not resolve `{name}` placeholders — the scanner cannot read the
+ * nested `variables` mapping of a sequence item — so a templated entry is skipped
+ * and the wizard falls back to asking for the base URL.
+ */
+function inspectYamlServerUrl(lines: string[]): string {
+  const serversIndex = findYamlKey(lines, 'servers', 0)
+  if (serversIndex < 0) return ''
+  for (let index = serversIndex + 1; index < lines.length; index += 1) {
+    const line = lines[index]
+    if (line.trim() && indentation(line) === 0) break
+    if (!/^-?\s*url\s*:/.test(line.trim())) continue
+    const url = yamlScalar(line)
+    if (url && !url.includes('{')) return url
+  }
+  return ''
 }
 
 function yamlBlock(lines: string[], start: number, parentIndent: number, folded: boolean): string {
@@ -396,6 +474,48 @@ function sourceName(title: string): string {
   return name
 }
 
+/**
+ * OpenAPI treats an absent or empty `servers` block as a single `/` entry, so the
+ * origin of the URL we fetched is the document's own answer for where the API
+ * lives — right when the spec is served by the API, wrong when it is served by a
+ * file host such as `raw.githubusercontent.com`. One request tells the two apart:
+ * a file host has no such route, while an API answers or asks for credentials.
+ *
+ * Only 404/410 and a failed request rule the origin out. Anything else, 401 and
+ * 403 included, means the host routes the path, which is what is being checked.
+ * The probe reaches only the origin the caller already had us fetch.
+ */
+async function derivedServerUrl(sourceUrl: URL, probePath: string): Promise<string> {
+  if (!probePath) return ''
+  try {
+    const response = await fetch(new URL(probePath, sourceUrl.origin), {
+      signal: AbortSignal.timeout(5_000),
+    })
+    return response.status === 404 || response.status === 410 ? '' : sourceUrl.origin
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * A base URL is joined with operation paths that already lead with `/`, so a
+ * trailing slash would produce `https://host//data`. `new URL().toString()` adds
+ * one to every bare origin, which is what a derived server URL always is.
+ */
+function trimTrailingSlash(url: string): string {
+  return url.endsWith('/') ? url.slice(0, -1) : url
+}
+
+/** Resolve a relative `servers[].url` such as `/v1` against the document location. */
+function absoluteServerUrl(serverUrl: string, fetchUrl: URL): string {
+  if (!serverUrl) return ''
+  try {
+    return trimTrailingSlash(new URL(serverUrl, fetchUrl).toString())
+  } catch {
+    return ''
+  }
+}
+
 function discoveryError(url: string, message: string): SourceDiscoveryData {
   return { message, status: 'error', url }
 }
@@ -408,6 +528,7 @@ function discoveredSource(
     description: string
     format: SourceDocumentFormat
     inspectionError?: string
+    serverUrl: string
     title: string
   },
 ): SourceDiscoveryData {
@@ -419,6 +540,7 @@ function discoveredSource(
         ? 'mcp'
         : metadata.format,
     name: sourceName(metadata.title || fallbackTitle(sourceUrl)),
+    serverUrl: absoluteServerUrl(metadata.serverUrl, sourceUrl),
     status: 'success',
     url,
     ...(metadata.inspectionError ? { inspectionError: metadata.inspectionError } : {}),
