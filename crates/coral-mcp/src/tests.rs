@@ -684,7 +684,7 @@ async fn mcp_task_tools_persist_lifecycle_and_tag_follow_up_calls() {
     assert_eq!(end["task_status"], "success");
     assert_eq!(
         end["note"],
-        "Task status recorded. Before responding to the user, consider whether adding a function would improve future work: better discovery through a semantically richer function, or simpler query composition through fewer or simpler SQL calls. You may call `add_function` to add it as a new function. Do not add a function that duplicates or only renames a table function you called during this task. Do not replace an existing function unless the user confirms."
+        "Task status recorded. Before responding to the user, consider whether adding a function would improve future work: better discovery through a semantically richer function, or simpler query composition through fewer or simpler SQL calls. You may call `add_function` to add it as a new function. Do not add a function that duplicates or only renames a table function you called during this task. The tool never replaces an existing function."
     );
 
     let post_end_sql = client
@@ -1945,9 +1945,9 @@ async fn factory_shares_configuration_and_task_guide_state_across_sessions() {
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
-    reason = "This end-to-end MCP function test verifies the schema, create-only default, replacement safety, structured output, and callable result together."
+    reason = "This end-to-end MCP function test verifies the create-only schema, structured output, and callable result together."
 )]
-async fn add_function_is_create_only_by_default_and_replaces_explicitly() {
+async fn add_function_is_create_only() {
     let temp = TempDir::new().expect("temp dir");
     let session = start_session(&temp).await;
     let client = &session.client;
@@ -1960,7 +1960,7 @@ async fn add_function_is_create_only_by_default_and_replaces_explicitly() {
         .as_ref()
         .expect("add_function annotations");
     assert_eq!(annotations.read_only_hint, Some(false));
-    assert_eq!(annotations.destructive_hint, Some(true));
+    assert_eq!(annotations.destructive_hint, Some(false));
     assert_eq!(annotations.idempotent_hint, Some(false));
     assert_eq!(annotations.open_world_hint, Some(false));
     let required = add_function_tool.input_schema["required"]
@@ -1969,9 +1969,10 @@ async fn add_function_is_create_only_by_default_and_replaces_explicitly() {
     for name in ["schema", "name", "description", "sql", "task_id", "intent"] {
         assert!(required.iter().any(|value| value == name));
     }
-    assert_eq!(
-        add_function_tool.input_schema["properties"]["replace_existing"]["default"],
-        false
+    assert!(
+        add_function_tool.input_schema["properties"]
+            .get("replace_existing")
+            .is_none()
     );
 
     let added = client
@@ -2003,7 +2004,6 @@ async fn add_function_is_create_only_by_default_and_replaces_explicitly() {
     );
     assert_eq!(added["sql_reference"], "functions.echo_value");
     assert_eq!(added["result_columns"][0]["column_name"], "value");
-    assert_eq!(added["replaced"], false);
     let config_raw =
         fs::read_to_string(temp.path().join("coral-config/config.toml")).expect("read config");
     assert!(config_raw.contains("write_surface = \"mcp\""));
@@ -2042,24 +2042,6 @@ async fn add_function_is_create_only_by_default_and_replaces_explicitly() {
     assert_eq!(duplicate.is_error, Some(true));
     assert_tool_error_text_contains(&duplicate, "already exists");
 
-    let rejected = client
-        .call_tool(
-            CallToolRequestParams::new("add_function").with_arguments(task_arguments(
-                &task_id,
-                &json!({
-                    "schema": "functions",
-                    "name": "echo_value",
-                    "description": "Invalid replacement",
-                    "sql": "select $value as value",
-                    "replace_existing": true
-                }),
-            )),
-        )
-        .await
-        .expect("invalid replacement should return a tool error");
-    assert_eq!(rejected.is_error, Some(true));
-    assert_tool_error_text_contains(&rejected, "has no inferred type");
-
     let still_callable = client
         .call_tool(
             CallToolRequestParams::new("sql").with_arguments(task_arguments(
@@ -2076,28 +2058,6 @@ async fn add_function_is_create_only_by_default_and_replaces_explicitly() {
         still_callable.structured_content.expect("query result")["results"][0]["rows"][0]["value"],
         "still here"
     );
-
-    let replaced = client
-        .call_tool(
-            CallToolRequestParams::new("add_function").with_arguments(task_arguments(
-                &task_id,
-                &json!({
-                    "schema": "functions",
-                    "name": "echo_value",
-                    "description": "Return a replacement value",
-                    "sql": "select cast($value as VARCHAR) as replacement",
-                    "replace_existing": true
-                }),
-            )),
-        )
-        .await
-        .expect("replace function");
-    assert_eq!(replaced.is_error, Some(false));
-    let replaced = replaced.structured_content.expect("replacement function");
-    assert_matches_output_schema(add_function_tool, &replaced);
-    assert_eq!(replaced["description"], "Return a replacement value");
-    assert_eq!(replaced["result_columns"][0]["column_name"], "replacement");
-    assert_eq!(replaced["replaced"], true);
 
     let blank = client
         .call_tool(

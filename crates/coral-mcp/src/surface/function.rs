@@ -9,12 +9,10 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 
 use super::{
-    arguments::{optional_bool_argument, required_string_argument},
+    arguments::required_string_argument,
     schema::{tool_input_schema, tool_output_schema},
     tool_names::ToolName,
 };
-
-const DEFAULT_REPLACE_EXISTING: bool = false;
 
 #[derive(JsonSchema)]
 #[schemars(deny_unknown_fields)]
@@ -38,15 +36,6 @@ pub(crate) struct AddFunctionArguments {
         description = "One read-only Coral SQL query without function frontmatter. Use $name placeholders for scalar values that callers must supply. Add an explicit cast when SQL context does not determine a placeholder's type. Placeholders cannot replace SQL identifiers."
     )]
     pub(crate) sql: String,
-    #[schemars(
-        default = "default_replace_existing",
-        description = "Replace a function with the same name. Defaults to false; when false, an existing function is left unchanged."
-    )]
-    pub(crate) replace_existing: bool,
-}
-
-fn default_replace_existing() -> bool {
-    DEFAULT_REPLACE_EXISTING
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -59,7 +48,6 @@ pub(crate) struct FunctionAddedValue<'a> {
     result_columns: Vec<FunctionResultColumnValue<'a>>,
     sql_reference: String,
     sql_call_example: String,
-    replaced: bool,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -101,14 +89,14 @@ impl<'a> From<&'a TableFunctionResultColumn> for FunctionResultColumnValue<'a> {
 pub(crate) fn add_function_tool() -> Tool {
     Tool::new(
         ToolName::AddFunction.as_str(),
-        "Create a reusable table function in the current Coral workspace from one read-only SQL query. Use this tool when a function would improve future discovery or simplify query composition. Do not add a function that duplicates or only renames a table function used during the current task. Existing functions are left unchanged by default; replace one only when the user confirms. Values written as $placeholders become required named arguments. Coral validates the function before persisting it.",
+        "Create a reusable table function in the current Coral workspace from one read-only SQL query. Use this tool when a function would improve future discovery or simplify query composition. Do not add a function that duplicates or only renames a table function used during the current task. It never replaces an existing function. Values written as $placeholders become required named arguments. Coral validates the function before persisting it.",
         tool_input_schema::<AddFunctionArguments>(),
     )
     .with_raw_output_schema(tool_output_schema::<FunctionAddedValue<'static>>())
     .with_annotations(
         ToolAnnotations::with_title("Add Function")
             .read_only(false)
-            .destructive(true)
+            .destructive(false)
             .idempotent(false)
             .open_world(false),
     )
@@ -122,11 +110,6 @@ pub(crate) fn add_function_arguments(
         name: required_string_argument(arguments, "name")?,
         description: required_string_argument(arguments, "description")?,
         sql: required_string_argument(arguments, "sql")?,
-        replace_existing: optional_bool_argument(
-            arguments,
-            "replace_existing",
-            DEFAULT_REPLACE_EXISTING,
-        )?,
     })
 }
 
@@ -155,10 +138,7 @@ fn comment_safe_yaml_string(value: &str) -> Result<String, serde_json::Error> {
     Ok(encoded.replace("*/", "*\\u002f"))
 }
 
-pub(crate) fn function_added_value(
-    function: &Function,
-    replaced: bool,
-) -> Result<Value, tonic::Status> {
+pub(crate) fn function_added_value(function: &Function) -> Result<Value, tonic::Status> {
     let ready = match function.runtime.as_ref() {
         Some(function::Runtime::Ready(ready)) => ready,
         Some(function::Runtime::Invalid(_)) => {
@@ -200,7 +180,6 @@ pub(crate) fn function_added_value(
             .collect(),
         sql_call_example: format!("{sql_reference}({arguments})"),
         sql_reference,
-        replaced,
     })
     .map_err(|error| tonic::Status::internal(error.to_string()))
 }
@@ -217,7 +196,6 @@ mod tests {
             name: "open_prs".to_string(),
             description: description.to_string(),
             sql: "  select cast($owner as VARCHAR) as owner  ".to_string(),
-            replace_existing: false,
         }
     }
 

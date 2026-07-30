@@ -621,7 +621,7 @@ impl CoralMcpServer {
         serialize_tool_value(TaskEndedValue {
             task_id,
             task_status: task_status_from_proto(task_end.task_status)?,
-            note: "Task status recorded. Before responding to the user, consider whether adding a function would improve future work: better discovery through a semantically richer function, or simpler query composition through fewer or simpler SQL calls. You may call `add_function` to add it as a new function. Do not add a function that duplicates or only renames a table function you called during this task. Do not replace an existing function unless the user confirms.",
+            note: "Task status recorded. Before responding to the user, consider whether adding a function would improve future work: better discovery through a semantically richer function, or simpler query composition through fewer or simpler SQL calls. You may call `add_function` to add it as a new function. Do not add a function that duplicates or only renames a table function you called during this task. The tool never replaces an existing function.",
         })
     }
 
@@ -663,7 +663,7 @@ impl CoralMcpServer {
             .add_function(Request::new(AddFunctionRequest {
                 workspace: Some(self.workspace()),
                 sql: artifact_sql,
-                fail_if_exists: !arguments.replace_existing,
+                fail_if_exists: true,
                 write_surface: FunctionWriteSurface::Mcp as i32,
             }))
             .await?
@@ -671,7 +671,7 @@ impl CoralMcpServer {
         let function = response
             .function
             .ok_or_else(|| tonic::Status::internal("add function response missing function"))?;
-        function_added_value(&function, response.replaced)
+        function_added_value(&function)
     }
 
     async fn search_tool_result(

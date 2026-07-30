@@ -530,7 +530,7 @@ By default, this server exposes:
 | Resource | `coral://guide`  | Database workflow guide for agents |
 | Resource | `coral://tables` | JSON summaries of query-visible database tables, including Coral catalog tables and required filters |
 
-`add_function` accepts `schema`, `name`, `description`, and one read-only SQL query. Values such as `$owner` in the query become required named arguments. It refuses to overwrite an existing function unless the agent passes `replace_existing: true`, and Coral validates a replacement before changing the installed function.
+`add_function` accepts `schema`, `name`, `description`, and one read-only SQL query. Values such as `$owner` in the query become required named arguments. It never overwrites an existing function, and Coral validates the function before saving it.
 
 When the `feedback` feature is enabled, the server also exposes a non-read-only `feedback` tool for blocked-agent reports. Feedback reports are stored locally and anonymous copies may be uploaded to Coral.
 

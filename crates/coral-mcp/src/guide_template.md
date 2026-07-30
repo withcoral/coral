@@ -74,7 +74,7 @@ where owner = $owner and repo = $repo and state = 'open'
 
 Each distinct placeholder becomes a required named argument. Coral infers its type from the surrounding SQL; add an explicit cast such as `cast($limit as BIGINT)` when the context is ambiguous. Placeholders represent scalar values and cannot replace schema, table, function, or column identifiers.
 
-Call `add_function` with the target `schema`, function `name`, `description`, and SQL query. It creates a new function by default. Set `replace_existing` to `true` only when replacing a function with the same name and the user confirms. After installation, test the returned `sql_call_example` with representative argument values.
+Call `add_function` with the target `schema`, function `name`, `description`, and SQL query. It creates a new function and never replaces an existing one. After installation, test the returned `sql_call_example` with representative argument values.
 
 ## Query Guidance
 
