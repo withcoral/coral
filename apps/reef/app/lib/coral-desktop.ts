@@ -3,12 +3,19 @@
 // never drift. Only the reef-side runtime helpers live here.
 import type {
   CoralDesktopApi,
+  DesktopUpdateState,
   McpClientDescriptor,
   McpClientId,
   McpLaunchConfig,
 } from '../../../desktop/src/shared/types'
 
-export type { CoralDesktopApi, McpClientDescriptor, McpClientId, McpLaunchConfig }
+export type {
+  CoralDesktopApi,
+  DesktopUpdateState,
+  McpClientDescriptor,
+  McpClientId,
+  McpLaunchConfig,
+}
 
 declare global {
   interface Window {

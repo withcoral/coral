@@ -3,6 +3,7 @@ import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import type { AppUpdater } from 'electron-updater'
 
+import type { DesktopUpdateState, DesktopUpdateStateListener } from '../shared/types'
 import { createDesktopUpdater, type DesktopUpdater } from './auto-update-core'
 import {
   clearUpdateIntent,
@@ -32,6 +33,7 @@ export function desktopUpdatesSupported(): boolean {
 
 let updater: DesktopUpdater | null = null
 let installFailureHandler = () => app.exit(0)
+const UNSUPPORTED_UPDATE_STATE: DesktopUpdateState = { status: 'unsupported' }
 
 function updateIntentPath(): string {
   return join(app.getPath('userData'), UPDATE_INTENT_FILENAME)
@@ -94,6 +96,16 @@ export function installAutoUpdater({
 export function quitAndInstallDesktopUpdate(): boolean {
   if (!desktopUpdatesSupported()) return false
   return desktopUpdater().quitAndInstall()
+}
+
+export function getDesktopUpdateState(): DesktopUpdateState {
+  if (!desktopUpdatesSupported()) return UNSUPPORTED_UPDATE_STATE
+  return desktopUpdater().getUpdateState()
+}
+
+export function onDesktopUpdateStateChange(listener: DesktopUpdateStateListener): () => void {
+  if (!desktopUpdatesSupported()) return () => {}
+  return desktopUpdater().onUpdateStateChange(listener)
 }
 
 export async function checkForDesktopUpdates({

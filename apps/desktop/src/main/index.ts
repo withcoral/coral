@@ -1,6 +1,7 @@
 import { app, BrowserWindow, Menu, ipcMain, nativeTheme, shell } from 'electron'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import type { DesktopUpdateState } from '../shared/types'
 import {
   configureMcpClient,
   getMcpLaunchConfig,
@@ -18,7 +19,9 @@ import {
   checkForDesktopUpdates,
   clearPendingDesktopUpdateIntent,
   desktopUpdatesSupported,
+  getDesktopUpdateState,
   installAutoUpdater,
+  onDesktopUpdateStateChange,
   quitAndInstallDesktopUpdate,
   shouldExitForPendingDesktopUpdate,
 } from './auto-update'
@@ -259,6 +262,21 @@ function registerIpcHandlers() {
   )
   ipcMain.handle('coral:remove-mcp', (_event, clientId: unknown) => removeMcpClient(clientId))
   ipcMain.handle('coral:get-mcp-launch-config', () => getMcpLaunchConfig())
+  ipcMain.handle('coral:get-update-state', () => getDesktopUpdateState())
+  onDesktopUpdateStateChange(publishDesktopUpdateState)
+}
+
+function publishDesktopUpdateState(state: DesktopUpdateState): void {
+  const window = mainWindow
+  if (!window) return
+
+  try {
+    if (window.isDestroyed() || window.webContents.isDestroyed()) return
+    window.webContents.send('coral:update-state-changed', state)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    console.error(`[coral-updater] failed to publish update state: ${message}`)
+  }
 }
 
 function installMenu() {

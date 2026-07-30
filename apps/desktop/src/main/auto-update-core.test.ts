@@ -134,6 +134,105 @@ describe('install', () => {
   })
 })
 
+describe('update state', () => {
+  it('publishes available and downloading before the local proxy is truly ready', async () => {
+    const updater = createFakeUpdater()
+    const download = deferredPromise()
+    vi.mocked(updater.checkForUpdates).mockResolvedValue(
+      availableUpdate('1.2.4', download.promise),
+    )
+    const desktopUpdater = createDesktopUpdater(createDeps(updater))
+    const states: ReturnType<typeof desktopUpdater.getUpdateState>[] = []
+    desktopUpdater.onUpdateStateChange((state) => states.push(state))
+    desktopUpdater.install()
+
+    expect(desktopUpdater.getUpdateState()).toEqual({ status: 'idle' })
+
+    const check = desktopUpdater.check({ interactive: false })
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(desktopUpdater.getUpdateState()).toEqual({
+      status: 'downloading',
+      version: '1.2.4',
+    })
+    expect(states).toEqual([
+      { status: 'available', version: '1.2.4' },
+      { status: 'downloading', version: '1.2.4' },
+    ])
+
+    updater.emit('update-downloaded', { version: '1.2.4' })
+    expect(desktopUpdater.getUpdateState()).toEqual({
+      status: 'downloading',
+      version: '1.2.4',
+    })
+
+    download.resolve()
+    await check
+
+    expect(desktopUpdater.getUpdateState()).toEqual({ status: 'ready', version: '1.2.4' })
+    expect(states).toEqual([
+      { status: 'available', version: '1.2.4' },
+      { status: 'downloading', version: '1.2.4' },
+      { status: 'ready', version: '1.2.4' },
+    ])
+  })
+
+  it('returns to available when a download fails', async () => {
+    const updater = createFakeUpdater()
+    const download = deferredPromise()
+    vi.mocked(updater.checkForUpdates).mockResolvedValue(
+      availableUpdate('1.2.4', download.promise),
+    )
+    const desktopUpdater = createDesktopUpdater(createDeps(updater))
+    const states: ReturnType<typeof desktopUpdater.getUpdateState>[] = []
+    desktopUpdater.onUpdateStateChange((state) => states.push(state))
+
+    const check = desktopUpdater.check({ interactive: false })
+    await vi.advanceTimersByTimeAsync(0)
+    download.reject(new Error('zip handoff failed'))
+    await check
+
+    expect(desktopUpdater.getUpdateState()).toEqual({
+      status: 'available',
+      version: '1.2.4',
+    })
+    expect(states).toEqual([
+      { status: 'available', version: '1.2.4' },
+      { status: 'downloading', version: '1.2.4' },
+      { status: 'available', version: '1.2.4' },
+    ])
+  })
+
+  it('deduplicates unchanged state and supports unsubscribing', async () => {
+    const updater = createFakeUpdater()
+    vi.mocked(updater.checkForUpdates)
+      .mockResolvedValueOnce({
+        isUpdateAvailable: false,
+        updateInfo: { version: '1.2.3' },
+      })
+      .mockResolvedValueOnce(availableUpdate('1.2.4', null))
+      .mockResolvedValueOnce({
+        isUpdateAvailable: false,
+        updateInfo: { version: '1.2.3' },
+      })
+    const desktopUpdater = createDesktopUpdater(createDeps(updater))
+    const listener = vi.fn()
+    const unsubscribe = desktopUpdater.onUpdateStateChange(listener)
+
+    await desktopUpdater.check({ interactive: false })
+    expect(listener).not.toHaveBeenCalled()
+
+    await desktopUpdater.check({ interactive: false })
+    expect(listener).toHaveBeenCalledOnce()
+    expect(listener).toHaveBeenLastCalledWith({ status: 'available', version: '1.2.4' })
+
+    unsubscribe()
+    await desktopUpdater.check({ interactive: false })
+    expect(desktopUpdater.getUpdateState()).toEqual({ status: 'idle' })
+    expect(listener).toHaveBeenCalledOnce()
+  })
+})
+
 describe('explicit install hand-off', () => {
   it('waits for the local update payload and hands off only once', async () => {
     const events: string[] = []

@@ -5,6 +5,7 @@ import { render } from 'vitest-browser-react'
 
 import { Sidebar } from './sidebar'
 import { SIDEBAR_COOKIE_NAME } from './sidebar-state'
+import type { CoralDesktopApi } from '@/lib/coral-desktop'
 import { validateWorkspaceName } from '@/lib/workspace-name'
 import { routePath, routePattern } from '@/routing/routemap'
 
@@ -75,6 +76,7 @@ describe('Sidebar', () => {
   })
 
   afterEach(async () => {
+    delete window.coralDesktop
     vi.unstubAllEnvs()
     document.cookie = `${SIDEBAR_COOKIE_NAME}=; Max-Age=0; Path=/`
     await page.viewport(1024, 768)
@@ -229,6 +231,9 @@ describe('Sidebar', () => {
   })
 
   it('shows no settings navigation items on the web', async () => {
+    window.coralDesktop = desktopApi({
+      getUpdateState: vi.fn(async () => ({ status: 'ready' as const, version: '0.9.0' })),
+    })
     const screen = await renderSidebar(false, routePath('settings'), WORKSPACES)
 
     await expect.element(screen.getByRole('link', { name: 'Home' })).toBeVisible()
@@ -239,6 +244,7 @@ describe('Sidebar', () => {
     await expect.element(screen.getByRole('link', { name: 'Sources' })).not.toBeInTheDocument()
     await expect.element(screen.getByRole('link', { name: 'Schema' })).not.toBeInTheDocument()
     await expect.element(screen.getByRole('link', { name: 'Traces' })).not.toBeInTheDocument()
+    expect(window.coralDesktop.getUpdateState).not.toHaveBeenCalled()
   })
 
   it('shows MCP Clients in desktop settings navigation', async () => {
@@ -246,6 +252,22 @@ describe('Sidebar', () => {
     const screen = await renderSidebar(false, routePath('settings'), WORKSPACES)
 
     await expect.element(screen.getByRole('link', { name: 'MCP Clients' })).toBeVisible()
+  })
+
+  it('shows desktop update state persistently in the sidebar footer', async () => {
+    window.coralDesktop = desktopApi({
+      getUpdateState: vi.fn(async () => ({ status: 'available' as const, version: '0.9.0' })),
+    })
+    vi.stubEnv('CORAL_DESKTOP_APP', 'true')
+    const screen = await renderSidebar(false, routePath('home'), WORKSPACES)
+
+    await expect
+      .element(
+        screen.getByRole('status', {
+          name: 'Coral 0.9.0 is available and will download automatically.',
+        }),
+      )
+      .toBeVisible()
   })
 
   it('keeps the create workspace dialog closed after back and forward navigation', async () => {
@@ -359,3 +381,15 @@ describe('Sidebar', () => {
       .toContain('Sources')
   })
 })
+
+function desktopApi(overrides: Partial<CoralDesktopApi> = {}): CoralDesktopApi {
+  return {
+    configureMcp: vi.fn(async () => {}),
+    getMcpLaunchConfig: vi.fn(async () => ({ args: [], command: 'coral' })),
+    getUpdateState: vi.fn(async () => ({ status: 'idle' as const })),
+    listMcpClients: vi.fn(async () => []),
+    onUpdateStateChange: vi.fn(() => () => {}),
+    removeMcp: vi.fn(async () => {}),
+    ...overrides,
+  }
+}

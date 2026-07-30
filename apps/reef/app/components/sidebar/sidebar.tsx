@@ -16,6 +16,10 @@ import type { IconName } from '@/wax/components/icon'
 import * as Menu from '@/wax/components/menu'
 import { getAvatarColorFromSeed } from '@/wax/components/avatar/utils/get-avatar-color'
 import type { Workspace } from '@/generated/coral/v1/resources_pb'
+import {
+  DesktopUpdateIndicator,
+  useDesktopUpdateState,
+} from '@/components/desktop-update-indicator'
 import { WorkspaceCreationDialog } from '@/components/workspaces'
 import { isCoralDesktopBuild } from '@/lib/coral-desktop'
 import { workspacePathForCurrentSection } from '@/lib/workspace-routing'
@@ -35,6 +39,8 @@ export function Sidebar({ initialIsMinimized, workspaces }: SidebarProps) {
   const location = useLocation()
   const { workspaceId } = useParams()
   const { isMinimized, toggleSidebar } = useSidebarState(initialIsMinimized)
+  const desktop = isCoralDesktopBuild()
+  const updateState = useDesktopUpdateState(desktop)
   const [createWorkspaceDialogOpen, setCreateWorkspaceDialogOpen] = useState(false)
   const createWorkspaceDialogSession = useRef(0)
   const createWorkspaceFetcherKey = `create-workspace-${createWorkspaceDialogSession.current}`
@@ -62,7 +68,7 @@ export function Sidebar({ initialIsMinimized, workspaces }: SidebarProps) {
   ] satisfies NavItem[]
   const settingsPath = routePath('settings')
   const isSettingsRoute = Boolean(useMatch({ end: false, path: settingsPath }))
-  const settingsNavItems: NavItem[] = isCoralDesktopBuild()
+  const settingsNavItems: NavItem[] = desktop
     ? [{ icon: 'Settings', label: 'MCP Clients', paths: [settingsPath], to: settingsPath }]
     : []
   const navItems = isSettingsRoute ? settingsNavItems : workspaceNavItems
@@ -250,6 +256,9 @@ export function Sidebar({ initialIsMinimized, workspaces }: SidebarProps) {
           )
         })}
       </div>
+      {updateState.status !== 'idle' && updateState.status !== 'unsupported' && (
+        <DesktopUpdateIndicator isMinimized={isMinimized} state={updateState} />
+      )}
     </nav>
   )
 }

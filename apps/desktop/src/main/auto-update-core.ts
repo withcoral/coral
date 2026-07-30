@@ -3,6 +3,8 @@
 // notifications. Structural types keep this module importable without the
 // electron runtime.
 
+import type { DesktopUpdateState, DesktopUpdateStateListener } from '../shared/types'
+
 export const STARTUP_UPDATE_CHECK_DELAY_MS = 5000
 // Long-running desktop sessions would otherwise only see new releases after a
 // restart; re-check periodically so a release ships to open apps too. The
@@ -50,6 +52,8 @@ export interface DesktopUpdaterDeps {
 export interface DesktopUpdater {
   install: () => void
   check: (options: { interactive: boolean }) => Promise<void>
+  getUpdateState: () => DesktopUpdateState
+  onUpdateStateChange: (listener: DesktopUpdateStateListener) => () => void
   quitAndInstall: () => boolean
 }
 
@@ -62,6 +66,8 @@ export function createDesktopUpdater(deps: DesktopUpdaterDeps): DesktopUpdater {
   const { updater } = deps
   let installed = false
   let installing = false
+  let updateState: DesktopUpdateState = { status: 'idle' }
+  const updateStateListeners = new Set<DesktopUpdateStateListener>()
   // With automatic install disabled on macOS, the promise resolves once the
   // complete archive is available through electron-updater's local proxy.
   // Explicit quitAndInstall() starts the subsequent Squirrel hand-off.
@@ -72,6 +78,39 @@ export function createDesktopUpdater(deps: DesktopUpdaterDeps): DesktopUpdater {
         completion: Promise<void>
       }
     | null = null
+
+  function updateStateVersion(state: DesktopUpdateState): string | null {
+    return 'version' in state ? state.version : null
+  }
+
+  function setUpdateState(nextState: DesktopUpdateState): void {
+    if (
+      updateState.status === nextState.status &&
+      updateStateVersion(updateState) === updateStateVersion(nextState)
+    ) {
+      return
+    }
+
+    updateState = nextState
+    for (const listener of updateStateListeners) {
+      try {
+        listener(updateState)
+      } catch (error) {
+        console.error(`[coral-updater] update state listener failed: ${errorMessage(error)}`)
+      }
+    }
+  }
+
+  function getUpdateState(): DesktopUpdateState {
+    return updateState
+  }
+
+  function onUpdateStateChange(listener: DesktopUpdateStateListener): () => void {
+    updateStateListeners.add(listener)
+    return () => {
+      updateStateListeners.delete(listener)
+    }
+  }
 
   function clearInstallIntent(): void {
     try {
@@ -102,7 +141,11 @@ export function createDesktopUpdater(deps: DesktopUpdaterDeps): DesktopUpdater {
       if (!installing) return
 
       installing = false
+      const failedVersion = readyVersion
       readyVersion = null
+      if (failedVersion) {
+        setUpdateState({ status: 'available', version: failedVersion })
+      }
       clearInstallIntent()
       try {
         deps.onInstallFailure(error)
@@ -153,10 +196,12 @@ export function createDesktopUpdater(deps: DesktopUpdaterDeps): DesktopUpdater {
     if (!downloadPromise) return null
 
     const version = result.updateInfo.version
+    setUpdateState({ status: 'downloading', version })
     return downloadPromise.then<DownloadOutcome, DownloadOutcome>(
       () => {
         if (readyVersion !== version) {
           readyVersion = version
+          setUpdateState({ status: 'ready', version })
           try {
             deps.showNotification(
               'Coral update ready',
@@ -169,6 +214,7 @@ export function createDesktopUpdater(deps: DesktopUpdaterDeps): DesktopUpdater {
         return { ok: true }
       },
       (error: unknown) => {
+        setUpdateState({ status: 'available', version })
         console.error(`[coral-updater] update download failed: ${errorMessage(error)}`)
         return { ok: false, error }
       },
@@ -198,6 +244,12 @@ export function createDesktopUpdater(deps: DesktopUpdaterDeps): DesktopUpdater {
     } catch (error) {
       console.error(`[coral-updater] update check failed: ${errorMessage(error)}`)
       return { ok: false, error }
+    }
+
+    if (result?.isUpdateAvailable) {
+      setUpdateState({ status: 'available', version: result.updateInfo.version })
+    } else {
+      setUpdateState({ status: 'idle' })
     }
 
     // Attach before exposing the result. The download starts inside
@@ -278,7 +330,7 @@ export function createDesktopUpdater(deps: DesktopUpdaterDeps): DesktopUpdater {
     }
   }
 
-  return { check, install, quitAndInstall }
+  return { check, getUpdateState, install, onUpdateStateChange, quitAndInstall }
 }
 
 type DownloadOutcome = { ok: true } | { ok: false; error: unknown }
