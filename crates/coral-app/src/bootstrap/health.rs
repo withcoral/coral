@@ -14,6 +14,8 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use tokio::sync::Mutex as AsyncMutex;
+
 use tonic_health::pb::health_check_response::ServingStatus;
 use tonic_health::pb::health_server::Health;
 use tonic_health::pb::{HealthCheckRequest, HealthCheckResponse};
@@ -49,6 +51,14 @@ type ReadinessFuture = Pin<Box<dyn Future<Output = bool> + Send>>;
 pub(super) struct EngineReadiness {
     probe: Arc<dyn Fn() -> ReadinessFuture + Send + Sync>,
     cached: Arc<Mutex<Option<(Instant, bool)>>>,
+    /// Serializes probes so concurrent callers share one catalog resolution.
+    ///
+    /// The TTL alone bounds the steady-state rate but not concurrency: every
+    /// caller arriving in the instant the cache expires would otherwise launch its
+    /// own resolution, letting unauthenticated health traffic fan out into
+    /// arbitrary engine work. Holding this across the await costs a public probe
+    /// nothing it would not already wait for.
+    probing: Arc<AsyncMutex<()>>,
 }
 
 impl EngineReadiness {
@@ -56,6 +66,7 @@ impl EngineReadiness {
         Self {
             probe,
             cached: Arc::new(Mutex::new(None)),
+            probing: Arc::new(AsyncMutex::new(())),
         }
     }
 
@@ -82,11 +93,17 @@ impl EngineReadiness {
         Self::new(Arc::new(move || Box::pin(std::future::ready(ready))))
     }
 
-    /// Reads the cached answer while it is fresh, else probes and caches.
+    /// Reads the cached answer while it is fresh, else probes once and caches.
     ///
-    /// Concurrent callers may both probe; that costs a duplicate resolution at
-    /// worst and avoids holding a lock across the await.
+    /// Exactly one probe runs at a time. Callers that queue behind it re-read the
+    /// cache first, so a burst of health traffic resolves the catalog once rather
+    /// than once per request.
     async fn is_ready(&self) -> bool {
+        if let Some(ready) = self.fresh_answer() {
+            return ready;
+        }
+        let _probing = self.probing.lock().await;
+        // The probe that held the lock may have just answered this.
         if let Some(ready) = self.fresh_answer() {
             return ready;
         }
@@ -233,6 +250,36 @@ mod tests {
             calls.load(Ordering::SeqCst),
             1,
             "the unauthenticated readiness check must not resolve the catalog per request"
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_readiness_checks_share_one_probe() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&calls);
+        // Yields inside the probe so every task is queued before the first
+        // one finishes: without shared in-flight probing each would run its own.
+        let readiness = EngineReadiness::new(Arc::new(move || {
+            let counted = Arc::clone(&counted);
+            Box::pin(async move {
+                counted.fetch_add(1, Ordering::SeqCst);
+                tokio::task::yield_now().await;
+                true
+            })
+        }));
+
+        let (first, second, third, fourth) = tokio::join!(
+            readiness.is_ready(),
+            readiness.is_ready(),
+            readiness.is_ready(),
+            readiness.is_ready(),
+        );
+        assert!(first && second && third && fourth);
+
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "concurrent public health traffic must not fan out into parallel engine work"
         );
     }
 }
