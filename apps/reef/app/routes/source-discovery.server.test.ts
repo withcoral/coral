@@ -308,13 +308,13 @@ components:
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
-  it('keeps the document metadata when the probe times out', async () => {
+  it('keeps the document metadata when the probe request fails', async () => {
     vi.stubGlobal(
       'fetch',
       vi
         .fn()
         .mockResolvedValueOnce(new Response(serverlessSpec, { status: 200 }))
-        .mockRejectedValueOnce(new DOMException('The operation was aborted', 'AbortError')),
+        .mockRejectedValueOnce(new TypeError('fetch failed')),
     )
 
     const discovered = await loader({
