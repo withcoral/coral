@@ -10,7 +10,7 @@ use super::identity_documents_contract_tests::{
 };
 use crate::bootstrap::AppError;
 use crate::identities::model::{IdentityName, IdentityOwner};
-use crate::identity::UserPrincipal;
+use crate::identity::{Principal, PrincipalKind};
 use crate::state::db::schema::IdentityDocuments;
 use crate::state::db::{CoralDb, DbError, DbRepos, IdentitySpecKey, ResolvedDatabaseConfig};
 
@@ -31,7 +31,7 @@ async fn assert_identity_document_repository_negative_contract(db: &CoralDb) {
     let workspace = parsed_workspace(&format!("documentnegative{suffix}"));
     let owner = IdentityOwner::workspace(workspace.clone());
     let colliding_user = IdentityOwner::for_user(
-        UserPrincipal::for_user(workspace.as_str()).expect("matching user principal"),
+        Principal::parse(workspace.as_str(), PrincipalKind::User).expect("matching user principal"),
     );
     let material_name = identity_name(&format!("material{suffix}"));
     let concurrent_name = identity_name(&format!("concurrent{suffix}"));
@@ -180,7 +180,7 @@ async fn assert_corrupt_document(
         .await
         .expect("begin corrupt document transaction");
     let affected = tx
-        .execute_affected(
+        .execute_rows_affected(
             Query::update()
                 .table(IdentityDocuments::Table)
                 .value(column, value)
