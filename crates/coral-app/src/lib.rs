@@ -52,6 +52,7 @@ mod feedback;
 mod functions;
 mod hash;
 mod identity;
+mod oauth_resource;
 mod outbound_url_policy;
 mod query;
 mod request_auth;
@@ -77,6 +78,7 @@ pub use identity::{
     LocalPrincipalProvider, Principal, PrincipalId, PrincipalKind, PrincipalProvider,
     PrincipalProviderError,
 };
+pub use oauth_resource::{CanonicalOauthUrl, OauthUrlError};
 pub use query::extensions::{
     AwsEngineExtensionsProvider, EngineExtensionsProvider, NoopEngineExtensionsProvider,
 };

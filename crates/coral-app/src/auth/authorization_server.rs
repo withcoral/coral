@@ -5,6 +5,13 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use super::OIDC_CALLBACK_PATH;
+use super::config::{AuthSettings, ResolvedAuthSettings, signing_key_env_error};
+use super::error::AuthServerError;
+use super::provider_client::OidcProviderClient;
+use super::session::SessionTokenIssuer;
+use super::state_store::{InMemoryStateStore, StateStore};
+use crate::oauth_resource::{CanonicalOauthUrl, OauthUrlError};
 use axum::Router;
 use axum::extract::State;
 use axum::http::header;
@@ -13,15 +20,6 @@ use axum::routing::{get, post};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
-use url::Position;
-
-use super::OIDC_CALLBACK_PATH;
-use super::config::{AuthSettings, ResolvedAuthSettings, signing_key_env_error};
-use super::error::AuthServerError;
-use super::provider_client::OidcProviderClient;
-use super::session::SessionTokenIssuer;
-use super::state_store::{InMemoryStateStore, StateStore};
-use crate::outbound_url_policy::{EndpointUrl, ResourceIdentifier};
 
 mod authorize;
 mod callback;
@@ -105,8 +103,10 @@ impl CoralAuthorizationServer {
         mut self,
         resource: impl AsRef<str>,
     ) -> Result<Self, String> {
-        self.authorization_resources
-            .insert(canonical_authorization_resource(resource.as_ref())?);
+        self.authorization_resources.insert(
+            canonical_authorization_resource(resource.as_ref())
+                .map_err(|error| format!("authorization resource {error}"))?,
+        );
         Ok(self)
     }
 
@@ -228,17 +228,13 @@ struct AuthorizationServerHttpState {
     authorization_resources: Arc<BTreeSet<String>>,
 }
 
-fn canonical_authorization_resource(value: &str) -> Result<String, String> {
-    let resource = EndpointUrl::<ResourceIdentifier>::parse(value)
-        .map_err(|error| format!("authorization resource is invalid: {error}"))?
-        .into_url();
-    if resource.query().is_some() {
-        return Err("authorization resource must not include a query".to_string());
-    }
-    Ok(match resource.path() {
-        "/" => resource[..Position::BeforePath].to_string(),
-        _ => resource.to_string(),
-    })
+/// Canonicalizes an RFC 8707 `resource` for comparison and recording.
+///
+/// The identifier a client asks for must land on exactly the string the
+/// operator configured, so both sides run the one canonicalizer in
+/// [`crate::oauth_resource`].
+fn canonical_authorization_resource(value: &str) -> Result<String, OauthUrlError> {
+    CanonicalOauthUrl::parse(value).map(CanonicalOauthUrl::into_identifier)
 }
 
 async fn authorization_server_metadata(

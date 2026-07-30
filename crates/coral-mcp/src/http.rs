@@ -19,6 +19,7 @@ use axum::http::{HeaderMap, HeaderValue, Method, Request, StatusCode, Uri, heade
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get};
 use coral_api::v1::{CatalogItemKind, ListCatalogRequest, PaginationRequest};
+use coral_app::{CanonicalOauthUrl, OauthUrlError};
 use coral_client::{AppClient, default_workspace};
 use futures::{Stream, StreamExt as _};
 use rmcp::model::{ClientJsonRpcMessage, ClientRequest, ServerJsonRpcMessage};
@@ -47,7 +48,7 @@ use tokio::task::JoinHandle;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::Request as GrpcRequest;
 use tower::ServiceExt;
-use url::{Host, Position, Url};
+use url::{Position, Url};
 
 use crate::{CoralMcpServerFactory, McpOptions};
 
@@ -365,19 +366,17 @@ impl AuthenticatedMcpHttpConfig {
     ) -> Result<Self, McpHttpError> {
         let resource = validated_oauth_url(&public_url.into())?;
         let authorization_server = validated_oauth_url(&authorization_server.into())?;
-        let (metadata_url, metadata_path) = protected_resource_metadata_url(&resource);
+        let (metadata_url, metadata_path) = protected_resource_metadata_url(resource.url());
         let challenge = format!("Bearer resource_metadata=\"{metadata_url}\"");
         let challenge = HeaderValue::from_str(&challenge)
             .map_err(|_error| McpHttpError::InvalidAuthConfig("invalid challenge header"))?;
-        let public_url = canonical_oauth_identifier(&resource);
-        let authorization_server = canonical_oauth_identifier(&authorization_server);
         let mut allowed_hosts = vec![
             "localhost".to_string(),
             "127.0.0.1".to_string(),
             "::1".to_string(),
             bind_addr.ip().to_string(),
         ];
-        if let Some(host) = resource.host_str() {
+        if let Some(host) = resource.url().host_str() {
             allowed_hosts.push(host.to_string());
         }
         if allowed_hosts
@@ -388,8 +387,8 @@ impl AuthenticatedMcpHttpConfig {
         }
         Ok(Self {
             bind_addr,
-            public_url,
-            authorization_server,
+            public_url: resource.into_identifier(),
+            authorization_server: authorization_server.into_identifier(),
             metadata_path,
             challenge,
             allowed_hosts,
@@ -432,35 +431,19 @@ impl AuthenticatedMcpHttpRuntime {
     }
 }
 
-fn validated_oauth_url(value: &str) -> Result<Url, McpHttpError> {
-    let url =
-        Url::parse(value).map_err(|_error| McpHttpError::InvalidAuthConfig("invalid OAuth URL"))?;
-    if !url.username().is_empty()
-        || url.password().is_some()
-        || url.fragment().is_some()
-        || url.query().is_some()
-    {
-        return Err(McpHttpError::InvalidAuthConfig("unsafe OAuth URL"));
-    }
-    let loopback = match url.host() {
-        Some(Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
-        Some(Host::Ipv4(ip)) => ip.is_loopback(),
-        Some(Host::Ipv6(ip)) => is_loopback(IpAddr::V6(ip)),
-        None => false,
-    };
-    if url.scheme() != "https" && !(url.scheme() == "http" && loopback) {
-        return Err(McpHttpError::InvalidAuthConfig(
-            "OAuth URL must use HTTPS or loopback HTTP",
-        ));
-    }
-    Ok(url)
-}
-
-fn canonical_oauth_identifier(url: &Url) -> String {
-    match url.path() {
-        "/" => url[..Position::BeforePath].to_string(),
-        _ => url.to_string(),
-    }
+/// Validates an OAuth URL with the canonicalizer `coral-app` owns.
+///
+/// The advertised protected-resource identifier must match the audience minted
+/// into access tokens byte for byte, so this crate must not canonicalize on its
+/// own.
+fn validated_oauth_url(value: &str) -> Result<CanonicalOauthUrl, McpHttpError> {
+    CanonicalOauthUrl::parse(value).map_err(|error| {
+        McpHttpError::InvalidAuthConfig(match error {
+            OauthUrlError::Transport => "OAuth URL must use HTTPS or loopback HTTP",
+            OauthUrlError::Query => "unsafe OAuth URL",
+            OauthUrlError::Shape => "invalid OAuth URL",
+        })
+    })
 }
 
 fn protected_resource_metadata_url(resource: &Url) -> (String, String) {
