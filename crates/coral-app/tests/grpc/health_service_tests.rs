@@ -23,8 +23,12 @@ impl PrincipalProvider for UnavailablePrincipalProvider {
     }
 }
 
+/// The aggregate check answers from the engine, not from a static constant: it
+/// is the only unauthenticated RPC, so it carries the readiness signal probes
+/// reach without a credential. It must still not depend on principal selection,
+/// which the deliberately unavailable provider here pins.
 #[tokio::test]
-async fn grpc_health_is_process_liveness_only() {
+async fn grpc_health_reports_engine_readiness_without_a_principal() {
     let temp = TempDir::new().expect("temp dir");
     let server = ServerBuilder::new()
         .with_config_dir(temp.path())

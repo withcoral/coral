@@ -1,10 +1,9 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 
-use coral_api::v1::{CatalogItemKind, ListCatalogRequest, PaginationRequest};
 use coral_app::McpHttpServeConfig;
 use coral_client::{
-    AppClient, BearerToken, ClientError, default_workspace,
+    AppClient, BearerToken, ClientError,
     local::{
         LocalServerError, RunningServer as GrpcServer, ServerBuilder, connect_with_loopback_bearer,
     },
@@ -16,7 +15,7 @@ use coral_mcp::{
         RunningMcpHttpServer, start_auth_disabled, start_authenticated,
     },
 };
-use tonic::{Code, Request};
+use tonic::Code;
 
 #[derive(Debug, thiserror::Error)]
 #[error(transparent)]
@@ -160,7 +159,9 @@ async fn start_mcp_http(
             let config =
                 AuthenticatedMcpHttpConfig::new(bind_addr, public_url, authorization_server)?;
             let session_endpoint = grpc_endpoint_uri.clone();
-            let readiness_endpoint = grpc_endpoint_uri;
+            // One unauthenticated client, connected once and reused, drives every
+            // readiness probe; the gRPC health service answers without a bearer.
+            let readiness_client = AppClient::connect(&grpc_endpoint_uri).await?;
             let runtime = AuthenticatedMcpHttpRuntime::new(
                 move |token| {
                     let authenticator = Arc::clone(&authenticator);
@@ -183,8 +184,8 @@ async fn start_mcp_http(
                 },
                 mcp_options,
                 move || {
-                    let endpoint = readiness_endpoint.clone();
-                    async move { probe_catalog_reachability(&endpoint).await }
+                    let client = readiness_client.clone();
+                    async move { probe_serving_health(&client).await }
                 },
             );
             start_authenticated(config, runtime).await?
@@ -193,23 +194,18 @@ async fn start_mcp_http(
     Ok(Some(server))
 }
 
-async fn probe_catalog_reachability(endpoint: &str) -> Result<(), Code> {
-    let app = AppClient::connect(endpoint)
-        .await
-        .map_err(|_error| Code::Unavailable)?;
-    app.catalog_client()
-        .list_catalog(Request::new(ListCatalogRequest {
-            workspace: Some(default_workspace()),
-            schema_name: String::new(),
-            kind: CatalogItemKind::Unspecified as i32,
-            pagination: Some(PaginationRequest {
-                limit: 1,
-                offset: 0,
-            }),
-        }))
-        .await
-        .map(|_response| ())
-        .map_err(|status| status.code())
+/// Probes engine readiness over the unauthenticated gRPC health service.
+///
+/// A data-plane call cannot serve here: with `[auth]` on it would need a bearer
+/// token the probe does not hold, and its `Unauthenticated` rejection reads as
+/// "reachable" — turning `/readyz` into a port check. The health service reports
+/// catalog reachability server-side instead.
+async fn probe_serving_health(client: &AppClient) -> Result<(), Code> {
+    match client.check_serving().await {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(Code::Unavailable),
+        Err(status) => Err(status.code()),
+    }
 }
 
 fn loopback_grpc_endpoint_uri(address: SocketAddr) -> Result<String, McpStartError> {

@@ -15,6 +15,9 @@ use coral_api::{
 };
 use tonic::service::interceptor::InterceptedService;
 use tonic::transport::{Channel, ClientTlsConfig, Endpoint};
+use tonic_health::pb::HealthCheckRequest;
+use tonic_health::pb::health_check_response::ServingStatus;
+use tonic_health::pb::health_client::HealthClient;
 use url::{Host, Url};
 
 use crate::error::ClientError;
@@ -67,6 +70,9 @@ pub type FeedbackClient = FeedbackServiceClient<GrpcService>;
 /// Public task-lifecycle gRPC client.
 pub type TaskClient = TaskServiceClient<GrpcService>;
 
+/// Public `grpc.health.v1.Health` client.
+pub type HealthCheckClient = HealthClient<GrpcService>;
+
 /// Public Coral client handle.
 ///
 /// Wraps the generated gRPC clients for a Coral endpoint.
@@ -80,6 +86,7 @@ pub struct AppClient {
     function: FunctionClient,
     feedback: FeedbackClient,
     task: TaskClient,
+    health: HealthCheckClient,
 }
 
 impl AppClient {
@@ -217,7 +224,13 @@ impl AppClient {
             &grpc_endpoint,
             static_metadata.clone(),
         ));
-        let task_client = TaskClient::new(grpc_service(channel, &grpc_endpoint, static_metadata));
+        let task_client = TaskClient::new(grpc_service(
+            channel.clone(),
+            &grpc_endpoint,
+            static_metadata.clone(),
+        ));
+        let health_client =
+            HealthCheckClient::new(grpc_service(channel, &grpc_endpoint, static_metadata));
         Ok(Self {
             source: source_client,
             workspace: workspace_client,
@@ -227,6 +240,7 @@ impl AppClient {
             function: function_client,
             feedback: feedback_client,
             task: task_client,
+            health: health_client,
         })
     }
 
@@ -276,6 +290,28 @@ impl AppClient {
     /// Returns a cloned task-lifecycle client.
     pub fn task_client(&self) -> TaskClient {
         self.task.clone()
+    }
+
+    /// Reports whether the server answers its aggregate health check as serving.
+    ///
+    /// The health service is unauthenticated, so this reaches a server that
+    /// requires bearer tokens on every other RPC. It reuses this client's
+    /// channel, which is what makes it usable as a repeated readiness probe.
+    ///
+    /// # Errors
+    ///
+    /// Returns the gRPC [`tonic::Status`] when the health RPC cannot complete.
+    pub async fn check_serving(&self) -> Result<bool, tonic::Status> {
+        let status = self
+            .health
+            .clone()
+            .check(HealthCheckRequest {
+                service: String::new(),
+            })
+            .await?
+            .into_inner()
+            .status;
+        Ok(status == ServingStatus::Serving as i32)
     }
 }
 

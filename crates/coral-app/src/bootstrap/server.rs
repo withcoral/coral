@@ -40,7 +40,7 @@ use tower::{Layer, Service};
 
 use super::env::AppEnvironment;
 use super::error::AppError;
-use super::health::AggregateHealthService;
+use super::health::{AggregateHealthService, EngineReadiness};
 use super::server_config::{LoadedServerConfig, ServeCompanionConfig};
 use crate::EngineExtensionsProvider;
 use crate::catalog::discovery::CatalogDiscovery;
@@ -752,6 +752,7 @@ async fn start_server(
         ),
         None => (source, query),
     };
+    let health_queries = query.clone();
     let source_service = SourceService::new(source, query.clone(), workspace.clone());
     let workspace_service = WorkspaceService::new(workspace);
     let catalog_service = CatalogService::new(query.clone(), task.clone());
@@ -792,9 +793,10 @@ async fn start_server(
             .into_axum_router()
             .layer(GrpcRequestContextLayer::new(principal_provider)),
     )
-    // Process liveness must not depend on principal selection.
+    // Health must not depend on principal selection: it is the readiness signal
+    // an orchestrator reaches without a credential.
     .add_service(tonic_health::pb::health_server::HealthServer::new(
-        AggregateHealthService,
+        AggregateHealthService::new(EngineReadiness::from_query_manager(health_queries)),
     ));
 
     let listener = TcpListener::bind(mode.bind_addr()).await?;
