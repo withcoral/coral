@@ -308,6 +308,27 @@ components:
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
+  it('keeps the document metadata when the probe times out', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValueOnce(new Response(serverlessSpec, { status: 200 }))
+        .mockRejectedValueOnce(new DOMException('The operation was aborted', 'AbortError')),
+    )
+
+    const discovered = await loader({
+      request: discoverRequest('https://api.status.example/openapi.json'),
+    } as Parameters<typeof loader>[0])
+
+    expect(discovered).toMatchObject({
+      name: 'lords_votes_api',
+      serverUrl: '',
+      status: 'success',
+    })
+    expect(discovered).not.toHaveProperty('inspectionError')
+  })
+
   it('cancels the probe when the discovery request is aborted', async () => {
     const controller = new AbortController()
     const probeSignals: (AbortSignal | undefined)[] = []

@@ -64,12 +64,13 @@ export async function loader({ request }: Route.LoaderArgs): Promise<SourceDisco
     const document = await responseTextWithinLimit(response)
     const metadata = inspectSourceDocument(document)
     const documentUrl = documentLocation(response, sourceUrl)
-    return discoveredSource(rawUrl, sourceUrl, {
-      ...metadata,
-      serverUrl:
-        absoluteServerUrl(metadata.serverUrl, documentUrl) ||
-        (await derivedServerUrl(documentUrl, metadata.probePath, request.signal)),
-    })
+    const serverUrl =
+      absoluteServerUrl(metadata.serverUrl, documentUrl) ||
+      (await derivedServerUrl(documentUrl, metadata.probePath, signal))
+    // A probe that times out costs only the base URL, but a caller who navigated
+    // away gets no answer at all.
+    request.signal.throwIfAborted()
+    return discoveredSource(rawUrl, sourceUrl, { ...metadata, serverUrl })
   } catch (error) {
     if (request.signal.aborted) throw error
     let inspectionError = 'The source URL could not be loaded'
@@ -498,25 +499,24 @@ function sourceName(title: string): string {
  * 403 included, means the host routes the path, which is what is being checked.
  * The probe reaches only the origin the caller already had us fetch: a path key
  * is document-controlled, and a network-path one such as `//host/data` would
- * otherwise resolve to a host of the document's choosing.
+ * otherwise resolve to a host of the document's choosing. It runs inside
+ * discovery's own deadline, and every way it can fail leaves the base URL to the
+ * user rather than costing the metadata already read from the document.
  */
 async function derivedServerUrl(
   documentUrl: URL,
   probePath: string,
-  requestSignal: AbortSignal,
+  discoverySignal: AbortSignal,
 ): Promise<string> {
   if (!probePath) return ''
   try {
     const probeUrl = new URL(probePath, documentUrl.origin)
     if (probeUrl.origin !== documentUrl.origin) return ''
     const response = await fetch(probeUrl, {
-      signal: AbortSignal.any([requestSignal, AbortSignal.timeout(5_000)]),
+      signal: AbortSignal.any([discoverySignal, AbortSignal.timeout(5_000)]),
     })
     return response.status === 404 || response.status === 410 ? '' : documentUrl.origin
-  } catch (error) {
-    // A caller who navigated away gets the loader's abort handling; every other
-    // failure means the origin does not serve the path.
-    if (requestSignal.aborted) throw error
+  } catch {
     return ''
   }
 }
