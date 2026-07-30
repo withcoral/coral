@@ -321,21 +321,6 @@ mod tests {
     /// `AuthSettings` has no public constructor other than `from_toml`, so the
     /// unsafe-bind guard cannot be bypassed by building a value directly; the
     /// parsing boundary is the only place it needs to hold.
-    #[test]
-    fn rejects_unsafe_bind_at_the_only_construction_site() {
-        let raw = format!(
-            "[auth]\nhttp_bind_addr = '0.0.0.0:0'\n{AUTHORIZATION_SERVER}{PROVIDER}{SESSION}"
-        );
-        let Err(error) = AuthSettings::from_toml(&raw) else {
-            panic!("expected unsafe bind to be rejected");
-        };
-
-        assert!(
-            error
-                .to_string()
-                .contains("allow_insecure_remote_http_bind")
-        );
-    }
 
     #[test]
     fn rejects_session_tokens_resolved_from_different_settings() {

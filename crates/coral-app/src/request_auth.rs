@@ -1,6 +1,7 @@
 //! Session authentication shared by served transport surfaces.
 
 use std::fmt;
+use std::sync::Arc;
 
 use tonic::metadata::MetadataMap;
 
@@ -10,25 +11,27 @@ use crate::identity::{BearerAuthenticator, Principal, PrincipalProvider, Princip
 const AUTHORIZATION_METADATA: &str = "authorization";
 const UNAUTHENTICATED_MESSAGE: &str = "authentication required";
 
-/// Authenticates session tokens minted for one accepted audience.
+/// Authenticates session tokens minted for an allowlist of accepted audiences.
 ///
-/// The audience is a single value, not an allowlist: a served instance has one
-/// resource identifier, and a surface that must accept a different audience gets
-/// its own provider instead of widening this one.
+/// Whether the allowlist holds one entry or several depends on the surface, and
+/// the two cases are genuinely different policies. A public surface accepts only
+/// tokens minted for itself. The private gRPC API has no resource identity of its
+/// own — it is reached through the public surfaces that front it — so it accepts
+/// the audience of every one of them.
 #[derive(Clone)]
 pub(crate) struct SessionPrincipalProvider {
     verifier: SessionTokenVerifier,
-    accepted_audience: String,
+    accepted_audiences: Arc<[String]>,
 }
 
 impl SessionPrincipalProvider {
     pub(crate) fn new(
         verifier: SessionTokenVerifier,
-        accepted_audience: impl Into<String>,
+        accepted_audiences: impl IntoIterator<Item = String>,
     ) -> Self {
         Self {
             verifier,
-            accepted_audience: accepted_audience.into(),
+            accepted_audiences: accepted_audiences.into_iter().collect(),
         }
     }
 
@@ -36,9 +39,14 @@ impl SessionPrincipalProvider {
         if token.is_empty() || !token.bytes().all(|byte| byte.is_ascii_graphic()) {
             return Err(unauthenticated());
         }
+        let accepted = self
+            .accepted_audiences
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
         let session = self
             .verifier
-            .validate_access_token(token, &[self.accepted_audience.as_str()])
+            .validate_access_token(token, &accepted)
             .map_err(|_error| unauthenticated())?;
         Ok(Principal::for_federated(&session.subject))
     }
@@ -98,7 +106,7 @@ mod tests {
     use crate::identity::{BearerAuthenticator as _, PrincipalProvider as _};
 
     const MCP_AUDIENCE: &str = "https://coral.example/mcp";
-    const OTHER_AUDIENCE: &str = "https://app.example";
+    const BFF_AUDIENCE: &str = "https://app.example";
     const CLIENT_ID: &str = "https://client.example/client.json";
 
     fn session(key: &[u8]) -> SessionTokenIssuer {
@@ -123,7 +131,7 @@ mod tests {
             .issue_access_token("raw/subject with spaces", CLIENT_ID, MCP_AUDIENCE)
             .expect("session token")
             .access_token;
-        let provider = SessionPrincipalProvider::new(config.verifier(), MCP_AUDIENCE);
+        let provider = SessionPrincipalProvider::new(config.verifier(), [MCP_AUDIENCE.to_string()]);
 
         let principal = provider
             .principal_for_metadata(&bearer_metadata(&token))
@@ -155,7 +163,7 @@ mod tests {
             .issue_access_token("alice", CLIENT_ID, "https://other.example/mcp")
             .expect("wrong-audience token")
             .access_token;
-        let provider = SessionPrincipalProvider::new(config.verifier(), MCP_AUDIENCE);
+        let provider = SessionPrincipalProvider::new(config.verifier(), [MCP_AUDIENCE.to_string()]);
 
         let mut duplicate = bearer_metadata(&wrong_key);
         duplicate.append(
@@ -183,11 +191,46 @@ mod tests {
         }
     }
 
+    /// The private gRPC API is reached through the public surfaces that front it
+    /// (MCP HTTP today, the UI BFF later), so it admits the audience of each one
+    /// — and nothing else.
     #[tokio::test]
-    async fn a_provider_accepts_only_its_own_audience() {
+    async fn the_private_api_accepts_every_fronting_surface_audience() {
         let signing_key = test_signing_key();
         let config = session(&signing_key);
-        let provider = SessionPrincipalProvider::new(config.verifier(), MCP_AUDIENCE);
+        let private_api = SessionPrincipalProvider::new(
+            config.verifier(),
+            [MCP_AUDIENCE.to_string(), BFF_AUDIENCE.to_string()],
+        );
+
+        for audience in [MCP_AUDIENCE, BFF_AUDIENCE] {
+            let token = config
+                .issue_access_token("alice", CLIENT_ID, audience)
+                .expect("token")
+                .access_token;
+            private_api
+                .principal_for_metadata(&bearer_metadata(&token))
+                .await
+                .unwrap_or_else(|_| panic!("allowlisted audience {audience}"));
+        }
+
+        let unapproved = config
+            .issue_access_token("alice", CLIENT_ID, "https://unapproved.example")
+            .expect("token")
+            .access_token;
+        private_api
+            .principal_for_metadata(&bearer_metadata(&unapproved))
+            .await
+            .expect_err("an audience no fronting surface owns");
+    }
+
+    /// A public surface owns one resource identifier, so its provider must reject
+    /// a token minted for a sibling surface even though the private API takes both.
+    #[tokio::test]
+    async fn a_public_surface_accepts_only_its_own_audience() {
+        let signing_key = test_signing_key();
+        let config = session(&signing_key);
+        let provider = SessionPrincipalProvider::new(config.verifier(), [MCP_AUDIENCE.to_string()]);
 
         let accepted = config
             .issue_access_token("alice", CLIENT_ID, MCP_AUDIENCE)
@@ -198,7 +241,7 @@ mod tests {
             .await
             .expect("its own audience");
 
-        for audience in [OTHER_AUDIENCE, "https://unapproved.example"] {
+        for audience in [BFF_AUDIENCE, "https://unapproved.example"] {
             let token = config
                 .issue_access_token("alice", CLIENT_ID, audience)
                 .expect("token")
@@ -218,7 +261,7 @@ mod tests {
     async fn malformed_bare_tokens_fail_generically() {
         let signing_key = test_signing_key();
         let config = session(&signing_key);
-        let provider = SessionPrincipalProvider::new(config.verifier(), MCP_AUDIENCE);
+        let provider = SessionPrincipalProvider::new(config.verifier(), [MCP_AUDIENCE.to_string()]);
 
         for token in ["", "two words", "trailing\t"] {
             let error = provider

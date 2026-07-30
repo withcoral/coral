@@ -19,7 +19,6 @@ use zeroize::Zeroizing;
 use super::OIDC_CALLBACK_PATH;
 use super::error::AuthServerError;
 use super::session::SessionTokenIssuer;
-use crate::bootstrap::is_loopback_ip;
 use crate::outbound_url_policy::{Configured, EndpointUrl};
 
 const DEFAULT_BIND_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
@@ -62,8 +61,6 @@ struct RawAuthSettings {
         deserialize_with = "deserialize_bind_addr"
     )]
     http_bind_addr: SocketAddr,
-    #[serde(default)]
-    allow_insecure_remote_http_bind: bool,
     session: SessionTokenSettings,
     authorization_server: AuthorizationServerSettings,
     provider: OidcProviderSettings,
@@ -156,11 +153,6 @@ impl RawAuthSettings {
         self.session.validate()?;
         self.authorization_server.validate()?;
         self.provider.validate(&self.authorization_server.issuer)?;
-        if !is_loopback_ip(self.http_bind_addr.ip()) && !self.allow_insecure_remote_http_bind {
-            return Err(config_error(
-                "non-loopback auth.http_bind_addr serves cleartext OAuth endpoints and requires auth.allow_insecure_remote_http_bind = true",
-            ));
-        }
         Ok(())
     }
 }

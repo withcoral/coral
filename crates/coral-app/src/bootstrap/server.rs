@@ -42,7 +42,8 @@ use super::env::AppEnvironment;
 use super::error::AppError;
 use super::health::{AggregateHealthService, EngineReadiness};
 use super::server_config::{
-    LoadedServerConfig, ResolvedCompanionSettings, ResolvedSessionAuth, ServeCompanionConfig,
+    LoadedServerConfig, McpHttpServeConfig, ResolvedCompanionSettings, ResolvedSessionAuth,
+    ServeCompanionConfig,
 };
 use crate::EngineExtensionsProvider;
 use crate::auth::CoralAuthorizationServer;
@@ -100,7 +101,6 @@ pub trait StaticAssetsProvider: Send + Sync + 'static {
 enum ServerModeSelection {
     Explicit(ServerMode),
     ConfiguredStandaloneGrpc,
-    Prepared(ServerMode),
 }
 
 /// Server-side bootstrap configuration for the Coral server.
@@ -109,7 +109,7 @@ pub(crate) struct ServerConfig {
     config_dir: Option<PathBuf>,
     mode: ServerModeSelection,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
-    principal_provider: Option<Arc<dyn PrincipalProvider>>,
+    principal_provider: Arc<dyn PrincipalProvider>,
     feedback_publisher: Arc<dyn FeedbackPublisher>,
     feature_overrides: FeatureOverrides,
     enable_stderr_logs: bool,
@@ -127,7 +127,7 @@ impl ServerConfig {
             config_dir: None,
             mode: ServerModeSelection::Explicit(ServerMode::EphemeralGrpc),
             engine_extensions_providers: Vec::new(),
-            principal_provider: None,
+            principal_provider: Arc::new(LocalPrincipalProvider),
             feedback_publisher: Arc::new(HostedFeedbackPublisher::new()),
             feature_overrides: FeatureOverrides::default(),
             enable_stderr_logs: false,
@@ -157,9 +157,7 @@ impl ServerConfig {
                 loaded.reject_unprepared_auth()?;
                 Ok(mode.clone())
             }
-            ServerModeSelection::Explicit(mode) | ServerModeSelection::Prepared(mode) => {
-                Ok(mode.clone())
-            }
+            ServerModeSelection::Explicit(mode) => Ok(mode.clone()),
             ServerModeSelection::ConfiguredStandaloneGrpc => {
                 let loaded = LoadedServerConfig::load(layout)?;
                 loaded.reject_unprepared_auth()?;
@@ -168,13 +166,6 @@ impl ServerConfig {
                 })
             }
         }
-    }
-
-    fn resolved_principal_provider(&self) -> Arc<dyn PrincipalProvider> {
-        self.principal_provider.as_ref().map_or_else(
-            || Arc::new(LocalPrincipalProvider) as Arc<dyn PrincipalProvider>,
-            Arc::clone,
-        )
     }
 
     pub(crate) fn add_engine_extensions_provider(
@@ -321,33 +312,25 @@ impl ServerBuilder {
             ServerModeSelection::ConfiguredStandaloneGrpc => ServerMode::StandaloneGrpc {
                 bind: loaded.grpc_settings()?.bind_addr,
             },
-            ServerModeSelection::Prepared(_) => {
-                return Err(AppError::FailedPrecondition(
-                    "server builder has already been prepared for serving".to_string(),
-                ));
-            }
         };
         let companions = build_companions(loaded.companion_settings()?)?;
         if companions.mcp_http().is_some() {
             validate_mcp_http_grpc_mode(&mode)?;
         }
         if let Some(provider) = companions.grpc_principal_provider() {
-            if self.config.principal_provider.is_some() {
-                return Err(AppError::FailedPrecondition(
-                    "configured authentication cannot be combined with an injected principal provider"
-                        .to_string(),
-                ));
-            }
-            // Checked against the resolved mode, not `[server].bind_addr`: an
-            // explicitly selected mode supplies its own address, so validating the
-            // configured field would miss the address this listener really binds.
-            loaded
-                .grpc_settings()?
-                .reject_unacknowledged_authenticated_bind(mode.bind_addr())?;
-            self.config.principal_provider = Some(provider);
+            // Configured `[auth]` is the deployment's intent, so it replaces any
+            // provider the embedder installed. Precedence runs this way because
+            // it is the fail-closed one: an injection cannot quietly switch off
+            // authentication the configuration asked for.
+            self.config.principal_provider = provider;
         }
-        self.config.mode = ServerModeSelection::Prepared(mode);
-        Ok((PreparedGrpcServer { builder: self }, companions))
+        Ok((
+            PreparedGrpcServer {
+                builder: self,
+                mode,
+            },
+            companions,
+        ))
     }
 
     #[must_use]
@@ -375,7 +358,7 @@ impl ServerBuilder {
         mut self,
         principal_provider: Arc<dyn PrincipalProvider>,
     ) -> Self {
-        self.config.principal_provider = Some(principal_provider);
+        self.config.principal_provider = principal_provider;
         self
     }
 
@@ -416,10 +399,23 @@ impl ServerBuilder {
     /// required directories cannot be created, the config or credential backends
     /// fail to initialize, or the gRPC server cannot be started.
     pub async fn start(self) -> Result<RunningServer, AppError> {
+        self.start_with_mode(None).await
+    }
+
+    /// Starts the server, optionally on a mode that has already been resolved.
+    ///
+    /// `prepared_mode` is `Some` only from [`PreparedGrpcServer::start`], which
+    /// resolved the mode and installed the configured principal provider before
+    /// this point. Resolving again there would re-read the configuration and
+    /// reject the very `[auth]` preparation just wired in.
+    async fn start_with_mode(
+        self,
+        prepared_mode: Option<ServerMode>,
+    ) -> Result<RunningServer, AppError> {
         let env = AppEnvironment::discover();
         let layout = env.app_state_layout(self.config.config_dir.clone())?;
-        let mode = self.config.resolved_mode(&layout)?;
-        let principal_provider = self.config.resolved_principal_provider();
+        let mode = prepared_mode.map_or_else(|| self.config.resolved_mode(&layout), Ok)?;
+        let principal_provider = Arc::clone(&self.config.principal_provider);
         layout.ensure()?;
         let features = FeatureStore::from_layout(layout.clone())
             .load_with_overrides(&self.config.feature_overrides)?;
@@ -522,6 +518,12 @@ impl ServerBuilder {
 /// receives them separately and owns their lifecycle.
 pub struct PreparedGrpcServer {
     builder: ServerBuilder,
+    /// The mode `prepare_for_serve` settled on.
+    ///
+    /// Holding it here is what makes this type the only record that preparation
+    /// happened. The builder's own mode selection stays as the caller left it, so
+    /// there is no second copy of that fact to keep in step.
+    mode: ServerMode,
 }
 
 impl PreparedGrpcServer {
@@ -531,7 +533,7 @@ impl PreparedGrpcServer {
     ///
     /// Returns [`AppError`] when the app runtime or gRPC listener cannot start.
     pub async fn start(self) -> Result<RunningServer, AppError> {
-        self.builder.start().await
+        self.builder.start_with_mode(Some(self.mode)).await
     }
 }
 
@@ -560,25 +562,35 @@ fn build_companions(settings: ResolvedCompanionSettings) -> Result<ServeCompanio
     let ResolvedSessionAuth {
         settings: auth_settings,
         session_tokens,
-        resource,
+        public_audiences,
     } = session_auth;
 
-    // Two independently constructed providers that enforce the same policy today.
-    // They are kept separate so the private gRPC API and MCP HTTP can diverge
-    // later without one surface silently inheriting the other's change.
+    // Two genuinely different policies. The gRPC API is private — it is reached
+    // through the public surfaces that front it — so it admits the audience of
+    // every one of them. A public surface admits only its own, which is what stops
+    // a token minted for one surface being replayed at a sibling.
     let grpc_principal_provider = Some(Arc::new(SessionPrincipalProvider::new(
         session_tokens.verifier(),
-        resource.clone(),
+        public_audiences.clone(),
     )) as Arc<dyn PrincipalProvider>);
-    let mcp_principal_provider = Some(Arc::new(SessionPrincipalProvider::new(
-        session_tokens.verifier(),
-        resource.clone(),
-    )) as Arc<dyn BearerAuthenticator>);
-    let authorization_server =
+    let mcp_principal_provider = match &mcp_http {
+        Some(McpHttpServeConfig::Authenticated { public_url, .. }) => Some(Arc::new(
+            SessionPrincipalProvider::new(session_tokens.verifier(), [public_url.clone()]),
+        )
+            as Arc<dyn BearerAuthenticator>),
+        _ => None,
+    };
+
+    // Every public surface is an authorization resource clients may request a
+    // token for; the authorization server holds them as a set.
+    let mut authorization_server =
         CoralAuthorizationServer::from_resolved_settings(auth_settings, session_tokens)
-            .map_err(|error| AppError::FailedPrecondition(error.to_string()))?
-            .with_authorization_resource(resource)
+            .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
+    for audience in public_audiences {
+        authorization_server = authorization_server
+            .with_authorization_resource(audience)
             .map_err(AppError::FailedPrecondition)?;
+    }
 
     Ok(ServeCompanionConfig::from_parts(
         mcp_http,
@@ -1510,74 +1522,6 @@ redirect_uri = 'https://auth.example/auth/oidc/callback'
             .prepare_for_serve()
             .err()
             .expect("IPv4-mapped IPv6 must fail closed");
-    }
-
-    /// The acknowledgement is checked against the mode the listener will use, not
-    /// `[server].bind_addr`. An explicitly selected mode carries its own address,
-    /// so a config whose `bind_addr` is an unrelated loopback default must not let
-    /// an authenticated wildcard listener through unacknowledged.
-    #[test]
-    fn an_authenticated_non_loopback_bind_needs_an_acknowledgement() {
-        let auth_config = |extra: &str| {
-            format!(
-                "[server]\npublic_url = 'https://grpc.example.test'\n{extra}
-[auth.session]
-signing_key_file = 'session.key'
-
-[auth.authorization_server]
-issuer = 'https://auth.example'
-
-[auth.provider]
-issuer = 'https://accounts.example'
-client_id = 'upstream-client'
-client_secret = 'test-secret'
-redirect_uri = 'https://auth.example/auth/oidc/callback'
-"
-            )
-        };
-        // `explicit` selects the mode directly; otherwise the bind comes from
-        // `[server].bind_addr` in the config.
-        let prepared = |extra: &str, explicit: bool| {
-            let temp = TempDir::new().expect("temp dir");
-            let config_dir = temp.path().join("coral-config");
-            std::fs::create_dir_all(&config_dir).expect("config dir");
-            std::fs::write(config_dir.join("config.toml"), auth_config(extra))
-                .expect("config file");
-            let signing_key = crate::auth::session::test_signing_key();
-            std::fs::write(config_dir.join("session.key"), signing_key).expect("session key");
-            let builder = if explicit {
-                ServerBuilder::standalone_grpc(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 14555)))
-            } else {
-                ServerBuilder::configured_standalone_grpc()
-            };
-            let result = builder
-                .with_config_dir(config_dir)
-                .prepare_for_serve()
-                .map(|_| ());
-            drop(temp);
-            result
-        };
-
-        for (label, extra, explicit) in [
-            ("explicit mode", "", true),
-            ("configured bind", "bind_addr = '0.0.0.0:14555'\n", false),
-        ] {
-            let error = prepared(extra, explicit)
-                .err()
-                .unwrap_or_else(|| panic!("{label} must fail closed unacknowledged"));
-            assert!(
-                error
-                    .to_string()
-                    .contains("server.allow_insecure_remote_grpc_bind = true"),
-                "{label}: unexpected error: {error}"
-            );
-
-            prepared(
-                &format!("{extra}allow_insecure_remote_grpc_bind = true\n"),
-                explicit,
-            )
-            .unwrap_or_else(|error| panic!("{label} acknowledged must be allowed: {error}"));
-        }
     }
 
     #[tokio::test]

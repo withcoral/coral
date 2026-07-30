@@ -751,11 +751,10 @@ async fn run_server(
     let server = bootstrap::start_standalone_server(feature_overrides).await?;
     let endpoint = server.endpoint_uri().to_string();
 
-    if server_requires_security_warning(&endpoint, server.grpc_authentication_enabled()) {
+    if server_requires_security_warning(&endpoint) {
         eprintln!(
-            "Warning: the native gRPC server at {endpoint} does not authenticate clients; \
-             any client that can reach the server can access Coral and its configured sources. \
-             Protect it with a trusted network boundary or authenticating proxy."
+            "{}",
+            grpc_exposure_warning(&endpoint, server.grpc_authentication_enabled())
         );
     }
     println!("Coral gRPC server listening on {endpoint}");
@@ -793,16 +792,28 @@ fn server_endpoint_is_loopback(endpoint: &str) -> bool {
         .is_some_and(|address| address.ip().is_loopback())
 }
 
-/// Reports whether the operator still needs to be told the listener is exposed.
+/// Reports whether the operator should be told the listener is exposed.
 ///
-/// The warning is about a listener that authenticates nobody, so configured
-/// `[auth]` suppresses it and the wording stays accurate. A non-loopback
-/// authenticated bind is cleartext h2c too, but Coral no longer lets that happen
-/// silently: `server.allow_insecure_remote_grpc_bind` makes the operator
-/// acknowledge it in `config.toml` before startup, which is a stronger signal
-/// than a line on stderr.
-fn server_requires_security_warning(endpoint: &str, authentication_enabled: bool) -> bool {
-    !authentication_enabled && !server_endpoint_is_loopback(endpoint)
+/// Binding off loopback is the operator's decision and Coral does not gate it, so
+/// this line on stderr is the only notice they get — which is why it fires
+/// whether or not authentication is configured. Coral terminates no TLS: without
+/// `[auth]` anyone reachable gets in, and with it the bearer tokens cross the wire
+/// in cleartext. [`grpc_exposure_warning`] words each case.
+fn server_requires_security_warning(endpoint: &str) -> bool {
+    !server_endpoint_is_loopback(endpoint)
+}
+
+/// The exposure warning for a non-loopback gRPC listener.
+fn grpc_exposure_warning(endpoint: &str, authentication_enabled: bool) -> String {
+    let exposure = if authentication_enabled {
+        "it serves cleartext h2c, so the bearer tokens clients send can be read off the wire"
+    } else {
+        "it does not authenticate clients, so anything that can reach it can access Coral and its configured sources"
+    };
+    format!(
+        "Warning: the native gRPC server at {endpoint} is not bound to loopback and {exposure}. \
+         Terminate TLS in front of Coral and keep untrusted clients off the listener."
+    )
 }
 
 #[cfg(unix)]
@@ -1730,7 +1741,8 @@ mod tests {
 
     use super::{
         Cli, RequiredRuntime, command_enables_stderr_logs, function_columns_summary,
-        function_status_summary, server_endpoint_is_loopback, server_requires_security_warning,
+        function_status_summary, grpc_exposure_warning, server_endpoint_is_loopback,
+        server_requires_security_warning,
     };
 
     #[test]
@@ -1769,18 +1781,19 @@ mod tests {
                 "endpoint: {endpoint}"
             );
         }
-        assert!(server_requires_security_warning(
-            "http://0.0.0.0:14555",
-            false
-        ));
-        assert!(!server_requires_security_warning(
-            "http://0.0.0.0:14555",
-            true
-        ));
-        assert!(!server_requires_security_warning(
-            "http://127.0.0.1:14555",
-            false
-        ));
+        // A remote bind is warned about either way: nothing gates it, so this is
+        // the only notice the operator gets.
+        assert!(server_requires_security_warning("http://0.0.0.0:14555"));
+        assert!(!server_requires_security_warning("http://127.0.0.1:14555"));
+
+        // The wording has to name the right exposure for each case.
+        let unauthenticated = grpc_exposure_warning("http://0.0.0.0:14555", false);
+        assert!(
+            unauthenticated.contains("does not authenticate clients"),
+            "{unauthenticated}"
+        );
+        let authenticated = grpc_exposure_warning("http://0.0.0.0:14555", true);
+        assert!(authenticated.contains("bearer tokens"), "{authenticated}");
     }
 
     #[cfg(feature = "embedded-ui")]
