@@ -191,10 +191,13 @@ fn candidate_row_path<'a>(
             // such as `results.data` are worth finding, an unrestricted walk of
             // every resource child is not.
             for name in PREFERRED_ROW_PROPERTIES {
-                // A branch that cannot be walked — unresolvable, cyclic, too
-                // deep — holds no rows, which is not a reason to abandon the
-                // other candidate names. `schema_has_type` already treats the
-                // same failures this way.
+                // The error cannot propagate: `JsonSchemaWalkError` borrows
+                // from the schema it walked, and these properties belong to
+                // the merged view rather than the document, so `?` would hand
+                // back a reference to a local. Skipping is sound in itself — a
+                // branch that cannot be walked holds no rows — but it leaves
+                // the sole-array fallback below reachable for an envelope
+                // whose preferred branch is an unresolvable `$ref`.
                 if let Some(property) = properties.get(*name)
                     && let Some(mut path) = candidate_row_path(
                         root,
