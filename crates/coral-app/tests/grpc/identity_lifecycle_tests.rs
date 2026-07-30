@@ -19,10 +19,10 @@ const IDENTITY_NAME: &str = "example";
 const TOKEN: &str = "write-only-test-token";
 
 #[derive(Debug)]
-struct MetadataUserPrincipalProvider;
+struct MetadataPrincipalProvider;
 
 #[tonic::async_trait]
-impl PrincipalProvider for MetadataUserPrincipalProvider {
+impl PrincipalProvider for MetadataPrincipalProvider {
     async fn principal_for_metadata(
         &self,
         metadata: &tonic::metadata::MetadataMap,
@@ -40,8 +40,7 @@ impl PrincipalProvider for MetadataUserPrincipalProvider {
 #[tokio::test]
 async fn manages_current_user_fixed_token_identities_without_cross_user_leaks() {
     let harness =
-        GrpcHarness::new_with_user_principal_provider(Arc::new(MetadataUserPrincipalProvider))
-            .await;
+        GrpcHarness::new_with_principal_provider(Arc::new(MetadataPrincipalProvider)).await;
     install_global_spec(&harness).await;
 
     let missing_setup = harness

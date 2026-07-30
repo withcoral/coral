@@ -1712,6 +1712,10 @@ backend = "unsupported"
     }
 
     #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one end-to-end fixture whose server dependencies grow with each registered service"
+    )]
     async fn file_tilde_sources_resolve_from_app_owned_runtime_context() {
         if !loopback_sockets_available() {
             return;

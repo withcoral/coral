@@ -47,8 +47,8 @@ impl GrpcHarness {
         Self::start_with_parts(temp_dir, config_dir, feature_overrides).await
     }
 
-    pub(crate) async fn new_with_user_principal_provider(
-        user_principal_provider: Arc<dyn coral_app::PrincipalProvider>,
+    pub(crate) async fn new_with_principal_provider(
+        principal_provider: Arc<dyn coral_app::PrincipalProvider>,
     ) -> Self {
         let temp_dir = TempDir::new().expect("temp dir");
         let config_dir = temp_dir.path().join("coral-config");
@@ -56,7 +56,7 @@ impl GrpcHarness {
             temp_dir,
             config_dir,
             FeatureOverrides::default(),
-            ServerBuilder::new().with_principal_provider(user_principal_provider),
+            ServerBuilder::new().with_principal_provider(principal_provider),
         )
         .await
     }
