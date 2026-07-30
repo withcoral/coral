@@ -177,30 +177,52 @@ impl StructuredQueryError {
     /// `missing_ref` preserves the SQL object-name components for the missing
     /// table. `known_tables` is consulted to (a) distinguish `DataFusion`'s
     /// synthetic `public` schema from a real user source also named `public`,
-    /// and (b) recover a correct `(schema, table)` split when the source
-    /// name itself contains a dot.
+    /// (b) recover a correct `(schema, table)` split when the source name
+    /// itself contains a dot, and (c) split a catalog-backed reference into its
+    /// catalog and schema.
+    ///
+    /// Metadata reports `catalog` and `schema` as separate keys, never a
+    /// compound `catalog.schema` string: clients recover from this error by
+    /// feeding those values back into catalog lookups that take the catalog and
+    /// the schema as distinct arguments, and those match the schema on its own.
     pub(crate) fn table_not_found(missing_ref: &TableRefParts, known_tables: &[TableInfo]) -> Self {
         let parsed = parse_table_ref(missing_ref, known_tables);
 
-        let (schema, table) = match &parsed {
+        let (qualifier, table) = match &parsed {
             ParsedTableRef::Unqualified { table } => (None, table.clone()),
-            ParsedTableRef::Qualified { schema, table } => (Some(schema.clone()), table.clone()),
+            ParsedTableRef::Qualified { qualifier, table } => (Some(qualifier), table.clone()),
         };
 
-        let display_ref = match &schema {
-            Some(schema) => format!("{schema}.{table}"),
+        let display_ref = match qualifier {
+            Some(qualifier) => format!("{}.{table}", qualifier.written),
             None => table.clone(),
         };
-        let hint = table_not_found_hint(schema.as_deref(), &table, known_tables);
+        let hint = table_not_found_hint(
+            qualifier.map(|qualifier| qualifier.written.as_str()),
+            &table,
+            known_tables,
+        );
 
         let mut metadata = HashMap::new();
-        if let Some(schema) = &schema {
-            metadata.insert("schema".to_string(), schema.clone());
+        if let Some(qualifier) = qualifier {
+            if let Some(catalog) = qualifier.catalog() {
+                metadata.insert("catalog".to_string(), catalog.to_string());
+            }
+            metadata.insert("schema".to_string(), qualifier.schema().to_string());
         }
         metadata.insert("table".to_string(), table.clone());
 
-        let detail = match schema.as_deref() {
-            Some(schema) => format!("No table `{table}` exists in schema `{schema}`."),
+        let detail = match qualifier {
+            Some(qualifier) => match qualifier.catalog() {
+                Some(catalog) => format!(
+                    "No table `{table}` exists in catalog `{catalog}` schema `{}`.",
+                    qualifier.schema()
+                ),
+                None => format!(
+                    "No table `{table}` exists in schema `{}`.",
+                    qualifier.written
+                ),
+            },
             None => format!("No table `{table}` exists in any registered schema."),
         };
 
@@ -410,10 +432,9 @@ fn table_not_found_hint(
         ));
     };
 
-    let schema_lower = schema.to_lowercase();
     let tables_in_schema: Vec<&TableInfo> = known_tables
         .iter()
-        .filter(|info| table_schema_matches(info, &schema_lower))
+        .filter(|info| table_schema_matches(info, schema))
         .collect();
 
     if tables_in_schema.is_empty() {
@@ -467,7 +488,7 @@ fn quoted_qualified_table_match<'a>(
 
     let mut matches = known_tables
         .iter()
-        .filter(|info| raw_schema_table_name(info).eq_ignore_ascii_case(table));
+        .filter(|info| raw_schema_table_matches(info, table));
     let first = matches.next()?;
     matches.next().is_none().then_some(first)
 }
@@ -498,6 +519,29 @@ fn raw_schema_table_name(info: &TableInfo) -> String {
         format!("{}.{}.{}", catalog_name, info.schema_name, info.table_name)
     } else {
         format!("{}.{}", info.schema_name, info.table_name)
+    }
+}
+
+/// Case-insensitive match of a whole unquoted reference against this table's
+/// dotted raw name. Shares [`eq_folded`]'s folding so a non-ASCII source name
+/// matches here too, and compares in place instead of building the joined name
+/// per table.
+fn raw_schema_table_matches(info: &TableInfo, reference: &str) -> bool {
+    match info.catalog_name.as_deref() {
+        None => eq_folded(
+            reference,
+            &[&info.schema_name, ".", info.table_name.as_str()],
+        ),
+        Some(catalog_name) => eq_folded(
+            reference,
+            &[
+                catalog_name,
+                ".",
+                &info.schema_name,
+                ".",
+                info.table_name.as_str(),
+            ],
+        ),
     }
 }
 
@@ -558,7 +602,57 @@ fn sql_string_literal(value: &str) -> String {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ParsedTableRef {
     Unqualified { table: String },
-    Qualified { schema: String, table: String },
+    Qualified {
+        qualifier: ParsedQualifier,
+        table: String,
+    },
+}
+
+/// The qualifier recovered from a missing table reference.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedQualifier {
+    /// The qualifier exactly as the query spelled it. Error text echoes this so
+    /// the message names what the caller actually wrote.
+    written: String,
+    /// The registered catalog/schema pair this qualifier resolved to, when it
+    /// resolved at all.
+    registered: Option<RegisteredQualifier>,
+}
+
+/// A catalog/schema pair as the runtime has it registered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RegisteredQualifier {
+    catalog: Option<String>,
+    schema: String,
+}
+
+impl RegisteredQualifier {
+    fn from_table(info: &TableInfo) -> Self {
+        Self {
+            catalog: info.catalog_name.clone(),
+            schema: info.schema_name.clone(),
+        }
+    }
+}
+
+impl ParsedQualifier {
+    /// The catalog this qualifier resolved to, if it named a catalog-backed
+    /// table.
+    fn catalog(&self) -> Option<&str> {
+        self.registered
+            .as_ref()
+            .and_then(|registered| registered.catalog.as_deref())
+    }
+
+    /// The schema to report on its own: the registered spelling when the
+    /// qualifier resolved, otherwise the caller's own spelling.
+    fn schema(&self) -> &str {
+        self.registered
+            .as_ref()
+            .map_or(self.written.as_str(), |registered| {
+                registered.schema.as_str()
+            })
+    }
 }
 
 /// Recovers the user's intent from a parsed missing table reference.
@@ -621,9 +715,12 @@ fn parse_table_ref(reference: &TableRefParts, known_tables: &[TableInfo]) -> Par
                     body.get(..schema_len)
                         .expect("schema range is bounded by loop"),
                 );
-                if schema_is_registered(&candidate_schema, known_tables) {
+                if let Some(registered) = matched_qualifier(&candidate_schema, known_tables) {
                     return ParsedTableRef::Qualified {
-                        schema: candidate_schema,
+                        qualifier: ParsedQualifier {
+                            written: candidate_schema,
+                            registered: Some(registered),
+                        },
                         table: join_ref_parts(
                             body.get(schema_len..)
                                 .expect("table range is bounded by loop"),
@@ -641,7 +738,10 @@ fn parse_table_ref(reference: &TableRefParts, known_tables: &[TableInfo]) -> Par
                 .split_last()
                 .expect("multi-part body is guaranteed by match arm");
             ParsedTableRef::Qualified {
-                schema: join_ref_parts(schema),
+                qualifier: ParsedQualifier {
+                    written: join_ref_parts(schema),
+                    registered: None,
+                },
                 table: table.clone(),
             }
         }
@@ -653,19 +753,45 @@ fn join_ref_parts(parts: &[String]) -> String {
 }
 
 fn schema_is_registered(candidate: &str, known_tables: &[TableInfo]) -> bool {
-    let lowered = candidate.to_lowercase();
-    known_tables
-        .iter()
-        .any(|info| table_schema_matches(info, &lowered))
+    matched_qualifier(candidate, known_tables).is_some()
 }
 
-fn table_schema_matches(info: &TableInfo, schema_lower: &str) -> bool {
+/// Finds the registered qualifier a schema candidate names, so a caller can
+/// report the catalog and schema separately instead of echoing the compound
+/// string back.
+fn matched_qualifier(candidate: &str, known_tables: &[TableInfo]) -> Option<RegisteredQualifier> {
+    known_tables
+        .iter()
+        .find(|info| table_schema_matches(info, candidate))
+        .map(RegisteredQualifier::from_table)
+}
+
+/// Whether `candidate` names this table's qualifier: the bare schema for a
+/// schema-backed table, or `catalog.schema` for a catalog-backed one. A
+/// catalog-backed table deliberately does not match its bare schema, because a
+/// database's internal `public` schema is not a top-level source name.
+fn table_schema_matches(info: &TableInfo, candidate: &str) -> bool {
     match info.catalog_name.as_deref() {
-        None => info.schema_name.eq_ignore_ascii_case(schema_lower),
-        Some(catalog_name) => {
-            format!("{catalog_name}.{}", info.schema_name).to_lowercase() == schema_lower
-        }
+        None => eq_folded(candidate, &[info.schema_name.as_str()]),
+        Some(catalog_name) => eq_folded(candidate, &[catalog_name, ".", &info.schema_name]),
     }
+}
+
+/// Case-insensitive equality between `candidate` and `segments` joined end to
+/// end.
+///
+/// Both sides fold through `char::to_lowercase`, so identifiers outside ASCII
+/// compare correctly: legacy (pre-v4) manifests are not charset-restricted, so
+/// a source named `CAFÉ` still has to match `FROM café.orders`. Folding the
+/// segments in place also keeps the catalog-backed arm from allocating a joined
+/// `catalog.schema` string per table, and callers run this once per prefix
+/// length per table.
+fn eq_folded(candidate: &str, segments: &[&str]) -> bool {
+    folded_chars(candidate).eq(segments.iter().copied().flat_map(folded_chars))
+}
+
+fn folded_chars(value: &str) -> impl Iterator<Item = char> + '_ {
+    value.chars().flat_map(char::to_lowercase)
 }
 
 // ---------------------------------------------------------------------------
@@ -903,25 +1029,75 @@ mod tests {
     }
 
     #[test]
-    fn table_not_found_catalog_reference_uses_compound_schema() {
+    fn table_not_found_catalog_reference_splits_catalog_from_schema() {
         let tables = vec![catalog_table("coral_db", "main", "users")];
         let err = StructuredQueryError::table_not_found(
             &tr(&["datafusion", "coral_db", "main", "usrs"]),
             &tables,
         );
 
+        // Metadata reaches MCP clients verbatim and is what they feed back into
+        // catalog lookups, which match the schema on its own — so `schema` must
+        // stay bare and the catalog must travel in its own key.
+        assert_eq!(
+            err.metadata().get("catalog").map(String::as_str),
+            Some("coral_db")
+        );
         assert_eq!(
             err.metadata().get("schema").map(String::as_str),
-            Some("coral_db.main")
+            Some("main")
         );
         assert_eq!(
             err.metadata().get("table").map(String::as_str),
             Some("usrs")
         );
+        assert_eq!(
+            err.detail(),
+            "No table `usrs` exists in catalog `coral_db` schema `main`."
+        );
+        // The summary still echoes the reference as written.
+        assert!(
+            err.summary().contains("coral_db.main.usrs"),
+            "got: {}",
+            err.summary()
+        );
         let hint = err.hint().expect("hint should be present");
         assert!(
             hint.contains("coral_db.main.users"),
             "namespaced miss should suggest the queryable table reference, got: {hint}"
+        );
+    }
+
+    #[test]
+    fn table_not_found_schema_reference_has_no_catalog_metadata() {
+        let tables = vec![table("hockey", "master")];
+        let err =
+            StructuredQueryError::table_not_found(&tr(&["hockey", "missing_table"]), &tables);
+
+        assert_eq!(err.metadata().get("catalog"), None);
+        assert_eq!(
+            err.metadata().get("schema").map(String::as_str),
+            Some("hockey")
+        );
+    }
+
+    #[test]
+    fn table_not_found_matches_non_ascii_schema_case_insensitively() {
+        // Legacy (pre-v4) source names are not charset-restricted, so folding
+        // has to be Unicode-aware on both sides: `CAFÉ` must resolve to the
+        // registered `café` instead of falling through to the generic
+        // "schema not registered" hint.
+        let tables = vec![table("café", "orders")];
+        let err = StructuredQueryError::table_not_found(&tr(&["CAFÉ", "ordrs"]), &tables);
+
+        assert_eq!(
+            err.metadata().get("schema").map(String::as_str),
+            Some("café")
+        );
+        let hint = err.hint().expect("hint should be present");
+        assert!(
+            hint.contains("orders"),
+            "registered schema should drive the table suggestion, got: {hint}"
         );
     }
 
@@ -953,8 +1129,12 @@ mod tests {
         );
 
         assert_eq!(
+            err.metadata().get("catalog").map(String::as_str),
+            Some("warehouse")
+        );
+        assert_eq!(
             err.metadata().get("schema").map(String::as_str),
-            Some("warehouse.public")
+            Some("public")
         );
         assert_eq!(
             err.metadata().get("table").map(String::as_str),
