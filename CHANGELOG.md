@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.8.3](https://github.com/withcoral/coral/compare/v0.8.2...v0.8.3) (2026-07-30)
+
+
+### Features
+
+* **desktop:** add About Coral to the app menu ([#2030](https://github.com/withcoral/coral/issues/2030)) ([815e50b](https://github.com/withcoral/coral/commit/815e50b0aae9670a276947ac454ce887f5faeef2))
+* **reef:** add a base URL field to source creation ([#2024](https://github.com/withcoral/coral/issues/2024)) ([bd196f4](https://github.com/withcoral/coral/commit/bd196f49392c09d3296c145e27d29eef87fd2d3a))
+
 ## [0.8.2](https://github.com/withcoral/coral/compare/v0.8.1...v0.8.2) (2026-07-30)
 
 
