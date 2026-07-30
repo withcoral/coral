@@ -12,8 +12,11 @@ const serverlessSpec = JSON.stringify({
 const servedFrom = (response: Response, url: string) =>
   Object.defineProperty(response, 'url', { value: url })
 
-const discoverRequest = (url: string) =>
-  new Request(`http://reef.test/workspaces/default/sources/discover?url=${encodeURIComponent(url)}`)
+const discoverRequest = (url: string, signal?: AbortSignal) =>
+  new Request(
+    `http://reef.test/workspaces/default/sources/discover?url=${encodeURIComponent(url)}`,
+    signal ? { signal } : undefined,
+  )
 
 describe('source discovery', () => {
   afterEach(() => vi.unstubAllGlobals())
@@ -278,6 +281,28 @@ components:
         request: discoverRequest('https://raw.githubusercontent.com/org/repo/openapi.json'),
       } as Parameters<typeof loader>[0]),
     ).resolves.toMatchObject({ serverUrl: '' })
+  })
+
+  it('cancels the probe when the discovery request is aborted', async () => {
+    const controller = new AbortController()
+    const probeSignals: (AbortSignal | undefined)[] = []
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(serverlessSpec, { status: 200 }))
+      .mockImplementationOnce((_url: URL, init: RequestInit) => {
+        probeSignals.push(init.signal ?? undefined)
+        controller.abort()
+        return Promise.reject(new DOMException('The operation was aborted', 'AbortError'))
+      })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(
+      loader({
+        request: discoverRequest('https://api.status.example/openapi.json', controller.signal),
+      } as Parameters<typeof loader>[0]),
+    ).rejects.toThrow()
+
+    expect(probeSignals[0]?.aborted).toBe(true)
   })
 
   it('does not probe a path key that resolves to another host', async () => {

@@ -68,7 +68,7 @@ export async function loader({ request }: Route.LoaderArgs): Promise<SourceDisco
       ...metadata,
       serverUrl:
         absoluteServerUrl(metadata.serverUrl, documentUrl) ||
-        (await derivedServerUrl(documentUrl, metadata.probePath)),
+        (await derivedServerUrl(documentUrl, metadata.probePath, request.signal)),
     })
   } catch (error) {
     if (request.signal.aborted) throw error
@@ -490,16 +490,23 @@ function sourceName(title: string): string {
  * is document-controlled, and a network-path one such as `//host/data` would
  * otherwise resolve to a host of the document's choosing.
  */
-async function derivedServerUrl(sourceUrl: URL, probePath: string): Promise<string> {
+async function derivedServerUrl(
+  documentUrl: URL,
+  probePath: string,
+  requestSignal: AbortSignal,
+): Promise<string> {
   if (!probePath) return ''
   try {
-    const probeUrl = new URL(probePath, sourceUrl.origin)
-    if (probeUrl.origin !== sourceUrl.origin) return ''
+    const probeUrl = new URL(probePath, documentUrl.origin)
+    if (probeUrl.origin !== documentUrl.origin) return ''
     const response = await fetch(probeUrl, {
-      signal: AbortSignal.timeout(5_000),
+      signal: AbortSignal.any([requestSignal, AbortSignal.timeout(5_000)]),
     })
-    return response.status === 404 || response.status === 410 ? '' : sourceUrl.origin
-  } catch {
+    return response.status === 404 || response.status === 410 ? '' : documentUrl.origin
+  } catch (error) {
+    // A caller who navigated away gets the loader's abort handling; every other
+    // failure means the origin does not serve the path.
+    if (requestSignal.aborted) throw error
     return ''
   }
 }
