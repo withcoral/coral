@@ -63,9 +63,12 @@ export async function loader({ request }: Route.LoaderArgs): Promise<SourceDisco
 
     const document = await responseTextWithinLimit(response)
     const metadata = inspectSourceDocument(document)
+    const documentUrl = documentLocation(response, sourceUrl)
     return discoveredSource(rawUrl, sourceUrl, {
       ...metadata,
-      serverUrl: metadata.serverUrl || (await derivedServerUrl(sourceUrl, metadata.probePath)),
+      serverUrl:
+        absoluteServerUrl(metadata.serverUrl, documentUrl) ||
+        (await derivedServerUrl(documentUrl, metadata.probePath)),
     })
   } catch (error) {
     if (request.signal.aborted) throw error
@@ -520,6 +523,19 @@ function absoluteServerUrl(serverUrl: string, fetchUrl: URL): string {
   }
 }
 
+/**
+ * Where the document was actually served from, which a redirect can move to
+ * another host entirely. Both a relative `servers[].url` and an origin probe
+ * describe the API relative to the document, not to the URL that was typed.
+ */
+function documentLocation(response: Response, sourceUrl: URL): URL {
+  try {
+    return new URL(response.url)
+  } catch {
+    return sourceUrl
+  }
+}
+
 function discoveryError(url: string, message: string): SourceDiscoveryData {
   return { message, status: 'error', url }
 }
@@ -544,7 +560,7 @@ function discoveredSource(
         ? 'mcp'
         : metadata.format,
     name: sourceName(metadata.title || fallbackTitle(sourceUrl)),
-    serverUrl: absoluteServerUrl(metadata.serverUrl, sourceUrl),
+    serverUrl: metadata.serverUrl,
     status: 'success',
     url,
     ...(metadata.inspectionError ? { inspectionError: metadata.inspectionError } : {}),

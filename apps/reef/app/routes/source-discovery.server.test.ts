@@ -8,6 +8,10 @@ const serverlessSpec = JSON.stringify({
   paths: { '/data/Divisions/groupedbyparty': {}, '/data/Divisions/{divisionId}': {} },
 })
 
+/** A response as `fetch` returns it after following a redirect: `url` is the final one. */
+const servedFrom = (response: Response, url: string) =>
+  Object.defineProperty(response, 'url', { value: url })
+
 const discoverRequest = (url: string) =>
   new Request(`http://reef.test/workspaces/default/sources/discover?url=${encodeURIComponent(url)}`)
 
@@ -176,6 +180,54 @@ components:
     await expect(loader({ request } as Parameters<typeof loader>[0])).resolves.toMatchObject({
       serverUrl: 'https://status.example/v1',
     })
+  })
+
+  it('resolves a relative server URL against a redirected document location', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        servedFrom(
+          new Response(
+            JSON.stringify({
+              info: { title: 'Status API' },
+              openapi: '3.0.3',
+              servers: [{ url: '/v1' }],
+            }),
+            { status: 200 },
+          ),
+          'https://api.status.example/openapi.json',
+        ),
+      ),
+    )
+
+    await expect(
+      loader({
+        request: discoverRequest('https://docs.status.example/openapi.json'),
+      } as Parameters<typeof loader>[0]),
+    ).resolves.toMatchObject({ serverUrl: 'https://api.status.example/v1' })
+  })
+
+  it('probes the redirected document location rather than the requested host', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        servedFrom(
+          new Response(serverlessSpec, { status: 200 }),
+          'https://api.status.example/openapi.json',
+        ),
+      )
+      .mockResolvedValueOnce(new Response('[]', { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(
+      loader({
+        request: discoverRequest('https://docs.status.example/openapi.json'),
+      } as Parameters<typeof loader>[0]),
+    ).resolves.toMatchObject({ serverUrl: 'https://api.status.example' })
+
+    expect(fetchMock.mock.calls[1][0].toString()).toBe(
+      'https://api.status.example/data/Divisions/groupedbyparty',
+    )
   })
 
   it('derives the server URL from the fetch origin when a probed path is served', async () => {
