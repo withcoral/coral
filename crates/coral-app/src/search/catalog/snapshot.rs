@@ -4,8 +4,7 @@ use std::collections::BTreeMap;
 
 use coral_engine::{
     CatalogInfo, ColumnInfo, TableFunctionArgumentInfo, TableFunctionInfo,
-    TableFunctionResultColumnInfo, TableInfo, UniversalSearchAuthorizationDecision,
-    UniversalSearchAuthorizationInfo, UniversalSearchAuthorizationOrigin,
+    TableFunctionResultColumnInfo, TableInfo, UniversalSearchAuthorizationInfo,
 };
 use coral_spec::SourceTableFunctionKind;
 use sha2::{Digest as _, Sha256};
@@ -526,22 +525,8 @@ fn update_universal_search_hash(
     update_hash(hasher, "universal_search");
     update_hash(hasher, &authorization.source_name);
     update_optional_hash(hasher, authorization.route_id.as_deref());
-    update_hash(
-        hasher,
-        match authorization.origin {
-            UniversalSearchAuthorizationOrigin::Unspecified => "unspecified",
-            UniversalSearchAuthorizationOrigin::Explicit => "explicit",
-            UniversalSearchAuthorizationOrigin::Inferred => "inferred",
-        },
-    );
-    update_hash(
-        hasher,
-        match authorization.decision {
-            UniversalSearchAuthorizationDecision::Unspecified => "unspecified",
-            UniversalSearchAuthorizationDecision::Eligible => "eligible",
-            UniversalSearchAuthorizationDecision::Denied => "denied",
-        },
-    );
+    update_hash(hasher, authorization.origin.as_str());
+    update_hash(hasher, authorization.decision.as_str());
     update_optional_hash(hasher, authorization.query_argument.as_deref());
     update_hash(hasher, &authorization.operation_id);
 }

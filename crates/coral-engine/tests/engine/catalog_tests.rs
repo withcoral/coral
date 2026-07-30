@@ -429,7 +429,11 @@ fn http_manifest_with_function() -> Value {
     })
 }
 
-fn build_v4_runtime_source_with_function() -> QuerySource {
+fn build_materialized_v4_runtime_source_with_function() -> QuerySource {
+    // coral-engine consumes the backend-ready runtime component produced by
+    // DSL v4 materialization, not the authored DSL v4 manifest. Start from the
+    // validated HTTP component fixture, mark that generated component as v4,
+    // and attach the typed defaults that materialization preserves.
     let parsed = parse_source_manifest_value(http_manifest_with_function())
         .expect("base HTTP manifest should parse");
     let mut runtime_manifest = parsed.as_http().expect("HTTP manifest").clone();
@@ -515,7 +519,7 @@ fn jsonl_manifest_with_inputs(dir: &std::path::Path) -> Value {
 
 #[tokio::test]
 async fn coral_table_functions_lists_source_functions() {
-    let sources = vec![build_v4_runtime_source_with_function()];
+    let sources = vec![build_source(http_manifest_with_function())];
 
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
@@ -539,8 +543,8 @@ async fn coral_table_functions_lists_source_functions() {
         serde_json::from_str::<Value>(row["arguments_json"].as_str().unwrap()).unwrap(),
         json!([
             { "name": "q", "type": "Utf8", "required": true, "values": [] },
-            { "name": "mode", "type": "Utf8", "required": false, "values": ["lexical", "semantic", "hybrid"], "default": "lexical" },
-            { "name": "metadata", "type": "Json", "required": false, "values": [], "default": null },
+            { "name": "mode", "type": "Utf8", "required": false, "values": ["lexical", "semantic", "hybrid"] },
+            { "name": "metadata", "type": "Json", "required": false, "values": [] },
             { "name": "since", "type": "Timestamp", "required": false, "values": [] }
         ])
     );
@@ -564,8 +568,35 @@ async fn coral_table_functions_lists_source_functions() {
 }
 
 #[tokio::test]
+async fn coral_table_functions_preserves_materialized_v4_typed_defaults() {
+    let sources = vec![build_materialized_v4_runtime_source_with_function()];
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &sources,
+            test_runtime(),
+            "SELECT arguments_json FROM coral.table_functions \
+             WHERE schema_name = 'searchy' AND function_name = 'search_issues'",
+        )
+        .await
+        .expect("table function catalog query should succeed"),
+    );
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        serde_json::from_str::<Value>(rows[0]["arguments_json"].as_str().unwrap()).unwrap(),
+        json!([
+            { "name": "q", "type": "Utf8", "required": true, "values": [] },
+            { "name": "mode", "type": "Utf8", "required": false, "values": ["lexical", "semantic", "hybrid"], "default": "lexical" },
+            { "name": "metadata", "type": "Json", "required": false, "values": [], "default": null },
+            { "name": "since", "type": "Timestamp", "required": false, "values": [] }
+        ])
+    );
+}
+
+#[tokio::test]
 async fn table_function_used_as_table_returns_guided_error() {
-    let sources = vec![build_v4_runtime_source_with_function()];
+    let sources = vec![build_source(http_manifest_with_function())];
 
     for sql in [
         "DESCRIBE searchy.search_issues",
@@ -627,7 +658,7 @@ async fn describe_table_keeps_datafusion_shape() {
 
 #[tokio::test]
 async fn describe_select_from_table_function_keeps_datafusion_shape() {
-    let sources = vec![build_v4_runtime_source_with_function()];
+    let sources = vec![build_source(http_manifest_with_function())];
 
     let execution = CoralQuery::execute_sql(
         &sources,
@@ -649,7 +680,7 @@ async fn describe_select_from_table_function_keeps_datafusion_shape() {
 
 #[tokio::test]
 async fn coral_search_metadata_appends_columns_without_shifting_existing_ordinals() {
-    let sources = vec![build_v4_runtime_source_with_function()];
+    let sources = vec![build_source(http_manifest_with_function())];
 
     let table_functions = CoralQuery::execute_sql(
         &sources,
@@ -710,7 +741,7 @@ async fn coral_search_metadata_appends_columns_without_shifting_existing_ordinal
 
 #[tokio::test]
 async fn coral_tables_exposes_search_limits() {
-    let sources = vec![build_v4_runtime_source_with_function()];
+    let sources = vec![build_source(http_manifest_with_function())];
 
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
@@ -736,7 +767,7 @@ async fn coral_tables_exposes_search_limits() {
 
 #[tokio::test]
 async fn coral_filters_lists_filter_metadata() {
-    let sources = vec![build_v4_runtime_source_with_function()];
+    let sources = vec![build_source(http_manifest_with_function())];
 
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
@@ -765,7 +796,7 @@ async fn coral_filters_lists_filter_metadata() {
 
 #[tokio::test]
 async fn coral_columns_exposes_filter_mode_for_virtual_filters() {
-    let sources = vec![build_v4_runtime_source_with_function()];
+    let sources = vec![build_source(http_manifest_with_function())];
 
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
@@ -792,7 +823,7 @@ async fn coral_columns_exposes_filter_mode_for_virtual_filters() {
 
 #[tokio::test]
 async fn list_catalog_matches_table_function_metadata() {
-    let sources = vec![build_v4_runtime_source_with_function()];
+    let sources = vec![build_materialized_v4_runtime_source_with_function()];
 
     let catalog = CoralQuery::list_catalog(&sources, test_runtime(), None, Some("searchy"))
         .await
@@ -826,7 +857,7 @@ async fn list_catalog_matches_table_function_metadata() {
 
 #[tokio::test]
 async fn list_catalog_collects_tables_and_functions_together() {
-    let sources = vec![build_v4_runtime_source_with_function()];
+    let sources = vec![build_source(http_manifest_with_function())];
 
     let catalog = CoralQuery::list_catalog(&sources, test_runtime(), None, Some("searchy"))
         .await

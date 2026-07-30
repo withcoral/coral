@@ -5,7 +5,7 @@ use std::sync::{Arc, OnceLock};
 
 use crate::{
     BoundRequestIdentityHttpAuthenticator, QueryRuntimeContext, QuerySource, RequestAuthenticator,
-    SourceInputResolver, SourceObservationPublisher,
+    SourceInputResolver, SourceObservationPublisher, UniversalSearchAuthorizationInfo,
 };
 use async_trait::async_trait;
 use coral_spec::{
@@ -88,7 +88,7 @@ pub(crate) struct RegisteredTableFunction {
     pub(crate) arguments: Vec<RegisteredTableFunctionArgument>,
     pub(crate) result_columns: Vec<RegisteredTableFunctionResultColumn>,
     pub(crate) search_limits: Option<SearchLimitsSpec>,
-    pub(crate) universal_search: Option<crate::UniversalSearchAuthorizationInfo>,
+    pub(crate) universal_search: Option<UniversalSearchAuthorizationInfo>,
 }
 
 #[derive(Debug, Clone)]

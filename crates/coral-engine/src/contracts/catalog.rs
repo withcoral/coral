@@ -78,23 +78,41 @@ pub struct TableFunctionArgumentInfo {
 /// How a passive Universal Search authorization was selected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UniversalSearchAuthorizationOrigin {
-    /// No origin was supplied.
-    Unspecified,
     /// The source authored an explicit Universal Search route.
     Explicit,
     /// Coral selected the route through canonical inference.
     Inferred,
 }
 
+impl UniversalSearchAuthorizationOrigin {
+    /// Returns the stable catalog spelling of this origin.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Explicit => "explicit",
+            Self::Inferred => "inferred",
+        }
+    }
+}
+
 /// Passive authorization decision for one source table function.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UniversalSearchAuthorizationDecision {
-    /// No decision was supplied.
-    Unspecified,
     /// The route is eligible if the independent runtime feature is enabled.
     Eligible,
     /// The source explicitly denied execution of the route.
     Denied,
+}
+
+impl UniversalSearchAuthorizationDecision {
+    /// Returns the stable catalog spelling of this decision.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Eligible => "eligible",
+            Self::Denied => "denied",
+        }
+    }
 }
 
 /// Passive Universal Search authorization attached to one query-visible function.

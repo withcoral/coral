@@ -490,9 +490,6 @@ fn universal_search_authorization_to_proto(
         source_name: authorization.source_name.clone(),
         route_id: authorization.route_id.clone(),
         origin: match authorization.origin {
-            coral_engine::UniversalSearchAuthorizationOrigin::Unspecified => {
-                ProtoUniversalSearchAuthorizationOrigin::Unspecified
-            }
             coral_engine::UniversalSearchAuthorizationOrigin::Explicit => {
                 ProtoUniversalSearchAuthorizationOrigin::Explicit
             }
@@ -501,9 +498,6 @@ fn universal_search_authorization_to_proto(
             }
         } as i32,
         decision: match authorization.decision {
-            coral_engine::UniversalSearchAuthorizationDecision::Unspecified => {
-                ProtoUniversalSearchAuthorizationDecision::Unspecified
-            }
             coral_engine::UniversalSearchAuthorizationDecision::Eligible => {
                 ProtoUniversalSearchAuthorizationDecision::Eligible
             }

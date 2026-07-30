@@ -16,8 +16,7 @@ use crate::backends::{RegisteredSource, SourceQualifiedName};
 use crate::runtime::schema_provider::StaticSchemaProvider;
 use crate::{
     ColumnInfo, TableFunctionArgumentInfo, TableFunctionInfo, TableFunctionResultColumnInfo,
-    TableInfo, UniversalSearchAuthorizationDecision, UniversalSearchAuthorizationInfo,
-    UniversalSearchAuthorizationOrigin,
+    TableInfo, UniversalSearchAuthorizationInfo,
 };
 
 /// Schema name for source metadata tables such as `coral.tables`.
@@ -227,16 +226,8 @@ impl<'a> From<&'a UniversalSearchAuthorizationInfo> for UniversalSearchAuthoriza
         Self {
             source_name: &authorization.source_name,
             route_id: authorization.route_id.as_deref(),
-            origin: match authorization.origin {
-                UniversalSearchAuthorizationOrigin::Unspecified => "unspecified",
-                UniversalSearchAuthorizationOrigin::Explicit => "explicit",
-                UniversalSearchAuthorizationOrigin::Inferred => "inferred",
-            },
-            decision: match authorization.decision {
-                UniversalSearchAuthorizationDecision::Unspecified => "unspecified",
-                UniversalSearchAuthorizationDecision::Eligible => "eligible",
-                UniversalSearchAuthorizationDecision::Denied => "denied",
-            },
+            origin: authorization.origin.as_str(),
+            decision: authorization.decision.as_str(),
             query_argument: authorization.query_argument.as_deref(),
             operation_id: &authorization.operation_id,
         }
@@ -1244,8 +1235,54 @@ mod tests {
 
     use crate::backends::common::test_support::StubSourceFunctionFactory;
     use crate::backends::{RegisteredSource, RegisteredTableFunction, SourceQualifiedName};
+    use crate::{
+        UniversalSearchAuthorizationDecision, UniversalSearchAuthorizationInfo,
+        UniversalSearchAuthorizationOrigin,
+    };
 
-    use super::collect_table_functions;
+    use super::{collect_table_functions, universal_search_json};
+
+    #[test]
+    fn universal_search_json_serializes_the_public_catalog_shape() {
+        let explicit = UniversalSearchAuthorizationInfo {
+            source_name: "installed_demo".to_string(),
+            route_id: Some("primary".to_string()),
+            origin: UniversalSearchAuthorizationOrigin::Explicit,
+            decision: UniversalSearchAuthorizationDecision::Eligible,
+            query_argument: Some("query".to_string()),
+            operation_id: "issues/search".to_string(),
+        };
+        assert_eq!(
+            universal_search_json(Some(&explicit))
+                .expect("authorization JSON")
+                .expect("present authorization"),
+            r#"{"source_name":"installed_demo","route_id":"primary","origin":"explicit","decision":"eligible","query_argument":"query","operation_id":"issues/search"}"#
+        );
+
+        let inferred = UniversalSearchAuthorizationInfo {
+            route_id: None,
+            origin: UniversalSearchAuthorizationOrigin::Inferred,
+            ..explicit.clone()
+        };
+        assert_eq!(
+            universal_search_json(Some(&inferred))
+                .expect("authorization JSON")
+                .expect("present authorization"),
+            r#"{"source_name":"installed_demo","origin":"inferred","decision":"eligible","query_argument":"query","operation_id":"issues/search"}"#
+        );
+
+        let denied = UniversalSearchAuthorizationInfo {
+            decision: UniversalSearchAuthorizationDecision::Denied,
+            query_argument: None,
+            ..explicit
+        };
+        assert_eq!(
+            universal_search_json(Some(&denied))
+                .expect("authorization JSON")
+                .expect("present authorization"),
+            r#"{"source_name":"installed_demo","route_id":"primary","origin":"explicit","decision":"denied","operation_id":"issues/search"}"#
+        );
+    }
 
     #[test]
     fn collect_table_functions_preserves_registered_function_schema() {
