@@ -41,11 +41,23 @@ Grid and admin scopes, almost all of them writes.
 coral source add --interactive --file sources/v4/slack/manifest.yaml
 ```
 
-Both connection methods use the same scopes: `channels:read`,
-`channels:history`, `groups:read`, `groups:history`, `users:read`,
-`users:read.email`, `search:read`. `search:read` is only available on user
-tokens, so a bot token covers every relation except `search_messages`,
-`search_files` and `search_all`.
+The pre-filled app links in the setup prompts request the 21 read scopes these
+relations use, plus `search:read` on the user-token app. Slack only grants
+`search:read` to user tokens, so a bot token covers every relation except
+`search_all`, `search_files` and `search_messages`.
+
+Four relations need scopes deliberately left out of the defaults, because
+requesting them by default would be wrong for a read-only connector:
+
+| Relation | Extra scope | Why it is not requested |
+| --- | --- | --- |
+| `team_accesslogs`, `team_billableinfo`, `team_integrationlogs` | `admin` | Very broad; grants far more than reading |
+| `team_externalteams_list` | `conversations.connect:manage` | A write scope |
+| `users_identity` | `identity:read` | Belongs to Slack's separate Sign in with Slack flow |
+
+Add them to your app by hand if you need those tables. A relation whose scope is
+missing returns `ok = false` with `error = missing_scope` rather than failing
+the query — see the first known limitation below.
 
 Verify with `coral source test slack_v4`.
 
@@ -57,8 +69,11 @@ makes, the row path and pagination Coral inferred, and every derived column. It
 is the fastest way to see what a descriptor change did.
 
 ```sql
+-- conversations_list has no required arguments, so it is a table and its
+-- filters go in a WHERE clause. catalog-preview.md says which is which.
 SELECT id, name, num_members
-FROM slack_v4.conversations_list(types => 'public_channel')
+FROM slack_v4.conversations_list
+WHERE types = 'public_channel'
 LIMIT 20;
 
 SELECT ts, "user", text
