@@ -9,7 +9,7 @@
 use std::fmt;
 
 use crate::bootstrap::AppError;
-use crate::identity::{UserPrincipal, parse_path_segment};
+use crate::identity::{Principal, parse_path_segment};
 use crate::state::db::{IdentitySpecKey, IdentitySpecScope};
 use crate::workspaces::WorkspaceName;
 
@@ -41,13 +41,13 @@ impl fmt::Display for IdentityName {
 /// User or workspace that owns one identity instance.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum IdentityOwner {
-    User(UserPrincipal),
+    User(Principal),
     Workspace(WorkspaceName),
 }
 
 impl IdentityOwner {
     /// Build a user owner from an already validated request principal.
-    pub(crate) fn for_user(principal: UserPrincipal) -> Self {
+    pub(crate) fn for_user(principal: Principal) -> Self {
         Self::User(principal)
     }
 
@@ -67,7 +67,7 @@ impl IdentityOwner {
     /// Stable storage key within the owner kind.
     pub(crate) fn key(&self) -> &str {
         match self {
-            Self::User(principal) => principal.user_id(),
+            Self::User(principal) => principal.id().as_str(),
             Self::Workspace(workspace) => workspace.as_str(),
         }
     }
@@ -153,7 +153,7 @@ fn validate_scope(owner: &IdentityOwner, scope: &IdentitySpecScope) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::{IdentityName, IdentityOwner, IdentitySpecReference};
-    use crate::identity::UserPrincipal;
+    use crate::identity::{Principal, PrincipalKind};
     use crate::state::db::IdentitySpecKey;
     use crate::workspaces::WorkspaceName;
 
@@ -174,11 +174,13 @@ mod tests {
 
     #[test]
     fn owners_expose_stable_storage_values() {
-        let local = IdentityOwner::for_user(UserPrincipal::local());
-        assert_eq!((local.kind(), local.key()), ("user", "local"));
+        let local = IdentityOwner::for_user(Principal::local());
+        assert_eq!((local.kind(), local.key()), ("user", "coral:local"));
         assert!(local.workspace_name().is_none());
 
-        let user = IdentityOwner::for_user(UserPrincipal::for_user("member-1").expect("user"));
+        let user = IdentityOwner::for_user(
+            Principal::parse("member-1", PrincipalKind::User).expect("user"),
+        );
         assert_eq!((user.kind(), user.key()), ("user", "member-1"));
 
         let workspace = WorkspaceName::parse("team-1").expect("workspace");
@@ -189,7 +191,7 @@ mod tests {
 
     #[test]
     fn spec_references_enforce_the_full_owner_scope_matrix() {
-        let user = IdentityOwner::for_user(UserPrincipal::local());
+        let user = IdentityOwner::for_user(Principal::local());
         let alpha = WorkspaceName::parse("alpha").expect("alpha");
         let beta = WorkspaceName::parse("beta").expect("beta");
         let workspace = IdentityOwner::workspace(alpha.clone());
@@ -227,7 +229,7 @@ mod tests {
 
     #[test]
     fn spec_references_reject_blank_required_fields() {
-        let owner = IdentityOwner::for_user(UserPrincipal::local());
+        let owner = IdentityOwner::for_user(Principal::local());
         for fields in [
             (" ", "issuer", "fixed_token"),
             ("fingerprint", "\t", "fixed_token"),
