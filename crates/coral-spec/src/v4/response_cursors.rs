@@ -104,17 +104,21 @@ fn cursor_path<'a>(
             else {
                 return Ok(None);
             };
-            for (name, property) in &view.properties {
-                if name_tokens.contains(&normalized_name(name).as_str())
-                    && property_holds_string(
-                        root,
-                        property,
-                        string_type,
-                        resolving_refs,
-                        next_depth,
-                    )
-                {
-                    return Ok(Some(vec![name.clone()]));
+            // Tokens outside, so a response declaring two of them picks by
+            // `name_tokens` order rather than by property name.
+            for token in name_tokens {
+                for (name, property) in &view.properties {
+                    if normalized_name(name) == *token
+                        && property_holds_string(
+                            root,
+                            property,
+                            string_type,
+                            resolving_refs,
+                            next_depth,
+                        )
+                    {
+                        return Ok(Some(vec![name.clone()]));
+                    }
                 }
             }
             for (name, property) in &view.properties {
@@ -450,6 +454,32 @@ mod tests {
             Some(vec!["next_cursor".to_string()])
         );
         assert_eq!(find_declared(&schema, &schema, TOKENS), None);
+    }
+
+    /// Callers rank their lexicons — `odatanextlink` ahead of `nexthref`,
+    /// `nextcursor` ahead of `endcursor` — so the rank has to beat the
+    /// alphabetical order of the property names.
+    #[test]
+    fn prefers_the_earlier_token_over_the_earlier_property_name() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "end_cursor": {"type": "string"},
+                "next_cursor": {"type": "string"},
+            },
+        });
+
+        assert_eq!(
+            find_untyped(&schema, &schema, &["nextcursor", "endcursor"]),
+            Some(vec!["next_cursor".to_string()])
+        );
+
+        // Reversing the list reverses the answer: the ranking is the decision,
+        // not the spelling.
+        assert_eq!(
+            find_untyped(&schema, &schema, &["endcursor", "nextcursor"]),
+            Some(vec!["end_cursor".to_string()])
+        );
     }
 
     #[test]
