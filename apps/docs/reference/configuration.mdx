@@ -97,9 +97,10 @@ bind = "127.0.0.1:14556"
 The unauthenticated MCP listener is restricted to loopback addresses.
 
 To require Coral access tokens, configure the authorization-server issuer, a
-session signing key, and the upstream identity provider. The MCP
-listener's public URL becomes its protected-resource identifier and token
-audience:
+session signing key, and the upstream identity provider. An authenticated
+instance has exactly one protected-resource identifier, which is also the token
+audience: the MCP listener's `public_url` when MCP HTTP is enabled, and
+`[server].public_url` when it is not. Setting both is rejected.
 
 ```toml
 [auth.authorization_server]
@@ -107,6 +108,7 @@ issuer = "https://auth.example"
 
 [auth.session]
 signing_key_file = "session.key"
+access_token_ttl_seconds = 3600
 
 [auth.provider]
 issuer = "https://accounts.example"
@@ -121,16 +123,40 @@ allow_insecure_remote_http_bind = true
 public_url = "https://coral.example/mcp"
 ```
 
+To require tokens on the gRPC API with no MCP listener at all, give the gRPC API
+its own identifier instead:
+
+```toml
+[server]
+bind_addr = "0.0.0.0:14555"
+allow_insecure_remote_grpc_bind = true
+public_url = "https://coral.example"
+```
+
+<Warning>
+  Any valid session token grants full access to the instance and every source
+  configured in it. Coral does not scope access per user, per workspace, or per
+  source today, so issuing a token is equivalent to granting complete access.
+</Warning>
+
 The signing key file must contain a PKCS#8 DER-encoded P-256 private key and is
-resolved relative to Coral's config directory. MCP accepts only tokens whose
-audience is its canonical public URL. The private gRPC API accepts the explicit
-first-party audience allowlist, which currently contains that same MCP URL;
-gRPC health checks remain unauthenticated. The explicit insecure-bind
-acknowledgement is required because Coral serves cleartext HTTP on that socket.
-Put it behind TLS termination and prevent untrusted clients from reaching the
-private gRPC listener directly. While MCP HTTP and gRPC run in one process
-started by `coral server`, the gRPC bind must be loopback or wildcard so MCP can
-forward the bearer over a loopback connection.
+resolved relative to Coral's config directory. `access_token_ttl_seconds`
+defaults to 30 days (`2592000`), which is a long life for a bearer token that
+grants everything — set it explicitly to the shortest value your clients can
+re-authenticate within. Both served surfaces accept only tokens whose audience is
+the instance's canonical identifier; gRPC health checks remain unauthenticated so
+readiness probes work without a credential.
+
+Coral terminates no TLS, so every non-loopback listener is cleartext and any
+bearer token on it can be read off the wire. Each surface therefore requires its
+own explicit acknowledgement before it will serve authenticated traffic remotely:
+`server.allow_insecure_remote_grpc_bind` for gRPC,
+`server.mcp_http.allow_insecure_remote_http_bind` for MCP HTTP, and
+`auth.allow_insecure_remote_http_bind` for the OAuth endpoints. Put them behind
+TLS termination and prevent untrusted clients from reaching the listeners
+directly. While MCP HTTP and gRPC run in one process started by `coral server`,
+the gRPC bind must be loopback or wildcard so MCP can forward the bearer over a
+loopback connection.
 
 ## Runtime features
 
