@@ -245,14 +245,16 @@ pub(super) fn advance_pagination_state(
             let Some(next_raw) = next_raw else {
                 return Ok(PageAdvance::Stop);
             };
-            // A page that carried no rows ends the walk whatever the body
-            // claims. Unlike `page`/`offset` this cannot use
-            // `page_is_exhausted`: the server chooses the page size for a
-            // URL-following mode, so a short page is normal and only an empty
-            // one is evidence.
-            if context.rows_on_page == 0 {
-                return Ok(PageAdvance::Stop);
-            }
+            // Deliberately no row-count test, matching `link_header` and
+            // `next_url_header`: for a URL-following mode the link is the
+            // authority on whether more pages exist, not the size of this one.
+            // Microsoft Graph documents that "a page of results might contain
+            // zero or more results" and that a client must keep following
+            // `@odata.nextLink` until it stops being returned, so stopping on
+            // an empty page would silently truncate the collection this mode
+            // exists to read. Only `page` and `offset` can use
+            // `page_is_exhausted`, because there the client drives the offset
+            // and an empty page really is the end.
             let base = pagination_request_url(context.request_url)?;
             let next = resolve_pagination_next_url(&base, next_raw, "next URL body value")?;
             // So does a link back to the page that carried it. This mode is
@@ -907,37 +909,30 @@ mod tests {
     }
 
     #[test]
-    fn advance_next_url_body_stops_on_an_empty_page() {
-        // A short page is normal here — the server picks the page size — but
-        // an empty one is the end of the collection whatever the body claims.
-        let (advance, state) = advance_next_url_body_with_rows(
-            &["@odata.nextLink"],
-            &json!({"@odata.nextLink": "https://api.example.com/v1.0/me/chats?$skiptoken=abc"}),
-            0,
-        )
-        .unwrap();
+    fn advance_next_url_body_follows_a_link_whatever_the_page_held() {
+        // The link is the authority, not the row count. Microsoft Graph
+        // documents that "a page of results might contain zero or more
+        // results" and that a client must follow `@odata.nextLink` until it
+        // stops being returned, so an empty or short intermediate page must
+        // not end the walk — `page_is_exhausted` would end it at both 0 and 3.
+        for rows_on_page in [0, 3, 10] {
+            let (advance, state) = advance_next_url_body_with_rows(
+                &["@odata.nextLink"],
+                &json!({"@odata.nextLink": "https://api.example.com/v1.0/me/chats?$skiptoken=abc"}),
+                rows_on_page,
+            )
+            .unwrap();
 
-        assert_eq!(advance, PageAdvance::Stop);
-        assert!(state.next_url.is_none());
-    }
-
-    #[test]
-    fn advance_next_url_body_follows_a_short_page_that_still_offers_a_link() {
-        // The mirror of the empty-page stop: `page_is_exhausted` would end the
-        // walk here because 3 < 10, but the server chose that page size and
-        // has said there is more.
-        let (advance, state) = advance_next_url_body_with_rows(
-            &["@odata.nextLink"],
-            &json!({"@odata.nextLink": "https://api.example.com/v1.0/me/chats?$skiptoken=abc"}),
-            3,
-        )
-        .unwrap();
-
-        assert_eq!(advance, PageAdvance::Continue);
-        assert_eq!(
-            state.next_url.as_deref(),
-            Some("https://api.example.com/v1.0/me/chats?$skiptoken=abc")
-        );
+            assert_eq!(
+                advance,
+                PageAdvance::Continue,
+                "a declared next link outranks a {rows_on_page}-row page"
+            );
+            assert_eq!(
+                state.next_url.as_deref(),
+                Some("https://api.example.com/v1.0/me/chats?$skiptoken=abc")
+            );
+        }
     }
 
     #[test]

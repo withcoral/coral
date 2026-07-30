@@ -66,10 +66,12 @@ pub(in crate::v4) enum StringTypeRequirement {
     /// matching request parameter still has to be found before anything is
     /// committed, and descriptors routinely leave envelope metadata untyped.
     Untyped,
-    /// Require a declared `string`. For body next-URL detection, which has no
-    /// second signal: a property that is not a string reads back as `None` at
-    /// runtime, `advance_pagination_state` stops, and the query returns page
-    /// one with no error and no diagnostic.
+    /// Require a declared `string`, or a union of `string` and `null` and
+    /// nothing else. For body next-URL detection, which has no second signal:
+    /// a property that is not a string reads back as `None` at runtime,
+    /// `advance_pagination_state` stops, and the query returns page one with no
+    /// error and no diagnostic. A union that merely *permits* a string is not
+    /// enough — the response can still carry the other variant.
     Declared,
 }
 
@@ -148,14 +150,40 @@ fn property_holds_string(
         depth,
         MAX_DEPTH,
         |resolved, _, _| {
-            let declares_string = json_schema_type_contains(resolved, "string");
             Ok(match string_type {
-                StringTypeRequirement::Declared => declares_string,
-                StringTypeRequirement::Untyped => declares_string || resolved.get("type").is_none(),
+                StringTypeRequirement::Declared => declares_only_string(resolved),
+                StringTypeRequirement::Untyped => {
+                    json_schema_type_contains(resolved, "string") || resolved.get("type").is_none()
+                }
             })
         },
     )
     .unwrap_or(string_type == StringTypeRequirement::Untyped)
+}
+
+/// Whether every type the schema permits is one the runtime can read as a URL.
+///
+/// `json_schema_type_contains` would be too weak here: it asks whether `string`
+/// is *among* the permitted types, so a union like `["string", "integer"]`
+/// passes. That union is exactly the shape the strict requirement exists to
+/// reject — a response carrying the integer variant reads back as `None` and
+/// stops pagination after page one, which is the silent failure, not a louder
+/// version of it.
+///
+/// `null` is the one companion allowed, because that is how a descriptor says
+/// "absent on the last page" — Graph's `@odata.nextLink` is declared
+/// `{type: string, nullable: true}` — and the runtime already treats an absent
+/// or empty link as the end of the collection.
+fn declares_only_string(schema: &Value) -> bool {
+    match schema.get("type") {
+        Some(Value::String(value)) => value == "string",
+        Some(Value::Array(values)) => {
+            let mut permitted = values.iter().filter_map(Value::as_str);
+            let all_readable = permitted.all(|value| value == "string" || value == "null");
+            all_readable && json_schema_type_contains(schema, "string")
+        }
+        _ => false,
+    }
 }
 
 /// Descent is the opposite case: a property that cannot be resolved into an
@@ -318,6 +346,45 @@ mod tests {
         ] {
             assert_eq!(found, Some(vec!["next_cursor".to_string()]));
         }
+    }
+
+    #[test]
+    fn the_declared_standard_rejects_a_union_that_permits_a_non_string() {
+        // Merely permitting a string is not enough: a response carrying the
+        // other variant reads back as `None` and stops after page one, which
+        // is the silent failure the strict standard exists to prevent.
+        let union = json!({
+            "type": "object",
+            "properties": {"next_cursor": {"type": ["string", "integer"]}},
+        });
+
+        assert_eq!(
+            find_untyped(&union, &union, TOKENS),
+            Some(vec!["next_cursor".to_string()])
+        );
+        assert_eq!(find_declared(&union, &union, TOKENS), None);
+
+        // `null` is the one companion allowed, because that is how a
+        // descriptor says "absent on the last page", and the runtime already
+        // treats an absent link as the end.
+        let nullable = json!({
+            "type": "object",
+            "properties": {"next_cursor": {"type": ["string", "null"]}},
+        });
+
+        assert_eq!(
+            find_declared(&nullable, &nullable, TOKENS),
+            Some(vec!["next_cursor".to_string()])
+        );
+
+        // A union with no string at all fails both standards.
+        let no_string = json!({
+            "type": "object",
+            "properties": {"next_cursor": {"type": ["integer", "null"]}},
+        });
+
+        assert_eq!(find_declared(&no_string, &no_string, TOKENS), None);
+        assert_eq!(find_untyped(&no_string, &no_string, TOKENS), None);
     }
 
     #[test]
