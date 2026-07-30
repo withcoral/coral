@@ -10,13 +10,15 @@ use coral_api::{
     v1::{
         CatalogItem as ProtoCatalogItem, CatalogSearchResult as ProtoCatalogSearchResult, Column,
         ColumnSearchResult as ProtoColumnSearchResult,
-        DescribeTableResponse as ProtoDescribeTableResponse, PaginationResponse, QueryTestFailure,
-        QueryTestResult, QueryTestSuccess, SearchLimits, Source, Table, TableFunction,
-        TableFunctionArgument, TableFunctionKind, TableFunctionResultColumn, TableSummary,
+        DescribeTableResponse as ProtoDescribeTableResponse, JsonArray, JsonNull, JsonObject,
+        JsonValue as ProtoJsonValue, PaginationResponse, QueryTestFailure, QueryTestResult,
+        QueryTestSuccess, SearchLimits, Source, Table, TableFunction, TableFunctionArgument,
+        TableFunctionKind, TableFunctionResultColumn, TableSummary,
         UniversalSearchAuthorization as ProtoUniversalSearchAuthorization,
         UniversalSearchAuthorizationDecision as ProtoUniversalSearchAuthorizationDecision,
         UniversalSearchAuthorizationOrigin as ProtoUniversalSearchAuthorizationOrigin,
-        ValidateSourceResponse, Workspace, catalog_item, query_test_result,
+        ValidateSourceResponse, Workspace, catalog_item, json_value as proto_json_value,
+        query_test_result,
     },
 };
 use coral_spec::{SearchLimitsSpec, SourceTableFunctionKind};
@@ -460,7 +462,11 @@ pub(crate) fn table_function_to_proto(
                 required: argument.required,
                 values: argument.values,
                 data_type: argument.data_type,
-                default_json: argument.default_json,
+                default_value: argument.default_json.map(|default_json| {
+                    let value = serde_json::from_str(&default_json)
+                        .expect("catalog argument defaults contain valid JSON");
+                    json_value_to_proto(value)
+                }),
             })
             .collect(),
         result_columns: function
@@ -481,6 +487,39 @@ pub(crate) fn table_function_to_proto(
             .as_ref()
             .map(universal_search_authorization_to_proto),
     }
+}
+
+fn json_value_to_proto(value: serde_json::Value) -> ProtoJsonValue {
+    use proto_json_value::Kind;
+
+    let kind = match value {
+        serde_json::Value::Null => Kind::NullValue(JsonNull {}),
+        serde_json::Value::Bool(value) => Kind::BoolValue(value),
+        serde_json::Value::Number(value) => {
+            if let Some(value) = value.as_i64() {
+                Kind::Int64Value(value)
+            } else if let Some(value) = value.as_u64() {
+                Kind::Uint64Value(value)
+            } else {
+                Kind::DoubleValue(
+                    value
+                        .as_f64()
+                        .expect("serde_json numbers are signed, unsigned, or finite floats"),
+                )
+            }
+        }
+        serde_json::Value::String(value) => Kind::StringValue(value),
+        serde_json::Value::Array(values) => Kind::ArrayValue(JsonArray {
+            values: values.into_iter().map(json_value_to_proto).collect(),
+        }),
+        serde_json::Value::Object(fields) => Kind::ObjectValue(JsonObject {
+            fields: fields
+                .into_iter()
+                .map(|(key, value)| (key, json_value_to_proto(value)))
+                .collect(),
+        }),
+    };
+    ProtoJsonValue { kind: Some(kind) }
 }
 
 fn universal_search_authorization_to_proto(
@@ -650,10 +689,10 @@ mod tests {
         CORAL_ERROR_DOMAIN, CORAL_ERROR_METADATA_SUMMARY, CORAL_TASK_ID_METADATA_KEY,
         grpc_response_status_code,
         v1::{
-            QueryTestFailure, SearchLimits, TableFunction, TableFunctionArgument,
-            TableFunctionResultColumn, UniversalSearchAuthorization,
+            JsonValue as ProtoJsonValue, QueryTestFailure, SearchLimits, TableFunction,
+            TableFunctionArgument, TableFunctionResultColumn, UniversalSearchAuthorization,
             UniversalSearchAuthorizationDecision, UniversalSearchAuthorizationOrigin, Workspace,
-            query_test_result,
+            json_value as proto_json_value, query_test_result,
         },
     };
     use opentelemetry::Value;
@@ -666,9 +705,10 @@ mod tests {
 
     use super::{
         GRPC_REQUEST_ERROR_MESSAGE, GrpcMethodMetadata, GrpcServerMethod, annotate_request_context,
-        grpc_method, grpc_span_for_metadata, instrument_grpc, principal_provider_status,
-        query_status, query_test_result_to_proto, table_function_to_proto, table_summary_to_proto,
-        table_to_proto, workspace_name_from_proto, workspace_to_proto,
+        grpc_method, grpc_span_for_metadata, instrument_grpc, json_value_to_proto,
+        principal_provider_status, query_status, query_test_result_to_proto,
+        table_function_to_proto, table_summary_to_proto, table_to_proto, workspace_name_from_proto,
+        workspace_to_proto,
     };
     use crate::bootstrap::AppError;
     use crate::identity::PrincipalProviderError;
@@ -1090,7 +1130,13 @@ mod tests {
         assert!(proto.arguments[0].required);
         assert!(proto.arguments[0].values.is_empty());
         assert_eq!(proto.arguments[0].data_type, "Json");
-        assert_eq!(proto.arguments[0].default_json.as_deref(), Some("null"));
+        assert!(matches!(
+            proto.arguments[0]
+                .default_value
+                .as_ref()
+                .and_then(|value| value.kind.as_ref()),
+            Some(proto_json_value::Kind::NullValue(_))
+        ));
         let authorization = proto.universal_search.expect("authorization");
         assert_eq!(authorization.source_name, "installed_demo");
         assert_eq!(authorization.route_id.as_deref(), Some("primary"));
@@ -1146,7 +1192,7 @@ mod tests {
                 required: legacy.arguments[0].required,
                 values: legacy.arguments[0].values.clone(),
                 data_type: "Utf8".to_string(),
-                default_json: Some("\"lexical\"".to_string()),
+                default_value: Some(json_value_to_proto(serde_json::json!("lexical"))),
             }],
             result_columns: legacy.result_columns.clone(),
             kind: legacy.kind,
@@ -1188,8 +1234,87 @@ mod tests {
         assert_eq!(decoded_by_current.kind, current.kind);
         assert_eq!(decoded_by_current.search_limits, current.search_limits);
         assert!(decoded_by_current.arguments[0].data_type.is_empty());
-        assert!(decoded_by_current.arguments[0].default_json.is_none());
+        assert!(decoded_by_current.arguments[0].default_value.is_none());
         assert!(decoded_by_current.universal_search.is_none());
+    }
+
+    #[test]
+    fn json_value_to_proto_preserves_json_types_and_integer_precision() {
+        let value = json_value_to_proto(serde_json::json!({
+            "null": null,
+            "bool": false,
+            "signed": -9_007_199_254_740_993_i64,
+            "large_integer": 9_007_199_254_740_993_u64,
+            "unsigned": u64::MAX,
+            "double": 0.75,
+            "integral_double": 1.0,
+            "string": "recent",
+            "array": [1, "two"],
+            "object": {"nested": true}
+        }));
+        let decoded = ProtoJsonValue::decode(value.encode_to_vec().as_slice())
+            .expect("structured JSON protobuf round trip");
+        assert_eq!(decoded, value);
+        let Some(proto_json_value::Kind::ObjectValue(object)) = decoded.kind else {
+            panic!("expected JSON object");
+        };
+
+        assert!(matches!(
+            json_kind(&object.fields["null"]),
+            proto_json_value::Kind::NullValue(_)
+        ));
+        assert_eq!(
+            json_kind(&object.fields["bool"]),
+            &proto_json_value::Kind::BoolValue(false)
+        );
+        assert_eq!(
+            json_kind(&object.fields["signed"]),
+            &proto_json_value::Kind::Int64Value(-9_007_199_254_740_993)
+        );
+        assert_eq!(
+            json_kind(&object.fields["large_integer"]),
+            &proto_json_value::Kind::Int64Value(9_007_199_254_740_993)
+        );
+        assert_eq!(
+            json_kind(&object.fields["unsigned"]),
+            &proto_json_value::Kind::Uint64Value(u64::MAX)
+        );
+        assert_eq!(
+            json_kind(&object.fields["double"]),
+            &proto_json_value::Kind::DoubleValue(0.75)
+        );
+        assert_eq!(
+            json_kind(&object.fields["integral_double"]),
+            &proto_json_value::Kind::DoubleValue(1.0)
+        );
+        assert_eq!(
+            json_kind(&object.fields["string"]),
+            &proto_json_value::Kind::StringValue("recent".to_string())
+        );
+        let proto_json_value::Kind::ArrayValue(array) = json_kind(&object.fields["array"]) else {
+            panic!("expected nested JSON array");
+        };
+        assert_eq!(array.values.len(), 2);
+        assert_eq!(
+            json_kind(&array.values[0]),
+            &proto_json_value::Kind::Int64Value(1)
+        );
+        assert_eq!(
+            json_kind(&array.values[1]),
+            &proto_json_value::Kind::StringValue("two".to_string())
+        );
+        let proto_json_value::Kind::ObjectValue(nested) = json_kind(&object.fields["object"])
+        else {
+            panic!("expected nested JSON object");
+        };
+        assert_eq!(
+            json_kind(&nested.fields["nested"]),
+            &proto_json_value::Kind::BoolValue(true)
+        );
+    }
+
+    fn json_kind(value: &ProtoJsonValue) -> &proto_json_value::Kind {
+        value.kind.as_ref().expect("JSON value kind")
     }
 
     #[test]
