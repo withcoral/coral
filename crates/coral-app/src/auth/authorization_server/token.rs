@@ -107,16 +107,23 @@ pub(super) async fn oauth_token(
 fn client_auth_rejection(headers: &axum::http::HeaderMap) -> Option<Response> {
     let mut values = headers.get_all(header::AUTHORIZATION).iter();
     let value = values.next()?;
-    let challenge = value
-        .to_str()
-        .ok()
-        .and_then(|value| value.split_once(' '))
-        .filter(|(scheme, _credentials)| {
-            values.next().is_none() && axum::http::HeaderName::from_bytes(scheme.as_bytes()).is_ok()
-        })
-        .and_then(|(scheme, _credentials)| {
-            axum::http::HeaderValue::try_from(format!("{scheme} realm=\"Coral OAuth\"")).ok()
-        });
+    // RFC 6749 section 5.2 requires the 401 challenge to name the scheme the
+    // client authenticated with. A duplicated or malformed header names no
+    // single scheme, so it stays a plain `invalid_client` without a challenge.
+    let challenge = if values.next().is_some() {
+        None
+    } else {
+        value
+            .to_str()
+            .ok()
+            .and_then(|value| value.split_once(' '))
+            .filter(|(scheme, _credentials)| {
+                axum::http::HeaderName::from_bytes(scheme.as_bytes()).is_ok()
+            })
+            .and_then(|(scheme, _credentials)| {
+                axum::http::HeaderValue::try_from(format!("{scheme} realm=\"Coral OAuth\"")).ok()
+            })
+    };
     let mut response = token_error(TokenError::InvalidClient);
     if let Some(challenge) = challenge {
         *response.status_mut() = StatusCode::UNAUTHORIZED;
