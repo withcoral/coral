@@ -502,7 +502,7 @@ impl IdentitySpecDocumentsRepo<'_, CoralTx<'_>> {
                     .to_owned(),
             )
             .to_owned();
-        match self.session.execute_affected(statement).await? {
+        match self.session.execute_rows_affected(statement).await? {
             1 => {}
             0 => {
                 return Err(AppError::FailedPrecondition(format!(
@@ -528,7 +528,7 @@ impl IdentitySpecDocumentsRepo<'_, CoralTx<'_>> {
     ) -> Result<bool, DbError> {
         let rows_affected = self
             .session
-            .execute_affected(
+            .execute_rows_affected(
                 Query::delete()
                     .from_table(IdentitySpecDocuments::Table)
                     .and_where(identity_spec_document_id_where(identity_spec_id))
