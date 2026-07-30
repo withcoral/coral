@@ -40,13 +40,7 @@ impl SessionPrincipalProvider {
             .verifier
             .validate_access_token(token, &[self.accepted_audience.as_str()])
             .map_err(|_error| unauthenticated())?;
-        Ok(
-            Principal::for_federated(&session.subject).with_access_token_attribution(
-                session.token_id,
-                session.audience,
-                session.client_id,
-            ),
-        )
+        Ok(Principal::for_federated(&session.subject))
     }
 }
 
@@ -146,13 +140,6 @@ mod tests {
 
         assert!(principal.id().as_str().starts_with("federated-"));
         assert!(!principal.id().as_str().contains("raw"));
-        assert_eq!(principal.audience(), Some(MCP_AUDIENCE));
-        assert_eq!(principal.client_id(), Some(CLIENT_ID));
-        assert!(
-            principal
-                .token_id()
-                .is_some_and(|token_id| !token_id.is_empty())
-        );
     }
 
     #[tokio::test]

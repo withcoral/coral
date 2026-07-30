@@ -71,22 +71,13 @@ pub enum PrincipalKind {
 pub struct Principal {
     id: PrincipalId,
     kind: PrincipalKind,
-    token_id: Option<String>,
-    audience: Option<String>,
-    client_id: Option<String>,
 }
 
 impl Principal {
     /// Builds a principal from its canonical identity and authenticated kind.
     #[must_use]
     pub const fn new(id: PrincipalId, kind: PrincipalKind) -> Self {
-        Self {
-            id,
-            kind,
-            token_id: None,
-            audience: None,
-            client_id: None,
-        }
+        Self { id, kind }
     }
 
     /// Parses and builds a principal with an authenticated kind.
@@ -104,9 +95,6 @@ impl Principal {
         Self {
             id: PrincipalId(LOCAL_PRINCIPAL_ID.to_string()),
             kind: PrincipalKind::User,
-            token_id: None,
-            audience: None,
-            client_id: None,
         }
     }
 
@@ -129,22 +117,7 @@ impl Principal {
         Self {
             id: PrincipalId(format!("federated-{}", crate::hash::sha256_hex(&identity))),
             kind: PrincipalKind::User,
-            token_id: None,
-            audience: None,
-            client_id: None,
         }
-    }
-
-    pub(crate) fn with_access_token_attribution(
-        mut self,
-        token_id: String,
-        audience: String,
-        client_id: String,
-    ) -> Self {
-        self.token_id = Some(token_id);
-        self.audience = Some(audience);
-        self.client_id = Some(client_id);
-        self
     }
 
     /// Returns the stable principal identity.
@@ -157,24 +130,6 @@ impl Principal {
     #[must_use]
     pub const fn kind(&self) -> PrincipalKind {
         self.kind
-    }
-
-    /// Returns the validated access-token identifier, when authentication used one.
-    #[must_use]
-    pub fn token_id(&self) -> Option<&str> {
-        self.token_id.as_deref()
-    }
-
-    /// Returns the audience that authorized this request, when authenticated.
-    #[must_use]
-    pub fn audience(&self) -> Option<&str> {
-        self.audience.as_deref()
-    }
-
-    /// Returns the OAuth client that obtained the access token, when authenticated.
-    #[must_use]
-    pub fn client_id(&self) -> Option<&str> {
-        self.client_id.as_deref()
     }
 }
 
