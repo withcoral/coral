@@ -14,12 +14,17 @@
 //! - [`ResourceIdentifier`] — an RFC 8707 `resource`, compared and recorded.
 //! - [`BrowserRedirect`] — an OAuth redirect target, handed to a browser.
 //!
-//! The last two describe URLs Coral never connects to, which is the distinction
-//! [`FetchablePolicy`] carries: they accept the same URLs [`Configured`] does,
-//! but no request can be built from them. That is why a value a remote party
-//! controls may be checked under one of them and must not be checked under
-//! [`Configured`], whose permissiveness about private and loopback hosts is
-//! sound only because an operator chose the value.
+//! The last two describe URLs Coral never connects to. [`FetchablePolicy`] marks
+//! the distinction: the fetch helpers [`EndpointUrl::get`] and
+//! [`EndpointUrl::post`] exist only for the policies whose URLs Coral is meant to
+//! request. That is an intent signal, not a barrier — an [`EndpointUrl<P>`]
+//! certifies its URL passed `P`'s checks; it does not stop a caller from building
+//! a request out of the underlying [`Url`]. What keeps a compared-or-redirected
+//! URL from becoming an outbound request is that no call site fetches one. A
+//! remote party's value may still be checked under one of the non-fetchable
+//! policies but must not be checked under [`Configured`], whose permissiveness
+//! about private and loopback hosts is sound only because an operator chose the
+//! value.
 
 #![cfg_attr(
     not(test),
@@ -331,8 +336,10 @@ impl FetchablePolicy for PublicMetadata {}
 /// What makes that sound is not the permissiveness of the rule but where the
 /// value goes. A canonicalized resource is compared against an allowlist an
 /// operator authored, and only a value proven equal to one of those is stored or
-/// used. Loopback HTTP and private HTTPS therefore never become an outbound
-/// request, and this policy withholds [`FetchablePolicy`] so they cannot.
+/// used. Loopback HTTP and private HTTPS are therefore never fetched — not
+/// because the type forbids it (a [`Url`] can always be requested) but because no
+/// caller fetches a resource identifier. Withholding [`FetchablePolicy`] records
+/// that intent by leaving the fetch helpers absent; it does not enforce it.
 pub(crate) struct ResourceIdentifier;
 
 impl UrlPolicy for ResourceIdentifier {
