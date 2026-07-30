@@ -13,6 +13,7 @@ use coral_api::{
     CATALOG_RESPONSE_MAX_MESSAGE_SIZE, HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE,
     SEARCH_RESPONSE_MAX_MESSAGE_SIZE, SOURCE_RESPONSE_MAX_MESSAGE_SIZE,
 };
+use coral_app::READINESS_SERVICE_NAME;
 use tonic::service::interceptor::InterceptedService;
 use tonic::transport::{Channel, ClientTlsConfig, Endpoint};
 use tonic_health::pb::HealthCheckRequest;
@@ -292,21 +293,23 @@ impl AppClient {
         self.task.clone()
     }
 
-    /// Reports whether the server answers its aggregate health check as serving.
+    /// Reports whether the server's engine is ready to answer for its catalog.
     ///
-    /// The health service is unauthenticated, so this reaches a server that
-    /// requires bearer tokens on every other RPC. It reuses this client's
-    /// channel, which is what makes it usable as a repeated readiness probe.
+    /// This asks the health service for [`READINESS_SERVICE_NAME`] rather than
+    /// the empty aggregate name, which reports process liveness only. The health
+    /// service is unauthenticated, so this reaches a server that requires bearer
+    /// tokens on every other RPC, and it reuses this client's channel, which is
+    /// what makes it usable as a repeated readiness probe.
     ///
     /// # Errors
     ///
     /// Returns the gRPC [`tonic::Status`] when the health RPC cannot complete.
-    pub async fn check_serving(&self) -> Result<bool, tonic::Status> {
+    pub async fn check_engine_ready(&self) -> Result<bool, tonic::Status> {
         let status = self
             .health
             .clone()
             .check(HealthCheckRequest {
-                service: String::new(),
+                service: READINESS_SERVICE_NAME.to_string(),
             })
             .await?
             .into_inner()

@@ -20,6 +20,7 @@ pub(crate) use error::MAX_STATUS_DETAIL_BYTES;
 pub(crate) use error::{app_status, core_status, status_with_bounded_detail};
 
 pub use error::AppError;
+pub use health::READINESS_SERVICE_NAME;
 pub use server::{
     PreparedGrpcServer, RunningServer, ServerBuilder, ServerMode, StaticAsset, StaticAssetsProvider,
 };

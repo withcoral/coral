@@ -144,8 +144,18 @@ resolved relative to Coral's config directory. `access_token_ttl_seconds`
 defaults to 30 days (`2592000`), which is a long life for a bearer token that
 grants everything — set it explicitly to the shortest value your clients can
 re-authenticate within. Both served surfaces accept only tokens whose audience is
-the instance's canonical identifier; gRPC health checks remain unauthenticated so
-readiness probes work without a credential.
+the instance's canonical identifier.
+
+The `grpc.health.v1.Health` service stays unauthenticated so probes work without a
+credential. It answers two different questions, and probes should ask for the one
+they mean:
+
+- The empty service name reports **process liveness** from a constant. Point
+  liveness probes here — it stays `SERVING` while the engine is degraded, so a
+  struggling instance is not restarted out from under you.
+- The `coral.readiness` service reports **engine readiness**, answering from the
+  catalog. Point readiness probes here so a wedged engine is taken out of
+  rotation. The answer is cached briefly, so polling it frequently is cheap.
 
 Coral terminates no TLS, so every non-loopback listener is cleartext and any
 bearer token on it can be read off the wire. Each surface therefore requires its

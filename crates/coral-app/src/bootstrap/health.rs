@@ -1,8 +1,18 @@
-//! Engine-backed implementation of `grpc.health.v1.Health`.
+//! Implementation of `grpc.health.v1.Health` for the gRPC surface.
+//!
+//! The service separates the two questions orchestrators ask, because they
+//! demand opposite failure responses. The empty service name — the gRPC
+//! convention for overall server health, and what off-the-shelf probers query by
+//! default — answers process liveness from a constant: a live process must not
+//! report `NotServing` just because its engine is degraded, or a liveness prober
+//! restarts the container instead of removing it from rotation. Engine readiness
+//! is a separate registered service, [`READINESS_SERVICE_NAME`], so a readiness
+//! probe can ask for it explicitly.
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use tonic_health::pb::health_check_response::ServingStatus;
 use tonic_health::pb::health_server::Health;
@@ -12,6 +22,19 @@ use crate::catalog::discovery::CatalogDiscovery;
 use crate::query::QueryAttribution;
 use crate::query::manager::QueryManager;
 use crate::workspaces::WorkspaceName;
+
+/// Health service name reporting whether the engine can answer for its catalog.
+///
+/// Readiness lives under its own name so the default (empty-name) check stays a
+/// constant-time liveness answer. Probes that want engine health ask for this.
+pub const READINESS_SERVICE_NAME: &str = "coral.readiness";
+
+/// How long one engine readiness answer is reused.
+///
+/// The health service is unauthenticated by design, so without this every caller
+/// that can reach the port could drive a catalog resolution per request. It also
+/// keeps a normal orchestrator poll interval from doing the work every time.
+const READINESS_CACHE_TTL: Duration = Duration::from_secs(2);
 
 type ReadinessFuture = Pin<Box<dyn Future<Output = bool> + Send>>;
 
@@ -23,13 +46,23 @@ type ReadinessFuture = Pin<Box<dyn Future<Output = bool> + Send>>;
 /// degenerating into a port check: the alternative — probing a data-plane RPC
 /// from outside — either needs a token or an authentication bypass.
 #[derive(Clone)]
-pub(super) struct EngineReadiness(Arc<dyn Fn() -> ReadinessFuture + Send + Sync>);
+pub(super) struct EngineReadiness {
+    probe: Arc<dyn Fn() -> ReadinessFuture + Send + Sync>,
+    cached: Arc<Mutex<Option<(Instant, bool)>>>,
+}
 
 impl EngineReadiness {
+    fn new(probe: Arc<dyn Fn() -> ReadinessFuture + Send + Sync>) -> Self {
+        Self {
+            probe,
+            cached: Arc::new(Mutex::new(None)),
+        }
+    }
+
     /// Reports readiness by resolving the default workspace's catalog, the same
     /// work the auth-disabled readiness probe drives through `ListCatalog`.
     pub(super) fn from_query_manager(queries: QueryManager) -> Self {
-        Self(Arc::new(move || {
+        Self::new(Arc::new(move || {
             let catalog = CatalogDiscovery::new(queries.clone());
             Box::pin(async move {
                 catalog
@@ -46,11 +79,29 @@ impl EngineReadiness {
 
     #[cfg(test)]
     pub(super) fn fixed(ready: bool) -> Self {
-        Self(Arc::new(move || Box::pin(std::future::ready(ready))))
+        Self::new(Arc::new(move || Box::pin(std::future::ready(ready))))
     }
 
+    /// Reads the cached answer while it is fresh, else probes and caches.
+    ///
+    /// Concurrent callers may both probe; that costs a duplicate resolution at
+    /// worst and avoids holding a lock across the await.
     async fn is_ready(&self) -> bool {
-        (self.0)().await
+        if let Some(ready) = self.fresh_answer() {
+            return ready;
+        }
+        let ready = (self.probe)().await;
+        if let Ok(mut cached) = self.cached.lock() {
+            *cached = Some((Instant::now(), ready));
+        }
+        ready
+    }
+
+    fn fresh_answer(&self) -> Option<bool> {
+        let cached = self.cached.lock().ok()?;
+        cached
+            .filter(|(recorded, _)| recorded.elapsed() < READINESS_CACHE_TTL)
+            .map(|(_, ready)| ready)
     }
 }
 
@@ -85,14 +136,13 @@ impl Health for AggregateHealthService {
         &self,
         request: tonic::Request<HealthCheckRequest>,
     ) -> Result<tonic::Response<HealthCheckResponse>, tonic::Status> {
-        if !request.get_ref().service.is_empty() {
-            return Err(tonic::Status::not_found("service not registered"));
-        }
-
-        let status = if self.readiness.is_ready().await {
-            ServingStatus::Serving
-        } else {
-            ServingStatus::NotServing
+        let status = match request.get_ref().service.as_str() {
+            // Process liveness: answered from a constant so a degraded engine
+            // never tells a liveness prober to restart the process.
+            "" => ServingStatus::Serving,
+            READINESS_SERVICE_NAME if self.readiness.is_ready().await => ServingStatus::Serving,
+            READINESS_SERVICE_NAME => ServingStatus::NotServing,
+            _ => return Err(tonic::Status::not_found("service not registered")),
         };
         Ok(tonic::Response::new(HealthCheckResponse {
             status: status as i32,
@@ -113,26 +163,76 @@ impl Health for AggregateHealthService {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use tonic_health::pb::HealthCheckRequest;
     use tonic_health::pb::health_check_response::ServingStatus;
     use tonic_health::pb::health_server::Health as _;
 
-    use super::{AggregateHealthService, EngineReadiness};
+    use super::{AggregateHealthService, EngineReadiness, READINESS_SERVICE_NAME};
 
-    async fn check_status(ready: bool) -> i32 {
+    async fn check(service: &str, ready: bool) -> Result<i32, tonic::Status> {
         AggregateHealthService::new(EngineReadiness::fixed(ready))
             .check(tonic::Request::new(HealthCheckRequest {
-                service: String::new(),
+                service: service.to_string(),
             }))
             .await
-            .expect("aggregate health check")
-            .into_inner()
-            .status
+            .map(|response| response.into_inner().status)
     }
 
     #[tokio::test]
-    async fn aggregate_health_reports_engine_readiness() {
-        assert_eq!(check_status(true).await, ServingStatus::Serving as i32);
-        assert_eq!(check_status(false).await, ServingStatus::NotServing as i32);
+    async fn liveness_stays_serving_while_the_engine_is_unready() {
+        for ready in [true, false] {
+            assert_eq!(
+                check("", ready).await.expect("liveness check"),
+                ServingStatus::Serving as i32,
+                "liveness must not follow engine readiness"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn the_readiness_service_reports_engine_readiness() {
+        assert_eq!(
+            check(READINESS_SERVICE_NAME, true)
+                .await
+                .expect("readiness check"),
+            ServingStatus::Serving as i32
+        );
+        assert_eq!(
+            check(READINESS_SERVICE_NAME, false)
+                .await
+                .expect("readiness check"),
+            ServingStatus::NotServing as i32
+        );
+    }
+
+    #[tokio::test]
+    async fn other_service_names_are_not_registered() {
+        let error = check("coral.v1.QueryService", true)
+            .await
+            .expect_err("unknown services must not resolve");
+        assert_eq!(error.code(), tonic::Code::NotFound);
+    }
+
+    #[tokio::test]
+    async fn readiness_probes_the_engine_once_within_the_cache_window() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&calls);
+        let readiness = EngineReadiness::new(Arc::new(move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+            Box::pin(std::future::ready(true))
+        }));
+
+        for _ in 0..5 {
+            assert!(readiness.is_ready().await);
+        }
+
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "the unauthenticated readiness check must not resolve the catalog per request"
+        );
     }
 }

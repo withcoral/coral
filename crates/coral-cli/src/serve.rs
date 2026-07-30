@@ -199,9 +199,10 @@ async fn start_mcp_http(
 /// A data-plane call cannot serve here: with `[auth]` on it would need a bearer
 /// token the probe does not hold, and its `Unauthenticated` rejection reads as
 /// "reachable" — turning `/readyz` into a port check. The health service reports
-/// catalog reachability server-side instead.
+/// catalog reachability server-side instead, under its readiness service name so
+/// the aggregate liveness check stays a constant.
 async fn probe_serving_health(client: &AppClient) -> Result<(), Code> {
-    match client.check_serving().await {
+    match client.check_engine_ready().await {
         Ok(true) => Ok(()),
         Ok(false) => Err(Code::Unavailable),
         Err(status) => Err(status.code()),

@@ -23,12 +23,13 @@ impl PrincipalProvider for UnavailablePrincipalProvider {
     }
 }
 
-/// The aggregate check answers from the engine, not from a static constant: it
-/// is the only unauthenticated RPC, so it carries the readiness signal probes
-/// reach without a credential. It must still not depend on principal selection,
-/// which the deliberately unavailable provider here pins.
+/// The health service is the only unauthenticated RPC, so it carries the signals
+/// probes reach without a credential: the empty name answers process liveness
+/// from a constant, and the readiness service answers from the engine. Neither
+/// may depend on principal selection, which the deliberately unavailable provider
+/// here pins.
 #[tokio::test]
-async fn grpc_health_reports_engine_readiness_without_a_principal() {
+async fn grpc_health_reports_liveness_and_readiness_without_a_principal() {
     let temp = TempDir::new().expect("temp dir");
     let server = ServerBuilder::new()
         .with_config_dir(temp.path())
@@ -52,12 +53,21 @@ async fn grpc_health_reports_engine_readiness_without_a_principal() {
         .into_inner();
     assert_eq!(response.status, ServingStatus::Serving as i32);
 
+    let readiness = health
+        .check(HealthCheckRequest {
+            service: coral_app::READINESS_SERVICE_NAME.to_string(),
+        })
+        .await
+        .expect("readiness health check")
+        .into_inner();
+    assert_eq!(readiness.status, ServingStatus::Serving as i32);
+
     let named = health
         .check(HealthCheckRequest {
             service: "coral.v1.QueryService".to_string(),
         })
         .await
-        .expect_err("named services are not registered");
+        .expect_err("other named services are not registered");
     assert_eq!(named.code(), Code::NotFound);
 
     let watch = health
