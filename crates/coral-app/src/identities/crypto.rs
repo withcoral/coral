@@ -451,7 +451,10 @@ mod tests {
     }
 
     fn user_owner(user: &str) -> IdentityOwner {
-        IdentityOwner::for_user(crate::identity::UserPrincipal::for_user(user).expect("user"))
+        IdentityOwner::for_user(
+            crate::identity::Principal::parse(user, crate::identity::PrincipalKind::User)
+                .expect("user"),
+        )
     }
 
     fn workspace_owner(workspace: &str) -> IdentityOwner {
