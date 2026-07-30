@@ -94,14 +94,20 @@ pub(super) async fn fetch_rows(
         );
         let base_url = render_template(&client.base_url, &render_context)?;
         let base_url = normalize_base_url(&base_url);
-        // Asked once, of the mode itself: a mode that advances by URL must
-        // both request that URL and skip rebuilding the request Coral would
-        // otherwise have made. Two independent `matches!` tests here is how a
-        // new mode silently stops after page one.
-        let follows_next_url = pagination.mode.follows_response_next_url();
-        let following_next_url = follows_next_url && state.next_url.is_some();
+        // Resolved once, then both decisions read that one binding: a mode
+        // that advances by URL must both request that URL and skip rebuilding
+        // the request Coral would otherwise have made. Deriving "are we
+        // following?" from the URL itself rather than re-testing the mode
+        // means the two can never disagree — and a new mode that forgets to
+        // answer `follows_response_next_url` stops after page one at both
+        // sites together, not at one of them.
+        let next_url = state
+            .next_url
+            .clone()
+            .filter(|_| pagination.mode.follows_response_next_url());
+        let following_next_url = next_url.is_some();
 
-        let url = if let Some(next) = state.next_url.clone().filter(|_| follows_next_url) {
+        let url = if let Some(next) = next_url {
             next
         } else {
             let rendered_path = render_template(&active_request.path, &render_context)?;
