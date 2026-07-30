@@ -378,6 +378,7 @@ redirect_uri = 'https://auth.example/auth/oidc/callback'
     // HTTP keeps serving must turn the authenticated probe unhealthy.
     let RunningServer {
         grpc,
+        oauth,
         mcp_http,
         grpc_authentication_enabled: _,
     } = server;
@@ -395,6 +396,11 @@ redirect_uri = 'https://auth.example/auth/oidc/callback'
         .shutdown()
         .await
         .expect("shutdown MCP HTTP server");
+    oauth
+        .expect("OAuth server")
+        .shutdown()
+        .await
+        .expect("shutdown OAuth server");
 }
 
 #[tokio::test]
