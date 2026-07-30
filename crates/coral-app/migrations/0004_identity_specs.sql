@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS identity_spec_documents (
     wrapped_dek_nonce BYTEA NOT NULL,
     key_id TEXT NOT NULL,
     algorithm TEXT NOT NULL,
-    aad_version BIGINT NOT NULL,
+    binding_version BIGINT NOT NULL,
     created_at_unix_nanos BIGINT NOT NULL,
     updated_at_unix_nanos BIGINT NOT NULL,
     FOREIGN KEY (identity_spec_id) REFERENCES identity_specs(id) ON DELETE CASCADE
