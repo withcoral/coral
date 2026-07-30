@@ -48,8 +48,10 @@ pub(crate) async fn assert_identity_management_contract(db: &Arc<CoralDb>) {
 
     let workspace = WorkspaceName::parse(&format!("manage{suffix}")).expect("workspace");
     put_workspace(db, &workspace).await;
-    let primary_user = UserPrincipal::for_user(&format!("manage-a-{suffix}")).expect("principal");
-    let other_user = UserPrincipal::for_user(&format!("manage-b-{suffix}")).expect("principal");
+    let primary_user =
+        Principal::parse(&format!("manage-a-{suffix}"), PrincipalKind::User).expect("principal");
+    let other_user =
+        Principal::parse(&format!("manage-b-{suffix}"), PrincipalKind::User).expect("principal");
     let primary_owner = IdentityOwner::for_user(primary_user.clone());
     let other_owner = IdentityOwner::for_user(other_user.clone());
     let workspace_owner = IdentityOwner::workspace(workspace.clone());
