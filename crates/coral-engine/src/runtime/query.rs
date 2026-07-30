@@ -790,7 +790,7 @@ impl QueryRuntimeAdapter {
             .sources()
             .iter()
             .filter(|source_name| {
-                self.schema_to_source
+                self.name_to_source
                     .values()
                     .any(|installed_name| installed_name == *source_name)
             })
@@ -1475,6 +1475,7 @@ mod tests {
                 function_name: "search_events".to_string(),
                 description: "Search events.".to_string(),
                 guide: String::new(),
+                require_guide_read: false,
                 arguments: Vec::new(),
                 result_columns: Vec::new(),
                 kind: coral_spec::SourceTableFunctionKind::Table,

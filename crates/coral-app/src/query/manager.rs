@@ -428,8 +428,13 @@ impl QueryManager {
                     .await
                     .map_err(QueryManagerError::Core)?;
                 if let Some(shown_guide_ids) = shown_guide_ids {
-                    let required_guides =
-                        required_query_guides(&runtime.list_catalog(None), prepared.resources());
+                    // Unfiltered on both qualifiers: a required guide has to be
+                    // found wherever the query's tables live, including
+                    // catalog-backed sources.
+                    let required_guides = required_query_guides(
+                        &runtime.list_catalog(None, None),
+                        prepared.resources(),
+                    );
                     let unseen_guides = required_guides
                         .into_iter()
                         .filter(|guide| !shown_guide_ids.contains(&guide.guide_id))
