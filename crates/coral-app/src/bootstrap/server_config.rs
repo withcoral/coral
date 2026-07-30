@@ -10,10 +10,10 @@ use zeroize::Zeroizing;
 
 use super::env::AppEnvironment;
 use super::{AppError, is_loopback_ip};
-use crate::auth::{AuthSettings, CoralAuthorizationServer};
+use crate::auth::session::SessionTokenIssuer;
+use crate::auth::{AuthSettings, CoralAuthorizationServer, ResolvedAuthSettings};
 use crate::identity::{BearerAuthenticator, PrincipalProvider};
 use crate::oauth_resource::CanonicalOauthUrl;
-use crate::request_auth::SessionPrincipalProvider;
 use crate::state::AppStateLayout;
 
 #[derive(Debug, Default, Deserialize)]
@@ -85,15 +85,19 @@ impl LoadedServerConfig {
         Ok(())
     }
 
-    pub(crate) fn companion_config(&self) -> Result<ServeCompanionConfig, AppError> {
+    /// Resolves the settings `coral serve`'s companions are built from.
+    ///
+    /// This returns validated configuration and resolved key material only. The
+    /// services themselves are constructed by the composition root in
+    /// `bootstrap/server.rs`, so discovering configuration never owns a live
+    /// service or its state.
+    pub(crate) fn companion_settings(&self) -> Result<ResolvedCompanionSettings, AppError> {
         let auth_settings = AuthSettings::from_toml(&self.raw)
             .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
         let Some(auth_settings) = auth_settings else {
-            return Ok(ServeCompanionConfig {
+            return Ok(ResolvedCompanionSettings {
                 mcp_http: self.resolve_mcp_http(None)?,
-                authorization_server: None,
-                grpc_principal_provider: None,
-                mcp_principal_provider: None,
+                session_auth: None,
             });
         };
         let (auth_settings, session) = auth_settings
@@ -115,33 +119,15 @@ impl LoadedServerConfig {
             Some(auth_settings.authorization_server().issuer()),
         )?;
         let grpc = self.grpc_settings()?;
-        grpc.reject_unacknowledged_authenticated_bind()?;
         let mcp_http = self.resolve_mcp_http(Some(&authorization_server))?;
-        let audience = authenticated_resource_identifier(&grpc, mcp_http.as_ref())?;
-        // Two independently constructed providers that enforce the same policy
-        // today. They are kept separate so the private gRPC API and MCP HTTP can
-        // diverge later without one surface silently inheriting the other's
-        // change.
-        let grpc_principal_provider = Some(Arc::new(SessionPrincipalProvider::new(
-            session.verifier(),
-            audience.clone(),
-        )) as Arc<dyn PrincipalProvider>);
-        let mcp_principal_provider = Some(Arc::new(SessionPrincipalProvider::new(
-            session.verifier(),
-            audience.clone(),
-        )) as Arc<dyn BearerAuthenticator>);
-        let mut authorization_server =
-            CoralAuthorizationServer::from_resolved_settings(auth_settings, session)
-                .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
-        authorization_server = authorization_server
-            .with_authorization_resource(audience)
-            .map_err(AppError::FailedPrecondition)?;
-        let authorization_server = Some(authorization_server);
-        Ok(ServeCompanionConfig {
+        let resource = authenticated_resource_identifier(&grpc, mcp_http.as_ref())?;
+        Ok(ResolvedCompanionSettings {
             mcp_http,
-            authorization_server,
-            grpc_principal_provider,
-            mcp_principal_provider,
+            session_auth: Some(ResolvedSessionAuth {
+                settings: auth_settings,
+                session_tokens: session,
+                resource,
+            }),
         })
     }
 
@@ -204,10 +190,21 @@ impl ServerSettings {
     /// Coral terminates no TLS, so a non-loopback bind is plaintext h2c and the
     /// tokens on it can be read off the wire. This mirrors the acknowledgements
     /// the MCP HTTP and OAuth listeners already require.
-    fn reject_unacknowledged_authenticated_bind(&self) -> Result<(), AppError> {
-        if !is_loopback_ip(self.bind_addr.ip()) && !self.allow_insecure_remote_grpc_bind {
+    ///
+    /// `bind` is the address the listener will actually use, which is not always
+    /// `[server].bind_addr`: an explicitly selected [`ServerMode`] carries its own
+    /// address. Checking the configured field instead would let
+    /// `ServerBuilder::standalone_grpc(non_loopback)` serve tokens in cleartext
+    /// while this check inspected an unrelated loopback default.
+    ///
+    /// [`ServerMode`]: super::ServerMode
+    pub(crate) fn reject_unacknowledged_authenticated_bind(
+        &self,
+        bind: SocketAddr,
+    ) -> Result<(), AppError> {
+        if !is_loopback_ip(bind.ip()) && !self.allow_insecure_remote_grpc_bind {
             return Err(AppError::FailedPrecondition(
-                "non-loopback server.bind_addr serves cleartext authenticated gRPC and requires server.allow_insecure_remote_grpc_bind = true"
+                "non-loopback gRPC bind serves cleartext authenticated gRPC and requires server.allow_insecure_remote_grpc_bind = true"
                     .to_string(),
             ));
         }
@@ -317,9 +314,28 @@ impl McpHttpServeConfig {
     #[cfg(test)]
     fn load(layout: &AppStateLayout) -> Result<Option<Self>, AppError> {
         Ok(LoadedServerConfig::load(layout)?
-            .companion_config()?
+            .companion_settings()?
             .mcp_http)
     }
+}
+
+/// Settings the companion services are built from, with nothing live in them.
+///
+/// The split from [`ServeCompanionConfig`] is what keeps service construction in
+/// the composition root: this type carries validated configuration and resolved
+/// key material, and `bootstrap/server.rs` turns it into services.
+pub(crate) struct ResolvedCompanionSettings {
+    pub(super) mcp_http: Option<McpHttpServeConfig>,
+    pub(super) session_auth: Option<ResolvedSessionAuth>,
+}
+
+/// Resolved session-authentication inputs for one authenticated instance.
+pub(crate) struct ResolvedSessionAuth {
+    pub(super) settings: ResolvedAuthSettings,
+    pub(super) session_tokens: SessionTokenIssuer,
+    /// The instance's canonical protected-resource identifier, which is also the
+    /// only token audience either served surface accepts.
+    pub(super) resource: String,
 }
 
 /// Configuration for companions that `coral serve` starts beside gRPC.
@@ -331,6 +347,21 @@ pub struct ServeCompanionConfig {
 }
 
 impl ServeCompanionConfig {
+    /// Assembles the companion handles the composition root has constructed.
+    pub(super) fn from_parts(
+        mcp_http: Option<McpHttpServeConfig>,
+        authorization_server: Option<CoralAuthorizationServer>,
+        grpc_principal_provider: Option<Arc<dyn PrincipalProvider>>,
+        mcp_principal_provider: Option<Arc<dyn BearerAuthenticator>>,
+    ) -> Self {
+        Self {
+            mcp_http,
+            authorization_server,
+            grpc_principal_provider,
+            mcp_principal_provider,
+        }
+    }
+
     /// Returns the resolved MCP HTTP configuration, when enabled.
     #[must_use]
     pub fn mcp_http(&self) -> Option<&McpHttpServeConfig> {
@@ -346,7 +377,7 @@ impl ServeCompanionConfig {
     /// Returns the session policy the private gRPC API authenticates with.
     ///
     /// This is a separate value from [`Self::mcp_principal_provider`] that
-    /// currently enforces the same audience; see `companion_config`.
+    /// currently enforces the same audience; see `build_companions`.
     #[must_use]
     pub fn grpc_principal_provider(&self) -> Option<Arc<dyn PrincipalProvider>> {
         self.grpc_principal_provider.as_ref().map(Arc::clone)
@@ -561,23 +592,23 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
             "[server.mcp_http]\nenabled = true\nbind = '127.0.0.1:0'\npublic_url = 'https://MCP.example.test/'\n",
         );
 
-        let mut companions = LoadedServerConfig::load(&layout)
+        let companions = LoadedServerConfig::load(&layout)
             .expect("load")
-            .companion_config()
+            .companion_settings()
             .expect("companions");
         assert_eq!(
-            companions.mcp_http(),
+            companions.mcp_http.as_ref(),
             Some(&McpHttpServeConfig::Authenticated {
                 bind_addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
                 public_url: "https://mcp.example.test".to_string(),
                 authorization_server: "https://auth.example.test".to_string(),
             })
         );
-        // Two independently constructed providers enforcing the same audience
-        // today, kept separate so the two surfaces can diverge later.
-        assert!(companions.grpc_principal_provider().is_some());
-        assert!(companions.mcp_principal_provider().is_some());
-        assert!(companions.take_authorization_server().is_some());
+        // Resolution reports that session auth is configured; constructing the
+        // providers and the authorization server from it is the composition
+        // root's job, covered in `bootstrap::server`.
+        let session_auth = companions.session_auth.expect("session auth");
+        assert_eq!(session_auth.resource, "https://mcp.example.test");
     }
 
     #[test]
@@ -589,14 +620,14 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
             "[server]\npublic_url = 'https://GRPC.example.test/'\n",
         );
 
-        let mut companions = LoadedServerConfig::load(&layout)
+        let companions = LoadedServerConfig::load(&layout)
             .expect("load")
-            .companion_config()
+            .companion_settings()
             .expect("gRPC-only authentication must resolve");
 
-        assert!(companions.mcp_http().is_none());
-        assert!(companions.grpc_principal_provider().is_some());
-        assert!(companions.take_authorization_server().is_some());
+        assert!(companions.mcp_http.is_none());
+        let session_auth = companions.session_auth.expect("session auth");
+        assert_eq!(session_auth.resource, "https://grpc.example.test");
     }
 
     #[test]
@@ -606,7 +637,7 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
         write_authenticated_config(&layout, "");
         let error = LoadedServerConfig::load(&layout)
             .expect("load")
-            .companion_config()
+            .companion_settings()
             .err()
             .expect("auth without any resource identifier must fail");
         assert!(error.to_string().contains("requires server.public_url"));
@@ -617,7 +648,7 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
         );
         let error = LoadedServerConfig::load(&layout)
             .expect("load")
-            .companion_config()
+            .companion_settings()
             .err()
             .expect("two resource identifiers must fail");
         assert!(
@@ -637,7 +668,7 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
         );
         let error = LoadedServerConfig::load(&layout)
             .expect("load")
-            .companion_config()
+            .companion_settings()
             .err()
             .expect("missing public URL must fail");
         assert!(error.to_string().contains("server.mcp_http.public_url"));
@@ -653,7 +684,7 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
         );
         let error = LoadedServerConfig::load(&layout)
             .expect("load")
-            .companion_config()
+            .companion_settings()
             .err()
             .expect("cleartext remote MCP bind must fail");
         assert!(
@@ -669,43 +700,12 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
         );
         let companions = LoadedServerConfig::load(&layout)
             .expect("load")
-            .companion_config()
+            .companion_settings()
             .expect("acknowledged remote MCP bind must resolve");
         assert!(matches!(
-            companions.mcp_http(),
+            companions.mcp_http.as_ref(),
             Some(&McpHttpServeConfig::Authenticated { .. })
         ));
-    }
-
-    #[test]
-    fn authenticated_grpc_requires_acknowledging_a_remote_bind() {
-        let temp = TempDir::new().expect("temp dir");
-        let layout = AppStateLayout::discover(Some(temp.path().join("config"))).expect("layout");
-        write_authenticated_config(
-            &layout,
-            "[server]\nbind_addr = '0.0.0.0:14555'\npublic_url = 'https://grpc.example.test'\n",
-        );
-        let error = LoadedServerConfig::load(&layout)
-            .expect("load")
-            .companion_config()
-            .err()
-            .expect("cleartext remote gRPC bind must fail");
-        assert!(
-            error
-                .to_string()
-                .contains("server.allow_insecure_remote_grpc_bind = true"),
-            "error: {error}"
-        );
-
-        write_authenticated_config(
-            &layout,
-            "[server]\nbind_addr = '0.0.0.0:14555'\nallow_insecure_remote_grpc_bind = true\npublic_url = 'https://grpc.example.test'\n",
-        );
-        let companions = LoadedServerConfig::load(&layout)
-            .expect("load")
-            .companion_config()
-            .expect("acknowledged remote gRPC bind must resolve");
-        assert!(companions.grpc_principal_provider().is_some());
     }
 
     #[test]

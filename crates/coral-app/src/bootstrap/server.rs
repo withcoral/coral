@@ -41,8 +41,11 @@ use tower::{Layer, Service};
 use super::env::AppEnvironment;
 use super::error::AppError;
 use super::health::{AggregateHealthService, EngineReadiness};
-use super::server_config::{LoadedServerConfig, ServeCompanionConfig};
+use super::server_config::{
+    LoadedServerConfig, ResolvedCompanionSettings, ResolvedSessionAuth, ServeCompanionConfig,
+};
 use crate::EngineExtensionsProvider;
+use crate::auth::CoralAuthorizationServer;
 use crate::catalog::discovery::CatalogDiscovery;
 use crate::catalog::service::CatalogService;
 use crate::credentials::config::CredentialStorageConfig;
@@ -54,9 +57,10 @@ use crate::feedback::publisher::{
 };
 use crate::feedback::service::FeedbackService;
 use crate::functions::service::FunctionService;
-use crate::identity::{LocalPrincipalProvider, PrincipalProvider};
+use crate::identity::{BearerAuthenticator, LocalPrincipalProvider, PrincipalProvider};
 use crate::query::manager::QueryManager;
 use crate::query::service::QueryService;
+use crate::request_auth::SessionPrincipalProvider;
 use crate::search::manager::SearchManager;
 use crate::search::observed::SearchObservationHandle;
 use crate::search::service::SearchService;
@@ -323,7 +327,7 @@ impl ServerBuilder {
                 ));
             }
         };
-        let companions = loaded.companion_config()?;
+        let companions = build_companions(loaded.companion_settings()?)?;
         if companions.mcp_http().is_some() {
             validate_mcp_http_grpc_mode(&mode)?;
         }
@@ -334,6 +338,12 @@ impl ServerBuilder {
                         .to_string(),
                 ));
             }
+            // Checked against the resolved mode, not `[server].bind_addr`: an
+            // explicitly selected mode supplies its own address, so validating the
+            // configured field would miss the address this listener really binds.
+            loaded
+                .grpc_settings()?
+                .reject_unacknowledged_authenticated_bind(mode.bind_addr())?;
             self.config.principal_provider = Some(provider);
         }
         self.config.mode = ServerModeSelection::Prepared(mode);
@@ -531,6 +541,51 @@ fn server_mode_name(mode: &ServerMode) -> &'static str {
         ServerMode::StandaloneGrpc { .. } => "standalone gRPC",
         ServerMode::EmbeddedUi { .. } => "embedded UI",
     }
+}
+
+/// Builds the companion services from resolved settings.
+///
+/// This is the composition root's half of the split: `companion_settings` decides
+/// *what* is configured, and this decides *what to construct* — including the
+/// authorization server's state store, which a configuration accessor has no
+/// business owning.
+fn build_companions(settings: ResolvedCompanionSettings) -> Result<ServeCompanionConfig, AppError> {
+    let ResolvedCompanionSettings {
+        mcp_http,
+        session_auth,
+    } = settings;
+    let Some(session_auth) = session_auth else {
+        return Ok(ServeCompanionConfig::from_parts(mcp_http, None, None, None));
+    };
+    let ResolvedSessionAuth {
+        settings: auth_settings,
+        session_tokens,
+        resource,
+    } = session_auth;
+
+    // Two independently constructed providers that enforce the same policy today.
+    // They are kept separate so the private gRPC API and MCP HTTP can diverge
+    // later without one surface silently inheriting the other's change.
+    let grpc_principal_provider = Some(Arc::new(SessionPrincipalProvider::new(
+        session_tokens.verifier(),
+        resource.clone(),
+    )) as Arc<dyn PrincipalProvider>);
+    let mcp_principal_provider = Some(Arc::new(SessionPrincipalProvider::new(
+        session_tokens.verifier(),
+        resource.clone(),
+    )) as Arc<dyn BearerAuthenticator>);
+    let authorization_server =
+        CoralAuthorizationServer::from_resolved_settings(auth_settings, session_tokens)
+            .map_err(|error| AppError::FailedPrecondition(error.to_string()))?
+            .with_authorization_resource(resource)
+            .map_err(AppError::FailedPrecondition)?;
+
+    Ok(ServeCompanionConfig::from_parts(
+        mcp_http,
+        Some(authorization_server),
+        grpc_principal_provider,
+        mcp_principal_provider,
+    ))
 }
 
 fn validate_mcp_http_grpc_mode(mode: &ServerMode) -> Result<(), AppError> {
@@ -1455,6 +1510,74 @@ redirect_uri = 'https://auth.example/auth/oidc/callback'
             .prepare_for_serve()
             .err()
             .expect("IPv4-mapped IPv6 must fail closed");
+    }
+
+    /// The acknowledgement is checked against the mode the listener will use, not
+    /// `[server].bind_addr`. An explicitly selected mode carries its own address,
+    /// so a config whose `bind_addr` is an unrelated loopback default must not let
+    /// an authenticated wildcard listener through unacknowledged.
+    #[test]
+    fn an_authenticated_non_loopback_bind_needs_an_acknowledgement() {
+        let auth_config = |extra: &str| {
+            format!(
+                "[server]\npublic_url = 'https://grpc.example.test'\n{extra}
+[auth.session]
+signing_key_file = 'session.key'
+
+[auth.authorization_server]
+issuer = 'https://auth.example'
+
+[auth.provider]
+issuer = 'https://accounts.example'
+client_id = 'upstream-client'
+client_secret = 'test-secret'
+redirect_uri = 'https://auth.example/auth/oidc/callback'
+"
+            )
+        };
+        // `explicit` selects the mode directly; otherwise the bind comes from
+        // `[server].bind_addr` in the config.
+        let prepared = |extra: &str, explicit: bool| {
+            let temp = TempDir::new().expect("temp dir");
+            let config_dir = temp.path().join("coral-config");
+            std::fs::create_dir_all(&config_dir).expect("config dir");
+            std::fs::write(config_dir.join("config.toml"), auth_config(extra))
+                .expect("config file");
+            let signing_key = crate::auth::session::test_signing_key();
+            std::fs::write(config_dir.join("session.key"), signing_key).expect("session key");
+            let builder = if explicit {
+                ServerBuilder::standalone_grpc(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 14555)))
+            } else {
+                ServerBuilder::configured_standalone_grpc()
+            };
+            let result = builder
+                .with_config_dir(config_dir)
+                .prepare_for_serve()
+                .map(|_| ());
+            drop(temp);
+            result
+        };
+
+        for (label, extra, explicit) in [
+            ("explicit mode", "", true),
+            ("configured bind", "bind_addr = '0.0.0.0:14555'\n", false),
+        ] {
+            let error = prepared(extra, explicit)
+                .err()
+                .unwrap_or_else(|| panic!("{label} must fail closed unacknowledged"));
+            assert!(
+                error
+                    .to_string()
+                    .contains("server.allow_insecure_remote_grpc_bind = true"),
+                "{label}: unexpected error: {error}"
+            );
+
+            prepared(
+                &format!("{extra}allow_insecure_remote_grpc_bind = true\n"),
+                explicit,
+            )
+            .unwrap_or_else(|error| panic!("{label} acknowledged must be allowed: {error}"));
+        }
     }
 
     #[tokio::test]
