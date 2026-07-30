@@ -1,0 +1,81 @@
+{
+  "ok": false,
+  "channel": {
+    "id": "C00000000",
+    "name": "",
+    "is_channel": false,
+    "is_group": false,
+    "is_im": false,
+    "created": 12345,
+    "is_archived": false,
+    "is_general": false,
+    "unlinked": 12345,
+    "name_normalized": "",
+    "is_shared": false,
+    "creator": "U00000000",
+    "is_ext_shared": false,
+    "is_org_shared": false,
+    "shared_team_ids": [
+      "T00000000"
+    ],
+    "pending_shared": [
+      ""
+    ],
+    "pending_connected_team_ids": [
+      ""
+    ],
+    "is_pending_ext_shared": false,
+    "is_member": false,
+    "is_private": false,
+    "is_mpim": false,
+    "last_read": "0000000000.000000",
+    "topic": {
+      "value": "",
+      "creator": "",
+      "last_set": 12345
+    },
+    "purpose": {
+      "value": "",
+      "creator": "",
+      "last_set": 12345
+    },
+    "previous_names": [
+      ""
+    ],
+    "locale": "",
+    "num_members": 12345,
+    "is_read_only": false,
+    "is_thread_only": false,
+    "is_non_threadable": false,
+    "internal_team_ids": [
+      "T00000000"
+    ],
+    "connected_team_ids": [
+      "E00000000"
+    ],
+    "conversation_host_id": "T00000000",
+    "is_moved": 12345,
+    "is_global_shared": false,
+    "is_org_default": false,
+    "is_org_mandatory": false,
+    "connected_limited_team_ids": [
+      ""
+    ],
+    "context_team_id": "T00000000",
+    "updated": 12345,
+    "properties": {
+      "is_dormant": false,
+      "tabs": [
+        {}
+      ],
+      "tabz": [
+        {}
+      ],
+      "has_slack_connect_invite_created": false
+    }
+  },
+  "error": "",
+  "needed": "",
+  "provided": "",
+  "warning": ""
+}

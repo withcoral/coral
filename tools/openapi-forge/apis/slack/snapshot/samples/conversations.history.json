@@ -1,0 +1,104 @@
+{
+  "ok": false,
+  "messages": [
+    {
+      "type": "",
+      "subtype": "",
+      "text": "",
+      "bot_id": "B00000000",
+      "ts": "0000000000.000000",
+      "thread_ts": "0000000000.000000",
+      "root": {
+        "type": "",
+        "subtype": "",
+        "text": "",
+        "ts": "0000000000.000000",
+        "username": "",
+        "icons": {},
+        "bot_id": "B00000000",
+        "thread_ts": "0000000000.000000",
+        "parent_user_id": "U00000000",
+        "reply_count": 12345,
+        "reply_users_count": 12345,
+        "latest_reply": "0000000000.000000",
+        "reply_users": [],
+        "subscribed": false
+      },
+      "username": "",
+      "icons": {
+        "emoji": "",
+        "image_64": "https://www.example.com/",
+        "image_36": "https://www.example.com/",
+        "image_48": "https://www.example.com/",
+        "image_72": "https://www.example.com/"
+      },
+      "parent_user_id": "U00000000",
+      "reply_count": 12345,
+      "reply_users_count": 12345,
+      "latest_reply": "0000000000.000000",
+      "reply_users": [
+        "U00000000"
+      ],
+      "subscribed": false,
+      "user": "U00000000",
+      "team": "T00000000",
+      "bot_profile": {
+        "id": "B00000000",
+        "deleted": false,
+        "name": "",
+        "updated": 12345,
+        "app_id": "A00000000",
+        "icons": {},
+        "team_id": "T00000000"
+      },
+      "upload": false,
+      "display_as_bot": false,
+      "x_files": [
+        "F00000000"
+      ],
+      "edited": {
+        "user": "B00000000",
+        "ts": "0000000000.000000"
+      },
+      "topic": "",
+      "purpose": "",
+      "client_msg_id": "",
+      "reactions": [
+        {}
+      ],
+      "app_id": "A00000000",
+      "metadata": {
+        "event_payload": {},
+        "event_type": ""
+      },
+      "inviter": "U00000000",
+      "is_locked": false,
+      "files": [
+        {}
+      ],
+      "blocks": [
+        {}
+      ],
+      "attachments": [
+        {}
+      ],
+      "assistant_app_thread": {
+        "title": "",
+        "title_blocks": [],
+        "first_user_thread_reply": ""
+      }
+    }
+  ],
+  "has_more": false,
+  "pin_count": 12345,
+  "channel_actions_ts": 12345,
+  "channel_actions_count": 12345,
+  "response_metadata": {
+    "next_cursor": ""
+  },
+  "error": "",
+  "needed": "",
+  "provided": "",
+  "oldest": "0000000000.000000",
+  "latest": "0000000000.000000"
+}

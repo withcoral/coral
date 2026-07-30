@@ -1,0 +1,45 @@
+{
+  "ok": false,
+  "query": "",
+  "messages": {
+    "total": 12345,
+    "pagination": {
+      "total_count": 12345,
+      "page": 12345,
+      "per_page": 12345,
+      "page_count": 12345,
+      "first": 12345,
+      "last": 12345
+    },
+    "paging": {
+      "count": 12345,
+      "total": 12345,
+      "page": 12345,
+      "pages": 12345
+    },
+    "matches": [
+      {
+        "iid": "",
+        "team": "T00000000",
+        "channel": {},
+        "type": "",
+        "user": "U00000000",
+        "username": "",
+        "ts": "0000000000.000000",
+        "text": "",
+        "permalink": "https://www.example.com/",
+        "no_reactions": false,
+        "previous": {},
+        "previous_2": {},
+        "is_mpim": false,
+        "score": 12345,
+        "blocks": [],
+        "attachments": [],
+        "files": []
+      }
+    ]
+  },
+  "error": "",
+  "needed": "",
+  "provided": ""
+}

@@ -1,0 +1,30 @@
+api: slack
+title: Slack Web API
+description: >-
+  Read-only coverage of the Slack Web API, generated from Slack's published
+  reference documentation and the response samples recorded in
+  slackapi/java-slack-sdk. Slack publishes no OpenAPI 3.0 description of its
+  own: the official slackapi/slack-api-specs is Swagger 2.0, was last updated in
+  August 2020, and the repository was archived in March 2024.
+serverUrl: https://slack.com/api
+# Written by `forge build`, relative to this file.
+output: ../../../../sources/v4/slack/openapi.yaml
+
+scope:
+  # Starter scope: the methods the existing DSL v3 source at
+  # sources/core/slack/manifest.yaml already covers, plus the lookups and
+  # reference tables those relations need. Widened to the full read-only core
+  # once the pipeline is proven.
+  #
+  # Names are matched case-insensitively against Slack's own casing.
+  methods:
+    - auth.test
+    - conversations.history
+    - conversations.info
+    - conversations.list
+    - conversations.members
+    - conversations.replies
+    - search.messages
+    - users.conversations
+    - users.info
+    - users.list

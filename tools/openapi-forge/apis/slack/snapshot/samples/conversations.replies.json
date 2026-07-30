@@ -1,0 +1,71 @@
+{
+  "messages": [
+    {
+      "bot_id": "B00000000",
+      "type": "",
+      "text": "",
+      "user": "U00000000",
+      "ts": "0000000000.000000",
+      "team": "T00000000",
+      "bot_profile": {
+        "id": "B00000000",
+        "deleted": false,
+        "name": "",
+        "updated": 12345,
+        "app_id": "A00000000",
+        "icons": {},
+        "team_id": "T00000000"
+      },
+      "thread_ts": "0000000000.000000",
+      "reply_count": 12345,
+      "reply_users_count": 12345,
+      "latest_reply": "0000000000.000000",
+      "reply_users": [
+        "U00000000"
+      ],
+      "subscribed": false,
+      "parent_user_id": "U00000000",
+      "is_locked": false,
+      "last_read": "0000000000.000000",
+      "upload": false,
+      "display_as_bot": false,
+      "app_id": "A00000000",
+      "x_files": [
+        "F00000000"
+      ],
+      "edited": {
+        "user": "B00000000",
+        "ts": "0000000000.000000"
+      },
+      "reactions": [
+        {}
+      ],
+      "metadata": {
+        "event_payload": {},
+        "event_type": ""
+      },
+      "blocks": [
+        {}
+      ],
+      "attachments": [
+        {}
+      ],
+      "files": [
+        {}
+      ],
+      "assistant_app_thread": {
+        "title": "",
+        "title_blocks": [],
+        "first_user_thread_reply": ""
+      }
+    }
+  ],
+  "has_more": false,
+  "ok": false,
+  "response_metadata": {
+    "next_cursor": ""
+  },
+  "error": "",
+  "needed": "",
+  "provided": ""
+}

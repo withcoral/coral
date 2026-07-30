@@ -7,6 +7,7 @@
  */
 
 import type { ApiModel } from '../core/model.ts'
+import { SLACK_ADAPTER } from './slack/index.ts'
 
 export interface BuildOptions {
   /** Report drift instead of writing the descriptor. */
@@ -24,7 +25,7 @@ export interface Adapter {
   extract(): Promise<ApiModel>
 }
 
-const ADAPTERS: Adapter[] = []
+const ADAPTERS: Adapter[] = [SLACK_ADAPTER]
 
 export function findAdapter(name: string): Adapter | undefined {
   return ADAPTERS.find((adapter) => adapter.name === name)

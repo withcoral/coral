@@ -1,0 +1,82 @@
+{
+  "ok": false,
+  "channels": [
+    {
+      "id": "C00000000",
+      "name": "",
+      "is_channel": false,
+      "is_group": false,
+      "is_im": false,
+      "created": 12345,
+      "is_archived": false,
+      "is_general": false,
+      "unlinked": 12345,
+      "name_normalized": "",
+      "is_shared": false,
+      "creator": "U00000000",
+      "is_ext_shared": false,
+      "is_org_shared": false,
+      "shared_team_ids": [
+        "T00000000"
+      ],
+      "pending_shared": [
+        ""
+      ],
+      "pending_connected_team_ids": [
+        ""
+      ],
+      "is_pending_ext_shared": false,
+      "is_private": false,
+      "is_mpim": false,
+      "topic": {
+        "value": "",
+        "creator": "",
+        "last_set": 12345
+      },
+      "purpose": {
+        "value": "",
+        "creator": "",
+        "last_set": 12345
+      },
+      "previous_names": [
+        ""
+      ],
+      "conversation_host_id": "T00000000",
+      "is_moved": 12345,
+      "internal_team_ids": [
+        "T00000000"
+      ],
+      "is_global_shared": false,
+      "is_org_default": false,
+      "is_org_mandatory": false,
+      "enterprise_id": "E00000000",
+      "last_read": "0000000000.000000",
+      "is_open": false,
+      "priority": 12345,
+      "user": "U00000000",
+      "is_user_deleted": false,
+      "parent_conversation": "G00000000",
+      "context_team_id": "T00000000",
+      "updated": 12345,
+      "properties": {
+        "posting_restricted_to": {},
+        "huddles_restricted": false,
+        "canvas": {},
+        "threads_restricted_to": {},
+        "tabs": [],
+        "tabz": [],
+        "meeting_notes": {},
+        "is_dormant": false,
+        "use_case": ""
+      }
+    }
+  ],
+  "response_metadata": {
+    "next_cursor": ""
+  },
+  "error": "",
+  "needed": "",
+  "provided": "",
+  "arg": "",
+  "warning": ""
+}
