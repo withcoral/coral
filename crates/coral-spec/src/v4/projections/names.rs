@@ -1,7 +1,9 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::v4::diagnostics::Diagnostic;
-use crate::v4::ir::{IrExecutionAttachment, IrOperation, OutputCardinality, SemanticIr};
+use crate::v4::ir::{
+    IrExecutionAttachment, IrInputLocation, IrOperation, OutputCardinality, SemanticIr,
+};
 use crate::v4::manifest::V4SourceManifest;
 use crate::v4::naming::{normalize_identifier, stable_suffix};
 
@@ -118,7 +120,14 @@ fn required_input_count(operation: &IrOperation) -> usize {
     operation
         .inputs
         .iter()
-        .filter(|input| input.required && input.default_value.is_none())
+        .filter(|input| {
+            input.required
+                && (input.location == IrInputLocation::ToolArg
+                    || input
+                        .default_value
+                        .as_ref()
+                        .is_none_or(|default| default.value().is_null()))
+        })
         .count()
 }
 

@@ -223,8 +223,9 @@ impl OpenApiImporter<'_> {
                     location,
                     required: parameter_is_required(parameter_obj, location),
                     data_type: scalar,
-                    default_value: resolved_schema
+                    default_value: schema
                         .get("default")
+                        .or_else(|| resolved_schema.get("default"))
                         .cloned()
                         .map(DeclaredDefaultValue::new),
                     description: parameter_obj

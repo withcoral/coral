@@ -115,12 +115,16 @@ pub fn request_spec_for_projection(
     for input in &projection.inputs {
         if input.source_location == IrInputLocation::Path {
             let replacement = match input.sql_exposure {
-                SqlInputExposure::Filter => {
-                    path_template_token("filter", &input.name, input.default_value.as_ref())
-                }
-                SqlInputExposure::FunctionArg => {
-                    path_template_token("arg", &input.name, input.default_value.as_ref())
-                }
+                SqlInputExposure::Filter => path_template_token(
+                    "filter",
+                    &input.name,
+                    usable_text_default(input.default_value.as_ref()),
+                ),
+                SqlInputExposure::FunctionArg => path_template_token(
+                    "arg",
+                    &input.name,
+                    usable_text_default(input.default_value.as_ref()),
+                ),
                 SqlInputExposure::Internal => continue,
             };
             path = path.replace(&format!("{{{}}}", input.wire_name), &replacement);
@@ -134,16 +138,12 @@ pub fn request_spec_for_projection(
             let value = match input.sql_exposure {
                 SqlInputExposure::Filter => crate::ValueSourceSpec::Filter {
                     key: input.name.clone(),
-                    default: input
-                        .default_value
-                        .as_ref()
+                    default: usable_text_default(input.default_value.as_ref())
                         .map(|value| value.value().clone()),
                 },
                 SqlInputExposure::FunctionArg => crate::ValueSourceSpec::Arg {
                     key: input.name.clone(),
-                    default: input
-                        .default_value
-                        .as_ref()
+                    default: usable_text_default(input.default_value.as_ref())
                         .map(|value| value.value().clone()),
                 },
                 SqlInputExposure::Internal => return None,
@@ -161,6 +161,10 @@ pub fn request_spec_for_projection(
         body: crate::BodySpec::default(),
         headers: Vec::new(),
     })
+}
+
+fn usable_text_default(default: Option<&DeclaredDefaultValue>) -> Option<&DeclaredDefaultValue> {
+    default.filter(|default| !default.value().is_null())
 }
 
 fn path_template_token(

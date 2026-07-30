@@ -183,8 +183,8 @@ fn validate_projection_columns(
                 projection.name, column.name
             )));
         };
-        // The generator only ever emits one segment, but an authored override
-        // may nest, and runtime follows every segment it is given.
+        // Generated and authored columns may both nest, and runtime follows
+        // every segment it is given.
         let nested = column.source_path.get(1..).unwrap_or_default();
         if let Err(reason) = walk_source_path(&field.type_ref, nested, types) {
             return Err(ManifestError::validation(format!(
@@ -203,11 +203,12 @@ fn validate_projection_columns(
 ///
 /// `get_path_value` reads a segment that parses as an integer only as an array
 /// index, never as a key, so whether a segment is numeric decides as much as the
-/// shape it lands on does. The generator can emit a numeric *first* segment, for
-/// a resource whose field really is named `0`, and those columns already resolve
-/// to null; rejecting them here would make a freshly generated catalog fail its
-/// own validation, so the rule applies only below the first segment, where
-/// nothing but an authored override can put one.
+/// shape it lands on does. Established top-level projection columns can contain
+/// a numeric *first* segment for a resource whose field really is named `0`, and
+/// those columns already resolve to null; rejecting them here would invalidate
+/// existing generated catalogs. The nested scalar-leaf generator omits numeric
+/// object keys, so the rule applies below the first segment to reject authored
+/// overrides and stale generated artifacts that runtime cannot read.
 fn walk_source_path(
     type_ref: &str,
     segments: &[String],

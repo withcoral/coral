@@ -1048,7 +1048,7 @@ components:
 }
 
 #[test]
-fn runtime_lowering_preserves_typed_component_ref_query_defaults_including_null() {
+fn projection_metadata_preserves_typed_defaults_while_runtime_omits_null() {
     let manifest = parse_source_manifest_yaml(
         r"
 name: demo
@@ -1079,6 +1079,16 @@ paths:
       parameters:
         - {name: query, in: query, required: true, schema: {type: string}}
         - {name: limit, in: query, schema: {$ref: '#/components/schemas/LimitParameter'}}
+        - name: component_override
+          in: query
+          schema:
+            $ref: '#/components/schemas/LimitParameter'
+            default: 50
+        - name: component_null_override
+          in: query
+          schema:
+            $ref: '#/components/schemas/LimitParameter'
+            default: null
         - {name: exact, in: query, schema: {$ref: '#/components/schemas/ExactParameter'}}
         - {name: scope, in: query, schema: {$ref: '#/components/schemas/ScopeParameter'}}
       responses:
@@ -1108,6 +1118,11 @@ paths:
         .collect::<BTreeMap<_, _>>();
     assert_eq!(defaults.get("query"), Some(&None));
     assert_eq!(defaults.get("limit"), Some(&Some(json!(25))));
+    assert_eq!(defaults.get("component_override"), Some(&Some(json!(50))));
+    assert_eq!(
+        defaults.get("component_null_override"),
+        Some(&Some(serde_json::Value::Null))
+    );
     assert_eq!(defaults.get("exact"), Some(&Some(json!(false))));
     assert_eq!(defaults.get("scope"), Some(&Some(serde_json::Value::Null)));
 
@@ -1124,11 +1139,64 @@ paths:
         })
         .collect::<BTreeMap<_, _>>();
     assert_eq!(request_defaults.get("limit"), Some(&Some(json!(25))));
-    assert_eq!(request_defaults.get("exact"), Some(&Some(json!(false))));
     assert_eq!(
-        request_defaults.get("scope"),
-        Some(&Some(serde_json::Value::Null))
+        request_defaults.get("component_override"),
+        Some(&Some(json!(50)))
     );
+    assert_eq!(request_defaults.get("component_null_override"), Some(&None));
+    assert_eq!(request_defaults.get("exact"), Some(&Some(json!(false))));
+    assert_eq!(request_defaults.get("scope"), Some(&None));
+}
+
+#[test]
+fn explicit_null_is_not_a_usable_required_rest_input_default() {
+    let manifest = openapi_manifest();
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.0.3
+paths:
+  /scopes/{scope}:
+    get:
+      operationId: scopes/get
+      parameters:
+        - name: scope
+          in: path
+          required: true
+          schema: {type: [string, 'null'], default: null}
+        - name: cursor
+          in: query
+          required: true
+          schema: {type: [string, 'null'], default: null}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {type: object, properties: {id: {type: string}}}
+"
+        .as_bytes(),
+    )
+    .expect("import");
+    let catalog =
+        generate_projection_catalog(v4, &ir.validated_plan().expect("plan")).expect("catalog");
+    let projection = catalog.projections.first().expect("projection");
+    let operation = ir.operations.first().expect("operation");
+    let args = projection_arg_specs(projection)
+        .into_iter()
+        .map(|arg| (arg.name, arg.required))
+        .collect::<BTreeMap<_, _>>();
+
+    assert_eq!(args.get("scope"), Some(&true));
+    assert_eq!(args.get("cursor"), Some(&true));
+
+    let request = request_spec_for_projection(projection, operation).expect("request");
+    assert_eq!(request.path.raw(), "/scopes/{{arg.scope}}");
+    assert!(matches!(
+        request.query.first().map(|parameter| &parameter.value),
+        Some(crate::ValueSourceSpec::Arg { default: None, .. })
+    ));
 }
 
 #[test]
@@ -1705,6 +1773,103 @@ paths:
             .expect("nested scalar leaf");
         assert_eq!(leaf.name, "repository__owner_name");
         assert_eq!(leaf.data_type, ManifestDataType::Utf8);
+    }
+}
+
+#[test]
+fn generated_nested_columns_skip_numeric_object_keys() {
+    let rest_manifest = openapi_manifest();
+    let rest_v4 = rest_manifest.as_v4().expect("REST v4");
+    let rest_ir = import_openapi_surface(
+        rest_v4,
+        &rest_v4.surface,
+        r#"
+openapi: 3.0.3
+paths:
+  /items:
+    get:
+      operationId: items/get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  details:
+                    type: object
+                    properties:
+                      safe: {type: string}
+                      "0": {type: string}
+                      "2024":
+                        type: object
+                        properties:
+                          label: {type: string}
+"#
+        .as_bytes(),
+    )
+    .expect("REST import");
+    let rest_plan = rest_ir.validated_plan().expect("REST plan");
+    let rest_catalog = generate_projection_catalog(rest_v4, &rest_plan).expect("REST catalog");
+    validate_projection_compatibility(&rest_plan, &rest_catalog)
+        .expect("generated REST catalog should validate");
+
+    let mcp_manifest = mcp_manifest();
+    let mcp_v4 = mcp_manifest.as_v4().expect("MCP v4");
+    let mcp_ir = import_mcp_surface(
+        mcp_v4,
+        &mcp_v4.surface,
+        &McpToolCatalog {
+            tools: vec![McpToolDescriptor {
+                name: "get_item".to_string(),
+                title: None,
+                description: None,
+                input_schema: json!({"type": "object", "properties": {}}),
+                output_schema: Some(json!({
+                    "type": "object",
+                    "properties": {
+                        "details": {
+                            "type": "object",
+                            "properties": {
+                                "safe": {"type": "string"},
+                                "0": {"type": "string"},
+                                "2024": {
+                                    "type": "object",
+                                    "properties": {
+                                        "label": {"type": "string"}
+                                    }
+                                }
+                            }
+                        }
+                    }
+                })),
+                read_only_hint: Some(true),
+                idempotent_hint: Some(true),
+            }],
+        },
+    )
+    .expect("MCP import");
+    let mcp_plan = mcp_ir.validated_plan().expect("MCP plan");
+    let mcp_catalog = generate_projection_catalog(mcp_v4, &mcp_plan).expect("MCP catalog");
+    validate_projection_compatibility(&mcp_plan, &mcp_catalog)
+        .expect("generated MCP catalog should validate");
+
+    for projection in [
+        rest_catalog.projections.first().expect("REST projection"),
+        mcp_catalog.projections.first().expect("MCP projection"),
+    ] {
+        assert!(
+            projection
+                .columns
+                .iter()
+                .any(|column| column.source_path == ["details", "safe"])
+        );
+        assert!(projection.columns.iter().all(|column| {
+            column
+                .source_path
+                .iter()
+                .all(|segment| segment.parse::<usize>().is_err())
+        }));
     }
 }
 
@@ -2524,9 +2689,9 @@ fn projection_compatibility_accepts_whole_row_columns_for_non_object_rows() {
     }
 }
 
-/// The generator never nests a source path, but an authored override may, and
-/// runtime follows every segment. Each case is the shape reached *before* the
-/// final segment deciding whether that segment is selectable.
+/// Generated and authored source paths may both nest, and runtime follows every
+/// segment. Each case is the shape reached *before* the final segment deciding
+/// whether that segment is selectable.
 #[test]
 fn projection_compatibility_walks_every_segment_of_a_nested_source_path() {
     let (manifest, imported) = imported_nested_row_surface();

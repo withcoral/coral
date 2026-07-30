@@ -253,6 +253,18 @@ surface:
     }
 
     #[test]
+    fn normalized_mcp_catalog_omits_absent_behavior_hints() {
+        let catalog = McpToolCatalog {
+            tools: vec![tool("search-items", None)],
+        };
+
+        let normalized = normalize_mcp_tool_catalog(&catalog).expect("normalize catalog");
+        let normalized = String::from_utf8(normalized).expect("catalog YAML");
+        assert!(!normalized.contains("read_only_hint"));
+        assert!(!normalized.contains("idempotent_hint"));
+    }
+
+    #[test]
     fn imports_input_schema_types_required_flags_and_defaults() {
         let catalog = McpToolCatalog {
             tools: vec![tool_with_schemas(

@@ -239,7 +239,12 @@ fn generated_projection_name(operation: &IrOperation, is_search: bool) -> String
 }
 
 fn projection_input_required(input: &IrOperationInput) -> bool {
-    input.required && (input.default_value.is_none() || input.location == IrInputLocation::ToolArg)
+    input.required
+        && (input.location == IrInputLocation::ToolArg
+            || input
+                .default_value
+                .as_ref()
+                .is_none_or(|default| default.value().is_null()))
 }
 
 fn rest_input_exposure(
@@ -450,6 +455,15 @@ impl ScalarLeafCollector<'_, '_> {
         description: &str,
         depth: usize,
     ) {
+        // Collector paths traverse object fields only. Runtime reserves a
+        // numeric path segment for list indexing, so a numeric object key and
+        // everything below it could never be read from the projected row.
+        if path
+            .last()
+            .is_some_and(|segment| segment.parse::<usize>().is_ok())
+        {
+            return;
+        }
         let Some(ty) = self.type_by_id.get(type_ref) else {
             return;
         };
