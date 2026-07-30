@@ -105,10 +105,21 @@ impl Principal {
     /// by that provider and two subjects cannot collide. The `subject` argument
     /// is the raw upstream `sub` claim, with no issuer or provider prefix.
     ///
-    /// The hash preimage is versioned because of that assumption. Admitting a
-    /// second provider would make the provider part of the identity, which
-    /// requires a `-v2` preimage and a migration of every stored user id — the
-    /// derivation cannot change in place without renaming existing users.
+    /// The preimage is versioned because of that assumption: admitting a second
+    /// provider would make the provider part of the identity, which needs a `-v2`
+    /// preimage. Note what that costs, because it is not a migration — the
+    /// derivation is one-way and the upstream subject is persisted nowhere (only
+    /// the short-lived in-memory authorization-code store holds it), so stored ids
+    /// can never be recomputed. Changing the derivation means either accepting both
+    /// prefixes for the same user or orphaning every existing attribution row.
+    ///
+    /// The digest is stable and collision-free, but it is not opaque against a
+    /// guesser: it is unkeyed, and subjects are low-entropy (emails, numeric
+    /// provider ids), so anyone holding this value and a candidate list can confirm a
+    /// match offline. Nothing deployment-specific enters the preimage either, so
+    /// the same subject yields the same id everywhere — two databases join on it
+    /// directly. Keying the derivation is the fix, and it has to happen before real
+    /// deployments store `federated-*` rows, since afterwards there is no backfill.
     pub(crate) fn for_federated(subject: &str) -> Self {
         let mut identity = Vec::with_capacity(subject.len() + 32);
         identity.extend_from_slice(b"coral-federated-user-v1\0");
