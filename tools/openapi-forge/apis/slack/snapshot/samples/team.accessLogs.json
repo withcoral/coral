@@ -1,0 +1,33 @@
+{
+  "ok": false,
+  "logins": [
+    {
+      "user_id": "U00000000",
+      "username": "",
+      "date_first": 12345,
+      "date_last": 12345,
+      "count": 12345,
+      "ip": "",
+      "user_agent": "",
+      "isp": "",
+      "country": "",
+      "region": ""
+    }
+  ],
+  "paging": {
+    "count": 12345,
+    "total": 12345,
+    "page": 12345,
+    "pages": 12345,
+    "warnings": [
+      ""
+    ]
+  },
+  "error": "",
+  "needed": "",
+  "provided": "",
+  "response_metadata": {
+    "next_cursor": ""
+  },
+  "warning": ""
+}

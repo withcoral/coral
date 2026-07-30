@@ -19,3 +19,18 @@ parameters:
       `integer` — so `number` here means "numeric", not "may be fractional".
       Left uncorrected it becomes a Float64 column, and a page size expressed
       as a float is wrong for every caller.
+
+operations:
+  files.info:
+    response:
+      dropProperties:
+        - comments
+      reason: >-
+        files.info returns `{ok, file, comments, paging}`. Coral's row-path
+        inference reads `paging` as evidence of a page envelope and `comments`
+        as the sole array, so it makes the comments the rows and discards the
+        file the operation is named after — a `files_info` relation that
+        returns comments rather than file metadata. Leaving `comments`
+        undescribed keeps the file as the row. Nothing is misdescribed: an
+        OpenAPI schema is a description rather than an inventory, and comments
+        are still reachable through files.list.

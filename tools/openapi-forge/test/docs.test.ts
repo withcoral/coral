@@ -106,17 +106,26 @@ describe('parseDocsPage', () => {
    * Derived from the snapshot rather than hardcoded, so widening the scope
    * widens the coverage instead of leaving this list behind.
    */
-  it('parses every page in the snapshot without warnings', async () => {
+  it('parses every page in the snapshot, warning only where expected', async () => {
     const slugs = (await readdir(DOCS_DIR)).map((file) => file.replace(/\.md$/, ''))
+    const warnings: string[] = []
 
     expect(slugs.length).toBeGreaterThan(0)
     for (const slug of slugs) {
       const facts = parseDocsPage(await page(slug), SERVER_URL)
 
-      expect(facts.warnings, `${slug} produced warnings`).toEqual([])
+      warnings.push(...facts.warnings.map((warning) => `${slug}: ${warning}`))
       expect(facts.method.toLowerCase(), `${slug} method mismatch`).toBe(slug)
       expect(facts.description, `${slug} has no description`).not.toBe('')
     }
+
+    // Named rather than merely counted: Coral drops non-scalar parameters, so
+    // these two are genuinely unusable, and any *other* warning is a parser
+    // gap that should fail here.
+    expect(warnings.toSorted()).toEqual([
+      "team.externalteams.list: argument 'slack_connect_pref_filter' has unsupported type 'array'; omitted",
+      "team.externalteams.list: argument 'workspace_filter' has unsupported type 'array'; omitted",
+    ])
   })
 
   it('rejects a page whose request URL is not under the configured server', async () => {

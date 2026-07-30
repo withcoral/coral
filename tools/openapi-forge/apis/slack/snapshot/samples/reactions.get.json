@@ -1,0 +1,157 @@
+{
+  "ok": false,
+  "type": "",
+  "channel": "C00000000",
+  "message": {
+    "bot_id": "B00000000",
+    "type": "",
+    "text": "",
+    "user": "U00000000",
+    "ts": "0000000000.000000",
+    "team": "T00000000",
+    "bot_profile": {
+      "id": "B00000000",
+      "deleted": false,
+      "name": "",
+      "updated": 12345,
+      "app_id": "A00000000",
+      "icons": {
+        "image_36": "https://www.example.com/",
+        "image_48": "https://www.example.com/",
+        "image_72": "https://www.example.com/"
+      },
+      "team_id": "T00000000"
+    },
+    "reactions": [
+      {
+        "name": "",
+        "users": [],
+        "count": 12345
+      }
+    ],
+    "permalink": "https://www.example.com/",
+    "app_id": "A00000000",
+    "room": {
+      "id": "",
+      "name": "",
+      "media_server": "",
+      "created_by": "",
+      "date_start": 123,
+      "date_end": 123,
+      "participants": [
+        ""
+      ],
+      "participant_history": [
+        ""
+      ],
+      "participants_camera_on": [
+        ""
+      ],
+      "participants_camera_off": [
+        ""
+      ],
+      "participants_screenshare_on": [
+        ""
+      ],
+      "participants_screenshare_off": [
+        ""
+      ],
+      "canvas_thread_ts": "",
+      "thread_root_ts": "",
+      "channels": [
+        ""
+      ],
+      "is_dm_call": false,
+      "was_rejected": false,
+      "was_missed": false,
+      "was_accepted": false,
+      "has_ended": false,
+      "background_id": "",
+      "canvas_background": "",
+      "is_prewarmed": false,
+      "is_scheduled": false,
+      "attached_file_ids": [
+        ""
+      ],
+      "media_backend_type": "",
+      "display_id": "",
+      "external_unique_id": "",
+      "app_id": "",
+      "call_family": "",
+      "pending_invitees": {},
+      "last_invite_status_by_user": {},
+      "knocks": {},
+      "recording": {
+        "transcript": false,
+        "summary": false,
+        "notetaking": false,
+        "summary_status": "",
+        "can_record_summary": ""
+      },
+      "huddle_link": ""
+    },
+    "blocks": [
+      {
+        "type": "actions",
+        "elements": [],
+        "block_id": "",
+        "call_id": "",
+        "api_decoration_available": false,
+        "call": {},
+        "external_id": "",
+        "source": "",
+        "file_id": "",
+        "file": {},
+        "text": {},
+        "fallback": "",
+        "image_url": "",
+        "image_width": 123,
+        "image_height": 123,
+        "image_bytes": 123,
+        "is_animated": false,
+        "slack_file": {},
+        "alt_text": "",
+        "title": {},
+        "title_url": "",
+        "description": {},
+        "video_url": "",
+        "thumbnail_url": "",
+        "author_name": "",
+        "provider_name": "",
+        "provider_icon_url": "",
+        "function_trigger_id": "",
+        "app_id": "",
+        "is_workflow_app": false,
+        "sales_home_workflow_app_type": 123,
+        "app_collaborators": [],
+        "button_label": "",
+        "bot_user_id": "",
+        "url": "",
+        "owning_team_id": "",
+        "workflow_id": "",
+        "developer_trace_id": "",
+        "trigger_type": "",
+        "trigger_subtype": "",
+        "share_url": "",
+        "fields": [],
+        "accessory": {},
+        "expand": false,
+        "label": {},
+        "element": {},
+        "dispatch_action": false,
+        "hint": {},
+        "optional": false
+      }
+    ],
+    "assistant_app_thread": {
+      "title": "",
+      "title_blocks": [
+        {}
+      ],
+      "first_user_thread_reply": ""
+    }
+  },
+  "error": "",
+  "needed": "",
+  "provided": ""
+}

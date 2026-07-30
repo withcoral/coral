@@ -1,0 +1,18 @@
+{
+  "ok": false,
+  "billable_info": {
+    "U00000000": {
+      "billing_active": false
+    },
+    "U00000001": {
+      "billing_active": false
+    }
+  },
+  "error": "",
+  "needed": "",
+  "provided": "",
+  "response_metadata": {
+    "next_cursor": ""
+  },
+  "warning": ""
+}

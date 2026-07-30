@@ -1,6 +1,13 @@
 {
-  "fetchedAt": "2026-07-30T10:29:52.617Z",
+  "fetchedAt": "2026-07-30T10:42:41.528Z",
   "inputs": [
+    {
+      "path": "docs/bots.info.md",
+      "url": "https://docs.slack.dev/reference/methods/bots.info.md",
+      "upstreamSha256": "18d238fa834e7cf09aec812e74e1a3e3330363ee4ad7c383a6647c35c6857108",
+      "sha256": "18d238fa834e7cf09aec812e74e1a3e3330363ee4ad7c383a6647c35c6857108",
+      "bytes": 7243
+    },
     {
       "path": "docs/conversations.history.md",
       "url": "https://docs.slack.dev/reference/methods/conversations.history.md",
@@ -37,6 +44,104 @@
       "bytes": 12107
     },
     {
+      "path": "docs/dnd.info.md",
+      "url": "https://docs.slack.dev/reference/methods/dnd.info.md",
+      "upstreamSha256": "7d4047d911ad50ca518d34cbc964b43a631c1969393a3c14b2ed14c32882de13",
+      "sha256": "7d4047d911ad50ca518d34cbc964b43a631c1969393a3c14b2ed14c32882de13",
+      "bytes": 6672
+    },
+    {
+      "path": "docs/dnd.teaminfo.md",
+      "url": "https://docs.slack.dev/reference/methods/dnd.teaminfo.md",
+      "upstreamSha256": "c31154fb7c919b43cefebbc1ce24f7ed1830df7a10dca79b575bca9ad5da6481",
+      "sha256": "c31154fb7c919b43cefebbc1ce24f7ed1830df7a10dca79b575bca9ad5da6481",
+      "bytes": 6377
+    },
+    {
+      "path": "docs/emoji.list.md",
+      "url": "https://docs.slack.dev/reference/methods/emoji.list.md",
+      "upstreamSha256": "cdd74b745b8c268b1f6760a60255d74383bce3a5ac0818b173b9668adcc2c995",
+      "sha256": "cdd74b745b8c268b1f6760a60255d74383bce3a5ac0818b173b9668adcc2c995",
+      "bytes": 6384
+    },
+    {
+      "path": "docs/files.info.md",
+      "url": "https://docs.slack.dev/reference/methods/files.info.md",
+      "upstreamSha256": "02dcf7e896c704cc5a180855433942749b593b170445cb49a318fe3b58d5e46a",
+      "sha256": "02dcf7e896c704cc5a180855433942749b593b170445cb49a318fe3b58d5e46a",
+      "bytes": 10199
+    },
+    {
+      "path": "docs/files.list.md",
+      "url": "https://docs.slack.dev/reference/methods/files.list.md",
+      "upstreamSha256": "e5b02c1ba3f0fc45ea27da4b3e2bdf9eefa2603a00f677609863bd918d110827",
+      "sha256": "e5b02c1ba3f0fc45ea27da4b3e2bdf9eefa2603a00f677609863bd918d110827",
+      "bytes": 10515
+    },
+    {
+      "path": "docs/files.remote.info.md",
+      "url": "https://docs.slack.dev/reference/methods/files.remote.info.md",
+      "upstreamSha256": "749c87c87b6ecbd3bd6c1441ee08dfa49c783ff134939b4cd37b29042ea63057",
+      "sha256": "749c87c87b6ecbd3bd6c1441ee08dfa49c783ff134939b4cd37b29042ea63057",
+      "bytes": 7481
+    },
+    {
+      "path": "docs/files.remote.list.md",
+      "url": "https://docs.slack.dev/reference/methods/files.remote.list.md",
+      "upstreamSha256": "a9e1f7c5f303307d8c18f924d66f464fcb945dacbe8b87854fb9f864d46badcd",
+      "sha256": "a9e1f7c5f303307d8c18f924d66f464fcb945dacbe8b87854fb9f864d46badcd",
+      "bytes": 6685
+    },
+    {
+      "path": "docs/pins.list.md",
+      "url": "https://docs.slack.dev/reference/methods/pins.list.md",
+      "upstreamSha256": "740eced86cba30c7826d029545b604811cd8260574bfcafe32f3fb1af604f377",
+      "sha256": "740eced86cba30c7826d029545b604811cd8260574bfcafe32f3fb1af604f377",
+      "bytes": 7622
+    },
+    {
+      "path": "docs/reactions.get.md",
+      "url": "https://docs.slack.dev/reference/methods/reactions.get.md",
+      "upstreamSha256": "c92045465544f6326e303b572ab81df04bf5f8bdbf5e74f4a1be807caf69f989",
+      "sha256": "c92045465544f6326e303b572ab81df04bf5f8bdbf5e74f4a1be807caf69f989",
+      "bytes": 8092
+    },
+    {
+      "path": "docs/reactions.list.md",
+      "url": "https://docs.slack.dev/reference/methods/reactions.list.md",
+      "upstreamSha256": "12352971fd69ac649d2127fc83d68eb74863e0166225d82fdbd2f0448caa561d",
+      "sha256": "12352971fd69ac649d2127fc83d68eb74863e0166225d82fdbd2f0448caa561d",
+      "bytes": 10117
+    },
+    {
+      "path": "docs/reminders.info.md",
+      "url": "https://docs.slack.dev/reference/methods/reminders.info.md",
+      "upstreamSha256": "60cbf1d5fd77323fcf2319279cb864bcd278e5bf345fd16b11f755fb9694fbd2",
+      "sha256": "60cbf1d5fd77323fcf2319279cb864bcd278e5bf345fd16b11f755fb9694fbd2",
+      "bytes": 6412
+    },
+    {
+      "path": "docs/reminders.list.md",
+      "url": "https://docs.slack.dev/reference/methods/reminders.list.md",
+      "upstreamSha256": "a5d8a0c9697bd48342c46685aee5be8b9b10323da3a1398ab2fcd92c1baa52dc",
+      "sha256": "a5d8a0c9697bd48342c46685aee5be8b9b10323da3a1398ab2fcd92c1baa52dc",
+      "bytes": 6455
+    },
+    {
+      "path": "docs/search.all.md",
+      "url": "https://docs.slack.dev/reference/methods/search.all.md",
+      "upstreamSha256": "93018cd32a5638b05bb0b7ea2d23ce64a830aaa548456de903e2c7608c61143d",
+      "sha256": "93018cd32a5638b05bb0b7ea2d23ce64a830aaa548456de903e2c7608c61143d",
+      "bytes": 11758
+    },
+    {
+      "path": "docs/search.files.md",
+      "url": "https://docs.slack.dev/reference/methods/search.files.md",
+      "upstreamSha256": "61e1c975cc1cf7523fa0ff81f4309c632d21d120b61e344153aa39a21fbc63d3",
+      "sha256": "61e1c975cc1cf7523fa0ff81f4309c632d21d120b61e344153aa39a21fbc63d3",
+      "bytes": 10018
+    },
+    {
       "path": "docs/search.messages.md",
       "url": "https://docs.slack.dev/reference/methods/search.messages.md",
       "upstreamSha256": "7b49f1c35e2bb4d1664ee2839e05556342cd389fc447833c6b588c211c787323",
@@ -44,11 +149,88 @@
       "bytes": 10439
     },
     {
+      "path": "docs/stars.list.md",
+      "url": "https://docs.slack.dev/reference/methods/stars.list.md",
+      "upstreamSha256": "e83eccb58fc1f551dfdb92b29df6a53bb16ae153a0fa374bea82a40db03c7bff",
+      "sha256": "e83eccb58fc1f551dfdb92b29df6a53bb16ae153a0fa374bea82a40db03c7bff",
+      "bytes": 9365
+    },
+    {
+      "path": "docs/team.accesslogs.md",
+      "url": "https://docs.slack.dev/reference/methods/team.accesslogs.md",
+      "upstreamSha256": "3a8754cd4b70c030dfb9e3b13148710f5db91891b0f4ad0db6f6be54d6b6d308",
+      "sha256": "3a8754cd4b70c030dfb9e3b13148710f5db91891b0f4ad0db6f6be54d6b6d308",
+      "bytes": 11004
+    },
+    {
+      "path": "docs/team.billableinfo.md",
+      "url": "https://docs.slack.dev/reference/methods/team.billableinfo.md",
+      "upstreamSha256": "82f60b74de7cc98a084869468ac52c1ae9be3e687874a809087dcf5c934f15e5",
+      "sha256": "82f60b74de7cc98a084869468ac52c1ae9be3e687874a809087dcf5c934f15e5",
+      "bytes": 7390
+    },
+    {
+      "path": "docs/team.externalteams.list.md",
+      "url": "https://docs.slack.dev/reference/methods/team.externalteams.list.md",
+      "upstreamSha256": "9a2b8a748094ab3b3762ce04a0e4e3528c692289e40081b64c8fca009a269f5d",
+      "sha256": "9a2b8a748094ab3b3762ce04a0e4e3528c692289e40081b64c8fca009a269f5d",
+      "bytes": 8874
+    },
+    {
+      "path": "docs/team.info.md",
+      "url": "https://docs.slack.dev/reference/methods/team.info.md",
+      "upstreamSha256": "d85b7e0b350c8b5633abd817dbd85f7039fc7a92cafa8dc299625ed741d2937c",
+      "sha256": "d85b7e0b350c8b5633abd817dbd85f7039fc7a92cafa8dc299625ed741d2937c",
+      "bytes": 7368
+    },
+    {
+      "path": "docs/team.integrationlogs.md",
+      "url": "https://docs.slack.dev/reference/methods/team.integrationlogs.md",
+      "upstreamSha256": "9aaee573a3a2ffc940f04651323c88d785e4a953d1ac5f3868ec38c74c811929",
+      "sha256": "9aaee573a3a2ffc940f04651323c88d785e4a953d1ac5f3868ec38c74c811929",
+      "bytes": 8930
+    },
+    {
+      "path": "docs/team.profile.get.md",
+      "url": "https://docs.slack.dev/reference/methods/team.profile.get.md",
+      "upstreamSha256": "2955aa31717c7d68200dea008d6a515152870eff733288adf34396f434e94c1d",
+      "sha256": "2955aa31717c7d68200dea008d6a515152870eff733288adf34396f434e94c1d",
+      "bytes": 9322
+    },
+    {
+      "path": "docs/usergroups.list.md",
+      "url": "https://docs.slack.dev/reference/methods/usergroups.list.md",
+      "upstreamSha256": "a0b57a35d7f6be1f98f1b301d03c3697c505769d9afef30c5c00fdf26a5adeb8",
+      "sha256": "a0b57a35d7f6be1f98f1b301d03c3697c505769d9afef30c5c00fdf26a5adeb8",
+      "bytes": 8287
+    },
+    {
+      "path": "docs/usergroups.users.list.md",
+      "url": "https://docs.slack.dev/reference/methods/usergroups.users.list.md",
+      "upstreamSha256": "58e422c9c153332634228931ceea041ee89bd32c76088c7e17a0e64b555471ca",
+      "sha256": "58e422c9c153332634228931ceea041ee89bd32c76088c7e17a0e64b555471ca",
+      "bytes": 6453
+    },
+    {
       "path": "docs/users.conversations.md",
       "url": "https://docs.slack.dev/reference/methods/users.conversations.md",
       "upstreamSha256": "c29ffdb4f2c3a3023f6922978f5f2c45d0fa138673d9c91b22d039fc8d7ac4a9",
       "sha256": "c29ffdb4f2c3a3023f6922978f5f2c45d0fa138673d9c91b22d039fc8d7ac4a9",
       "bytes": 13648
+    },
+    {
+      "path": "docs/users.getpresence.md",
+      "url": "https://docs.slack.dev/reference/methods/users.getpresence.md",
+      "upstreamSha256": "6d2cb9f82935aa5aade79751016e01992ec20ef3d69c626f41258c021a43e23e",
+      "sha256": "6d2cb9f82935aa5aade79751016e01992ec20ef3d69c626f41258c021a43e23e",
+      "bytes": 6892
+    },
+    {
+      "path": "docs/users.identity.md",
+      "url": "https://docs.slack.dev/reference/methods/users.identity.md",
+      "upstreamSha256": "94dbd6af7554d69c4a8b42b21b9779c49e8bc91b8ea68c8209a0b98c88c08c04",
+      "sha256": "94dbd6af7554d69c4a8b42b21b9779c49e8bc91b8ea68c8209a0b98c88c08c04",
+      "bytes": 7974
     },
     {
       "path": "docs/users.info.md",
@@ -63,6 +245,27 @@
       "upstreamSha256": "689244e675d1c44a06e15d81b0a7efa8044465320bb4ad50d5de05a548cfe342",
       "sha256": "689244e675d1c44a06e15d81b0a7efa8044465320bb4ad50d5de05a548cfe342",
       "bytes": 11982
+    },
+    {
+      "path": "docs/users.lookupbyemail.md",
+      "url": "https://docs.slack.dev/reference/methods/users.lookupbyemail.md",
+      "upstreamSha256": "0096e7ddc2aed8123445642fa06470105c783a4e87a764a04de0e55d092fbed2",
+      "sha256": "0096e7ddc2aed8123445642fa06470105c783a4e87a764a04de0e55d092fbed2",
+      "bytes": 8972
+    },
+    {
+      "path": "docs/users.profile.get.md",
+      "url": "https://docs.slack.dev/reference/methods/users.profile.get.md",
+      "upstreamSha256": "e20f3712a366b9a2dca39ecf92f670019dd925d30ac386a2785e28d2d0bc399a",
+      "sha256": "e20f3712a366b9a2dca39ecf92f670019dd925d30ac386a2785e28d2d0bc399a",
+      "bytes": 11533
+    },
+    {
+      "path": "samples/bots.info.json",
+      "url": "https://raw.githubusercontent.com/slackapi/java-slack-sdk/main/json-logs/samples/api/bots.info.json",
+      "upstreamSha256": "0d68c1b4961a5922b91783b1699294225ce4fb8c079b971ce85f4d79e963b510",
+      "sha256": "b9359c2ddec13c0453595d2e2168d60abb772a1ca62146d14f609d8ff06f31b7",
+      "bytes": 396
     },
     {
       "path": "samples/conversations.history.json",
@@ -100,6 +303,104 @@
       "bytes": 1456
     },
     {
+      "path": "samples/dnd.info.json",
+      "url": "https://raw.githubusercontent.com/slackapi/java-slack-sdk/main/json-logs/samples/api/dnd.info.json",
+      "upstreamSha256": "5dea042dd70a4c53e81d3a5422f04c9360de5a8ec8040d305debddf321d5eb59",
+      "sha256": "f050b983e1ba0469526167f0366ff3c5fe3adc320458ee5928fa4e6220aa54cb",
+      "bytes": 166
+    },
+    {
+      "path": "samples/dnd.teamInfo.json",
+      "url": "https://raw.githubusercontent.com/slackapi/java-slack-sdk/main/json-logs/samples/api/dnd.teamInfo.json",
+      "upstreamSha256": "0e9deb7063ada7a2aec25d3f1954626481f184372761430189bf573831d9aff4",
+      "sha256": "748e1d301d1636b946185c972b8816a7551746d5ed61081271c4d07cddfee2d5",
+      "bytes": 339
+    },
+    {
+      "path": "samples/emoji.list.json",
+      "url": "https://raw.githubusercontent.com/slackapi/java-slack-sdk/main/json-logs/samples/api/emoji.list.json",
+      "upstreamSha256": "8664a57f1bfe3acd34fa9cf77b09939ec37b006fe221612aa4163b9649d63d52",
+      "sha256": "573f48d21076295bb687f384a316d3efed951cc696d17c612fb7b9ae22c1199b",
+      "bytes": 342
+    },
+    {
+      "path": "samples/files.info.json",
+      "url": "https://raw.githubusercontent.com/slackapi/java-slack-sdk/main/json-logs/samples/api/files.info.json",
+      "upstreamSha256": "2516aa1dd5706572c0c7a8fc2321a81af36a2d3312ef8f71741567e1ce979d88",
+      "sha256": "f1cb5a8d90afc2a02e9d1f5e7935d865b19a168742dead35a147379ec0f3d80d",
+      "bytes": 7927
+    },
+    {
+      "path": "samples/files.list.json",
+      "url": "https://raw.githubusercontent.com/slackapi/java-slack-sdk/main/json-logs/samples/api/files.list.json",
+      "upstreamSha256": "48a46dcd4a98318ce09e30588045962faec6decc78a0cd7f51e6bbd3a00c0722",
+      "sha256": "921d0cb1014209dfc62c47c3d79711bf7cd0c0fd0639e8244ad8bba00081bc3d",
+      "bytes": 5847
+    },
+    {
+      "path": "samples/files.remote.info.json",
+      "url": "https://raw.githubusercontent.com/slackapi/java-slack-sdk/main/json-logs/samples/api/files.remote.info.json",
+      "upstreamSha256": "44421be55ed705c0e869acef917401c237fa50a0efc48a6f8a9d357ff24e1695",
+      "sha256": "944183e9172d06a19255f1e74b89da17bfadc763e2ba50dd69851d078fb38615",
+      "bytes": 7501
+    },
+    {
+      "path": "samples/files.remote.list.json",
+      "url": "https://raw.githubusercontent.com/slackapi/java-slack-sdk/main/json-logs/samples/api/files.remote.list.json",
+      "upstreamSha256": "f332d1da2bf430984e1078c2700754f32b72e23b2adb2ffd33e194c72eafbc5f",
+      "sha256": "5a8525374eccfcda6110eabe2125fe9ce556d7cfeccb9d0e629c29292f5afdc5",
+      "bytes": 5802
+    },
+    {
+      "path": "samples/pins.list.json",
+      "url": "https://raw.githubusercontent.com/slackapi/java-slack-sdk/main/json-logs/samples/api/pins.list.json",
+      "upstreamSha256": "8a4f679939cd45f9d23ac68b17e7f56ee4deda632c528bd1cdb0bdf13cfd66ad",
+      "sha256": "549b7f88374b1d48cc90ede1cf477e52ba6eef330c58f25c3c0be8f43a8b62b4",
+      "bytes": 4675
+    },
+    {
+      "path": "samples/reactions.get.json",
+      "url": "https://raw.githubusercontent.com/slackapi/java-slack-sdk/main/json-logs/samples/api/reactions.get.json",
+      "upstreamSha256": "03a8e06a0e0ce1577041a5fc55b6772880d73fe69419a0f62b43869eae2084ff",
+      "sha256": "19c1fbbee3b7d2175490edc5b69a60364e24fafa76fb0abe31b181ad9071edbc",
+      "bytes": 3583
+    },
+    {
+      "path": "samples/reactions.list.json",
+      "url": "https://raw.githubusercontent.com/slackapi/java-slack-sdk/main/json-logs/samples/api/reactions.list.json",
+      "upstreamSha256": "b2b9844a56ab8d1d0e613ce0a8c67f950412714a658e3a5dbb3da1eb51f44189",
+      "sha256": "ebad9f4c3f605c02d3bd85da79eca428ebbae4270f13049fabbf961d94a4eb60",
+      "bytes": 1294
+    },
+    {
+      "path": "samples/reminders.info.json",
+      "url": "https://raw.githubusercontent.com/slackapi/java-slack-sdk/main/json-logs/samples/api/reminders.info.json",
+      "upstreamSha256": "c8b52e40be0f825f64d95b57454a773fb7513c92d7e017a7558bc5d65d322472",
+      "sha256": "8df935266c3bcf1bb53c5be8e821d66b7ca6ddb4330fbd3f1e8552c976b4afc3",
+      "bytes": 239
+    },
+    {
+      "path": "samples/reminders.list.json",
+      "url": "https://raw.githubusercontent.com/slackapi/java-slack-sdk/main/json-logs/samples/api/reminders.list.json",
+      "upstreamSha256": "66891a54a5861d2a632e9c3f04b91af6a0de6c362cefc89ecd778d8854f9cae1",
+      "sha256": "469e48acc53f7b1e4500ea3b24bd8879cf175a6c01537013d4497845a4f89183",
+      "bytes": 375
+    },
+    {
+      "path": "samples/search.all.json",
+      "url": "https://raw.githubusercontent.com/slackapi/java-slack-sdk/main/json-logs/samples/api/search.all.json",
+      "upstreamSha256": "7ea197ff12c9118b8bd20ae18c2211c9fd0c01f4c85071f9fe0a9f7392eac001",
+      "sha256": "d01d7942e7f1d0ec5de899372712cae1941e63ecdc7ea2b3384392aab3e76c96",
+      "bytes": 5036
+    },
+    {
+      "path": "samples/search.files.json",
+      "url": "https://raw.githubusercontent.com/slackapi/java-slack-sdk/main/json-logs/samples/api/search.files.json",
+      "upstreamSha256": "d3c35175b957aeaf7cbbc117a45550b98f7c5db924f8a6ddb93f5c1ac696f0a5",
+      "sha256": "96d6f5b14d21c23a658ccbc4e9c7213b5dee5170b882260be53fe47a16c1ab91",
+      "bytes": 4159
+    },
+    {
       "path": "samples/search.messages.json",
       "url": "https://raw.githubusercontent.com/slackapi/java-slack-sdk/main/json-logs/samples/api/search.messages.json",
       "upstreamSha256": "1e6bc5db06e5c56c980c848f0e821752e1d31946f88db5dd8edb6addd8ba9868",
@@ -107,11 +408,88 @@
       "bytes": 889
     },
     {
+      "path": "samples/stars.list.json",
+      "url": "https://raw.githubusercontent.com/slackapi/java-slack-sdk/main/json-logs/samples/api/stars.list.json",
+      "upstreamSha256": "2f34f3831a68d6e3923712d3590c9dc5330ef9f120d765af7c38d3b47a75de51",
+      "sha256": "25097ee91ed3a603cf54c511bf88e43981ded3b183e13ff2e205d1a83badc75f",
+      "bytes": 4811
+    },
+    {
+      "path": "samples/team.accessLogs.json",
+      "url": "https://raw.githubusercontent.com/slackapi/java-slack-sdk/main/json-logs/samples/api/team.accessLogs.json",
+      "upstreamSha256": "e88cdce397b81af6a34f496680e1ac826fef8c535412c2ba3ddc20ac34b400c3",
+      "sha256": "9aa26b31418c25b2493a6386ebe10cdbb77a81baf5391fb10dc4fee700ae2409",
+      "bytes": 522
+    },
+    {
+      "path": "samples/team.billableInfo.json",
+      "url": "https://raw.githubusercontent.com/slackapi/java-slack-sdk/main/json-logs/samples/api/team.billableInfo.json",
+      "upstreamSha256": "b2f2c9df6397dce68df1ba487a5709def1e0319bbafd4d35e43e5f7d82df0fcb",
+      "sha256": "f68a4bf23aed3bc0ddaeb3306f062e84c44de471b40806c3f88ef63ada9b0d97",
+      "bytes": 273
+    },
+    {
+      "path": "samples/team.externalTeams.list.json",
+      "url": "https://raw.githubusercontent.com/slackapi/java-slack-sdk/main/json-logs/samples/api/team.externalTeams.list.json",
+      "upstreamSha256": "bb6519fb16e315671bffdde252fda3578793f12b020ac8c1497a21e8ddcffafb",
+      "sha256": "77765bf13bb3e05c703f27529e84897bbd188774e531ef76dc4bc904b1a9be1e",
+      "bytes": 1346
+    },
+    {
+      "path": "samples/team.info.json",
+      "url": "https://raw.githubusercontent.com/slackapi/java-slack-sdk/main/json-logs/samples/api/team.info.json",
+      "upstreamSha256": "4cc90f023655187bced99f00d727c69e869ca08d9e34f589480367faf91ed81d",
+      "sha256": "5df171d988a3a26e5e332c358dba228471cbdbf265a58cc12f56080fac42be88",
+      "bytes": 1033
+    },
+    {
+      "path": "samples/team.integrationLogs.json",
+      "url": "https://raw.githubusercontent.com/slackapi/java-slack-sdk/main/json-logs/samples/api/team.integrationLogs.json",
+      "upstreamSha256": "7cf31c4c73122c4e37d50edf0d128a729f28ef3911f39a17fdef7033ab19869e",
+      "sha256": "c3e381adae33ae36f429bd5e99db6e90d2b8cfbfe861ad0fb0e2f82ddc767b83",
+      "bytes": 649
+    },
+    {
+      "path": "samples/team.profile.get.json",
+      "url": "https://raw.githubusercontent.com/slackapi/java-slack-sdk/main/json-logs/samples/api/team.profile.get.json",
+      "upstreamSha256": "df3024d0c172aac5d9fc82d0f45e17a38a0f390a4b8c8e417788ef936f9bca00",
+      "sha256": "3f1c5d9ffbca4cfb5ba65ca94160e291dfa7eeae65775420784f2f3d8851b29f",
+      "bytes": 617
+    },
+    {
+      "path": "samples/usergroups.list.json",
+      "url": "https://raw.githubusercontent.com/slackapi/java-slack-sdk/main/json-logs/samples/api/usergroups.list.json",
+      "upstreamSha256": "d708cd0b662b032089777c554e3911b6b83731e4f58ec29b98a6d1c29a457176",
+      "sha256": "5b8d606ecbb96a302efd939d6cf2283b7b865e32747acf107d79dff6e56890cf",
+      "bytes": 921
+    },
+    {
+      "path": "samples/usergroups.users.list.json",
+      "url": "https://raw.githubusercontent.com/slackapi/java-slack-sdk/main/json-logs/samples/api/usergroups.users.list.json",
+      "upstreamSha256": "61071b36100ad5adf237ea92fe6dc7d2d91454fe8298b600a87619dfd2140b0d",
+      "sha256": "67035d6a4acc5627b77d413052ff184aa1c7e8e8099141149d514c4c48ae41da",
+      "bytes": 109
+    },
+    {
       "path": "samples/users.conversations.json",
       "url": "https://raw.githubusercontent.com/slackapi/java-slack-sdk/main/json-logs/samples/api/users.conversations.json",
       "upstreamSha256": "a40495421419dc33c13510ce308ebcb2087f637da8759a7f657b194a91393cc1",
       "sha256": "d54513d483b4a71e4c8da6a6ca4bd0b13d8f80e8645af2327bd1ca0d4250e87d",
       "bytes": 1832
+    },
+    {
+      "path": "samples/users.getPresence.json",
+      "url": "https://raw.githubusercontent.com/slackapi/java-slack-sdk/main/json-logs/samples/api/users.getPresence.json",
+      "upstreamSha256": "6efd97681ed6a357d88d7471fca79f6de047b73a3c6e0e8392c8fa454e8d7a75",
+      "sha256": "601e1707d3d57c68fdea7252532a6c52692965d1eb76f134cd2dd5c3bcbde869",
+      "bytes": 218
+    },
+    {
+      "path": "samples/users.identity.json",
+      "url": "https://raw.githubusercontent.com/slackapi/java-slack-sdk/main/json-logs/samples/api/users.identity.json",
+      "upstreamSha256": "b665f0795a2b87625d12743a5d4a5ef9dcb5893b82d0ff24b072b25cd535478c",
+      "sha256": "b583ac877caa0a0f0a440a0477458f23378ce237beb26a21483b3d9c5f40c304",
+      "bytes": 315
     },
     {
       "path": "samples/users.info.json",
@@ -126,6 +504,20 @@
       "upstreamSha256": "d63c699c74ec12dad1a8d90d5ba16443ac49b47bceb2af29f88c928cbd1d7772",
       "sha256": "51d06f55ddf733125d7b2a5575881ea9ba39af153f15beb866551aadf46dbd37",
       "bytes": 2400
+    },
+    {
+      "path": "samples/users.lookupByEmail.json",
+      "url": "https://raw.githubusercontent.com/slackapi/java-slack-sdk/main/json-logs/samples/api/users.lookupByEmail.json",
+      "upstreamSha256": "cfb8dd9549283de97bd51585e37970ba9c0a0b1babb00776ddc382e27af57071",
+      "sha256": "4672975c7033d5d5e7614d1b5c660db9b3a8a5f97e713220f8b8bfb313e4ac6d",
+      "bytes": 1744
+    },
+    {
+      "path": "samples/users.profile.get.json",
+      "url": "https://raw.githubusercontent.com/slackapi/java-slack-sdk/main/json-logs/samples/api/users.profile.get.json",
+      "upstreamSha256": "cc4f49ee5d2861cfc5cb20e888454c75c5a018dba3422bbdcd2eff266995cf0f",
+      "sha256": "7d7d3e7c898c429ccfa17fdea081066b3fea7152729ad8e82e5a996e4f092f75",
+      "bytes": 1420
     }
   ]
 }

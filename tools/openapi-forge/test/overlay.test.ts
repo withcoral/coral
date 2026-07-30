@@ -160,6 +160,44 @@ describe('applyOverlay', () => {
     expect(error?.message).toContain('operations.chat.postMessage')
   })
 
+  /**
+   * The lever exists for envelopes that pair a resource with an incidental
+   * array: leaving the array described makes it the rows and discards the
+   * resource the operation is named after.
+   */
+  it('leaves a response property undescribed', () => {
+    const source = model([
+      operation({
+        response: {
+          kind: 'object',
+          properties: {
+            ok: { kind: 'scalar', type: 'boolean' },
+            file: { kind: 'object', properties: {} },
+            comments: { kind: 'array', items: { kind: 'object', properties: {} } },
+          },
+        },
+      }),
+    ])
+
+    const result = applyOverlay(source, {
+      operations: { 'conversations.list': { response: { dropProperties: ['comments'] } } },
+    })
+    const response = result.operations[0]?.response
+
+    expect(response?.kind === 'object' ? Object.keys(response.properties).toSorted() : []).toEqual([
+      'file',
+      'ok',
+    ])
+  })
+
+  it('rejects dropping a response property that does not exist', () => {
+    expect(() =>
+      applyOverlay(model([operation()]), {
+        operations: { 'conversations.list': { response: { dropProperties: ['nope'] } } },
+      }),
+    ).toThrow(/operations\.conversations\.list\.response\.dropProperties\.nope/)
+  })
+
   it('leaves a model with no overlay untouched', () => {
     const source = model([operation()])
 

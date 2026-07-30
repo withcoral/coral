@@ -32,6 +32,20 @@ export interface ParameterOverride {
   reason?: string
 }
 
+export interface ResponseOverride {
+  /**
+   * Top-level response properties to leave undescribed.
+   *
+   * An OpenAPI schema is a description, not an inventory, and Coral reads only
+   * what is described. The lever exists for envelopes that pair a resource
+   * with an incidental array: row-path inference sees the array, makes it the
+   * rows, and discards the resource the operation is named after. Omitting the
+   * array is what keeps the operation returning what it says it returns.
+   */
+  dropProperties?: string[]
+  reason?: string
+}
+
 export interface OperationOverride {
   summary?: string
   description?: string
@@ -39,6 +53,7 @@ export interface OperationOverride {
   /** Remove the operation entirely. */
   drop?: boolean
   parameters?: Record<string, ParameterOverride>
+  response?: ResponseOverride
   reason?: string
 }
 
@@ -76,6 +91,7 @@ export function applyOverlay(model: ApiModel, overlay: Overlay): ApiModel {
   const usedGlobalParameters = new Set<string>()
   const usedOperations = new Set<string>()
   const usedOperationParameters = new Set<string>()
+  const usedDroppedProperties = new Set<string>()
 
   const operations: Operation[] = []
   for (const operation of model.operations) {
@@ -90,6 +106,7 @@ export function applyOverlay(model: ApiModel, overlay: Overlay): ApiModel {
       applyToOperation(operation, overlay, override, {
         usedGlobalParameters,
         usedOperationParameters,
+        usedDroppedProperties,
       }),
     )
   }
@@ -106,6 +123,11 @@ export function applyOverlay(model: ApiModel, overlay: Overlay): ApiModel {
         .filter((name) => !usedOperationParameters.has(`${id}.${name}`))
         .map((name) => `operations.${id}.parameters.${name}`),
     ),
+    ...Object.entries(overlay.operations ?? {}).flatMap(([id, override]) =>
+      (override.response?.dropProperties ?? [])
+        .filter((name) => !usedDroppedProperties.has(`${id}.${name}`))
+        .map((name) => `operations.${id}.response.dropProperties.${name}`),
+    ),
   ].toSorted((left, right) => left.localeCompare(right))
 
   if (unused.length > 0) {
@@ -121,6 +143,7 @@ export function applyOverlay(model: ApiModel, overlay: Overlay): ApiModel {
 interface Usage {
   usedGlobalParameters: Set<string>
   usedOperationParameters: Set<string>
+  usedDroppedProperties: Set<string>
 }
 
 function applyToOperation(
@@ -157,7 +180,27 @@ function applyToOperation(
     ...(override?.description === undefined ? {} : { description: override.description }),
     ...(override?.deprecated === undefined ? {} : { deprecated: override.deprecated }),
     parameters,
+    response: dropResponseProperties(operation, override?.response?.dropProperties, usage),
   }
+}
+
+function dropResponseProperties(
+  operation: Operation,
+  names: string[] | undefined,
+  usage: Usage,
+): Operation['response'] {
+  if (names === undefined || names.length === 0 || operation.response.kind !== 'object') {
+    return operation.response
+  }
+  const properties = { ...operation.response.properties }
+  for (const name of names) {
+    if (properties[name] === undefined) {
+      continue
+    }
+    usage.usedDroppedProperties.add(`${operation.id}.${name}`)
+    delete properties[name]
+  }
+  return { ...operation.response, properties }
 }
 
 function applyToParameter(parameter: Parameter, override: ParameterOverride): Parameter {

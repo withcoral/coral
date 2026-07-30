@@ -20,13 +20,24 @@ const model = await (async () => {
 })()
 
 describe('extractApiModel', () => {
-  it('extracts every configured method with no warnings', async () => {
+  it('extracts every configured method', async () => {
     const config = await loadConfig('slack')
 
     expect(model.operations.map((operation) => operation.id).toSorted()).toEqual(
       config.methods.toSorted(),
     )
-    expect(collectWarnings(model)).toEqual([])
+  })
+
+  /**
+   * Listed rather than counted. Both are arguments Coral cannot use, so they
+   * are expected; anything else is a regression that should fail here rather
+   * than scroll past in build output.
+   */
+  it('warns only about the two arguments Coral cannot represent', () => {
+    expect(collectWarnings(model).toSorted()).toEqual([
+      "team.externalTeams.list: argument 'slack_connect_pref_filter' has unsupported type 'array'; omitted",
+      "team.externalTeams.list: argument 'workspace_filter' has unsupported type 'array'; omitted",
+    ])
   })
 
   it('gives each operation a group/leaf operationId', () => {

@@ -1,0 +1,40 @@
+{
+  "ok": false,
+  "team": {
+    "id": "T00000000",
+    "name": "",
+    "domain": "",
+    "email_domain": "",
+    "icon": {
+      "image_34": "https://www.example.com/",
+      "image_44": "https://www.example.com/",
+      "image_68": "https://www.example.com/",
+      "image_88": "https://www.example.com/",
+      "image_102": "https://www.example.com/",
+      "image_132": "https://www.example.com/",
+      "image_230": "https://www.example.com/",
+      "image_original": "https://www.example.com/",
+      "image_default": false
+    },
+    "is_verified": false,
+    "url": "https://www.example.com/",
+    "enterprise_id": "E00000000",
+    "enterprise_name": "",
+    "enterprise_domain": "",
+    "discoverable": "",
+    "avatar_base_url": "https://www.example.com/",
+    "lob_sales_home_enabled": false,
+    "is_sfdc_auto_slack": false,
+    "sso_provider": {
+      "type": "",
+      "name": "",
+      "label": ""
+    },
+    "pay_prod_cur": "",
+    "locale": ""
+  },
+  "error": "",
+  "needed": "",
+  "provided": "",
+  "warning": ""
+}

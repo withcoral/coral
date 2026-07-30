@@ -1,0 +1,13 @@
+{
+  "ok": false,
+  "warning": "",
+  "error": "",
+  "needed": "",
+  "provided": "",
+  "presence": "",
+  "online": false,
+  "auto_away": false,
+  "manual_away": false,
+  "connection_count": 123,
+  "last_activity": 123
+}

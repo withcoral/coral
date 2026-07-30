@@ -1,0 +1,60 @@
+{
+  "ok": false,
+  "profile": {
+    "title": "",
+    "phone": "",
+    "skype": "",
+    "real_name": "",
+    "real_name_normalized": "",
+    "display_name": "",
+    "display_name_normalized": "",
+    "fields": {
+      "X00000000": {
+        "value": "",
+        "alt": "",
+        "label": ""
+      },
+      "X00000001": {
+        "value": "",
+        "alt": "",
+        "label": ""
+      }
+    },
+    "status_text": "",
+    "status_emoji": "",
+    "status_expiration": 12345,
+    "avatar_hash": "",
+    "image_original": "https://www.example.com/",
+    "is_custom_image": false,
+    "email": "",
+    "first_name": "",
+    "last_name": "",
+    "image_24": "https://www.example.com/",
+    "image_32": "https://www.example.com/",
+    "image_48": "https://www.example.com/",
+    "image_72": "https://www.example.com/",
+    "image_192": "https://www.example.com/",
+    "image_512": "https://www.example.com/",
+    "image_1024": "https://www.example.com/",
+    "status_text_canonical": "",
+    "status_emoji_url": "",
+    "pronouns": "",
+    "huddle_state": "",
+    "huddle_state_expiration_ts": 12345,
+    "status_emoji_display_info": [
+      {
+        "emoji_name": "",
+        "display_alias": "",
+        "display_url": "",
+        "unicode": ""
+      }
+    ],
+    "start_date": "",
+    "always_active": false,
+    "status_clear_on_focus_end": false
+  },
+  "error": "",
+  "needed": "",
+  "provided": "",
+  "warning": ""
+}

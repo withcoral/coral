@@ -1,0 +1,33 @@
+{
+  "ok": false,
+  "logs": [
+    {
+      "user_id": "U00000000",
+      "user_name": "",
+      "date": "1234567890",
+      "change_type": "",
+      "app_type": "",
+      "app_id": "A00000000",
+      "scope": "",
+      "rss_feed": false,
+      "rss_feed_change_type": "",
+      "rss_feed_title": "",
+      "rss_feed_url": "https://www.example.com/",
+      "service_id": 12345,
+      "service_type": "",
+      "channel": "C00000000",
+      "reason": "",
+      "resolution": ""
+    }
+  ],
+  "paging": {
+    "count": 12345,
+    "total": 12345,
+    "page": 12345,
+    "pages": 12345
+  },
+  "error": "",
+  "needed": "",
+  "provided": "",
+  "warning": ""
+}

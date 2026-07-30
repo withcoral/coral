@@ -1,0 +1,22 @@
+{
+  "ok": false,
+  "reminders": [
+    {
+      "id": "",
+      "creator": "U00000000",
+      "text": "",
+      "user": "U00000000",
+      "recurring": false,
+      "time": 12345,
+      "complete_ts": 12345,
+      "channel": "C00000000",
+      "recurrence": {
+        "frequency": "",
+        "weekdays": []
+      }
+    }
+  ],
+  "error": "",
+  "needed": "",
+  "provided": ""
+}

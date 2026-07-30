@@ -1,0 +1,55 @@
+{
+  "ok": false,
+  "organizations": [
+    {
+      "team_id": "",
+      "team_name": "",
+      "team_domain": "",
+      "public_channel_count": 123,
+      "private_channel_count": 123,
+      "im_channel_count": 123,
+      "mpim_channel_count": 123,
+      "connected_workspaces": [
+        {}
+      ],
+      "slack_connect_prefs": {
+        "allow_sc_file_uploads": {},
+        "approved_org_info": {},
+        "profile_visibility": {},
+        "allowed_workspaces": {},
+        "allowed_canvas_sharing": {},
+        "allowed_list_sharing": {},
+        "away_team_sc_invite_permissions": {},
+        "away_team_sc_invite_require_2fa": {},
+        "accept_sc_invites": {},
+        "sc_channel_limited_access": {},
+        "sc_mpdm_to_private": {},
+        "external_awareness_context_bar": {},
+        "require_sc_channel_for_sc_dm": {},
+        "shared_channel_invite_requested": {}
+      },
+      "connection_status": "",
+      "last_active_timestamp": 123,
+      "is_sponsored": false,
+      "canvas": {
+        "total_count": 123,
+        "ownership_details": []
+      },
+      "lists": {
+        "total_count": 123,
+        "ownership_details": []
+      }
+    }
+  ],
+  "total_count": 12345,
+  "response_metadata": {
+    "next_cursor": "",
+    "messages": [
+      ""
+    ]
+  },
+  "error": "",
+  "needed": "",
+  "provided": "",
+  "warning": ""
+}

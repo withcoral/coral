@@ -1,0 +1,70 @@
+{
+  "ok": false,
+  "user": {
+    "id": "U00000000",
+    "team_id": "T00000000",
+    "name": "",
+    "deleted": false,
+    "color": "",
+    "real_name": "",
+    "tz": "",
+    "tz_label": "",
+    "tz_offset": 12345,
+    "profile": {
+      "title": "",
+      "phone": "",
+      "skype": "",
+      "real_name": "",
+      "real_name_normalized": "",
+      "display_name": "",
+      "display_name_normalized": "",
+      "status_text": "",
+      "status_emoji": "",
+      "status_expiration": 12345,
+      "avatar_hash": "",
+      "image_original": "https://www.example.com/",
+      "is_custom_image": false,
+      "email": "",
+      "first_name": "",
+      "last_name": "",
+      "image_24": "https://www.example.com/",
+      "image_32": "https://www.example.com/",
+      "image_48": "https://www.example.com/",
+      "image_72": "https://www.example.com/",
+      "image_192": "https://www.example.com/",
+      "image_512": "https://www.example.com/",
+      "image_1024": "https://www.example.com/",
+      "status_text_canonical": "",
+      "team": "T00000000",
+      "status_emoji_url": "",
+      "pronouns": "",
+      "huddle_state": "",
+      "huddle_state_expiration_ts": 12345,
+      "guest_invited_by": "U00000000",
+      "status_emoji_display_info": [
+        {}
+      ]
+    },
+    "is_admin": false,
+    "is_owner": false,
+    "is_primary_owner": false,
+    "is_restricted": false,
+    "is_ultra_restricted": false,
+    "is_bot": false,
+    "is_app_user": false,
+    "updated": 12345,
+    "has_2fa": false,
+    "is_email_confirmed": false,
+    "who_can_share_contact_card": "",
+    "is_invited_user": false
+  },
+  "error": "",
+  "needed": "",
+  "provided": "",
+  "response_metadata": {
+    "messages": [
+      ""
+    ]
+  },
+  "warning": ""
+}

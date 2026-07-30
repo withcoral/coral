@@ -11,23 +11,59 @@ serverUrl: https://slack.com/api
 output: ../../../../sources/v4/slack/openapi.yaml
 
 scope:
-  # Starter scope: the methods the existing DSL v3 source at
-  # sources/core/slack/manifest.yaml already covers, plus the lookups and
-  # reference tables those relations need. Widened to the full read-only core
-  # once the pipeline is proven.
+  # The read-only core of the Web API. Selected by two filters over the
+  # thirteen non-admin families (bots, conversations, dnd, emoji, files, pins,
+  # reactions, reminders, search, stars, team, usergroups, users):
   #
-  # Only methods Slack documents as GET are worth listing: Coral hides every
-  # non-GET operation, so a POST method such as auth.test would generate a
-  # relation nobody can query. `forge build` warns if one slips in.
+  # 1. Slack must document the method as GET. Coral hides every non-GET
+  #    operation, so anything else generates a relation nobody can query.
+  #    `forge build` warns if one slips in.
+  #
+  # 2. The method must actually read. GET is not a safety filter here: Slack
+  #    documents `auth.revoke`, `users.deletePhoto`,
+  #    `conversations.declineSharedInvite` and `files.remote.share` as GET, and
+  #    every one of them mutates. They are excluded deliberately — a read-only
+  #    SQL surface must not be able to revoke a token or delete a photo.
+  #
+  # admin.* is out of scope entirely: 106 methods that need Enterprise Grid and
+  # admin scopes, almost all of them writes.
   #
   # Names are matched case-insensitively against Slack's own casing.
   methods:
+    - bots.info
     - conversations.history
     - conversations.info
     - conversations.list
     - conversations.members
     - conversations.replies
+    - dnd.info
+    - dnd.teamInfo
+    - emoji.list
+    - files.info
+    - files.list
+    - files.remote.info
+    - files.remote.list
+    - pins.list
+    - reactions.get
+    - reactions.list
+    - reminders.info
+    - reminders.list
+    - search.all
+    - search.files
     - search.messages
+    - stars.list
+    - team.accessLogs
+    - team.billableInfo
+    - team.externalTeams.list
+    - team.info
+    - team.integrationLogs
+    - team.profile.get
+    - usergroups.list
+    - usergroups.users.list
     - users.conversations
+    - users.getPresence
+    - users.identity
     - users.info
     - users.list
+    - users.lookupByEmail
+    - users.profile.get

@@ -1,0 +1,22 @@
+{
+  "ok": false,
+  "warning": "",
+  "error": "",
+  "needed": "",
+  "provided": "",
+  "user": {
+    "name": "",
+    "id": "",
+    "email": "",
+    "image_24": "",
+    "image_32": "",
+    "image_48": "",
+    "image_72": "",
+    "image_192": "",
+    "image_512": ""
+  },
+  "team": {
+    "name": "",
+    "id": ""
+  }
+}

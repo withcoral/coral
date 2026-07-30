@@ -1,0 +1,42 @@
+{
+  "ok": false,
+  "usergroups": [
+    {
+      "id": "S00000000",
+      "team_id": "T00000000",
+      "is_usergroup": false,
+      "is_subteam": false,
+      "name": "",
+      "description": "",
+      "handle": "",
+      "is_external": false,
+      "date_create": 12345,
+      "date_update": 12345,
+      "date_delete": 12345,
+      "auto_provision": false,
+      "enterprise_subteam_id": "",
+      "created_by": "U00000000",
+      "updated_by": "U00000000",
+      "prefs": {
+        "channels": [],
+        "groups": []
+      },
+      "channel_count": 12345,
+      "users": [
+        ""
+      ],
+      "user_count": 12345,
+      "is_section": false,
+      "is_idp_group": false,
+      "is_visible": false,
+      "is_editing_restricted": false,
+      "is_membership_locked": false,
+      "is_org_level": false,
+      "deleted_by": "U00000000"
+    }
+  ],
+  "error": "",
+  "needed": "",
+  "provided": "",
+  "warning": ""
+}

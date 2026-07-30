@@ -1,0 +1,21 @@
+{
+  "ok": false,
+  "emoji": {
+    "333": "https://www.example.com/",
+    "444": "https://www.example.com/"
+  },
+  "cache_ts": "0000000000.000000",
+  "error": "",
+  "needed": "",
+  "provided": "",
+  "categories_version": "12345",
+  "categories": [
+    {
+      "name": "",
+      "emoji_names": [
+        ""
+      ]
+    }
+  ],
+  "warning": ""
+}

@@ -1,0 +1,35 @@
+{
+  "ok": false,
+  "profile": {
+    "fields": [
+      {
+        "id": "",
+        "ordering": 12345,
+        "field_name": "",
+        "label": "",
+        "hint": "",
+        "type": "",
+        "is_hidden": false,
+        "options": {},
+        "section_id": "",
+        "permissions": {},
+        "is_inverse": false,
+        "possible_values": []
+      }
+    ],
+    "sections": [
+      {
+        "id": "",
+        "team_id": "",
+        "section_type": "",
+        "label": "",
+        "order": 123,
+        "is_hidden": false
+      }
+    ]
+  },
+  "error": "",
+  "needed": "",
+  "provided": "",
+  "warning": ""
+}

@@ -10,10 +10,83 @@ info:
 servers:
   - url: https://slack.com/api
 tags:
+  - name: bots
   - name: conversations
+  - name: dnd
+  - name: emoji
+  - name: files
+  - name: pins
+  - name: reactions
+  - name: reminders
   - name: search
+  - name: stars
+  - name: team
+  - name: usergroups
   - name: users
 paths:
+  /bots.info:
+    get:
+      operationId: bots/info
+      tags:
+        - bots
+      summary: Gets information about a bot user.
+      description: "Gets information about a bot user. Requires one of the scopes: users:read. Rate limit: Tier 3: 50+ per minute. See https://docs.slack.dev/reference/methods/bots.info."
+      parameters:
+        - name: bot
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Bot user to get info on
+          example: B12345678
+        - name: team_id
+          in: query
+          required: false
+          schema:
+            type: string
+          description: encoded team id or enterprise id where the bot exists, required if org token is used
+      responses:
+        "200":
+          description: "Response envelope. Slack reports failures here with `ok: false`."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  bot:
+                    type: object
+                    properties:
+                      app_id:
+                        type: string
+                      deleted:
+                        type: boolean
+                      icons:
+                        type: object
+                        properties:
+                          image_36:
+                            type: string
+                          image_48:
+                            type: string
+                          image_72:
+                            type: string
+                      id:
+                        type: string
+                      name:
+                        type: string
+                      updated:
+                        type: integer
+                      user_id:
+                        type: string
+                  error:
+                    type: string
+                  needed:
+                    type: string
+                  ok:
+                    type: boolean
+                  provided:
+                    type: string
+                  warning:
+                    type: string
   /conversations.history:
     get:
       operationId: conversations/history
@@ -499,6 +572,1986 @@ paths:
                     properties:
                       next_cursor:
                         type: string
+  /dnd.info:
+    get:
+      operationId: dnd/info
+      tags:
+        - dnd
+      summary: Retrieves a user's current Do Not Disturb status.
+      description: "Retrieves a user's current Do Not Disturb status. Requires one of the scopes: dnd:read. Rate limit: Tier 3: 50+ per minute. See https://docs.slack.dev/reference/methods/dnd.info."
+      parameters:
+        - name: team_id
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Encoded team id where passed in user param belongs, required if org token is used. If no user param is passed, then a team which has access to the app should be passed
+        - name: user
+          in: query
+          required: false
+          schema:
+            type: string
+          description: User to fetch status for (defaults to current user)
+          example: U1234
+      responses:
+        "200":
+          description: "Response envelope. Slack reports failures here with `ok: false`."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  dnd_enabled:
+                    type: boolean
+                  error:
+                    type: string
+                  needed:
+                    type: string
+                  next_dnd_end_ts:
+                    type: integer
+                  next_dnd_start_ts:
+                    type: integer
+                  ok:
+                    type: boolean
+                  provided:
+                    type: string
+                  warning:
+                    type: string
+  /dnd.teamInfo:
+    get:
+      operationId: dnd/teamInfo
+      tags:
+        - dnd
+      summary: Retrieves the Do Not Disturb status for up to 50 users on a team.
+      description: "Retrieves the Do Not Disturb status for up to 50 users on a team. Requires one of the scopes: dnd:read. Rate limit: Tier 2: 20+ per minute. See https://docs.slack.dev/reference/methods/dnd.teamInfo."
+      parameters:
+        - name: team_id
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Encoded team id where passed in users belong, required if org token is used
+        - name: users
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Comma-separated list of users to fetch Do Not Disturb status for
+          example: U1234,W4567
+      responses:
+        "200":
+          description: "Response envelope. Slack reports failures here with `ok: false`."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  needed:
+                    type: string
+                  ok:
+                    type: boolean
+                  provided:
+                    type: string
+                  users:
+                    type: object
+                    properties:
+                      U00000000:
+                        type: object
+                        properties:
+                          dnd_enabled:
+                            type: boolean
+                          next_dnd_end_ts:
+                            type: integer
+                          next_dnd_start_ts:
+                            type: integer
+                      U00000001:
+                        type: object
+                        properties:
+                          dnd_enabled:
+                            type: boolean
+                          next_dnd_end_ts:
+                            type: integer
+                          next_dnd_start_ts:
+                            type: integer
+                  warning:
+                    type: string
+  /emoji.list:
+    get:
+      operationId: emoji/list
+      tags:
+        - emoji
+      summary: Lists custom emoji for a team.
+      description: "Lists custom emoji for a team. Requires one of the scopes: emoji:read. Rate limit: Tier 2: 20+ per minute. See https://docs.slack.dev/reference/methods/emoji.list."
+      parameters:
+        - name: include_categories
+          in: query
+          required: false
+          schema:
+            type: boolean
+          description: Include a list of categories for Unicode emoji and the emoji in each category
+      responses:
+        "200":
+          description: "Response envelope. Slack reports failures here with `ok: false`."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cache_ts:
+                    type: string
+                  categories:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Category"
+                  categories_version:
+                    type: string
+                  emoji:
+                    type: object
+                    properties:
+                      "333":
+                        type: string
+                      "444":
+                        type: string
+                  error:
+                    type: string
+                  needed:
+                    type: string
+                  ok:
+                    type: boolean
+                  provided:
+                    type: string
+                  warning:
+                    type: string
+  /files.info:
+    get:
+      operationId: files/info
+      tags:
+        - files
+      summary: Gets information about a file.
+      description: "Gets information about a file. Requires one of the scopes: files:read. Rate limit: Tier 4: 100+ per minute. See https://docs.slack.dev/reference/methods/files.info."
+      parameters:
+        - name: count
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 100
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+          description: "Parameter for pagination. File comments are paginated for a single file. Set `cursor` equal to the `next_cursor` attribute returned by the previous request's `response_metadata`. This parameter is optional, but pagination is mandatory: the default value simply fetches the first \"page\" of the collection of comments. See pagination for more details."
+          example: dXNlcjpVMDYxTkZUVDI=
+        - name: file
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Specify a file by providing its ID.
+          example: F2147483862
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+          description: The maximum number of items to return. Fewer than the requested number of items may be returned, even if the end of the list hasn't been reached.
+          example: 20
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 1
+      responses:
+        "200":
+          description: "Response envelope. Slack reports failures here with `ok: false`."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  content:
+                    type: string
+                  content_highlight_css:
+                    type: string
+                  content_highlight_html:
+                    type: string
+                  content_highlight_html_truncated:
+                    type: boolean
+                  error:
+                    type: string
+                  file:
+                    type: object
+                    properties:
+                      access:
+                        type: string
+                      alt_txt:
+                        type: string
+                      app_id:
+                        type: string
+                      app_name:
+                        type: string
+                      bot_id:
+                        type: string
+                      can_toggle_canvas_lock:
+                        type: boolean
+                      canvas_printing_enabled:
+                        type: boolean
+                      canvas_template_mode:
+                        type: string
+                      cc:
+                        type: array
+                        items:
+                          type: object
+                      channel_actions_count:
+                        type: integer
+                      channel_actions_ts:
+                        type: string
+                      channels:
+                        type: array
+                        items:
+                          type: string
+                      comments_count:
+                        type: integer
+                      converted_pdf:
+                        type: string
+                      created:
+                        type: integer
+                      deanimate:
+                        type: string
+                      deanimate_gif:
+                        type: string
+                      display_as_bot:
+                        type: boolean
+                      dm_mpdm_users_with_file_access:
+                        type: array
+                        items:
+                          type: object
+                      duration_ms:
+                        type: integer
+                      edit_link:
+                        type: string
+                      edit_timestamp:
+                        type: integer
+                      editable:
+                        type: boolean
+                      editor:
+                        type: string
+                      editors:
+                        type: array
+                        items:
+                          type: string
+                      external_id:
+                        type: string
+                      external_type:
+                        type: string
+                      external_url:
+                        type: string
+                      favorites:
+                        type: array
+                        items:
+                          type: object
+                      file_access:
+                        type: string
+                      filetype:
+                        type: string
+                      from:
+                        type: array
+                        items:
+                          type: object
+                      groups:
+                        type: array
+                        items:
+                          type: string
+                      has_more:
+                        type: boolean
+                      has_more_shares:
+                        type: boolean
+                      has_rich_preview:
+                        type: boolean
+                      headers:
+                        type: object
+                        properties:
+                          date:
+                            type: string
+                          in_reply_to:
+                            type: string
+                          message_id:
+                            type: string
+                          reply_to:
+                            type: string
+                      hls:
+                        type: string
+                      hls_embed:
+                        type: string
+                      id:
+                        type: string
+                      image_exif_rotation:
+                        type: integer
+                      ims:
+                        type: array
+                        items:
+                          type: string
+                      initial_comment:
+                        type: object
+                        properties:
+                          channel:
+                            type: string
+                          comment:
+                            type: string
+                          created:
+                            type: integer
+                          id:
+                            type: string
+                          is_intro:
+                            type: boolean
+                          timestamp:
+                            type: integer
+                          user:
+                            type: string
+                      is_channel_space:
+                        type: boolean
+                      is_external:
+                        type: boolean
+                      is_public:
+                        type: boolean
+                      is_restricted_sharing_enabled:
+                        type: boolean
+                      is_starred:
+                        type: boolean
+                      last_editor:
+                        type: string
+                      last_read:
+                        type: integer
+                      lines:
+                        type: integer
+                      lines_more:
+                        type: integer
+                      linked_channel_id:
+                        type: string
+                      list_csv_download_url:
+                        type: string
+                      list_limits:
+                        type: object
+                        properties:
+                          column_count:
+                            type: integer
+                          column_count_limit:
+                            type: integer
+                          max_attachments_per_cell:
+                            type: integer
+                          over_column_maximum:
+                            type: boolean
+                          over_row_maximum:
+                            type: boolean
+                          over_view_maximum:
+                            type: boolean
+                          row_count:
+                            type: integer
+                          row_count_limit:
+                            type: integer
+                          view_count:
+                            type: integer
+                          view_count_limit:
+                            type: integer
+                      list_metadata:
+                        type: object
+                        properties:
+                          creation_source:
+                            type: object
+                          description:
+                            type: string
+                          description_blocks:
+                            type: array
+                            items: {}
+                          icon:
+                            type: string
+                          icon_team_id:
+                            type: string
+                          icon_url:
+                            type: string
+                          integrations:
+                            type: array
+                            items: {}
+                          is_trial:
+                            type: boolean
+                          schema:
+                            type: array
+                            items: {}
+                          views:
+                            type: array
+                            items: {}
+                      media_display_type:
+                        type: string
+                      media_progress:
+                        type: object
+                        properties:
+                          duration_ms:
+                            type: integer
+                          max_offset_ms:
+                            type: integer
+                          media_watched:
+                            type: boolean
+                          offset_ms:
+                            type: integer
+                      mimetype:
+                        type: string
+                      mode:
+                        type: string
+                      mp4:
+                        type: string
+                      mp4_low:
+                        type: string
+                      name:
+                        type: string
+                      non_owner_editable:
+                        type: boolean
+                      num_stars:
+                        type: integer
+                      org_or_workspace_access:
+                        type: string
+                      original_attachment_count:
+                        type: integer
+                      original_h:
+                        type: string
+                      original_w:
+                        type: string
+                      permalink:
+                        type: string
+                      permalink_public:
+                        type: string
+                      pinned_to:
+                        type: array
+                        items:
+                          type: string
+                      pjpeg:
+                        type: string
+                      plain_text:
+                        type: string
+                      pretty_type:
+                        type: string
+                      preview:
+                        type: string
+                      preview_highlight:
+                        type: string
+                      preview_is_truncated:
+                        type: boolean
+                      preview_plain_text:
+                        type: string
+                      private_channels_with_file_access_count:
+                        type: integer
+                      private_file_with_access_count:
+                        type: integer
+                      public_url_shared:
+                        type: boolean
+                      quip_thread_id:
+                        type: string
+                      reactions:
+                        type: array
+                        items:
+                          type: object
+                      saved:
+                        type: object
+                        properties:
+                          date_completed:
+                            type: integer
+                          date_due:
+                            type: integer
+                          is_archived:
+                            type: boolean
+                          state:
+                            type: string
+                      sent_to_self:
+                        type: boolean
+                      shares:
+                        type: object
+                        properties:
+                          private:
+                            type: object
+                          public:
+                            type: object
+                      show_badge:
+                        type: boolean
+                      simplified_html:
+                        type: string
+                      size:
+                        type: integer
+                      source_team:
+                        type: string
+                      subject:
+                        type: string
+                      subtype:
+                        type: string
+                      team_pref_version_history_enabled:
+                        type: boolean
+                      teams_shared_with:
+                        type: array
+                        items: {}
+                      template_conversion_ts:
+                        type: integer
+                      template_description:
+                        type: string
+                      template_icon:
+                        type: string
+                      template_name:
+                        type: string
+                      template_title:
+                        type: string
+                      thumb_1024:
+                        type: string
+                      thumb_1024_gif:
+                        type: string
+                      thumb_1024_h:
+                        type: string
+                      thumb_1024_w:
+                        type: string
+                      thumb_160:
+                        type: string
+                      thumb_160_gif:
+                        type: string
+                      thumb_160_h:
+                        type: string
+                      thumb_160_w:
+                        type: string
+                      thumb_360:
+                        type: string
+                      thumb_360_gif:
+                        type: string
+                      thumb_360_h:
+                        type: string
+                      thumb_360_w:
+                        type: string
+                      thumb_480:
+                        type: string
+                      thumb_480_gif:
+                        type: string
+                      thumb_480_h:
+                        type: string
+                      thumb_480_w:
+                        type: string
+                      thumb_64:
+                        type: string
+                      thumb_64_gif:
+                        type: string
+                      thumb_64_h:
+                        type: string
+                      thumb_64_w:
+                        type: string
+                      thumb_720:
+                        type: string
+                      thumb_720_gif:
+                        type: string
+                      thumb_720_h:
+                        type: string
+                      thumb_720_w:
+                        type: string
+                      thumb_80:
+                        type: string
+                      thumb_80_gif:
+                        type: string
+                      thumb_80_h:
+                        type: string
+                      thumb_80_w:
+                        type: string
+                      thumb_800:
+                        type: string
+                      thumb_800_gif:
+                        type: string
+                      thumb_800_h:
+                        type: string
+                      thumb_800_w:
+                        type: string
+                      thumb_960:
+                        type: string
+                      thumb_960_gif:
+                        type: string
+                      thumb_960_h:
+                        type: string
+                      thumb_960_w:
+                        type: string
+                      thumb_gif:
+                        type: string
+                      thumb_pdf:
+                        type: string
+                      thumb_pdf_h:
+                        type: string
+                      thumb_pdf_w:
+                        type: string
+                      thumb_tiny:
+                        type: string
+                      thumb_video:
+                        type: string
+                      thumb_video_h:
+                        type: integer
+                      thumb_video_w:
+                        type: integer
+                      timestamp:
+                        type: integer
+                      title:
+                        type: string
+                      title_blocks:
+                        type: array
+                        items:
+                          type: object
+                      to:
+                        type: array
+                        items:
+                          type: object
+                      transcription:
+                        type: object
+                        properties:
+                          locale:
+                            type: string
+                          preview:
+                            type: object
+                          status:
+                            type: string
+                      update_notification:
+                        type: integer
+                      updated:
+                        type: integer
+                      url_private:
+                        type: string
+                      url_private_download:
+                        type: string
+                      url_static_preview:
+                        type: string
+                      user:
+                        type: string
+                      user_team:
+                        type: string
+                      username:
+                        type: string
+                      vtt:
+                        type: string
+                  is_truncated:
+                    type: boolean
+                  needed:
+                    type: string
+                  ok:
+                    type: boolean
+                  paging:
+                    type: object
+                    properties:
+                      count:
+                        type: integer
+                      page:
+                        type: integer
+                      pages:
+                        type: integer
+                      total:
+                        type: integer
+                  provided:
+                    type: string
+  /files.list:
+    get:
+      operationId: files/list
+      tags:
+        - files
+      summary: List files for a team, in a channel, or from a user with applied filters.
+      description: "List files for a team, in a channel, or from a user with applied filters. Requires one of the scopes: files:read. Rate limit: Tier 3: 50+ per minute. See https://docs.slack.dev/reference/methods/files.list."
+      parameters:
+        - name: channel
+          in: query
+          required: false
+          schema:
+            type: string
+            default: "100"
+          description: Filter files appearing in a specific channel, indicated by its ID.
+        - name: show_files_hidden_by_limit
+          in: query
+          required: false
+          schema:
+            type: boolean
+          description: Show truncated file info for files hidden due to being too old, and the team who owns the file being over the file limit.
+          example: true
+        - name: team_id
+          in: query
+          required: false
+          schema:
+            type: string
+          description: encoded team id to list files in, required if org token is used
+        - name: ts_from
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter files created after this timestamp (inclusive).
+          example: "123456789"
+        - name: ts_to
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter files created before this timestamp (inclusive).
+          example: "123456789"
+        - name: types
+          in: query
+          required: false
+          schema:
+            type: string
+            default: all
+          description: Filter files by type (see below). You can pass multiple values in the types argument, like `types=spaces,snippets`.The default value is `all`, which does not filter the list.
+          example: images
+        - name: user
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter files created by a single user.
+      responses:
+        "200":
+          description: "Response envelope. Slack reports failures here with `ok: false`."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  files:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/File"
+                  needed:
+                    type: string
+                  ok:
+                    type: boolean
+                  paging:
+                    type: object
+                    properties:
+                      count:
+                        type: integer
+                      page:
+                        type: integer
+                      pages:
+                        type: integer
+                      total:
+                        type: integer
+                  provided:
+                    type: string
+  /files.remote.info:
+    get:
+      operationId: files/remote_info
+      tags:
+        - files
+      summary: Retrieve information about a remote file added to Slack
+      description: "Retrieve information about a remote file added to Slack Requires one of the scopes: remote_files:read. Rate limit: Tier 2: 20+ per minute. See https://docs.slack.dev/reference/methods/files.remote.info."
+      parameters:
+        - name: external_id
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Creator defined GUID for the file.
+          example: "123456"
+        - name: file
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Specify a file by providing its ID.
+          example: F2147483862
+      responses:
+        "200":
+          description: "Response envelope. Slack reports failures here with `ok: false`."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  file:
+                    type: object
+                    properties:
+                      access:
+                        type: string
+                      alt_txt:
+                        type: string
+                      app_id:
+                        type: string
+                      app_name:
+                        type: string
+                      bot_id:
+                        type: string
+                      can_toggle_canvas_lock:
+                        type: boolean
+                      canvas_printing_enabled:
+                        type: boolean
+                      canvas_template_mode:
+                        type: string
+                      cc:
+                        type: array
+                        items:
+                          type: object
+                      channel_actions_count:
+                        type: integer
+                      channel_actions_ts:
+                        type: string
+                      channels:
+                        type: array
+                        items:
+                          type: string
+                      comments_count:
+                        type: integer
+                      converted_pdf:
+                        type: string
+                      created:
+                        type: integer
+                      deanimate:
+                        type: string
+                      deanimate_gif:
+                        type: string
+                      display_as_bot:
+                        type: boolean
+                      dm_mpdm_users_with_file_access:
+                        type: array
+                        items:
+                          type: object
+                      duration_ms:
+                        type: integer
+                      edit_link:
+                        type: string
+                      edit_timestamp:
+                        type: integer
+                      editable:
+                        type: boolean
+                      editor:
+                        type: string
+                      editors:
+                        type: array
+                        items:
+                          type: string
+                      external_id:
+                        type: string
+                      external_type:
+                        type: string
+                      external_url:
+                        type: string
+                      favorites:
+                        type: array
+                        items:
+                          type: object
+                      file_access:
+                        type: string
+                      filetype:
+                        type: string
+                      from:
+                        type: array
+                        items:
+                          type: object
+                      groups:
+                        type: array
+                        items:
+                          type: string
+                      has_more:
+                        type: boolean
+                      has_more_shares:
+                        type: boolean
+                      has_rich_preview:
+                        type: boolean
+                      headers:
+                        type: object
+                        properties:
+                          date:
+                            type: string
+                          in_reply_to:
+                            type: string
+                          message_id:
+                            type: string
+                          reply_to:
+                            type: string
+                      hls:
+                        type: string
+                      hls_embed:
+                        type: string
+                      id:
+                        type: string
+                      image_exif_rotation:
+                        type: integer
+                      ims:
+                        type: array
+                        items:
+                          type: string
+                      initial_comment:
+                        type: object
+                        properties:
+                          channel:
+                            type: string
+                          comment:
+                            type: string
+                          created:
+                            type: integer
+                          id:
+                            type: string
+                          is_intro:
+                            type: boolean
+                          timestamp:
+                            type: integer
+                          user:
+                            type: string
+                      is_channel_space:
+                        type: boolean
+                      is_external:
+                        type: boolean
+                      is_public:
+                        type: boolean
+                      is_restricted_sharing_enabled:
+                        type: boolean
+                      is_starred:
+                        type: boolean
+                      last_editor:
+                        type: string
+                      last_read:
+                        type: integer
+                      lines:
+                        type: integer
+                      lines_more:
+                        type: integer
+                      linked_channel_id:
+                        type: string
+                      list_csv_download_url:
+                        type: string
+                      list_limits:
+                        type: object
+                        properties:
+                          column_count:
+                            type: integer
+                          column_count_limit:
+                            type: integer
+                          max_attachments_per_cell:
+                            type: integer
+                          over_column_maximum:
+                            type: boolean
+                          over_row_maximum:
+                            type: boolean
+                          over_view_maximum:
+                            type: boolean
+                          row_count:
+                            type: integer
+                          row_count_limit:
+                            type: integer
+                          view_count:
+                            type: integer
+                          view_count_limit:
+                            type: integer
+                      list_metadata:
+                        type: object
+                        properties:
+                          creation_source:
+                            type: object
+                          description:
+                            type: string
+                          description_blocks:
+                            type: array
+                            items: {}
+                          icon:
+                            type: string
+                          icon_team_id:
+                            type: string
+                          icon_url:
+                            type: string
+                          integrations:
+                            type: array
+                            items: {}
+                          is_trial:
+                            type: boolean
+                          schema:
+                            type: array
+                            items: {}
+                          views:
+                            type: array
+                            items: {}
+                      media_display_type:
+                        type: string
+                      media_progress:
+                        type: object
+                        properties:
+                          duration_ms:
+                            type: integer
+                          max_offset_ms:
+                            type: integer
+                          media_watched:
+                            type: boolean
+                          offset_ms:
+                            type: integer
+                      mimetype:
+                        type: string
+                      mode:
+                        type: string
+                      mp4:
+                        type: string
+                      mp4_low:
+                        type: string
+                      name:
+                        type: string
+                      non_owner_editable:
+                        type: boolean
+                      num_stars:
+                        type: integer
+                      org_or_workspace_access:
+                        type: string
+                      original_attachment_count:
+                        type: integer
+                      original_h:
+                        type: string
+                      original_w:
+                        type: string
+                      permalink:
+                        type: string
+                      permalink_public:
+                        type: string
+                      pinned_to:
+                        type: array
+                        items:
+                          type: string
+                      pjpeg:
+                        type: string
+                      plain_text:
+                        type: string
+                      pretty_type:
+                        type: string
+                      preview:
+                        type: string
+                      preview_highlight:
+                        type: string
+                      preview_is_truncated:
+                        type: boolean
+                      preview_plain_text:
+                        type: string
+                      private_channels_with_file_access_count:
+                        type: integer
+                      private_file_with_access_count:
+                        type: integer
+                      public_url_shared:
+                        type: boolean
+                      quip_thread_id:
+                        type: string
+                      reactions:
+                        type: array
+                        items:
+                          type: object
+                      saved:
+                        type: object
+                        properties:
+                          date_completed:
+                            type: integer
+                          date_due:
+                            type: integer
+                          is_archived:
+                            type: boolean
+                          state:
+                            type: string
+                      sent_to_self:
+                        type: boolean
+                      shares:
+                        type: object
+                        properties:
+                          private:
+                            type: object
+                          public:
+                            type: object
+                      show_badge:
+                        type: boolean
+                      simplified_html:
+                        type: string
+                      size:
+                        type: integer
+                      source_team:
+                        type: string
+                      subject:
+                        type: string
+                      subtype:
+                        type: string
+                      team_pref_version_history_enabled:
+                        type: boolean
+                      teams_shared_with:
+                        type: array
+                        items: {}
+                      template_conversion_ts:
+                        type: integer
+                      template_description:
+                        type: string
+                      template_icon:
+                        type: string
+                      template_name:
+                        type: string
+                      template_title:
+                        type: string
+                      thumb_1024:
+                        type: string
+                      thumb_1024_gif:
+                        type: string
+                      thumb_1024_h:
+                        type: string
+                      thumb_1024_w:
+                        type: string
+                      thumb_160:
+                        type: string
+                      thumb_160_gif:
+                        type: string
+                      thumb_160_h:
+                        type: string
+                      thumb_160_w:
+                        type: string
+                      thumb_360:
+                        type: string
+                      thumb_360_gif:
+                        type: string
+                      thumb_360_h:
+                        type: string
+                      thumb_360_w:
+                        type: string
+                      thumb_480:
+                        type: string
+                      thumb_480_gif:
+                        type: string
+                      thumb_480_h:
+                        type: string
+                      thumb_480_w:
+                        type: string
+                      thumb_64:
+                        type: string
+                      thumb_64_gif:
+                        type: string
+                      thumb_64_h:
+                        type: string
+                      thumb_64_w:
+                        type: string
+                      thumb_720:
+                        type: string
+                      thumb_720_gif:
+                        type: string
+                      thumb_720_h:
+                        type: string
+                      thumb_720_w:
+                        type: string
+                      thumb_80:
+                        type: string
+                      thumb_80_gif:
+                        type: string
+                      thumb_80_h:
+                        type: string
+                      thumb_80_w:
+                        type: string
+                      thumb_800:
+                        type: string
+                      thumb_800_gif:
+                        type: string
+                      thumb_800_h:
+                        type: string
+                      thumb_800_w:
+                        type: string
+                      thumb_960:
+                        type: string
+                      thumb_960_gif:
+                        type: string
+                      thumb_960_h:
+                        type: string
+                      thumb_960_w:
+                        type: string
+                      thumb_gif:
+                        type: string
+                      thumb_pdf:
+                        type: string
+                      thumb_pdf_h:
+                        type: string
+                      thumb_pdf_w:
+                        type: string
+                      thumb_tiny:
+                        type: string
+                      thumb_video:
+                        type: string
+                      thumb_video_h:
+                        type: integer
+                      thumb_video_w:
+                        type: integer
+                      timestamp:
+                        type: integer
+                      title:
+                        type: string
+                      title_blocks:
+                        type: array
+                        items:
+                          type: object
+                      to:
+                        type: array
+                        items:
+                          type: object
+                      transcription:
+                        type: object
+                        properties:
+                          locale:
+                            type: string
+                          preview:
+                            type: object
+                          status:
+                            type: string
+                      update_notification:
+                        type: integer
+                      updated:
+                        type: integer
+                      url_private:
+                        type: string
+                      url_private_download:
+                        type: string
+                      url_static_preview:
+                        type: string
+                      user:
+                        type: string
+                      user_team:
+                        type: string
+                      username:
+                        type: string
+                      vtt:
+                        type: string
+                  needed:
+                    type: string
+                  ok:
+                    type: boolean
+                  provided:
+                    type: string
+  /files.remote.list:
+    get:
+      operationId: files/remote_list
+      tags:
+        - files
+      summary: Retrieve information about a remote file added to Slack
+      description: "Retrieve information about a remote file added to Slack Requires one of the scopes: remote_files:read. Rate limit: Tier 2: 20+ per minute. See https://docs.slack.dev/reference/methods/files.remote.list."
+      parameters:
+        - name: channel
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter files appearing in a specific channel, indicated by its ID.
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Paginate through collections of data by setting the `cursor` parameter to a `next_cursor` attribute returned by a previous request's `response_metadata`. Default value fetches the first "page" of the collection. See pagination for more detail.
+          example: dXNlcjpVMDYxTkZUVDI=
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+          description: The maximum number of items to return.
+          example: 20
+        - name: ts_from
+          in: query
+          required: false
+          schema:
+            type: string
+            default: "0"
+          description: Filter files created after this timestamp (inclusive).
+          example: "123456789"
+        - name: ts_to
+          in: query
+          required: false
+          schema:
+            type: string
+            default: now
+          description: Filter files created before this timestamp (inclusive).
+          example: "123456789"
+      responses:
+        "200":
+          description: "Response envelope. Slack reports failures here with `ok: false`."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  files:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/File"
+                  needed:
+                    type: string
+                  ok:
+                    type: boolean
+                  provided:
+                    type: string
+                  response_metadata:
+                    type: object
+                    properties:
+                      next_cursor:
+                        type: string
+  /pins.list:
+    get:
+      operationId: pins/list
+      tags:
+        - pins
+      summary: Lists items pinned to a channel.
+      description: "Lists items pinned to a channel. Requires one of the scopes: pins:read. Rate limit: Tier 2: 20+ per minute. See https://docs.slack.dev/reference/methods/pins.list."
+      parameters:
+        - name: channel
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Channel to get pinned items for.
+      responses:
+        "200":
+          description: "Response envelope. Slack reports failures here with `ok: false`."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Item"
+                  needed:
+                    type: string
+                  ok:
+                    type: boolean
+                  provided:
+                    type: string
+  /reactions.get:
+    get:
+      operationId: reactions/get
+      tags:
+        - reactions
+      summary: Gets reactions for an item.
+      description: "Gets reactions for an item. Requires one of the scopes: reactions:read. Rate limit: Tier 3: 50+ per minute. See https://docs.slack.dev/reference/methods/reactions.get."
+      parameters:
+        - name: channel
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Channel where the message to get reactions for was posted.
+          example: C0NF841BK
+        - name: file
+          in: query
+          required: false
+          schema:
+            type: string
+          description: File to get reactions for.
+          example: F1234567890
+        - name: file_comment
+          in: query
+          required: false
+          schema:
+            type: string
+          description: File comment to get reactions for.
+        - name: full
+          in: query
+          required: false
+          schema:
+            type: boolean
+          description: If true always return the complete reaction list.
+        - name: timestamp
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Timestamp of the message to get reactions for.
+          example: "1524523204.000192"
+      responses:
+        "200":
+          description: "Response envelope. Slack reports failures here with `ok: false`."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  channel:
+                    type: string
+                  error:
+                    type: string
+                  message:
+                    type: object
+                    properties:
+                      app_id:
+                        type: string
+                      assistant_app_thread:
+                        type: object
+                        properties:
+                          first_user_thread_reply:
+                            type: string
+                          title:
+                            type: string
+                          title_blocks:
+                            type: array
+                            items: {}
+                      blocks:
+                        type: array
+                        items:
+                          type: object
+                      bot_id:
+                        type: string
+                      bot_profile:
+                        type: object
+                        properties:
+                          app_id:
+                            type: string
+                          deleted:
+                            type: boolean
+                          icons:
+                            type: object
+                          id:
+                            type: string
+                          name:
+                            type: string
+                          team_id:
+                            type: string
+                          updated:
+                            type: integer
+                      permalink:
+                        type: string
+                      reactions:
+                        type: array
+                        items:
+                          type: object
+                      room:
+                        type: object
+                        properties:
+                          app_id:
+                            type: string
+                          attached_file_ids:
+                            type: array
+                            items: {}
+                          background_id:
+                            type: string
+                          call_family:
+                            type: string
+                          canvas_background:
+                            type: string
+                          canvas_thread_ts:
+                            type: string
+                          channels:
+                            type: array
+                            items: {}
+                          created_by:
+                            type: string
+                          date_end:
+                            type: integer
+                          date_start:
+                            type: integer
+                          display_id:
+                            type: string
+                          external_unique_id:
+                            type: string
+                          has_ended:
+                            type: boolean
+                          huddle_link:
+                            type: string
+                          id:
+                            type: string
+                          is_dm_call:
+                            type: boolean
+                          is_prewarmed:
+                            type: boolean
+                          is_scheduled:
+                            type: boolean
+                          knocks:
+                            type: object
+                          last_invite_status_by_user:
+                            type: object
+                          media_backend_type:
+                            type: string
+                          media_server:
+                            type: string
+                          name:
+                            type: string
+                          participant_history:
+                            type: array
+                            items: {}
+                          participants:
+                            type: array
+                            items: {}
+                          participants_camera_off:
+                            type: array
+                            items: {}
+                          participants_camera_on:
+                            type: array
+                            items: {}
+                          participants_screenshare_off:
+                            type: array
+                            items: {}
+                          participants_screenshare_on:
+                            type: array
+                            items: {}
+                          pending_invitees:
+                            type: object
+                          recording:
+                            type: object
+                          thread_root_ts:
+                            type: string
+                          was_accepted:
+                            type: boolean
+                          was_missed:
+                            type: boolean
+                          was_rejected:
+                            type: boolean
+                      team:
+                        type: string
+                      text:
+                        type: string
+                      ts:
+                        type: string
+                      type:
+                        type: string
+                      user:
+                        type: string
+                  needed:
+                    type: string
+                  ok:
+                    type: boolean
+                  provided:
+                    type: string
+                  type:
+                    type: string
+  /reactions.list:
+    get:
+      operationId: reactions/list
+      tags:
+        - reactions
+      summary: Lists reactions made by a user.
+      description: "Lists reactions made by a user. Requires one of the scopes: reactions:read. Rate limit: Tier 2: 20+ per minute. See https://docs.slack.dev/reference/methods/reactions.list."
+      parameters:
+        - name: count
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 100
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+          description: "Parameter for pagination. Set `cursor` equal to the `next_cursor` attribute returned by the previous request's `response_metadata`. This parameter is optional, but pagination is mandatory: the default value simply fetches the first \"page\" of the collection. See pagination for more details."
+          example: dXNlcjpVMDYxTkZUVDI=
+        - name: full
+          in: query
+          required: false
+          schema:
+            type: boolean
+          description: If true always return the complete reaction list.
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+          description: The maximum number of items to return. Fewer than the requested number of items may be returned, even if the end of the list hasn't been reached.
+          example: 20
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 1
+        - name: team_id
+          in: query
+          required: false
+          schema:
+            type: string
+          description: encoded team id to list reactions in, required if org token is used
+        - name: user
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Show reactions made by this user. Defaults to the authed user.
+      responses:
+        "200":
+          description: "Response envelope. Slack reports failures here with `ok: false`."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ReactionsItem"
+                  needed:
+                    type: string
+                  ok:
+                    type: boolean
+                  paging:
+                    type: object
+                    properties:
+                      count:
+                        type: integer
+                      page:
+                        type: integer
+                      pages:
+                        type: integer
+                      total:
+                        type: integer
+                  provided:
+                    type: string
+                  response_metadata:
+                    type: object
+                    properties:
+                      next_cursor:
+                        type: string
+  /reminders.info:
+    get:
+      operationId: reminders/info
+      tags:
+        - reminders
+      summary: Gets information about a reminder.
+      description: "Gets information about a reminder. Requires one of the scopes: reminders:read. Rate limit: Tier 2: 20+ per minute. See https://docs.slack.dev/reference/methods/reminders.info."
+      parameters:
+        - name: reminder
+          in: query
+          required: true
+          schema:
+            type: string
+          description: The ID of the reminder
+          example: Rm23456789
+        - name: team_id
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Encoded team id, required if org token is passed
+      responses:
+        "200":
+          description: "Response envelope. Slack reports failures here with `ok: false`."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  needed:
+                    type: string
+                  ok:
+                    type: boolean
+                  provided:
+                    type: string
+                  reminder:
+                    type: object
+                    properties:
+                      complete_ts:
+                        type: integer
+                      creator:
+                        type: string
+                      id:
+                        type: string
+                      recurring:
+                        type: boolean
+                      text:
+                        type: string
+                      time:
+                        type: integer
+                      user:
+                        type: string
+  /reminders.list:
+    get:
+      operationId: reminders/list
+      tags:
+        - reminders
+      summary: Lists all reminders created by or for a given user.
+      description: "Lists all reminders created by or for a given user. Requires one of the scopes: reminders:read. Rate limit: Tier 2: 20+ per minute. See https://docs.slack.dev/reference/methods/reminders.list."
+      parameters:
+        - name: team_id
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Encoded team id, required if org token is passed
+      responses:
+        "200":
+          description: "Response envelope. Slack reports failures here with `ok: false`."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  needed:
+                    type: string
+                  ok:
+                    type: boolean
+                  provided:
+                    type: string
+                  reminders:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Reminder"
+  /search.all:
+    get:
+      operationId: search/all
+      tags:
+        - search
+      summary: Searches for messages and files matching a query.
+      description: "Searches for messages and files matching a query. Requires one of the scopes: search:read. Rate limit: Tier 2: 20+ per minute. See https://docs.slack.dev/reference/methods/search.all."
+      parameters:
+        - name: count
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 20
+        - name: highlight
+          in: query
+          required: false
+          schema:
+            type: boolean
+          description: Pass a value of `true` to enable query highlight markers (see below).
+          example: true
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 1
+        - name: query
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Search query. May contains booleans, etc.
+          example: pickleface
+        - name: sort
+          in: query
+          required: false
+          schema:
+            type: string
+            default: score
+          description: Return matches sorted by either `score` or `timestamp`.
+          example: timestamp
+        - name: sort_dir
+          in: query
+          required: false
+          schema:
+            type: string
+            default: desc
+          description: Change sort direction to ascending (`asc`) or descending (`desc`).
+          example: asc
+        - name: team_id
+          in: query
+          required: false
+          schema:
+            type: string
+          description: encoded team id to search in, required if org token is used
+      responses:
+        "200":
+          description: "Response envelope. Slack reports failures here with `ok: false`."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  files:
+                    type: object
+                    properties:
+                      matches:
+                        type: array
+                        items:
+                          type: object
+                      pagination:
+                        type: object
+                        properties:
+                          first:
+                            type: integer
+                          last:
+                            type: integer
+                          page:
+                            type: integer
+                          page_count:
+                            type: integer
+                          per_page:
+                            type: integer
+                          total_count:
+                            type: integer
+                      paging:
+                        type: object
+                        properties:
+                          count:
+                            type: integer
+                          page:
+                            type: integer
+                          pages:
+                            type: integer
+                          total:
+                            type: integer
+                      total:
+                        type: integer
+                  messages:
+                    type: object
+                    properties:
+                      matches:
+                        type: array
+                        items:
+                          type: object
+                      pagination:
+                        type: object
+                        properties:
+                          first:
+                            type: integer
+                          last:
+                            type: integer
+                          page:
+                            type: integer
+                          page_count:
+                            type: integer
+                          per_page:
+                            type: integer
+                          total_count:
+                            type: integer
+                      paging:
+                        type: object
+                        properties:
+                          count:
+                            type: integer
+                          page:
+                            type: integer
+                          pages:
+                            type: integer
+                          total:
+                            type: integer
+                      total:
+                        type: integer
+                  needed:
+                    type: string
+                  ok:
+                    type: boolean
+                  posts:
+                    type: object
+                    properties:
+                      matches:
+                        type: array
+                        items:
+                          type: string
+                      total:
+                        type: integer
+                  provided:
+                    type: string
+                  query:
+                    type: string
+  /search.files:
+    get:
+      operationId: search/files
+      tags:
+        - search
+      summary: Searches for files matching a query.
+      description: "Searches for files matching a query. Requires one of the scopes: search:read. Rate limit: Tier 2: 20+ per minute. See https://docs.slack.dev/reference/methods/search.files."
+      parameters:
+        - name: count
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 20
+        - name: highlight
+          in: query
+          required: false
+          schema:
+            type: boolean
+          description: Pass a value of `true` to enable query highlight markers (see below).
+          example: true
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 1
+        - name: query
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Search query.
+          example: pickleface
+        - name: sort
+          in: query
+          required: false
+          schema:
+            type: string
+            default: score
+          description: Return matches sorted by either `score` or `timestamp`.
+          example: timestamp
+        - name: sort_dir
+          in: query
+          required: false
+          schema:
+            type: string
+            default: desc
+          description: Change sort direction to ascending (`asc`) or descending (`desc`).
+          example: asc
+        - name: team_id
+          in: query
+          required: false
+          schema:
+            type: string
+          description: encoded team id to search in, required if org token is used
+      responses:
+        "200":
+          description: "Response envelope. Slack reports failures here with `ok: false`."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  files:
+                    type: object
+                    properties:
+                      matches:
+                        type: array
+                        items:
+                          type: object
+                      pagination:
+                        type: object
+                        properties:
+                          first:
+                            type: integer
+                          last:
+                            type: integer
+                          page:
+                            type: integer
+                          page_count:
+                            type: integer
+                          per_page:
+                            type: integer
+                          total_count:
+                            type: integer
+                      paging:
+                        type: object
+                        properties:
+                          count:
+                            type: integer
+                          page:
+                            type: integer
+                          pages:
+                            type: integer
+                          total:
+                            type: integer
+                      total:
+                        type: integer
+                  needed:
+                    type: string
+                  ok:
+                    type: boolean
+                  provided:
+                    type: string
+                  query:
+                    type: string
   /search.messages:
     get:
       operationId: search/messages
@@ -615,6 +2668,642 @@ paths:
                     type: string
                   query:
                     type: string
+  /stars.list:
+    get:
+      operationId: stars/list
+      tags:
+        - stars
+      summary: Listed a user's saved items, formerly known as stars.
+      description: "Listed a user's saved items, formerly known as stars. Requires one of the scopes: stars:read. Rate limit: Tier 3: 50+ per minute. See https://docs.slack.dev/reference/methods/stars.list."
+      parameters:
+        - name: count
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 100
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+          description: "Parameter for pagination. Set `cursor` equal to the `next_cursor` attribute returned by the previous request's `response_metadata`. This parameter is optional, but pagination is mandatory: the default value simply fetches the first \"page\" of the collection. See pagination for more details."
+          example: dXNlcjpVMDYxTkZUVDI=
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+          description: The maximum number of items to return. Fewer than the requested number of items may be returned, even if the end of the list hasn't been reached.
+          example: 20
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 1
+        - name: team_id
+          in: query
+          required: false
+          schema:
+            type: string
+          description: encoded team id to list stars in, required if org token is used
+      responses:
+        "200":
+          description: "Response envelope. Slack reports failures here with `ok: false`."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/StarsItem"
+                  needed:
+                    type: string
+                  ok:
+                    type: boolean
+                  paging:
+                    type: object
+                    properties:
+                      page:
+                        type: integer
+                      pages:
+                        type: integer
+                      per_page:
+                        type: integer
+                      spill:
+                        type: integer
+                      total:
+                        type: integer
+                  provided:
+                    type: string
+  /team.accessLogs:
+    get:
+      operationId: team/accessLogs
+      tags:
+        - team
+      summary: Gets the access logs for the current team.
+      description: "Gets the access logs for the current team. Requires one of the scopes: admin. Rate limit: Tier 2: 20+ per minute. See https://docs.slack.dev/reference/methods/team.accessLogs."
+      parameters:
+        - name: count
+          in: query
+          required: false
+          schema:
+            type: string
+            default: "100"
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+          description: "Parameter for pagination. Set `cursor` equal to the `next_cursor` attribute returned by the previous request's `response_metadata`. This parameter is optional, but pagination is mandatory: the default value simply fetches the first \"page\" of the collection. See pagination for more details."
+          example: dXNlcjpVMDYxTkZUVDI=
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+          description: The maximum number of items to return. Fewer than the requested number of items may be returned, even if the end of the list hasn't been reached. If specified, result is returned using a cursor-based approach instead of a classic one.
+          example: 20
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: string
+            default: "1"
+        - name: team_id
+          in: query
+          required: false
+          schema:
+            type: string
+          description: encoded team id to get logs from, required if org token is used
+      responses:
+        "200":
+          description: "Response envelope. Slack reports failures here with `ok: false`."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  logins:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Login"
+                  needed:
+                    type: string
+                  ok:
+                    type: boolean
+                  paging:
+                    type: object
+                    properties:
+                      count:
+                        type: integer
+                      page:
+                        type: integer
+                      pages:
+                        type: integer
+                      total:
+                        type: integer
+                      warnings:
+                        type: array
+                        items:
+                          type: string
+                  provided:
+                    type: string
+                  response_metadata:
+                    type: object
+                    properties:
+                      next_cursor:
+                        type: string
+                  warning:
+                    type: string
+  /team.billableInfo:
+    get:
+      operationId: team/billableInfo
+      tags:
+        - team
+      summary: Gets billable users information for the current team.
+      description: "Gets billable users information for the current team. Requires one of the scopes: admin. Rate limit: Tier 2: 20+ per minute. See https://docs.slack.dev/reference/methods/team.billableInfo."
+      parameters:
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Set `cursor` to `next_cursor` returned by previous call, to indicate from where you want to list next page of users list. Default value fetches the first page.
+          example: dXNlcjpVMDYxTkZUVDI=
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+          description: The maximum number of items to return.
+          example: 20
+        - name: team_id
+          in: query
+          required: false
+          schema:
+            type: string
+          description: encoded team id to get the billable information from, required if org token is used
+        - name: user
+          in: query
+          required: false
+          schema:
+            type: string
+          description: A user to retrieve the billable information for. Defaults to all users.
+      responses:
+        "200":
+          description: "Response envelope. Slack reports failures here with `ok: false`."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  billable_info:
+                    type: object
+                    properties:
+                      U00000000:
+                        type: object
+                        properties:
+                          billing_active:
+                            type: boolean
+                      U00000001:
+                        type: object
+                        properties:
+                          billing_active:
+                            type: boolean
+                  error:
+                    type: string
+                  needed:
+                    type: string
+                  ok:
+                    type: boolean
+                  provided:
+                    type: string
+                  response_metadata:
+                    type: object
+                    properties:
+                      next_cursor:
+                        type: string
+                  warning:
+                    type: string
+  /team.externalTeams.list:
+    get:
+      operationId: team/externalTeams_list
+      tags:
+        - team
+      summary: Returns a list of all the external teams connected and details about the connection.
+      description: "Returns a list of all the external teams connected and details about the connection. Requires one of the scopes: conversations.connect:manage, team:read. Rate limit: Tier 2: 20+ per minute. See https://docs.slack.dev/reference/methods/team.externalTeams.list."
+      parameters:
+        - name: connection_status_filter
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Status of the connected team.
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Paginate through collections of data by setting parameter to the `team_id` attribute returned by a previous request's `response_metadata`. If not provided, the first page of the collection is returned. See pagination for more detail.
+          example: T123ABC456
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 20
+          description: The maximum number of items to return per page
+        - name: sort_direction
+          in: query
+          required: false
+          schema:
+            type: string
+            default: asc
+          description: Direction to sort in asc or desc
+        - name: sort_field
+          in: query
+          required: false
+          schema:
+            type: string
+            default: team_name
+          description: Name of the parameter that we are sorting by
+      responses:
+        "200":
+          description: "Response envelope. Slack reports failures here with `ok: false`."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  needed:
+                    type: string
+                  ok:
+                    type: boolean
+                  organizations:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Organization"
+                  provided:
+                    type: string
+                  response_metadata:
+                    type: object
+                    properties:
+                      messages:
+                        type: array
+                        items:
+                          type: string
+                      next_cursor:
+                        type: string
+                  total_count:
+                    type: integer
+                  warning:
+                    type: string
+  /team.info:
+    get:
+      operationId: team/info
+      tags:
+        - team
+      summary: Gets information about the current team.
+      description: "Gets information about the current team. Requires one of the scopes: team:read. Rate limit: Tier 3: 50+ per minute. See https://docs.slack.dev/reference/methods/team.info."
+      parameters:
+        - name: domain
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Query by domain instead of team (only when team is null). This only works for domains in the same enterprise as the querying team token. This also expects the domain to belong to a team and not the enterprise itself. This is the value set up for the 'Joining This Workspace' workspace setting. If it contains more than one domain, the field will contain multiple comma-separated domain values. If no domain is set, the field is empty.
+        - name: team
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Team to get info about; if omitted, will return information about the current team.
+      responses:
+        "200":
+          description: "Response envelope. Slack reports failures here with `ok: false`."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  needed:
+                    type: string
+                  ok:
+                    type: boolean
+                  provided:
+                    type: string
+                  team:
+                    type: object
+                    properties:
+                      avatar_base_url:
+                        type: string
+                      discoverable:
+                        type: string
+                      domain:
+                        type: string
+                      email_domain:
+                        type: string
+                      enterprise_domain:
+                        type: string
+                      enterprise_id:
+                        type: string
+                      enterprise_name:
+                        type: string
+                      icon:
+                        type: object
+                        properties:
+                          image_102:
+                            type: string
+                          image_132:
+                            type: string
+                          image_230:
+                            type: string
+                          image_34:
+                            type: string
+                          image_44:
+                            type: string
+                          image_68:
+                            type: string
+                          image_88:
+                            type: string
+                          image_default:
+                            type: boolean
+                          image_original:
+                            type: string
+                      id:
+                        type: string
+                      is_sfdc_auto_slack:
+                        type: boolean
+                      is_verified:
+                        type: boolean
+                      lob_sales_home_enabled:
+                        type: boolean
+                      locale:
+                        type: string
+                      name:
+                        type: string
+                      pay_prod_cur:
+                        type: string
+                      sso_provider:
+                        type: object
+                        properties:
+                          label:
+                            type: string
+                          name:
+                            type: string
+                          type:
+                            type: string
+                      url:
+                        type: string
+                  warning:
+                    type: string
+  /team.integrationLogs:
+    get:
+      operationId: team/integrationLogs
+      tags:
+        - team
+      summary: Gets the integration logs for the current team.
+      description: "Gets the integration logs for the current team. Requires one of the scopes: admin. Rate limit: Tier 2: 20+ per minute. See https://docs.slack.dev/reference/methods/team.integrationLogs."
+      parameters:
+        - name: app_id
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter logs to this Slack app. Defaults to all logs.
+        - name: change_type
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter logs with this change type. Possible values are `added`, `removed`, `enabled`, `disabled`, and `updated`. Defaults to all logs.
+          example: added
+        - name: count
+          in: query
+          required: false
+          schema:
+            type: string
+            default: "100"
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: string
+            default: "1"
+        - name: service_id
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter logs to this service. Defaults to all logs.
+        - name: team_id
+          in: query
+          required: false
+          schema:
+            type: string
+          description: encoded team id to get logs from, required if org token is used
+        - name: user
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter logs generated by this user’s actions. Defaults to all logs.
+      responses:
+        "200":
+          description: "Response envelope. Slack reports failures here with `ok: false`."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  logs:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Log"
+                  needed:
+                    type: string
+                  ok:
+                    type: boolean
+                  paging:
+                    type: object
+                    properties:
+                      count:
+                        type: integer
+                      page:
+                        type: integer
+                      pages:
+                        type: integer
+                      total:
+                        type: integer
+                  provided:
+                    type: string
+                  warning:
+                    type: string
+  /team.profile.get:
+    get:
+      operationId: team/profile_get
+      tags:
+        - team
+      summary: Retrieve a team's profile.
+      description: "Retrieve a team's profile. Requires one of the scopes: users.profile:read. Rate limit: Tier 3: 50+ per minute. See https://docs.slack.dev/reference/methods/team.profile.get."
+      parameters:
+        - name: visibility
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter by visibility.
+          example: all
+      responses:
+        "200":
+          description: "Response envelope. Slack reports failures here with `ok: false`."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  needed:
+                    type: string
+                  ok:
+                    type: boolean
+                  profile:
+                    type: object
+                    properties:
+                      fields:
+                        type: array
+                        items:
+                          type: object
+                      sections:
+                        type: array
+                        items:
+                          type: object
+                  provided:
+                    type: string
+                  warning:
+                    type: string
+  /usergroups.list:
+    get:
+      operationId: usergroups/list
+      tags:
+        - usergroups
+      summary: List all User Groups for a team.
+      description: "List all User Groups for a team. Requires one of the scopes: usergroups:read. Rate limit: Tier 2: 20+ per minute. See https://docs.slack.dev/reference/methods/usergroups.list."
+      parameters:
+        - name: include_count
+          in: query
+          required: false
+          schema:
+            type: boolean
+          description: Include the number of users in each User Group.
+          example: true
+        - name: include_disabled
+          in: query
+          required: false
+          schema:
+            type: boolean
+          description: Include results for disabled User Groups.
+          example: true
+        - name: include_users
+          in: query
+          required: false
+          schema:
+            type: boolean
+          description: Include the list of users for each User Group.
+          example: true
+        - name: team_id
+          in: query
+          required: false
+          schema:
+            type: string
+          description: The user group's encoded team ID. Required if org token is used.
+      responses:
+        "200":
+          description: "Response envelope. Slack reports failures here with `ok: false`."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  needed:
+                    type: string
+                  ok:
+                    type: boolean
+                  provided:
+                    type: string
+                  usergroups:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Usergroup"
+                  warning:
+                    type: string
+  /usergroups.users.list:
+    get:
+      operationId: usergroups/users_list
+      tags:
+        - usergroups
+      summary: List all users in a User Group.
+      description: "List all users in a User Group. Requires one of the scopes: usergroups:read. Rate limit: Tier 2: 20+ per minute. See https://docs.slack.dev/reference/methods/usergroups.users.list."
+      parameters:
+        - name: include_disabled
+          in: query
+          required: false
+          schema:
+            type: boolean
+          description: Include results for disabled User Groups.
+          example: true
+        - name: team_id
+          in: query
+          required: false
+          schema:
+            type: string
+          description: The user group's encoded team ID. Required if org token is used.
+        - name: usergroup
+          in: query
+          required: true
+          schema:
+            type: string
+          description: The encoded ID of the User Group.
+          example: S0604QSJC
+      responses:
+        "200":
+          description: "Response envelope. Slack reports failures here with `ok: false`."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  needed:
+                    type: string
+                  ok:
+                    type: boolean
+                  provided:
+                    type: string
+                  users:
+                    type: array
+                    items:
+                      type: string
+                  warning:
+                    type: string
   /users.conversations:
     get:
       operationId: users/conversations
@@ -693,6 +3382,103 @@ paths:
                     type: object
                     properties:
                       next_cursor:
+                        type: string
+                  warning:
+                    type: string
+  /users.getPresence:
+    get:
+      operationId: users/getPresence
+      tags:
+        - users
+      summary: Gets user presence information.
+      description: "Gets user presence information. Requires one of the scopes: users:read. Rate limit: Tier 3: 50+ per minute. See https://docs.slack.dev/reference/methods/users.getPresence."
+      parameters:
+        - name: user
+          in: query
+          required: false
+          schema:
+            type: string
+          description: User to get presence info on. Defaults to the authed user.
+      responses:
+        "200":
+          description: "Response envelope. Slack reports failures here with `ok: false`."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  auto_away:
+                    type: boolean
+                  connection_count:
+                    type: integer
+                  error:
+                    type: string
+                  last_activity:
+                    type: integer
+                  manual_away:
+                    type: boolean
+                  needed:
+                    type: string
+                  ok:
+                    type: boolean
+                  online:
+                    type: boolean
+                  presence:
+                    type: string
+                  provided:
+                    type: string
+                  warning:
+                    type: string
+  /users.identity:
+    get:
+      operationId: users/identity
+      tags:
+        - users
+      summary: Get a user's identity.
+      description: "Get a user's identity. Requires one of the scopes: identity:read. Rate limit: Tier 3: 50+ per minute. See https://docs.slack.dev/reference/methods/users.identity."
+      responses:
+        "200":
+          description: "Response envelope. Slack reports failures here with `ok: false`."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  needed:
+                    type: string
+                  ok:
+                    type: boolean
+                  provided:
+                    type: string
+                  team:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      name:
+                        type: string
+                  user:
+                    type: object
+                    properties:
+                      email:
+                        type: string
+                      id:
+                        type: string
+                      image_192:
+                        type: string
+                      image_24:
+                        type: string
+                      image_32:
+                        type: string
+                      image_48:
+                        type: string
+                      image_512:
+                        type: string
+                      image_72:
+                        type: string
+                      name:
                         type: string
                   warning:
                     type: string
@@ -954,8 +3740,283 @@ paths:
                         type: string
                   warning:
                     type: string
+  /users.lookupByEmail:
+    get:
+      operationId: users/lookupByEmail
+      tags:
+        - users
+      summary: Find a user with an email address.
+      description: "Find a user with an email address. Requires one of the scopes: users:read.email. Rate limit: Tier 3: 50+ per minute. See https://docs.slack.dev/reference/methods/users.lookupByEmail."
+      parameters:
+        - name: email
+          in: query
+          required: true
+          schema:
+            type: string
+          description: An email address belonging to a user in the workspace
+          example: spengler@ghostbusters.example.com
+      responses:
+        "200":
+          description: "Response envelope. Slack reports failures here with `ok: false`."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  needed:
+                    type: string
+                  ok:
+                    type: boolean
+                  provided:
+                    type: string
+                  response_metadata:
+                    type: object
+                    properties:
+                      messages:
+                        type: array
+                        items:
+                          type: string
+                  user:
+                    type: object
+                    properties:
+                      color:
+                        type: string
+                      deleted:
+                        type: boolean
+                      has_2fa:
+                        type: boolean
+                      id:
+                        type: string
+                      is_admin:
+                        type: boolean
+                      is_app_user:
+                        type: boolean
+                      is_bot:
+                        type: boolean
+                      is_email_confirmed:
+                        type: boolean
+                      is_invited_user:
+                        type: boolean
+                      is_owner:
+                        type: boolean
+                      is_primary_owner:
+                        type: boolean
+                      is_restricted:
+                        type: boolean
+                      is_ultra_restricted:
+                        type: boolean
+                      name:
+                        type: string
+                      profile:
+                        type: object
+                        properties:
+                          avatar_hash:
+                            type: string
+                          display_name:
+                            type: string
+                          display_name_normalized:
+                            type: string
+                          email:
+                            type: string
+                          first_name:
+                            type: string
+                          guest_invited_by:
+                            type: string
+                          huddle_state:
+                            type: string
+                          huddle_state_expiration_ts:
+                            type: integer
+                          image_1024:
+                            type: string
+                          image_192:
+                            type: string
+                          image_24:
+                            type: string
+                          image_32:
+                            type: string
+                          image_48:
+                            type: string
+                          image_512:
+                            type: string
+                          image_72:
+                            type: string
+                          image_original:
+                            type: string
+                          is_custom_image:
+                            type: boolean
+                          last_name:
+                            type: string
+                          phone:
+                            type: string
+                          pronouns:
+                            type: string
+                          real_name:
+                            type: string
+                          real_name_normalized:
+                            type: string
+                          skype:
+                            type: string
+                          status_emoji:
+                            type: string
+                          status_emoji_display_info:
+                            type: array
+                            items: {}
+                          status_emoji_url:
+                            type: string
+                          status_expiration:
+                            type: integer
+                          status_text:
+                            type: string
+                          status_text_canonical:
+                            type: string
+                          team:
+                            type: string
+                          title:
+                            type: string
+                      real_name:
+                        type: string
+                      team_id:
+                        type: string
+                      tz:
+                        type: string
+                      tz_label:
+                        type: string
+                      tz_offset:
+                        type: integer
+                      updated:
+                        type: integer
+                      who_can_share_contact_card:
+                        type: string
+                  warning:
+                    type: string
+  /users.profile.get:
+    get:
+      operationId: users/profile_get
+      tags:
+        - users
+      summary: Retrieve a user's profile information, including their custom status.
+      description: "Retrieve a user's profile information, including their custom status. Requires one of the scopes: users.profile:read. Rate limit: Tier 4: 100+ per minute. See https://docs.slack.dev/reference/methods/users.profile.get."
+      parameters:
+        - name: include_labels
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+          description: Include labels for each ID in custom profile fields. Using this parameter will heavily rate-limit your requests and is not recommended.
+          example: true
+        - name: user
+          in: query
+          required: false
+          schema:
+            type: string
+          description: User to retrieve profile info for
+      responses:
+        "200":
+          description: "Response envelope. Slack reports failures here with `ok: false`."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  needed:
+                    type: string
+                  ok:
+                    type: boolean
+                  profile:
+                    type: object
+                    properties:
+                      always_active:
+                        type: boolean
+                      avatar_hash:
+                        type: string
+                      display_name:
+                        type: string
+                      display_name_normalized:
+                        type: string
+                      email:
+                        type: string
+                      fields:
+                        type: object
+                        properties:
+                          X00000000:
+                            type: object
+                          X00000001:
+                            type: object
+                      first_name:
+                        type: string
+                      huddle_state:
+                        type: string
+                      huddle_state_expiration_ts:
+                        type: integer
+                      image_1024:
+                        type: string
+                      image_192:
+                        type: string
+                      image_24:
+                        type: string
+                      image_32:
+                        type: string
+                      image_48:
+                        type: string
+                      image_512:
+                        type: string
+                      image_72:
+                        type: string
+                      image_original:
+                        type: string
+                      is_custom_image:
+                        type: boolean
+                      last_name:
+                        type: string
+                      phone:
+                        type: string
+                      pronouns:
+                        type: string
+                      real_name:
+                        type: string
+                      real_name_normalized:
+                        type: string
+                      skype:
+                        type: string
+                      start_date:
+                        type: string
+                      status_clear_on_focus_end:
+                        type: boolean
+                      status_emoji:
+                        type: string
+                      status_emoji_display_info:
+                        type: array
+                        items:
+                          type: object
+                      status_emoji_url:
+                        type: string
+                      status_expiration:
+                        type: integer
+                      status_text:
+                        type: string
+                      status_text_canonical:
+                        type: string
+                      title:
+                        type: string
+                  provided:
+                    type: string
+                  warning:
+                    type: string
 components:
   schemas:
+    Category:
+      type: object
+      properties:
+        emoji_names:
+          type: array
+          items: {}
+        name:
+          type: string
     Channel:
       type: object
       properties:
@@ -1101,6 +4162,409 @@ components:
         x_files:
           type: array
           items: {}
+    File:
+      type: object
+      properties:
+        access:
+          type: string
+        alt_txt:
+          type: string
+        app_id:
+          type: string
+        app_name:
+          type: string
+        bot_id:
+          type: string
+        can_toggle_canvas_lock:
+          type: boolean
+        canvas_printing_enabled:
+          type: boolean
+        canvas_template_mode:
+          type: string
+        cc:
+          type: array
+          items: {}
+        channel_actions_count:
+          type: integer
+        channel_actions_ts:
+          type: string
+        channels:
+          type: array
+          items: {}
+        comments_count:
+          type: integer
+        converted_pdf:
+          type: string
+        created:
+          type: integer
+        deanimate:
+          type: string
+        deanimate_gif:
+          type: string
+        display_as_bot:
+          type: boolean
+        dm_mpdm_users_with_file_access:
+          type: array
+          items: {}
+        duration_ms:
+          type: integer
+        edit_link:
+          type: string
+        edit_timestamp:
+          type: integer
+        editable:
+          type: boolean
+        editor:
+          type: string
+        editors:
+          type: array
+          items: {}
+        external_id:
+          type: string
+        external_type:
+          type: string
+        external_url:
+          type: string
+        favorites:
+          type: array
+          items: {}
+        file_access:
+          type: string
+        filetype:
+          type: string
+        from:
+          type: array
+          items: {}
+        groups:
+          type: array
+          items: {}
+        has_more:
+          type: boolean
+        has_more_shares:
+          type: boolean
+        has_rich_preview:
+          type: boolean
+        headers:
+          type: object
+        hls:
+          type: string
+        hls_embed:
+          type: string
+        id:
+          type: string
+        image_exif_rotation:
+          type: integer
+        ims:
+          type: array
+          items: {}
+        initial_comment:
+          type: object
+        is_channel_space:
+          type: boolean
+        is_external:
+          type: boolean
+        is_public:
+          type: boolean
+        is_restricted_sharing_enabled:
+          type: boolean
+        is_starred:
+          type: boolean
+        last_editor:
+          type: string
+        last_read:
+          type: integer
+        lines:
+          type: integer
+        lines_more:
+          type: integer
+        linked_channel_id:
+          type: string
+        list_csv_download_url:
+          type: string
+        list_limits:
+          type: object
+        list_metadata:
+          type: object
+        media_display_type:
+          type: string
+        media_progress:
+          type: object
+        mimetype:
+          type: string
+        mode:
+          type: string
+        mp4:
+          type: string
+        mp4_low:
+          type: string
+        name:
+          type: string
+        non_owner_editable:
+          type: boolean
+        num_stars:
+          type: integer
+        org_or_workspace_access:
+          type: string
+        original_attachment_count:
+          type: integer
+        original_h:
+          type: string
+        original_w:
+          type: string
+        permalink:
+          type: string
+        permalink_public:
+          type: string
+        pinned_to:
+          type: array
+          items: {}
+        pjpeg:
+          type: string
+        plain_text:
+          type: string
+        pretty_type:
+          type: string
+        preview:
+          type: string
+        preview_highlight:
+          type: string
+        preview_is_truncated:
+          type: boolean
+        preview_plain_text:
+          type: string
+        private_channels_with_file_access_count:
+          type: integer
+        private_file_with_access_count:
+          type: integer
+        public_url_shared:
+          type: boolean
+        quip_thread_id:
+          type: string
+        reactions:
+          type: array
+          items: {}
+        saved:
+          type: object
+        sent_to_self:
+          type: boolean
+        shares:
+          type: object
+        show_badge:
+          type: boolean
+        simplified_html:
+          type: string
+        size:
+          type: integer
+        source_team:
+          type: string
+        subject:
+          type: string
+        subtype:
+          type: string
+        team_pref_version_history_enabled:
+          type: boolean
+        teams_shared_with:
+          type: array
+          items: {}
+        template_conversion_ts:
+          type: integer
+        template_description:
+          type: string
+        template_icon:
+          type: string
+        template_name:
+          type: string
+        template_title:
+          type: string
+        thumb_1024:
+          type: string
+        thumb_1024_gif:
+          type: string
+        thumb_1024_h:
+          type: string
+        thumb_1024_w:
+          type: string
+        thumb_160:
+          type: string
+        thumb_160_gif:
+          type: string
+        thumb_160_h:
+          type: string
+        thumb_160_w:
+          type: string
+        thumb_360:
+          type: string
+        thumb_360_gif:
+          type: string
+        thumb_360_h:
+          type: string
+        thumb_360_w:
+          type: string
+        thumb_480:
+          type: string
+        thumb_480_gif:
+          type: string
+        thumb_480_h:
+          type: string
+        thumb_480_w:
+          type: string
+        thumb_64:
+          type: string
+        thumb_64_gif:
+          type: string
+        thumb_64_h:
+          type: string
+        thumb_64_w:
+          type: string
+        thumb_720:
+          type: string
+        thumb_720_gif:
+          type: string
+        thumb_720_h:
+          type: string
+        thumb_720_w:
+          type: string
+        thumb_80:
+          type: string
+        thumb_80_gif:
+          type: string
+        thumb_80_h:
+          type: string
+        thumb_80_w:
+          type: string
+        thumb_800:
+          type: string
+        thumb_800_gif:
+          type: string
+        thumb_800_h:
+          type: string
+        thumb_800_w:
+          type: string
+        thumb_960:
+          type: string
+        thumb_960_gif:
+          type: string
+        thumb_960_h:
+          type: string
+        thumb_960_w:
+          type: string
+        thumb_gif:
+          type: string
+        thumb_pdf:
+          type: string
+        thumb_pdf_h:
+          type: string
+        thumb_pdf_w:
+          type: string
+        thumb_tiny:
+          type: string
+        thumb_video:
+          type: string
+        thumb_video_h:
+          type: integer
+        thumb_video_w:
+          type: integer
+        timestamp:
+          type: integer
+        title:
+          type: string
+        title_blocks:
+          type: array
+          items: {}
+        to:
+          type: array
+          items: {}
+        transcription:
+          type: object
+        update_notification:
+          type: integer
+        updated:
+          type: integer
+        url_private:
+          type: string
+        url_private_download:
+          type: string
+        url_static_preview:
+          type: string
+        user:
+          type: string
+        user_team:
+          type: string
+        username:
+          type: string
+        vtt:
+          type: string
+    Item:
+      type: object
+      properties:
+        comment:
+          type: string
+        created:
+          type: integer
+        created_by:
+          type: string
+        file:
+          type: object
+        type:
+          type: string
+    Log:
+      type: object
+      properties:
+        app_id:
+          type: string
+        app_type:
+          type: string
+        change_type:
+          type: string
+        channel:
+          type: string
+        date:
+          type: string
+        reason:
+          type: string
+        resolution:
+          type: string
+        rss_feed:
+          type: boolean
+        rss_feed_change_type:
+          type: string
+        rss_feed_title:
+          type: string
+        rss_feed_url:
+          type: string
+        scope:
+          type: string
+        service_id:
+          type: integer
+        service_type:
+          type: string
+        user_id:
+          type: string
+        user_name:
+          type: string
+    Login:
+      type: object
+      properties:
+        count:
+          type: integer
+        country:
+          type: string
+        date_first:
+          type: integer
+        date_last:
+          type: integer
+        ip:
+          type: string
+        isp:
+          type: string
+        region:
+          type: string
+        user_agent:
+          type: string
+        user_id:
+          type: string
+        username:
+          type: string
     Member:
       type: object
       properties:
@@ -1233,6 +4697,139 @@ components:
         username:
           type: string
         x_files:
+          type: array
+          items: {}
+    Organization:
+      type: object
+      properties:
+        canvas:
+          type: object
+        connected_workspaces:
+          type: array
+          items: {}
+        connection_status:
+          type: string
+        im_channel_count:
+          type: integer
+        is_sponsored:
+          type: boolean
+        last_active_timestamp:
+          type: integer
+        lists:
+          type: object
+        mpim_channel_count:
+          type: integer
+        private_channel_count:
+          type: integer
+        public_channel_count:
+          type: integer
+        slack_connect_prefs:
+          type: object
+        team_domain:
+          type: string
+        team_id:
+          type: string
+        team_name:
+          type: string
+    ReactionsItem:
+      type: object
+      properties:
+        channel:
+          type: string
+        message:
+          type: object
+        type:
+          type: string
+    Reminder:
+      type: object
+      properties:
+        channel:
+          type: string
+        complete_ts:
+          type: integer
+        creator:
+          type: string
+        id:
+          type: string
+        recurrence:
+          type: object
+        recurring:
+          type: boolean
+        text:
+          type: string
+        time:
+          type: integer
+        user:
+          type: string
+    StarsItem:
+      type: object
+      properties:
+        channel:
+          type: string
+        comment:
+          type: object
+        date_create:
+          type: integer
+        file:
+          type: object
+        message:
+          type: object
+        type:
+          type: string
+    Usergroup:
+      type: object
+      properties:
+        auto_provision:
+          type: boolean
+        channel_count:
+          type: integer
+        created_by:
+          type: string
+        date_create:
+          type: integer
+        date_delete:
+          type: integer
+        date_update:
+          type: integer
+        deleted_by:
+          type: string
+        description:
+          type: string
+        enterprise_subteam_id:
+          type: string
+        handle:
+          type: string
+        id:
+          type: string
+        is_editing_restricted:
+          type: boolean
+        is_external:
+          type: boolean
+        is_idp_group:
+          type: boolean
+        is_membership_locked:
+          type: boolean
+        is_org_level:
+          type: boolean
+        is_section:
+          type: boolean
+        is_subteam:
+          type: boolean
+        is_usergroup:
+          type: boolean
+        is_visible:
+          type: boolean
+        name:
+          type: string
+        prefs:
+          type: object
+        team_id:
+          type: string
+        updated_by:
+          type: string
+        user_count:
+          type: integer
+        users:
           type: array
           items: {}
     UsersChannel:
