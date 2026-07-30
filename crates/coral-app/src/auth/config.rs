@@ -371,9 +371,11 @@ impl OidcProviderSettings {
         }
         // The origin alone does not make the URI reachable: the router serves
         // one callback path, so any other path is accepted here and then 404s
-        // once the provider redirects the browser to it. A query is rejected
-        // for the same reason — the provider appends its own `state`, and a
-        // configured one collides with it and fails the callback.
+        // once the provider redirects the browser to it. The served path is
+        // always exactly this constant — the issuer is validated `root_only`,
+        // so there is no issuer path prefix to join onto it. A query is
+        // rejected for the same reason — the provider appends its own `state`,
+        // and a configured one collides with it and fails the callback.
         if redirect_uri.as_url().path() != OIDC_CALLBACK_PATH {
             return Err(invalid_provider(format!(
                 "redirect_uri must use the path this server serves ({OIDC_CALLBACK_PATH})"

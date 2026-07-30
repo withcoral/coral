@@ -112,7 +112,10 @@ impl CoralAuthorizationServer {
     /// Starts the HTTP listener.
     ///
     /// The server is intended to run on loopback or behind a TLS-terminating
-    /// reverse proxy.
+    /// reverse proxy that forwards at the origin root. Every endpoint is served
+    /// and advertised relative to `auth.authorization_server.issuer`, which must
+    /// mount at the root, so a proxy that adds a path prefix strands discovery,
+    /// the authorize route, and the OIDC callback.
     /// # Errors
     /// Returns an error when the listener cannot start.
     pub async fn start(self) -> Result<RunningCoralAuthorizationServer, AuthServerError> {
