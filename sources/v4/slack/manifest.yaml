@@ -54,11 +54,6 @@ inputs:
       `groups:history`, `users:read`, `users:read.email`, `search:read`.
       See the
       [Slack app setup guide](https://docs.slack.dev/app-management/quickstart-app-settings).
-  SLACK_OAUTH_CLIENT_ID:
-    kind: variable
-    hint: |
-      Client ID from your Slack app's Basic Information page. Only needed
-      for the OAuth connection method.
 surface:
   type: openapi
   file: ./openapi.yaml
@@ -75,4 +70,4 @@ surface:
     retry_after_header: Retry-After
 
 test_queries:
-  - SELECT id, name FROM slack_v4.conversations_list(types => 'public_channel') LIMIT 5
+  - SELECT id, name FROM slack_v4.conversations_list WHERE types = 'public_channel' LIMIT 5
