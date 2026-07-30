@@ -1,5 +1,7 @@
 //! Client-side bootstrap for local Coral clients.
 
+use std::net::IpAddr;
+
 use coral_api::v1::Workspace;
 use coral_api::v1::catalog_service_client::CatalogServiceClient;
 use coral_api::v1::feedback_service_client::FeedbackServiceClient;
@@ -342,6 +344,15 @@ fn endpoint_allows_authorization(endpoint_uri: &str) -> bool {
     endpoint.scheme() == "https" && endpoint.host().is_some()
 }
 
+/// Whether a cleartext endpoint is loopback enough to carry a bearer token.
+///
+/// The host must be a canonical IP literal *as written*, because this check and
+/// the transport do not read the endpoint the same way. `Url::parse` applies
+/// WHATWG normalization, so both its `host()` and its `host_str()` report
+/// `http://2130706433` and `http://0x7f000001` as a loopback `127.0.0.1`, while
+/// the channel is built from the original authority — which a resolver is free to
+/// treat as a name and send off-host. So the authority is re-read from the raw
+/// input and must round-trip through `IpAddr` unchanged.
 fn endpoint_allows_loopback_authorization(endpoint_uri: &str) -> bool {
     let Ok(endpoint) = Url::parse(endpoint_uri) else {
         return false;
@@ -349,7 +360,39 @@ fn endpoint_allows_loopback_authorization(endpoint_uri: &str) -> bool {
     if endpoint_has_credentials(&endpoint) || endpoint.scheme() != "http" {
         return false;
     }
-    endpoint.host().as_ref().is_some_and(host_is_loopback)
+    if !endpoint.host().as_ref().is_some_and(host_is_loopback) {
+        return false;
+    }
+    raw_authority_host(endpoint_uri).is_some_and(is_canonical_loopback_literal)
+}
+
+/// Extracts the host from the endpoint as written, before URL normalization.
+///
+/// IPv6 hosts are returned without their brackets.
+fn raw_authority_host(endpoint_uri: &str) -> Option<&str> {
+    let rest = endpoint_uri.strip_prefix("http://")?;
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    let authority = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    if let Some(host) = authority.strip_prefix('[') {
+        return host.split_once(']').map(|(host, _)| host);
+    }
+    Some(
+        authority
+            .split_once(':')
+            .map_or(authority, |(host, _)| host),
+    )
+}
+
+/// Whether `host` is a loopback address written in its one canonical spelling.
+///
+/// The round-trip comparison is what rejects the alternate encodings a resolver
+/// might read differently: `0177.0.0.1`, `127.1`, and `2130706433` all either
+/// fail to parse or do not print back identically.
+fn is_canonical_loopback_literal(host: &str) -> bool {
+    host.parse::<IpAddr>()
+        .is_ok_and(|address| address.is_loopback() && address.to_string() == host)
 }
 
 fn endpoint_has_credentials(endpoint: &Url) -> bool {
@@ -532,6 +575,12 @@ mod tests {
             "http://localhost.example.com:50051",
             "http://localhost@api.example.com:50051",
             "http://user:password@localhost:50051",
+            // Non-canonical spellings `Url` normalizes to loopback but the
+            // transport may resolve as a name: the bearer must not ride these.
+            "http://2130706433:50051",
+            "http://0x7f000001:50051",
+            "http://0177.0.0.1:50051",
+            "http://127.1:50051",
         ] {
             assert!(
                 !endpoint_allows_loopback_authorization(endpoint),
