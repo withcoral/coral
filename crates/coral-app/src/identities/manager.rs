@@ -18,12 +18,11 @@ use super::model::{IdentityName, IdentityOwner, IdentitySpecReference};
 use crate::bootstrap::AppError;
 use crate::credentials::encryption::CredentialKeyProvider;
 use crate::encrypted_document::EncryptedEnvelopeDocument;
-use crate::identity::UserPrincipal;
+use crate::identity::Principal;
 use crate::identity_specs::identity_spec_fingerprint;
 use crate::identity_specs::manager::record_to_installed;
 use crate::state::db::{
-    CoralDb, DbRepos, IdentityRecord, IdentitySpecKey, IdentitySpecRecord,
-    now_unix_nanos_i64,
+    CoralDb, DbRepos, IdentityRecord, IdentitySpecKey, IdentitySpecRecord, now_unix_nanos_i64,
 };
 
 const FIXED_TOKEN_KEY: &str = "TOKEN";
@@ -49,7 +48,7 @@ impl IdentityManager {
     /// Create or replace one user-owned fixed-token identity from an exact global spec.
     pub(crate) async fn create_or_replace_user_fixed_token(
         &self,
-        principal: &UserPrincipal,
+        principal: &Principal,
         identity_name: &str,
         identity_spec_name: &str,
         token: String,
