@@ -11,7 +11,7 @@ use crate::v4::ir::{
 };
 use crate::v4::lookup_keys::infer_rest_lookup_keys;
 use crate::v4::naming::normalize_identifier;
-use crate::v4::response_cursors::find_response_cursor_path;
+use crate::v4::response_cursors::{StringTypeRequirement, find_response_cursor_path};
 use crate::v4::surfaces::json_schema::{
     json_schema_default_to_string, json_schema_scalar_type_or_string, json_schema_type_contains,
     json_schema_type_display,
@@ -428,8 +428,19 @@ fn detect_link_header_pagination(
 ///
 /// Ranked above cursor-query and offset detection because a whole URL is
 /// unambiguous: there is no guessing which request parameter a token belongs
-/// in, and no risk of driving the endpoint with a parameter it rejects. It
-/// stays below `Link` header detection, which is a declared, cheaper signal.
+/// in, and no risk of driving the endpoint with a parameter it rejects. Graph
+/// declares `$skip` on collections that reject it at runtime, so that ordering
+/// is load-bearing, not a preference. It stays below `Link` header detection,
+/// which is a declared, cheaper signal.
+///
+/// Outranking the input-corroborated modes is what makes
+/// [`StringTypeRequirement::Declared`] necessary. Every other detector has a
+/// second signal — a matching cursor, offset or page parameter — so a name-only
+/// false positive costs them nothing. This one commits on the name alone, and
+/// if the property does not hold a string `Value::as_str` reads `None` at
+/// runtime, pagination stops, and the query returns page one with no error and
+/// no diagnostic, where offset pagination would have fetched everything.
+/// Requiring the descriptor to declare `string` is the second signal.
 fn detect_next_url_body_pagination(
     document: &Value,
     inputs: &[IrOperationInput],
@@ -455,8 +466,12 @@ fn detect_next_url_body_pagination(
         "nexthref",
     ];
 
-    let next_url_path =
-        find_response_cursor_path(document, &context.schema, RESPONSE_NEXT_URL_BODY_TOKENS)?;
+    let next_url_path = find_response_cursor_path(
+        document,
+        &context.schema,
+        RESPONSE_NEXT_URL_BODY_TOKENS,
+        StringTypeRequirement::Declared,
+    )?;
     Some(PaginationSpec {
         mode: PaginationMode::NextUrlBody,
         page_size: detect_page_size(inputs),
@@ -513,9 +528,16 @@ fn detect_cursor_query_pagination(
     // The pagination context holds the response schema with only its own `$ref`
     // resolved, so the document is still needed to see inside a referenced
     // metadata sibling.
-    let response_cursor_path =
-        find_response_cursor_path(document, &context.schema, RESPONSE_CURSOR_TOKENS)
-            .unwrap_or_default();
+    // Permissive about the declared type, unlike body next-URL detection: this
+    // detector has already found a cursor query parameter to corroborate the
+    // name, and descriptors routinely leave envelope metadata untyped.
+    let response_cursor_path = find_response_cursor_path(
+        document,
+        &context.schema,
+        RESPONSE_CURSOR_TOKENS,
+        StringTypeRequirement::Untyped,
+    )
+    .unwrap_or_default();
     let response_cursor_header = response_cursor_header(context);
     if response_cursor_path.is_empty() && response_cursor_header.is_none() {
         return None;

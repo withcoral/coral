@@ -2,7 +2,7 @@ use serde_json::Value;
 
 use crate::backends::mcp::{McpOffsetPaginationSpec, McpPaginationSpec};
 use crate::v4::ir::{IrOperationInput, IrOperationOutput, IrScalarType, OutputCardinality};
-use crate::v4::response_cursors::find_response_cursor_path;
+use crate::v4::response_cursors::{StringTypeRequirement, find_response_cursor_path};
 
 /// Pagination contracts a tool's arguments and output schema describe, before
 /// any decision about whether its result is read as a list.
@@ -46,8 +46,12 @@ fn infer_mcp_pagination(
     // A tool's output schema is its own reference root, so `$defs` entries
     // resolve against the schema itself.
     let output_schema = output_schema?;
-    let response_cursor_path =
-        find_response_cursor_path(output_schema, output_schema, RESPONSE_CURSOR_TOKENS)?;
+    let response_cursor_path = find_response_cursor_path(
+        output_schema,
+        output_schema,
+        RESPONSE_CURSOR_TOKENS,
+        StringTypeRequirement::Untyped,
+    )?;
     Some(McpPaginationSpec {
         cursor_arg: cursor_arg.to_string(),
         response_cursor_path,

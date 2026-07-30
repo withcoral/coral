@@ -2502,6 +2502,66 @@ paths:
     );
 }
 
+/// A body next-URL outranks the input-corroborated modes, so it has to be more
+/// than a name match: the schema must declare the property a string.
+///
+/// Without that, an operation like this one got `mode: next_url_body` on the
+/// strength of the name `nextLink`. At runtime `Value::as_str` on a non-string
+/// reads `None`, `advance_pagination_state` stops, and the query returns page
+/// one — no error, no diagnostic — where the `skip`/`limit` contract the server
+/// actually declared would have fetched everything.
+#[test]
+fn importer_ignores_a_body_next_url_the_schema_does_not_declare_a_string() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: things
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.0.3
+paths:
+  /things:
+    get:
+      operationId: listThings
+      parameters:
+        - {name: skip, in: query, schema: {type: integer, default: 0}}
+        - {name: limit, in: query, schema: {type: integer, default: 25}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  nextLink: {}
+                  data:
+                    type: array
+                    items: {type: object, properties: {id: {type: string}}}
+"
+        .as_bytes(),
+    )
+    .expect("import");
+
+    let pagination = imported_rest_pagination(&ir, "listthings");
+    assert_eq!(
+        pagination.mode,
+        PaginationMode::Offset,
+        "an undeclared type is not enough to displace the contract the server declared"
+    );
+    assert_eq!(pagination.offset_param.as_deref(), Some("skip"));
+    assert!(pagination.next_url_path.is_empty());
+}
+
 /// ...but only at the response root, which is where what it unlocks applies.
 ///
 /// `find_response_cursor_path` descends into nested objects up to depth 8. A
