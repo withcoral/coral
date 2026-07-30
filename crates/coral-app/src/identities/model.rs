@@ -486,7 +486,7 @@ mod tests {
             IdentityAudience::new(host, port).expect_err("invalid audience");
         }
 
-        let owner = IdentityOwner::for_user(UserPrincipal::local());
+        let owner = IdentityOwner::for_user(Principal::local());
         let stored = |host: Option<&str>, port| {
             IdentitySpecReference::from_storage_parts(
                 &owner,
