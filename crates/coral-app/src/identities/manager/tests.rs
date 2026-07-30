@@ -485,7 +485,8 @@ pub(crate) async fn assert_identity_use_contract(db: &Arc<CoralDb>) {
     let spec = format!("use_spec_{suffix}");
     let yaml = fixed_manifest_with_port(&spec, "stable", 8443);
     put_global_spec(db, &spec, &yaml).await;
-    let principal = UserPrincipal::for_user(&format!("use-{suffix}")).expect("principal");
+    let principal =
+        Principal::parse(&format!("use-{suffix}"), PrincipalKind::User).expect("principal");
     let owner = IdentityOwner::for_user(principal.clone());
     let identity = format!("primary_{suffix}");
     let token = format!("primary-token-{suffix}");
@@ -711,7 +712,8 @@ pub(crate) async fn assert_identity_use_snapshot_race_contract(db: &Arc<CoralDb>
         CredentialEncryptionKey::from_static_bytes_for_test([80; 32]),
     ]));
     let manager = IdentityManager::new(db.clone(), provider.clone());
-    let principal = UserPrincipal::for_user(&format!("race-use-{suffix}")).expect("principal");
+    let principal =
+        Principal::parse(&format!("race-use-{suffix}"), PrincipalKind::User).expect("principal");
     let owner = IdentityOwner::for_user(principal.clone());
 
     let old_spec = format!("race_old_{suffix}");
