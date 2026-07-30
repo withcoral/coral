@@ -86,46 +86,11 @@ message TableSummary {
   string catalog_name = 7;
 }
 
-// An exact JSON value carried through protobuf without text encoding.
-message JsonValue {
-  // Exactly one JSON kind.
-  oneof kind {
-    // Explicit JSON null.
-    JsonNull null_value = 1;
-    // JSON boolean.
-    bool bool_value = 2;
-    // JSON integer represented as a signed 64-bit value.
-    int64 int64_value = 3 [jstype = JS_STRING];
-    // JSON integer represented as an unsigned 64-bit value.
-    uint64 uint64_value = 4 [jstype = JS_STRING];
-    // JSON non-integer number.
-    double double_value = 5;
-    // JSON string.
-    string string_value = 6;
-    // JSON array.
-    JsonArray array_value = 7;
-    // JSON object.
-    JsonObject object_value = 8;
-  }
-}
-
-// Explicit JSON null.
-message JsonNull {}
-
-// JSON array.
-message JsonArray {
-  // Values in array order.
-  repeated JsonValue values = 1;
-}
-
-// JSON object.
-message JsonObject {
-  // Object fields keyed by property name.
-  map<string, JsonValue> fields = 1;
-}
-
 // An argument accepted by a query-visible table function.
 message TableFunctionArgument {
+  reserved 5;
+  reserved "default_value", "default_json";
+
   // Argument name as used in a named SQL function call.
   string name = 1;
   // Whether callers must provide this argument.
@@ -134,9 +99,6 @@ message TableFunctionArgument {
   repeated string values = 3;
   // Argument type in source-manifest spelling.
   string data_type = 4;
-  // Authored typed default. Absence means no default; a present `null_value`
-  // means the source explicitly authored JSON null.
-  JsonValue default_value = 5;
 }
 
 // A result column returned by a query-visible table function.
