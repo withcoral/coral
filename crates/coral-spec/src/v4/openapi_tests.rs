@@ -2904,6 +2904,90 @@ components:
     );
 }
 
+/// The fixture above declares only `$top` and `$skip`, which is not what a real
+/// Graph collection looks like: they also declare a boolean `$count`.
+///
+/// `find_numeric_query_input` picks the first candidate-named input and only
+/// then filters by type, so `$count` is chosen and rejected and `$top` is never
+/// reached — page-size detection finds nothing. Pinning it here so the
+/// follow-up that fixes the ordering has an assertion to flip; pagination
+/// itself is unaffected, since the next link carries the paging state and Coral
+/// just accepts Graph's server-side default page size.
+#[test]
+fn importer_misses_the_page_size_a_boolean_count_parameter_masks() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: graph
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://graph.microsoft.com/v1.0
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.0.3
+paths:
+  /me/chats:
+    get:
+      operationId: me.listChats
+      parameters:
+        - {name: $top, in: query, schema: {type: integer}}
+        - {name: $skip, in: query, schema: {type: integer}}
+        - {name: $count, in: query, schema: {type: boolean}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/microsoft.graph.chatCollectionResponse'
+components:
+  schemas:
+    BaseCollectionPaginationCountResponse:
+      title: Base collection pagination and count responses
+      type: object
+      properties:
+        '@odata.count': {type: integer, format: int64, nullable: true}
+        '@odata.nextLink': {type: string, nullable: true}
+    microsoft.graph.chat:
+      type: object
+      properties:
+        id: {type: string}
+        topic: {type: string}
+    microsoft.graph.chatCollectionResponse:
+      title: Collection of chat
+      type: object
+      allOf:
+        - $ref: '#/components/schemas/BaseCollectionPaginationCountResponse'
+        - type: object
+          properties:
+            value:
+              type: array
+              items:
+                $ref: '#/components/schemas/microsoft.graph.chat'
+"
+        .as_bytes(),
+    )
+    .expect("import");
+
+    // The collection still reads as a paginated row table — only the page size
+    // is lost.
+    assert_eq!(imported_row_path(&ir, "me_listchats"), ["value"]);
+    let pagination = imported_rest_pagination(&ir, "me_listchats");
+    assert_eq!(pagination.mode, PaginationMode::NextUrlBody);
+    assert_eq!(pagination.next_url_path, ["@odata.nextLink"]);
+    assert!(
+        pagination.page_size.is_none(),
+        "boolean $count sorts ahead of $top and masks it; flip this when \
+         find_numeric_query_input filters by type before choosing"
+    );
+}
+
 /// Graph nests its envelope bases: a delta collection response composes
 /// `BaseDeltaFunctionResponse`, which is itself an `allOf` over
 /// `BaseCollectionPaginationCountResponse`. Row-path inference folds that whole

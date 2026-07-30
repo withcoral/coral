@@ -335,7 +335,9 @@ impl MergedObjectView {
 /// On duplicate property names the first branch wins, and no conflict is
 /// reported. This answers a heuristic question, so an annotation-only
 /// disagreement between branches must not discard the whole envelope. Type
-/// import has the opposite need and keeps its own exact merge.
+/// import has the opposite need and folds through
+/// [`merge_json_object_shape_annotation_insensitive`], which reports a genuine
+/// disagreement rather than resolving it by branch order.
 pub(crate) fn merged_all_of_object_view<'a>(
     root: &'a Value,
     schema: &'a Value,

@@ -229,9 +229,20 @@ fn property_is_object(
         depth,
         MAX_DEPTH,
         |resolved, resolving_refs, next_depth| {
-            Ok(json_schema_type_contains(resolved, "object")
-                || merged_all_of_object_view(root, resolved, resolving_refs, next_depth, MAX_DEPTH)
-                    .is_some_and(|view| view.declares_type("object")))
+            if json_schema_type_contains(resolved, "object") {
+                return Ok(true);
+            }
+            // Without `allOf` the merge has only this schema to collect, so it
+            // could only re-derive the answer above. Skipping it matters here
+            // because this runs for every property on every walked level, and
+            // building the view clones the properties of each one.
+            if resolved.get("allOf").is_none() {
+                return Ok(false);
+            }
+            Ok(
+                merged_all_of_object_view(root, resolved, resolving_refs, next_depth, MAX_DEPTH)
+                    .is_some_and(|view| view.declares_type("object")),
+            )
         },
     )
     .unwrap_or(false)

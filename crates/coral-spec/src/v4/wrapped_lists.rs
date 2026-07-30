@@ -268,9 +268,11 @@ fn is_metadata_name(name: &str) -> bool {
 /// An unresolvable or cyclic property simply does not declare the type asked
 /// about; it must not abandon inference for its siblings.
 ///
-/// `allOf` branches count, so a property assembled from a base and an extension
-/// still declares its type. An alternation does not: a property that is one of
-/// several shapes has no single type to check against.
+/// `allOf` branches count for `object`, so a property assembled from a base and
+/// an extension still reads as one. Other types do not: the merged view is
+/// object-only, so a composed `array` or `string` still has to declare its type
+/// outright. An alternation never counts — a property that is one of several
+/// shapes has no single type to check against.
 fn schema_has_type(
     root: &Value,
     schema: &Value,
