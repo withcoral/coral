@@ -138,6 +138,8 @@ async fn function_sources_are_returned_when_added_and_listed() {
         .add_function(Request::new(AddFunctionRequest {
             workspace: Some(default_workspace()),
             sql: function_sql(r#"select "sessionId" as session_id from local_messages.messages"#),
+            fail_if_exists: false,
+            write_surface: 0,
         }))
         .await
         .expect("add function")
