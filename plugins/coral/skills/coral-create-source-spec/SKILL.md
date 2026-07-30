@@ -71,7 +71,7 @@ Only switch to Coral repo layout when the user is explicitly editing the Coral r
    - repo sources or already-named sources: `coral source test <name>`
 6. Inspect the exposed shape:
    - inspect `coral.tables` for visible tables, descriptions, guides, and required filters; keep metadata queries bounded with `LIMIT`/`OFFSET`
-   - inspect `coral.table_functions` for source-scoped functions, arguments, result columns, kind, and search limits
+   - inspect `coral.table_functions` for source-scoped functions, descriptions, guides, arguments, result columns, kind, and search limits
    - inspect `coral.columns` for canonical column metadata, including `is_virtual` and `is_required_filter`; filter by one table or page large column sets
    - inspect `coral.filters` for normalized table filter names, types, modes, required flags, and descriptions
    - inspect `coral.inputs` to verify variables, secrets, defaults, hints, and required flags

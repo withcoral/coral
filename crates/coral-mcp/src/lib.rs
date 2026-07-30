@@ -1,23 +1,24 @@
-//! `MCP` stdio server for Coral.
+//! `MCP` server adapters for Coral.
 //!
 //! This crate adapts the local Coral client from `coral-client` to the
-//! official Rust `MCP` SDK on stdio.
+//! official Rust `MCP` SDK over stdio and Streamable HTTP.
 //!
 //! # Primary Entry Points
 //!
 //! - [`run_stdio_with_client`] serves `MCP` messages on stdio using an
 //!   existing [`coral_client::AppClient`], typically bootstrapped by
 //!   `coral-cli`.
-//! - [`CoralMcpServerFactory`] constructs an independent protocol handler for
-//!   each session owned by an alternate transport.
+//! - [`http::start_auth_disabled`] serves the same MCP surface over
+//!   loopback-only Streamable HTTP.
 //!
 //! The exposed MCP surface is intentionally small:
 //!
-//! - tools: `sql`, `search`, paginated `list_catalog`, `describe_table`, `list_columns`, and optionally `feedback`, `start_task`, and `end_task`
+//! - tools: `start_task`, `sql`, `search`, paginated `list_catalog`,
+//!   `describe_table`, `list_columns`, `end_task`, and optionally `feedback`
 //! - resources: `coral://guide`, `coral://tables`
 //!
-//! Protocol lifecycle, initialization, and stdio transport behavior should stay
-//! inside the SDK integration rather than being reimplemented locally.
+//! Protocol lifecycle and initialization should stay inside the SDK integration
+//! rather than being reimplemented locally.
 
 #![allow(
     unused_crate_dependencies,
@@ -25,6 +26,8 @@
 )]
 
 mod error;
+mod guide_block;
+pub mod http;
 mod server;
 mod surface;
 mod telemetry;
@@ -36,7 +39,7 @@ use coral_client::AppClient;
 use rmcp::ServiceExt;
 
 pub use error::McpError;
-pub use server::CoralMcpServerFactory;
+pub(crate) use server::CoralMcpServerFactory;
 
 /// A successful SQL query example for MCP initialize instructions.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,15 +99,13 @@ impl McpQueryExample {
     }
 }
 
-/// Optional MCP surface features.
+/// MCP runtime options.
 #[derive(Debug, Clone, Default)]
 pub struct McpOptions {
     /// Expose the feedback submission tool.
     pub feedback_enabled: bool,
     /// Advertise observed-value search behavior across MCP discovery surfaces.
     pub observed_values_search_enabled: bool,
-    /// Expose the task lifecycle and attribution surface.
-    pub tasks_enabled: bool,
     /// Optional W3C traceparent used to parent each MCP request span.
     pub trace_parent: Option<String>,
     /// Installed source names to include in MCP initialize instructions.

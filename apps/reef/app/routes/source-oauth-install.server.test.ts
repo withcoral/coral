@@ -24,8 +24,9 @@ import {
   type CreateBundledSourceWithOAuthResponse,
 } from '@/generated/coral/v1/sources_pb'
 import type { OAuthInstallStreamEvent } from '@/lib/source-oauth-install-stream'
+import { relayOAuthSourceStreamEvents } from '@/lib/source-oauth-response.server'
 
-import { action, relayOAuthInstallStreamEvents } from './source-oauth-install'
+import { action } from './source-oauth-install'
 
 async function* responses(
   events: CreateBundledSourceWithOAuthResponse[],
@@ -105,11 +106,11 @@ describe('action', () => {
   })
 })
 
-describe('relayOAuthInstallStreamEvents', () => {
+describe('relayOAuthSourceStreamEvents', () => {
   it('relays callback receipt before the terminal source event', async () => {
     const send = vi.fn<(event: OAuthInstallStreamEvent) => void>()
 
-    await relayOAuthInstallStreamEvents(
+    await relayOAuthSourceStreamEvents(
       responses([
         create(CreateBundledSourceWithOAuthResponseSchema, {
           event: {

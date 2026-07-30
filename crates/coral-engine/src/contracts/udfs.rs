@@ -9,6 +9,8 @@ pub struct UdfRuntimeSignature {
     pub arguments: Vec<UdfRuntimeArgument>,
     /// Columns returned by the UDF SQL body.
     pub result_columns: Vec<UdfRuntimeResultColumn>,
+    /// Canonical installed source names referenced by the UDF SQL body.
+    pub source_names: Vec<String>,
 }
 
 /// One SQL UDF body to validate before runtime registration.
@@ -44,6 +46,8 @@ pub struct UdfRuntimeDefinition {
     pub publish: UdfRuntimePublish,
     /// Columns inferred by planning the UDF SQL body.
     pub result_columns: Vec<UdfRuntimeResultColumn>,
+    /// Canonical installed source names referenced by the UDF SQL body.
+    pub source_names: Vec<String>,
 }
 
 /// One typed UDF argument.
@@ -93,4 +97,6 @@ pub struct UdfRuntimeTableFunctionPublish {
     pub name: String,
     /// Optional publish-target-specific description.
     pub description: String,
+    /// Query guidance for the published table function.
+    pub guide: String,
 }

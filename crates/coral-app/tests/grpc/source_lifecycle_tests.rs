@@ -205,6 +205,7 @@ async fn delete_source_removes_from_list_and_disk() {
         .execute_sql(Request::new(ExecuteSqlRequest {
             workspace: Some(default_workspace()),
             sql: "SELECT * FROM local_messages.messages".to_string(),
+            guide_read_context: None,
         }))
         .await
         .expect_err("query should fail after delete");
@@ -421,6 +422,7 @@ async fn query_execution_rejects_non_read_only_sql() {
                 "COPY local_messages.messages TO '{}' STORED AS ARROW",
                 copy_target.display()
             ),
+            guide_read_context: None,
         }))
         .await
         .expect_err("COPY TO should be rejected");
@@ -432,6 +434,7 @@ async fn query_execution_rejects_non_read_only_sql() {
         .execute_sql(Request::new(ExecuteSqlRequest {
             workspace: Some(default_workspace()),
             sql: "CREATE TABLE copied AS SELECT * FROM local_messages.messages".to_string(),
+            guide_read_context: None,
         }))
         .await
         .expect_err("CREATE TABLE should be rejected");
@@ -443,6 +446,7 @@ async fn query_execution_rejects_non_read_only_sql() {
         .execute_sql(Request::new(ExecuteSqlRequest {
             workspace: Some(default_workspace()),
             sql: "SET datafusion.execution.batch_size = 1".to_string(),
+            guide_read_context: None,
         }))
         .await
         .expect_err("SET should be rejected");
@@ -568,6 +572,7 @@ async fn execute_sql_with_unreachable_api_returns_unavailable_error() {
         .execute_sql(Request::new(ExecuteSqlRequest {
             workspace: Some(default_workspace()),
             sql: "SELECT * FROM unreachable_messages.messages".to_string(),
+            guide_read_context: None,
         }))
         .await
         .expect_err("unreachable source query should fail");

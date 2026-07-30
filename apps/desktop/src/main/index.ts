@@ -1,8 +1,12 @@
-import { app, BrowserWindow, Menu, dialog, ipcMain, nativeTheme, shell } from 'electron'
+import { app, BrowserWindow, Menu, ipcMain, nativeTheme, shell } from 'electron'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import type { McpClientId } from '../shared/types'
-import { configureMcpClient, getMcpLaunchConfig, mcpClients } from './mcp-config'
+import {
+  configureMcpClient,
+  getMcpLaunchConfig,
+  mcpClients,
+  removeMcpClient,
+} from './mcp-config'
 import {
   APP_ENTRY_URL,
   APP_ORIGIN,
@@ -10,15 +14,21 @@ import {
   registerAppSchemePrivileges,
 } from './app-renderer'
 import { killAllTrackedChildren, startCoralSidecar, type CoralSidecar } from './sidecar'
-import { checkForDesktopUpdates, desktopUpdatesSupported, installAutoUpdater } from './auto-update'
+import {
+  checkForDesktopUpdates,
+  clearPendingDesktopUpdateIntent,
+  desktopUpdatesSupported,
+  installAutoUpdater,
+  quitAndInstallDesktopUpdate,
+  shouldExitForPendingDesktopUpdate,
+} from './auto-update'
+import { createShutdownCoordinator } from './shutdown'
 
 const SHUTDOWN_TIMEOUT_MS = 6000
 
 let mainWindow: BrowserWindow | null = null
 let sidecar: CoralSidecar | null = null
 let sidecarPromise: Promise<CoralSidecar> | null = null
-let quitting = false
-let stopping = false
 
 function currentDir(): string {
   return dirname(fileURLToPath(import.meta.url))
@@ -185,7 +195,7 @@ function isTrustedNavigation(
 
 function ensureSidecar(): Promise<CoralSidecar> {
   // Don't spawn a fresh child once teardown has begun — it would outlive quit.
-  if (stopping || quitting) {
+  if (shutdownCoordinator.isShuttingDown()) {
     return Promise.reject(new Error('Coral is shutting down.'))
   }
   if (sidecarPromise) return sidecarPromise
@@ -196,7 +206,7 @@ function ensureSidecar(): Promise<CoralSidecar> {
     started.child.once('exit', (code, signal) => {
       if (sidecar === started) sidecar = null
       if (sidecarPromise === promise) sidecarPromise = null
-      if (!stopping && !quitting) {
+      if (!shutdownCoordinator.isShuttingDown()) {
         console.error(`[coral-sidecar] exited unexpectedly (code=${code}, signal=${signal})`)
       }
     })
@@ -236,43 +246,26 @@ async function stopServices(): Promise<void> {
   killAllTrackedChildren()
 }
 
+const shutdownCoordinator = createShutdownCoordinator({
+  stopServices,
+  installReadyUpdate: quitAndInstallDesktopUpdate,
+  quit: () => app.quit(),
+})
+
 function registerIpcHandlers() {
   ipcMain.handle('coral:list-mcp-clients', () => mcpClients())
-  ipcMain.handle('coral:configure-mcp', (_event, clientId: McpClientId) =>
-    configureMcpClient(clientId),
+  ipcMain.handle('coral:configure-mcp', (_event, clientId: unknown, workspaceName: unknown) =>
+    configureMcpClient(clientId, workspaceName),
   )
+  ipcMain.handle('coral:remove-mcp', (_event, clientId: unknown) => removeMcpClient(clientId))
   ipcMain.handle('coral:get-mcp-launch-config', () => getMcpLaunchConfig())
 }
 
 function installMenu() {
-  const mcpSubmenu: Electron.MenuItemConstructorOptions[] = mcpClients().map((client) => ({
-    label: client.name,
-    click: async () => {
-      try {
-        const result = await configureMcpClient(client.id)
-        await dialog.showMessageBox({
-          type: 'info',
-          message: `${result.client.name} MCP configured`,
-          detail: result.configPath,
-        })
-      } catch (error) {
-        await dialog.showMessageBox({
-          type: 'error',
-          message: 'MCP configuration failed',
-          detail: error instanceof Error ? error.message : String(error),
-        })
-      }
-    },
-  }))
-
   const template: Electron.MenuItemConstructorOptions[] = [
     {
       label: 'Coral',
       submenu: [
-        {
-          label: 'Configure MCP',
-          submenu: mcpSubmenu,
-        },
         ...(desktopUpdatesSupported()
           ? ([
               {
@@ -320,52 +313,68 @@ function installMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }
 
-// Must run before the app `ready` event.
-registerAppSchemePrivileges()
+function startApplication(): void {
+  const gotLock = app.requestSingleInstanceLock()
+  if (!gotLock) {
+    app.quit()
+    return
+  }
 
-const gotLock = app.requestSingleInstanceLock()
-if (!gotLock) {
-  app.quit()
-} else {
+  // The marker may have appeared while this process waited for the lock. An
+  // old binary that won the race must release it without clearing the marker.
+  if (shouldExitForPendingDesktopUpdate()) {
+    console.info('[coral-updater] update installation is still in progress; exiting')
+    app.releaseSingleInstanceLock()
+    app.exit(0)
+    return
+  }
+
+  // Keep the hand-off marker visible until the updated binary owns the lock.
+  clearPendingDesktopUpdateIntent()
+
+  // Must run before the app `ready` event.
+  registerAppSchemePrivileges()
+
   app.on('second-instance', () => {
+    if (shutdownCoordinator.isShuttingDown()) return
     if (!mainWindow) return
     if (mainWindow.isMinimized()) mainWindow.restore()
     mainWindow.focus()
   })
+
+  app.on('before-quit', shutdownCoordinator.beforeQuit)
+
+  app.whenReady().then(() => {
+    if (shutdownCoordinator.isShuttingDown()) return
+
+    updatePlatformIcon()
+    nativeTheme.on('updated', updatePlatformIcon)
+    registerIpcHandlers()
+    installMenu()
+    installAutoUpdater({
+      allowUpdateQuit: shutdownCoordinator.allowQuit,
+      onInstallFailure: shutdownCoordinator.quitAfterUpdateFailure,
+    })
+    registerAppProtocol(() => ensureSidecar().then((started) => started.url))
+    void ensureSidecar().catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error)
+      console.error(`[coral-sidecar] failed to start during boot: ${message}`)
+    })
+    mainWindow = createMainWindow()
+  })
+
+  app.on('activate', () => {
+    if (shutdownCoordinator.isShuttingDown()) return
+    if (BrowserWindow.getAllWindows().length === 0) mainWindow = createMainWindow()
+  })
 }
 
-app.whenReady().then(() => {
-  updatePlatformIcon()
-  nativeTheme.on('updated', updatePlatformIcon)
-  registerIpcHandlers()
-  installMenu()
-  installAutoUpdater()
-  registerAppProtocol(() => ensureSidecar().then((started) => started.url))
-  void ensureSidecar().catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error)
-    console.error(`[coral-sidecar] failed to start during boot: ${message}`)
-  })
-  mainWindow = createMainWindow()
-})
-
-app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) mainWindow = createMainWindow()
-})
-
-app.on('before-quit', (event) => {
-  if (quitting) return
-  // Teardown already in flight (e.g. a second Cmd-Q): block the quit until it
-  // finishes so the spawned sidecar child is never orphaned.
-  if (stopping) {
-    event.preventDefault()
-    return
-  }
-  if (!sidecar && !sidecarPromise) return
-
-  stopping = true
-  event.preventDefault()
-  void stopServices().finally(() => {
-    quitting = true
-    app.quit()
-  })
-})
+// Evaluate the hand-off marker before taking the single-instance lock. A
+// rapidly reopened old binary exits independently instead of waking the
+// instance that is still handing its update to ShipIt.
+if (shouldExitForPendingDesktopUpdate()) {
+  console.info('[coral-updater] update installation is still in progress; exiting')
+  app.exit(0)
+} else {
+  startApplication()
+}

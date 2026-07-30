@@ -51,19 +51,23 @@ use crate::search::result::{
     TableColumnPreview as DomainTableColumnPreview,
 };
 use crate::sources::SourceName;
+use crate::task::manager::TaskManager;
+use crate::task::service::task_manager_status;
 use crate::transport::{
-    catalog_item_to_proto, grpc_span, instrument_grpc, workspace_name_from_proto,
+    catalog_item_to_proto, grpc_span, instrument_grpc, request_context, workspace_name_from_proto,
 };
 
 #[derive(Clone)]
 pub(crate) struct SearchService {
     search: SearchManager,
+    tasks: TaskManager,
 }
 
 impl SearchService {
-    pub(crate) fn new(search_manager: SearchManager) -> Self {
+    pub(crate) fn new(search_manager: SearchManager, task_manager: TaskManager) -> Self {
         Self {
             search: search_manager,
+            tasks: task_manager,
         }
     }
 }
@@ -76,10 +80,17 @@ impl SearchServiceApi for SearchService {
     ) -> Result<Response<ProtoSearchResponse>, Status> {
         let span = grpc_span(&request);
         let search = self.search.clone();
+        let tasks = self.tasks.clone();
+        let request_context = request_context(&request)?.clone();
         Box::pin(instrument_grpc(span, async move {
-            let attribution = QueryAttribution::from_extensions(request.extensions());
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            let attribution = QueryAttribution::new(
+                tasks
+                    .validate_attribution(&workspace_name, request_context.task_id())
+                    .await
+                    .map_err(task_manager_status)?,
+            );
             let request = SearchRequest::new(workspace_name, &request.query, request.limit)
                 .map_err(search_status)?;
             let response = search

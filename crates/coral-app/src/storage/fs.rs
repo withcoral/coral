@@ -88,6 +88,14 @@ pub(crate) fn append_file_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
+pub(crate) fn remove_file_if_exists(path: &Path) -> io::Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
 pub(crate) fn replace_atomic(from: &Path, to: &Path) -> io::Result<()> {
     rename_with_fallback(from, to)?;
 
@@ -288,7 +296,7 @@ fn set_file_permissions_private(_path: &Path) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{DirectoryBackup, ensure_file_private};
+    use super::{DirectoryBackup, ensure_file_private, remove_file_if_exists};
 
     #[test]
     fn ensure_file_private_rejects_existing_directory() {
@@ -385,5 +393,17 @@ mod tests {
 
         assert!(!missing_dir.exists());
         assert!(!backup.backup_path().exists());
+    }
+
+    #[test]
+    fn remove_file_if_exists_is_idempotent() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("legacy.jsonl");
+        std::fs::write(&path, "legacy").expect("write legacy file");
+
+        remove_file_if_exists(&path).expect("remove existing file");
+        remove_file_if_exists(&path).expect("ignore missing file");
+
+        assert!(!path.exists());
     }
 }

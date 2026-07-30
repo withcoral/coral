@@ -47,7 +47,7 @@ pub(crate) struct FunctionListing {
 }
 
 pub(crate) enum FunctionRuntimeStatus {
-    Ready(UdfRuntimeDefinition),
+    Ready(Box<UdfRuntimeDefinition>),
     Invalid(String),
 }
 
@@ -60,7 +60,7 @@ enum FunctionCandidate {
     Listing(FunctionListing),
     Pending {
         name: FunctionName,
-        definition: UdfRuntimeDefinition,
+        definition: Box<UdfRuntimeDefinition>,
     },
 }
 
@@ -93,7 +93,7 @@ impl FunctionManager {
         self.install_user_function_artifact(workspace_name, &function_name, raw_sql)
     }
 
-    pub(crate) fn install_validated_user_function_if_unchanged(
+    pub(crate) async fn install_validated_user_function_if_unchanged(
         &self,
         workspace_name: &WorkspaceName,
         raw_sql: &str,
@@ -101,14 +101,22 @@ impl FunctionManager {
         revision: WorkspaceLifecycleRevision,
     ) -> Result<ValidatedFunctionInstall, AppError> {
         let function_name = validated_function_name(raw_sql, runtime_function)?;
-        let Some(_lifecycle_guard) = self.lifecycle_lock.lock_if_unchanged(revision) else {
+        let manager = self.clone();
+        let operation_workspace_name = workspace_name.clone();
+        let raw_sql = raw_sql.to_string();
+        let Some(_) = self
+            .lifecycle_lock
+            .run_blocking_workspace_write_if_unchanged(revision, workspace_name, move || {
+                manager.install_user_function_artifact_with_lifecycle_lock(
+                    &operation_workspace_name,
+                    &function_name,
+                    &raw_sql,
+                )
+            })
+            .await?
+        else {
             return Ok(ValidatedFunctionInstall::WorkspaceChanged);
         };
-        self.install_user_function_artifact_with_lifecycle_lock(
-            workspace_name,
-            &function_name,
-            raw_sql,
-        )?;
         Ok(ValidatedFunctionInstall::Installed)
     }
 
@@ -209,7 +217,7 @@ impl FunctionManager {
         let mut definitions = Vec::new();
         for listing in listings {
             match listing.runtime {
-                FunctionRuntimeStatus::Ready(definition) => definitions.push(definition),
+                FunctionRuntimeStatus::Ready(definition) => definitions.push(*definition),
                 FunctionRuntimeStatus::Invalid(error) => tracing::warn!(
                     function = %listing.name,
                     detail = %error,
@@ -261,14 +269,14 @@ impl FunctionManager {
             }
             candidates.push(FunctionCandidate::Pending {
                 name: artifact.name,
-                definition: runtime_function,
+                definition: Box::new(runtime_function),
             });
         }
 
         let pending = candidates
             .iter()
             .filter_map(|candidate| match candidate {
-                FunctionCandidate::Pending { definition, .. } => Some(definition.clone()),
+                FunctionCandidate::Pending { definition, .. } => Some(definition.as_ref().clone()),
                 FunctionCandidate::Listing(_) => None,
             })
             .collect::<Vec<_>>();
@@ -299,12 +307,26 @@ impl FunctionManager {
             .collect()
     }
 
-    pub(crate) fn remove_user_function(
+    pub(crate) async fn remove_user_function(
         &self,
         workspace_name: &WorkspaceName,
         function_name: &FunctionName,
     ) -> Result<(), AppError> {
-        let _lifecycle_guard = self.lifecycle_lock.lock();
+        let manager = self.clone();
+        let workspace_name = workspace_name.clone();
+        let function_name = function_name.clone();
+        self.lifecycle_lock
+            .run_blocking_write(move || {
+                manager.remove_user_function_with_lifecycle_lock(&workspace_name, &function_name)
+            })
+            .await
+    }
+
+    fn remove_user_function_with_lifecycle_lock(
+        &self,
+        workspace_name: &WorkspaceName,
+        function_name: &FunctionName,
+    ) -> Result<(), AppError> {
         let _state_lock = self.config_store.state_lock_exclusive()?;
         self.config_store
             .get_function_unlocked(workspace_name, function_name)?;
@@ -426,7 +448,7 @@ fn parse_function_artifact(artifact: &FunctionArtifact) -> Result<FunctionSpec, 
 fn ready_listing(name: FunctionName, definition: UdfRuntimeDefinition) -> FunctionListing {
     FunctionListing {
         name,
-        runtime: FunctionRuntimeStatus::Ready(definition),
+        runtime: FunctionRuntimeStatus::Ready(Box::new(definition)),
     }
 }
 
@@ -664,6 +686,7 @@ select 1 as id
         assert!(error.contains("declares name 'renamed'"));
         manager
             .remove_user_function(&workspace, &installed.name)
+            .await
             .expect("inventory name remains removable");
     }
 
@@ -710,8 +733,8 @@ select 1 as id
         assert_eq!(runtime_function.result_columns.len(), 1);
     }
 
-    #[test]
-    fn remove_user_function_removes_inventory_and_artifacts() {
+    #[tokio::test]
+    async fn remove_user_function_removes_inventory_and_artifacts() {
         let (_temp, layout, config_store, manager) = fixture();
         let workspace = workspace();
         let raw_sql = function_sql("review_queue");
@@ -719,6 +742,7 @@ select 1 as id
 
         manager
             .remove_user_function(&workspace, &installed.name)
+            .await
             .expect("remove function");
 
         assert!(
@@ -733,13 +757,14 @@ select 1 as id
         );
     }
 
-    #[test]
-    fn remove_user_function_reports_typed_missing_function() {
+    #[tokio::test]
+    async fn remove_user_function_reports_typed_missing_function() {
         let (_temp, _layout, _config_store, manager) = fixture();
         let function_name = FunctionName::parse("missing").expect("function name");
 
         let error = manager
             .remove_user_function(&workspace(), &function_name)
+            .await
             .expect_err("missing function should fail");
 
         assert!(matches!(

@@ -41,7 +41,7 @@ use tower::{Layer, Service};
 use super::env::AppEnvironment;
 use super::error::AppError;
 use super::health::AggregateHealthService;
-use super::server_config::ServerSettings;
+use super::server_config::{McpHttpServeConfig, ServerSettings};
 use crate::EngineExtensionsProvider;
 use crate::catalog::discovery::CatalogDiscovery;
 use crate::catalog::service::CatalogService;
@@ -54,7 +54,7 @@ use crate::feedback::publisher::{
 };
 use crate::feedback::service::FeedbackService;
 use crate::functions::service::FunctionService;
-use crate::identity::{SingleUserPrincipalProvider, UserPrincipalProvider};
+use crate::identity::{LocalPrincipalProvider, PrincipalProvider};
 use crate::query::manager::QueryManager;
 use crate::query::service::QueryService;
 use crate::search::manager::SearchManager;
@@ -67,7 +67,7 @@ use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig, run_stat
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::task::manager::TaskManager;
 use crate::task::service::TaskService;
-use crate::task::store::JsonlTaskEventStore;
+use crate::task::store::TaskStore;
 use crate::telemetry::TelemetryConfig;
 use crate::telemetry::service::TraceService;
 use crate::transport::GrpcRequestContextLayer;
@@ -104,7 +104,7 @@ pub(crate) struct ServerConfig {
     config_dir: Option<PathBuf>,
     mode: ServerModeSelection,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
-    user_principal_provider: Arc<dyn UserPrincipalProvider>,
+    principal_provider: Arc<dyn PrincipalProvider>,
     feedback_publisher: Arc<dyn FeedbackPublisher>,
     feature_overrides: FeatureOverrides,
     enable_stderr_logs: bool,
@@ -122,7 +122,7 @@ impl ServerConfig {
             config_dir: None,
             mode: ServerModeSelection::Explicit(ServerMode::EphemeralGrpc),
             engine_extensions_providers: Vec::new(),
-            user_principal_provider: Arc::new(SingleUserPrincipalProvider),
+            principal_provider: Arc::new(LocalPrincipalProvider),
             feedback_publisher: Arc::new(HostedFeedbackPublisher::new()),
             feature_overrides: FeatureOverrides::default(),
             enable_stderr_logs: false,
@@ -146,6 +146,10 @@ impl ServerConfig {
 
     fn resolved_mode(&self, layout: &AppStateLayout) -> Result<ServerMode, AppError> {
         match &self.mode {
+            ServerModeSelection::Explicit(mode @ ServerMode::StandaloneGrpc { .. }) => {
+                ServerSettings::reject_removed_auth(layout)?;
+                Ok(mode.clone())
+            }
             ServerModeSelection::Explicit(mode) => Ok(mode.clone()),
             ServerModeSelection::ConfiguredStandaloneGrpc => Ok(ServerMode::StandaloneGrpc {
                 bind: ServerSettings::load(layout)?.bind_addr,
@@ -267,6 +271,21 @@ impl ServerBuilder {
         self
     }
 
+    /// Resolves the configured MCP HTTP listener without starting a server.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError`] if the config directory cannot be determined or
+    /// the MCP HTTP configuration cannot use the selected gRPC mode.
+    pub fn resolve_mcp_http_serve_config(&self) -> Result<Option<McpHttpServeConfig>, AppError> {
+        let layout = AppEnvironment::discover().app_state_layout(self.config.config_dir.clone())?;
+        let config = McpHttpServeConfig::load(&layout)?;
+        if config.is_some() {
+            validate_mcp_http_grpc_mode(&self.config.resolved_mode(&layout)?)?;
+        }
+        Ok(config)
+    }
+
     #[must_use]
     /// Adds an engine extensions provider used for query runtime builds.
     ///
@@ -283,16 +302,16 @@ impl ServerBuilder {
     }
 
     #[must_use]
-    /// Sets the server-side user principal provider.
+    /// Sets the server-side principal provider.
     ///
-    /// The default provider returns the local single-user principal for every
-    /// request. Product runtimes can authenticate inbound metadata and select a
-    /// user by installing their own provider.
-    pub fn with_user_principal_provider(
+    /// The default provider returns the local principal for every
+    /// request. Product runtimes can authenticate inbound metadata and select
+    /// any canonical principal by installing their own provider.
+    pub fn with_principal_provider(
         mut self,
-        user_principal_provider: Arc<dyn UserPrincipalProvider>,
+        principal_provider: Arc<dyn PrincipalProvider>,
     ) -> Self {
-        self.config.user_principal_provider = user_principal_provider;
+        self.config.principal_provider = principal_provider;
         self
     }
 
@@ -341,7 +360,7 @@ impl ServerBuilder {
             .load_with_overrides(&self.config.feature_overrides)?;
         let coral_db = init_database(&layout).await?;
         let config_store = ConfigStore::new(layout.clone());
-        run_state_migrations(&coral_db, &config_store).await?;
+        run_state_migrations(&coral_db, &config_store, &layout).await?;
         let coral_db = Arc::new(coral_db);
         let telemetry_config = TelemetryConfig::load(&layout)?;
         let internal_trace_store_dir = telemetry_config
@@ -383,7 +402,7 @@ impl ServerBuilder {
         );
         let feedback_manager =
             FeedbackManager::with_publisher(layout.clone(), self.config.feedback_publisher);
-        let task_manager = TaskManager::new(Arc::new(JsonlTaskEventStore::new(layout.clone())));
+        let task_manager = TaskManager::new(TaskStore::new(Arc::clone(&coral_db)));
         let body_capture_max_bytes = telemetry_config
             .trace_history
             .http_body_recording_max_bytes();
@@ -425,10 +444,27 @@ impl ServerBuilder {
                 task: task_manager,
             },
             trace_components,
-            self.config.user_principal_provider,
+            self.config.principal_provider,
             mode,
         )
         .await
+    }
+}
+
+fn validate_mcp_http_grpc_mode(mode: &ServerMode) -> Result<(), AppError> {
+    match mode {
+        ServerMode::EphemeralGrpc => Ok(()),
+        ServerMode::StandaloneGrpc { bind }
+            if bind.ip().is_loopback() || bind.ip().is_unspecified() =>
+        {
+            Ok(())
+        }
+        ServerMode::StandaloneGrpc { .. } => Err(AppError::FailedPrecondition(
+            "server.mcp_http requires a loopback or wildcard gRPC bind".to_string(),
+        )),
+        ServerMode::EmbeddedUi { .. } => Err(AppError::FailedPrecondition(
+            "server.mcp_http requires a native gRPC server".to_string(),
+        )),
     }
 }
 
@@ -477,6 +513,7 @@ fn resolve_database_config(layout: &AppStateLayout) -> Result<ResolvedDatabaseCo
 /// does not wait for the task to finish.
 pub struct RunningServer {
     endpoint_uri: String,
+    local_addr: SocketAddr,
     local_trace_store_dir: Option<PathBuf>,
     search: SearchManager,
     search_observations: Mutex<Option<SearchObservationHandle>>,
@@ -494,6 +531,12 @@ impl RunningServer {
     /// over server configuration.
     pub fn endpoint_uri(&self) -> &str {
         &self.endpoint_uri
+    }
+
+    /// Returns the address bound by this server.
+    #[must_use]
+    pub fn local_addr(&self) -> SocketAddr {
+        self.local_addr
     }
 
     #[must_use]
@@ -604,7 +647,7 @@ struct ServerDependencies {
 async fn start_server(
     dependencies: ServerDependencies,
     trace_components: TraceServerComponents,
-    user_principal_provider: Arc<dyn UserPrincipalProvider>,
+    principal_provider: Arc<dyn PrincipalProvider>,
     mode: ServerMode,
 ) -> Result<RunningServer, AppError> {
     let TraceServerComponents {
@@ -629,11 +672,11 @@ async fn start_server(
     };
     let source_service = SourceService::new(source, query.clone(), workspace.clone());
     let workspace_service = WorkspaceService::new(workspace);
-    let catalog_service = CatalogService::new(query.clone());
+    let catalog_service = CatalogService::new(query.clone(), task.clone());
     let function_service = FunctionService::new(query.clone());
-    let query_service = QueryService::new(query);
-    let search_service = SearchService::new(search.clone());
-    let feedback_service = FeedbackService::new(feedback);
+    let query_service = QueryService::new(query, task.clone());
+    let search_service = SearchService::new(search.clone(), task.clone());
+    let feedback_service = FeedbackService::new(feedback, task.clone());
     let task_service = TaskService::new(task);
     let mut application_routes = Routes::default()
         .add_service(
@@ -665,7 +708,7 @@ async fn start_server(
     let routes = Routes::from(
         application_routes
             .into_axum_router()
-            .layer(GrpcRequestContextLayer::new(user_principal_provider)),
+            .layer(GrpcRequestContextLayer::new(principal_provider)),
     )
     // Process liveness must not depend on principal selection.
     .add_service(tonic_health::pb::health_server::HealthServer::new(
@@ -673,7 +716,8 @@ async fn start_server(
     ));
 
     let listener = TcpListener::bind(mode.bind_addr()).await?;
-    let endpoint_uri = format!("http://{}", listener.local_addr()?);
+    let local_addr = listener.local_addr()?;
+    let endpoint_uri = format!("http://{local_addr}");
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let (task_finished_tx, task_finished) = watch::channel(false);
 
@@ -688,6 +732,7 @@ async fn start_server(
 
     Ok(RunningServer {
         endpoint_uri,
+        local_addr,
         local_trace_store_dir,
         search,
         search_observations: Mutex::new(search_observations),
@@ -949,13 +994,13 @@ mod tests {
     use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig, run_state_migrations};
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::task::manager::TaskManager;
-    use crate::task::store::JsonlTaskEventStore;
+    use crate::task::store::TaskStore;
     use crate::telemetry::service::TraceService;
     use crate::transport::workspace_to_proto;
     use crate::workspaces::{WorkspaceManager, WorkspaceName};
     use crate::{
-        AwsEngineExtensionsProvider, NoopEngineExtensionsProvider, SingleUserPrincipalProvider,
-        UserPrincipal, UserPrincipalProvider, UserPrincipalProviderError,
+        AwsEngineExtensionsProvider, LocalPrincipalProvider, NoopEngineExtensionsProvider,
+        Principal, PrincipalProvider, PrincipalProviderError,
     };
 
     fn default_workspace() -> Workspace {
@@ -1004,16 +1049,16 @@ enabled = false
     }
 
     #[derive(Debug)]
-    struct RejectingUserPrincipalProvider;
+    struct RejectingPrincipalProvider;
 
     #[tonic::async_trait]
-    impl UserPrincipalProvider for RejectingUserPrincipalProvider {
+    impl PrincipalProvider for RejectingPrincipalProvider {
         async fn principal_for_metadata(
             &self,
             _metadata: &tonic::metadata::MetadataMap,
-        ) -> Result<UserPrincipal, UserPrincipalProviderError> {
-            Err(UserPrincipalProviderError::unauthenticated(
-                "rejected user principal",
+        ) -> Result<Principal, PrincipalProviderError> {
+            Err(PrincipalProviderError::unauthenticated(
+                "rejected principal",
             ))
         }
     }
@@ -1027,7 +1072,7 @@ enabled = false
             .await
             .expect("open sqlite");
         db.migrate().await.expect("migrate sqlite");
-        run_state_migrations(&db, config_store)
+        run_state_migrations(&db, config_store, layout)
             .await
             .expect("run state migrations");
         Arc::new(db)
@@ -1103,6 +1148,7 @@ enabled = false
         });
         let server = RunningServer {
             endpoint_uri: "http://127.0.0.1:0".to_string(),
+            local_addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
             local_trace_store_dir: None,
             search,
             search_observations: Mutex::new(Some(search_observations)),
@@ -1190,6 +1236,103 @@ enabled = false
         assert_eq!(bind, SocketAddr::from(([127, 0, 0, 2], 14555)));
     }
 
+    #[test]
+    fn explicit_standalone_grpc_rejects_removed_static_auth_config() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+        std::fs::create_dir_all(&config_dir).expect("config dir");
+        std::fs::write(
+            config_dir.join("config.toml"),
+            "[server.auth]\ntoken_env = 'CORAL_SERVER_AUTH_TOKEN'\n",
+        )
+        .expect("config file");
+        let layout = AppStateLayout::discover(Some(config_dir)).expect("layout");
+        let builder =
+            ServerBuilder::standalone_grpc(SocketAddr::from((Ipv4Addr::LOCALHOST, 14555)));
+
+        assert!(
+            builder.config.resolved_mode(&layout).is_err(),
+            "removed standalone auth config must fail closed"
+        );
+    }
+
+    #[test]
+    fn explicit_standalone_grpc_does_not_parse_the_configured_bind() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+        std::fs::create_dir_all(&config_dir).expect("config dir");
+        std::fs::write(
+            config_dir.join("config.toml"),
+            "[server]\nbind_addr = 'not-an-address'\n",
+        )
+        .expect("config file");
+        let layout = AppStateLayout::discover(Some(config_dir)).expect("layout");
+        let explicit_bind = SocketAddr::from((Ipv4Addr::LOCALHOST, 14555));
+        let builder = ServerBuilder::standalone_grpc(explicit_bind);
+
+        let ServerMode::StandaloneGrpc { bind } = builder
+            .config
+            .resolved_mode(&layout)
+            .expect("explicit bind overrides configured bind")
+        else {
+            panic!("explicit standalone mode must remain selected");
+        };
+        assert_eq!(bind, explicit_bind);
+    }
+
+    #[test]
+    fn resolves_mcp_http_config_without_starting_grpc() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+        std::fs::create_dir_all(&config_dir).expect("config dir");
+        std::fs::write(
+            config_dir.join("config.toml"),
+            "[server.mcp_http]\nenabled = true\nbind = '127.0.0.1:14556'\n",
+        )
+        .expect("config file");
+
+        let config = ServerBuilder::configured_standalone_grpc()
+            .with_config_dir(config_dir)
+            .resolve_mcp_http_serve_config()
+            .expect("resolve MCP HTTP config")
+            .expect("enabled MCP HTTP config");
+
+        assert_eq!(
+            config.bind_addr(),
+            SocketAddr::from((Ipv4Addr::LOCALHOST, 14556))
+        );
+    }
+
+    #[test]
+    fn mcp_http_resolution_accepts_wildcard_and_rejects_public_grpc_binds() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+        std::fs::create_dir_all(&config_dir).expect("config dir");
+        std::fs::write(
+            config_dir.join("config.toml"),
+            "[server.mcp_http]\nenabled = true\n",
+        )
+        .expect("config file");
+
+        ServerBuilder::standalone_grpc(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 14555)))
+            .with_config_dir(config_dir.clone())
+            .resolve_mcp_http_serve_config()
+            .expect("wildcard gRPC bind has a safe loopback route");
+
+        let error = ServerBuilder::standalone_grpc(SocketAddr::from(([192, 0, 2, 1], 14555)))
+            .with_config_dir(config_dir.clone())
+            .resolve_mcp_http_serve_config()
+            .expect_err("public gRPC address has no safe local route");
+
+        assert!(error.to_string().contains("loopback or wildcard gRPC bind"));
+
+        let mapped_loopback = SocketAddr::new(Ipv4Addr::LOCALHOST.to_ipv6_mapped().into(), 14555);
+        ServerBuilder::standalone_grpc(mapped_loopback)
+            .with_config_dir(config_dir)
+            .resolve_mcp_http_serve_config()
+            .expect_err("IPv4-mapped IPv6 must fail closed");
+    }
+
     #[tokio::test]
     async fn configured_standalone_grpc_starts_with_configured_bind() {
         let temp = TempDir::new().expect("temp dir");
@@ -1213,6 +1356,7 @@ enabled = false
             .expect("endpoint scheme")
             .parse::<SocketAddr>()
             .expect("socket address endpoint");
+        assert_eq!(server.local_addr(), endpoint);
         assert!(endpoint.ip().is_loopback());
         assert_ne!(endpoint.port(), 0);
         server.shutdown().await.expect("shutdown server");
@@ -1365,7 +1509,7 @@ backend = "unsupported"
         let config_dir = temp.path().join("coral-config");
         disable_internal_tracing(&config_dir);
         let server = ServerBuilder::new()
-            .with_config_dir(config_dir.clone())
+            .with_config_dir(config_dir)
             .start()
             .await
             .expect("start server");
@@ -1401,20 +1545,6 @@ backend = "unsupported"
             .expect("task end");
         assert_eq!(task_end.task_id, task.task_id);
         assert_eq!(task_end.task_status, TaskStatus::Success as i32);
-
-        let layout = AppStateLayout::discover(Some(config_dir)).expect("layout");
-        let workspace = WorkspaceName::default();
-        let tasks =
-            std::fs::read_to_string(layout.task_events_file(&workspace)).expect("task events file");
-        assert!(tasks.contains(&task.task_id));
-        assert!(
-            tasks.contains("find the HR onboarding form"),
-            "task events should contain start intent, got: {tasks}"
-        );
-        assert!(
-            tasks.contains("success"),
-            "task events should contain end status, got: {tasks}"
-        );
         server.shutdown().await.expect("shutdown");
     }
 
@@ -1532,7 +1662,6 @@ backend = "unsupported"
             layout.clone(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
-        let task_manager = TaskManager::new(Arc::new(JsonlTaskEventStore::new(layout.clone())));
         let workspace_manager = WorkspaceManager::new_for_tests(
             config_store.clone(),
             credential_manager.clone(),
@@ -1540,6 +1669,7 @@ backend = "unsupported"
             None,
             Arc::clone(&db),
         );
+        let task_manager = TaskManager::new(TaskStore::new(Arc::clone(&db)));
         let query_manager = QueryManager::new_for_tests(
             config_store.clone(),
             workspace_manager.clone(),
@@ -1574,7 +1704,7 @@ backend = "unsupported"
                 service: Some(trace_service),
                 local_trace_store_dir: None,
             },
-            Arc::new(SingleUserPrincipalProvider),
+            Arc::new(LocalPrincipalProvider),
             ServerMode::EphemeralGrpc,
         )
         .await
@@ -1648,7 +1778,7 @@ backend = "unsupported"
         let temp = TempDir::new().expect("temp dir");
         let server = ServerBuilder::new()
             .with_config_dir(temp.path().join("coral-config"))
-            .with_user_principal_provider(Arc::new(RejectingUserPrincipalProvider))
+            .with_principal_provider(Arc::new(RejectingPrincipalProvider))
             .start()
             .await
             .expect("start server");
@@ -1847,7 +1977,7 @@ tables:
         let temp = TempDir::new().expect("temp dir");
         let running = ServerBuilder::embedded_ui_loopback(0, Arc::new(StubAssets))
             .with_config_dir(temp.path().join("coral-config"))
-            .with_user_principal_provider(Arc::new(RejectingUserPrincipalProvider))
+            .with_principal_provider(Arc::new(RejectingPrincipalProvider))
             .start()
             .await
             .expect("start embedded UI server");
@@ -1981,7 +2111,6 @@ tables:
             layout.clone(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
-        let task_manager = TaskManager::new(Arc::new(JsonlTaskEventStore::new(layout.clone())));
         let workspace_manager = WorkspaceManager::new_for_tests(
             config_store.clone(),
             credential_manager.clone(),
@@ -1989,6 +2118,7 @@ tables:
             None,
             Arc::clone(&db),
         );
+        let task_manager = TaskManager::new(TaskStore::new(Arc::clone(&db)));
         let query_manager = QueryManager::new_for_tests(
             config_store.clone(),
             workspace_manager.clone(),
@@ -2021,7 +2151,7 @@ tables:
                 task: task_manager,
             },
             TraceServerComponents::default(),
-            Arc::new(SingleUserPrincipalProvider),
+            Arc::new(LocalPrincipalProvider),
             ServerMode::EphemeralGrpc,
         )
         .await
@@ -2080,6 +2210,7 @@ tables:
             .execute_sql(Request::new(ExecuteSqlRequest {
                 workspace: Some(default_workspace()),
                 sql: "SELECT text FROM tilde_demo.messages ORDER BY text".to_string(),
+                guide_read_context: None,
             }))
             .await
             .expect("execute sql")
@@ -2110,7 +2241,6 @@ tables:
             layout.clone(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
-        let task_manager = TaskManager::new(Arc::new(JsonlTaskEventStore::new(layout.clone())));
         let workspace_manager = WorkspaceManager::new_for_tests(
             config_store.clone(),
             credential_manager.clone(),
@@ -2118,6 +2248,7 @@ tables:
             None,
             Arc::clone(&db),
         );
+        let task_manager = TaskManager::new(TaskStore::new(Arc::clone(&db)));
         let query_manager = QueryManager::new_for_tests(
             config_store.clone(),
             workspace_manager.clone(),
@@ -2147,7 +2278,7 @@ tables:
                 task: task_manager,
             },
             TraceServerComponents::default(),
-            Arc::new(SingleUserPrincipalProvider),
+            Arc::new(LocalPrincipalProvider),
             ServerMode::EphemeralGrpc,
         )
         .await
@@ -2168,6 +2299,7 @@ tables:
             .execute_sql(Request::new(ExecuteSqlRequest {
                 workspace: Some(default_workspace()),
                 sql: sql.to_string(),
+                guide_read_context: None,
             }))
             .await
             .expect("execute_sql >4MB response")
@@ -2236,7 +2368,6 @@ tables:
             layout.clone(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
-        let task_manager = TaskManager::new(Arc::new(JsonlTaskEventStore::new(layout.clone())));
         let workspace_manager = WorkspaceManager::new_for_tests(
             config_store.clone(),
             credential_manager.clone(),
@@ -2244,6 +2375,7 @@ tables:
             None,
             Arc::clone(&db),
         );
+        let task_manager = TaskManager::new(TaskStore::new(Arc::clone(&db)));
         let query_manager = QueryManager::new_for_tests(
             config_store.clone(),
             workspace_manager.clone(),
@@ -2273,7 +2405,7 @@ tables:
                 task: task_manager,
             },
             TraceServerComponents::default(),
-            Arc::new(SingleUserPrincipalProvider),
+            Arc::new(LocalPrincipalProvider),
             ServerMode::EphemeralGrpc,
         )
         .await
@@ -2314,6 +2446,7 @@ tables:
             .execute_sql(Request::new(ExecuteSqlRequest {
                 workspace: Some(default_workspace()),
                 sql: "SELECT bogus_column FROM wide_demo.wide LIMIT 0".to_string(),
+                guide_read_context: None,
             }))
             .await
             .expect_err("expected gRPC Status, not a transport-level PROTOCOL_ERROR");

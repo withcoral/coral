@@ -38,8 +38,38 @@ use tonic::Request;
 
 const RAW_JSONRPC_RESPONSE_TIMEOUT: Duration = Duration::from_secs(15);
 
-fn json_object(value: &Value) -> Map<String, Value> {
+fn task_arguments(task_id: &str, value: &Value) -> Map<String, Value> {
+    let mut arguments = raw_json_object(value);
+    assert!(
+        arguments
+            .insert("task_id".to_string(), json!(task_id))
+            .is_none(),
+        "task arguments should not provide their own task_id"
+    );
+    arguments
+        .entry("intent".to_string())
+        .or_insert_with(|| json!("Exercise the MCP CLI test contract"));
+    arguments
+}
+
+fn raw_json_object(value: &Value) -> Map<String, Value> {
     value.as_object().cloned().expect("json object")
+}
+
+async fn start_test_task(
+    client: &RunningService<RoleClient, ()>,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let started = structured_tool_content(
+        client,
+        CallToolRequestParams::new("start_task").with_arguments(raw_json_object(&json!({
+            "intent": "Exercise the MCP CLI test contract"
+        }))),
+    )
+    .await?;
+    Ok(started["task_id"]
+        .as_str()
+        .expect("start task id")
+        .to_string())
 }
 
 fn write_config(server: &MockServer, raw: &str) -> Result<(), io::Error> {
@@ -485,6 +515,7 @@ storage = "file"
         .execute_sql(Request::new(ExecuteSqlRequest {
             workspace: Some(default_workspace()),
             sql: sql.to_string(),
+            guide_read_context: None,
         }))
         .await?;
     shutdown_tracing();
@@ -707,29 +738,31 @@ async fn mcp_stdio_lists_tools_and_resources() -> Result<(), Box<dyn std::error:
             .map(|tool| tool.name.as_ref())
             .collect::<Vec<_>>(),
         vec![
+            "start_task",
             "sql",
             "search",
             "list_catalog",
             "describe_table",
-            "list_columns"
+            "list_columns",
+            "end_task"
         ]
     );
     assert!(
-        tools[0]
+        tools[1]
             .description
             .as_deref()
             .expect("sql description")
             .contains("3 table(s) are currently visible")
     );
     assert!(
-        tools[1]
+        tools[2]
             .description
             .as_deref()
             .expect("search description")
             .contains("Returns typed results plus provider statuses")
     );
     assert!(
-        tools[2]
+        tools[3]
             .description
             .as_deref()
             .expect("list_catalog description")
@@ -790,11 +823,13 @@ async fn mcp_stdio_enable_feedback_flag_lists_feedback_tool()
             .map(|tool| tool.name.as_ref())
             .collect::<Vec<_>>(),
         vec![
+            "start_task",
             "sql",
             "search",
             "list_catalog",
             "describe_table",
             "list_columns",
+            "end_task",
             "feedback"
         ]
     );
@@ -870,9 +905,9 @@ async fn assert_observed_value_discovery_surface(
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn mcp_stdio_enable_tasks_flag_lists_task_tools() -> Result<(), Box<dyn std::error::Error>> {
+async fn mcp_stdio_always_lists_task_tools() -> Result<(), Box<dyn std::error::Error>> {
     let server = MockServer::start().await;
-    let client = start_mcp_client_with_args(&server, &["--enable-tasks"]).await?;
+    let client = start_mcp_client(&server).await?;
 
     let tools = client.list_all_tools().await?;
     assert_eq!(
@@ -881,12 +916,12 @@ async fn mcp_stdio_enable_tasks_flag_lists_task_tools() -> Result<(), Box<dyn st
             .map(|tool| tool.name.as_ref())
             .collect::<Vec<_>>(),
         vec![
+            "start_task",
             "sql",
             "search",
             "list_catalog",
             "describe_table",
             "list_columns",
-            "start_task",
             "end_task"
         ]
     );
@@ -954,6 +989,45 @@ async fn mcp_stdio_enable_tasks_flag_lists_task_tools() -> Result<(), Box<dyn st
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn mcp_stdio_task_tools_send_lifecycle_requests() -> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    let client = start_mcp_client(&server).await?;
+
+    let task_id = start_test_task(&client).await?;
+    let start_requests = server.start_task_requests();
+    assert_eq!(start_requests.len(), 1);
+    assert_default_workspace(start_requests[0].workspace.as_ref());
+    assert_eq!(
+        start_requests[0].intent,
+        "Exercise the MCP CLI test contract"
+    );
+
+    let ended = structured_tool_content(
+        &client,
+        CallToolRequestParams::new("end_task").with_arguments(raw_json_object(&json!({
+            "task_id": task_id,
+            "task_status": "success"
+        }))),
+    )
+    .await?;
+    assert_eq!(ended["task_id"], task_id);
+    assert_eq!(ended["task_status"], "success");
+
+    let end_requests = server.end_task_requests();
+    assert_eq!(end_requests.len(), 1);
+    assert_default_workspace(end_requests[0].workspace.as_ref());
+    assert_eq!(end_requests[0].task_id, task_id);
+    assert_eq!(
+        end_requests[0].task_status,
+        coral_api::v1::TaskStatus::Success as i32
+    );
+
+    client.cancel().await?;
+    server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn mcp_stdio_feature_config_enables_feedback_tool() -> Result<(), Box<dyn std::error::Error>>
 {
     let server = MockServer::start().await;
@@ -978,13 +1052,14 @@ feedback = true
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn mcp_stdio_feature_config_enables_task_tools() -> Result<(), Box<dyn std::error::Error>> {
+async fn stale_tasks_feature_config_cannot_disable_task_tools()
+-> Result<(), Box<dyn std::error::Error>> {
     let server = MockServer::start().await;
     write_config(
         &server,
         r"
 [features]
-tasks = true
+tasks = false
 ",
     )?;
     let client = start_mcp_client(&server).await?;
@@ -992,11 +1067,11 @@ tasks = true
     let tools = client.list_all_tools().await?;
     assert!(
         tools.iter().any(|tool| tool.name.as_ref() == "start_task"),
-        "start_task tool should be listed when [features].tasks is true"
+        "stale [features].tasks must not disable start_task"
     );
     assert!(
         tools.iter().any(|tool| tool.name.as_ref() == "end_task"),
-        "end_task tool should be listed when [features].tasks is true"
+        "stale [features].tasks must not disable end_task"
     );
 
     client.cancel().await?;
@@ -1207,16 +1282,17 @@ async fn mcp_stdio_sql_and_catalog_tools_return_structured_content()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = MockServer::start().await;
     let client = start_mcp_client(&server).await?;
+    let task_id = start_test_task(&client).await?;
 
-    assert_list_catalog_tool(&client, &server).await?;
+    assert_list_catalog_tool(&client, &server, &task_id).await?;
     client
         .call_tool(CallToolRequestParams::new("search_catalog"))
         .await
         .expect_err("removed search_catalog tool should not be callable");
-    assert_search_tool(&client, &server).await?;
-    assert_describe_table_tool(&client, &server).await?;
-    assert_list_columns_tool(&client).await?;
-    assert_sql_tool(&client).await?;
+    assert_search_tool(&client, &server, &task_id).await?;
+    assert_describe_table_tool(&client, &server, &task_id).await?;
+    assert_list_columns_tool(&client, &task_id).await?;
+    assert_sql_tool(&client, &task_id).await?;
 
     client.cancel().await?;
     server.shutdown().await;
@@ -1226,9 +1302,14 @@ async fn mcp_stdio_sql_and_catalog_tools_return_structured_content()
 async fn assert_list_catalog_tool(
     client: &RunningService<RoleClient, ()>,
     server: &MockServer,
+    task_id: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let structured_catalog =
-        structured_tool_content(client, CallToolRequestParams::new("list_catalog")).await?;
+    let structured_catalog = structured_tool_content(
+        client,
+        CallToolRequestParams::new("list_catalog")
+            .with_arguments(task_arguments(task_id, &json!({}))),
+    )
+    .await?;
     assert_eq!(structured_catalog["total"], 3);
     assert_eq!(structured_catalog["limit"], 50);
     assert_eq!(structured_catalog["offset"], 0);
@@ -1248,10 +1329,13 @@ async fn assert_list_catalog_tool(
 
     let all_kinds = structured_tool_content(
         client,
-        CallToolRequestParams::new("list_catalog").with_arguments(json_object(&json!({
-            "schema": "local_messages",
-            "kind": null
-        }))),
+        CallToolRequestParams::new("list_catalog").with_arguments(task_arguments(
+            task_id,
+            &json!({
+                "schema": "local_messages",
+                "kind": null
+            }),
+        )),
     )
     .await?;
     assert_eq!(all_kinds["total"], 3);
@@ -1259,12 +1343,15 @@ async fn assert_list_catalog_tool(
 
     let paginated = structured_tool_content(
         client,
-        CallToolRequestParams::new("list_catalog").with_arguments(json_object(&json!({
-            "schema": "local_messages",
-            "kind": "table",
-            "limit": 2,
-            "offset": 0
-        }))),
+        CallToolRequestParams::new("list_catalog").with_arguments(task_arguments(
+            task_id,
+            &json!({
+                "schema": "local_messages",
+                "kind": "table",
+                "limit": 2,
+                "offset": 0
+            }),
+        )),
     )
     .await?;
     assert_eq!(paginated["total"], 3);
@@ -1274,9 +1361,12 @@ async fn assert_list_catalog_tool(
 
     let functions = structured_tool_content(
         client,
-        CallToolRequestParams::new("list_catalog").with_arguments(json_object(&json!({
-            "kind": "table_function"
-        }))),
+        CallToolRequestParams::new("list_catalog").with_arguments(task_arguments(
+            task_id,
+            &json!({
+                "kind": "table_function"
+            }),
+        )),
     )
     .await?;
     assert_eq!(functions["total"], 0);
@@ -1284,8 +1374,10 @@ async fn assert_list_catalog_tool(
 
     client
         .call_tool(
-            CallToolRequestParams::new("list_catalog").with_arguments(json_object(&json!({
-                "kind": "invalid"
+            CallToolRequestParams::new("list_catalog").with_arguments(raw_json_object(&json!({
+                "kind": "invalid",
+                "task_id": task_id,
+                "intent": "Validate invalid catalog kind handling"
             }))),
         )
         .await
@@ -1296,13 +1388,17 @@ async fn assert_list_catalog_tool(
 async fn assert_search_tool(
     client: &RunningService<RoleClient, ()>,
     server: &MockServer,
+    task_id: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let search = structured_tool_content(
         client,
-        CallToolRequestParams::new("search").with_arguments(json_object(&json!({
-            "query": "messages",
-            "limit": 5
-        }))),
+        CallToolRequestParams::new("search").with_arguments(task_arguments(
+            task_id,
+            &json!({
+                "query": "messages",
+                "limit": 5
+            }),
+        )),
     )
     .await?;
     assert_eq!(search["results"][0]["kind"], "catalog_metadata");
@@ -1328,15 +1424,19 @@ async fn assert_search_tool(
 async fn assert_describe_table_tool(
     client: &RunningService<RoleClient, ()>,
     server: &MockServer,
+    task_id: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let describe_before = server.describe_table_requests().len();
     let execute_sql_before = server.execute_sql_requests().len();
     let described = structured_tool_content(
         client,
-        CallToolRequestParams::new("describe_table").with_arguments(json_object(&json!({
-            "schema": "local_messages",
-            "table": "messages"
-        }))),
+        CallToolRequestParams::new("describe_table").with_arguments(task_arguments(
+            task_id,
+            &json!({
+                "schema": "local_messages",
+                "table": "messages"
+            }),
+        )),
     )
     .await?;
     assert_eq!(described["found"], true);
@@ -1354,42 +1454,66 @@ async fn assert_describe_table_tool(
 
 async fn assert_list_columns_tool(
     client: &RunningService<RoleClient, ()>,
+    task_id: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let columns = structured_tool_content(
         client,
-        CallToolRequestParams::new("list_columns").with_arguments(json_object(&json!({
-            "schema": "local_messages",
-            "table": "messages",
-            "required_only": true
-        }))),
+        CallToolRequestParams::new("list_columns").with_arguments(task_arguments(
+            task_id,
+            &json!({
+                "schema": "local_messages",
+                "table": "messages",
+                "required_only": true
+            }),
+        )),
     )
     .await?;
     assert_eq!(columns["total"], 2);
-    assert_eq!(columns["columns"][0]["column_name"], "owner");
-    assert_eq!(columns["columns"][1]["column_name"], "repo");
+    assert_eq!(
+        columns["fields"],
+        json!([
+            "column_name",
+            "data_type",
+            "is_nullable",
+            "is_virtual",
+            "is_required_filter",
+            "description",
+            "ordinal_position",
+            "matched_fields"
+        ])
+    );
+    assert_eq!(columns["rows"][0][0], "owner");
+    assert_eq!(columns["rows"][1][0], "repo");
 
     let filtered_columns = structured_tool_content(
         client,
-        CallToolRequestParams::new("list_columns").with_arguments(json_object(&json!({
-            "schema": "local_messages",
-            "table": "messages",
-            "pattern": "text"
-        }))),
+        CallToolRequestParams::new("list_columns").with_arguments(task_arguments(
+            task_id,
+            &json!({
+                "schema": "local_messages",
+                "table": "messages",
+                "pattern": "text"
+            }),
+        )),
     )
     .await?;
     assert_eq!(filtered_columns["total"], 1);
-    assert_eq!(filtered_columns["columns"][0]["column_name"], "text");
+    assert_eq!(filtered_columns["rows"][0][0], "text");
     Ok(())
 }
 
 async fn assert_sql_tool(
     client: &RunningService<RoleClient, ()>,
+    task_id: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let sql = structured_tool_content(
         client,
-        CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
-            "queries": ["SELECT text FROM local_messages.messages ORDER BY text"]
-        }))),
+        CallToolRequestParams::new("sql").with_arguments(task_arguments(
+            task_id,
+            &json!({
+                "queries": ["SELECT text FROM local_messages.messages ORDER BY text"]
+            }),
+        )),
     )
     .await?;
     assert_eq!(sql["total_count"], 1);
@@ -1404,15 +1528,19 @@ async fn assert_sql_tool(
 async fn mcp_stdio_tool_errors_do_not_end_the_session() -> Result<(), Box<dyn std::error::Error>> {
     let server = MockServer::start().await;
     let client = start_mcp_client(&server).await?;
+    let task_id = start_test_task(&client).await?;
 
     let mixed_sql = client
         .call_tool(
-            CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
-                "queries": [
-                    "SELECT text FROM local_messages.messages ORDER BY text",
-                    "DELETE FROM local_messages.messages"
-                ]
-            }))),
+            CallToolRequestParams::new("sql").with_arguments(task_arguments(
+                &task_id,
+                &json!({
+                    "queries": [
+                        "SELECT text FROM local_messages.messages ORDER BY text",
+                        "DELETE FROM local_messages.messages"
+                    ]
+                }),
+            )),
         )
         .await?;
     assert_eq!(mixed_sql.is_error, Some(true));
@@ -1445,7 +1573,10 @@ async fn mcp_stdio_tool_errors_do_not_end_the_session() -> Result<(), Box<dyn st
     assert_eq!(server.execute_sql_requests().len(), 2);
 
     let catalog = client
-        .call_tool(CallToolRequestParams::new("list_catalog"))
+        .call_tool(
+            CallToolRequestParams::new("list_catalog")
+                .with_arguments(task_arguments(&task_id, &json!({}))),
+        )
         .await?;
     assert_eq!(catalog.is_error, Some(false));
     assert!(catalog.content.is_empty());
@@ -1464,15 +1595,19 @@ async fn mcp_stdio_sql_batch_records_each_execute_sql_request()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = MockServer::start().await;
     let client = start_mcp_client(&server).await?;
+    let task_id = start_test_task(&client).await?;
 
     let sql = structured_tool_content(
         &client,
-        CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
-            "queries": [
-                "SELECT 'first' AS label",
-                "SELECT 'second' AS label"
-            ]
-        }))),
+        CallToolRequestParams::new("sql").with_arguments(task_arguments(
+            &task_id,
+            &json!({
+                "queries": [
+                    "SELECT 'first' AS label",
+                    "SELECT 'second' AS label"
+                ]
+            }),
+        )),
     )
     .await?;
     assert_eq!(sql["total_count"], 2);
@@ -1505,18 +1640,21 @@ async fn mcp_stdio_sql_batch_records_each_execute_sql_request()
 async fn mcp_stdio_sql_batch_propagates_task_id_to_each_query()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = MockServer::start().await;
-    let client = start_mcp_client_with_args(&server, &["--enable-tasks"]).await?;
+    let client = start_mcp_client(&server).await?;
+    let task_id = start_test_task(&client).await?;
 
     let sql = structured_tool_content(
         &client,
-        CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
-            "queries": [
-                "SELECT 'first' AS label",
-                "SELECT 'second' AS label"
-            ],
-            "intent": "Run a task-scoped SQL batch",
-            "task_id": "550e8400-e29b-41d4-a716-446655440000"
-        }))),
+        CallToolRequestParams::new("sql").with_arguments(task_arguments(
+            &task_id,
+            &json!({
+                "queries": [
+                    "SELECT 'first' AS label",
+                    "SELECT 'second' AS label"
+                ],
+                "intent": "Run a task-scoped SQL batch"
+            }),
+        )),
     )
     .await?;
     assert_eq!(sql["total_count"], 2);
@@ -1527,7 +1665,7 @@ async fn mcp_stdio_sql_batch_propagates_task_id_to_each_query()
     assert!(
         task_ids
             .iter()
-            .all(|task_id| task_id.as_deref() == Some("550e8400-e29b-41d4-a716-446655440000")),
+            .all(|propagated_task_id| propagated_task_id.as_deref() == Some(task_id.as_str())),
         "expected every batch query to carry coral-task-id, got {task_ids:?}"
     );
 
@@ -1541,11 +1679,14 @@ async fn mcp_stdio_sql_rejects_malformed_queries_before_backend_dispatch()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = MockServer::start().await;
     let client = start_mcp_client(&server).await?;
+    let task_id = start_test_task(&client).await?;
 
     client
         .call_tool(
-            CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
-                "queries": []
+            CallToolRequestParams::new("sql").with_arguments(raw_json_object(&json!({
+                "queries": [],
+                "task_id": task_id,
+                "intent": "Validate malformed SQL batch handling"
             }))),
         )
         .await

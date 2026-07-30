@@ -143,17 +143,15 @@ impl<'a> OpenApiImporter<'a> {
     }
 
     fn ref_error_diagnostic(error: RefError<'_>, context: &RefDiagnosticContext<'_>) -> Diagnostic {
-        let (code, message) = match error {
-            RefError::External(reference) => (
-                "OPENAPI_EXTERNAL_REF_UNSUPPORTED",
+        let message = match error {
+            RefError::External(reference) => {
                 format!(
                     "external reference '{reference}' is unsupported; Coral currently requires dereferenced or bundled OpenAPI documents"
-                ),
-            ),
-            RefError::NotFound(reference) => (
-                "OPENAPI_REF_NOT_FOUND",
-                format!("reference '{reference}' was not found"),
-            ),
+                )
+            }
+            RefError::NotFound(reference) => {
+                format!("reference '{reference}' was not found")
+            }
         };
         let (message, operation_id) = match context {
             RefDiagnosticContext::Operation { path, method_name } => (
@@ -164,6 +162,6 @@ impl<'a> OpenApiImporter<'a> {
                 (message, Some(operation_id.to_string()))
             }
         };
-        Diagnostic::warning(code, message, operation_id)
+        Diagnostic::new(message, operation_id)
     }
 }

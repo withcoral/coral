@@ -7,10 +7,15 @@ use sqlx::{FromRow, Postgres, Sqlite};
 use super::backend::CoralDbBackend;
 use super::{CoralDb, CoralTx, DbError};
 use crate::state::db::repositories::state_migrations::StateMigrationsRepo;
+use crate::state::db::repositories::tasks::TasksRepo;
 use crate::state::db::repositories::workspaces::WorkspacesRepo;
 
 pub(crate) trait DbSession {
     async fn execute<S>(&mut self, statement: S) -> Result<(), DbError>
+    where
+        S: SqlxBinder;
+
+    async fn execute_rows_affected<S>(&mut self, statement: S) -> Result<u64, DbError>
     where
         S: SqlxBinder;
 
@@ -35,12 +40,24 @@ pub(crate) trait DbRepos: DbSession + Sized {
     fn workspaces(&mut self) -> WorkspacesRepo<'_, Self> {
         WorkspacesRepo::new(self)
     }
+
+    fn tasks(&mut self) -> TasksRepo<'_, Self> {
+        TasksRepo::new(self)
+    }
 }
 
 impl<T> DbRepos for T where T: DbSession + Sized {}
 
 impl DbSession for &CoralDb {
     async fn execute<S>(&mut self, statement: S) -> Result<(), DbError>
+    where
+        S: SqlxBinder,
+    {
+        execute_statement(&self.backend, statement).await?;
+        Ok(())
+    }
+
+    async fn execute_rows_affected<S>(&mut self, statement: S) -> Result<u64, DbError>
     where
         S: SqlxBinder,
     {
@@ -74,6 +91,13 @@ impl DbSession for CoralTx<'_> {
         self.execute(statement).await
     }
 
+    async fn execute_rows_affected<S>(&mut self, statement: S) -> Result<u64, DbError>
+    where
+        S: SqlxBinder,
+    {
+        self.execute_rows_affected(statement).await
+    }
+
     async fn fetch_optional<T>(&mut self, statement: SelectStatement) -> Result<Option<T>, DbError>
     where
         T: Send + Unpin,
@@ -96,25 +120,26 @@ impl DbSession for CoralTx<'_> {
 pub(super) async fn execute_statement<S>(
     backend: &CoralDbBackend,
     statement: S,
-) -> Result<(), DbError>
+) -> Result<u64, DbError>
 where
     S: SqlxBinder,
 {
     match backend {
         CoralDbBackend::Sqlite(db) => {
             let (sql, values) = statement.build_sqlx(sea_query::SqliteQueryBuilder);
-            sqlx::query_with::<Sqlite, _>(sqlx::AssertSqlSafe(sql), values)
+            let result = sqlx::query_with::<Sqlite, _>(sqlx::AssertSqlSafe(sql), values)
                 .execute(&db.pool)
                 .await?;
+            Ok(result.rows_affected())
         }
         CoralDbBackend::Postgres(db) => {
             let (sql, values) = statement.build_sqlx(sea_query::PostgresQueryBuilder);
-            sqlx::query_with::<Postgres, _>(sqlx::AssertSqlSafe(sql), values)
+            let result = sqlx::query_with::<Postgres, _>(sqlx::AssertSqlSafe(sql), values)
                 .execute(&db.pool)
                 .await?;
+            Ok(result.rows_affected())
         }
     }
-    Ok(())
 }
 
 pub(super) async fn fetch_optional_statement<T>(

@@ -15,6 +15,7 @@ mod embedded_ui;
 pub mod env;
 mod onboard;
 mod query_error;
+mod serve;
 mod source_ops;
 
 use std::borrow::Cow;
@@ -734,7 +735,13 @@ async fn run_ui(
     }
     println!("Press Ctrl-C to stop the UI.");
 
-    run_until_server_stops(server, tokio::signal::ctrl_c()).await
+    let wait =
+        wait_for_shutdown_signal_or_server_exit(server.wait_for_exit(), tokio::signal::ctrl_c())
+            .await;
+    let shutdown = server.shutdown().await;
+    wait?;
+    shutdown?;
+    Ok(())
 }
 
 async fn run_server(
@@ -751,26 +758,31 @@ async fn run_server(
         );
     }
     println!("Coral gRPC server listening on {endpoint}");
+    if let Some(address) = server.mcp_http_addr() {
+        println!("Coral MCP HTTP server listening on http://{address}/mcp");
+    }
     println!("Connect clients with CORAL_ENDPOINT={endpoint}");
     println!("Press Ctrl-C to stop the server.");
 
-    run_until_server_stops(server, wait_for_server_shutdown_signal()).await
-}
-
-async fn run_until_server_stops(
-    server: coral_app::RunningServer,
-    shutdown_signal: impl Future<Output = Result<(), std::io::Error>>,
-) -> Result<(), anyhow::Error> {
-    let signal = tokio::select! {
-        result = shutdown_signal => Some(result),
-        () = server.wait_for_exit() => None,
-    };
+    let wait = wait_for_shutdown_signal_or_server_exit(
+        server.wait_for_exit(),
+        wait_for_server_shutdown_signal(),
+    )
+    .await;
     let shutdown = server.shutdown().await;
-    if let Some(signal) = signal {
-        signal?;
-    }
+    wait?;
     shutdown?;
     Ok(())
+}
+
+async fn wait_for_shutdown_signal_or_server_exit(
+    server_exit: impl Future<Output = ()>,
+    shutdown_signal: impl Future<Output = Result<(), std::io::Error>>,
+) -> Result<(), std::io::Error> {
+    tokio::select! {
+        result = shutdown_signal => result,
+        () = server_exit => Ok(()),
+    }
 }
 
 fn server_endpoint_is_loopback(endpoint: &str) -> bool {
@@ -819,11 +831,11 @@ async fn run_no_runtime_command(
             Ok(())
         }
         Command::Features(args) => run_features(args, feature_overrides).map_err(Into::into),
-        Command::Server => run_server(feature_overrides.clone())
+        Command::Server => Box::pin(run_server(feature_overrides.clone()))
             .await
             .map_err(Into::into),
         #[cfg(feature = "embedded-ui")]
-        Command::Ui(args) => run_ui(args, feature_overrides.clone())
+        Command::Ui(args) => Box::pin(run_ui(args, feature_overrides.clone()))
             .await
             .map_err(Into::into),
         Command::Sql(_)
@@ -853,6 +865,7 @@ async fn run_app_command(
                 .execute_sql(Request::new(ExecuteSqlRequest {
                     workspace: Some(workspace.clone()),
                     sql: args.sql,
+                    guide_read_context: None,
                 }))
                 .await
             {
@@ -920,7 +933,6 @@ async fn run_app_command(
                     feedback_enabled: features.enabled(coral_app::features::Feature::Feedback),
                     observed_values_search_enabled: features
                         .enabled(coral_app::features::Feature::ObservedValuesSearch),
-                    tasks_enabled: features.enabled(coral_app::features::Feature::Tasks),
                     trace_parent: ctx.and_then(|ctx| ctx.trace_parent.clone()),
                     source_names,
                     query_examples,
@@ -2061,6 +2073,16 @@ mod tests {
         .expect_err("conflicting feature overrides should fail");
 
         assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn retired_task_feature_flags_are_rejected() {
+        for flag in ["--enable-tasks", "--disable-tasks"] {
+            let error = Cli::try_parse_from(["coral", flag, "mcp-stdio"])
+                .expect_err("retired task feature flag should be rejected");
+
+            assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+        }
     }
 
     #[test]

@@ -34,6 +34,19 @@ export const authPanel = style({
   minWidth: 0,
 })
 
+export const oauthDevicePanel = style([
+  authPanel,
+  {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+    '@media': {
+      'screen and (max-width: 600px)': {
+        gridTemplateColumns: 'minmax(0, 1fr)',
+      },
+    },
+  },
+])
+
 export const authPanelHidden = style({
   pointerEvents: 'none',
   visibility: 'hidden',

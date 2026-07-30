@@ -203,7 +203,7 @@ export function SchemaExplorer({
                     return (
                       <div key={connector.name}>
                         <ButtonContainer
-                          aria-controls={connectorChildrenId}
+                          aria-controls={expanded ? connectorChildrenId : undefined}
                           aria-expanded={expanded}
                           className={styles.treeRow}
                           fullWidth

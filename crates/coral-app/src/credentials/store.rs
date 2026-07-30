@@ -636,7 +636,7 @@ impl FileCredentialBackend {
     fn write_unlocked(path: &Path, material: Option<&[u8]>) -> Result<(), CredentialsError> {
         match material {
             Some(material) => write_file_unlocked(path, material),
-            None => remove_file_if_exists_unlocked(path).map_err(Into::into),
+            None => storage_fs::remove_file_if_exists(path).map_err(Into::into),
         }
     }
 
@@ -1094,7 +1094,7 @@ fn save_values_unlocked(
     values: &BTreeMap<String, String>,
 ) -> Result<(), CredentialsError> {
     if values.is_empty() {
-        remove_file_if_exists_unlocked(path)?;
+        storage_fs::remove_file_if_exists(path)?;
         return Ok(());
     }
 
@@ -1117,14 +1117,6 @@ fn render_env_file(values: &BTreeMap<String, String>) -> String {
         output.push('\n');
     }
     output
-}
-
-fn remove_file_if_exists_unlocked(path: &Path) -> Result<(), io::Error> {
-    match std::fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error),
-    }
 }
 
 fn parse_env_file(raw: &str) -> Result<BTreeMap<String, String>, CredentialsError> {

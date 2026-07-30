@@ -1,10 +1,10 @@
 [workspace]
-members = ["crates/coral-*", "crates/auth/*", "xtask"]
+members = ["crates/coral-*", "crates/auth/*", "xtask", "xtask/benchmarks"]
 resolver = "2"
 
 [workspace.package]
 edition = "2024"
-version = "0.7.1" # x-release-please-version
+version = "0.8.1" # x-release-please-version
 license = "Apache-2.0"
 rust-version = "1.97"
 
@@ -47,6 +47,7 @@ print_stdout = "warn"
 assert_cmd = "2"
 anyhow = "1"
 arrow = "58.1.0"
+async-lock = "3"
 async-trait = "0.1"
 axum = { version = "0.8", default-features = false }
 base64 = "0.22"
@@ -68,6 +69,7 @@ glob = "0.3"
 http-body = "1"
 httpdate = "1.0.3"
 jsonschema = { version = "0.46.9", default-features = false }
+jsonwebtoken = { version = "10", default-features = false, features = ["aws_lc_rs"] }
 keyring-core = { version = "1.0.0", default-features = false }
 apple-native-keyring-store = { version = "1.0.0", default-features = false, features = ["keychain"] }
 windows-native-keyring-store = { version = "1.0.0", default-features = false }

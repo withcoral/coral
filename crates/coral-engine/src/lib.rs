@@ -76,12 +76,12 @@ pub use contracts::{
     DescribeTableInfo, EffectiveDependentJoinConfig, MemorySize, QueryExecution,
     QueryExecutionProvenance, QueryMemoryConfig, QueryParameterValue, QueryParameters, QueryPlan,
     QueryRuntimeConfig, QueryRuntimeContext, QuerySource, QueryTableFunctionUsage, QueryTableUsage,
-    QueryTestFailure, QueryTestResult, QueryTestSuccess, RuntimeSourceComponent,
-    RuntimeSourcePackage, SourceValidationReport, StatusCode, StructuredQueryError,
-    TableFunctionArgumentInfo, TableFunctionInfo, TableFunctionResultColumnInfo, TableInfo,
-    UdfRuntimeArgument, UdfRuntimeDefinition, UdfRuntimeImplementation, UdfRuntimePublish,
-    UdfRuntimeResultColumn, UdfRuntimeSignature, UdfRuntimeSqlDefinition,
-    UdfRuntimeTableFunctionPublish,
+    QueryTestFailure, QueryTestResult, QueryTestSuccess, ResolvedQueryResources,
+    RuntimeSourceComponent, RuntimeSourcePackage, SourceValidationReport, StatusCode,
+    StructuredQueryError, TableFunctionArgumentInfo, TableFunctionInfo,
+    TableFunctionResultColumnInfo, TableInfo, UdfRuntimeArgument, UdfRuntimeDefinition,
+    UdfRuntimeImplementation, UdfRuntimePublish, UdfRuntimeResultColumn, UdfRuntimeSignature,
+    UdfRuntimeSqlDefinition, UdfRuntimeTableFunctionPublish,
 };
 
 /// High-level query operations for the local query engine.
@@ -93,6 +93,31 @@ pub struct CoralQuery;
 /// `DataFusion` session. Its internals remain engine-owned.
 pub struct PreparedQueryRuntime {
     inner: runtime::query::QueryRuntimeAdapter,
+}
+
+/// One logically planned query bound to its originating runtime.
+///
+/// Inspect [`Self::resources`] before consuming the query with [`Self::execute`].
+pub struct PreparedQuery<'runtime> {
+    runtime: &'runtime PreparedQueryRuntime,
+    inner: runtime::query::PreparedSql,
+}
+
+impl PreparedQuery<'_> {
+    /// Returns source resources referenced by the logical query plan.
+    #[must_use]
+    pub fn resources(&self) -> &ResolvedQueryResources {
+        self.inner.resources()
+    }
+
+    /// Physically plans and executes this query.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if physical planning or execution fails.
+    pub async fn execute(self) -> Result<QueryExecution, CoreError> {
+        self.runtime.inner.execute_prepared(self.inner).await
+    }
 }
 
 impl PreparedQueryRuntime {
@@ -177,10 +202,34 @@ impl PreparedQueryRuntime {
         sql: &str,
         params: QueryParameters,
     ) -> Result<QueryExecution, CoreError> {
+        self.prepare_sql_with_params(sql, params)
+            .await?
+            .execute()
+            .await
+    }
+
+    /// Logically plans one `SQL` statement without physical execution.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if the SQL is empty or cannot be logically planned.
+    pub async fn prepare_sql(&self, sql: &str) -> Result<PreparedQuery<'_>, CoreError> {
+        self.prepare_sql_with_params(sql, QueryParameters::new())
+            .await
+    }
+
+    async fn prepare_sql_with_params(
+        &self,
+        sql: &str,
+        params: QueryParameters,
+    ) -> Result<PreparedQuery<'_>, CoreError> {
         if sql.trim().is_empty() {
             return Err(CoreError::InvalidInput("SQL must not be empty".to_string()));
         }
-        self.inner.execute_sql(sql, &params).await
+        Ok(PreparedQuery {
+            runtime: self,
+            inner: self.inner.prepare_sql(sql, params).await?,
+        })
     }
 
     /// Explains one `SQL` statement against this prepared runtime.

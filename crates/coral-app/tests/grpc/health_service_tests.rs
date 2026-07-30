@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use coral_app::{UserPrincipal, UserPrincipalProvider, UserPrincipalProviderError};
+use coral_app::{Principal, PrincipalProvider, PrincipalProviderError};
 use coral_client::local::ServerBuilder;
 use tempfile::TempDir;
 use tonic::Code;
@@ -9,16 +9,16 @@ use tonic_health::pb::health_check_response::ServingStatus;
 use tonic_health::pb::health_client::HealthClient;
 
 #[derive(Debug)]
-struct UnavailableUserPrincipalProvider;
+struct UnavailablePrincipalProvider;
 
 #[tonic::async_trait]
-impl UserPrincipalProvider for UnavailableUserPrincipalProvider {
+impl PrincipalProvider for UnavailablePrincipalProvider {
     async fn principal_for_metadata(
         &self,
         _metadata: &tonic::metadata::MetadataMap,
-    ) -> Result<UserPrincipal, UserPrincipalProviderError> {
-        Err(UserPrincipalProviderError::unavailable(
-            "user principal provider unavailable",
+    ) -> Result<Principal, PrincipalProviderError> {
+        Err(PrincipalProviderError::unavailable(
+            "principal provider unavailable",
         ))
     }
 }
@@ -28,7 +28,7 @@ async fn grpc_health_is_process_liveness_only() {
     let temp = TempDir::new().expect("temp dir");
     let server = ServerBuilder::new()
         .with_config_dir(temp.path())
-        .with_user_principal_provider(Arc::new(UnavailableUserPrincipalProvider))
+        .with_principal_provider(Arc::new(UnavailablePrincipalProvider))
         .start()
         .await
         .expect("start server");

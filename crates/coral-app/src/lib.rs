@@ -41,6 +41,7 @@
     )
 )]
 
+mod auth;
 /// Bootstrap entrypoints and local server assembly.
 pub mod bootstrap;
 mod catalog;
@@ -50,6 +51,7 @@ mod feedback;
 mod functions;
 mod hash;
 mod identity;
+mod outbound_url_policy;
 mod query;
 mod request_context;
 mod search;
@@ -61,12 +63,17 @@ pub mod telemetry;
 mod transport;
 mod workspaces;
 
+pub use auth::{
+    AuthServerError, AuthSettings, CoralAuthorizationServer, RunningCoralAuthorizationServer,
+};
 pub use bootstrap::{
-    AppError, RunningServer, ServerBuilder, ServerMode, StaticAsset, StaticAssetsProvider,
+    AppError, McpHttpServeConfig, RunningServer, ServerBuilder, ServerMode, StaticAsset,
+    StaticAssetsProvider,
 };
 pub use coral_engine::{EngineExtensions, QuerySource};
 pub use identity::{
-    SingleUserPrincipalProvider, UserPrincipal, UserPrincipalProvider, UserPrincipalProviderError,
+    LocalPrincipalProvider, Principal, PrincipalId, PrincipalKind, PrincipalProvider,
+    PrincipalProviderError,
 };
 pub use query::extensions::{
     AwsEngineExtensionsProvider, EngineExtensionsProvider, NoopEngineExtensionsProvider,

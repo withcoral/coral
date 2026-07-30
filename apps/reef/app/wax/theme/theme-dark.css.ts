@@ -89,6 +89,7 @@ export const darkTheme = createTheme(theme, {
   },
   content: {
     accentContent: {
+      iconFill: paletteDark.CoralGreenAlpha['03'],
       primary: paletteDark.CoralGreen['12'],
       primaryReverse: paletteDark.CoralGreen['02'],
       secondary: paletteDark.CoralGreen['11'],
@@ -100,6 +101,7 @@ export const darkTheme = createTheme(theme, {
     },
     disabled: paletteDark.GrayAlpha['07'],
     error: paletteDark.RedAlpha['10'],
+    errorBackground: paletteDark.RedAlpha['03'],
     info: paletteDark.BlueAlpha['10'],
     link: paletteDark.CoralGreen['11'],
     linkHover: paletteDark.CoralGreen['12'],
@@ -108,22 +110,28 @@ export const darkTheme = createTheme(theme, {
     secondary: paletteDark.GrayAlpha['11'],
     selection: paletteDark.CoralGreenAlpha['04'],
     success: paletteDark.GreenAlpha['10'],
+    successBackground: paletteDark.GreenAlpha['03'],
     tertiary: paletteDark.GrayAlpha['09'],
     warning: paletteDark.AmberAlpha['11'],
+    warningBackground: paletteDark.AmberAlpha['03'],
   },
   elevation: {
     e1: `0 4px 24px 0 ${paletteDark.BlackAlpha['03']}, 0 1px 2px 0 ${paletteDark.BlackAlpha['05']}`,
-    e2: `0 2px 8px 0 ${paletteDark.BlackAlpha['05']}, 0 1px 2px 0 ${paletteDark.BlackAlpha['05']}`,
+    e2: `0 2px 8px 0 ${paletteDark.BlackAlpha['07']}, 0 1px 2px 0 ${paletteDark.BlackAlpha['07']}`,
     e3: `0 4px 24px 0 ${paletteDark.BlackAlpha['09']}, 0 1px 2px 0 ${paletteDark.BlackAlpha['06']}`,
     e4: `0 32px 96px 0 ${paletteDark.BlackAlpha['10']}, 0 1px 2px 0 ${paletteDark.BlackAlpha['09']}`,
   },
   gradient: {
     card: `linear-gradient(92deg, ${utils.opacify(paletteDark.CoralGreenAlpha['01'], 20)} 0%, ${utils.opacify(paletteDark.CoralGreenAlpha['07'], 20)} 100%), ${paletteDark.GrayAlpha['02']}`,
   },
+  help: {
+    componentBackground: paletteDark.Gray['02'],
+  },
   input: {
     stroke: {
       default: paletteDark.GrayAlpha['04'],
       disabled: paletteDark.GrayAlpha['03'],
+      error: paletteDark.RedAlpha['07'],
       focus: paletteDark.CoralGreen['11'],
       hover: paletteDark.GrayAlpha['05'],
     },
@@ -199,7 +207,8 @@ export const darkTheme = createTheme(theme, {
       selected: paletteDark.GrayAlpha['03'],
     },
     buttonAccent: {
-      hover: paletteDark.CoralGreenAlpha['02'],
+      default: paletteDark.CoralGreenAlpha['02'],
+      hover: paletteDark.CoralGreenAlpha['03'],
       selected: paletteDark.CoralGreenAlpha['03'],
     },
   },
@@ -213,6 +222,7 @@ export const darkTheme = createTheme(theme, {
   surface: {
     backdrop: paletteDark.BlackAlpha['08'],
     card: paletteDark.GrayAlpha['02'],
+    cardHover: paletteDark.GrayAlpha['04'],
     floating: paletteDark.Gray['04'],
     main: paletteDark.Gray['02'],
     mainContent: paletteDark.Gray['03'],

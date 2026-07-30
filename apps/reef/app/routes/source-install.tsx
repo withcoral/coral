@@ -1,5 +1,5 @@
 import type { Route } from './+types/source-install'
-import { redirect, useNavigate } from 'react-router'
+import { redirect, useNavigate, useRevalidator } from 'react-router'
 
 import type { SourcesActionData } from './sources-action'
 import { runSourcesAction } from './sources-action'
@@ -29,12 +29,23 @@ export async function clientAction({
 
 export default function SourceInstallRoute({ actionData, params }: Route.ComponentProps) {
   const navigate = useNavigate()
+  const revalidator = useRevalidator()
   const sourcesPath = routePath('workspaceSources', { workspaceId: params.workspaceId })
 
   return (
     <SourceCreateDialog
       actionData={actionData}
       discoveryPath={routePath('workspaceSourceDiscovery', { workspaceId: params.workspaceId })}
+      oauthImportPath={`${sourcesPath}/oauth-import`}
+      onOAuthImportComplete={async (name, signal) => {
+        addToast('success', {
+          title: `Created ${name}`,
+          description: 'The source was validated and installed.',
+        })
+        await revalidator.revalidate()
+        if (signal.aborted) return
+        await navigate(sourcesPath)
+      }}
       open
       onOpenChange={(open) => {
         if (!open) navigate(sourcesPath)

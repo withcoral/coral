@@ -69,7 +69,6 @@ pub enum OutputCardinality {
     None,
     Singleton,
     List,
-    WrappedList,
     Unknown,
 }
 
@@ -226,7 +225,7 @@ mod tests {
                     description: String::new(),
                 },
             ],
-            diagnostics: vec![Diagnostic::warning("TEST", "diagnostic", None)],
+            diagnostics: vec![Diagnostic::new("diagnostic", None)],
         };
 
         let yaml = serde_yaml::to_string(&ir).expect("serialize semantic IR");

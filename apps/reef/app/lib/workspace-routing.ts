@@ -16,6 +16,12 @@ export function workspaceFromParams(params: { workspaceId?: string }): Workspace
 }
 
 export function workspacePathForCurrentSection(workspaceId: string, pathname: string): string {
+  const isFunctionsSection = matchPath(
+    { end: false, path: routePattern('workspaceFunctions') },
+    pathname,
+  )
+  if (isFunctionsSection) return routePath('workspaceFunctions', { workspaceId })
+
   const isSchemaSection = matchPath({ end: false, path: routePattern('workspaceSchema') }, pathname)
   if (isSchemaSection) return routePath('workspaceSchema', { workspaceId })
 

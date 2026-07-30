@@ -20,6 +20,8 @@ pub struct Projection {
     pub kind: ProjectionKind,
     pub description: String,
     pub guide: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub require_guide_read: bool,
     pub operation_id: String,
     pub visibility: ProjectionVisibility,
     pub inputs: Vec<ProjectionInput>,
@@ -103,7 +105,8 @@ mod tests {
                     function_kind: SourceTableFunctionKind::Search,
                 },
                 description: String::new(),
-                guide: String::new(),
+                guide: "Use search_issues for lookups.".to_string(),
+                require_guide_read: true,
                 operation_id: "issues/search".to_string(),
                 visibility: ProjectionVisibility::Published,
                 inputs: Vec::new(),
@@ -147,6 +150,10 @@ mod tests {
             yaml.contains("do_not_index: true"),
             "projection catalog should serialize explicit indexing policy: {yaml}"
         );
+        assert!(
+            yaml.contains("require_guide_read: true"),
+            "required guide-read policy should serialize: {yaml}"
+        );
         assert!(!yaml.contains("surface_id:"), "surface ID leaked: {yaml}");
 
         let decoded = serde_yaml::from_str::<ProjectionCatalog>(&yaml)
@@ -161,6 +168,13 @@ mod tests {
                 .expect("column")
                 .do_not_index,
             "projection column policy should survive round-trip"
+        );
+        assert!(
+            decoded
+                .projections
+                .first()
+                .expect("projection")
+                .require_guide_read
         );
     }
 

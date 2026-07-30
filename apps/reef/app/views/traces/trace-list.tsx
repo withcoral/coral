@@ -1,12 +1,12 @@
 import classNames from 'classnames'
 import { NavLink, useLocation } from 'react-router'
 
+import { HighlightedCode } from '@/components/code-block'
+import { routePath } from '@/routing/routemap'
 import { Tooltip } from '@/wax/components/tooltip'
 import { Typography } from '@/wax/components/typography'
-import { routePath } from '@/routing/routemap'
 
 import * as s from './traces.css'
-import { SqlCode } from './sql-code'
 import {
   durationClass,
   formatDurationFromNanos,
@@ -49,7 +49,11 @@ function TraceRow({
         </Tooltip>
       </div>
       <div className={s.sqlPreview}>
-        <SqlCode inline sql={trace.query || trace.name || trace.traceId} />
+        <HighlightedCode
+          className={s.sqlInlineCode}
+          code={trace.query || trace.name || trace.traceId}
+          language="sql"
+        />
       </div>
       <div
         className={classNames(

@@ -22,8 +22,8 @@ use crate::inputs::{
 use crate::{
     ColumnSpec, DeclaredRelation, FilterSpec, ManifestDataType, ManifestError, ManifestInputSpec,
     ParsedTemplate, Result, SourceBackend, SourceManifestCommon, TableCommon, TemplateNamespace,
-    TemplatePart, validate_columns, validate_declared_relation_namespace, validate_source_name,
-    validate_test_queries,
+    TemplatePart, validate_columns, validate_declared_relation_namespace, validate_required_guide,
+    validate_source_name, validate_test_queries,
 };
 
 /// Validated top-level manifest for a native file-backed source.
@@ -139,6 +139,8 @@ struct RawFileTableSpec {
     format: String,
     #[serde(default)]
     guide: String,
+    #[serde(default)]
+    require_guide_read: bool,
     #[serde(default)]
     filters: Vec<FilterSpec>,
     #[serde(default)]
@@ -578,6 +580,11 @@ impl FileFormatOptions {
 
 impl RawFileTableSpec {
     fn into_validated(self, schema: &str) -> Result<FileTableSpec> {
+        validate_required_guide(
+            &format!("table '{schema}.{}'", self.name),
+            &self.guide,
+            self.require_guide_read,
+        )?;
         let format = FileFormat::parse(&self.format, schema, &self.name)?;
         if format.requires_declared_columns() && self.columns.is_empty() {
             return Err(ManifestError::validation(format!(
@@ -605,6 +612,7 @@ impl RawFileTableSpec {
                 self.name,
                 self.description,
                 self.guide,
+                self.require_guide_read,
                 self.filters,
                 self.fetch_limit_default,
                 None,

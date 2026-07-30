@@ -6,16 +6,21 @@ use crate::v4::OperationMetadata;
 use crate::v4::diagnostics::Diagnostic;
 use crate::v4::ir::{
     HttpMethod, IrExecutionAttachment, IrInputLocation, IrOperation, IrOperationInput,
-    IrOperationNaming, IrScalarType, OutputCardinality, RestExecutionAttachment,
+    IrOperationNaming, IrOperationOutput, IrScalarType, OutputCardinality, RestExecutionAttachment,
     RestParameterBinding, RestRequestBody,
 };
 use crate::v4::lookup_keys::infer_rest_lookup_keys;
 use crate::v4::naming::normalize_identifier;
+use crate::v4::response_cursors::find_response_cursor_path;
 use crate::v4::surfaces::json_schema::{
     json_schema_default_to_string, json_schema_scalar_type_or_string, json_schema_type_contains,
     json_schema_type_display,
 };
-use crate::{ManifestError, PageSizeSpec, PaginationMode, PaginationSpec, Result};
+use crate::v4::wrapped_lists::{WrappedListInferenceContext, infer_wrapped_list_row_path};
+use crate::{
+    ManifestError, PageSizeSpec, PaginationMode, PaginationSpec, Result,
+    v4::resolve_output_row_type_ref,
+};
 
 use super::import::OpenApiImporter;
 use super::responses::OpenApiResponsePaginationContext;
@@ -45,7 +50,19 @@ impl OpenApiImporter<'_> {
         let request_body = self.import_request_body(op_obj, &operation_id, &mut diagnostics);
         let (output, response, entity, pagination_context) =
             self.import_response(path, op_obj, &operation_id, &mut diagnostics);
-        let pagination = detect_pagination(&parameters, &pagination_context);
+        let contract = detect_pagination_contract(self.document, &parameters, &pagination_context);
+        let row_path = self.infer_row_path(
+            raw_operation_id.unwrap_or(&operation_id),
+            contract.as_ref().is_some_and(binds_pagination_input),
+            &pagination_context,
+            &output,
+        );
+        // A contract only becomes this operation's pagination once Coral reads
+        // the response as a list, whether by declaration or by row path.
+        let pagination = is_list_like_output(pagination_context.cardinality, &row_path)
+            .then_some(contract)
+            .flatten()
+            .unwrap_or_default();
         let lookup_keys = infer_rest_lookup_keys(&parameters, &pagination);
         let rest_parameters = parameters
             .iter()
@@ -91,10 +108,42 @@ impl OpenApiImporter<'_> {
         Ok((
             operation,
             OperationMetadata::Rest {
+                row_path,
                 pagination,
                 lookup_keys,
             },
         ))
+    }
+
+    /// Infers where the rows of a wrapped-list response live, discarding a path
+    /// the imported types cannot resolve so the importer never emits metadata
+    /// that fails plan validation.
+    fn infer_row_path(
+        &self,
+        operation_name: &str,
+        paginated_operation: bool,
+        pagination_context: &OpenApiResponsePaginationContext,
+        output: &IrOperationOutput,
+    ) -> Vec<String> {
+        let row_path = infer_wrapped_list_row_path(WrappedListInferenceContext {
+            operation_name,
+            paginated_operation,
+            schema_root: self.document,
+            response_schema: &pagination_context.schema,
+        });
+        if row_path.is_empty() {
+            return row_path;
+        }
+        let types = self
+            .types
+            .iter()
+            .map(|(id, ty)| (id.as_str(), ty))
+            .collect::<BTreeMap<_, _>>();
+        if resolve_output_row_type_ref(output, &row_path, &types).is_ok() {
+            row_path
+        } else {
+            Vec::new()
+        }
     }
 
     fn import_parameters(
@@ -122,16 +171,14 @@ impl OpenApiImporter<'_> {
                 continue;
             };
             let Some(parameter_obj) = resolved.as_object() else {
-                diagnostics.push(Diagnostic::warning(
-                    "OPENAPI_PARAMETER_INVALID",
+                diagnostics.push(Diagnostic::new(
                     format!("operation '{operation_id}' has a parameter that is not an object"),
                     Some(operation_id.to_string()),
                 ));
                 continue;
             };
             let Some(name) = parameter_obj.get("name").and_then(Value::as_str) else {
-                diagnostics.push(Diagnostic::warning(
-                    "OPENAPI_PARAMETER_INVALID",
+                diagnostics.push(Diagnostic::new(
                     format!("operation '{operation_id}' has a parameter without a string name"),
                     Some(operation_id.to_string()),
                 ));
@@ -142,8 +189,7 @@ impl OpenApiImporter<'_> {
                 .and_then(Value::as_str)
                 .and_then(parse_parameter_location)
             else {
-                diagnostics.push(Diagnostic::warning(
-                    "OPENAPI_PARAMETER_SERIALIZATION_UNSUPPORTED",
+                diagnostics.push(Diagnostic::new(
                     format!("operation '{operation_id}' has unsupported parameter location"),
                     Some(operation_id.to_string()),
                 ));
@@ -189,8 +235,7 @@ impl OpenApiImporter<'_> {
     ) -> Option<IrScalarType> {
         let resolved = self.resolve_ref(schema, operation_id, diagnostics)?;
         let Some(scalar) = json_schema_scalar_type_or_string(&resolved) else {
-            diagnostics.push(Diagnostic::warning(
-                "PROJECTION_INPUT_UNSUPPORTED",
+            diagnostics.push(Diagnostic::new(
                 format!(
                     "parameter '{name}' has unsupported schema type '{}'",
                     json_schema_type_display(&resolved)
@@ -222,8 +267,7 @@ impl OpenApiImporter<'_> {
                 diagnostics,
             )
             .unwrap_or_else(|| "json".to_string());
-        diagnostics.push(Diagnostic::warning(
-            "OPENAPI_REQUEST_BODY_UNPUBLISHED",
+        diagnostics.push(Diagnostic::new(
             format!("operation '{operation_id}' has a request body and will not be published"),
             Some(operation_id.to_string()),
         ));
@@ -305,18 +349,35 @@ fn parameter_is_required(parameter_obj: &Map<String, Value>, location: IrInputLo
         .unwrap_or(false)
 }
 
-fn detect_pagination(
+/// Finds the pagination contract the operation's inputs and response describe,
+/// independently of whether Coral will read the response as a list.
+///
+/// None of the detectors consults the row path, so this runs first and answers
+/// the question wrapped-list inference needs — is this operation paginated? —
+/// without the two inferences having to predict each other.
+fn detect_pagination_contract(
+    document: &Value,
     inputs: &[IrOperationInput],
     context: &OpenApiResponsePaginationContext,
-) -> PaginationSpec {
-    if !is_paginated_cardinality(context.cardinality) {
-        return PaginationSpec::default();
-    }
+) -> Option<PaginationSpec> {
     detect_link_header_pagination(inputs, context)
-        .or_else(|| detect_cursor_query_pagination(inputs, context))
+        .or_else(|| detect_cursor_query_pagination(document, inputs, context))
         .or_else(|| detect_offset_pagination(inputs))
         .or_else(|| detect_page_pagination(inputs))
-        .unwrap_or_default()
+}
+
+/// Whether a detected contract binds any request input.
+///
+/// Only this narrower question is envelope evidence. `Link` header detection
+/// reads no input at all, and providers declare that header on singleton
+/// resources too — GitHub does, on `GET /orgs/{org}/actions/hosted-runners/{id}`
+/// among others. Treating a bare header as evidence would promote a resource's
+/// incidental array, such as that runner's `public_ips`, to the whole relation.
+fn binds_pagination_input(contract: &PaginationSpec) -> bool {
+    contract.cursor_param.is_some()
+        || contract.offset_param.is_some()
+        || contract.page_param.is_some()
+        || contract.page_size.is_some()
 }
 
 fn detect_link_header_pagination(
@@ -340,9 +401,25 @@ fn detect_link_header_pagination(
 }
 
 fn detect_cursor_query_pagination(
+    document: &Value,
     inputs: &[IrOperationInput],
     context: &OpenApiResponsePaginationContext,
 ) -> Option<PaginationSpec> {
+    /// Response property names that conventionally carry a continuation token.
+    const RESPONSE_CURSOR_TOKENS: &[&str] = &[
+        "after",
+        "continuationtoken",
+        "cursor",
+        "endcursor",
+        "iterator",
+        "next",
+        "nextcursor",
+        "nextmarker",
+        "nextpage",
+        "nextpagetoken",
+        "nexttoken",
+    ];
+
     let cursor_input = find_optional_string_query_input(
         inputs,
         &[
@@ -368,7 +445,12 @@ fn detect_cursor_query_pagination(
         return None;
     }
 
-    let response_cursor_path = find_response_cursor_path(&context.schema).unwrap_or_default();
+    // The pagination context holds the response schema with only its own `$ref`
+    // resolved, so the document is still needed to see inside a referenced
+    // metadata sibling.
+    let response_cursor_path =
+        find_response_cursor_path(document, &context.schema, RESPONSE_CURSOR_TOKENS)
+            .unwrap_or_default();
     let response_cursor_header = response_cursor_header(context);
     if response_cursor_path.is_empty() && response_cursor_header.is_none() {
         return None;
@@ -545,49 +627,10 @@ fn response_header_allows_string(header: &Value) -> bool {
     })
 }
 
-fn find_response_cursor_path(schema: &Value) -> Option<Vec<String>> {
-    let properties = schema.get("properties").and_then(Value::as_object)?;
-    for (name, property) in properties {
-        if is_response_cursor_property(name, property) {
-            return Some(vec![name.clone()]);
-        }
-    }
-    for (name, property) in properties {
-        if !json_schema_type_contains(property, "object") {
-            continue;
-        }
-        if let Some(mut path) = find_response_cursor_path(property) {
-            path.insert(0, name.clone());
-            return Some(path);
-        }
-    }
-    None
-}
-
-fn is_response_cursor_property(name: &str, schema: &Value) -> bool {
-    const RESPONSE_CURSOR_TOKENS: &[&str] = &[
-        "after",
-        "continuationtoken",
-        "cursor",
-        "endcursor",
-        "iterator",
-        "next",
-        "nextcursor",
-        "nextmarker",
-        "nextpage",
-        "nextpagetoken",
-        "nexttoken",
-    ];
-
-    RESPONSE_CURSOR_TOKENS.contains(&name_token(name).as_str())
-        && (json_schema_type_contains(schema, "string") || schema.get("type").is_none())
-}
-
-fn is_paginated_cardinality(cardinality: OutputCardinality) -> bool {
-    matches!(
-        cardinality,
-        OutputCardinality::List | OutputCardinality::WrappedList
-    )
+/// A wrapped-list envelope is a singleton by cardinality but yields rows, so it
+/// paginates like a declared list.
+fn is_list_like_output(cardinality: OutputCardinality, row_path: &[String]) -> bool {
+    cardinality == OutputCardinality::List || !row_path.is_empty()
 }
 
 fn page_size_spec(input: &IrOperationInput) -> PageSizeSpec {

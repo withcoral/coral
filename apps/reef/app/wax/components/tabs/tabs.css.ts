@@ -37,6 +37,7 @@ export const list = style({
 
 export const tab = style({
   color: theme.content.secondary,
+  outlineOffset: '-1px',
   paddingBlock: '6px',
   paddingInline: '10px',
 

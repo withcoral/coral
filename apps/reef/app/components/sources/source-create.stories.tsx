@@ -4,6 +4,7 @@ import { createContext, useContext, type ComponentProps } from 'react'
 import { createRoutesStub } from 'react-router'
 import { expect, fn, waitFor, within } from 'storybook/test'
 
+import { oauthInstallEventToNdjson } from '@/lib/source-oauth-install-stream'
 import { SourceCreateDialog } from '@/views/sources/source-create'
 
 type SourceCreateDialogProps = ComponentProps<typeof SourceCreateDialog>
@@ -29,6 +30,28 @@ const SourceCreateRoutesStub = createRoutesStub([
     path: '/workspaces/:workspaceId/sources/install',
   },
 ])
+
+const pendingOAuthResponse: typeof fetch = async (_input, init) => {
+  const event = oauthInstallEventToNdjson({
+    authorizationUrl: 'https://github.com/login/device',
+    expiresInSeconds: '900',
+    inputKey: 'API_TOKEN',
+    type: 'oauthAuthorization',
+    userCode: 'ABCD-EFGH',
+    verificationUri: 'https://github.com/login/device',
+    verificationUriComplete: 'https://github.com/login/device?user_code=ABCD-EFGH',
+  })
+  const encoder = new TextEncoder()
+
+  return new Response(
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(event))
+        init?.signal?.addEventListener('abort', () => controller.close(), { once: true })
+      },
+    }),
+  )
+}
 
 const meta = {
   args: {
@@ -114,6 +137,40 @@ export const Credentials: Story = {
     await userEvent.click(page.getByRole('radio', { name: 'None' }))
     await expect(page.getByText('This endpoint doesn’t require credentials.')).toBeVisible()
     await expect(activeToken).not.toBeVisible()
+  },
+}
+
+export const OAuthLoading: Story = {
+  args: {
+    fetchOAuthImport: pendingOAuthResponse,
+    openAuthorization: fn(),
+  },
+  name: 'OAuth loading',
+  play: async ({ canvasElement, userEvent }) => {
+    const page = within(canvasElement.ownerDocument.body)
+
+    await userEvent.type(page.getByLabelText('Source URL'), DISCOVERY.url)
+    await userEvent.click(page.getByRole('button', { name: 'Next' }))
+    await waitFor(() => expect(page.getByLabelText('Name')).toHaveValue('weather_api'))
+    await userEvent.click(page.getByRole('button', { name: 'Next' }))
+    await waitFor(() => expect(activeDialogCount(canvasElement.ownerDocument)).toBe(3))
+    await userEvent.click(page.getByRole('radio', { name: 'OAuth device flow' }))
+    await userEvent.type(
+      page.getByLabelText('Device authorization URL'),
+      'https://github.com/login/device/code',
+    )
+    await userEvent.type(
+      page.getByLabelText('Token URL'),
+      'https://github.com/login/oauth/access_token',
+    )
+    await userEvent.type(page.getByLabelText('Client ID'), 'storybook-client')
+    await userEvent.click(page.getByRole('button', { name: 'Create source' }))
+
+    await waitFor(() => expect(activeDialogCount(canvasElement.ownerDocument)).toBe(4))
+    await waitFor(() =>
+      expect(page.getByRole('dialog', { name: 'Authorize Api token' })).toBeVisible(),
+    )
+    await expect(page.getByText('ABCD-EFGH')).toBeVisible()
   },
 }
 

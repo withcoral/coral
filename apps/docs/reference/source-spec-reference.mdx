@@ -505,6 +505,26 @@ In this minimal example:
 - `auth` declares how stored values are used to authenticate outgoing HTTP requests
 - `{{input.API_TOKEN}}` is resolved from the secret store because `API_TOKEN` is declared as `kind: secret`
 
+### Table guidance
+
+Use `guide` for query instructions that are too detailed for `description`.
+Set `require_guide_read: true` to show the guide before an MCP agent first
+queries the table in each task:
+
+```yaml
+tables:
+  - name: channels
+    description: Slack channels
+    guide: Prefer user_channels for lookup by name or ID.
+    require_guide_read: true
+```
+
+`require_guide_read` requires a non-empty guide. Coral returns the guide instead
+of executing the first matching query in each MCP task; other queries in the
+same batch still run. The agent can then retry or revise the query. Other SQL
+clients are unaffected. In a DSL v4 projection override, set the same fields on
+the projection.
+
 ### Table filters
 
 HTTP tables can declare `filters` that Coral binds from SQL `WHERE` predicates into provider requests. MCP tables use the same SQL-facing filter fields and add a required `tool_arg` field to bind the filter to an MCP tool argument.
@@ -542,6 +562,9 @@ functions:
   - name: search_issues
     kind: search
     description: Search GitHub issues
+    guide: |
+      Use this function to find issues by keywords or qualifiers.
+      Prefer it over scanning the issues table for lookup queries.
     search_limits:
       default_top_k: 10
       max_top_k: 100
@@ -592,6 +615,8 @@ functions:
       - name: score
         type: Float64
 ```
+
+Table functions support `guide` and `require_guide_read` with the same behavior.
 
 Use `bind.arg` when a SQL argument should populate a differently named request
 argument. Function request values can then reference those bound arguments with

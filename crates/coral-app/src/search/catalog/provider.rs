@@ -20,7 +20,7 @@ use crate::search::maintenance::{
     SearchDataScope, SearchMaintenanceDetail, SearchMaintenanceResult, SearchMaintenanceState,
     SearchProviderClearOutcome, SearchProviderClearRequest, SearchStorageCleanupResult,
 };
-use crate::search::provider::ProviderSearchOutcome;
+use crate::search::provider::{LocalSearchWriteCoordinator, ProviderSearchOutcome};
 use crate::search::result::{
     CatalogMetadataResult, ColumnHintResult, ProviderCoverage, ProviderStatus, SearchCandidate,
     SearchFieldRole, SearchManagerError, SearchPayload, SearchProviderKind, SearchProviderState,
@@ -54,11 +54,18 @@ struct CatalogProjectionState {
 #[derive(Clone)]
 pub(crate) struct CatalogMetadataProvider {
     layout: AppStateLayout,
+    write_coordinator: LocalSearchWriteCoordinator,
 }
 
 impl CatalogMetadataProvider {
-    pub(crate) fn new(layout: AppStateLayout) -> Self {
-        Self { layout }
+    pub(crate) fn with_write_coordinator(
+        layout: AppStateLayout,
+        write_coordinator: LocalSearchWriteCoordinator,
+    ) -> Self {
+        Self {
+            layout,
+            write_coordinator,
+        }
     }
 
     pub(crate) fn search(
@@ -70,6 +77,16 @@ impl CatalogMetadataProvider {
             Ok(resolution) => resolution,
             Err(error) => return catalog_query_error_outcome(error),
         };
+        self.write_coordinator.run(&request.workspace_name, || {
+            self.search_with_resolution(request, resolution)
+        })
+    }
+
+    fn search_with_resolution(
+        &self,
+        request: &SearchRequest,
+        resolution: &CatalogResolution,
+    ) -> ProviderSearchOutcome {
         let projection = match self.prepare_projection(request, resolution) {
             Ok(projection) => projection,
             Err(error) => return catalog_index_error_outcome(&error),
@@ -1042,6 +1059,7 @@ mod tests {
                 table_name: "payments".to_string(),
                 description: "Payments".to_string(),
                 guide: String::new(),
+                require_guide_read: false,
                 columns: (0..column_count)
                     .map(|index| ColumnInfo {
                         name: format!("alpha_{index}"),

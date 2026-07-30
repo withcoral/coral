@@ -4,6 +4,7 @@ import { extname, join, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { app, protocol } from 'electron'
 import { RouterContextProvider, createRequestHandler, type ServerBuild } from 'react-router'
+import { createRequestCancellationBridge } from './request-cancellation'
 import { repoRoot } from './sidecar'
 
 // The renderer is served over a custom, non-network scheme instead of a TCP
@@ -182,6 +183,8 @@ async function reactRouterResponse(
   request: Request,
   resolveSidecarBaseUrl: () => Promise<string>,
 ): Promise<Response> {
+  const cancellation = createRequestCancellationBridge(request)
+
   try {
     await refreshServerSidecarEndpoint(resolveSidecarBaseUrl)
   } catch (error) {
@@ -189,8 +192,9 @@ async function reactRouterResponse(
   }
 
   const handler = await loadReactRouterHandler()
-  const response = await handler(request, new RouterContextProvider() as never)
-  return secureDocumentResponse(response, request.method === 'HEAD')
+  const response = await handler(cancellation.request, new RouterContextProvider() as never)
+  const securedResponse = await secureDocumentResponse(response, request.method === 'HEAD')
+  return cancellation.wrapResponse(securedResponse)
 }
 
 async function secureDocumentResponse(response: Response, headOnly: boolean): Promise<Response> {

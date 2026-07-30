@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 
-import { highlightSQL } from '@/lib/sql-highlight'
+import { CodeBlock } from '@/components/code-block'
 import { Container as ScrollArea } from '@/wax/components/scroll-area'
 import { Typography } from '@/wax/components/typography'
 
@@ -62,11 +62,7 @@ export function QueryDetailSummary({
       </header>
       <ScrollArea className={styles.scrollBody} constrainWidth fade="none" fillContent>
         <div className={styles.content}>
-          <div className={styles.sqlBlock}>
-            <pre>
-              <QuerySqlCode sql={sql} />
-            </pre>
-          </div>
+          <CodeBlock code={sql} language="sql" />
           {stats.length > 0 ? (
             <div className={styles.statGrid}>
               {stats.map((stat) => (
@@ -79,10 +75,6 @@ export function QueryDetailSummary({
       </ScrollArea>
     </div>
   )
-}
-
-function QuerySqlCode({ sql }: { sql: string }) {
-  return <code dangerouslySetInnerHTML={{ __html: highlightSQL(sql) }} />
 }
 
 function QueryDetailStatCard({ label, value }: QueryDetailStat) {

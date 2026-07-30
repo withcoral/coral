@@ -7,7 +7,9 @@ use coral_api::v1::{
     FunctionTableFunctionPublish, ListFunctionsRequest, ListFunctionsResponse,
     TableFunctionResultColumn, function,
 };
-use coral_engine::{UdfRuntimeDefinition, UdfRuntimeTableFunctionPublish};
+use coral_engine::{
+    UdfRuntimeDefinition, UdfRuntimeImplementation, UdfRuntimeTableFunctionPublish,
+};
 use tonic::{Request, Response, Status};
 
 use crate::bootstrap::app_status;
@@ -88,6 +90,7 @@ impl FunctionServiceApi for FunctionService {
             queries
                 .function_manager()
                 .remove_user_function(&workspace_name, &function_name)
+                .await
                 .map_err(app_status)?;
             Ok(Response::new(DeleteFunctionResponse {}))
         })
@@ -98,7 +101,7 @@ impl FunctionServiceApi for FunctionService {
 fn function_listing_to_proto(workspace_name: &WorkspaceName, listing: FunctionListing) -> Function {
     match listing.runtime {
         FunctionRuntimeStatus::Ready(definition) => {
-            runtime_function_to_proto(workspace_name, definition)
+            runtime_function_to_proto(workspace_name, *definition)
         }
         FunctionRuntimeStatus::Invalid(reason) => Function {
             name: listing.name.to_string(),
@@ -115,6 +118,9 @@ fn runtime_function_to_proto(
     function: UdfRuntimeDefinition,
 ) -> Function {
     let name = function.name;
+    let UdfRuntimeImplementation::CoralSql { query: sql_body } = function.implementation else {
+        unreachable!("unsupported function runtime implementation")
+    };
     Function {
         workspace: Some(workspace_to_proto(workspace_name)),
         name,
@@ -141,6 +147,8 @@ fn runtime_function_to_proto(
                     description: String::new(),
                 })
                 .collect(),
+            sql_body,
+            source_names: function.source_names,
         })),
     }
 }
@@ -152,6 +160,7 @@ fn function_table_function_publish_to_proto(
         schema_name: publish.schema,
         name: publish.name,
         description: publish.description,
+        guide: publish.guide,
     }
 }
 

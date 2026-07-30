@@ -315,6 +315,7 @@ fn table_function_documents(function: &TableFunctionInfo, documents: &mut Vec<Ca
             function.function_name.as_str(),
             qualified_name.as_str(),
             function.description.as_str(),
+            function.guide.as_str(),
             function.kind.as_str(),
             source_native_search_keywords,
             arguments.as_str(),
@@ -456,6 +457,7 @@ fn catalog_snapshot_fingerprint(
         update_hash(&mut hasher, &function.schema_name);
         update_hash(&mut hasher, &function.function_name);
         update_hash(&mut hasher, &function.description);
+        update_hash(&mut hasher, &function.guide);
         update_hash(&mut hasher, function.kind.as_str());
         let search_limits_json = function
             .search_limits
@@ -576,6 +578,7 @@ mod tests {
                 table_name: table_name.to_string(),
                 description: format!("Fixture {table_name}"),
                 guide: String::new(),
+                require_guide_read: false,
                 columns: vec![coral_engine::ColumnInfo {
                     name: "title".to_string(),
                     data_type: "Utf8".to_string(),

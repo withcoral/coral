@@ -117,6 +117,7 @@ async fn list_catalog_returns_tables_and_table_functions_with_filters_and_pagina
     };
     assert_eq!(function.schema_name, "searchy");
     assert_eq!(function.name, "lookup_issue");
+    assert_eq!(function.guide, "Use this function for exact issue lookup.");
     let table = match response.items[1].item.as_ref().expect("catalog item") {
         catalog_item::Item::Table(table) => table,
         catalog_item::Item::TableFunction(_) => panic!("expected table"),
@@ -156,6 +157,40 @@ async fn list_catalog_returns_tables_and_table_functions_with_filters_and_pagina
             catalog_item::Item::TableFunction(_)
         )
     }));
+}
+
+#[tokio::test]
+async fn search_catalog_matches_table_function_guide() {
+    let harness = GrpcHarness::new().await;
+    harness
+        .import_source(
+            fixture_manifest_with_functions_yaml(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await;
+
+    let response = harness
+        .catalog_client()
+        .search_catalog(Request::new(SearchCatalogRequest {
+            workspace: Some(default_workspace()),
+            pattern: "exact issue lookup".to_string(),
+            ignore_case: true,
+            schema_name: "searchy".to_string(),
+            kind: 2,
+            pagination: None,
+        }))
+        .await
+        .expect("search table function guide")
+        .into_inner();
+
+    assert_eq!(response.items.len(), 1);
+    assert!(
+        response.items[0]
+            .matched_fields
+            .iter()
+            .any(|field| field == "guide")
+    );
 }
 
 #[tokio::test]

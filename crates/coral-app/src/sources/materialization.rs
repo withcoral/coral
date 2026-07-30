@@ -7,15 +7,15 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use coral_spec::v4::{
-    Diagnostic, DiagnosticSeverity, Fingerprint, FingerprintSurface, MCP_IMPORTER_VERSION,
-    MaterializedSurface, McpToolCatalog, OPENAPI_IMPORTER_VERSION,
-    OPERATION_METADATA_GENERATOR_VERSION, OperationMetadataCatalog, PROJECTION_GENERATOR_VERSION,
-    ProjectionCatalog, ProjectionInputSyncMode, SURFACE_IMPORTER_VERSION, SemanticIr, SurfaceType,
-    V4_ARTIFACT_SCHEMA_VERSION, V4MaterializedSource, V4SourceManifest, ValidatedSurfacePlan,
-    generate_projection_catalog, import_mcp_surface, import_openapi_surface,
-    normalize_mcp_tool_catalog, normalize_source_document, openapi_document_metadata,
-    sync_projection_inputs, validate_materialized_source, validate_materialized_source_structure,
-    validate_openapi_base_url_template, validate_semantic_ir_structure,
+    Diagnostic, Fingerprint, FingerprintSurface, MCP_IMPORTER_VERSION, MaterializedSurface,
+    McpToolCatalog, OPENAPI_IMPORTER_VERSION, OPERATION_METADATA_GENERATOR_VERSION,
+    OperationMetadataCatalog, PROJECTION_GENERATOR_VERSION, ProjectionCatalog,
+    SURFACE_IMPORTER_VERSION, SemanticIr, SurfaceType, V4_ARTIFACT_SCHEMA_VERSION,
+    V4MaterializedSource, V4SourceManifest, ValidatedSurfacePlan, generate_projection_catalog,
+    import_mcp_surface, import_openapi_surface, normalize_mcp_tool_catalog,
+    normalize_source_document, openapi_document_metadata, validate_materialized_source,
+    validate_materialized_source_structure, validate_openapi_base_url_template,
+    validate_projection_compatibility, validate_semantic_ir_structure,
 };
 use coral_spec::{
     ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestInputKind, ManifestInputSpec,
@@ -43,9 +43,8 @@ pub(crate) const FINGERPRINT_FILENAME: &str = "fingerprint.yaml";
 pub(crate) const DIAGNOSTICS_FILENAME: &str = "diagnostics.yaml";
 pub(crate) const OPERATION_METADATA_FILENAME: &str = "operation-metadata.yaml";
 
-type ReportedDiagnosticKey = (String, String);
 type ReportedDiagnosticStateKey = (String, String, String);
-type ReportedDiagnostics = BTreeMap<ReportedDiagnosticStateKey, BTreeSet<ReportedDiagnosticKey>>;
+type ReportedDiagnostics = BTreeMap<ReportedDiagnosticStateKey, BTreeSet<String>>;
 type RawDocumentValidationKey = (String, String);
 
 #[derive(Debug, Clone)]
@@ -79,10 +78,9 @@ impl SourceDiagnosticReporter {
         stage: SourceLoadDiagnosticStage,
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
-        code: &str,
         detail: &str,
     ) {
-        let diagnostic = materialization_warning(code, detail);
+        let diagnostic = materialization_warning(detail);
         self.report_source_diagnostics(
             workspace_name,
             source_name,
@@ -154,20 +152,16 @@ impl SourceDiagnosticReporter {
         let (diagnostic, cacheable) = match std::fs::read(path) {
             Ok(raw_bytes) if sha256_hex(&raw_bytes) != expected_sha256 => (
                 Some(materialization_warning(
-                    "V4_RAW_DOCUMENT_FINGERPRINT_MISMATCH",
                     "raw source document hash does not match",
                 )),
                 true,
             ),
             Ok(_) => (None, true),
             Err(error) => (
-                Some(materialization_warning(
-                    "V4_RAW_DOCUMENT_UNAVAILABLE",
-                    format!(
-                        "could not read raw source document '{}' for provenance validation: {error}",
-                        path.display()
-                    ),
-                )),
+                Some(materialization_warning(format!(
+                    "could not read raw source document '{}' for provenance validation: {error}",
+                    path.display()
+                ))),
                 false,
             ),
         };
@@ -201,7 +195,7 @@ impl SourceDiagnosticReporter {
         let diagnostics = diagnostics.into_iter().collect::<Vec<_>>();
         let current = diagnostics
             .iter()
-            .map(|diagnostic| (diagnostic.code.clone(), diagnostic.message.clone()))
+            .map(|diagnostic| diagnostic.message.clone())
             .collect::<BTreeSet<_>>();
         let mut reported = self
             .reported
@@ -209,12 +203,11 @@ impl SourceDiagnosticReporter {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let previous = reported.get(&state_key).cloned().unwrap_or_default();
         for diagnostic in diagnostics {
-            let key = (diagnostic.code.clone(), diagnostic.message.clone());
+            let key = diagnostic.message.clone();
             if previous.contains(&key) {
                 continue;
             }
             tracing::warn!(
-                diagnostic.code = %diagnostic.code,
                 diagnostic.stage = stage,
                 workspace = %workspace_name,
                 source = %source_name,
@@ -236,7 +229,7 @@ impl SourceDiagnosticReporter {
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
         stage: &str,
-        code: &str,
+        message: &str,
     ) -> bool {
         self.reported
             .lock()
@@ -249,7 +242,7 @@ impl SourceDiagnosticReporter {
             .is_some_and(|diagnostics| {
                 diagnostics
                     .iter()
-                    .any(|(diagnostic_code, _message)| diagnostic_code == code)
+                    .any(|diagnostic| diagnostic.contains(message))
             })
     }
 }
@@ -392,7 +385,7 @@ pub(crate) fn load_v4_materialization_with_reporter(
         &fingerprint_path,
         &mut load_diagnostics,
     );
-    let mut projections = load_projection_catalog(
+    let projections = load_projection_catalog(
         source_name,
         manifest,
         &projections_file,
@@ -438,7 +431,8 @@ pub(crate) fn load_v4_materialization_with_reporter(
     {
         load_diagnostics.push(diagnostic);
     }
-    sync_loaded_projection_inputs(source_name, &projections_file, &plan, &mut projections)?;
+    validate_projection_compatibility(&plan, &projections)
+        .map_err(|error| incompatible_materialization_error(source_name, error.to_string()))?;
     diagnostic_reporter.report_source_diagnostics(
         workspace_name,
         source_name,
@@ -469,10 +463,9 @@ fn report_materialization_failure(
     workspace_name: &WorkspaceName,
     source_name: &SourceName,
     load_diagnostics: &mut Vec<Diagnostic>,
-    code: &str,
     error: &AppError,
 ) {
-    load_diagnostics.push(materialization_warning(code, error.to_string()));
+    load_diagnostics.push(materialization_warning(error.to_string()));
     diagnostic_reporter.report_source_diagnostics(
         workspace_name,
         source_name,
@@ -495,7 +488,6 @@ fn validate_semantic_ir_structure_with_reporter(
             workspace_name,
             source_name,
             load_diagnostics,
-            "V4_SEMANTIC_IR_UNAVAILABLE",
             &error,
         );
         error
@@ -518,10 +510,7 @@ fn read_validated_semantic_ir_with_reporter(
         diagnostic_reporter,
     )?;
     if let Err(error) = validate_semantic_ir(manifest, &semantic_ir) {
-        load_diagnostics.push(materialization_warning(
-            "V4_SEMANTIC_IR_PROVENANCE_MISMATCH",
-            error,
-        ));
+        load_diagnostics.push(materialization_warning(error));
     }
     validate_semantic_ir_structure_with_reporter(
         &semantic_ir,
@@ -543,18 +532,14 @@ fn build_validated_plan_with_reporter(
     diagnostic_reporter: &SourceDiagnosticReporter,
 ) -> Result<ValidatedSurfacePlan, AppError> {
     ValidatedSurfacePlan::new(semantic_ir, operation_metadata).map_err(|error| {
-        let (error, code) = match metadata_file.origin {
-            V4OperationMetadataOrigin::Materialized => (
-                incompatible_materialization_error(source_name, error.to_string()),
-                "V4_OPERATION_METADATA_UNAVAILABLE",
-            ),
-            V4OperationMetadataOrigin::Override => (
-                invalid_operation_metadata_override_error(
-                    source_name,
-                    &metadata_file.path,
-                    error.to_string(),
-                ),
-                "V4_OPERATION_METADATA_OVERRIDE_FAILED",
+        let error = match metadata_file.origin {
+            V4OperationMetadataOrigin::Materialized => {
+                incompatible_materialization_error(source_name, error.to_string())
+            }
+            V4OperationMetadataOrigin::Override => invalid_operation_metadata_override_error(
+                source_name,
+                &metadata_file.path,
+                error.to_string(),
             ),
         };
         report_materialization_failure(
@@ -562,7 +547,6 @@ fn build_validated_plan_with_reporter(
             workspace_name,
             source_name,
             load_diagnostics,
-            code,
             &error,
         );
         error
@@ -582,7 +566,6 @@ fn read_semantic_ir_with_reporter(
             workspace_name,
             source_name,
             load_diagnostics,
-            "V4_SEMANTIC_IR_UNAVAILABLE",
             error,
         );
     })
@@ -603,10 +586,6 @@ fn read_operation_metadata_with_reporter(
                 workspace_name,
                 source_name,
                 load_diagnostics,
-                match metadata_file.origin {
-                    V4OperationMetadataOrigin::Materialized => "V4_OPERATION_METADATA_UNAVAILABLE",
-                    V4OperationMetadataOrigin::Override => "V4_OPERATION_METADATA_OVERRIDE_FAILED",
-                },
                 error,
             );
         },
@@ -640,33 +619,23 @@ fn load_optional_fingerprint(
     let fingerprint = match read_yaml::<Fingerprint>(path) {
         Ok(fingerprint) => fingerprint,
         Err(error) => {
-            diagnostics.push(materialization_warning(
-                "V4_FINGERPRINT_UNAVAILABLE",
-                format!(
-                    "could not read optional fingerprint '{}': {error}",
-                    path.display()
-                ),
-            ));
+            diagnostics.push(materialization_warning(format!(
+                "could not read optional fingerprint '{}': {error}",
+                path.display()
+            )));
             return None;
         }
     };
     if let Err(error) = validate_fingerprint_header(manifest, &fingerprint) {
-        diagnostics.push(materialization_warning(
-            "V4_FINGERPRINT_HEADER_MISMATCH",
-            error,
-        ));
+        diagnostics.push(materialization_warning(error));
     }
     if fingerprint.manifest_sha256 != sha256_hex(manifest_yaml.as_bytes()) {
         diagnostics.push(materialization_warning(
-            "V4_MANIFEST_FINGERPRINT_MISMATCH",
             "manifest fingerprint does not match installed manifest",
         ));
     }
     if let Err(error) = validate_fingerprint_surface(manifest, &fingerprint) {
-        diagnostics.push(materialization_warning(
-            "V4_FINGERPRINT_SURFACE_MISMATCH",
-            error,
-        ));
+        diagnostics.push(materialization_warning(error));
     }
     Some(fingerprint)
 }
@@ -728,10 +697,7 @@ fn load_projection_catalog(
     };
     if let Err(error) = validate_projection_catalog_header(manifest, &projections, projections_file)
     {
-        diagnostics.push(materialization_warning(
-            "V4_PROJECTION_CATALOG_PROVENANCE_MISMATCH",
-            error,
-        ));
+        diagnostics.push(materialization_warning(error));
     }
     Ok(projections)
 }
@@ -740,25 +706,17 @@ fn load_optional_diagnostics(path: &Path, diagnostics: &mut Vec<Diagnostic>) -> 
     match read_yaml(path) {
         Ok(diagnostics) => diagnostics,
         Err(error) => {
-            diagnostics.push(materialization_warning(
-                "V4_DIAGNOSTICS_UNAVAILABLE",
-                format!(
-                    "could not read optional diagnostics '{}': {error}",
-                    path.display()
-                ),
-            ));
+            diagnostics.push(materialization_warning(format!(
+                "could not read optional diagnostics '{}': {error}",
+                path.display()
+            )));
             Vec::new()
         }
     }
 }
 
-fn materialization_warning(code: &str, message: impl Into<String>) -> Diagnostic {
-    Diagnostic {
-        code: code.to_string(),
-        severity: DiagnosticSeverity::Warning,
-        message: message.into(),
-        operation_id: None,
-    }
+fn materialization_warning(message: impl Into<String>) -> Diagnostic {
+    Diagnostic::new(message, None)
 }
 
 fn validate_projection_catalog_header(
@@ -820,10 +778,7 @@ fn load_operation_metadata(
         }
     };
     if let Err(error) = validate_operation_metadata_header(manifest, &metadata, metadata_file) {
-        diagnostics.push(materialization_warning(
-            "V4_OPERATION_METADATA_PROVENANCE_MISMATCH",
-            error,
-        ));
+        diagnostics.push(materialization_warning(error));
     }
     Ok(metadata)
 }
@@ -858,30 +813,6 @@ fn validate_operation_metadata_header(
     Ok(())
 }
 
-fn sync_loaded_projection_inputs(
-    source_name: &SourceName,
-    projections_file: &V4ProjectionCatalogFile,
-    plan: &ValidatedSurfacePlan,
-    projections: &mut ProjectionCatalog,
-) -> Result<(), AppError> {
-    let projection_sync_mode = match projections_file.origin {
-        V4ProjectionCatalogOrigin::Materialized => ProjectionInputSyncMode::RecomputeInputExposure,
-        V4ProjectionCatalogOrigin::Override => ProjectionInputSyncMode::PreserveExistingExposure,
-    };
-    sync_projection_inputs(plan, projections, projection_sync_mode).map_err(|error| {
-        match projections_file.origin {
-            V4ProjectionCatalogOrigin::Materialized => {
-                incompatible_materialization_error(source_name, error.to_string())
-            }
-            V4ProjectionCatalogOrigin::Override => invalid_projection_override_error(
-                source_name,
-                &projections_file.path,
-                error.to_string(),
-            ),
-        }
-    })
-}
-
 fn validate_loaded_materialization(
     source_name: &SourceName,
     manifest: &V4SourceManifest,
@@ -900,39 +831,6 @@ fn validate_loaded_materialization(
             ),
         }
     })?;
-    let operations = materialized
-        .surface
-        .plan
-        .semantic_ir()
-        .operations
-        .iter()
-        .map(|operation| operation.id.as_str())
-        .collect::<BTreeSet<_>>();
-    validate_projection_references(source_name, projections_file, materialized, &operations)
-}
-
-fn validate_projection_references(
-    source_name: &SourceName,
-    projections_file: &V4ProjectionCatalogFile,
-    materialized: &V4MaterializedSource,
-    operations: &BTreeSet<&str>,
-) -> Result<(), AppError> {
-    for projection in &materialized.projections.projections {
-        if !operations.contains(projection.operation_id.as_str()) {
-            let detail = format!(
-                "projection '{}' references missing operation '{}'",
-                projection.name, projection.operation_id
-            );
-            return Err(match projections_file.origin {
-                V4ProjectionCatalogOrigin::Materialized => {
-                    incompatible_materialization_error(source_name, detail)
-                }
-                V4ProjectionCatalogOrigin::Override => {
-                    invalid_projection_override_error(source_name, &projections_file.path, detail)
-                }
-            });
-        }
-    }
     Ok(())
 }
 
@@ -1568,11 +1466,15 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  type: object
-                  properties:
-                    id: {type: integer}
+                type: object
+                properties:
+                  total_count: {type: integer}
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: {type: integer}
 "
     }
 
@@ -1840,22 +1742,61 @@ surface:
         path
     }
 
+    fn installed_operation_metadata(layout: &AppStateLayout) -> OperationMetadataCatalog {
+        read_yaml(
+            &layout
+                .v4_materialized_dir(&workspace_name(), &source_name())
+                .join(OPERATION_METADATA_FILENAME),
+        )
+        .expect("read installed operation metadata")
+    }
+
+    fn write_operation_metadata_override(
+        layout: &AppStateLayout,
+        metadata: &OperationMetadataCatalog,
+    ) -> PathBuf {
+        let path = layout
+            .v4_override_dir(&workspace_name(), &source_name())
+            .join(OPERATION_METADATA_FILENAME);
+        std::fs::create_dir_all(path.parent().expect("override parent"))
+            .expect("create override dir");
+        write_yaml(&path, metadata).expect("write operation metadata override");
+        path
+    }
+
+    fn remove_state_lookup_key(metadata: &mut OperationMetadataCatalog) {
+        let coral_spec::v4::OperationMetadata::Rest { lookup_keys, .. } = metadata
+            .operations
+            .values_mut()
+            .next()
+            .expect("operation metadata")
+        else {
+            panic!("expected REST metadata");
+        };
+        lookup_keys.retain(|key| key != "state");
+    }
+
     #[test]
-    fn build_v4_materialization_persists_lookup_keys_in_operation_metadata() {
+    fn build_v4_materialization_persists_inferred_policy_in_operation_metadata() {
         let (_state, _descriptor, layout, _manifest_yaml, _manifest) = setup_materialization();
         let surface_dir = layout.v4_materialized_dir(&workspace_name(), &source_name());
         let metadata: OperationMetadataCatalog =
             read_yaml(&surface_dir.join(OPERATION_METADATA_FILENAME))
                 .expect("read operation metadata");
-        let lookup_keys = match metadata
+        let (row_path, lookup_keys) = match metadata
             .operations
             .values()
             .next()
             .expect("operation metadata")
         {
-            coral_spec::v4::OperationMetadata::Rest { lookup_keys, .. } => lookup_keys,
+            coral_spec::v4::OperationMetadata::Rest {
+                row_path,
+                lookup_keys,
+                ..
+            } => (row_path, lookup_keys),
             coral_spec::v4::OperationMetadata::Mcp { .. } => panic!("expected REST metadata"),
         };
+        assert_eq!(row_path, &["items"]);
         assert_eq!(lookup_keys, &["state"]);
     }
 
@@ -1899,16 +1840,22 @@ surface:
         let metadata: OperationMetadataCatalog =
             read_yaml(&build.temp_dir.join(OPERATION_METADATA_FILENAME))
                 .expect("read operation metadata");
-        let pagination = match metadata
+        let (row_path, pagination) = match metadata
             .operations
             .values()
             .next()
             .expect("operation metadata")
         {
-            coral_spec::v4::OperationMetadata::Mcp { pagination } => pagination,
+            coral_spec::v4::OperationMetadata::Mcp {
+                row_path,
+                pagination,
+            } => (row_path, pagination),
             coral_spec::v4::OperationMetadata::Rest { .. } => panic!("expected MCP metadata"),
         };
-        assert!(pagination.cursor.is_none());
+        assert_eq!(row_path, &["items"]);
+        let cursor = pagination.cursor.as_ref().expect("cursor pagination");
+        assert_eq!(cursor.cursor_arg, "cursor");
+        assert_eq!(cursor.response_cursor_path, ["meta", "nextCursor"]);
         assert!(pagination.offset.is_none());
 
         let projections: ProjectionCatalog =
@@ -1981,7 +1928,11 @@ surface:
             read_yaml(&build.temp_dir.join(DIAGNOSTICS_FILENAME)).expect("read diagnostics");
         let diagnostic = diagnostics
             .iter()
-            .find(|diagnostic| diagnostic.code == "OPENAPI_EXTERNAL_REF_UNSUPPORTED")
+            .find(|diagnostic| {
+                diagnostic
+                    .message
+                    .contains("dereferenced or bundled OpenAPI documents")
+            })
             .expect("unsupported operation ref diagnostic");
         assert!(
             diagnostic
@@ -2057,12 +2008,11 @@ surface:
         )
         .expect("changed manifest hash is advisory");
 
-        assert!(
-            materialized
-                .diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic.code == "V4_MANIFEST_FINGERPRINT_MISMATCH")
-        );
+        assert!(materialized.diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("manifest fingerprint does not match")
+        }));
     }
 
     #[test]
@@ -2088,11 +2038,11 @@ surface:
         )
         .expect("generated projection catalog provenance is advisory");
 
-        assert!(
-            materialized.diagnostics.iter().any(|diagnostic| {
-                diagnostic.code == "V4_PROJECTION_CATALOG_PROVENANCE_MISMATCH"
-            })
-        );
+        assert!(materialized.diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("projection catalog generator version mismatch")
+        }));
     }
 
     #[test]
@@ -2151,11 +2101,273 @@ surface:
         )
         .expect("stale projection generator provenance is advisory");
 
-        assert!(
-            materialized.diagnostics.iter().any(|diagnostic| {
-                diagnostic.code == "V4_PROJECTION_CATALOG_PROVENANCE_MISMATCH"
-            })
+        assert!(materialized.diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("projection override was copied from generator version")
+        }));
+    }
+
+    #[test]
+    fn load_v4_materialization_preserves_persisted_projection_input_policy() {
+        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
+        let projection_path = layout
+            .v4_materialized_dir(&workspace_name(), &source_name())
+            .join(PROJECTIONS_FILENAME);
+        let mut catalog: ProjectionCatalog =
+            read_yaml(&projection_path).expect("read installed projections");
+        let projection = catalog.projections.first_mut().expect("projection");
+        let order_by = projection
+            .inputs
+            .iter_mut()
+            .find(|input| input.wire_name == "order_by")
+            .expect("order_by");
+        order_by.sql_exposure = coral_spec::v4::SqlInputExposure::Internal;
+        let state = projection
+            .inputs
+            .iter_mut()
+            .find(|input| input.wire_name == "state")
+            .expect("state");
+        state.lookup_key = false;
+        write_yaml(&projection_path, &catalog).expect("write selected projections");
+
+        let materialized = load_v4_materialization(
+            &layout,
+            &workspace_name(),
+            &source_name(),
+            &manifest_yaml,
+            &manifest,
+        )
+        .expect("conservative persisted projection policy should load");
+        let projection = materialized
+            .projections
+            .projections
+            .first()
+            .expect("loaded projection");
+
+        assert_eq!(
+            projection
+                .inputs
+                .iter()
+                .find(|input| input.wire_name == "order_by")
+                .expect("loaded order_by")
+                .sql_exposure,
+            coral_spec::v4::SqlInputExposure::Internal
         );
+        assert!(
+            !projection
+                .inputs
+                .iter()
+                .find(|input| input.wire_name == "state")
+                .expect("loaded state")
+                .lookup_key
+        );
+    }
+
+    #[test]
+    fn load_v4_materialization_rejects_removed_lookup_key_used_by_projection() {
+        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
+        let mut metadata = installed_operation_metadata(&layout);
+        remove_state_lookup_key(&mut metadata);
+        write_operation_metadata_override(&layout, &metadata);
+
+        let error = load_v4_materialization(
+            &layout,
+            &workspace_name(),
+            &source_name(),
+            &manifest_yaml,
+            &manifest,
+        )
+        .expect_err("selected metadata must authorise persisted lookup keys");
+
+        assert!(
+            matches!(
+                error,
+                AppError::MissingOrIncompatibleV4Materialization { .. }
+            ),
+            "unexpected error: {error:#}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("wire input 'state' is not authorised"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn load_v4_materialization_accepts_new_lookup_key_left_disabled_in_projection() {
+        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
+        let mut metadata = installed_operation_metadata(&layout);
+        let coral_spec::v4::OperationMetadata::Rest { lookup_keys, .. } = metadata
+            .operations
+            .values_mut()
+            .next()
+            .expect("operation metadata")
+        else {
+            panic!("expected REST metadata");
+        };
+        lookup_keys.push("q".to_string());
+        write_operation_metadata_override(&layout, &metadata);
+
+        let materialized = load_v4_materialization(
+            &layout,
+            &workspace_name(),
+            &source_name(),
+            &manifest_yaml,
+            &manifest,
+        )
+        .expect("new authorised lookup key may remain disabled");
+        let q = materialized
+            .projections
+            .projections
+            .first()
+            .expect("projection")
+            .inputs
+            .iter()
+            .find(|input| input.wire_name == "q")
+            .expect("q");
+
+        assert!(
+            !q.lookup_key,
+            "loading must not enable a persisted lookup key"
+        );
+    }
+
+    #[test]
+    fn load_v4_materialization_rejects_row_path_override_the_projection_cannot_serve() {
+        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
+        let mut metadata = installed_operation_metadata(&layout);
+        let coral_spec::v4::OperationMetadata::Rest { row_path, .. } = metadata
+            .operations
+            .values_mut()
+            .next()
+            .expect("operation metadata")
+        else {
+            panic!("expected REST metadata");
+        };
+        // The materialized projection has issue columns because the rows come
+        // from `items`; making the envelope the row makes them unreadable.
+        row_path.clear();
+        write_operation_metadata_override(&layout, &metadata);
+
+        let error = load_v4_materialization(
+            &layout,
+            &workspace_name(),
+            &source_name(),
+            &manifest_yaml,
+            &manifest,
+        )
+        .expect_err("row path override incompatible with persisted columns must fail");
+
+        assert!(
+            matches!(
+                error,
+                AppError::MissingOrIncompatibleV4Materialization { .. }
+            ),
+            "unexpected error: {error:#}"
+        );
+        assert!(
+            error.to_string().contains("column 'id' reads field 'id'"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn load_v4_materialization_rejects_public_input_newly_owned_by_pagination() {
+        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
+        let mut metadata = installed_operation_metadata(&layout);
+        let coral_spec::v4::OperationMetadata::Rest { pagination, .. } = metadata
+            .operations
+            .values_mut()
+            .next()
+            .expect("operation metadata")
+        else {
+            panic!("expected REST metadata");
+        };
+        pagination.mode = coral_spec::PaginationMode::CursorQuery;
+        pagination.cursor_param = Some("q".to_string());
+        pagination.response_cursor_path = vec!["next".to_string()];
+        write_operation_metadata_override(&layout, &metadata);
+
+        let error = load_v4_materialization(
+            &layout,
+            &workspace_name(),
+            &source_name(),
+            &manifest_yaml,
+            &manifest,
+        )
+        .expect_err("public pagination-owned projection input must fail");
+
+        assert!(
+            matches!(
+                error,
+                AppError::MissingOrIncompatibleV4Materialization { .. }
+            ),
+            "unexpected error: {error:#}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("input 'q' on operation 'issues_list' is owned by pagination"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn projection_metadata_mismatches_use_generic_error_for_all_artifact_origins() {
+        for (projection_override, metadata_override) in
+            [(false, false), (true, false), (false, true), (true, true)]
+        {
+            let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
+            let mut metadata = installed_operation_metadata(&layout);
+            remove_state_lookup_key(&mut metadata);
+            if metadata_override {
+                write_operation_metadata_override(&layout, &metadata);
+            } else {
+                write_yaml(
+                    &layout
+                        .v4_materialized_dir(&workspace_name(), &source_name())
+                        .join(OPERATION_METADATA_FILENAME),
+                    &metadata,
+                )
+                .expect("write generated metadata");
+            }
+            if projection_override {
+                let catalog = installed_projection_catalog_value(&layout);
+                write_projection_override(&layout, &catalog);
+            }
+
+            let error = load_v4_materialization(
+                &layout,
+                &workspace_name(),
+                &source_name(),
+                &manifest_yaml,
+                &manifest,
+            )
+            .expect_err("lookup-key mismatch must fail for every selected origin");
+            let message = error.to_string();
+
+            assert!(
+                matches!(
+                    error,
+                    AppError::MissingOrIncompatibleV4Materialization { .. }
+                ),
+                "projection_override={projection_override}, metadata_override={metadata_override}: {error:#}"
+            );
+            assert!(
+                message.contains("wire input 'state' is not authorised"),
+                "projection_override={projection_override}, metadata_override={metadata_override}: {message}"
+            );
+            assert!(
+                message.contains("Re-add the source or reconcile the selected artifact files"),
+                "projection_override={projection_override}, metadata_override={metadata_override}: {message}"
+            );
+            assert!(
+                !message.contains("override '"),
+                "compatibility error must not attribute the mismatch: {message}"
+            );
+        }
     }
 
     #[test]
@@ -2211,12 +2423,11 @@ surface:
         )
         .expect("corrupted optional fingerprint is advisory");
 
-        assert!(
-            materialized
-                .diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic.code == "V4_FINGERPRINT_UNAVAILABLE")
-        );
+        assert!(materialized.diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("could not read optional fingerprint")
+        }));
     }
 
     #[test]
@@ -2244,13 +2455,13 @@ surface:
             &workspace_name(),
             &source_name(),
             "materialization",
-            "V4_FINGERPRINT_UNAVAILABLE",
+            "could not read optional fingerprint",
         ));
         assert!(reporter.tracks_diagnostic(
             &workspace_name(),
             &source_name(),
             "materialization",
-            "V4_SEMANTIC_IR_UNAVAILABLE",
+            "semantic IR",
         ));
     }
 
@@ -2283,16 +2494,16 @@ surface:
         )
         .expect("old fingerprint provenance is advisory");
 
-        assert!(
-            materialized
-                .diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic.code == "V4_FINGERPRINT_HEADER_MISMATCH")
-        );
+        assert!(materialized.diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("fingerprint artifact schema version mismatch")
+        }));
     }
 
     #[test]
-    fn load_v4_materialization_applies_operation_metadata_override_without_rewriting_artifact() {
+    fn load_v4_materialization_applies_compatible_operation_metadata_override_without_rewriting_artifact()
+     {
         let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
         let generated_path = layout
             .v4_materialized_dir(&workspace_name(), &source_name())
@@ -2307,7 +2518,7 @@ surface:
         let coral_spec::v4::OperationMetadata::Rest { lookup_keys, .. } = operation_metadata else {
             panic!("expected REST metadata");
         };
-        *lookup_keys = vec!["q".to_string()];
+        lookup_keys.push("q".to_string());
         let override_path = layout
             .v4_override_dir(&workspace_name(), &source_name())
             .join(OPERATION_METADATA_FILENAME);
@@ -2339,7 +2550,7 @@ surface:
                 .input_is_lookup_key(&operation_id, "q")
         );
         assert!(
-            !materialized
+            materialized
                 .surface
                 .plan
                 .input_is_lookup_key(&operation_id, "state")
@@ -2543,13 +2754,13 @@ surface:
             &workspace_name(),
             &source_name(),
             "materialization",
-            "V4_FINGERPRINT_UNAVAILABLE",
+            "could not read optional fingerprint",
         ));
         assert!(reporter.tracks_diagnostic(
             &workspace_name(),
             &source_name(),
             "materialization",
-            "V4_OPERATION_METADATA_OVERRIDE_FAILED",
+            "operation metadata override",
         ));
     }
 
@@ -2580,12 +2791,11 @@ surface:
         )
         .expect("mismatched fingerprint surface type is advisory");
 
-        assert!(
-            materialized
-                .diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic.code == "V4_FINGERPRINT_SURFACE_MISMATCH")
-        );
+        assert!(materialized.diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("surface type fingerprint does not match")
+        }));
     }
 
     #[test]
@@ -2605,12 +2815,11 @@ surface:
         )
         .expect("raw descriptor hash is advisory provenance");
 
-        assert!(
-            materialized
-                .diagnostics
-                .iter()
-                .any(|diagnostic| { diagnostic.code == "V4_RAW_DOCUMENT_FINGERPRINT_MISMATCH" })
-        );
+        assert!(materialized.diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("raw source document hash does not match")
+        }));
     }
 
     #[cfg(unix)]
@@ -2646,12 +2855,11 @@ surface:
         std::fs::set_permissions(&raw_path, original_permissions)
             .expect("restore raw descriptor permissions");
         let materialized = result.expect("unreadable raw descriptor is advisory provenance");
-        assert!(
-            materialized
-                .diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic.code == "V4_RAW_DOCUMENT_UNAVAILABLE")
-        );
+        assert!(materialized.diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("could not read raw source document")
+        }));
     }
 
     #[test]

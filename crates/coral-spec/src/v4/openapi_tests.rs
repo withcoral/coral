@@ -21,6 +21,15 @@ fn imported_rest_pagination<'a>(
     }
 }
 
+fn imported_row_path<'a>(surface: &'a ImportedSurface, operation_id: &str) -> &'a [String] {
+    surface
+        .operation_metadata
+        .operations
+        .get(operation_id)
+        .expect("operation metadata")
+        .row_path()
+}
+
 #[test]
 fn extracts_openapi_document_metadata() {
     let metadata = openapi_document_metadata(
@@ -64,62 +73,6 @@ paths: {}
     assert_eq!(
         metadata.server_url.as_deref(),
         Some("https://statusgator.com/api/v3")
-    );
-}
-
-#[test]
-fn importer_warns_and_skips_external_openapi_operation_refs() {
-    let manifest = parse_source_manifest_yaml(
-        r"
-name: digitalocean_ref_test
-dsl_version: 4
-surface:
-    type: openapi
-    file: /tmp/openapi.yaml
-    base_url: https://api.example.com
-",
-    )
-    .expect("manifest");
-    let v4 = manifest.as_v4().expect("v4");
-    let surface = &v4.surface;
-    let ir = import_openapi_surface(
-        v4,
-        surface,
-        r"
-openapi: 3.0.3
-paths:
-  /account:
-    get:
-      $ref: resources/account/account_get.yml
-"
-        .as_bytes(),
-    )
-    .expect("operation ref import should emit diagnostics");
-
-    assert!(
-        ir.operations.is_empty(),
-        "unsupported operation refs should not import empty operations: {:?}",
-        ir.operations
-    );
-    let diagnostic = ir
-        .diagnostics
-        .iter()
-        .find(|diagnostic| diagnostic.code == "OPENAPI_EXTERNAL_REF_UNSUPPORTED")
-        .expect("unsupported operation ref diagnostic");
-    assert!(diagnostic.operation_id.is_none());
-    assert!(
-        diagnostic
-            .message
-            .contains("resources/account/account_get.yml"),
-        "{}",
-        diagnostic.message
-    );
-    assert!(
-        diagnostic
-            .message
-            .contains("dereferenced or bundled OpenAPI documents"),
-        "{}",
-        diagnostic.message
     );
 }
 
@@ -308,7 +261,7 @@ components:
 }
 
 #[test]
-fn importer_keeps_common_envelope_objects_as_singletons() {
+fn importer_infers_row_paths_for_common_envelope_objects() {
     let manifest = parse_source_manifest_yaml(
         r"
 name: statusgator
@@ -358,7 +311,10 @@ components:
     )
     .expect("import");
     let operation = ir.operations.first().expect("operation");
+    // The IR keeps the declared envelope; only the metadata says where its rows
+    // are.
     assert_eq!(operation.output.cardinality, OutputCardinality::Singleton);
+    assert_eq!(imported_row_path(&ir, "listincidents"), ["data"]);
 
     let catalog =
         generate_projection_catalog(v4, &ir.validated_plan().expect("plan")).expect("catalog");
@@ -372,9 +328,9 @@ components:
         .iter()
         .map(|column| (column.name.as_str(), column.data_type))
         .collect::<BTreeMap<_, _>>();
-    assert_eq!(columns.get("success"), Some(&ManifestDataType::Boolean));
-    assert_eq!(columns.get("data"), Some(&ManifestDataType::Json));
-    assert_eq!(columns.get("pagination"), Some(&ManifestDataType::Json));
+    assert_eq!(columns.get("id"), Some(&ManifestDataType::Utf8));
+    assert_eq!(columns.get("name"), Some(&ManifestDataType::Utf8));
+    assert_eq!(columns.len(), 2);
     assert!(matches!(
         projection.kind,
         ProjectionKind::TableFunction {
@@ -384,7 +340,7 @@ components:
 }
 
 #[test]
-fn importer_keeps_single_array_payload_objects_as_singletons() {
+fn importer_infers_row_path_for_a_sole_array_payload_beside_a_total() {
     let manifest = parse_source_manifest_yaml(
         r"
 name: github
@@ -433,6 +389,13 @@ components:
     .expect("import");
     let operation = ir.operations.first().expect("operation");
     assert_eq!(operation.output.cardinality, OutputCardinality::Singleton);
+    assert_eq!(
+        imported_row_path(
+            &ir,
+            "actions_list_selected_repositories_enabled_github_actions_organization"
+        ),
+        ["repositories"]
+    );
 
     let catalog =
         generate_projection_catalog(v4, &ir.validated_plan().expect("plan")).expect("catalog");
@@ -442,8 +405,9 @@ components:
         .iter()
         .map(|column| (column.name.as_str(), column.data_type))
         .collect::<BTreeMap<_, _>>();
-    assert_eq!(columns.get("total_count"), Some(&ManifestDataType::Int64));
-    assert_eq!(columns.get("repositories"), Some(&ManifestDataType::Json));
+    assert_eq!(columns.get("id"), Some(&ManifestDataType::Int64));
+    assert_eq!(columns.get("name"), Some(&ManifestDataType::Utf8));
+    assert_eq!(columns.len(), 2);
     assert!(matches!(
         projection.kind,
         ProjectionKind::TableFunction {
@@ -453,7 +417,7 @@ components:
 }
 
 #[test]
-fn importer_keeps_search_result_objects_as_singletons() {
+fn importer_prefers_a_named_row_property_over_other_arrays() {
     let manifest = parse_source_manifest_yaml(
         r"
 name: github
@@ -512,6 +476,11 @@ paths:
 
     let operation = ir.operations.first().expect("operation");
     assert_eq!(operation.output.cardinality, OutputCardinality::Singleton);
+    // `lexical_fallback_reason` is an array too; the conventional row name wins.
+    assert_eq!(
+        imported_row_path(&ir, "search_issues_and_pull_requests"),
+        ["items"]
+    );
 
     let catalog =
         generate_projection_catalog(v4, &ir.validated_plan().expect("plan")).expect("catalog");
@@ -521,21 +490,13 @@ paths:
         .iter()
         .map(|column| (column.name.as_str(), column.data_type))
         .collect::<BTreeMap<_, _>>();
-    assert_eq!(columns.get("total_count"), Some(&ManifestDataType::Int64));
-    assert_eq!(
-        columns.get("incomplete_results"),
-        Some(&ManifestDataType::Boolean)
-    );
-    assert_eq!(columns.get("items"), Some(&ManifestDataType::Json));
-    assert_eq!(columns.get("search_type"), Some(&ManifestDataType::Utf8));
-    assert_eq!(
-        columns.get("lexical_fallback_reason"),
-        Some(&ManifestDataType::Json)
-    );
-    assert!(!columns.contains_key("id"));
-    assert!(!columns.contains_key("number"));
-    assert!(!columns.contains_key("title"));
-    assert!(!columns.contains_key("state"));
+    assert_eq!(columns.get("id"), Some(&ManifestDataType::Int64));
+    assert_eq!(columns.get("number"), Some(&ManifestDataType::Int64));
+    assert_eq!(columns.get("title"), Some(&ManifestDataType::Utf8));
+    assert_eq!(columns.get("state"), Some(&ManifestDataType::Utf8));
+    assert_eq!(columns.len(), 4);
+    assert!(!columns.contains_key("total_count"));
+    assert!(!columns.contains_key("lexical_fallback_reason"));
 }
 
 #[test]
@@ -636,6 +597,9 @@ components:
 
     let operation = ir.operations.first().expect("operation");
     assert_eq!(operation.output.cardinality, OutputCardinality::Singleton);
+    // A project item is a resource, not a page of its `fields`: nothing in the
+    // response or the request says otherwise.
+    assert!(imported_row_path(&ir, "projects_get_org_item").is_empty());
 
     let row_type = ir
         .types
@@ -716,6 +680,9 @@ paths:
 
     let operation = ir.operations.first().expect("operation");
     assert_eq!(operation.output.cardinality, OutputCardinality::Singleton);
+    // A bundle's `items` is a conventional row name, but a bundle is still a
+    // resource: no metadata sibling, no pagination parameter.
+    assert!(imported_row_path(&ir, "bundles_get").is_empty());
 }
 
 #[test]
@@ -1191,16 +1158,23 @@ paths:
         .as_bytes(),
     )
     .expect("broken response refs import with diagnostics");
-    let codes = ir
+    let messages = ir
         .operations
         .iter()
         .flat_map(|operation| operation.diagnostics.iter())
-        .map(|diagnostic| diagnostic.code.as_str())
+        .map(|diagnostic| diagnostic.message.as_str())
         .collect::<Vec<_>>();
-    assert!(codes.contains(&"OPENAPI_REF_NOT_FOUND"), "{codes:?}");
     assert!(
-        codes.contains(&"OPENAPI_EXTERNAL_REF_UNSUPPORTED"),
-        "{codes:?}"
+        messages
+            .iter()
+            .any(|message| message.contains("was not found")),
+        "{messages:?}"
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("external reference")),
+        "{messages:?}"
     );
     for operation in &ir.operations {
         assert_eq!(operation.output.cardinality, OutputCardinality::None);
@@ -1252,12 +1226,14 @@ components:
     .expect("conflicting allOf imports with diagnostics");
 
     let operation = ir.operations.first().expect("operation");
-    let codes = operation
-        .diagnostics
-        .iter()
-        .map(|diagnostic| diagnostic.code.as_str())
-        .collect::<Vec<_>>();
-    assert!(codes.contains(&"OPENAPI_ALLOF_CONFLICT"), "{codes:?}");
+    assert!(
+        operation
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("allOf property")),
+        "{:?}",
+        operation.diagnostics
+    );
     assert_eq!(operation.output.type_ref, "json");
 }
 
@@ -1806,16 +1782,17 @@ paths:
         .map(|operation| (operation.id.as_str(), operation))
         .collect::<BTreeMap<_, _>>();
 
-    for operation_id in [
-        "cursor_list",
-        "pagination_token_list",
-        "iterator_list",
-        "start_cursor_list",
-        "nested_next_list",
-        "singleton_get",
-        "cursor_header_list",
-        "cursor_page_list",
-        "numeric_page_list",
+    // Each of these declares an envelope object, so cardinality stays
+    // Singleton; the inferred row path is what makes them paginate.
+    for (operation_id, mode) in [
+        ("cursor_list", PaginationMode::CursorQuery),
+        ("pagination_token_list", PaginationMode::CursorQuery),
+        ("iterator_list", PaginationMode::CursorQuery),
+        ("start_cursor_list", PaginationMode::CursorQuery),
+        ("nested_next_list", PaginationMode::CursorQuery),
+        ("cursor_header_list", PaginationMode::CursorQuery),
+        ("cursor_page_list", PaginationMode::CursorQuery),
+        ("numeric_page_list", PaginationMode::Page),
     ] {
         let operation = operations.get(operation_id).expect("operation");
         assert_eq!(
@@ -1823,12 +1800,26 @@ paths:
             OutputCardinality::Singleton,
             "{operation_id}"
         );
+        assert!(
+            !imported_row_path(&ir, operation_id).is_empty(),
+            "{operation_id}"
+        );
         assert_eq!(
             imported_rest_pagination(&ir, operation_id).mode,
-            PaginationMode::None,
+            mode,
             "{operation_id}"
         );
     }
+
+    // A singleton with a cursor query parameter has no row collection to page
+    // through, so the parameter stays an ordinary input.
+    let singleton = operations.get("singleton_get").expect("singleton");
+    assert_eq!(singleton.output.cardinality, OutputCardinality::Singleton);
+    assert!(imported_row_path(&ir, "singleton_get").is_empty());
+    assert_eq!(
+        imported_rest_pagination(&ir, "singleton_get").mode,
+        PaginationMode::None
+    );
 
     let link = imported_rest_pagination(&ir, "link_list");
     assert_eq!(link.mode, PaginationMode::LinkHeader);
@@ -1907,6 +1898,308 @@ paths:
             .as_ref()
             .and_then(|page_size| page_size.query_param.as_deref()),
         Some("per_page")
+    );
+}
+
+/// Wrapped-list inference resolves `$ref` when it decides a response is an
+/// envelope, so cursor discovery has to resolve it too: a row path without a
+/// cursor is a table that silently stops after its first page.
+#[test]
+fn importer_finds_a_cursor_inside_a_referenced_envelope_metadata_object() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: referenced_meta
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = &v4.surface;
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /things:
+    get:
+      operationId: listThings
+      parameters:
+        - {name: cursor, in: query, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ThingPage'}
+  /widgets:
+    get:
+      operationId: listWidgets
+      parameters:
+        - {name: cursor, in: query, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: {$ref: '#/components/schemas/Thing'}
+                  pageInfo:
+                    type: object
+                    properties:
+                      end_cursor: {$ref: '#/components/schemas/Cursor'}
+components:
+  schemas:
+    Cursor:
+      type: string
+    Thing:
+      type: object
+      properties:
+        id: {type: string}
+    PageMeta:
+      type: object
+      properties:
+        next_cursor: {type: string}
+    ThingPage:
+      type: object
+      properties:
+        data:
+          type: array
+          items: {$ref: '#/components/schemas/Thing'}
+        meta: {$ref: '#/components/schemas/PageMeta'}
+"
+        .as_bytes(),
+    )
+    .expect("import");
+
+    // A referenced `meta` sibling: the reference is what supplies the envelope
+    // evidence, so the row path depends on resolving exactly what the cursor
+    // walk must also see.
+    assert_eq!(imported_row_path(&ir, "listthings"), ["data"]);
+    let referenced_meta = imported_rest_pagination(&ir, "listthings");
+    assert_eq!(referenced_meta.mode, PaginationMode::CursorQuery);
+    assert_eq!(referenced_meta.cursor_param.as_deref(), Some("cursor"));
+    assert_eq!(
+        referenced_meta.response_cursor_path,
+        ["meta", "next_cursor"]
+    );
+
+    // An inline `pageInfo` whose token is itself a reference.
+    assert_eq!(imported_row_path(&ir, "listwidgets"), ["data"]);
+    let referenced_token = imported_rest_pagination(&ir, "listwidgets");
+    assert_eq!(referenced_token.mode, PaginationMode::CursorQuery);
+    assert_eq!(
+        referenced_token.response_cursor_path,
+        ["pageInfo", "end_cursor"]
+    );
+}
+
+/// Row-path inference asks the pagination detectors whether an operation is
+/// paginated rather than predicting their answer, so a contract binding any
+/// request input is envelope evidence — one case per way `binds_pagination_input`
+/// can be satisfied. Predicting the answer used to deadlock the two inferences:
+/// no row path because an alias was unknown, and no pagination because the gate
+/// needs a row path. `skip`/`take` and `$skip`/`$top` are the aliases that
+/// deadlocked.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "Every mode shares one envelope fixture, which is what makes the inputs the only variable."
+)]
+fn importer_infers_row_paths_when_pagination_detection_binds_a_request_input() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: aliases
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = &v4.surface;
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /skip-take:
+    get:
+      operationId: skipTakeList
+      parameters:
+        - {name: skip, in: query, schema: {type: integer, default: 0}}
+        - {name: take, in: query, schema: {type: integer, default: 25}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+  /odata:
+    get:
+      operationId: odataList
+      parameters:
+        - {name: $skip, in: query, schema: {type: integer, default: 0}}
+        - {name: $top, in: query, schema: {type: integer, default: 25}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+  /cursor:
+    get:
+      operationId: cursorList
+      parameters:
+        - {name: cursor, in: query, schema: {type: string}}
+      responses:
+        '200':
+          headers:
+            X-Next-Cursor:
+              schema: {type: string}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+  /page:
+    get:
+      operationId: pageList
+      parameters:
+        - {name: page, in: query, schema: {type: integer, default: 1}}
+        - {name: per_page, in: query, schema: {type: integer, default: 30}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+  /link-header:
+    get:
+      operationId: linkHeaderList
+      parameters:
+        - {name: page, in: query, schema: {type: integer, default: 1}}
+        - {name: per_page, in: query, schema: {type: integer, default: 30}}
+      responses:
+        '200':
+          headers:
+            Link:
+              schema: {type: string}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+  /unpaginated:
+    get:
+      operationId: unpaginatedGet
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+components:
+  schemas:
+    Envelope:
+      type: object
+      properties:
+        success: {type: boolean}
+        data:
+          type: array
+          items:
+            type: object
+            properties:
+              id: {type: string}
+"
+        .as_bytes(),
+    )
+    .expect("import");
+
+    // Every operation returns the same envelope, and it carries no metadata
+    // sibling, so the operation's own inputs are the only evidence available.
+    for (operation_id, mode) in [
+        ("skiptakelist", PaginationMode::Offset),
+        ("odatalist", PaginationMode::Offset),
+        ("cursorlist", PaginationMode::CursorQuery),
+        ("pagelist", PaginationMode::Page),
+        // Link-header detection is tried first, so this reaches
+        // `binds_pagination_input` by a different route than `pagelist` does —
+        // and it is the shape most real paginated endpoints use.
+        ("linkheaderlist", PaginationMode::LinkHeader),
+    ] {
+        assert_eq!(
+            imported_row_path(&ir, operation_id),
+            ["data"],
+            "{operation_id} should be unwrapped"
+        );
+        assert_eq!(
+            imported_rest_pagination(&ir, operation_id).mode,
+            mode,
+            "{operation_id} should paginate"
+        );
+    }
+
+    // The same envelope without pagination inputs stays a singleton: nothing
+    // says this response is a page rather than a resource.
+    assert!(imported_row_path(&ir, "unpaginatedget").is_empty());
+}
+
+/// A `Link` response header alone is not envelope evidence. GitHub declares one
+/// on singleton resources, where treating it as evidence would promote an
+/// incidental array to the whole relation.
+#[test]
+fn importer_does_not_treat_a_bare_link_header_as_envelope_evidence() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: link_header_singleton
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = &v4.surface;
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /runners/{runner_id}:
+    get:
+      operationId: getRunner
+      parameters:
+        - {name: runner_id, in: path, required: true, schema: {type: integer}}
+      responses:
+        '200':
+          headers:
+            Link:
+              schema: {type: string}
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  name: {type: string}
+                  public_ips:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        prefix: {type: string}
+"
+        .as_bytes(),
+    )
+    .expect("import");
+
+    assert!(
+        imported_row_path(&ir, "getrunner").is_empty(),
+        "a runner is a resource, not a page of its IP addresses"
     );
 }
 
@@ -1997,15 +2290,19 @@ paths:
     )
     .expect("broken schema imports with diagnostics");
     let operation = ir.operations.first().expect("operation");
-    let codes = operation
-        .diagnostics
-        .iter()
-        .map(|diagnostic| diagnostic.code.as_str())
-        .collect::<Vec<_>>();
-    assert!(codes.contains(&"OPENAPI_PARAMETER_INVALID"), "{codes:?}");
     assert!(
-        codes.contains(&"OPENAPI_RESPONSE_SCHEMA_UNRESOLVED"),
-        "{codes:?}"
+        operation.diagnostics.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("parameter without a string name")),
+        "{:?}",
+        operation.diagnostics
+    );
+    assert!(
+        operation.diagnostics.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("response schema could not be resolved")),
+        "{:?}",
+        operation.diagnostics
     );
     assert_eq!(operation.output.cardinality, OutputCardinality::Unknown);
 }

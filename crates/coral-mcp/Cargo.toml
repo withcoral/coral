@@ -10,17 +10,23 @@ publish = false
 workspace = true
 
 [dependencies]
+axum = { workspace = true, features = ["http1", "tokio"] }
+futures.workspace = true
 regex.workspace = true
 rmcp.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tokio-stream.workspace = true
 tonic.workspace = true
+tower.workspace = true
 tracing.workspace = true
 tracing-opentelemetry.workspace = true
 opentelemetry.workspace = true
+url.workspace = true
 uuid.workspace = true
 
 coral-api.workspace = true
@@ -32,5 +38,6 @@ coral-app.workspace = true
 jsonschema.workspace = true
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
 tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 tonic-types.workspace = true
 tracing-subscriber.workspace = true

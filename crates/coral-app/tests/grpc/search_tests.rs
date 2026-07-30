@@ -120,6 +120,7 @@ fn review_queue_function_sql() -> String {
 name: get_review_queue
 schema: github
 description: Get the current viewer's review queue.
+guide: Use this function for review queue lookups.
 */
 
 select
@@ -276,6 +277,10 @@ async fn search_and_list_catalog_share_installed_udf_metadata() {
     assert_eq!(searched, listed);
     match searched.item {
         Some(catalog_item::Item::TableFunction(function)) => {
+            assert_eq!(
+                function.guide,
+                "Use this function for review queue lookups."
+            );
             assert_eq!(function.arguments[0].name, "viewer");
             assert_eq!(function.result_columns[0].name, "reviewer");
             assert_eq!(function.result_columns[1].name, "default_queue");
@@ -429,6 +434,39 @@ async fn search_service_returns_structured_shell_response() {
     assert_no_coverage(native_status);
 }
 
+#[test]
+fn search_completes_with_one_blocking_thread() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .max_blocking_threads(1)
+        .enable_all()
+        .build()
+        .expect("build constrained Tokio runtime");
+    let search = runtime.block_on(async {
+        let harness = GrpcHarness::new().await;
+        let search = tokio::time::timeout(
+            Duration::from_secs(5),
+            harness.search_client().search(Request::new(SearchRequest {
+                workspace: Some(default_workspace()),
+                query: "github issue".to_string(),
+                limit: 10,
+            })),
+        )
+        .await;
+        drop(harness);
+        search
+    });
+    // A failed regression must not leave the test process waiting forever for
+    // a blocked task while Tokio tears down its constrained blocking pool.
+    runtime.shutdown_timeout(Duration::from_secs(1));
+
+    let response = search
+        .expect("search should not starve the blocking pool")
+        .expect("search")
+        .into_inner();
+    assert_eq!(response.provider_statuses.len(), 3);
+}
+
 #[tokio::test]
 async fn search_service_rejects_unknown_workspace() {
     let harness = GrpcHarness::new().await;
@@ -563,10 +601,45 @@ async fn table_function_proto_exposes_search_metadata() {
         TableFunctionKind::try_from(function.kind).expect("kind"),
         TableFunctionKind::Search
     );
+    assert_eq!(
+        function.guide,
+        "Prefer this provider route for message lookup."
+    );
     let search_limits = function.search_limits.as_ref().expect("search limits");
     assert_eq!(search_limits.default_top_k, 5);
     assert_eq!(search_limits.max_top_k, 20);
     assert_eq!(search_limits.max_calls_per_query, 2);
+}
+
+#[tokio::test]
+async fn search_matches_table_function_guide() {
+    let harness = GrpcHarness::new().await;
+    harness
+        .import_source(searchable_manifest_yaml(), Vec::new(), Vec::new())
+        .await;
+
+    let response = harness
+        .search_client()
+        .search(Request::new(SearchRequest {
+            workspace: Some(default_workspace()),
+            query: "provider route".to_string(),
+            limit: 10,
+        }))
+        .await
+        .expect("search table function guide")
+        .into_inner();
+
+    assert!(response.results.iter().any(|result| matches!(
+        result.payload.as_ref(),
+        Some(search_result::Payload::CatalogMetadata(metadata))
+            if metadata.item.as_ref().and_then(|item| item.item.as_ref()).is_some_and(|item| {
+                matches!(
+                    item,
+                    catalog_item::Item::TableFunction(function)
+                        if function.name == "search_messages"
+                )
+            })
+    )));
 }
 
 #[tokio::test]
@@ -1575,6 +1648,7 @@ fn searchable_manifest_yaml() -> String {
             "name": "search_messages",
             "kind": "search",
             "description": "Search messages",
+            "guide": "Prefer this provider route for message lookup.",
             "args": [{
                 "name": "query",
                 "required": true,

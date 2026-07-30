@@ -21,6 +21,7 @@ pub(crate) use error::{app_status, core_status, status_with_bounded_detail};
 
 pub use error::AppError;
 pub use server::{RunningServer, ServerBuilder, ServerMode, StaticAsset, StaticAssetsProvider};
+pub use server_config::McpHttpServeConfig;
 
 pub(crate) fn discover_app_state_layout(
     config_dir_override: Option<PathBuf>,
@@ -28,9 +29,22 @@ pub(crate) fn discover_app_state_layout(
     env::AppEnvironment::discover().app_state_layout(config_dir_override)
 }
 
-#[cfg(test)]
 pub(crate) fn env_var(name: &str) -> Result<Option<String>, std::env::VarError> {
     env::AppEnvironment::env_var(name)
+}
+
+/// Reports whether `ip` addresses the local machine.
+///
+/// Shared by the `server.mcp_http.bind` and `auth.http_bind_addr` bind guards
+/// and the auth URL validator's loopback-http allowance, so that tightening the
+/// rule (for instance, to stop treating `::ffff:127.0.0.1` as loopback) cannot
+/// leave one of those call sites more permissive than another. Other loopback
+/// tests in this crate deliberately do not route through it:
+/// `validate_mcp_http_grpc_mode` accepts a wildcard bind as well, and
+/// `postgres_host_is_loopback` works on host strings rather than addresses.
+pub(crate) fn is_loopback_ip(ip: std::net::IpAddr) -> bool {
+    ip.is_loopback()
+        || matches!(ip, std::net::IpAddr::V6(ip) if ip.to_ipv4_mapped().is_some_and(|ip| ip.is_loopback()))
 }
 
 /// Startup context for one workspace's MCP session.

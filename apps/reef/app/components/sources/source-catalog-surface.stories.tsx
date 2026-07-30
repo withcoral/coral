@@ -111,23 +111,6 @@ export const Compact: Story = {
   ),
 }
 
-export const CompactSearchOnly: Story = {
-  args: {
-    entries,
-    loadState: 'idle',
-    onPick: fn(),
-    onSearchChange: fn(),
-    search: '',
-    showTitle: false,
-    variant: 'compact',
-  },
-  render: (args) => (
-    <StoryShell>
-      <StatefulSurface {...args} />
-    </StoryShell>
-  ),
-}
-
 export const Loading: Story = {
   args: {
     entries: [],

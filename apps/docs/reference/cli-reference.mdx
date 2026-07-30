@@ -56,8 +56,8 @@ Use `DESCRIBE <schema>.<table>` to inspect a table's result columns:
 coral sql "DESCRIBE datadog.hosts"
 ```
 
-`DESCRIBE` expects a table. To inspect table functions, query
-`coral.table_functions`.
+`DESCRIBE` expects a table. To inspect table functions, including their
+descriptions and guides, query `coral.table_functions`.
 
 `DESCRIBE SELECT ...` still describes the result schema of the query itself.
 
@@ -375,6 +375,7 @@ Example function:
 name: open_prs
 schema: functions
 description: All open PRs in the specified repo
+guide: Use this function when you need a reusable open-PR lookup.
 */
 
 select number, title, html_url as url
@@ -382,7 +383,7 @@ from github.pulls
 where owner = $owner and repo = $repo and state = 'open'
 ```
 
-The `schema` and `name` frontmatter fields expose the function through SQL as `schema.name(...)`. Coral infers each required argument and its type from `$argument` uses in the SQL body. If the surrounding SQL does not provide enough type evidence, add an explicit cast such as `cast($limit as BIGINT)`.
+The `schema` and `name` frontmatter fields expose the function through SQL as `schema.name(...)`. The optional `guide` appears in catalog and search metadata for agents and users choosing how to query the function. Coral infers each required argument and its type from `$argument` uses in the SQL body. If the surrounding SQL does not provide enough type evidence, add an explicit cast such as `cast($limit as BIGINT)`.
 
 ### `coral functions list`
 
@@ -490,7 +491,8 @@ coral ui --no-open
 
 Start a long-running native gRPC server. Coral prints the selected endpoint and
 a `CORAL_ENDPOINT` hint for clients, then runs until you press `Ctrl-C` or send
-`SIGTERM` on Unix.
+`SIGTERM` on Unix. When `[server.mcp_http]` is enabled, it also prints the bound
+MCP Streamable HTTP endpoint.
 
 ```shellscript
 coral server

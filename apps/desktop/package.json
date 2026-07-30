@@ -1,7 +1,7 @@
 {
   "name": "@withcoral/desktop",
   "private": true,
-  "version": "0.7.1",
+  "version": "0.8.1",
   "description": "Coral desktop app",
   "author": "With Coral",
   "type": "module",
@@ -43,6 +43,7 @@
     "isbot": "5.1.43",
     "jotai": "2.20.1",
     "lucide-react": "1.18.0",
+    "prismjs": "1.30.0",
     "react": "19.2.7",
     "react-aria": "3.49.0",
     "react-aria-components": "1.18.0",
@@ -50,10 +51,13 @@
     "react-markdown": "10.1.0",
     "react-router": "7.17.0",
     "react-toastify": "11.1.0",
+    "react-truncate-markup": "5.1.2",
+    "semver": "7.8.4",
     "tinykeys": "4.0.0"
   },
   "devDependencies": {
     "@types/node": "^22.19.2",
+    "@types/semver": "7.7.1",
     "electron": "^42.3.3",
     "electron-builder": "^26.15.2",
     "electron-vite": "^5.0.0",

@@ -1,14 +1,9 @@
-export type McpClientId = 'codex' | 'claude-code'
+export type McpClientId = string
 
 export interface McpClientDescriptor {
   id: McpClientId
   name: string
-  configPath: string
-}
-
-export interface McpConfigureResult {
-  client: McpClientDescriptor
-  configPath: string
+  configuredWorkspace?: string
 }
 
 export interface McpLaunchConfig {
@@ -17,7 +12,8 @@ export interface McpLaunchConfig {
 }
 
 export interface CoralDesktopApi {
-  configureMcp(clientId: McpClientId): Promise<McpConfigureResult>
+  configureMcp(clientId: McpClientId, workspaceName: string): Promise<void>
   getMcpLaunchConfig(): Promise<McpLaunchConfig>
   listMcpClients(): Promise<McpClientDescriptor[]>
+  removeMcp(clientId: McpClientId): Promise<void>
 }

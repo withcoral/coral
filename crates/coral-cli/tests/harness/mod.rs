@@ -3,6 +3,7 @@
     reason = "Integration test crates share this harness, but each target only uses a subset of the helpers."
 )]
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -18,6 +19,7 @@ use coral_api::v1::function_service_server::{FunctionService, FunctionServiceSer
 use coral_api::v1::query_service_server::{QueryService, QueryServiceServer};
 use coral_api::v1::search_service_server::{SearchService, SearchServiceServer};
 use coral_api::v1::source_service_server::{SourceService, SourceServiceServer};
+use coral_api::v1::task_service_server::{TaskService, TaskServiceServer};
 use coral_api::v1::workspace_service_server::{WorkspaceService, WorkspaceServiceServer};
 use coral_api::v1::{
     AddFunctionRequest, AddFunctionResponse, CatalogClearResult, CatalogCounts, CatalogItem,
@@ -28,22 +30,23 @@ use coral_api::v1::{
     DeleteFunctionRequest, DeleteFunctionResponse, DeleteSourceRequest, DeleteSourceResponse,
     DeleteWorkspaceRequest, DeleteWorkspaceResponse, DescribeTableRequest, DescribeTableResponse,
     DiscoverSourcesRequest, DiscoverSourcesResponse, DrainSearchQueueRequest,
-    DrainSearchQueueResponse, ExecuteSqlRequest, ExecuteSqlResponse, ExplainSqlRequest,
-    ExplainSqlResponse, GetSourceInfoRequest, GetSourceInfoResponse, GetSourceRequest,
-    GetSourceResponse, ImportSourceRequest, ImportSourceResponse, ListCatalogRequest,
-    ListCatalogResponse, ListColumnsRequest, ListColumnsResponse, ListFunctionsRequest,
-    ListFunctionsResponse, ListSourcesRequest, ListSourcesResponse, ListWorkspacesRequest,
-    ListWorkspacesResponse, ObservedDrainResult, ObservedRebuildResult, PaginationRequest,
-    PaginationResponse, QueryPlan, RebuildSearchIndexRequest, RebuildSearchIndexResponse,
-    SearchCatalogRequest, SearchCatalogResponse, SearchFieldRole, SearchMaintenanceResult,
-    SearchMaintenanceState, SearchProvider, SearchProviderCoverage, SearchProviderState,
-    SearchRequest, SearchResponse, SearchResult, SearchResultTruncation,
-    SearchStorageCleanupResult, SearchSurfaceKind, SearchTableColumnPreview,
-    SearchTableColumnPreviewColumn, Source, SourceCredentialStorage, SourceInfo, SourceInputSpec,
-    SourceOrigin, SourceSecretInput, Table, TableFunction, TableSummary, ValidateSourceRequest,
-    ValidateSourceResponse, Workspace, catalog_item, create_bundled_source_with_o_auth_response,
-    import_source_response, search_maintenance_result, search_result,
-    source_input_spec::Input as ProtoSourceInput,
+    DrainSearchQueueResponse, EndTaskRequest, EndTaskResponse, ExecuteSqlRequest,
+    ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse, GetSourceInfoRequest,
+    GetSourceInfoResponse, GetSourceRequest, GetSourceResponse, ImportSourceRequest,
+    ImportSourceResponse, ListCatalogRequest, ListCatalogResponse, ListColumnsRequest,
+    ListColumnsResponse, ListFunctionsRequest, ListFunctionsResponse, ListSourcesRequest,
+    ListSourcesResponse, ListWorkspacesRequest, ListWorkspacesResponse, ObservedDrainResult,
+    ObservedRebuildResult, PaginationRequest, PaginationResponse, QueryPlan,
+    RebuildSearchIndexRequest, RebuildSearchIndexResponse, SearchCatalogRequest,
+    SearchCatalogResponse, SearchFieldRole, SearchMaintenanceResult, SearchMaintenanceState,
+    SearchProvider, SearchProviderCoverage, SearchProviderState, SearchRequest, SearchResponse,
+    SearchResult, SearchResultTruncation, SearchStorageCleanupResult, SearchSurfaceKind,
+    SearchTableColumnPreview, SearchTableColumnPreviewColumn, Source, SourceCredentialStorage,
+    SourceInfo, SourceInputSpec, SourceOrigin, SourceSecretInput, StartTaskRequest,
+    StartTaskResponse, Table, TableFunction, TableSummary, Task as ProtoTask,
+    TaskEnd as ProtoTaskEnd, TaskStatus, ValidateSourceRequest, ValidateSourceResponse, Workspace,
+    catalog_item, create_bundled_source_with_o_auth_response, import_source_response,
+    search_maintenance_result, search_result, source_input_spec::Input as ProtoSourceInput,
 };
 use coral_api::{
     CORAL_ERROR_DOMAIN, CORAL_ERROR_REASON_SOURCE_NOT_FOUND, CORAL_TASK_ID_METADATA_KEY,
@@ -252,6 +255,7 @@ fn mock_sql_response(sql: &str) -> ExecuteSqlResponse {
         return ExecuteSqlResponse {
             arrow_ipc_stream: encode_arrow_ipc_stream(&schema, &[batch]).expect("encode arrow ipc"),
             row_count: 1,
+            guide_required: None,
         };
     }
 
@@ -276,6 +280,7 @@ fn mock_sql_response(sql: &str) -> ExecuteSqlResponse {
     ExecuteSqlResponse {
         arrow_ipc_stream: encode_arrow_ipc_stream(&schema, &[batch]).expect("encode arrow ipc"),
         row_count,
+        guide_required: None,
     }
 }
 
@@ -314,6 +319,7 @@ fn mock_coral_tables_response() -> ExecuteSqlResponse {
     ExecuteSqlResponse {
         arrow_ipc_stream: encode_arrow_ipc_stream(&schema, &[batch]).expect("encode arrow ipc"),
         row_count: 3,
+        guide_required: None,
     }
 }
 
@@ -361,6 +367,7 @@ fn mock_validate_response() -> ValidateSourceResponse {
             schema_name: "github".to_string(),
             name: "search_issues".to_string(),
             description: "Search issues".to_string(),
+            guide: "Prefer this function for issue lookup.".to_string(),
             arguments: Vec::new(),
             result_columns: Vec::new(),
             kind: 0,
@@ -885,6 +892,8 @@ struct Captured {
     list_workspaces: Mutex<Vec<ListWorkspacesRequest>>,
     create_workspace: Mutex<Vec<CreateWorkspaceRequest>>,
     delete_workspace: Mutex<Vec<DeleteWorkspaceRequest>>,
+    start_task: Mutex<Vec<StartTaskRequest>>,
+    end_task: Mutex<Vec<EndTaskRequest>>,
 }
 
 pub(crate) fn encode_arrow_ipc_stream(
@@ -1455,6 +1464,90 @@ impl WorkspaceService for MockWorkspaceService {
     }
 }
 
+#[derive(Default)]
+struct MockTaskState {
+    next_id: u64,
+    tasks: HashMap<(String, String), Option<TaskStatus>>,
+}
+
+#[derive(Clone, Default)]
+struct MockTaskService {
+    state: Arc<Mutex<MockTaskState>>,
+    captured: Arc<Captured>,
+}
+
+#[tonic::async_trait]
+impl TaskService for MockTaskService {
+    async fn start_task(
+        &self,
+        request: Request<StartTaskRequest>,
+    ) -> Result<Response<StartTaskResponse>, Status> {
+        let request = request.into_inner();
+        self.captured
+            .start_task
+            .lock()
+            .expect("start_task capture")
+            .push(request.clone());
+        let workspace = request
+            .workspace
+            .ok_or_else(|| Status::invalid_argument("workspace is required"))?;
+        if workspace.name.trim().is_empty() {
+            return Err(Status::invalid_argument("workspace name is required"));
+        }
+        if request.intent.trim().is_empty() {
+            return Err(Status::invalid_argument("task intent is required"));
+        }
+
+        let mut state = self.state.lock().expect("task state");
+        state.next_id = state.next_id.checked_add(1).expect("task id counter");
+        let task_id = format!("00000000-0000-4000-8000-{:012x}", state.next_id);
+        state.tasks.insert((workspace.name, task_id.clone()), None);
+
+        Ok(Response::new(StartTaskResponse {
+            task: Some(ProtoTask { task_id }),
+        }))
+    }
+
+    async fn end_task(
+        &self,
+        request: Request<EndTaskRequest>,
+    ) -> Result<Response<EndTaskResponse>, Status> {
+        let request = request.into_inner();
+        self.captured
+            .end_task
+            .lock()
+            .expect("end_task capture")
+            .push(request.clone());
+        let workspace = request
+            .workspace
+            .ok_or_else(|| Status::invalid_argument("workspace is required"))?;
+        let task_status = TaskStatus::try_from(request.task_status)
+            .map_err(|_error| Status::invalid_argument("unknown task status"))?;
+        if task_status == TaskStatus::Unspecified {
+            return Err(Status::invalid_argument(
+                "task status must be success or failure",
+            ));
+        }
+
+        let mut state = self.state.lock().expect("task state");
+        let status = state
+            .tasks
+            .get_mut(&(workspace.name, request.task_id.clone()))
+            .ok_or_else(|| Status::not_found("task was not found"))?;
+        if status.is_some() {
+            return Err(Status::failed_precondition("task has already ended"));
+        }
+        *status = Some(task_status);
+
+        Ok(Response::new(EndTaskResponse {
+            task_end: Some(ProtoTaskEnd {
+                task_id: request.task_id,
+                task_status: task_status as i32,
+            }),
+        }))
+    }
+}
+
 pub(crate) struct MockServer {
     endpoint_uri: String,
     config_dir: TempDir,
@@ -1482,6 +1575,7 @@ impl MockServer {
         let source_captured = Arc::clone(&captured);
         let function_captured = Arc::clone(&captured);
         let workspace_captured = Arc::clone(&captured);
+        let task_captured = Arc::clone(&captured);
         let query_config = Arc::clone(&config);
         let search_config = Arc::clone(&config);
         let source_config = Arc::clone(&config);
@@ -1510,6 +1604,10 @@ impl MockServer {
                 .add_service(FunctionServiceServer::new(MockFunctionService {
                     config: Arc::clone(&config),
                     captured: function_captured,
+                }))
+                .add_service(TaskServiceServer::new(MockTaskService {
+                    captured: task_captured,
+                    ..MockTaskService::default()
                 }))
                 .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
                     drop(shutdown_rx.await);
@@ -1714,6 +1812,22 @@ impl MockServer {
             .delete_workspace
             .lock()
             .expect("delete_workspace capture")
+            .clone()
+    }
+
+    pub(crate) fn start_task_requests(&self) -> Vec<StartTaskRequest> {
+        self.captured
+            .start_task
+            .lock()
+            .expect("start_task capture")
+            .clone()
+    }
+
+    pub(crate) fn end_task_requests(&self) -> Vec<EndTaskRequest> {
+        self.captured
+            .end_task
+            .lock()
+            .expect("end_task capture")
             .clone()
     }
 

@@ -10,7 +10,8 @@ use crate::state::ConfigStore;
 use crate::state::db::{CoralDb, DbRepos, now_unix_nanos_i64};
 use crate::storage::fs::DirectoryBackup;
 use crate::workspaces::{
-    DeletedWorkspace, WorkspaceLifecycleLock, WorkspaceName, WorkspacePaths, WorkspaceRecord,
+    DeletedWorkspace, WorkspaceLifecycleLock, WorkspaceLifecycleRevision, WorkspaceName,
+    WorkspacePaths, WorkspaceRecord,
 };
 
 /// App-owned workspace lifecycle behavior.
@@ -98,6 +99,20 @@ impl WorkspaceManager {
         }
     }
 
+    /// Verifies the canonical workspace row while holding one active lifecycle
+    /// snapshot, then returns the revision a long-running writer must preserve.
+    pub(crate) async fn require_active_workspace_revision(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<WorkspaceLifecycleRevision, AppError> {
+        let snapshot = self.lifecycle_lock.snapshot_async().await;
+        if snapshot.workspace_is_deleting(workspace_name) {
+            return Err(AppError::WorkspaceNotFound(workspace_name.to_string()));
+        }
+        self.require_workspace(workspace_name).await?;
+        Ok(snapshot.revision())
+    }
+
     #[cfg(test)]
     pub(crate) fn lifecycle_lock(&self) -> WorkspaceLifecycleLock {
         self.lifecycle_lock.clone()
@@ -107,6 +122,7 @@ impl WorkspaceManager {
         &self,
         workspace_name: &WorkspaceName,
     ) -> Result<WorkspaceRecord, AppError> {
+        let _lifecycle_guard = self.lifecycle_lock.lock_async().await;
         let mut tx = self.db.begin().await?;
         if tx
             .workspaces()
@@ -145,6 +161,7 @@ impl WorkspaceManager {
         let deletion_marker = self
             .lifecycle_lock
             .mark_workspace_deleting(workspace_name)
+            .await
             .ok_or_else(|| {
                 AppError::FailedPrecondition(format!(
                     "workspace '{workspace_name}' is already being deleted"
@@ -152,21 +169,16 @@ impl WorkspaceManager {
             })?;
 
         let (deleted, workspace_dir_backup) = {
-            let mut tx = self.db.begin().await?;
-            if tx
-                .workspaces()
-                .get(workspace_name.as_str())
+            let Some(deletion) = self
+                .db
+                .begin_workspace_deletion(workspace_name.as_str())
                 .await?
-                .is_none()
-            {
+            else {
                 return Err(AppError::WorkspaceNotFound(workspace_name.to_string()));
-            }
-            tx.workspaces().delete(workspace_name.as_str()).await?;
-            let deleted = {
-                let _lifecycle_guard = self.lifecycle_lock.lock();
-                self.config_store
-                    .remove_workspace_config_entries(workspace_name)
             };
+            let deleted = self
+                .config_store
+                .remove_workspace_config_entries(workspace_name);
             let deleted = match deleted {
                 Ok(deleted) => deleted.unwrap_or_else(|| DeletedWorkspace {
                     workspace: WorkspaceRecord {
@@ -175,7 +187,7 @@ impl WorkspaceManager {
                     sources: Vec::new(),
                 }),
                 Err(error) => {
-                    if let Err(rollback_error) = tx.rollback().await {
+                    if let Err(rollback_error) = deletion.rollback().await {
                         warn!(
                             workspace = %workspace_name,
                             "workspace config cleanup failed, and database rollback also failed: {rollback_error}"
@@ -184,7 +196,7 @@ impl WorkspaceManager {
                     return Err(error);
                 }
             };
-            tx.commit().await?;
+            deletion.commit().await?;
             self.remove_deleted_workspace_credentials(&deleted);
             let workspace_dir_backup = self.stage_deleted_workspace_dir(&deleted.workspace.name);
             (deleted, workspace_dir_backup)
@@ -365,7 +377,6 @@ mod tests {
             SourceLoadDiagnosticStage::Query,
             &workspace_name,
             &source_name,
-            "SOURCE_LOAD_FAILED",
             "test failure",
         );
         credential_manager
@@ -414,7 +425,7 @@ mod tests {
             &workspace_name,
             &source_name,
             "query-source",
-            "SOURCE_LOAD_FAILED",
+            "test failure",
         ));
     }
 
@@ -441,7 +452,6 @@ mod tests {
             SourceLoadDiagnosticStage::Query,
             &workspace_name,
             &source_name,
-            "SOURCE_LOAD_FAILED",
             "test failure",
         );
 
@@ -454,7 +464,7 @@ mod tests {
             &workspace_name,
             &source_name,
             "query-source",
-            "SOURCE_LOAD_FAILED",
+            "test failure",
         ));
     }
 }

@@ -593,6 +593,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "00bdb5da18dac48ca2cc7cd4a98e533e8635a58e2361d13a1a4ee3888e0d72f1"
 dependencies = [
  "aws-lc-sys",
+ "untrusted 0.7.1",
  "zeroize",
 ]
 
@@ -727,6 +728,8 @@ dependencies = [
  "http 1.4.2",
  "http-body 1.1.0",
  "http-body-util",
+ "hyper",
+ "hyper-util",
  "itoa",
  "matchit",
  "memchr",
@@ -735,6 +738,7 @@ dependencies = [
  "pin-project-lite",
  "serde_core",
  "sync_wrapper",
+ "tokio",
  "tower",
  "tower-layer",
  "tower-service",
@@ -1210,7 +1214,7 @@ checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 
 [[package]]
 name = "coral-api"
-version = "0.7.1"
+version = "0.8.1"
 dependencies = [
  "prost",
  "protoc-bin-vendored",
@@ -1222,10 +1226,12 @@ dependencies = [
 
 [[package]]
 name = "coral-app"
-version = "0.7.1"
+version = "0.8.1"
 dependencies = [
  "apple-native-keyring-store",
  "arrow",
+ "async-trait",
+ "async-lock",
  "axum",
  "base64",
  "chrono",
@@ -1237,6 +1243,7 @@ dependencies = [
  "coral-telemetry",
  "etcetera",
  "fs2",
+ "jsonwebtoken",
  "keyring-core",
  "opentelemetry",
  "opentelemetry-appender-tracing",
@@ -1279,7 +1286,7 @@ dependencies = [
 
 [[package]]
 name = "coral-auth-aws"
-version = "0.7.1"
+version = "0.8.1"
 dependencies = [
  "aws-credential-types",
  "aws-sigv4",
@@ -1291,8 +1298,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "coral-benchmarks"
+version = "0.8.1"
+dependencies = [
+ "anyhow",
+ "clap",
+ "coral-api",
+ "coral-client",
+ "coral-mcp",
+ "rmcp",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "tiktoken-rs",
+ "tokio",
+ "tonic",
+ "url",
+]
+
+[[package]]
 name = "coral-cli"
-version = "0.7.1"
+version = "0.8.1"
 dependencies = [
  "anyhow",
  "arrow",
@@ -1323,7 +1350,7 @@ dependencies = [
 
 [[package]]
 name = "coral-client"
-version = "0.7.1"
+version = "0.8.1"
 dependencies = [
  "arrow",
  "coral-api",
@@ -1349,7 +1376,7 @@ dependencies = [
 
 [[package]]
 name = "coral-engine"
-version = "0.7.1"
+version = "0.8.1"
 dependencies = [
  "arrow",
  "async-trait",
@@ -1388,12 +1415,14 @@ dependencies = [
 
 [[package]]
 name = "coral-mcp"
-version = "0.7.1"
+version = "0.8.1"
 dependencies = [
+ "axum",
  "coral-api",
  "coral-app",
  "coral-client",
  "coral-telemetry",
+ "futures",
  "jsonschema",
  "opentelemetry",
  "opentelemetry_sdk",
@@ -1402,20 +1431,24 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "thiserror",
  "tokio",
+ "tokio-stream",
  "tonic",
  "tonic-types",
+ "tower",
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
+ "url",
  "uuid",
 ]
 
 [[package]]
 name = "coral-spec"
-version = "0.7.1"
+version = "0.8.1"
 dependencies = [
  "jsonschema",
  "schemars",
@@ -1429,7 +1462,7 @@ dependencies = [
 
 [[package]]
 name = "coral-telemetry"
-version = "0.7.1"
+version = "0.8.1"
 dependencies = [
  "opentelemetry",
  "opentelemetry_sdk",
@@ -2613,6 +2646,17 @@ checksum = "7360491ce676a36bf9bb3c56c1aa791658183a54d2744120f27285738d90465a"
 
 [[package]]
 name = "fancy-regex"
+version = "0.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72cf461f865c862bb7dc573f643dd6a2b6842f7c30b07882b56bd148cc2761b8"
+dependencies = [
+ "bit-set",
+ "regex-automata",
+ "regex-syntax",
+]
+
+[[package]]
+name = "fancy-regex"
 version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e1e1dacd0d2082dfcf1351c4bdd566bbe89a2b263235a2b50058f1e130a47277"
@@ -3508,7 +3552,7 @@ dependencies = [
  "bytecount",
  "data-encoding",
  "email_address",
- "fancy-regex",
+ "fancy-regex 0.18.0",
  "fraction",
  "getrandom 0.3.4",
  "idna",
@@ -3532,6 +3576,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6dbd1086b01b9349fd4ef9a07433965af64c8ce8159abe633a189e4ff817bd13"
 dependencies = [
  "regex-syntax",
+]
+
+[[package]]
+name = "jsonwebtoken"
+version = "10.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eba32bfb4ffdeaca3e34431072faf01745c9b26d25504aa7a6cf5684334fc4fc"
+dependencies = [
+ "aws-lc-rs",
+ "base64",
+ "getrandom 0.2.17",
+ "js-sys",
+ "serde",
+ "serde_json",
+ "signature",
+ "zeroize",
 ]
 
 [[package]]
@@ -4704,6 +4764,15 @@ dependencies = [
 
 [[package]]
 name = "rand_core"
+version = "0.6.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c"
+dependencies = [
+ "getrandom 0.2.17",
+]
+
+[[package]]
+name = "rand_core"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "76afc826de14238e6e8c374ddcc1fa19e374fd8dd986b0d2af0d02377261d83c"
@@ -4919,7 +4988,7 @@ dependencies = [
  "cfg-if",
  "getrandom 0.2.17",
  "libc",
- "untrusted",
+ "untrusted 0.9.0",
  "windows-sys 0.52.0",
 ]
 
@@ -5121,7 +5190,7 @@ dependencies = [
  "aws-lc-rs",
  "ring",
  "rustls-pki-types",
- "untrusted",
+ "untrusted 0.9.0",
 ]
 
 [[package]]
@@ -5456,6 +5525,15 @@ checksum = "c4db69cba1110affc0e9f7bcd48bbf87b3f4fc7c61fc9155afd4c469eb3d6c1b"
 dependencies = [
  "errno",
  "libc",
+]
+
+[[package]]
+name = "signature"
+version = "2.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77549399552de45a898a580c1b41d445bf730df867cc44e6c0233bbc4b8329de"
+dependencies = [
+ "rand_core 0.6.4",
 ]
 
 [[package]]
@@ -5913,6 +5991,21 @@ dependencies = [
  "byteorder",
  "integer-encoding",
  "ordered-float",
+]
+
+[[package]]
+name = "tiktoken-rs"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "027853bbf8c7763b77c5c595f1c271c7d536ced7d6f83452911b944621e57fc2"
+dependencies = [
+ "anyhow",
+ "base64",
+ "bstr",
+ "fancy-regex 0.17.0",
+ "lazy_static",
+ "regex",
+ "rustc-hash",
 ]
 
 [[package]]
@@ -6440,6 +6533,12 @@ name = "unsafe-libyaml"
 version = "0.2.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "673aac59facbab8a9007c7f6108d11f63b603f7cabff99fabf650fea5c32b861"
+
+[[package]]
+name = "untrusted"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a156c684c91ea7d62626509bce3cb4e1d9ed5c4d978f7b4352658f96a4c26b4a"
 
 [[package]]
 name = "untrusted"
@@ -6998,7 +7097,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.7.1"
+version = "0.8.1"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -7162,6 +7261,21 @@ name = "zeroize"
 version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e13c156562582aa81c60cb29407084cdb54c4164760106ab78e6c5b0858cf64e"
+dependencies = [
+ "serde",
+ "zeroize_derive",
+]
+
+[[package]]
+name = "zeroize_derive"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3c50655cbb0fe3fc43170059e702f1ce5e19b84cec58dc87b037a09935c2f328"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
 
 [[package]]
 name = "zerotrie"

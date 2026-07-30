@@ -90,8 +90,7 @@ fn generate_projection(
             };
             if exposure == SqlInputExposure::Internal && input.required && !pagination_owned_input {
                 visibility = ProjectionVisibility::Hidden;
-                projection_diagnostics.push(Diagnostic::warning(
-                    "PROJECTION_INPUT_UNSUPPORTED",
+                projection_diagnostics.push(Diagnostic::new(
                     format!(
                         "required {:?} input '{}' cannot be exposed in SQL",
                         input.location, input.name
@@ -105,8 +104,7 @@ fn generate_projection(
                 // Request lowering only renders path and query parameters, so
                 // an optional header or cookie is omitted from every generated
                 // request; the projection stays usable but must say so.
-                projection_diagnostics.push(Diagnostic::warning(
-                    "PROJECTION_INPUT_UNSUPPORTED",
+                projection_diagnostics.push(Diagnostic::new(
                     format!(
                         "optional {:?} input '{}' is not sent by generated requests",
                         input.location, input.name
@@ -131,7 +129,7 @@ fn generate_projection(
             }
         })
         .collect::<Vec<_>>();
-    let columns = projection_columns(type_by_id, operation);
+    let columns = projection_columns(plan, type_by_id, operation);
     let name = generated_projection_name(operation, is_search);
     let guide = projection_guide(&kind, &inputs, is_search);
     let projection = Projection {
@@ -139,6 +137,7 @@ fn generate_projection(
         kind,
         description: operation.description.clone(),
         guide,
+        require_guide_read: false,
         operation_id: operation.id.clone(),
         visibility,
         inputs,
@@ -301,6 +300,7 @@ fn type_index(ir: &SemanticIr) -> TypeIndex<'_> {
 }
 
 fn projection_columns(
+    plan: &ValidatedSurfacePlan,
     type_by_id: &TypeIndex<'_>,
     operation: &IrOperation,
 ) -> Vec<ProjectionColumn> {
@@ -327,7 +327,9 @@ fn projection_columns(
             },
         ];
     }
-    let Some(row_type) = type_by_id.get(operation.output.type_ref.as_str()) else {
+    // A wrapped-list operation declares an envelope but yields the rows nested
+    // inside it, so columns come from the type its row path selects.
+    let Some(row_type) = type_by_id.get(plan.rest_output_type_ref(&operation.id)) else {
         return vec![ProjectionColumn {
             name: "value".to_string(),
             data_type: ManifestDataType::Json,

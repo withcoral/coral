@@ -3,6 +3,7 @@ import type { RouteObject } from 'react-router'
 
 const HOME_PATH = '/'
 const WORKSPACES_PATH = '/workspaces'
+const WORKSPACE_FUNCTIONS_PATH = '/workspaces/:workspaceId/functions'
 const WORKSPACE_SCHEMA_PATH = '/workspaces/:workspaceId/schema'
 const WORKSPACE_SCHEMA_TABLE_PATH = '/workspaces/:workspaceId/schema/:schemaName/:tableName'
 const WORKSPACE_SCHEMA_TABLE_FUNCTION_PATH =
@@ -27,6 +28,13 @@ export const routeDefinitions = {
   workspaces: {
     path: WORKSPACES_PATH,
     toPath: () => WORKSPACES_PATH,
+  },
+  workspaceFunctions: {
+    path: WORKSPACE_FUNCTIONS_PATH,
+    toPath: (params: { workspaceId: string }) =>
+      generatePath(WORKSPACE_FUNCTIONS_PATH, {
+        workspaceId: params.workspaceId,
+      }),
   },
   workspaceSchema: {
     path: WORKSPACE_SCHEMA_PATH,

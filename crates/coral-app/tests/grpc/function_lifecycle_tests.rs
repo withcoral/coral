@@ -5,7 +5,7 @@ use coral_api::v1::{
 use coral_client::default_workspace;
 use tonic::Request;
 
-use crate::harness::GrpcHarness;
+use crate::harness::{GrpcHarness, fixture_manifest_yaml};
 
 fn workspace(name: &str) -> Workspace {
     Workspace {
@@ -19,6 +19,7 @@ fn function_sql(body: &str) -> String {
 name: echo_value
 schema: functions
 description: Echo one value
+guide: Use this function to echo a typed value.
 */
 
 {body}
@@ -38,11 +39,13 @@ async fn function_lifecycle_is_scoped_to_the_selected_workspace() {
         .await
         .expect("create workspace");
 
+    let sql_body = "select cast($value as VARCHAR) as value";
+    let sql = function_sql(sql_body);
     let added = harness
         .function_client()
         .add_function(Request::new(AddFunctionRequest {
             workspace: Some(work.clone()),
-            sql: function_sql("select cast($value as VARCHAR) as value"),
+            sql: sql.clone(),
         }))
         .await
         .expect("add function")
@@ -51,7 +54,15 @@ async fn function_lifecycle_is_scoped_to_the_selected_workspace() {
         .expect("added function");
     assert_eq!(added.name, "echo_value");
     assert_eq!(added.workspace.as_ref(), Some(&work));
-    assert!(matches!(added.runtime, Some(function::Runtime::Ready(_))));
+    let Some(function::Runtime::Ready(ready)) = added.runtime else {
+        panic!("expected runtime-ready function");
+    };
+    assert_eq!(ready.sql_body, sql_body);
+    assert!(ready.source_names.is_empty());
+    assert_eq!(
+        ready.table_function.expect("table function").guide,
+        "Use this function to echo a typed value."
+    );
 
     let default_functions = harness
         .function_client()
@@ -74,6 +85,12 @@ async fn function_lifecycle_is_scoped_to_the_selected_workspace() {
         .into_inner()
         .functions;
     assert_eq!(work_functions.len(), 1);
+    let listed = work_functions.into_iter().next().expect("listed function");
+    let Some(function::Runtime::Ready(ready)) = listed.runtime else {
+        panic!("expected listed runtime-ready function");
+    };
+    assert_eq!(ready.sql_body, sql_body);
+    assert!(ready.source_names.is_empty());
 
     harness
         .function_client()
@@ -94,6 +111,49 @@ async fn function_lifecycle_is_scoped_to_the_selected_workspace() {
         .into_inner()
         .functions;
     assert!(remaining.is_empty());
+}
+
+#[tokio::test]
+async fn function_sources_are_returned_when_added_and_listed() {
+    let harness = GrpcHarness::new().await;
+    harness
+        .import_source(
+            fixture_manifest_yaml(harness.temp_path()),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await;
+
+    let added = harness
+        .function_client()
+        .add_function(Request::new(AddFunctionRequest {
+            workspace: Some(default_workspace()),
+            sql: function_sql(r#"select "sessionId" as session_id from local_messages.messages"#),
+        }))
+        .await
+        .expect("add function")
+        .into_inner()
+        .function
+        .expect("added function");
+    let Some(function::Runtime::Ready(ready)) = added.runtime else {
+        panic!("expected runtime-ready function");
+    };
+    assert_eq!(ready.source_names, ["local_messages"]);
+
+    let listed = harness
+        .function_client()
+        .list_functions(Request::new(ListFunctionsRequest {
+            workspace: Some(default_workspace()),
+        }))
+        .await
+        .expect("list functions")
+        .into_inner()
+        .functions;
+    let listed = listed.into_iter().next().expect("listed function");
+    let Some(function::Runtime::Ready(ready)) = listed.runtime else {
+        panic!("expected listed runtime-ready function");
+    };
+    assert_eq!(ready.source_names, ["local_messages"]);
 }
 
 #[tokio::test]

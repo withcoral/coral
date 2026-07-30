@@ -195,9 +195,11 @@ tables:
                     schema: "functions".to_string(),
                     name: "review_queue".to_string(),
                     description: String::new(),
+                    guide: String::new(),
                 },
             },
             result_columns: Vec::new(),
+            source_names: Vec::new(),
         }
     }
 

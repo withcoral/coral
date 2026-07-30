@@ -16,10 +16,11 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
+use datafusion::arrow::datatypes::DataType;
 use datafusion::common::config::ConfigOptions;
 use datafusion::common::tree_node::Transformed;
-use datafusion::common::{DFSchema, DFSchemaRef, TableReference};
-use datafusion::datasource::provider_as_source;
+use datafusion::common::{DFSchema, DFSchemaRef, ScalarValue, TableReference};
+use datafusion::datasource::{TableProvider, provider_as_source};
 use datafusion::error::{DataFusionError, Result};
 use datafusion::logical_expr::planner::{
     PlannedRelation, RelationPlanner, RelationPlannerContext, RelationPlanning,
@@ -31,9 +32,13 @@ use datafusion::logical_expr::{
 use datafusion::optimizer::AnalyzerRule;
 use datafusion::prelude::SessionContext;
 
+use crate::backends::shared::filter_expr::literal_to_string;
+use crate::backends::shared::scalar::timestamp_to_rfc3339;
 use crate::backends::{
-    RegisteredTableFunction, RegisteredTableFunctionArgument, SourceFunctionProviderFactory,
+    BoundSourceFunctionArg, BoundSourceFunctionValue, RegisteredTableFunction,
+    RegisteredTableFunctionArgument, SourceFunctionProviderFactory,
 };
+use crate::runtime::literal_scalar_value;
 use crate::runtime::scoped_table_functions::{
     ScopedTableFunctionCall, ScopedTableFunctionName, ScopedTableFunctionSignature,
     available_functions_hint, call_parts, find_placeholder, lower_named_args_to_positional_exprs,
@@ -163,7 +168,7 @@ impl RelationPlanner for SourceFunctionRegistry {
         // inside SQL planning. Binding is pure value capture (no I/O), so the
         // analyzer repeating it later is cheap.
         if !node.has_parameter_placeholders() {
-            node.factory.provider_for_args(&node.call_args)?;
+            node.provider_for_bound_args()?;
         }
 
         let plan = LogicalPlan::Extension(Extension {
@@ -295,9 +300,17 @@ impl SourceFunctionNode {
         )
     }
 
+    fn provider_for_bound_args(&self) -> Result<Arc<dyn TableProvider>> {
+        let args = self
+            .declared_args_with_call_exprs()
+            .map(|(argument, expr)| bind_function_arg(&self.display_name, argument, expr))
+            .collect::<Result<Vec<_>>>()?;
+        self.factory.provider_for_args(&args)
+    }
+
     fn to_provider_scan(&self) -> Result<LogicalPlan> {
         self.reject_unbound_parameters()?;
-        let provider = self.factory.provider_for_args(&self.call_args)?;
+        let provider = self.provider_for_bound_args()?;
         LogicalPlanBuilder::scan(
             self.table_reference.clone(),
             provider_as_source(provider),
@@ -305,6 +318,153 @@ impl SourceFunctionNode {
         )?
         .build()
     }
+}
+
+fn bind_function_arg(
+    function: &str,
+    argument: &SourceFunctionArgument,
+    expr: &Expr,
+) -> Result<BoundSourceFunctionArg> {
+    let Some(value) = literal_scalar_value(expr)? else {
+        return Err(DataFusionError::Plan(format!(
+            "{function} argument '{}' must be a literal",
+            argument.name
+        )));
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let source_text = function_arg_source_text(expr);
+
+    if argument.data_type == ManifestDataType::Json {
+        let Some(value) = value.try_as_str().flatten() else {
+            return Err(argument_type_error(function, argument, &value));
+        };
+        return serde_json::from_str(value)
+            .map(|value: serde_json::Value| {
+                let source_text = source_text.unwrap_or_else(|| value.to_string());
+                Some(BoundSourceFunctionValue { value, source_text })
+            })
+            .map_err(|error| {
+                DataFusionError::Plan(format!(
+                    "{function} argument '{}' expected Json: {error}",
+                    argument.name
+                ))
+            });
+    }
+
+    let target_type = crate::types::arrow_data_type(argument.data_type);
+    let source_type = value.data_type();
+    let compatible = source_type == target_type
+        || crate::types::is_string_family(&source_type)
+        || (argument.data_type == ManifestDataType::Timestamp
+            && matches!(source_type, DataType::Timestamp(_, _)))
+        || (argument.data_type == ManifestDataType::Int64
+            && matches!(
+                source_type,
+                DataType::Int8
+                    | DataType::Int16
+                    | DataType::Int32
+                    | DataType::UInt8
+                    | DataType::UInt16
+                    | DataType::UInt32
+                    | DataType::UInt64
+            ))
+        || (argument.data_type == ManifestDataType::Float64
+            && matches!(
+                source_type,
+                DataType::Int8
+                    | DataType::Int16
+                    | DataType::Int32
+                    | DataType::Int64
+                    | DataType::UInt8
+                    | DataType::UInt16
+                    | DataType::UInt32
+                    | DataType::UInt64
+                    | DataType::Float32
+            ))
+        || (argument.data_type == ManifestDataType::Utf8
+            && matches!(
+                source_type,
+                DataType::Int8
+                    | DataType::Int16
+                    | DataType::Int32
+                    | DataType::Int64
+                    | DataType::UInt8
+                    | DataType::UInt16
+                    | DataType::UInt32
+                    | DataType::UInt64
+                    | DataType::Float32
+                    | DataType::Float64
+                    | DataType::Boolean
+                    | DataType::Timestamp(_, _)
+            ));
+    if !compatible {
+        return Err(argument_type_error(function, argument, &value));
+    }
+
+    let value = value.cast_to(&target_type).map_err(|error| {
+        DataFusionError::Plan(format!(
+            "{function} argument '{}' expected {}: {error}",
+            argument.name,
+            argument.data_type.as_manifest_str()
+        ))
+    })?;
+    let value = bound_value_to_json(value, argument.data_type).ok_or_else(|| {
+        DataFusionError::Plan(format!(
+            "{function} argument '{}' could not be encoded",
+            argument.name
+        ))
+    })?;
+    let source_text = source_text.unwrap_or_else(|| match &value {
+        serde_json::Value::String(value) => value.clone(),
+        value => value.to_string(),
+    });
+    let value = if argument.data_type == ManifestDataType::Utf8 {
+        serde_json::Value::String(source_text.clone())
+    } else {
+        value
+    };
+    Ok(Some(BoundSourceFunctionValue { value, source_text }))
+}
+
+fn function_arg_source_text(expr: &Expr) -> Option<String> {
+    match expr {
+        Expr::Negative(value) => literal_to_string(value).map(|value| format!("-{value}")),
+        _ => literal_to_string(expr),
+    }
+}
+
+fn bound_value_to_json(
+    value: ScalarValue,
+    data_type: ManifestDataType,
+) -> Option<serde_json::Value> {
+    match data_type {
+        ManifestDataType::Utf8 => value
+            .try_as_str()
+            .flatten()
+            .map(|value| serde_json::Value::String(value.to_owned())),
+        ManifestDataType::Int64 => i64::try_from(value).ok().map(serde_json::Value::from),
+        ManifestDataType::Float64 => f64::try_from(value)
+            .ok()
+            .and_then(serde_json::Number::from_f64)
+            .map(serde_json::Value::Number),
+        ManifestDataType::Boolean => bool::try_from(value).ok().map(serde_json::Value::Bool),
+        ManifestDataType::Timestamp => timestamp_to_rfc3339(&value).map(serde_json::Value::String),
+        ManifestDataType::Json => None,
+    }
+}
+
+fn argument_type_error(
+    function: &str,
+    argument: &SourceFunctionArgument,
+    value: &ScalarValue,
+) -> DataFusionError {
+    DataFusionError::Plan(format!(
+        "{function} argument '{}' expected {}, got {value:?}",
+        argument.name,
+        argument.data_type.as_manifest_str()
+    ))
 }
 
 // Node identity is the function name plus its declared argument signature and
@@ -420,6 +580,60 @@ impl AnalyzerRule for SourceFunctionAnalyzerRule {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn argument(data_type: ManifestDataType) -> SourceFunctionArgument {
+        SourceFunctionArgument {
+            name: "value".to_string(),
+            data_type,
+        }
+    }
+
+    #[test]
+    fn numeric_binding_accepts_unsigned_values_and_rejects_overflow() {
+        let int_value = Expr::Literal(ScalarValue::UInt64(Some(10)), None);
+        assert_eq!(
+            bind_function_arg(
+                "test.function",
+                &argument(ManifestDataType::Int64),
+                &int_value
+            )
+            .expect("UInt64 value should fit in Int64")
+            .map(|value| value.value),
+            Some(serde_json::json!(10))
+        );
+
+        let float_value = Expr::Literal(ScalarValue::UInt32(Some(10)), None);
+        assert_eq!(
+            bind_function_arg(
+                "test.function",
+                &argument(ManifestDataType::Float64),
+                &float_value
+            )
+            .expect("UInt32 value should convert to Float64")
+            .map(|value| value.value),
+            Some(serde_json::json!(10.0))
+        );
+
+        let overflow = Expr::Literal(ScalarValue::UInt64(Some(u64::MAX)), None);
+        let error = bind_function_arg(
+            "test.function",
+            &argument(ManifestDataType::Int64),
+            &overflow,
+        )
+        .expect_err("UInt64 overflow should be rejected");
+        assert!(error.to_string().contains("expected Int64"));
+    }
+
+    #[test]
+    fn utf8_binding_preserves_negative_zero_source_text() {
+        let expr = Expr::Negative(Box::new(Expr::Literal(ScalarValue::Int64(Some(0)), None)));
+        let value = bind_function_arg("test.function", &argument(ManifestDataType::Utf8), &expr)
+            .expect("negative zero should bind")
+            .expect("negative zero should not bind as NULL");
+
+        assert_eq!(value.source_text, "-0");
+        assert_eq!(value.value, serde_json::json!("-0"));
+    }
 
     #[test]
     fn install_analyzer_is_idempotent() {

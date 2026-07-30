@@ -150,6 +150,7 @@ fn plan_rejects_mcp_offset_pagination_starting_past_first_page() {
     }
     let operation_id = operation.id.clone();
     let metadata_with_offset_start = |offset_start| OperationMetadata::Mcp {
+        row_path: Vec::new(),
         pagination: crate::v4::McpOperationPagination {
             cursor: None,
             offset: Some(crate::backends::mcp::McpOffsetPaginationSpec {
@@ -199,17 +200,158 @@ fn semantic_ir_serialization_contains_facts_not_inferred_policy() {
         !yaml.contains("lookup_keys:"),
         "unexpected policy in IR: {yaml}"
     );
+    assert!(
+        !yaml.contains("row_path:"),
+        "unexpected policy in IR: {yaml}"
+    );
     assert!(matches!(
         imported.operation_metadata.operations.values().next(),
-        Some(OperationMetadata::Rest { pagination, lookup_keys })
+        Some(OperationMetadata::Rest { pagination, lookup_keys, .. })
             if pagination.page_param.as_deref() == Some("page")
                 && lookup_keys == &["state"]
     ));
 }
 
 #[test]
+fn plan_rejects_blank_or_unresolvable_rest_row_paths() {
+    let (_manifest, mut imported) = imported();
+    let OperationMetadata::Rest { row_path, .. } = imported
+        .operation_metadata
+        .operations
+        .values_mut()
+        .next()
+        .expect("metadata")
+    else {
+        panic!("expected REST metadata");
+    };
+    *row_path = vec![" ".to_string()];
+    let error = imported
+        .validated_plan()
+        .expect_err("blank row path must fail");
+    assert!(
+        error.to_string().contains("blank or padded segment"),
+        "unexpected error: {error}"
+    );
+
+    let OperationMetadata::Rest { row_path, .. } = imported
+        .operation_metadata
+        .operations
+        .values_mut()
+        .next()
+        .expect("metadata")
+    else {
+        panic!("expected REST metadata");
+    };
+    // The operation returns a declared array, which already *is* the rows, so
+    // no path applies: the runtime would select the segment from the array.
+    *row_path = vec!["missing".to_string()];
+    let error = imported
+        .validated_plan()
+        .expect_err("a row path on a declared list must fail");
+    assert!(
+        error
+            .to_string()
+            .contains("row path must be empty when the response root is already a list"),
+        "unexpected error: {error}"
+    );
+}
+
+/// A singleton envelope is the case a row path is *for*, so resolution has to
+/// keep checking that the path reaches an array of rows.
+#[test]
+fn plan_rejects_rest_row_paths_a_singleton_response_cannot_resolve() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: demo
+dsl_version: 4
+surface:
+  type: openapi
+  file: /tmp/openapi.yaml
+  base_url: https://api.example.com
+",
+    )
+    .expect("manifest")
+    .as_v4()
+    .expect("v4")
+    .clone();
+    let imported = import_openapi_surface(
+        &manifest,
+        &manifest.surface,
+        br"
+openapi: 3.0.3
+paths:
+  /items:
+    get:
+      operationId: items/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total: {type: integer}
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: {type: string}
+",
+    )
+    .expect("import");
+
+    for (row_path, fragment) in [
+        (vec!["missing".to_string()], "has no field 'missing'"),
+        (vec!["total".to_string()], "is not a list"),
+        (
+            vec!["data".to_string(), "id".to_string()],
+            "traverses non-object type",
+        ),
+    ] {
+        let mut imported = imported.clone();
+        let OperationMetadata::Rest {
+            row_path: metadata_row_path,
+            ..
+        } = imported
+            .operation_metadata
+            .operations
+            .values_mut()
+            .next()
+            .expect("metadata")
+        else {
+            panic!("expected REST metadata");
+        };
+        *metadata_row_path = row_path.clone();
+        let error = imported
+            .validated_plan()
+            .expect_err("unresolvable row path must fail");
+        assert!(
+            error.to_string().contains(fragment),
+            "row path {row_path:?}: unexpected error: {error}"
+        );
+    }
+}
+
+#[test]
+fn operation_metadata_without_a_row_path_defaults_to_the_response_root() {
+    let metadata: OperationMetadata = serde_yaml::from_str(
+        r"
+type: rest
+pagination:
+  mode: none
+lookup_keys: []
+",
+    )
+    .expect("metadata without a row path");
+
+    assert!(metadata.row_path().is_empty());
+}
+
+#[test]
 fn disabled_rest_pagination_serializes_only_its_mode() {
     let metadata = OperationMetadata::Rest {
+        row_path: Vec::new(),
         pagination: crate::PaginationSpec::default(),
         lookup_keys: Vec::new(),
     };

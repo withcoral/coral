@@ -22,6 +22,8 @@ message FunctionTableFunctionPublish {
   string name = 2;
   // User-facing description.
   string description = 3;
+  // Query guidance for the published table function.
+  string guide = 4;
 }
 
 // Runtime metadata for an installed function that currently plans and executes.
@@ -34,6 +36,10 @@ message FunctionRuntimeReady {
   FunctionTableFunctionPublish table_function = 3;
   // Result columns inferred from the planned function SQL.
   repeated TableFunctionResultColumn result_columns = 4;
+  // Executable SQL body parsed from the installed artifact.
+  string sql_body = 5;
+  // Canonical installed sources referenced by the planned function SQL.
+  repeated string source_names = 6;
 }
 
 // Validation failure for an installed function that is not currently queryable.

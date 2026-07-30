@@ -1,6 +1,6 @@
 //! Query-time loading, validation, and execution over installed sources.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -8,8 +8,9 @@ use std::time::Instant;
 use coral_engine::{
     CatalogInfo, CoralQuery, CoreError, DescribeTableInfo, PreparedQueryRuntime, QueryExecution,
     QueryExecutionProvenance, QueryPlan, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,
-    SourceDecorator, SourceDecoratorError, SourceFailurePolicy, SourceInputResolver, SourceTables,
-    SourceValidationReport, StatusCode, TableInfo, UdfRuntimeDefinition,
+    ResolvedQueryResources, SourceDecorator, SourceDecoratorError, SourceFailurePolicy,
+    SourceInputResolver, SourceTables, SourceValidationReport, StatusCode, TableInfo,
+    UdfRuntimeDefinition,
 };
 use coral_spec::{ManifestInputKind, ManifestInputSpec};
 use opentelemetry::trace::Status as OtelStatus;
@@ -21,6 +22,7 @@ use crate::bootstrap::AppError;
 use crate::catalog::model::CatalogResolution;
 use crate::credentials::{CredentialManager, CredentialSetId};
 use crate::functions::manager::{FunctionListing, FunctionManager, ValidatedFunctionInstall};
+use crate::hash::sha256_hex;
 use crate::query::QueryAttribution;
 use crate::query::extensions::{EngineExtensionsProvider, engine_extensions_for_providers};
 use crate::query::input_resolver::{
@@ -45,6 +47,19 @@ use crate::workspaces::{
 pub(crate) enum QueryManagerError {
     App(AppError),
     Core(CoreError),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RequiredQueryGuide {
+    pub(crate) schema_name: String,
+    pub(crate) resource_name: String,
+    pub(crate) guide: String,
+    pub(crate) guide_id: String,
+}
+
+pub(crate) enum ExecuteSqlOutcome {
+    Executed(QueryExecution),
+    GuideRequired(Vec<RequiredQueryGuide>),
 }
 
 pub(crate) struct ValidatedSource {
@@ -372,8 +387,9 @@ impl QueryManager {
         &self,
         workspace_name: &WorkspaceName,
         sql: &str,
+        shown_guide_ids: Option<&HashSet<String>>,
         attribution: &QueryAttribution,
-    ) -> Result<QueryExecution, QueryManagerError> {
+    ) -> Result<ExecuteSqlOutcome, QueryManagerError> {
         run_query_operation(
             QueryOperation::ExecuteSql,
             workspace_name,
@@ -393,13 +409,38 @@ impl QueryManager {
                         SourceObservationMode::Enabled,
                     )
                     .await?;
-                runtime
-                    .execute_sql(sql)
+                let prepared = runtime
+                    .prepare_sql(sql)
                     .await
+                    .map_err(QueryManagerError::Core)?;
+                if let Some(shown_guide_ids) = shown_guide_ids {
+                    let required_guides =
+                        required_query_guides(&runtime.list_catalog(None), prepared.resources());
+                    let unseen_guides = required_guides
+                        .into_iter()
+                        .filter(|guide| !shown_guide_ids.contains(&guide.guide_id))
+                        .collect::<Vec<_>>();
+                    if !unseen_guides.is_empty() {
+                        return Ok(ExecuteSqlOutcome::GuideRequired(unseen_guides));
+                    }
+                }
+                prepared
+                    .execute()
+                    .await
+                    .map(ExecuteSqlOutcome::Executed)
                     .map_err(QueryManagerError::Core)
             },
-            |execution| Some(u64::try_from(execution.row_count()).unwrap_or(u64::MAX)),
-            |span, execution| record_query_provenance(span, execution.provenance()),
+            |outcome| match outcome {
+                ExecuteSqlOutcome::Executed(execution) => {
+                    Some(u64::try_from(execution.row_count()).unwrap_or(u64::MAX))
+                }
+                ExecuteSqlOutcome::GuideRequired(_) => None,
+            },
+            |span, outcome| {
+                if let ExecuteSqlOutcome::Executed(execution) = outcome {
+                    record_query_provenance(span, execution.provenance());
+                }
+            },
         )
         .await
     }
@@ -533,7 +574,6 @@ impl QueryManager {
                         SourceLoadDiagnosticStage::Query,
                         workspace_name,
                         &source.name,
-                        "SOURCE_LOAD_FAILED",
                         &error.to_string(),
                     );
                 }
@@ -743,7 +783,7 @@ impl QueryManager {
         self.require_workspace(workspace_name)
             .await
             .map_err(QueryManagerError::App)?;
-        let _lifecycle_snapshot = self.lifecycle_lock.snapshot();
+        let _lifecycle_snapshot = self.lifecycle_lock.snapshot_async().await;
         let (loaded_sources, config) = self.load_function_validation_sources(workspace_name)?;
         self.validate_udf_sql_against_snapshot(workspace_name, raw_sql, &loaded_sources, &config)
             .await
@@ -755,12 +795,13 @@ impl QueryManager {
         raw_sql: &str,
     ) -> Result<UdfRuntimeDefinition, QueryManagerError> {
         for _ in 0..2 {
-            let revision = self.lifecycle_lock.snapshot().revision();
+            let revision = self.lifecycle_lock.snapshot_async().await.revision();
             self.require_workspace(workspace_name)
                 .await
                 .map_err(QueryManagerError::App)?;
-            let Some((loaded_sources, config)) =
-                self.function_validation_snapshot_if_unchanged(workspace_name, revision)?
+            let Some((loaded_sources, config)) = self
+                .function_validation_snapshot_if_unchanged(workspace_name, revision)
+                .await?
             else {
                 continue;
             };
@@ -780,6 +821,7 @@ impl QueryManager {
                     &runtime_function,
                     revision,
                 )
+                .await
                 .map_err(QueryManagerError::App)?
             {
                 ValidatedFunctionInstall::Installed => return Ok(runtime_function),
@@ -792,12 +834,12 @@ impl QueryManager {
         )))
     }
 
-    fn function_validation_snapshot_if_unchanged(
+    async fn function_validation_snapshot_if_unchanged(
         &self,
         workspace_name: &WorkspaceName,
         revision: WorkspaceLifecycleRevision,
     ) -> Result<Option<(Vec<LoadedQuerySource>, AppConfig)>, QueryManagerError> {
-        let lifecycle_snapshot = self.lifecycle_lock.snapshot();
+        let lifecycle_snapshot = self.lifecycle_lock.snapshot_async().await;
         if lifecycle_snapshot.revision() != revision {
             return Ok(None);
         }
@@ -914,6 +956,47 @@ impl QueryManager {
             .await
             .map_err(QueryManagerError::Core)
     }
+}
+
+fn required_query_guides(
+    catalog: &CatalogInfo,
+    resources: &ResolvedQueryResources,
+) -> Vec<RequiredQueryGuide> {
+    let mut guides = Vec::new();
+    for usage in resources.tables() {
+        if let Some(table) = catalog.tables.iter().find(|table| {
+            table.schema_name == usage.schema_name() && table.table_name == usage.table_name()
+        }) && table.require_guide_read
+        {
+            let guide = table.guide.clone();
+            guides.push(RequiredQueryGuide {
+                schema_name: table.schema_name.clone(),
+                resource_name: table.table_name.clone(),
+                guide_id: required_guide_id(&table.schema_name, &table.table_name, &guide),
+                guide,
+            });
+        }
+    }
+    for usage in resources.table_functions() {
+        if let Some(function) = catalog.table_functions.iter().find(|function| {
+            function.schema_name == usage.schema_name()
+                && function.function_name == usage.function_name()
+        }) && function.require_guide_read
+        {
+            let guide = function.guide.clone();
+            guides.push(RequiredQueryGuide {
+                schema_name: function.schema_name.clone(),
+                resource_name: function.function_name.clone(),
+                guide_id: required_guide_id(&function.schema_name, &function.function_name, &guide),
+                guide,
+            });
+        }
+    }
+    guides
+}
+
+fn required_guide_id(schema_name: &str, resource_name: &str, guide: &str) -> String {
+    sha256_hex(format!("{schema_name}\0{resource_name}\0{guide}").as_bytes())
 }
 
 fn query_sources_from_loaded(loaded_sources: &[LoadedQuerySource]) -> Vec<QuerySource> {
@@ -1208,11 +1291,12 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use coral_engine::{
-        EngineExtensions, QueryExecution, QueryExecutionProvenance, QueryTableFunctionUsage,
-        QueryTableUsage, SourceDecorator, SourceDecoratorError, SourceInputResolutionContext,
-        SourceInputResolver, SourceInputResolverError, SourceTables,
+        EngineExtensions, QueryExecutionProvenance, QueryTableFunctionUsage, QueryTableUsage,
+        ResolvedQueryResources, SourceDecorator, SourceDecoratorError,
+        SourceInputResolutionContext, SourceInputResolver, SourceInputResolverError, SourceTables,
     };
     use coral_spec::parse_source_manifest_yaml;
+    use coral_spec::v4::ProjectionCatalog;
     use serde_json::{Value, json};
     use tempfile::TempDir;
     use wiremock::matchers::{method, path};
@@ -1220,13 +1304,18 @@ mod tests {
 
     use super::*;
     use crate::credentials::{CredentialStorageKind, CredentialStoragePreference, CredentialStore};
+    use crate::identity::Principal;
+    use crate::request_context::RequestContext;
     use crate::sources::manager::{ImportSourceCommand, SourceBindings, SourceManager};
     use crate::sources::model::SourceOrigin;
     use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig, run_state_migrations};
+    use crate::task::manager::TaskManager;
+    use crate::task::store::TaskStore;
 
     struct QueryManagerFixture {
         _temp: TempDir,
         manager: QueryManager,
+        db: Arc<CoralDb>,
     }
 
     async fn query_manager_with(
@@ -1258,6 +1347,7 @@ mod tests {
         QueryManagerFixture {
             _temp: temp,
             manager,
+            db,
         }
     }
 
@@ -1291,6 +1381,7 @@ mod tests {
         QueryManagerFixture {
             _temp: temp,
             manager,
+            db,
         }
     }
 
@@ -1320,10 +1411,26 @@ mod tests {
             .await
             .expect("open sqlite");
         db.migrate().await.expect("migrate sqlite");
-        run_state_migrations(&db, config_store)
+        run_state_migrations(&db, config_store, layout)
             .await
             .expect("run state migrations");
         Arc::new(db)
+    }
+
+    async fn active_task_context(db: &Arc<CoralDb>) -> (TaskManager, RequestContext, String) {
+        let task = TaskManager::new(TaskStore::new(Arc::clone(db)));
+        let principal = Principal::local();
+        let started = task
+            .start_task(
+                WorkspaceName::default(),
+                principal.clone(),
+                "Exercise query attribution".to_string(),
+            )
+            .await
+            .expect("start attributed task");
+        let task_id = started.id.to_string();
+        let context = RequestContext::new(principal).with_task_id(Some(started.id));
+        (task, context, task_id)
     }
 
     fn assert_workspace_not_found(error: AppError, workspace_name: &WorkspaceName) {
@@ -1392,18 +1499,17 @@ mod tests {
         let _guard = tracing::subscriber::set_default(subscriber);
 
         let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
-        let service = QueryService::new(fixture.manager.clone());
+        let (task, request_context, task_id) = active_task_context(&fixture.db).await;
+        let service = QueryService::new(fixture.manager.clone(), task);
 
         let mut request = Request::new(ExecuteSqlRequest {
             workspace: Some(Workspace {
                 name: WorkspaceName::default().as_str().to_string(),
             }),
             sql: "SELECT 1".to_string(),
+            guide_read_context: None,
         });
-        request.extensions_mut().insert(
-            crate::task::id::TaskId::parse("550e8400-e29b-41d4-a716-446655440000")
-                .expect("task id"),
-        );
+        request.extensions_mut().insert(request_context);
 
         // The query may fail (the fixture has no installed sources); the
         // `coral.query` span is created and stamped before execution regardless.
@@ -1420,10 +1526,7 @@ mod tests {
             .iter()
             .find(|attribute| attribute.key.as_str() == "task.id")
             .expect("task.id attribute present");
-        assert_eq!(
-            task_attr.value.as_str(),
-            "550e8400-e29b-41d4-a716-446655440000"
-        );
+        assert_eq!(task_attr.value.as_str(), task_id);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1444,13 +1547,14 @@ mod tests {
         let _guard = tracing::subscriber::set_default(subscriber);
 
         let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
-        let service = CatalogService::new(fixture.manager.clone());
+        let (task, request_context, task_id) = active_task_context(&fixture.db).await;
+        let service = CatalogService::new(fixture.manager.clone(), task);
 
-        call_catalog_tools_with_task(&service).await;
+        call_catalog_tools_with_task(&service, &request_context).await;
 
         provider.force_flush().expect("flush spans");
         let spans = exporter.get_finished_spans().expect("finished spans");
-        assert_catalog_task_spans(&spans);
+        assert_catalog_task_spans(&spans, &task_id);
     }
 
     #[test]
@@ -1474,8 +1578,7 @@ mod tests {
             "SELECT title FROM github.issues",
             None,
         );
-        let provenance = QueryExecutionProvenance::new(
-            "SELECT title FROM github.issues",
+        let resources = ResolvedQueryResources::new(
             vec!["github".to_string()],
             vec![QueryTableUsage::new("github", "github", "issues")],
             vec![QueryTableFunctionUsage::new(
@@ -1484,6 +1587,8 @@ mod tests {
                 "search_issues",
             )],
         );
+        let provenance =
+            QueryExecutionProvenance::new("SELECT title FROM github.issues", resources, 0);
         record_query_provenance(&span, &provenance);
         drop(span);
 
@@ -1517,7 +1622,10 @@ mod tests {
         );
     }
 
-    async fn call_catalog_tools_with_task(service: &crate::catalog::service::CatalogService) {
+    async fn call_catalog_tools_with_task(
+        service: &crate::catalog::service::CatalogService,
+        request_context: &RequestContext,
+    ) {
         use coral_api::v1::catalog_service_server::CatalogService as CatalogServiceApi;
         use coral_api::v1::{
             DescribeTableRequest, ListCatalogRequest, ListColumnsRequest, PaginationRequest,
@@ -1525,49 +1633,61 @@ mod tests {
         };
 
         let _list_catalog_result = service
-            .list_catalog(tagged_catalog_request(ListCatalogRequest {
-                workspace: Some(default_workspace_proto()),
-                schema_name: String::new(),
-                kind: 0,
-                pagination: Some(PaginationRequest {
-                    limit: 10,
-                    offset: 0,
-                }),
-            }))
+            .list_catalog(tagged_catalog_request(
+                request_context,
+                ListCatalogRequest {
+                    workspace: Some(default_workspace_proto()),
+                    schema_name: String::new(),
+                    kind: 0,
+                    pagination: Some(PaginationRequest {
+                        limit: 10,
+                        offset: 0,
+                    }),
+                },
+            ))
             .await;
         let _search_catalog_result = service
-            .search_catalog(tagged_catalog_request(SearchCatalogRequest {
-                workspace: Some(default_workspace_proto()),
-                pattern: "tables".to_string(),
-                ignore_case: true,
-                schema_name: String::new(),
-                kind: 0,
-                pagination: Some(PaginationRequest {
-                    limit: 10,
-                    offset: 0,
-                }),
-            }))
+            .search_catalog(tagged_catalog_request(
+                request_context,
+                SearchCatalogRequest {
+                    workspace: Some(default_workspace_proto()),
+                    pattern: "tables".to_string(),
+                    ignore_case: true,
+                    schema_name: String::new(),
+                    kind: 0,
+                    pagination: Some(PaginationRequest {
+                        limit: 10,
+                        offset: 0,
+                    }),
+                },
+            ))
             .await;
         let _describe_table_result = service
-            .describe_table(tagged_catalog_request(DescribeTableRequest {
-                workspace: Some(default_workspace_proto()),
-                schema_name: "coral".to_string(),
-                table_name: "tables".to_string(),
-            }))
+            .describe_table(tagged_catalog_request(
+                request_context,
+                DescribeTableRequest {
+                    workspace: Some(default_workspace_proto()),
+                    schema_name: "coral".to_string(),
+                    table_name: "tables".to_string(),
+                },
+            ))
             .await;
         let _list_columns_result = service
-            .list_columns(tagged_catalog_request(ListColumnsRequest {
-                workspace: Some(default_workspace_proto()),
-                schema_name: "coral".to_string(),
-                table_name: "tables".to_string(),
-                pattern: None,
-                ignore_case: true,
-                required_only: false,
-                pagination: Some(PaginationRequest {
-                    limit: 10,
-                    offset: 0,
-                }),
-            }))
+            .list_columns(tagged_catalog_request(
+                request_context,
+                ListColumnsRequest {
+                    workspace: Some(default_workspace_proto()),
+                    schema_name: "coral".to_string(),
+                    table_name: "tables".to_string(),
+                    pattern: None,
+                    ignore_case: true,
+                    required_only: false,
+                    pagination: Some(PaginationRequest {
+                        limit: 10,
+                        offset: 0,
+                    }),
+                },
+            ))
             .await;
     }
 
@@ -1577,23 +1697,22 @@ mod tests {
         }
     }
 
-    fn tagged_catalog_request<T>(message: T) -> tonic::Request<T> {
+    fn tagged_catalog_request<T>(
+        request_context: &RequestContext,
+        message: T,
+    ) -> tonic::Request<T> {
         let mut request = tonic::Request::new(message);
-        request.extensions_mut().insert(
-            crate::task::id::TaskId::parse("650e8400-e29b-41d4-a716-446655440000")
-                .expect("task id"),
-        );
+        request.extensions_mut().insert(request_context.clone());
         request
     }
 
-    fn assert_catalog_task_spans(spans: &[opentelemetry_sdk::trace::SpanData]) {
+    fn assert_catalog_task_spans(spans: &[opentelemetry_sdk::trace::SpanData], task_id: &str) {
         let attributed_query_spans = spans
             .iter()
             .filter(|span| {
                 span.name == "coral.query"
                     && span.attributes.iter().any(|attribute| {
-                        attribute.key.as_str() == "task.id"
-                            && attribute.value.as_str() == "650e8400-e29b-41d4-a716-446655440000"
+                        attribute.key.as_str() == "task.id" && attribute.value.as_str() == task_id
                     })
             })
             .collect::<Vec<_>>();
@@ -1634,7 +1753,10 @@ mod tests {
             .map(|attribute| attribute.value.as_str().into_owned())
     }
 
-    fn execution_to_rows(execution: &QueryExecution) -> Vec<Value> {
+    fn execution_to_rows(outcome: &ExecuteSqlOutcome) -> Vec<Value> {
+        let ExecuteSqlOutcome::Executed(execution) = outcome else {
+            panic!("query should execute");
+        };
         let mut bytes = Vec::new();
         {
             let mut writer = arrow::json::ArrayWriter::new(&mut bytes);
@@ -1866,7 +1988,156 @@ tables:
         );
     }
 
+    fn required_guide_http_manifest(base_url: &str, guide: &str) -> String {
+        format!(
+            r"
+name: changing_guidance
+version: 0.1.0
+dsl_version: 3
+backend: http
+base_url: {base_url}
+tables:
+  - name: items
+    description: Items
+    guide: {guide}
+    require_guide_read: true
+    request:
+      method: GET
+      path: /items
+    columns:
+      - name: id
+        type: Utf8
+"
+        )
+    }
+
     #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the integration test keeps manifest replacement, guide blocking, and provider-I/O assertions together"
+    )]
+    async fn execute_sql_requires_a_changed_guide_again_before_provider_io() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/items"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([{"id": "1"}])))
+            .mount(&server)
+            .await;
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
+        let source_manager = SourceManager::new_for_tests(
+            fixture.manager.config_store.clone(),
+            fixture.manager.credential_manager.clone(),
+            fixture.manager.layout.clone(),
+        );
+        let workspace_name = WorkspaceName::default();
+        source_manager
+            .import_source(
+                &workspace_name,
+                &ImportSourceCommand {
+                    manifest_yaml: required_guide_http_manifest(
+                        &server.uri(),
+                        "Use the old lookup.",
+                    ),
+                    bindings: SourceBindings::default(),
+                },
+            )
+            .expect("import initial guide");
+        let sql = "SELECT id FROM changing_guidance.items";
+        let initial = fixture
+            .manager
+            .execute_sql(
+                &workspace_name,
+                sql,
+                Some(&HashSet::new()),
+                &QueryAttribution::default(),
+            )
+            .await
+            .expect("require initial guide");
+        let ExecuteSqlOutcome::GuideRequired(initial) = initial else {
+            panic!("initial guide should be required");
+        };
+        let initial = initial.first().expect("initial guide");
+        assert_eq!(initial.guide, "Use the old lookup.");
+        assert!(
+            server
+                .received_requests()
+                .await
+                .expect("request recording")
+                .is_empty(),
+            "requiring a guide must not perform provider I/O"
+        );
+        let shown_initial = HashSet::from([initial.guide_id.clone()]);
+
+        source_manager
+            .import_source(
+                &workspace_name,
+                &ImportSourceCommand {
+                    manifest_yaml: required_guide_http_manifest(
+                        &server.uri(),
+                        "Use the new lookup.",
+                    ),
+                    bindings: SourceBindings::default(),
+                },
+            )
+            .expect("replace guide");
+        let provider_requests_before = server
+            .received_requests()
+            .await
+            .expect("request recording")
+            .len();
+
+        let current = fixture
+            .manager
+            .execute_sql(
+                &workspace_name,
+                sql,
+                Some(&shown_initial),
+                &QueryAttribution::default(),
+            )
+            .await
+            .expect("require changed guide");
+        let ExecuteSqlOutcome::GuideRequired(current) = current else {
+            panic!("changed guide should be required");
+        };
+        let current = current.first().expect("current guide");
+        assert_eq!(current.guide, "Use the new lookup.");
+        assert_ne!(current.guide_id, initial.guide_id);
+        assert_eq!(
+            server
+                .received_requests()
+                .await
+                .expect("request recording")
+                .len(),
+            provider_requests_before,
+            "requiring a changed guide must not perform provider I/O"
+        );
+        let shown_current = HashSet::from([current.guide_id.clone()]);
+        let executed = fixture
+            .manager
+            .execute_sql(
+                &workspace_name,
+                sql,
+                Some(&shown_current),
+                &QueryAttribution::default(),
+            )
+            .await
+            .expect("execute after showing changed guide");
+        assert!(matches!(executed, ExecuteSqlOutcome::Executed(_)));
+        assert_eq!(
+            server
+                .received_requests()
+                .await
+                .expect("request recording")
+                .len(),
+            provider_requests_before + 1
+        );
+    }
+
+    #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the integration test keeps V4 materialization, override, guide blocking, and execution together"
+    )]
     async fn installed_v4_source_queries_through_app_assembled_runtime_component() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
@@ -1936,11 +2207,68 @@ surface:
             .expect("import v4 source");
         std::fs::remove_file(&openapi_file).expect("remove authored descriptor after import");
 
+        let source_name = SourceName::parse("github_v4_query").expect("source name");
+        let generated_path = fixture
+            .manager
+            .layout
+            .v4_projection_catalog_file(&workspace_name, &source_name)
+            .path;
+        let mut projections: ProjectionCatalog = serde_yaml::from_slice(
+            &std::fs::read(generated_path).expect("read generated projections"),
+        )
+        .expect("parse generated projections");
+        let issues = projections
+            .projections
+            .iter_mut()
+            .find(|projection| projection.name == "issues")
+            .expect("issues projection");
+        issues.guide = "Use issue_search for lookups.".to_string();
+        issues.require_guide_read = true;
+        let override_path = fixture
+            .manager
+            .layout
+            .v4_override_dir(&workspace_name, &source_name)
+            .join("projections.yaml");
+        std::fs::create_dir_all(override_path.parent().expect("override parent"))
+            .expect("create override dir");
+        std::fs::write(
+            override_path,
+            serde_yaml::to_string(&projections).expect("encode projection override"),
+        )
+        .expect("write projection override");
+
+        let sql = "SELECT id, title FROM github_v4_query.issues";
+        let required = fixture
+            .manager
+            .execute_sql(
+                &workspace_name,
+                sql,
+                Some(&HashSet::new()),
+                &QueryAttribution::default(),
+            )
+            .await
+            .expect("require overridden projection guide");
+        let ExecuteSqlOutcome::GuideRequired(required) = required else {
+            panic!("overridden projection guide should be required");
+        };
+        let required = required.first().expect("required projection guide");
+        assert_eq!(required.resource_name, "issues");
+        assert_eq!(required.guide, "Use issue_search for lookups.");
+        assert!(
+            server
+                .received_requests()
+                .await
+                .expect("request recording")
+                .is_empty(),
+            "requiring a v4 projection guide must not perform provider I/O"
+        );
+        let shown = HashSet::from([required.guide_id.clone()]);
         let execution = fixture
             .manager
             .execute_sql(
                 &workspace_name,
-                "SELECT id, title FROM github_v4_query.issues",
+                sql,
+                Some(&shown),
                 &QueryAttribution::default(),
             )
             .await
@@ -2092,6 +2420,7 @@ surface:
             .execute_sql(
                 &workspace_name,
                 "SELECT id FROM github_v4_pagination_override.widgets LIMIT 3",
+                None,
                 &QueryAttribution::default(),
             )
             .await
@@ -2284,12 +2613,16 @@ select text from function_demo.messages
 name: messages_by_type
 schema: functions
 description: Messages filtered by sender type
+guide: |-
+  Prefer this function for sender lookups.
+  Required argument: kind.
 */
 
 select text
 from function_demo.messages
 where type = $kind
 ";
+        let expected_guide = "Prefer this function for sender lookups.\nRequired argument: kind.";
         let validated_function = fixture
             .manager
             .validate_udf_sql(&workspace_name, function_sql)
@@ -2312,6 +2645,7 @@ where type = $kind
             .expect("catalog");
         let function_function = catalog.table_functions.first().expect("function function");
         assert_eq!(function_function.function_name, "messages_by_type");
+        assert_eq!(function_function.guide, expected_guide);
         assert_eq!(
             function_function
                 .result_columns
@@ -2332,17 +2666,35 @@ where type = $kind
         else {
             panic!("function should be runtime-ready");
         };
+        assert_eq!(definition.publish.table_function.guide, expected_guide);
         let column = definition
             .result_columns
             .first()
             .expect("text result column");
         assert_eq!(column.name, "text");
 
+        let guide_query = fixture
+            .manager
+            .execute_sql(
+                &workspace_name,
+                "select guide from coral.table_functions \
+                 where schema_name = 'functions' and function_name = 'messages_by_type'",
+                None,
+                &QueryAttribution::default(),
+            )
+            .await
+            .expect("function guide query");
+        assert_eq!(
+            execution_to_rows(&guide_query),
+            vec![json!({"guide": expected_guide})]
+        );
+
         let execution = fixture
             .manager
             .execute_sql(
                 &workspace_name,
                 "select text from functions.messages_by_type(kind => 'user')",
+                None,
                 &QueryAttribution::default(),
             )
             .await
@@ -2718,6 +3070,7 @@ select 1 as value
             .execute_sql(
                 &workspace_name,
                 "select value from functions.constant_value()",
+                None,
                 &QueryAttribution::default(),
             )
             .await

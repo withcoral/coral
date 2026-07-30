@@ -29,7 +29,9 @@ pub(crate) use resources::{
     tables_resource_content,
 };
 pub(crate) use search::search_arguments;
-pub(crate) use sql::{SqlBatchValue, SqlQueryResultValue, sql_arguments};
+pub(crate) use sql::{
+    SqlBatchValue, SqlGuideBlockValue, SqlGuideValue, SqlQueryResultValue, sql_arguments,
+};
 pub(crate) use task::{
     EndTaskArguments, StartTaskArguments, TaskEndedValue, TaskId, TaskStartedValue, TaskStatus,
     end_task_arguments, required_task_id_argument, required_tool_intent_argument,

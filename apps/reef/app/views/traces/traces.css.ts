@@ -3,7 +3,6 @@ import { globalStyle, style } from '@vanilla-extract/css'
 import { breakpoints } from '@/styles/theme.css'
 import { utils } from '@/styles/utils'
 import { fontFamily } from '@/wax/theme/font.css'
-import { lightTheme } from '@/wax/theme/theme-light.css'
 import { theme } from '@/wax/theme/theme.css'
 
 export const root = style({
@@ -857,18 +856,6 @@ export const detailsPre = style({
   wordBreak: 'break-word',
 })
 
-globalStyle('.sql-keyword', { color: '#569CD6', fontWeight: 600 })
-globalStyle(`body.${lightTheme} .sql-keyword`, { color: '#0000FF' })
-globalStyle('.sql-function', { color: '#4EC9B0' })
-globalStyle(`body.${lightTheme} .sql-function`, { color: '#795E26' })
-globalStyle('.sql-string', { color: '#CE9178' })
-globalStyle(`body.${lightTheme} .sql-string`, { color: '#A31515' })
-globalStyle('.sql-number', { color: '#CE9178' })
-globalStyle(`body.${lightTheme} .sql-number`, { color: '#098658' })
-globalStyle('.sql-comment', { color: '#6A9955', fontStyle: 'italic' })
-globalStyle(`body.${lightTheme} .sql-comment`, { color: '#008000' })
-globalStyle('.sql-identifier', { color: '#9CDCFE' })
-globalStyle(`body.${lightTheme} .sql-identifier`, { color: '#001080' })
 globalStyle(`${sqlBlock} pre`, {
   color: theme.content.primary,
   fontFamily: fontFamily.dmMono,

@@ -50,9 +50,9 @@ use crate::{
     QueryRuntimeConfig, QueryRuntimeContext, QuerySource, QueryTableFunctionUsage, QueryTableUsage,
     RequestAuthenticator, RequestIdentityHttpAuthenticatorError,
     RequestIdentityHttpAuthenticatorFactory, RequestIdentitySelectionContext,
-    RequestIdentitySelectionError, RequestIdentitySelector, SelectedRequestIdentity,
-    SourceDecorator, SourceInputResolver, SourceObservationPublisher, TableFunctionInfo, TableInfo,
-    UdfRuntimeDefinition,
+    RequestIdentitySelectionError, RequestIdentitySelector, ResolvedQueryResources,
+    SelectedRequestIdentity, SourceDecorator, SourceInputResolver, SourceObservationPublisher,
+    TableFunctionInfo, TableInfo, UdfRuntimeDefinition,
 };
 
 pub(crate) struct QueryRuntimeAdapter {
@@ -73,6 +73,20 @@ pub(crate) struct InferredSqlSignature {
     pub(crate) parameter_fields: HashMap<String, Option<FieldRef>>,
     pub(crate) declared_parameter_types: HashMap<String, ManifestDataType>,
     pub(crate) planned_schema: Arc<arrow::datatypes::Schema>,
+    pub(crate) source_names: Vec<String>,
+}
+
+pub(crate) struct PreparedSql {
+    dataframe: DataFrame,
+    sql: String,
+    params: QueryParameters,
+    resources: ResolvedQueryResources,
+}
+
+impl PreparedSql {
+    pub(crate) fn resources(&self) -> &ResolvedQueryResources {
+        &self.resources
+    }
 }
 
 type BoundRequestIdentityHttpAuthenticators =
@@ -629,7 +643,27 @@ impl QueryRuntimeAdapter {
         sql: &str,
         params: &QueryParameters,
     ) -> Result<QueryExecution, CoreError> {
-        match self.execute_sql_once(&self.ctx, sql, params).await {
+        let prepared = self.prepare_sql(sql, params.clone()).await?;
+        self.execute_prepared(prepared).await
+    }
+
+    pub(crate) async fn prepare_sql(
+        &self,
+        sql: &str,
+        params: QueryParameters,
+    ) -> Result<PreparedSql, CoreError> {
+        self.prepare_sql_once(&self.ctx, sql, params)
+            .await
+            .map_err(|error| self.sql_execution_failure_to_core(error, sql))
+    }
+
+    pub(crate) async fn execute_prepared(
+        &self,
+        prepared: PreparedSql,
+    ) -> Result<QueryExecution, CoreError> {
+        let sql = prepared.sql.clone();
+        let params = prepared.params.clone();
+        match self.execute_prepared_once(prepared).await {
             Ok(execution) => Ok(execution),
             Err(SqlExecutionFailure::Collection(error)) => {
                 // Resolver-row overflow is a dependent-join buffering limit, not
@@ -658,18 +692,22 @@ impl QueryRuntimeAdapter {
                     .get_or_build_without_dependent_join()
                     .await?;
 
-                match self.execute_sql_once(&fallback.ctx, sql, params).await {
+                let prepared = self
+                    .prepare_sql_once(&fallback.ctx, &sql, params)
+                    .await
+                    .map_err(|error| self.sql_execution_failure_to_core(error, &sql))?;
+                match self.execute_prepared_once(prepared).await {
                     Ok(execution) => Ok(execution),
                     Err(error) => {
                         if is_missing_required_filter_failure(&error) {
                             return Err(cap_core_error);
                         }
-                        let fallback_error = self.sql_execution_failure_to_core(error, sql);
+                        let fallback_error = self.sql_execution_failure_to_core(error, &sql);
                         Err(fallback_error)
                     }
                 }
             }
-            Err(error) => Err(self.sql_execution_failure_to_core(error, sql)),
+            Err(error) => Err(self.sql_execution_failure_to_core(error, &sql)),
         }
     }
 
@@ -703,30 +741,61 @@ impl QueryRuntimeAdapter {
             &mut declared_parameter_types,
         )
         .map_err(plan_error)?;
+        let source_names = self
+            .resolve_query_resources(df.logical_plan())
+            .map_err(plan_error)?
+            .sources()
+            .iter()
+            .filter(|source_name| {
+                self.schema_to_source
+                    .values()
+                    .any(|installed_name| installed_name == *source_name)
+            })
+            .cloned()
+            .collect();
 
         Ok(InferredSqlSignature {
             parameter_fields,
             declared_parameter_types,
             planned_schema: Arc::new(df.logical_plan().schema().as_arrow().clone()),
+            source_names,
         })
     }
 
-    async fn execute_sql_once(
+    async fn prepare_sql_once(
         &self,
         ctx: &SessionContext,
         sql: &str,
-        params: &QueryParameters,
-    ) -> Result<QueryExecution, SqlExecutionFailure> {
+        params: QueryParameters,
+    ) -> Result<PreparedSql, SqlExecutionFailure> {
         let df = ctx
             .sql_with_options(sql, read_only_sql_options())
             .await
             .map_err(SqlExecutionFailure::Planning)?;
-        let df = apply_query_parameters(df, params).map_err(SqlExecutionFailure::Planning)?;
-        let provenance = self
-            .query_provenance(sql, df.logical_plan())
+        let df = apply_query_parameters(df, &params).map_err(SqlExecutionFailure::Planning)?;
+        let resources = self
+            .resolve_query_resources(df.logical_plan())
             .map_err(SqlExecutionFailure::Planning)?;
-        let task_ctx = Arc::new(df.task_ctx());
-        let physical_plan = df
+        Ok(PreparedSql {
+            dataframe: df,
+            sql: sql.to_string(),
+            params,
+            resources,
+        })
+    }
+
+    async fn execute_prepared_once(
+        &self,
+        prepared: PreparedSql,
+    ) -> Result<QueryExecution, SqlExecutionFailure> {
+        let PreparedSql {
+            dataframe,
+            sql,
+            resources,
+            ..
+        } = prepared;
+        let task_ctx = Arc::new(dataframe.task_ctx());
+        let physical_plan = dataframe
             .create_physical_plan()
             .await
             .map_err(SqlExecutionFailure::Collection)?;
@@ -734,9 +803,9 @@ impl QueryRuntimeAdapter {
         let batches = collect(physical_plan, task_ctx)
             .await
             .map_err(SqlExecutionFailure::Collection)?;
-        let execution = QueryExecution::new(arrow_schema, batches, provenance);
+        let execution = QueryExecution::new(arrow_schema, batches, &sql, resources);
         self.observe_query_result(
-            sql,
+            &sql,
             execution.arrow_schema().as_ref(),
             execution.batches(),
             execution.provenance(),
@@ -784,14 +853,13 @@ impl QueryRuntimeAdapter {
         Ok(())
     }
 
-    fn query_provenance(
+    fn resolve_query_resources(
         &self,
-        sql: &str,
         plan: &LogicalPlan,
-    ) -> Result<QueryExecutionProvenance, DataFusionError> {
+    ) -> Result<ResolvedQueryResources, DataFusionError> {
         let mut tables = BTreeSet::new();
         let mut table_functions = BTreeSet::new();
-        self.collect_plan_provenance(plan, &mut tables, &mut table_functions)?;
+        self.collect_plan_resources(plan, &mut tables, &mut table_functions)?;
 
         let mut sources = BTreeSet::new();
         sources.extend(tables.iter().map(|usage| usage.source_name().to_string()));
@@ -802,15 +870,14 @@ impl QueryRuntimeAdapter {
                 .map(|usage| usage.source_name().to_string()),
         );
 
-        Ok(QueryExecutionProvenance::new(
-            sql,
+        Ok(ResolvedQueryResources::new(
             sources.into_iter().collect(),
             tables.into_iter().collect(),
             table_functions.into_iter().collect(),
         ))
     }
 
-    fn collect_plan_provenance(
+    fn collect_plan_resources(
         &self,
         plan: &LogicalPlan,
         tables: &mut BTreeSet<QueryTableUsage>,
@@ -836,11 +903,7 @@ impl QueryRuntimeAdapter {
                             function.table_reference(),
                             table_functions,
                         );
-                        self.collect_plan_provenance(
-                            function.body_plan(),
-                            tables,
-                            table_functions,
-                        )?;
+                        self.collect_plan_resources(function.body_plan(), tables, table_functions)?;
                     }
                 }
                 _ => {}
@@ -1300,6 +1363,7 @@ fn table_metadata_without_columns(table: &TableInfo) -> TableInfo {
         table_name: table.table_name.clone(),
         description: table.description.clone(),
         guide: table.guide.clone(),
+        require_guide_read: table.require_guide_read,
         columns: Vec::new(),
         required_filters: table.required_filters.clone(),
     }
@@ -1345,6 +1409,7 @@ mod tests {
                 table_name: "events".to_string(),
                 description: "Event rows".to_string(),
                 guide: "Query event rows.".to_string(),
+                require_guide_read: false,
                 columns: vec![ColumnInfo {
                     name: "event_id".to_string(),
                     data_type: "Utf8".to_string(),
@@ -1509,6 +1574,7 @@ mod tests {
                         schema: "functions".to_string(),
                         name: "constant_value".to_string(),
                         description: "Returns one value".to_string(),
+                        guide: String::new(),
                     },
                 },
                 result_columns: vec![UdfRuntimeResultColumn {
@@ -1516,6 +1582,7 @@ mod tests {
                     data_type: DataType::Int64,
                     nullable: false,
                 }],
+                source_names: Vec::new(),
             }])
             .await
             .expect("late UDF install");

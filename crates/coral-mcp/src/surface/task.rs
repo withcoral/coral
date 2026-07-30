@@ -21,7 +21,7 @@ const TOOL_INTENT_ARGUMENT_DESCRIPTION: &str =
 const TOOL_INTENT_JSON_SCHEMA_PATTERN: &str = r".*\S.*";
 const TASK_ID_LEN: usize = 36;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize)]
 #[serde(transparent)]
 pub(crate) struct TaskId(uuid::Uuid);
 
@@ -99,7 +99,6 @@ pub(crate) struct TaskStartedValue {
 pub(crate) struct TaskEndedValue {
     pub(crate) task_id: TaskId,
     pub(crate) task_status: TaskStatus,
-    pub(crate) success: &'static str,
     pub(crate) note: &'static str,
 }
 

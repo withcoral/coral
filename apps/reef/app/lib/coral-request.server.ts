@@ -2,6 +2,7 @@ import { createClient } from '@connectrpc/connect'
 import { createGrpcWebTransport } from '@connectrpc/connect-web'
 
 import { CatalogService } from '@/generated/coral/v1/catalog_pb'
+import { FunctionService } from '@/generated/coral/v1/functions_pb'
 import { QueryService } from '@/generated/coral/v1/query_pb'
 import { SourceService } from '@/generated/coral/v1/sources_pb'
 import { TraceService } from '@/generated/coral/v1/traces_pb'
@@ -23,6 +24,10 @@ export function catalogClientForRequest(request: Request) {
     CatalogService,
     createGrpcWebTransport({ baseUrl: coralEndpointForRequest(request) }),
   )
+}
+
+export function functionClientForRequest(request: Request) {
+  return createClient(FunctionService, coralTransportForRequest(request))
 }
 
 export function queryClientForRequest(request: Request) {

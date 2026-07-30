@@ -45,21 +45,30 @@ impl<'a> CoralTx<'a> {
     where
         S: SqlxBinder,
     {
+        self.execute_rows_affected(statement).await?;
+        Ok(())
+    }
+
+    pub(super) async fn execute_rows_affected<S>(&mut self, statement: S) -> Result<u64, DbError>
+    where
+        S: SqlxBinder,
+    {
         match &mut self.backend {
             CoralTxBackend::Sqlite(tx) => {
                 let (sql, values) = statement.build_sqlx(sea_query::SqliteQueryBuilder);
-                sqlx::query_with::<Sqlite, _>(sqlx::AssertSqlSafe(sql), values)
+                let result = sqlx::query_with::<Sqlite, _>(sqlx::AssertSqlSafe(sql), values)
                     .execute(&mut **tx)
                     .await?;
+                Ok(result.rows_affected())
             }
             CoralTxBackend::Postgres(tx) => {
                 let (sql, values) = statement.build_sqlx(sea_query::PostgresQueryBuilder);
-                sqlx::query_with::<Postgres, _>(sqlx::AssertSqlSafe(sql), values)
+                let result = sqlx::query_with::<Postgres, _>(sqlx::AssertSqlSafe(sql), values)
                     .execute(&mut **tx)
                     .await?;
+                Ok(result.rows_affected())
             }
         }
-        Ok(())
     }
 
     pub(super) async fn fetch_optional<T>(

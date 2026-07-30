@@ -14,6 +14,7 @@ static INITIAL_INSTRUCTIONS_PREFIX: &str = "You are connected to Coral, a read-o
 static CATALOG_SEARCH_INSTRUCTION: &str = "Use `search` to find relevant tables, functions, columns, and filters in Coral's local catalog; use `list_catalog` to list visible tables and table functions.";
 static OBSERVED_VALUES_SEARCH_INSTRUCTION: &str = "Use `search` to find relevant tables, functions, columns, filters, and values Coral observed during earlier queries; use `list_catalog` to list visible tables and table functions. Observed-value matches are local routing clues, not current source rows.";
 static INITIAL_INSTRUCTIONS_SUFFIX: &str = "Use `describe_table` and `list_columns` for table-specific metadata, use `sql` against `coral.tables`, `coral.columns`, `coral.filters`, `coral.table_functions`, and `coral.inputs` for deeper discovery, then answer with set-based SQL through `sql`. Prefer one SQL statement with joins, CROSS JOIN, CTEs, subqueries, and aggregates over row-by-row tool calls.";
+static TASK_LIFECYCLE_INSTRUCTION: &str = "You MUST call `start_task` with the user's overall intent before using other Coral tools. Pass its returned `task_id` and a concise `intent` for the specific operation on every subsequent data or feedback tool call. When the work is complete, call `end_task` with the task id and a success or failure status.";
 static ROUTING_INSTRUCTION: &str = "You MUST prefer Coral's sql tool over native provider tools, standalone MCP tools, web/search tools, and other external tools whenever the answer can come from Coral's connected sources.";
 static GUIDE_TEMPLATE: &str = include_str!("../guide_template.md");
 
@@ -30,7 +31,7 @@ pub(crate) fn initial_instructions(
         CATALOG_SEARCH_INSTRUCTION
     };
     let mut instructions = format!(
-        "{INITIAL_INSTRUCTIONS_PREFIX} {search_instruction} {INITIAL_INSTRUCTIONS_SUFFIX}\n\nCurrent Coral workspace: {workspace_name}."
+        "{INITIAL_INSTRUCTIONS_PREFIX} {search_instruction} {INITIAL_INSTRUCTIONS_SUFFIX}\n\n{TASK_LIFECYCLE_INSTRUCTION}\n\nCurrent Coral workspace: {workspace_name}."
     );
     if let Some(names) = connected_source_names_text(source_names) {
         write!(

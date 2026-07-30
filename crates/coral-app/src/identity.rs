@@ -4,55 +4,115 @@ use std::fmt;
 
 use crate::bootstrap::AppError;
 
-/// Stable local user used by single-user local mode.
-pub(crate) const LOCAL_MEMBER_ID: &str = "local";
+/// Stable local principal used by single-user local mode.
+pub(crate) const LOCAL_PRINCIPAL_ID: &str = "coral:local";
 
-/// Request-scoped user principal selected by the app transport layer.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UserPrincipal {
-    user_id: String,
-}
+/// Stable, opaque identity shared by every principal kind and authority.
+///
+/// Providers must supply identifiers from one collision-free namespace. The
+/// identifier deliberately does not expose whether the principal is a user,
+/// agent, service, or another future actor kind.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PrincipalId(String);
 
-impl UserPrincipal {
-    /// Builds the default single-user local principal.
-    #[must_use]
-    pub fn local() -> Self {
-        Self {
-            user_id: LOCAL_MEMBER_ID.to_string(),
-        }
-    }
-
-    /// Builds a principal for a validated user id.
+impl PrincipalId {
+    /// Parses a canonical principal identifier.
     ///
     /// # Errors
     ///
-    /// Returns [`AppError`] if the user id is empty, contains whitespace,
-    /// contains path separators, or aliases the reserved local single-user
-    /// sentinel.
-    pub fn for_user(user_id: &str) -> Result<Self, AppError> {
-        if user_id.chars().any(char::is_whitespace) {
+    /// Returns [`AppError`] when the identifier is empty or contains
+    /// whitespace or control characters.
+    pub fn parse(value: &str) -> Result<Self, AppError> {
+        if value.is_empty()
+            || value
+                .chars()
+                .any(|character| character.is_whitespace() || character.is_control())
+        {
             return Err(AppError::InvalidInput(
-                "user id must not contain whitespace".to_string(),
+                "principal id must be non-empty and contain no whitespace or control characters"
+                    .to_string(),
             ));
         }
-        let user_id = parse_path_segment("user", user_id)?;
-        if user_id == LOCAL_MEMBER_ID {
+        if value == LOCAL_PRINCIPAL_ID {
             return Err(AppError::InvalidInput(format!(
-                "user id '{LOCAL_MEMBER_ID}' is reserved for single-user local mode"
+                "principal id '{LOCAL_PRINCIPAL_ID}' is reserved for local mode"
             )));
         }
-        Ok(Self { user_id })
+        Ok(Self(value.to_string()))
     }
 
-    /// Returns the validated user id.
+    /// Returns the canonical principal identifier.
     #[must_use]
-    pub fn user_id(&self) -> &str {
-        &self.user_id
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for PrincipalId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Authenticated category of actor represented by a [`Principal`].
+///
+/// Kind is available to authorization policy, but does not itself grant a
+/// permission or imply a role.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PrincipalKind {
+    /// A human user.
+    User,
+    /// An autonomous or delegated agent.
+    Agent,
+}
+
+/// Request-scoped principal selected by the app transport layer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Principal {
+    id: PrincipalId,
+    kind: PrincipalKind,
+}
+
+impl Principal {
+    /// Builds a principal from its canonical identity and authenticated kind.
+    #[must_use]
+    pub const fn new(id: PrincipalId, kind: PrincipalKind) -> Self {
+        Self { id, kind }
+    }
+
+    /// Parses and builds a principal with an authenticated kind.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError`] when `id` is not a valid [`PrincipalId`].
+    pub fn parse(id: &str, kind: PrincipalKind) -> Result<Self, AppError> {
+        PrincipalId::parse(id).map(|id| Self::new(id, kind))
+    }
+
+    /// Builds the default local user principal.
+    #[must_use]
+    pub fn local() -> Self {
+        Self {
+            id: PrincipalId(LOCAL_PRINCIPAL_ID.to_string()),
+            kind: PrincipalKind::User,
+        }
+    }
+
+    /// Returns the stable principal identity.
+    #[must_use]
+    pub const fn id(&self) -> &PrincipalId {
+        &self.id
+    }
+
+    /// Returns the authenticated actor kind.
+    #[must_use]
+    pub const fn kind(&self) -> PrincipalKind {
+        self.kind
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum UserPrincipalProviderErrorKind {
+pub(crate) enum PrincipalProviderErrorKind {
     Unauthenticated,
     Unavailable,
     Internal,
@@ -60,14 +120,14 @@ pub(crate) enum UserPrincipalProviderErrorKind {
 
 /// Client-safe failure reported by a request principal provider.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UserPrincipalProviderError {
-    kind: UserPrincipalProviderErrorKind,
+pub struct PrincipalProviderError {
+    kind: PrincipalProviderErrorKind,
     client_message: String,
 }
 
-impl UserPrincipalProviderError {
+impl PrincipalProviderError {
     fn new(
-        kind: UserPrincipalProviderErrorKind,
+        kind: PrincipalProviderErrorKind,
         client_message: impl Into<String>,
         default_message: &str,
     ) -> Self {
@@ -87,7 +147,7 @@ impl UserPrincipalProviderError {
     #[must_use]
     pub fn unauthenticated(client_message: impl Into<String>) -> Self {
         Self::new(
-            UserPrincipalProviderErrorKind::Unauthenticated,
+            PrincipalProviderErrorKind::Unauthenticated,
             client_message,
             "unauthenticated request",
         )
@@ -97,9 +157,9 @@ impl UserPrincipalProviderError {
     #[must_use]
     pub fn unavailable(client_message: impl Into<String>) -> Self {
         Self::new(
-            UserPrincipalProviderErrorKind::Unavailable,
+            PrincipalProviderErrorKind::Unavailable,
             client_message,
-            "user principal provider unavailable",
+            "principal provider unavailable",
         )
     }
 
@@ -107,13 +167,13 @@ impl UserPrincipalProviderError {
     #[must_use]
     pub fn internal(client_message: impl Into<String>) -> Self {
         Self::new(
-            UserPrincipalProviderErrorKind::Internal,
+            PrincipalProviderErrorKind::Internal,
             client_message,
-            "user principal provider failed",
+            "principal provider failed",
         )
     }
 
-    pub(crate) fn kind(&self) -> UserPrincipalProviderErrorKind {
+    pub(crate) fn kind(&self) -> PrincipalProviderErrorKind {
         self.kind
     }
 
@@ -124,45 +184,46 @@ impl UserPrincipalProviderError {
     }
 }
 
-impl fmt::Display for UserPrincipalProviderError {
+impl fmt::Display for PrincipalProviderError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.client_message)
     }
 }
 
-impl std::error::Error for UserPrincipalProviderError {}
+impl std::error::Error for PrincipalProviderError {}
 
-/// Server-side provider for request user principals.
+/// Server-side provider for request principals.
 ///
-/// The OSS provider always returns [`UserPrincipal::local`]. Product runtimes
-/// can install a provider that authenticates inbound metadata and returns the
-/// corresponding user principal.
+/// The OSS provider always returns [`Principal::local`]. Product runtimes can
+/// install a provider that authenticates inbound metadata and returns the
+/// corresponding stable principal identity and actor kind. A provider must
+/// classify a given [`PrincipalId`] consistently across requests.
 #[tonic::async_trait]
-pub trait UserPrincipalProvider: Send + Sync + std::fmt::Debug {
-    /// Returns the user principal for one inbound gRPC request.
+pub trait PrincipalProvider: Send + Sync + std::fmt::Debug {
+    /// Returns the principal for one inbound gRPC request.
     ///
     /// # Errors
     ///
-    /// Returns [`UserPrincipalProviderError`] when transport metadata is
+    /// Returns [`PrincipalProviderError`] when transport metadata is
     /// malformed, the provider cannot authenticate the request, or principal
     /// selection fails.
     async fn principal_for_metadata(
         &self,
         metadata: &tonic::metadata::MetadataMap,
-    ) -> Result<UserPrincipal, UserPrincipalProviderError>;
+    ) -> Result<Principal, PrincipalProviderError>;
 }
 
-/// Default OSS principal provider for single-user local mode.
+/// Default OSS principal provider for local mode.
 #[derive(Debug, Default)]
-pub struct SingleUserPrincipalProvider;
+pub struct LocalPrincipalProvider;
 
 #[tonic::async_trait]
-impl UserPrincipalProvider for SingleUserPrincipalProvider {
+impl PrincipalProvider for LocalPrincipalProvider {
     async fn principal_for_metadata(
         &self,
         _metadata: &tonic::metadata::MetadataMap,
-    ) -> Result<UserPrincipal, UserPrincipalProviderError> {
-        Ok(UserPrincipal::local())
+    ) -> Result<Principal, PrincipalProviderError> {
+        Ok(Principal::local())
     }
 }
 
@@ -187,7 +248,8 @@ pub(crate) fn parse_path_segment(kind: &str, value: &str) -> Result<String, AppE
 #[cfg(test)]
 mod tests {
     use super::{
-        SingleUserPrincipalProvider, UserPrincipal, UserPrincipalProvider, parse_path_segment,
+        LOCAL_PRINCIPAL_ID, LocalPrincipalProvider, Principal, PrincipalId, PrincipalKind,
+        PrincipalProvider, parse_path_segment,
     };
 
     #[test]
@@ -217,39 +279,45 @@ mod tests {
     }
 
     #[test]
-    fn user_principal_rejects_whitespace_anywhere() {
-        for invalid in [" saul", "saul ", "alice bob", "alice\tbob", "alice\nbob"] {
-            let error = UserPrincipal::for_user(invalid).expect_err("whitespace should fail");
+    fn principal_id_rejects_empty_whitespace_and_control_characters() {
+        for invalid in [
+            "",
+            " saul",
+            "saul ",
+            "alice bob",
+            "alice\tbob",
+            "alice\nbob",
+            "alice\0bob",
+        ] {
+            let error = PrincipalId::parse(invalid).expect_err("invalid principal id");
 
-            assert!(
-                error
-                    .to_string()
-                    .contains("user id must not contain whitespace")
-            );
+            assert!(error.to_string().contains("principal id must be non-empty"));
         }
     }
 
     #[test]
-    fn user_principal_rejects_path_segments_and_reserved_local_id() {
-        for invalid in ["team/saul", r"team\saul", ".", "..", "local"] {
-            UserPrincipal::for_user(invalid).expect_err("invalid user id should fail");
-        }
+    fn principal_id_rejects_reserved_local_identity() {
+        PrincipalId::parse(LOCAL_PRINCIPAL_ID).expect_err("local identity must stay app-owned");
     }
 
     #[test]
-    fn user_principal_preserves_valid_id() {
-        let principal = UserPrincipal::for_user("saul").expect("valid user");
+    fn principal_preserves_canonical_opaque_id_and_explicit_kind() {
+        let id = PrincipalId::parse("product:principal/saul").expect("valid principal id");
+        let principal = Principal::new(id.clone(), PrincipalKind::Agent);
 
-        assert_eq!(principal.user_id(), "saul");
+        assert_eq!(principal.id(), &id);
+        assert_eq!(principal.id().as_str(), "product:principal/saul");
+        assert_eq!(principal.kind(), PrincipalKind::Agent);
     }
 
     #[tokio::test]
-    async fn single_user_provider_returns_local_principal() {
-        let principal = SingleUserPrincipalProvider
+    async fn local_provider_returns_local_principal() {
+        let principal = LocalPrincipalProvider
             .principal_for_metadata(&tonic::metadata::MetadataMap::new())
             .await
             .expect("local principal");
 
-        assert_eq!(principal, UserPrincipal::local());
+        assert_eq!(principal, Principal::local());
+        assert_eq!(principal.kind(), PrincipalKind::User);
     }
 }

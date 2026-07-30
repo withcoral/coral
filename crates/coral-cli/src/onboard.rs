@@ -358,6 +358,7 @@ async fn run_first_query(
         .execute_sql(Request::new(ExecuteSqlRequest {
             workspace: Some(workspace.clone()),
             sql: sql.to_string(),
+            guide_read_context: None,
         }))
         .await?
         .into_inner();

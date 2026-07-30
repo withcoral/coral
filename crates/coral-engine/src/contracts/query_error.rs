@@ -661,6 +661,7 @@ mod tests {
             table_name: name.to_string(),
             description: String::new(),
             guide: String::new(),
+            require_guide_read: false,
             columns: vec![],
             required_filters: vec![],
         }
@@ -671,6 +672,8 @@ mod tests {
             schema_name: schema.to_string(),
             function_name: name.to_string(),
             description: String::new(),
+            guide: String::new(),
+            require_guide_read: false,
             arguments: vec![],
             result_columns: vec![],
             kind: coral_spec::SourceTableFunctionKind::Table,

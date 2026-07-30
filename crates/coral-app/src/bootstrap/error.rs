@@ -54,7 +54,7 @@ pub enum AppError {
     },
     /// A DSL v4 source has missing or stale generated runtime artifacts.
     #[error(
-        "failed precondition: source '{source_name}' has missing or incompatible DSL v4 materialized artifacts: {detail}. Re-add the source to regenerate them."
+        "failed precondition: source '{source_name}' has missing or incompatible DSL v4 materialized artifacts: {detail}. Re-add the source or reconcile the selected artifact files."
     )]
     MissingOrIncompatibleV4Materialization {
         /// Source name whose installed artifacts failed validation.

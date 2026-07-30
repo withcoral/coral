@@ -32,3 +32,7 @@ tasks/
 # Playwright CLI validation artifacts
 .playwright-cli/
 .verify/
+
+# Universal Search benchmark run artifacts. Reviewed corpora may be committed
+# directly under benchmarks/universal-search/.
+/benchmarks/universal-search/runs/

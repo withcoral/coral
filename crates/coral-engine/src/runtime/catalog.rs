@@ -27,6 +27,8 @@ pub(crate) struct CatalogTableFunction {
     pub(crate) schema_name: String,
     pub(crate) function_name: String,
     pub(crate) description: String,
+    pub(crate) guide: String,
+    pub(crate) require_guide_read: bool,
     pub(crate) arguments: Vec<CatalogTableFunctionArgument>,
     pub(crate) result_columns: Vec<CatalogTableFunctionResultColumn>,
     pub(crate) kind: SourceTableFunctionKind,
@@ -100,6 +102,7 @@ fn build_table_functions_table(
         Field::new("result_columns_json", DataType::Utf8, false),
         Field::new("kind", DataType::Utf8, false),
         Field::new("search_limits_json", DataType::Utf8, true),
+        Field::new("guide", DataType::Utf8, false),
     ]));
 
     let rows = catalog_table_functions(active_sources, catalog_only_table_functions);
@@ -127,6 +130,7 @@ fn build_table_functions_table(
             utf8_column(result_columns_json.iter().map(|value| Some(value.as_str()))),
             utf8_column(rows.iter().map(|row| Some(row.kind.as_str()))),
             utf8_column(search_limits_json.iter().map(|value| value.as_deref())),
+            utf8_column(rows.iter().map(|row| Some(row.guide.as_str()))),
         ],
     )
     .map_err(|error| DataFusionError::ArrowError(Box::new(error), None))?;
@@ -457,6 +461,12 @@ const TABLE_FUNCTIONS_COLUMNS: &[SystemColumnDefinition] = &[
         nullable: true,
         description: "JSON search-limit metadata when the function declares provider search limits.",
     },
+    SystemColumnDefinition {
+        name: "guide",
+        data_type: "Utf8",
+        nullable: false,
+        description: "User-facing query guidance for the table function.",
+    },
 ];
 
 const SYSTEM_TABLE_DEFINITIONS: &[SystemTableDefinition] = &[
@@ -500,6 +510,7 @@ fn system_table_infos() -> Vec<TableInfo> {
             table_name: table.table_name.to_string(),
             description: table.description.to_string(),
             guide: table.guide.to_string(),
+            require_guide_read: false,
             columns: table
                 .columns
                 .iter()
@@ -529,6 +540,7 @@ pub(crate) fn collect_tables(active_sources: &[RegisteredSource]) -> Vec<TableIn
             table_name: table.table_name.clone(),
             description: table.description.clone(),
             guide: table.guide.clone(),
+            require_guide_read: table.require_guide_read,
             columns: table
                 .columns
                 .iter()
@@ -564,6 +576,8 @@ pub(crate) fn collect_table_functions(
             schema_name: function.schema_name,
             function_name: function.function_name,
             description: function.description,
+            guide: function.guide,
+            require_guide_read: function.require_guide_read,
             arguments: function
                 .arguments
                 .into_iter()
@@ -603,6 +617,8 @@ fn catalog_table_functions(
                     schema_name: function.schema_name.clone(),
                     function_name: function.function_name.clone(),
                     description: function.description.clone(),
+                    guide: function.guide.clone(),
+                    require_guide_read: function.require_guide_read,
                     arguments: function
                         .arguments
                         .iter()
@@ -1042,6 +1058,8 @@ mod tests {
                     factory: Arc::new(StubSourceFunctionFactory::default()),
                     kind: coral_spec::SourceTableFunctionKind::Search,
                     description: String::new(),
+                    guide: "Prefer this function for lookup.".to_string(),
+                    require_guide_read: true,
                     arguments: Vec::new(),
                     result_columns: Vec::new(),
                     search_limits: None,

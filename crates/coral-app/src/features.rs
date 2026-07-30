@@ -18,9 +18,6 @@ pub enum Feature {
     /// Enable observed-value collection, storage, retrieval, and maintenance
     /// for Universal Search.
     ObservedValuesSearch,
-    /// Expose MCP task lifecycle tools and task attribution for follow-up Coral
-    /// MCP tool calls via the `coral-task-id` metadata key.
-    Tasks,
 }
 
 impl Feature {
@@ -87,14 +84,6 @@ const FEATURE_SPECS: &[FeatureSpec] = &[
         description: "Enables collecting, indexing, retrieving, and maintaining values observed during earlier queries. Off by default.",
         enable_flag: "enable-observed-values-search",
         disable_flag: "disable-observed-values-search",
-    },
-    FeatureSpec {
-        feature: Feature::Tasks,
-        key: "tasks",
-        default_enabled: false,
-        description: "Exposes MCP task lifecycle tools and tags follow-up Coral tool calls with task ids. Off by default.",
-        enable_flag: "enable-tasks",
-        disable_flag: "disable-tasks",
     },
 ];
 
@@ -481,5 +470,24 @@ observed_values_search = true
         assert!(error.to_string().contains("unknown feature 'nope'"));
         assert!(error.to_string().contains("feedback"));
         assert!(error.to_string().contains("observed_values_search"));
+    }
+
+    #[test]
+    fn retired_tasks_feature_key_is_unknown() {
+        let temp = TempDir::new().expect("temp dir");
+        let store =
+            FeatureStore::discover(Some(temp.path().join("coral-config"))).expect("feature store");
+        let raw = raw([("tasks", RawFeatureValue::Bool(false))]);
+        let features = Features::from_raw_overrides(&raw);
+        let keys = Feature::all().map(Feature::key).collect::<Vec<_>>();
+        let error = unknown_feature_error("tasks");
+
+        assert_eq!(keys, vec!["feedback", "observed_values_search"]);
+        assert!(!features.enabled(Feature::Feedback));
+        assert!(!features.enabled(Feature::ObservedValuesSearch));
+        assert!(error.to_string().contains("unknown feature 'tasks'"));
+        assert!(!error.to_string().contains("enable-tasks"));
+        assert!(store.enable("tasks").is_err());
+        assert!(store.disable("tasks").is_err());
     }
 }

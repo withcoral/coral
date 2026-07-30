@@ -140,6 +140,8 @@ message TableFunction {
   TableFunctionKind kind = 7;
   // Provider search limit metadata, when declared by the source.
   SearchLimits search_limits = 8;
+  // User-facing query guidance.
+  string guide = 9;
 }
 
 // Catalog item kind filter for unified discovery.

@@ -230,7 +230,7 @@ export const button = recipe({
         vars: assignVars(buttonVars, {
           backgroundActive: theme.button.bare.hover,
           backgroundBase: 'transparent',
-          backgroundHover: 'transparent',
+          backgroundHover: theme.button.bare.hover,
           shadow: 'none',
         }),
       },
