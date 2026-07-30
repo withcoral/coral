@@ -1,7 +1,7 @@
 {
   "name": "@withcoral/desktop",
   "private": true,
-  "version": "0.8.1",
+  "version": "0.8.2",
   "description": "Coral desktop app",
   "author": "With Coral",
   "type": "module",
