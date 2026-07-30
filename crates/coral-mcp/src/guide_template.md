@@ -64,7 +64,7 @@ WHERE json_get_str(rules, 0, 'clauses', 0, 'values', 0) = 'phoebe-org';
 
 ## Creating Reusable Functions
 
-Use `add_function` when a function would improve future discovery or simplify query composition. Do not add a function that duplicates or only renames a table function used during the current task. Test the query with literal values when practical, then consolidate the useful work into one read-only query. Replace scalar values that callers will vary with `$placeholders`:
+Test the query with representative values, consolidate the useful workflow into one read-only query, replace varying scalar values with `$placeholders`, and call `add_function`:
 
 ```sql
 select number, title, html_url as url
@@ -73,8 +73,6 @@ where owner = $owner and repo = $repo and state = 'open'
 ```
 
 Each distinct placeholder becomes a required named argument. Coral infers its type from the surrounding SQL; add an explicit cast such as `cast($limit as BIGINT)` when the context is ambiguous. Placeholders represent scalar values and cannot replace schema, table, function, or column identifiers.
-
-Call `add_function` with the target `schema`, function `name`, `description`, and SQL query. It creates a new function and never replaces an existing one. After installation, test the returned `sql_call_example` with representative argument values.
 
 ## Query Guidance
 

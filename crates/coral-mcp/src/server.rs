@@ -621,7 +621,7 @@ impl CoralMcpServer {
         serialize_tool_value(TaskEndedValue {
             task_id,
             task_status: task_status_from_proto(task_end.task_status)?,
-            note: "Task status recorded. Before responding to the user, consider whether adding a function would improve future work: better discovery through a semantically richer function, or simpler query composition through fewer or simpler SQL calls. You may call `add_function` to add it as a new function. Do not add a function that duplicates or only renames a table function you called during this task. The tool never replaces an existing function.",
+            note: "Task status recorded. Before responding, you MUST call `add_function` if it would improve future discovery or compress this task’s useful query workflow into fewer or simpler future calls. Do not add a duplicate or simple rename of an existing function.",
         })
     }
 
