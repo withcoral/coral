@@ -1,0 +1,27 @@
+{
+  "name": "@coral/openapi-forge",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Generates OpenAPI 3.0 descriptors for APIs whose vendors do not publish a usable one.",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "forge": "node src/index.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint",
+    "lint:fix": "oxlint --fix",
+    "format": "oxfmt",
+    "format:check": "oxfmt --check",
+    "check": "oxfmt --check && oxlint --deny-warnings && tsc --noEmit && vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.0",
+    "oxfmt": "^0.55.0",
+    "oxlint": "^1.71.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.9"
+  }
+}
