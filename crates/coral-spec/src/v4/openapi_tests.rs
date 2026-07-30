@@ -2501,3 +2501,66 @@ paths:
         "nothing declares a page size here; the next URL carries the paging state"
     );
 }
+
+/// ...but only at the response root, which is where what it unlocks applies.
+///
+/// `find_response_cursor_path` descends into nested objects up to depth 8. A
+/// singleton resource that happens to carry a nested link — every pre-existing
+/// detector was immune to this, because each needed a bound request input —
+/// would otherwise reach the sole-array fallback and have its one incidental
+/// array promoted to the whole relation.
+#[test]
+fn importer_ignores_a_body_next_url_nested_below_the_response_root() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: tracks
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.0.3
+paths:
+  /tracks/{id}:
+    get:
+      operationId: getTrack
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: {type: string}
+                  tags:
+                    type: array
+                    items: {type: string}
+                  links:
+                    type: object
+                    properties:
+                      next_href: {type: string}
+"
+        .as_bytes(),
+    )
+    .expect("import");
+
+    assert!(
+        imported_row_path(&ir, "gettrack").is_empty(),
+        "the track is the resource; its tags are one of its fields, not the relation"
+    );
+    assert_eq!(
+        imported_rest_pagination(&ir, "gettrack").mode,
+        PaginationMode::None,
+        "a contract only survives once the response reads as a list"
+    );
+}

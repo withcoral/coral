@@ -371,12 +371,24 @@ fn detect_pagination_contract(
 /// envelope.
 ///
 /// Two signals qualify. Binding a request input — a cursor, offset, page, or
-/// page-size parameter — says the caller can ask for another page. A response
-/// path holding a whole next-page URL says the response hands one back
-/// unprompted; that path comes out of this operation's own response schema, so
-/// it is evidence about this response rather than about the API at large. Graph
-/// needs the second signal: `{"@odata.nextLink": ..., "value": [...]}` on an
-/// operation that declares no `$top` binds nothing at all.
+/// page-size parameter — says the caller can ask for another page. A next-page
+/// URL *at the response root* says the response hands one back unprompted; that
+/// path comes out of this operation's own response schema, so it is evidence
+/// about this response rather than about the API at large. Graph needs the
+/// second signal: `{"@odata.nextLink": ..., "value": [...]}` on an operation
+/// that declares no `$top` binds nothing at all.
+///
+/// Root-only is the whole point of the length test. `find_response_cursor_path`
+/// descends into nested objects up to depth 8, but what this unlocks —
+/// `accept_fallback` in `infer_wrapped_list_row_path` — applies at the root, so
+/// deep evidence would answer a question it was not asked. A singleton
+/// `GET /tracks/{id}` returning `{id, tags: [...], links: {next_href}}` matches
+/// `nexthref` two levels down; counting that would fire the sole-array fallback
+/// and promote `tags` to the whole relation, discarding the declared resource.
+/// Both shapes this exists for — `@odata.nextLink` and Stripe's
+/// `next_page_url` — sit at the root as single segments, and a legitimate
+/// `{data, meta: {next_url}}` still qualifies through `meta` in the
+/// metadata-object lexicon.
 ///
 /// A bare `Link` header is neither. It reads no input, and providers declare
 /// that header on singleton resources too — GitHub does, on
@@ -388,7 +400,7 @@ fn signals_page_envelope(contract: &PaginationSpec) -> bool {
         || contract.offset_param.is_some()
         || contract.page_param.is_some()
         || contract.page_size.is_some()
-        || !contract.next_url_path.is_empty()
+        || contract.next_url_path.len() == 1
 }
 
 fn detect_link_header_pagination(
