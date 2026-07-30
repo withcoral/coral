@@ -93,12 +93,22 @@ postgres-stop:
 postgres-clean:
 	@docker rm -f "$(LOCAL_POSTGRES_CONTAINER)" >/dev/null 2>&1 || true
 
-postgres-tests:
+# Provision the local container through a prerequisite rather than a recursive
+# $(MAKE) call inside the recipe. GNU make runs any recipe line containing
+# $(MAKE) even under -n/-t/-q, and this recipe is a single continued line, so an
+# inline sub-make would make `make -n postgres-tests` execute the real suite.
+# CORAL_TEST_POSTGRES_URL reaches both this conditional and the recipe's shell
+# whether it is set in the environment or on the command line.
+POSTGRES_TESTS_PREREQS :=
+ifeq ($(strip $(CORAL_TEST_POSTGRES_URL)),)
+POSTGRES_TESTS_PREREQS := postgres-start
+endif
+
+postgres-tests: $(POSTGRES_TESTS_PREREQS)
 	@set -eu; \
 	url="$${CORAL_TEST_POSTGRES_URL:-}"; \
 	cleanup() { :; }; \
 	if [ -z "$$url" ]; then \
-	  $(MAKE) postgres-start; \
 	  host_port=$$(docker port "$(LOCAL_POSTGRES_CONTAINER)" 5432/tcp | sed -n 's/.*:\([0-9][0-9]*\)$$/\1/p' | head -n 1); \
 	  if [ -z "$$host_port" ]; then \
 	    echo "Local Postgres is not exposing 5432/tcp"; \
