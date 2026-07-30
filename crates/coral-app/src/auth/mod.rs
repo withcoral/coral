@@ -21,13 +21,6 @@ pub use authorization_server::{CoralAuthorizationServer, RunningCoralAuthorizati
 pub use config::AuthSettings;
 pub use error::AuthServerError;
 
-/// Identifier recorded for Coral's single configured OIDC provider.
-///
-/// Coral authenticates against exactly one upstream provider, so authorization
-/// state and session tokens carry this constant instead of an operator-chosen
-/// provider name.
-pub(crate) const PROVIDER_ID: &str = "oidc";
-
 /// Minimal `[auth]` TOML sections shared by this module's tests.
 ///
 /// `config` and `authorization_server` both build configs from the same

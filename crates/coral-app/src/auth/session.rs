@@ -96,13 +96,12 @@ impl SessionTokenIssuer {
 
     pub(crate) fn issue_access_token(
         &self,
-        provider: &str,
         subject: &str,
         client_id: &str,
         audience: &str,
     ) -> Result<IssuedAccessToken, SessionTokenError> {
-        if provider.trim().is_empty() || subject.trim().is_empty() {
-            return Err(config_error("provider and subject must not be empty"));
+        if subject.trim().is_empty() {
+            return Err(config_error("subject must not be empty"));
         }
         if client_id.trim().is_empty()
             || client_id.trim() != client_id
@@ -126,7 +125,6 @@ impl SessionTokenIssuer {
             exp: expires_at,
             iat: issued_at,
             nbf: issued_at,
-            provider: provider.to_string(),
         };
         let mut header = Header::new(SESSION_TOKEN_ALGORITHM);
         header.kid = Some(self.signing_key_id.clone());
@@ -237,7 +235,6 @@ impl SessionTokenVerifier {
             "iss",
             "jti",
             "nbf",
-            "provider",
             "sub",
         ]);
         validation.validate_nbf = true;
@@ -250,23 +247,19 @@ impl SessionTokenVerifier {
             token_id: claims.jti,
             audience: claims.aud,
             client_id: claims.client_id,
-            provider: claims.provider,
             subject: claims.sub,
         })
     }
 
     fn validate_claims(&self, claims: &SessionTokenClaims) -> Result<(), SessionTokenError> {
         let invalid = |message: &str| format!("invalid Coral access token: {message}");
-        if claims.provider.trim().is_empty()
-            || claims.sub.trim().is_empty()
+        if claims.sub.trim().is_empty()
             || claims.client_id.trim().is_empty()
             || claims.client_id.trim() != claims.client_id
             || claims.jti.trim().is_empty()
             || claims.jti.trim() != claims.jti
         {
-            return Err(invalid(
-                "provider, subject, client_id, and jti must be valid",
-            ));
+            return Err(invalid("subject, client_id, and jti must be valid"));
         }
         let now = unix_timestamp()?;
         if claims.iat > now.saturating_add(CLOCK_SKEW.as_secs()) {
@@ -356,7 +349,6 @@ pub(crate) struct ValidatedSession {
     pub(crate) token_id: String,
     pub(crate) audience: String,
     pub(crate) client_id: String,
-    pub(crate) provider: String,
     pub(crate) subject: String,
 }
 
@@ -370,7 +362,6 @@ struct SessionTokenClaims {
     exp: u64,
     iat: u64,
     nbf: u64,
-    provider: String,
 }
 
 fn normalized_or_default<'a>(value: Option<&'a str>, default: &'a str) -> &'a str {
@@ -433,7 +424,6 @@ mod tests {
             exp: now + issuer.access_token_ttl.as_secs(),
             iat: now,
             nbf: now,
-            provider: "oidc".to_string(),
         }
     }
 
@@ -500,7 +490,6 @@ mod tests {
         let verifier = issuer.verifier();
         let access = issuer
             .issue_access_token(
-                "oidc",
                 "issuer.example|opaque:subject/123",
                 CLIENT_ID,
                 MCP_AUDIENCE,
@@ -522,7 +511,6 @@ mod tests {
         assert_eq!(session.token_id, token_id);
         assert_eq!(session.audience, MCP_AUDIENCE);
         assert_eq!(session.client_id, CLIENT_ID);
-        assert_eq!(session.provider, "oidc");
         assert_eq!(session.subject, "issuer.example|opaque:subject/123");
     }
 
@@ -534,7 +522,6 @@ mod tests {
         let invalid = [
             changed(original.clone(), |c| c.iss = "other".into()),
             changed(original.clone(), |c| c.aud = "other".into()),
-            changed(original.clone(), |c| c.provider = " ".into()),
             changed(original.clone(), |c| c.sub = " ".into()),
             changed(original.clone(), |c| c.client_id = " ".into()),
             changed(original.clone(), |c| c.jti = " ".into()),
@@ -634,10 +621,10 @@ mod tests {
         let issuer = test_issuer();
         let verifier = issuer.verifier();
         let mcp = issuer
-            .issue_access_token("oidc", "user-123", "mcp-client", MCP_AUDIENCE)
+            .issue_access_token("user-123", "mcp-client", MCP_AUDIENCE)
             .unwrap();
         let bff = issuer
-            .issue_access_token("oidc", "user-123", "bff-client", BFF_AUDIENCE)
+            .issue_access_token("user-123", "bff-client", BFF_AUDIENCE)
             .unwrap();
 
         verifier
@@ -667,7 +654,7 @@ mod tests {
             (CLIENT_ID, ""),
             (CLIENT_ID, "audience "),
         ] {
-            let Err(_error) = issuer.issue_access_token("oidc", "user-123", client_id, audience)
+            let Err(_error) = issuer.issue_access_token("user-123", client_id, audience)
             else {
                 panic!(
                     "token issuance should reject client_id={client_id:?}, audience={audience:?}"
@@ -680,7 +667,7 @@ mod tests {
     fn public_jwks_support_detached_validation() {
         let issuer = test_issuer();
         let token = issuer
-            .issue_access_token("oidc", "user-123", CLIENT_ID, MCP_AUDIENCE)
+            .issue_access_token("user-123", CLIENT_ID, MCP_AUDIENCE)
             .unwrap();
         let expected = issuer
             .verifier()

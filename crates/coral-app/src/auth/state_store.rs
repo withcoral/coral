@@ -15,7 +15,6 @@ type SecretHash = [u8; 32];
 
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct OAuthAuthorizationSessionRecord {
-    pub(crate) provider_id: String,
     pub(crate) client_id: String,
     pub(crate) redirect_uri: String,
     pub(crate) client_state: Option<String>,
@@ -27,7 +26,6 @@ pub(crate) struct OAuthAuthorizationSessionRecord {
 
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct OAuthAuthorizationCodeRecord {
-    pub(crate) provider_id: String,
     pub(crate) user_id: String,
     pub(crate) client_id: String,
     pub(crate) redirect_uri: String,
@@ -244,7 +242,6 @@ mod tests {
 
     fn session(id: &str) -> OAuthAuthorizationSessionRecord {
         OAuthAuthorizationSessionRecord {
-            provider_id: "oidc".to_string(),
             client_id: "client".to_string(),
             redirect_uri: "http://127.0.0.1/callback".to_string(),
             client_state: Some(id.to_string()),
@@ -257,7 +254,6 @@ mod tests {
 
     fn code(id: &str) -> OAuthAuthorizationCodeRecord {
         OAuthAuthorizationCodeRecord {
-            provider_id: "oidc".to_string(),
             user_id: id.to_string(),
             client_id: "client".to_string(),
             redirect_uri: "http://127.0.0.1/callback".to_string(),

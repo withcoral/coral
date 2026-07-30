@@ -5,7 +5,6 @@ use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use url::{Url, form_urlencoded};
 
-use super::super::PROVIDER_ID;
 use super::super::provider_client::OidcAuthorizationRequest;
 use super::super::state_store::OAuthAuthorizationSessionRecord;
 use super::{AuthorizationServerHttpState, canonical_authorization_resource};
@@ -85,7 +84,6 @@ pub(super) async fn oauth_authorize(
         code_verifier: oidc_code_verifier,
     } = request;
     let session = OAuthAuthorizationSessionRecord {
-        provider_id: PROVIDER_ID.to_string(),
         client_id: client_id.to_string(),
         redirect_uri: redirect_uri.to_string(),
         client_state: query.state,
@@ -500,7 +498,6 @@ mod tests {
             .await
             .expect("store")
             .expect("stored before redirect");
-        assert_eq!(session.provider_id, PROVIDER_ID);
         assert_eq!(session.client_id, CLIENT_ID);
         assert_eq!(session.redirect_uri, REDIRECT_URI);
         assert_eq!(session.client_state.as_deref(), Some(CLIENT_STATE));
@@ -534,7 +531,6 @@ mod tests {
         provider.reset().await;
         mount_discovery(&provider, 200).await;
         let filler = OAuthAuthorizationSessionRecord {
-            provider_id: PROVIDER_ID.into(),
             client_id: CLIENT_ID.into(),
             redirect_uri: REDIRECT_URI.into(),
             client_state: None,
