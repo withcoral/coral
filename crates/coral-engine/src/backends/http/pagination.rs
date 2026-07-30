@@ -242,18 +242,35 @@ pub(super) fn advance_pagination_state(
                 .and_then(Value::as_str)
                 .map(str::trim)
                 .filter(|next| !next.is_empty());
-            match next_raw {
-                Some(next_raw) => {
-                    let base = pagination_request_url(context.request_url)?;
-                    state.next_url = Some(resolve_pagination_next_url(
-                        &base,
-                        next_raw,
-                        "next URL body value",
-                    )?);
-                    Ok(PageAdvance::Continue)
-                }
-                None => Ok(PageAdvance::Stop),
+            let Some(next_raw) = next_raw else {
+                return Ok(PageAdvance::Stop);
+            };
+            // A page that carried no rows ends the walk whatever the body
+            // claims. Unlike `page`/`offset` this cannot use
+            // `page_is_exhausted`: the server chooses the page size for a
+            // URL-following mode, so a short page is normal and only an empty
+            // one is evidence.
+            if context.rows_on_page == 0 {
+                return Ok(PageAdvance::Stop);
             }
+            let base = pagination_request_url(context.request_url)?;
+            let next = resolve_pagination_next_url(&base, next_raw, "next URL body value")?;
+            // So does a link back to the page that carried it. This mode is
+            // inferred from a property *name*, so unlike `link_header` — where
+            // the server must explicitly say `rel="next"` — the field may not
+            // be a next-page link at all: a related-resource URL the heuristic
+            // picked up, or an API that echoes the collection URL instead of
+            // omitting the link on its last page. Nothing else bounds the
+            // loop, so that would be `max_pages` credentialed requests and
+            // `max_pages` pages of duplicate rows before the query errors.
+            //
+            // From page two on `request_url` is the previous next link, so a
+            // constant link stops on its second appearance.
+            if next == context.request_url {
+                return Ok(PageAdvance::Stop);
+            }
+            state.next_url = Some(next);
+            Ok(PageAdvance::Continue)
         }
     }
 }
@@ -791,6 +808,14 @@ mod tests {
         path: &[&str],
         payload: &Value,
     ) -> datafusion::error::Result<(PageAdvance, PageState)> {
+        advance_next_url_body_with_rows(path, payload, 10)
+    }
+
+    fn advance_next_url_body_with_rows(
+        path: &[&str],
+        payload: &Value,
+        rows_on_page: usize,
+    ) -> datafusion::error::Result<(PageAdvance, PageState)> {
         let pagination = next_url_body_pagination(path);
         let mut state = PageState::default();
         let advance = advance_pagination_state(
@@ -800,7 +825,7 @@ mod tests {
                 payload,
                 response_headers: &HeaderMap::new(),
                 request_url: "https://api.example.com/v1.0/me/chats",
-                rows_on_page: 10,
+                rows_on_page,
                 page_size: Some(10),
                 source_schema: "demo",
                 table_name: "items",
@@ -851,6 +876,68 @@ mod tests {
             );
             assert!(state.next_url.is_none());
         }
+    }
+
+    #[test]
+    fn advance_next_url_body_stops_on_a_link_back_to_the_page_that_carried_it() {
+        // This mode is inferred from a property name, so the field may be a
+        // related-resource URL or a collection link an API echoes on its last
+        // page rather than omitting. Without this stop nothing bounds the
+        // loop: `max_pages` requests, all returning the same rows.
+        for next in [
+            // Absolute, exactly the request URL.
+            "https://api.example.com/v1.0/me/chats",
+            // Relative, resolving to it.
+            "chats",
+        ] {
+            let (advance, state) = advance_next_url_body_with_rows(
+                &["@odata.nextLink"],
+                &json!({ "@odata.nextLink": next }),
+                10,
+            )
+            .unwrap();
+
+            assert_eq!(
+                advance,
+                PageAdvance::Stop,
+                "a next link pointing at the current page is not progress: {next}"
+            );
+            assert!(state.next_url.is_none());
+        }
+    }
+
+    #[test]
+    fn advance_next_url_body_stops_on_an_empty_page() {
+        // A short page is normal here — the server picks the page size — but
+        // an empty one is the end of the collection whatever the body claims.
+        let (advance, state) = advance_next_url_body_with_rows(
+            &["@odata.nextLink"],
+            &json!({"@odata.nextLink": "https://api.example.com/v1.0/me/chats?$skiptoken=abc"}),
+            0,
+        )
+        .unwrap();
+
+        assert_eq!(advance, PageAdvance::Stop);
+        assert!(state.next_url.is_none());
+    }
+
+    #[test]
+    fn advance_next_url_body_follows_a_short_page_that_still_offers_a_link() {
+        // The mirror of the empty-page stop: `page_is_exhausted` would end the
+        // walk here because 3 < 10, but the server chose that page size and
+        // has said there is more.
+        let (advance, state) = advance_next_url_body_with_rows(
+            &["@odata.nextLink"],
+            &json!({"@odata.nextLink": "https://api.example.com/v1.0/me/chats?$skiptoken=abc"}),
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(advance, PageAdvance::Continue);
+        assert_eq!(
+            state.next_url.as_deref(),
+            Some("https://api.example.com/v1.0/me/chats?$skiptoken=abc")
+        );
     }
 
     #[test]
