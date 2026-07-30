@@ -364,6 +364,7 @@ fn mock_validate_response() -> ValidateSourceResponse {
         ],
         table_functions: vec![TableFunction {
             workspace: Some(workspace()),
+            catalog_name: String::new(),
             schema_name: "github".to_string(),
             name: "search_issues".to_string(),
             description: "Search issues".to_string(),
@@ -413,6 +414,7 @@ fn mock_search_response() -> SearchResponse {
             SearchResult {
                 provider: SearchProvider::CatalogMetadata as i32,
                 payload: Some(search_result::Payload::ColumnHint(ColumnHint {
+                    catalog_name: String::new(),
                     schema_name: "local_messages".to_string(),
                     surface_name: "messages".to_string(),
                     surface_kind: SearchSurfaceKind::Table as i32,

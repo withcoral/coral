@@ -241,8 +241,8 @@ pub struct McpTableFilterBinding {
 impl McpTableSpec {
     #[must_use]
     /// Returns the stable table name.
-    pub fn name(&self) -> &str {
-        &self.common.name
+    pub fn table_name(&self) -> &str {
+        &self.common.table_name
     }
 
     #[must_use]
@@ -276,8 +276,8 @@ impl McpTableSpec {
 impl McpTableFunctionSpec {
     #[must_use]
     /// Returns the stable function name.
-    pub fn name(&self) -> &str {
-        &self.common.name
+    pub fn function_name(&self) -> &str {
+        &self.common.function_name
     }
 
     #[must_use]
@@ -331,7 +331,9 @@ impl RawMcpTableFunctionSpec {
             pagination: self.pagination,
             offset_pagination: None,
             common: SourceTableFunctionSpec {
-                name: self.name,
+                catalog_name: "datafusion".to_string(),
+                schema_name: source_name.to_string(),
+                function_name: self.name,
                 kind: SourceTableFunctionKind::default(),
                 description: self.description,
                 guide: self.guide,
@@ -363,6 +365,8 @@ impl RawMcpTableSpec {
             .collect();
         Ok(McpTableSpec {
             common: TableCommon::new(
+                "datafusion".to_string(),
+                source_name.to_string(),
                 self.name,
                 self.description,
                 self.guide,
@@ -1349,7 +1353,7 @@ mod tests {
 
         assert_eq!(manifest.tables.len(), 1);
         let table = manifest.tables.first().expect("one table");
-        assert_eq!(table.name(), "issues");
+        assert_eq!(table.table_name(), "issues");
         assert_eq!(table.tool, "list_issues");
         assert_eq!(table.filters().len(), 1);
         assert_eq!(

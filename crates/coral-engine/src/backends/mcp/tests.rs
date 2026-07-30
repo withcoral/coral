@@ -559,12 +559,7 @@ async fn missing_required_function_arg_fails_planning() {
 
 fn register_test_sources(ctx: &SessionContext, sources: Vec<CompiledQuerySource>) {
     let registration = register_sources_blocking(ctx, sources).expect("mcp source should register");
-    let source_functions = SourceFunctionRegistry::new(
-        registration
-            .active_sources
-            .iter()
-            .flat_map(|source| source.table_functions.iter()),
-    );
+    let source_functions = SourceFunctionRegistry::new(&registration.active_publications);
     source_functions
         .install(ctx)
         .expect("source function planner should register");
@@ -574,17 +569,12 @@ fn register_test_sources_with_catalog(ctx: &SessionContext, sources: Vec<Compile
     let registration = register_sources_blocking(ctx, sources).expect("mcp source should register");
     catalog::register(
         ctx,
-        &registration.active_sources,
+        &registration.active_publications,
         &registration.column_fetchers,
         &[],
     )
     .expect("catalog should register");
-    let source_functions = SourceFunctionRegistry::new(
-        registration
-            .active_sources
-            .iter()
-            .flat_map(|source| source.table_functions.iter()),
-    );
+    let source_functions = SourceFunctionRegistry::new(&registration.active_publications);
     source_functions
         .install(ctx)
         .expect("source function planner should register");
@@ -1732,7 +1722,7 @@ async fn limit_binding_max_does_not_cap_final_rows_in_paginated_table() {
 }
 
 #[tokio::test]
-async fn mcp_table_appears_in_catalog_metadata() {
+async fn unified_backend_catalog_publication_mcp_table_appears_in_catalog_metadata() {
     let ctx = SessionContext::new();
     let caller = Arc::new(FakeMcpTableCaller {
         calls: Mutex::new(Vec::new()),

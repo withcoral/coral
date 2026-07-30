@@ -198,12 +198,23 @@ The `coral://tables` resource exposes `catalog_name`, `schema_name`, and
 `table_name` separately for every table. It also provides `name` for display and
 `sql_reference` for use in `FROM` and `JOIN` clauses.
 
-Tables with an empty `catalog_name` use two-part `schema.table` names. Database
-tables have a catalog and use three-part `catalog.schema.table` names. Use the
-provided `sql_reference`, which quotes each identifier when required. When
-calling `list_catalog`, `describe_table`, or `list_columns` for a database
-table, pass its catalog separately from its schema; omit the catalog for
-two-part tables.
+Items with an empty `catalog_name`, including DSL v3 sources, use two-part
+`schema.relation` names. Database and DSL v4 items have a catalog and use
+three-part `catalog.schema.relation` names. For DSL v4, the source name is the
+catalog. The schema comes from the operation's first tag, normalized as a SQL
+identifier, or is `public` when the operation has no tag.
+
+Use the provided `sql_reference` or table-function `sql_call_example`, which
+quotes each identifier when required. When calling `list_catalog`,
+`describe_table`, or `list_columns` for a catalog-qualified table, pass its
+catalog separately from its schema; omit the catalog for two-part tables. A
+`list_catalog` catalog filter applies to both tables and table functions.
+
+<Note>
+Coral does not silently regenerate installed DSL v4 sources. If an older v4
+materialization is incompatible with the current catalog identity, explicitly
+re-add it from its source spec with `coral source add --file <manifest.yaml>`.
+</Note>
 
 ## What your agent can do
 
@@ -216,9 +227,9 @@ Coral gives your agent a read-only SQL view over the sources you have installed 
 - use the same local credentials and workspace state as the Coral CLI
 
 Catalog results expose `catalog_name`, `schema_name`, and `sql_reference`
-separately. Ordinary Coral sources use `schema.table`; database sources use
-`catalog.schema.table`. Pass `catalog` alongside `schema` to catalog tools when
-addressing a database table.
+separately. DSL v3 sources use `schema.relation`; database and DSL v4 sources
+use `catalog.schema.relation`. Pass `catalog` alongside `schema` to catalog
+tools when addressing a catalog-qualified table.
 
 Set up and update sources with the CLI. The MCP server is the agent-facing query surface, not a source installer.
 

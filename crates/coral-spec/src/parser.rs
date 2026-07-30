@@ -271,6 +271,159 @@ mod tests {
     use super::parse_source_manifest_yaml;
 
     #[test]
+    fn v3_runtime_sql_identity_adapts_http_names_without_changing_serialization() {
+        let http = parse_source_manifest_yaml(
+            r"
+name: github
+version: 1.0.0
+dsl_version: 3
+backend: http
+base_url: https://example.com
+tables:
+  - name: issues
+    description: Issues
+    request:
+      path: /issues
+    columns:
+      - name: id
+        type: Int64
+functions:
+  - name: search_issues
+    request:
+      path: /search/issues
+    columns:
+      - name: id
+        type: Int64
+",
+        )
+        .expect("HTTP manifest");
+        let http = http.as_http().expect("HTTP backend");
+        let table = http.tables.first().expect("HTTP table");
+        assert_eq!(
+            (
+                table.common.catalog_name.as_str(),
+                table.common.schema_name.as_str(),
+                table.table_name()
+            ),
+            ("datafusion", "github", "issues")
+        );
+        let function = http.functions.first().expect("HTTP function");
+        assert_eq!(
+            (
+                function.catalog_name.as_str(),
+                function.schema_name.as_str(),
+                function.function_name.as_str()
+            ),
+            ("datafusion", "github", "search_issues")
+        );
+        let serialized_table = serde_json::to_value(table).expect("serialize HTTP table");
+        let serialized_common = serialized_table
+            .get("common")
+            .and_then(serde_json::Value::as_object)
+            .expect("serialized HTTP table common fields");
+        assert_eq!(
+            serialized_common
+                .get("name")
+                .and_then(serde_json::Value::as_str),
+            Some("issues")
+        );
+        assert!(serialized_common.get("catalog_name").is_none());
+        assert!(serialized_common.get("schema_name").is_none());
+        let serialized_function = serde_json::to_value(function).expect("serialize HTTP function");
+        assert_eq!(
+            serialized_function
+                .get("name")
+                .and_then(serde_json::Value::as_str),
+            Some("search_issues")
+        );
+        assert!(serialized_function.get("catalog_name").is_none());
+        assert!(serialized_function.get("schema_name").is_none());
+    }
+
+    #[test]
+    fn v3_runtime_sql_identity_adapts_file_names() {
+        let file = parse_source_manifest_yaml(
+            r"
+name: logs
+version: 1.0.0
+dsl_version: 3
+backend: file
+tables:
+  - name: events
+    description: Events
+    format: jsonl
+    source:
+      location: file:///tmp/events/
+    columns:
+      - name: id
+        type: Int64
+",
+        )
+        .expect("file manifest");
+        let table = file
+            .as_file()
+            .expect("file backend")
+            .tables
+            .first()
+            .expect("file table");
+        assert_eq!(
+            (
+                table.common.catalog_name.as_str(),
+                table.common.schema_name.as_str(),
+                table.table_name()
+            ),
+            ("datafusion", "logs", "events")
+        );
+    }
+
+    #[test]
+    fn v3_runtime_sql_identity_adapts_mcp_names() {
+        let mcp = parse_source_manifest_yaml(
+            r"
+name: github_mcp
+version: 1.0.0
+dsl_version: 3
+backend: mcp
+server:
+  transport: stdio
+  command: github-mcp-server
+tables:
+  - name: issues
+    tool: list_issues
+    columns:
+      - name: id
+        type: Int64
+functions:
+  - name: search_issues
+    tool: search_issues
+    columns:
+      - name: id
+        type: Int64
+",
+        )
+        .expect("MCP manifest");
+        let mcp = mcp.as_mcp().expect("MCP backend");
+        let table = mcp.tables.first().expect("MCP table");
+        assert_eq!(
+            (
+                table.common.catalog_name.as_str(),
+                table.common.schema_name.as_str(),
+                table.table_name()
+            ),
+            ("datafusion", "github_mcp", "issues")
+        );
+        let function = mcp.functions.first().expect("MCP function");
+        assert_eq!(
+            (
+                function.common.catalog_name.as_str(),
+                function.common.schema_name.as_str(),
+                function.function_name()
+            ),
+            ("datafusion", "github_mcp", "search_issues")
+        );
+    }
+
+    #[test]
     fn parse_source_manifest_preserves_test_query_order() {
         let manifest = parse_source_manifest_yaml(
             r"
@@ -517,7 +670,7 @@ functions:
         assert!(http.tables.is_empty());
         assert_eq!(http.functions.len(), 1);
         let function = http.functions.first().expect("HTTP function");
-        assert_eq!(function.name, "search_issues");
+        assert_eq!(function.function_name, "search_issues");
     }
 
     #[test]

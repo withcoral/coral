@@ -8,7 +8,7 @@ use std::time::Instant;
 use coral_engine::{
     CatalogInfo, CoralQuery, CoreError, DescribeTableInfo, PreparedQueryRuntime, QueryExecution,
     QueryExecutionProvenance, QueryPlan, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,
-    SourceDecorator, SourceDecoratorError, SourceFailurePolicy, SourceInputResolver, SourceTables,
+    SourceDecorator, SourceDecoratorError, SourceFailurePolicy, SourceInputResolver,
     SourceValidationReport, StatusCode, TableInfo, UdfRuntimeDefinition,
 };
 use coral_spec::{ManifestInputKind, ManifestInputSpec};
@@ -18,7 +18,7 @@ use tracing::Instrument as _;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
 use crate::bootstrap::AppError;
-use crate::catalog::model::CatalogResolution;
+use crate::catalog::model::{CatalogResolution, RuntimeRelationOwners};
 use crate::credentials::{CredentialManager, CredentialSetId};
 use crate::functions::manager::{FunctionListing, FunctionManager, ValidatedFunctionInstall};
 use crate::query::QueryAttribution;
@@ -63,7 +63,6 @@ enum CredentialResolutionMode {
 struct LoadedQuerySource {
     source: InstalledSource,
     query_source: QuerySource,
-    runtime_schema_name: String,
     runtime_contract_fingerprint: RuntimeContractFingerprint,
     credential_material: BTreeMap<String, String>,
 }
@@ -73,30 +72,97 @@ struct QuerySourceLoad {
     failed_source_names: BTreeSet<String>,
 }
 
-/// Maps each loaded runtime schema to its canonical installed source owner.
-fn runtime_schema_owners(
+/// Maps each loaded runtime catalog/schema identity to its installed source.
+fn runtime_relation_owners(
     loaded_sources: &[LoadedQuerySource],
-) -> Result<BTreeMap<String, String>, AppError> {
-    let mut owners = BTreeMap::new();
+    catalog: &CatalogInfo,
+) -> Result<RuntimeRelationOwners, AppError> {
+    let mut schema_claims = BTreeMap::new();
+    let mut catalog_claims = BTreeMap::new();
     for loaded in loaded_sources {
-        match owners.entry(loaded.runtime_schema_name.clone()) {
-            std::collections::btree_map::Entry::Vacant(entry) => {
-                entry.insert(loaded.source.name.as_str().to_string());
-            }
-            std::collections::btree_map::Entry::Occupied(entry)
-                if entry.get().as_str() != loaded.source.name.as_str() =>
-            {
-                return Err(AppError::InvalidInput(format!(
-                    "catalog runtime schema '{}' is owned by both '{}' and '{}'",
-                    entry.key(),
-                    entry.get(),
-                    loaded.source.name
-                )));
-            }
-            std::collections::btree_map::Entry::Occupied(_) => {}
+        let schema_names = loaded.query_source.schema_names();
+        let catalog_names = loaded.query_source.catalog_names();
+        claim_runtime_relation_owners(
+            &mut schema_claims,
+            &mut catalog_claims,
+            loaded.source.name.as_str(),
+            &schema_names,
+            &catalog_names,
+        );
+    }
+
+    let relation_namespaces = catalog
+        .tables
+        .iter()
+        .map(|table| (table.catalog_name.as_deref(), table.schema_name.as_str()))
+        .chain(catalog.table_functions.iter().map(|function| {
+            (
+                function.catalog_name.as_deref(),
+                function.schema_name.as_str(),
+            )
+        }))
+        .collect::<BTreeSet<_>>();
+    let mut owners = RuntimeRelationOwners::new();
+    for (catalog_name, schema_name) in relation_namespaces {
+        let claim = catalog_name.map_or_else(
+            || schema_claims.get(schema_name),
+            |catalog_name| catalog_claims.get(catalog_name),
+        );
+        let Some(claim) = claim else {
+            continue;
+        };
+        if let Some(conflicting_source_name) = claim.conflicting_source_name {
+            let namespace = catalog_name.map_or_else(
+                || schema_name.to_string(),
+                |catalog_name| format!("{catalog_name}.{schema_name}"),
+            );
+            return Err(AppError::InvalidInput(format!(
+                "catalog runtime namespace '{namespace}' is owned by both '{}' and '{conflicting_source_name}'",
+                claim.source_name,
+            )));
         }
+        owners.insert(
+            (
+                catalog_name.map(ToString::to_string),
+                schema_name.to_string(),
+            ),
+            claim.source_name.to_string(),
+        );
     }
     Ok(owners)
+}
+
+#[derive(Clone, Copy)]
+struct RuntimeRelationOwnerClaim<'a> {
+    source_name: &'a str,
+    conflicting_source_name: Option<&'a str>,
+}
+
+fn claim_runtime_relation_owners<'a>(
+    schema_claims: &mut BTreeMap<&'a str, RuntimeRelationOwnerClaim<'a>>,
+    catalog_claims: &mut BTreeMap<&'a str, RuntimeRelationOwnerClaim<'a>>,
+    source_name: &'a str,
+    schema_names: &[&'a str],
+    catalog_names: &[&'a str],
+) {
+    for (claims, names) in [
+        (schema_claims, schema_names),
+        (catalog_claims, catalog_names),
+    ] {
+        for name in names {
+            claims
+                .entry(name)
+                .and_modify(|claim| {
+                    if claim.source_name != source_name {
+                        claim.conflicting_source_name.get_or_insert(source_name);
+                    }
+                })
+                .or_insert(RuntimeRelationOwnerClaim {
+                    source_name,
+                    conflicting_source_name: None,
+                });
+        }
+    }
 }
 
 #[derive(Clone, Default)]
@@ -118,16 +184,8 @@ impl SourceDecorator for CatalogFailureRecorder {
         "catalog_failure_recorder"
     }
 
-    fn supports_catalog_sources(&self) -> bool {
+    fn supports_lazy_schemas(&self) -> bool {
         true
-    }
-
-    fn decorate_source(
-        &mut self,
-        _source: &QuerySource,
-        tables: SourceTables,
-    ) -> Result<SourceTables, SourceDecoratorError> {
-        Ok(tables)
     }
 
     fn source_failed(
@@ -331,15 +389,25 @@ impl QueryManager {
                     .await?;
                 let mut failed_source_names = source_load.failed_source_names;
                 failed_source_names.extend(failure_recorder.failed_source_names());
-                let runtime_schema_owners =
-                    runtime_schema_owners(&source_load.loaded).map_err(QueryManagerError::App)?;
-                Ok(CatalogResolution {
-                    catalog: runtime
+                let ownership_catalog = runtime
+                    .list_catalog(None, None)
+                    .await
+                    .map_err(QueryManagerError::Core)?;
+                let runtime_relation_owners =
+                    runtime_relation_owners(&source_load.loaded, &ownership_catalog)
+                        .map_err(QueryManagerError::App)?;
+                let catalog = if catalog_filter.is_none() && schema_filter.is_none() {
+                    ownership_catalog
+                } else {
+                    runtime
                         .list_catalog(catalog_filter, schema_filter)
                         .await
-                        .map_err(QueryManagerError::Core)?,
+                        .map_err(QueryManagerError::Core)?
+                };
+                Ok(CatalogResolution {
+                    catalog,
                     failed_source_names,
-                    runtime_schema_owners,
+                    runtime_relation_owners,
                 })
             },
             |resolution| {
@@ -629,7 +697,6 @@ impl QueryManager {
             LoadedQuerySource {
                 source: source.clone(),
                 query_source: loaded_runtime.query_source,
-                runtime_schema_name: installed.source_spec.schema_name().to_string(),
                 runtime_contract_fingerprint: loaded_runtime.runtime_contract_fingerprint,
                 credential_material: stored_secrets,
             },
@@ -1251,6 +1318,9 @@ fn validate_required_variables(
 }
 
 #[cfg(test)]
+mod test_support;
+
+#[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
     use std::sync::Arc;
@@ -1258,9 +1328,9 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use coral_engine::{
-        EngineExtensions, QueryExecution, QueryExecutionProvenance, QueryTableFunctionUsage,
-        QueryTableUsage, SourceDecorator, SourceDecoratorError, SourceInputResolutionContext,
-        SourceInputResolver, SourceInputResolverError, SourceTables,
+        EngineExtensions, QueryExecutionProvenance, QueryTableFunctionUsage, QueryTableUsage,
+        SourceDecorator, SourceDecoratorError, SourceInputResolutionContext, SourceInputResolver,
+        SourceInputResolverError,
     };
     use coral_spec::parse_source_manifest_yaml;
     use serde_json::{Value, json};
@@ -1268,6 +1338,10 @@ mod tests {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    use super::test_support::{
+        execution_to_rows, import_v4_mcp_catalog_source, import_v4_openapi_catalog_source,
+        mount_v4_mcp_catalog_server, mount_v4_openapi_catalog_server,
+    };
     use super::*;
     use crate::credentials::{CredentialStorageKind, CredentialStoragePreference, CredentialStore};
     use crate::identity::Principal;
@@ -1282,6 +1356,105 @@ mod tests {
         _temp: TempDir,
         manager: QueryManager,
         db: Arc<CoralDb>,
+    }
+
+    #[test]
+    fn runtime_relation_owner_claims_distinguish_catalogs_with_the_same_schema() {
+        let mut schema_claims = BTreeMap::new();
+        let mut catalog_claims = BTreeMap::new();
+        claim_runtime_relation_owners(
+            &mut schema_claims,
+            &mut catalog_claims,
+            "warehouse_source",
+            &[],
+            &["warehouse"],
+        );
+        claim_runtime_relation_owners(
+            &mut schema_claims,
+            &mut catalog_claims,
+            "analytics_source",
+            &[],
+            &["analytics"],
+        );
+
+        assert_eq!(
+            catalog_claims
+                .get("warehouse")
+                .map(|claim| claim.source_name),
+            Some("warehouse_source")
+        );
+        assert_eq!(
+            catalog_claims
+                .get("analytics")
+                .map(|claim| claim.source_name),
+            Some("analytics_source")
+        );
+        assert!(schema_claims.is_empty());
+    }
+
+    #[test]
+    fn runtime_relation_owner_conflicts_are_detected_from_unfiltered_catalog() {
+        let loaded_sources = vec![
+            loaded_schema_owner("owner_a", "shared"),
+            loaded_schema_owner("owner_b", "shared"),
+        ];
+        let unfiltered_catalog = CatalogInfo {
+            tables: vec![TableInfo {
+                catalog_name: None,
+                schema_name: "shared".to_string(),
+                table_name: "items".to_string(),
+                description: String::new(),
+                guide: String::new(),
+                columns: Vec::new(),
+                required_filters: Vec::new(),
+            }],
+            table_functions: Vec::new(),
+        };
+
+        let error = runtime_relation_owners(&loaded_sources, &unfiltered_catalog)
+            .expect_err("unfiltered catalog must expose duplicate runtime namespace owners");
+
+        assert!(
+            error
+                .to_string()
+                .contains("runtime namespace 'shared' is owned by both 'owner_a' and 'owner_b'"),
+            "unexpected error: {error}"
+        );
+    }
+
+    fn loaded_schema_owner(installed_name: &str, runtime_schema_name: &str) -> LoadedQuerySource {
+        let source_spec = parse_source_manifest_yaml(&format!(
+            r"
+name: {runtime_schema_name}
+version: 0.1.0
+dsl_version: 3
+backend: http
+base_url: https://example.com
+tables:
+  - name: items
+    description: Items
+    request:
+      path: /items
+    columns:
+      - name: id
+        type: Utf8
+"
+        ))
+        .expect("parse source manifest");
+        LoadedQuerySource {
+            source: InstalledSource {
+                name: SourceName::parse(installed_name).expect("installed source name"),
+                version: None,
+                variables: BTreeMap::new(),
+                secrets: Vec::new(),
+                credential_storage: None,
+                credential_revision: uuid::Uuid::default(),
+                origin: SourceOrigin::Bundled,
+            },
+            query_source: QuerySource::new(source_spec, BTreeMap::new(), BTreeMap::new()),
+            runtime_contract_fingerprint: RuntimeContractFingerprint::for_test("contract"),
+            credential_material: BTreeMap::new(),
+        }
     }
 
     async fn query_manager_with(
@@ -1549,6 +1722,7 @@ mod tests {
             vec![QueryTableUsage::new("github", "github", "issues")],
             vec![QueryTableFunctionUsage::new(
                 "github",
+                "datafusion",
                 "github",
                 "search_issues",
             )],
@@ -1719,18 +1893,6 @@ mod tests {
             .iter()
             .find(|attribute| attribute.key.as_str() == name)
             .map(|attribute| attribute.value.as_str().into_owned())
-    }
-
-    fn execution_to_rows(execution: &QueryExecution) -> Vec<Value> {
-        let mut bytes = Vec::new();
-        {
-            let mut writer = arrow::json::ArrayWriter::new(&mut bytes);
-            for batch in execution.batches() {
-                writer.write(batch).expect("batch should encode to json");
-            }
-            writer.finish().expect("json writer should finish");
-        }
-        serde_json::from_slice(&bytes).expect("json rows should decode")
     }
 
     #[tokio::test]
@@ -1954,88 +2116,166 @@ tables:
     }
 
     #[tokio::test]
-    async fn installed_v4_source_queries_through_app_assembled_runtime_component() {
+    async fn v4_openapi_catalog_runtime_queries_tagged_and_public_relations() {
         let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/issues"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
-                {"id": 1, "title": "Generated runtime package"}
-            ])))
-            .mount(&server)
-            .await;
+        mount_v4_openapi_catalog_server(&server).await;
 
         let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
         fixture.manager.layout.ensure().expect("ensure layout");
-        let source_manager = SourceManager::new_for_tests(
-            fixture.manager.config_store.clone(),
-            fixture.manager.credential_manager.clone(),
-            fixture.manager.layout.clone(),
-        );
         let workspace_name = WorkspaceName::default();
-        let descriptor_temp = tempfile::tempdir().expect("descriptor temp dir");
-        let openapi_file = descriptor_temp.path().join("github-openapi.yaml");
-        std::fs::write(
-            &openapi_file,
-            format!(
-                r"
-openapi: 3.0.3
-info:
-  title: GitHub
-servers:
-  - url: {}
-paths:
-  /issues:
-    get:
-      operationId: issues/list
-      responses:
-        '200':
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  type: object
-                  properties:
-                    id: {{type: integer}}
-                    title: {{type: string}}
-",
-                server.uri()
-            ),
-        )
-        .expect("write OpenAPI fixture");
-        source_manager
-            .import_source(
-                &workspace_name,
-                &ImportSourceCommand {
-                    manifest_yaml: format!(
-                        r"
-name: github_v4_query
-dsl_version: 4
-surface:
-    type: openapi
-    file: {}
-",
-                        openapi_file.display()
-                    ),
-                    bindings: SourceBindings::default(),
-                },
-            )
-            .expect("import v4 source");
-        std::fs::remove_file(&openapi_file).expect("remove authored descriptor after import");
+        let source_name = import_v4_openapi_catalog_source(
+            &fixture.manager,
+            &workspace_name,
+            "github_v4_openapi",
+            &server.uri(),
+        );
 
-        let execution = fixture
+        let validated = fixture
+            .manager
+            .validate_source(&workspace_name, &source_name)
+            .await
+            .expect("validate source");
+        let table_identities = validated
+            .report
+            .tables
+            .iter()
+            .map(|table| {
+                (
+                    table.catalog_name.as_deref(),
+                    table.schema_name.as_str(),
+                    table.table_name.as_str(),
+                )
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            table_identities,
+            std::collections::BTreeSet::from([
+                (Some("github_v4_openapi"), "issues", "list_tagged"),
+                (Some("github_v4_openapi"), "public", "list_public"),
+            ])
+        );
+        let function = validated
+            .report
+            .table_functions
+            .first()
+            .expect("OpenAPI table function");
+        assert_eq!(function.catalog_name.as_deref(), Some("github_v4_openapi"));
+        assert_eq!(function.schema_name, "public");
+        assert_eq!(function.function_name, "search_public");
+
+        for (sql, expected_id) in [
+            ("SELECT id FROM github_v4_openapi.issues.list_tagged", 1),
+            ("SELECT id FROM github_v4_openapi.public.list_public", 2),
+            (
+                "SELECT id FROM github_v4_openapi.public.search_public(query => 'needle')",
+                3,
+            ),
+        ] {
+            let execution = fixture
+                .manager
+                .execute_sql(&workspace_name, sql, &QueryAttribution::default())
+                .await
+                .expect("three-part OpenAPI query executes");
+            assert_eq!(
+                execution_to_rows(&execution),
+                vec![json!({"id": expected_id})]
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn v4_mcp_catalog_runtime_queries_table_and_function() {
+        let server = MockServer::start().await;
+        mount_v4_mcp_catalog_server(&server).await;
+
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
+        fixture.manager.layout.ensure().expect("ensure layout");
+        let workspace_name = WorkspaceName::default();
+        let source_name = import_v4_mcp_catalog_source(
+            &fixture.manager,
+            &workspace_name,
+            "github_v4_mcp",
+            &server.uri(),
+        );
+
+        let validated = fixture
+            .manager
+            .validate_source(&workspace_name, &source_name)
+            .await
+            .expect("validate MCP source");
+        let table = validated.report.tables.first().expect("MCP table");
+        assert_eq!(table.catalog_name.as_deref(), Some("github_v4_mcp"));
+        assert_eq!(table.schema_name, "public");
+        assert_eq!(table.table_name, "list_items");
+        let function = validated
+            .report
+            .table_functions
+            .first()
+            .expect("MCP table function");
+        assert_eq!(function.catalog_name.as_deref(), Some("github_v4_mcp"));
+        assert_eq!(function.schema_name, "public");
+        assert_eq!(function.function_name, "search_items");
+
+        for sql in [
+            "SELECT result_json FROM github_v4_mcp.public.list_items LIMIT 1",
+            "SELECT result_json FROM github_v4_mcp.public.search_items(query => 'needle') LIMIT 1",
+        ] {
+            let execution = fixture
+                .manager
+                .execute_sql(&workspace_name, sql, &QueryAttribution::default())
+                .await
+                .expect("three-part MCP query executes");
+            assert_eq!(execution.row_count(), 1);
+        }
+
+        let called_tools = server
+            .received_requests()
+            .await
+            .expect("request recording")
+            .iter()
+            .filter_map(|request| request.body_json::<Value>().ok())
+            .filter(|body| body.get("method").and_then(Value::as_str) == Some("tools/call"))
+            .filter_map(|body| {
+                body.pointer("/params/name")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(called_tools, ["list_items", "search_items"]);
+    }
+
+    #[tokio::test]
+    async fn v4_two_part_alias_is_absent() {
+        let server = MockServer::start().await;
+        mount_v4_openapi_catalog_server(&server).await;
+
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
+        fixture.manager.layout.ensure().expect("ensure layout");
+        let workspace_name = WorkspaceName::default();
+        import_v4_openapi_catalog_source(
+            &fixture.manager,
+            &workspace_name,
+            "github_v4_no_alias",
+            &server.uri(),
+        );
+
+        let error = fixture
             .manager
             .execute_sql(
                 &workspace_name,
-                "SELECT id, title FROM github_v4_query.issues",
+                "SELECT id FROM github_v4_no_alias.list_public",
                 &QueryAttribution::default(),
             )
             .await
-            .expect("query executes");
+            .expect_err("v4 two-part aliases must not be registered");
+        let message = match &error {
+            QueryManagerError::App(error) => error.to_string(),
+            QueryManagerError::Core(error) => error.to_string(),
+        };
 
-        assert_eq!(
-            execution_to_rows(&execution),
-            vec![json!({"id": 1, "title": "Generated runtime package"})]
+        assert!(
+            message.contains("github_v4_no_alias.list_public"),
+            "missing-table error should preserve the rejected alias: {error:?}"
         );
     }
 
@@ -2178,7 +2418,7 @@ surface:
             .manager
             .execute_sql(
                 &workspace_name,
-                "SELECT id FROM github_v4_pagination_override.widgets LIMIT 3",
+                "SELECT id FROM github_v4_pagination_override.public.list LIMIT 3",
                 &QueryAttribution::default(),
             )
             .await
@@ -2765,14 +3005,6 @@ select 1 as value
             }
             Ok(())
         }
-
-        fn decorate_source(
-            &mut self,
-            _source: &QuerySource,
-            tables: SourceTables,
-        ) -> Result<SourceTables, SourceDecoratorError> {
-            Ok(tables)
-        }
     }
 
     struct PrepareCountingExtensionsProvider {
@@ -2928,11 +3160,9 @@ tables:
 ",
         )
         .expect("parse source manifest");
-        let runtime_schema_name = source_spec.schema_name().to_string();
         let loaded_source = LoadedQuerySource {
             source: installed_source,
             query_source: QuerySource::new(source_spec, BTreeMap::new(), BTreeMap::new()),
-            runtime_schema_name,
             runtime_contract_fingerprint: RuntimeContractFingerprint::for_test("contract"),
             credential_material: BTreeMap::from([(
                 "API_TOKEN".to_string(),
@@ -3109,7 +3339,6 @@ tables:
                 credential_revision: uuid::Uuid::default(),
                 origin: SourceOrigin::Bundled,
             },
-            runtime_schema_name: source_spec.schema_name().to_string(),
             query_source: QuerySource::new(source_spec.clone(), BTreeMap::new(), BTreeMap::new()),
             runtime_contract_fingerprint: RuntimeContractFingerprint::for_test("contract"),
             credential_material: BTreeMap::from([(
@@ -3188,7 +3417,6 @@ tables:
                 credential_revision: uuid::Uuid::default(),
                 origin: SourceOrigin::Bundled,
             },
-            runtime_schema_name: source_spec.schema_name().to_string(),
             query_source: QuerySource::new(source_spec.clone(), BTreeMap::new(), BTreeMap::new()),
             runtime_contract_fingerprint: RuntimeContractFingerprint::for_test("contract"),
             credential_material: BTreeMap::new(),

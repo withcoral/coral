@@ -19,9 +19,9 @@ use serde_json::{Map, Value};
 use crate::{
     ColumnSpec, DeclaredRelation, DetailHintDeclaringSurface, DetailHintSpec,
     DetailHintTargetTable, FilterSpec, HeaderSpec, HttpTableValidation, ManifestError,
-    ManifestInputSpec, PaginationSpec, ParsedTemplate, RequestRouteSpec, RequestSpec, ResponseSpec,
-    Result, SearchLimitsSpec, SourceBackend, SourceManifestCommon, SourceTableFunctionSpec,
-    TableCommon,
+    ManifestInputSpec, PaginationSpec, ParsedTemplate, RawSourceTableFunctionSpec,
+    RequestRouteSpec, RequestSpec, ResponseSpec, Result, SearchLimitsSpec, SourceBackend,
+    SourceManifestCommon, SourceTableFunctionSpec, TableCommon,
     inputs::{
         collect_source_inputs_value, declared_secret_input_names, required_secret_input_names,
     },
@@ -129,7 +129,7 @@ struct RawHttpSourceManifest {
     #[serde(default)]
     tables: Vec<RawHttpTableSpec>,
     #[serde(default)]
-    functions: Vec<SourceTableFunctionSpec>,
+    functions: Vec<RawSourceTableFunctionSpec>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -172,8 +172,8 @@ pub struct HttpTableSpec {
 impl HttpTableSpec {
     #[must_use]
     /// Returns the stable table name.
-    pub fn name(&self) -> &str {
-        &self.common.name
+    pub fn table_name(&self) -> &str {
+        &self.common.table_name
     }
 
     #[must_use]
@@ -250,6 +250,8 @@ impl RawHttpTableSpec {
 
         Ok(HttpTableSpec {
             common: TableCommon::new(
+                "datafusion".to_string(),
+                schema.to_string(),
                 self.name,
                 self.description,
                 self.guide,
@@ -314,6 +316,7 @@ impl HttpSourceManifest {
         let functions = functions
             .into_iter()
             .map(|function| {
+                let function = function.into_validated("datafusion", &common.name);
                 validate_http_function(&common.name, &function)?;
                 Ok(function)
             })
@@ -352,7 +355,7 @@ fn validate_http_detail_hints(
     let targets = tables
         .iter()
         .map(|table| DetailHintTargetTable {
-            name: table.name(),
+            name: table.table_name(),
             filters: table.filters(),
         })
         .collect::<Vec<_>>();
@@ -360,13 +363,13 @@ fn validate_http_detail_hints(
         .iter()
         .map(|table| DetailHintDeclaringSurface {
             surface_kind: "table",
-            surface_name: table.name(),
+            surface_name: table.table_name(),
             hints: &table.common.detail_hints,
             columns: table.columns(),
         })
         .chain(functions.iter().map(|function| DetailHintDeclaringSurface {
             surface_kind: "function",
-            surface_name: &function.name,
+            surface_name: &function.function_name,
             hints: &function.detail_hints,
             columns: &function.columns,
         }))
@@ -384,6 +387,8 @@ pub(crate) fn test_http_table_spec(
 ) -> HttpTableSpec {
     HttpTableSpec {
         common: TableCommon::new(
+            "datafusion".to_string(),
+            "test".to_string(),
             name.to_string(),
             "test".to_string(),
             String::new(),

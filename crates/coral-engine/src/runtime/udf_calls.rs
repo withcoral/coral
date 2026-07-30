@@ -26,9 +26,10 @@ use datafusion::logical_expr::{
 use datafusion::optimizer::AnalyzerRule;
 use datafusion::prelude::SessionContext;
 
+use crate::runtime::DATAFUSION_DEFAULT_CATALOG;
 use crate::runtime::query::{read_only_sql_options, reject_unknown_parameters};
 use crate::runtime::scoped_table_functions::{
-    ScopedTableFunctionCall, ScopedTableFunctionName, ScopedTableFunctionSignature,
+    ScopedTableFunctionSignature, TableFunctionCall, TableFunctionIdentity,
     available_functions_hint, call_parts, find_placeholder,
     lower_required_named_args_to_positional_exprs, original_relation, qualified_name,
     reject_settings, reject_unbound_parameters as reject_unbound_table_function_parameters,
@@ -41,7 +42,7 @@ pub(crate) const UDF_CALL_NODE_NAME: &str = "CoralUdfCall";
 
 #[derive(Debug)]
 pub(crate) struct UdfCallRegistry {
-    functions: HashMap<ScopedTableFunctionName, UdfCallTarget>,
+    functions: HashMap<TableFunctionIdentity, UdfCallTarget>,
     udf_schemas: HashSet<String>,
     source_function_schemas: HashSet<String>,
 }
@@ -50,11 +51,12 @@ impl UdfCallRegistry {
     pub(crate) async fn new(
         ctx: &SessionContext,
         udfs: &[UdfRuntimeDefinition],
-        source_functions: HashSet<ScopedTableFunctionName>,
+        source_functions: HashSet<TableFunctionIdentity>,
     ) -> Result<Self> {
         let source_function_schemas = source_functions
             .iter()
-            .map(|function| function.schema.clone())
+            .filter(|function| function.catalog_name == DATAFUSION_DEFAULT_CATALOG)
+            .map(|function| function.schema_name.clone())
             .collect();
         let mut registry = Self {
             functions: HashMap::new(),
@@ -84,38 +86,38 @@ impl UdfCallRegistry {
         body_plan: &LogicalPlan,
     ) -> Result<()> {
         let publish = &udf.publish.table_function;
-        let key = ScopedTableFunctionName::from_parts(&publish.schema, &publish.name);
+        let key = TableFunctionIdentity::from_default_catalog_parts(&publish.schema, &publish.name);
         if self
             .functions
             .insert(
                 key.clone(),
-                UdfCallTarget::new(&key.schema, &key.function, udf, body_plan)?,
+                UdfCallTarget::new(&key.schema_name, &key.function_name, udf, body_plan)?,
             )
             .is_some()
         {
             return Err(DataFusionError::Internal(format!(
                 "validated udf table function {} was registered twice",
-                qualified_name(&key.schema, &key.function)
+                qualified_name(&key.schema_name, &key.function_name)
             )));
         }
-        self.udf_schemas.insert(key.schema);
+        self.udf_schemas.insert(key.schema_name);
         Ok(())
     }
 
-    fn find(&self, call: &ScopedTableFunctionCall) -> Option<&UdfCallTarget> {
+    fn find(&self, call: &TableFunctionCall) -> Option<&UdfCallTarget> {
         self.functions.get(&call.lookup_key)
     }
 
-    fn owns_udf_only_schema(&self, call: &ScopedTableFunctionCall) -> bool {
-        self.udf_schemas.contains(&call.lookup_key.schema)
+    fn owns_udf_only_schema(&self, call: &TableFunctionCall) -> bool {
+        self.udf_schemas.contains(&call.lookup_key.schema_name)
             && !self
                 .source_function_schemas
-                .contains(&call.lookup_key.schema)
+                .contains(&call.lookup_key.schema_name)
     }
 
-    fn available_functions_hint(&self, schema: &str) -> String {
+    fn available_functions_hint(&self, scope: &TableFunctionIdentity) -> String {
         available_functions_hint(
-            schema,
+            scope,
             self.functions
                 .iter()
                 .map(|(key, function)| (key, function.display_name.as_str())),
@@ -129,21 +131,21 @@ impl RelationPlanner for UdfCallRegistry {
         relation: TableFactor,
         context: &mut dyn RelationPlannerContext,
     ) -> Result<RelationPlanning> {
-        let Some(call) = ScopedTableFunctionCall::parse(&relation, context) else {
+        let Some(call) = TableFunctionCall::parse_legacy(&relation, context) else {
             return Ok(original_relation(relation));
         };
 
         let Some(function) = self.find(&call) else {
             if self.owns_udf_only_schema(&call) {
-                let hint = self.available_functions_hint(&call.lookup_key.schema);
+                let hint = self.available_functions_hint(&call.lookup_key);
                 return Err(call.unknown_function_error("udf table function", &hint));
             }
             return Ok(original_relation(relation));
         };
 
-        reject_unsupported_modifiers(&call, &relation)?;
+        reject_unsupported_modifiers(&call.display_name, &relation)?;
         let (call_args, alias) = call_parts(relation);
-        reject_settings(&call, &call_args)?;
+        reject_settings(&call.display_name, &call_args)?;
 
         let args = lower_required_named_args_to_positional_exprs(function, &call_args, context)?;
         let node = UdfCallNode::new(function, args);

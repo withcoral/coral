@@ -220,6 +220,8 @@ pub(crate) struct CatalogIndexDocument {
     pub(crate) doc_kind: CatalogIndexDocumentKind,
     pub(crate) owner_source_name: String,
     pub(crate) source_name: String,
+    pub(crate) catalog_name: Option<String>,
+    pub(crate) schema_name: String,
     pub(crate) surface_kind: String,
     pub(crate) surface_name: String,
     pub(crate) field_name: String,
@@ -228,7 +230,6 @@ pub(crate) struct CatalogIndexDocument {
     pub(crate) title: String,
     pub(crate) description: String,
     pub(crate) searchable_text: String,
-    pub(crate) payload_json: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -288,6 +289,8 @@ pub(crate) struct CatalogSearchHit {
     pub(crate) doc_id: String,
     pub(crate) doc_kind: CatalogIndexDocumentKind,
     pub(crate) source_name: String,
+    pub(crate) catalog_name: Option<String>,
+    pub(crate) schema_name: String,
     pub(crate) surface_kind: String,
     pub(crate) surface_name: String,
     pub(crate) field_name: String,
@@ -375,11 +378,12 @@ fn insert_catalog_snapshot_documents(
     let mut document_insert = transaction.prepare(
         "
         INSERT INTO catalog_documents (
-            workspace, doc_id, doc_kind, source_name, surface_kind, surface_name,
+            workspace, doc_id, doc_kind, source_name, catalog_name, schema_name,
+            surface_kind, surface_name,
             field_name, field_role, qualified_name, title, description, payload_json,
             snapshot_fingerprint, updated_at
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, '{}', ?14,
             strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
         ",
     )?;
@@ -399,6 +403,8 @@ fn insert_catalog_snapshot_documents(
             &document.doc_id,
             document.doc_kind.as_str(),
             &document.source_name,
+            document.catalog_name.as_deref().unwrap_or_default(),
+            &document.schema_name,
             &document.surface_kind,
             &document.surface_name,
             &document.field_name,
@@ -406,7 +412,6 @@ fn insert_catalog_snapshot_documents(
             &document.qualified_name,
             &document.title,
             &document.description,
-            &document.payload_json,
             &snapshot.fingerprint,
         ])?;
         fts_insert.execute(params![
@@ -628,7 +633,9 @@ fn fts_search(
             f.title,
             f.qualified_name,
             f.description,
-            f.searchable_text
+            f.searchable_text,
+            d.catalog_name,
+            d.schema_name
         FROM catalog_documents_fts f
         JOIN catalog_documents d
             ON d.workspace = f.workspace AND d.doc_id = f.doc_id
@@ -676,7 +683,9 @@ fn exact_prefix_search(
             d.title,
             d.qualified_name,
             d.description,
-            ''
+            '',
+            d.catalog_name,
+            d.schema_name
         FROM catalog_documents d
         WHERE d.workspace = ?1
             AND (
@@ -768,6 +777,9 @@ fn hit_from_row(
     let surface_name: String = row.get(4)?;
     let field_role_raw: String = row.get(6)?;
     let field_role = field_role_from_storage(&field_role_raw)?;
+    let source_name: String = row.get(2)?;
+    let catalog_name: String = row.get(14)?;
+    let schema_name: String = row.get(15)?;
     let matched_fields = matched_fields(
         terms,
         &[
@@ -783,7 +795,9 @@ fn hit_from_row(
     Ok(CatalogSearchHit {
         doc_id: row.get(0)?,
         doc_kind,
-        source_name: row.get(2)?,
+        source_name,
+        catalog_name: (!catalog_name.is_empty()).then_some(catalog_name),
+        schema_name,
         surface_kind,
         surface_name,
         field_name,

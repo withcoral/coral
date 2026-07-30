@@ -113,7 +113,8 @@ pub use common::{
     ValueSourceSpec,
 };
 pub(crate) use common::{
-    validate_reserved_source_schema_name, validate_source_name, validate_test_queries,
+    RawSourceTableFunctionSpec, validate_reserved_source_schema_name, validate_source_name,
+    validate_test_queries,
 };
 pub use error::{ManifestError, Result};
 pub use identities::{

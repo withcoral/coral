@@ -16,9 +16,6 @@ use crate::contracts::{QueryExecutionProvenance, QuerySource};
 use coral_spec::v4::IdentityRequirements;
 use coral_spec::{ManifestInputKind, ManifestInputSpec};
 
-/// One source's table providers keyed by manifest table name.
-pub type SourceTables = HashMap<String, Arc<dyn TableProvider>>;
-
 /// Neutral bundle of optional engine extensions for one runtime build.
 #[derive(Default)]
 pub struct EngineExtensions {
@@ -537,18 +534,100 @@ pub trait QueryResultObserver: Send + Sync {
 /// Decorators can wrap successfully registered source tables and may also
 /// observe selected-source failures to decide whether runtime construction
 /// should abort.
+#[derive(Clone, Copy)]
+pub struct SourceSchemaDecorationContext<'a> {
+    source: &'a QuerySource,
+    catalog_name: &'a str,
+    schema_name: &'a str,
+}
+
+impl<'a> SourceSchemaDecorationContext<'a> {
+    pub(crate) fn new(
+        source: &'a QuerySource,
+        catalog_name: &'a str,
+        schema_name: &'a str,
+    ) -> Self {
+        Self {
+            source,
+            catalog_name,
+            schema_name,
+        }
+    }
+
+    /// Returns the logical selected source that owns this schema.
+    #[must_use]
+    pub fn source(&self) -> &'a QuerySource {
+        self.source
+    }
+
+    /// Returns the immutable SQL catalog identity being decorated.
+    #[must_use]
+    pub fn catalog_name(&self) -> &'a str {
+        self.catalog_name
+    }
+
+    /// Returns the immutable SQL schema identity being decorated.
+    #[must_use]
+    pub fn schema_name(&self) -> &'a str {
+        self.schema_name
+    }
+}
+
+impl std::fmt::Debug for SourceSchemaDecorationContext<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SourceSchemaDecorationContext")
+            .field("source_name", &self.source.source_name())
+            .field("catalog_name", &self.catalog_name)
+            .field("schema_name", &self.schema_name)
+            .finish()
+    }
+}
+
+/// Mutable provider slot for one table whose SQL identity remains registry-owned.
+pub struct SourceTableDecoratorTarget<'a> {
+    table_name: &'a str,
+    provider: &'a mut Arc<dyn TableProvider>,
+}
+
+impl<'a> SourceTableDecoratorTarget<'a> {
+    pub(crate) fn new(table_name: &'a str, provider: &'a mut Arc<dyn TableProvider>) -> Self {
+        Self {
+            table_name,
+            provider,
+        }
+    }
+
+    /// Returns the immutable table leaf being decorated.
+    #[must_use]
+    pub fn table_name(&self) -> &'a str {
+        self.table_name
+    }
+
+    /// Returns the current provider in this table slot.
+    #[must_use]
+    pub fn provider(&self) -> &Arc<dyn TableProvider> {
+        self.provider
+    }
+
+    /// Replaces this table's provider without changing its SQL identity.
+    pub fn replace_provider(&mut self, provider: Arc<dyn TableProvider>) {
+        *self.provider = provider;
+    }
+}
+
+/// Registration-time hook for schema-scoped table-provider decoration and
+/// selected-source lifecycle handling.
 pub trait SourceDecorator: Send + Sync {
     /// Stable decorator name used in diagnostics.
     fn name(&self) -> &'static str;
 
-    /// Whether this decorator supports sources registered as `SQL` catalogs.
+    /// Whether this decorator supports lazily resolved schema providers.
     ///
-    /// Catalog-backed sources expose table providers lazily, so
-    /// [`SourceDecorator::decorate_source`] is not called for them. Decorators
-    /// should return `true` only when their guarantees remain intact without
-    /// decorating those table providers, such as when they only observe
-    /// registration lifecycle events.
-    fn supports_catalog_sources(&self) -> bool {
+    /// Lazy providers cannot expose mutable table-provider slots during
+    /// registration. Decorators should return `true` only when their guarantees
+    /// remain intact without decorating those providers.
+    fn supports_lazy_schemas(&self) -> bool {
         false
     }
 
@@ -561,16 +640,18 @@ pub trait SourceDecorator: Send + Sync {
         Ok(())
     }
 
-    /// Decorates the registered tables for one source before catalog insertion.
+    /// Decorates one static schema before any source catalog is mutated.
     ///
     /// # Errors
     ///
     /// Returns [`SourceDecoratorError`] if the tables cannot be decorated.
-    fn decorate_source(
+    fn decorate_schema(
         &mut self,
-        source: &QuerySource,
-        tables: SourceTables,
-    ) -> Result<SourceTables, SourceDecoratorError>;
+        _context: SourceSchemaDecorationContext<'_>,
+        _tables: &mut [SourceTableDecoratorTarget<'_>],
+    ) -> Result<(), SourceDecoratorError> {
+        Ok(())
+    }
 
     /// Reports a selected source that failed during registration.
     ///

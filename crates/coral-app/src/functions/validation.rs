@@ -74,28 +74,37 @@ fn record_source_component_sql_targets(
         }
         RuntimeSourceComponent::Http(manifest) => {
             for table in &manifest.tables {
-                targets.insert(SqlPublishTarget::new(&manifest.common.name, table.name()));
+                targets.insert(SqlPublishTarget::new(
+                    &table.common.schema_name,
+                    table.table_name(),
+                ));
             }
             for function in &manifest.functions {
-                targets.insert(SqlPublishTarget::new(&manifest.common.name, &function.name));
+                targets.insert(SqlPublishTarget::new(
+                    &function.schema_name,
+                    &function.function_name,
+                ));
             }
         }
         RuntimeSourceComponent::File(manifest) => {
             for table in &manifest.tables {
-                targets.insert(SqlPublishTarget::new(&manifest.common.name, table.name()));
+                targets.insert(SqlPublishTarget::new(
+                    &table.common.schema_name,
+                    table.table_name(),
+                ));
             }
         }
         RuntimeSourceComponent::Mcp(manifest) => {
             for table in &manifest.tables {
                 targets.insert(SqlPublishTarget::new(
-                    &manifest.common.name,
-                    &table.common.name,
+                    &table.common.schema_name,
+                    table.table_name(),
                 ));
             }
             for function in &manifest.functions {
                 targets.insert(SqlPublishTarget::new(
-                    &manifest.common.name,
-                    &function.common.name,
+                    &function.common.schema_name,
+                    function.function_name(),
                 ));
             }
         }
@@ -206,7 +215,7 @@ tables:
     }
 
     #[test]
-    fn functions_schema_still_checks_source_publish_targets() {
+    fn v3_runtime_sql_identity_drives_source_publish_targets() {
         let targets = initial_sql_publish_targets(&[functions_source()]);
 
         assert!(targets.contains(&SqlPublishTarget::new("functions", "review_queue")));

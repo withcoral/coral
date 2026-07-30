@@ -39,7 +39,7 @@ pub(crate) fn build_joined_batches(
     let dependent_schema = schema_from_columns(
         config.dependent_table.columns(),
         config.dependent_source_schema,
-        config.dependent_table.name(),
+        config.dependent_table.table_name(),
     )?;
     let mut output_batches = RetainedRecordBatches::new(output_memory);
 
@@ -64,7 +64,7 @@ pub(crate) fn build_joined_batches(
         if let Some(source_observation) = config.source_observation {
             publish_source_scan_batch(
                 config.dependent_source_schema,
-                config.dependent_table.name(),
+                config.dependent_table.table_name(),
                 source_observation,
                 &dependent_batch,
             );

@@ -30,6 +30,14 @@ The `SQL` line gives you the table reference. For a table function, `SQL referen
 
 Use a catalog result's `SQL` reference or `Call` example in a query with `coral sql` to fetch rows. See [Query your data](/getting-started/quickstart#3-query-your-data) for a complete example.
 
+DSL v3 results use two-part `schema.relation` references. Database and DSL v4
+results use three-part `catalog.schema.relation` references. For DSL v4, the
+catalog is the source name and the schema comes from the operation's first tag,
+normalized as a SQL identifier, or is `public` when no tag exists. For example,
+a tagged v4 function can render as
+`github_v4.issues.issues_list_for_repo(...)`. Use the returned reference instead
+of reconstructing it.
+
 When observed-value search is enabled and Coral has previously seen a matching value, the same ranked list can also include:
 
 ```text
@@ -39,7 +47,12 @@ When observed-value search is enabled and Coral has previously seen a matching v
    Last observed: 2026-07-03T10:00:00Z (2 observation(s))
 ```
 
-Here, `github` is the query-visible SQL schema; JSON and MCP results return it as `schema_name`. For a source with multiple runtime components, it can differ from the installed source name because each component can publish its own SQL schema. Use it with the result's table or table function and column when you write SQL.
+Here, `github` is the query-visible SQL schema. JSON and MCP catalog results
+return `catalog_name` and `schema_name` separately; an empty `catalog_name`
+means the reference is two-part. For a source with multiple runtime components,
+the query-visible identity can differ from the installed source name. Use the
+complete returned identity with the result's table or table function and column
+when you write SQL.
 
 By default, Coral returns up to 10 results across all search providers. Use `--limit` to request between 1 and 50. See the complete [`coral search` reference](/reference/cli-reference#coral-search).
 

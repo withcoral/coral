@@ -41,7 +41,7 @@ impl std::fmt::Debug for HttpSourceTableProvider {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HttpSourceTableProvider")
             .field("source_schema", &self.source_schema)
-            .field("table", &self.table.name())
+            .field("table", &self.table.table_name())
             .finish_non_exhaustive()
     }
 }
@@ -59,7 +59,7 @@ impl HttpSourceTableProvider {
         table: HttpTableSpec,
         source_observation_publishers: SourceObservationPublishers,
     ) -> Result<Self> {
-        let schema = schema_from_columns(table.columns(), &source_schema, table.name())?;
+        let schema = schema_from_columns(table.columns(), &source_schema, table.table_name())?;
         let target = HttpFetchTarget::from_resolved_table_request(&table, table.request.clone());
         Ok(Self {
             backend,
@@ -304,7 +304,7 @@ impl TableProvider for HttpSourceTableProvider {
                 return Err(DataFusionError::External(Box::new(
                     ProviderQueryError::MissingRequiredFilter {
                         schema: self.source_schema.clone(),
-                        table: self.table.name().to_string(),
+                        table: self.table.table_name().to_string(),
                         column: required.name.clone(),
                     },
                 )));

@@ -9,10 +9,11 @@ use coral_spec::backends::mcp::{
     McpSourceManifest, McpTableFilterBinding, McpTableFunctionSpec, McpTableSpec,
 };
 use coral_spec::v4::{
-    IrExecutionAttachment, Projection, ProjectionKind, ProjectionVisibility, SqlInputExposure,
-    SurfaceType, V4MaterializedSource, V4SourceManifest, mcp_projection_arg_specs,
-    openapi_document_metadata, projection_arg_specs, projection_column_specs,
-    projection_filter_specs, request_spec_for_projection, validate_openapi_base_url_template,
+    IrExecutionAttachment, Projection, ProjectionKind, ProjectionSqlIdentity, ProjectionVisibility,
+    SqlInputExposure, SurfaceType, V4MaterializedSource, V4SourceManifest,
+    mcp_projection_arg_specs, openapi_document_metadata, projection_arg_specs,
+    projection_column_specs, projection_filter_specs, request_spec_for_projection,
+    validate_openapi_base_url_template,
 };
 use coral_spec::{
     PaginationSpec, ParsedTemplate, RequestSpec, ResponseSpec, SourceManifestCommon,
@@ -31,7 +32,7 @@ use crate::sources::model::InstalledSource;
 use crate::state::AppStateLayout;
 use crate::workspaces::WorkspaceName;
 
-const RUNTIME_CONTRACT_FINGERPRINT_VERSION: u32 = 3;
+const RUNTIME_CONTRACT_FINGERPRINT_VERSION: u32 = 4;
 
 /// Versioned, non-secret identity for the installed runtime contract used by
 /// query execution and derived local state.
@@ -261,7 +262,8 @@ fn http_manifest_for_surface(
             .ok_or_else(|| {
                 AppError::FailedPrecondition(format!(
                     "DSL v4 projection '{}' references missing operation '{}'",
-                    projection.name, projection.operation_id
+                    projection.sql_reference(),
+                    projection.operation_id
                 ))
             })?;
         let rest = rest_execution_for_operation(operation)?;
@@ -271,9 +273,12 @@ fn http_manifest_for_surface(
         let columns = projection_column_specs(projection);
         match &projection.kind {
             ProjectionKind::Table => {
+                let table_name = projection_table_name(projection)?;
                 tables.push(HttpTableSpec {
                     common: TableCommon {
-                        name: projection.name.clone(),
+                        catalog_name: projection.catalog_name.clone(),
+                        schema_name: projection.schema_name.clone(),
+                        table_name: table_name.to_string(),
                         description: projection.description.clone(),
                         guide: projection.guide.clone(),
                         filters: projection_filter_specs(projection),
@@ -289,8 +294,11 @@ fn http_manifest_for_surface(
                 });
             }
             ProjectionKind::TableFunction { function_kind } => {
+                let function_name = projection_function_name(projection)?;
                 functions.push(SourceTableFunctionSpec {
-                    name: projection.name.clone(),
+                    catalog_name: projection.catalog_name.clone(),
+                    schema_name: projection.schema_name.clone(),
+                    function_name: function_name.to_string(),
                     kind: *function_kind,
                     description: projection.description.clone(),
                     guide: projection.guide.clone(),
@@ -365,20 +373,23 @@ fn mcp_manifest_for_surface(
             .ok_or_else(|| {
                 AppError::FailedPrecondition(format!(
                     "DSL v4 projection '{}' references missing operation '{}'",
-                    projection.name, projection.operation_id
+                    projection.sql_reference(),
+                    projection.operation_id
                 ))
             })?;
         let IrExecutionAttachment::Mcp(mcp) = &operation.execution else {
             return Err(AppError::FailedPrecondition(format!(
                 "DSL v4 projection '{}' is not backed by an MCP operation",
-                projection.name
+                projection.sql_reference()
             )));
         };
         let (cursor_pagination, offset_pagination) =
             materialized_surface.plan.mcp_pagination(&operation.id);
         match &projection.kind {
             ProjectionKind::Table => {
+                let table_name = projection_table_name(projection)?;
                 tables.push(mcp_table_spec(
+                    table_name,
                     projection,
                     mcp,
                     cursor_pagination.cloned(),
@@ -386,7 +397,9 @@ fn mcp_manifest_for_surface(
                 ));
             }
             ProjectionKind::TableFunction { function_kind } => {
+                let function_name = projection_function_name(projection)?;
                 functions.push(mcp_table_function_spec(
+                    function_name,
                     projection,
                     *function_kind,
                     mcp,
@@ -412,6 +425,7 @@ fn mcp_manifest_for_surface(
 }
 
 fn mcp_table_spec(
+    table_name: &str,
     projection: &Projection,
     mcp: &coral_spec::v4::McpExecutionAttachment,
     pagination: Option<coral_spec::backends::mcp::McpPaginationSpec>,
@@ -419,7 +433,9 @@ fn mcp_table_spec(
 ) -> McpTableSpec {
     McpTableSpec {
         common: TableCommon {
-            name: projection.name.clone(),
+            catalog_name: projection.catalog_name.clone(),
+            schema_name: projection.schema_name.clone(),
+            table_name: table_name.to_string(),
             description: projection.description.clone(),
             guide: projection.guide.clone(),
             filters: projection_filter_specs(projection),
@@ -439,6 +455,7 @@ fn mcp_table_spec(
 }
 
 fn mcp_table_function_spec(
+    function_name: &str,
     projection: &Projection,
     function_kind: SourceTableFunctionKind,
     mcp: &coral_spec::v4::McpExecutionAttachment,
@@ -450,7 +467,9 @@ fn mcp_table_function_spec(
         pagination,
         offset_pagination,
         common: SourceTableFunctionSpec {
-            name: projection.name.clone(),
+            catalog_name: projection.catalog_name.clone(),
+            schema_name: projection.schema_name.clone(),
+            function_name: function_name.to_string(),
             kind: function_kind,
             description: projection.description.clone(),
             guide: projection.guide.clone(),
@@ -463,6 +482,26 @@ fn mcp_table_function_spec(
             pagination: PaginationSpec::default(),
             columns: projection_column_specs(projection),
         },
+    }
+}
+
+fn projection_table_name(projection: &Projection) -> Result<&str, AppError> {
+    match &projection.sql_identity {
+        ProjectionSqlIdentity::Table { table_name } => Ok(table_name),
+        ProjectionSqlIdentity::TableFunction { .. } => Err(AppError::FailedPrecondition(format!(
+            "DSL v4 table projection for operation '{}' has an invalid SQL identity",
+            projection.operation_id
+        ))),
+    }
+}
+
+fn projection_function_name(projection: &Projection) -> Result<&str, AppError> {
+    match &projection.sql_identity {
+        ProjectionSqlIdentity::TableFunction { function_name } => Ok(function_name),
+        ProjectionSqlIdentity::Table { .. } => Err(AppError::FailedPrecondition(format!(
+            "DSL v4 table-function projection for operation '{}' has an invalid SQL identity",
+            projection.operation_id
+        ))),
     }
 }
 
@@ -539,7 +578,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::path::PathBuf;
 
-    use coral_engine::RuntimeSourceComponent;
+    use coral_engine::{QuerySource, RuntimeSourceComponent, RuntimeSourcePackage};
     use coral_spec::backends::http::{AuthSpec, RateLimitSpec};
     use coral_spec::backends::mcp::{McpOffsetPaginationSpec, McpPaginationSpec, McpServerSpec};
     use coral_spec::v4::{
@@ -550,10 +589,11 @@ mod tests {
         McpRuntimeConfig, OPENAPI_IMPORTER_VERSION, OPERATION_METADATA_GENERATOR_VERSION,
         OpenApiRuntimeConfig, OperationMetadata, OperationMetadataCatalog,
         PROJECTION_GENERATOR_VERSION, Projection, ProjectionCatalog, ProjectionInput,
-        ProjectionKind, ProjectionVisibility, RestExecutionAttachment, RestParameterBinding,
-        RestResponseAttachment, SURFACE_IMPORTER_VERSION, SemanticIr, SqlInputExposure,
-        SurfaceDescriptor, SurfaceRuntimeConfig, SurfaceType, V4_ARTIFACT_SCHEMA_VERSION,
-        V4MaterializedSource, V4SourceCommon, V4SourceManifest, V4Surface, ValidatedSurfacePlan,
+        ProjectionKind, ProjectionSqlIdentity, ProjectionVisibility, RestExecutionAttachment,
+        RestParameterBinding, RestResponseAttachment, SURFACE_IMPORTER_VERSION, SemanticIr,
+        SqlInputExposure, SurfaceDescriptor, SurfaceRuntimeConfig, SurfaceType,
+        V4_ARTIFACT_SCHEMA_VERSION, V4MaterializedSource, V4SourceCommon, V4SourceManifest,
+        V4Surface, ValidatedSurfacePlan,
     };
     use coral_spec::{
         DatabaseConnectionSpec, ManifestDataType, ManifestInputKind, PageSizeSpec, PaginationMode,
@@ -897,7 +937,11 @@ mod tests {
 
     fn published_projection(operation_id: &str) -> Projection {
         Projection {
-            name: "list_issues".to_string(),
+            catalog_name: "github_v4".to_string(),
+            schema_name: "public".to_string(),
+            sql_identity: ProjectionSqlIdentity::Table {
+                table_name: "list_issues".to_string(),
+            },
             kind: ProjectionKind::Table,
             description: String::new(),
             guide: String::new(),
@@ -913,7 +957,11 @@ mod tests {
 
     fn published_function_projection(operation_id: &str) -> Projection {
         Projection {
-            name: "search_issues".to_string(),
+            catalog_name: "github_v4".to_string(),
+            schema_name: "public".to_string(),
+            sql_identity: ProjectionSqlIdentity::TableFunction {
+                function_name: "search_issues".to_string(),
+            },
             kind: ProjectionKind::TableFunction {
                 function_kind: SourceTableFunctionKind::Search,
             },
@@ -970,7 +1018,7 @@ mod tests {
     }
 
     #[test]
-    fn database_runtime_component_preserves_connection_and_declared_inputs() {
+    fn unified_backend_catalog_publication_database_component_preserves_inputs() {
         let manifest = parse_source_manifest_yaml(
             r#"
 name: coral_db
@@ -997,6 +1045,22 @@ surface:
 
         let component =
             runtime_component_for_v4_database_source(v4).expect("database runtime component");
+        let source = QuerySource::from_runtime_components(
+            RuntimeSourcePackage {
+                source_name: "coral_db".to_string(),
+                authored_version: None,
+                description: String::new(),
+                declared_inputs: Vec::new(),
+                test_queries: Vec::new(),
+                identity_requirements: None,
+                components: vec![component.clone()],
+            },
+            BTreeMap::new(),
+            BTreeMap::new(),
+        )
+        .expect("database query source");
+        assert!(source.schema_names().is_empty());
+        assert_eq!(source.catalog_names(), ["coral_db"]);
         let RuntimeSourceComponent::Database(database) = component else {
             panic!("database component");
         };
@@ -1036,7 +1100,7 @@ surface:
         )
         .expect("variable fingerprint");
 
-        assert!(first.as_str().starts_with("v3:"));
+        assert!(first.as_str().starts_with("v4:"));
         assert_ne!(first, different_literal);
         assert_ne!(first, different_variable);
     }
@@ -1109,7 +1173,7 @@ surface:
         )
         .expect("fingerprint without optional provenance");
         assert_eq!(first, without_optional_provenance);
-        assert!(without_optional_provenance.as_str().starts_with("v3:"));
+        assert!(without_optional_provenance.as_str().starts_with("v4:"));
     }
 
     #[test]
@@ -1214,7 +1278,11 @@ surface:
             panic!("expected HTTP component");
         };
         assert_eq!(http.common.name, "github_v4");
-        let table_pagination = &http.tables.first().expect("http table").pagination;
+        let table = http.tables.first().expect("http table");
+        assert_eq!(table.common.catalog_name, "github_v4");
+        assert_eq!(table.common.schema_name, "public");
+        assert_eq!(table.common.table_name, "list_issues");
+        let table_pagination = &table.pagination;
 
         assert_eq!(table_pagination.mode, PaginationMode::Page);
         assert_eq!(table_pagination.page_param.as_deref(), Some("page"));
@@ -1265,10 +1333,11 @@ surface:
             panic!("expected HTTP component");
         };
 
-        assert_eq!(
-            http.functions.first().expect("http function").guide,
-            "Prefer this function for issue lookup."
-        );
+        let function = http.functions.first().expect("http function");
+        assert_eq!(function.catalog_name, "github_v4");
+        assert_eq!(function.schema_name, "public");
+        assert_eq!(function.function_name, "search_issues");
+        assert_eq!(function.guide, "Prefer this function for issue lookup.");
     }
 
     #[test]
@@ -1285,13 +1354,17 @@ surface:
             surface: openapi_surface(),
         };
         let mut table = published_projection("items_list");
-        table.name = "items".to_string();
+        table.sql_identity = ProjectionSqlIdentity::Table {
+            table_name: "items".to_string(),
+        };
         table.inputs = vec![
             persisted_projection_input("q", SqlInputExposure::Filter, true),
             persisted_projection_input("state", SqlInputExposure::Internal, false),
         ];
         let mut function = published_projection("items_list");
-        function.name = "search_items".to_string();
+        function.sql_identity = ProjectionSqlIdentity::TableFunction {
+            function_name: "search_items".to_string(),
+        };
         function.kind = ProjectionKind::TableFunction {
             function_kind: SourceTableFunctionKind::Search,
         };
@@ -1395,10 +1468,11 @@ surface:
             panic!("expected MCP component");
         };
 
-        assert_eq!(
-            mcp.tables.first().expect("mcp table").pagination.as_ref(),
-            Some(&pagination)
-        );
+        let table = mcp.tables.first().expect("mcp table");
+        assert_eq!(table.common.catalog_name, "github_v4");
+        assert_eq!(table.common.schema_name, "public");
+        assert_eq!(table.common.table_name, "list_issues");
+        assert_eq!(table.pagination.as_ref(), Some(&pagination));
     }
 
     #[test]
@@ -1434,10 +1508,11 @@ surface:
             panic!("expected MCP component");
         };
 
-        assert_eq!(
-            mcp.functions.first().expect("mcp function").common.guide,
-            "Prefer this function for issue lookup."
-        );
+        let function = &mcp.functions.first().expect("mcp function").common;
+        assert_eq!(function.catalog_name, "github_v4");
+        assert_eq!(function.schema_name, "public");
+        assert_eq!(function.function_name, "search_issues");
+        assert_eq!(function.guide, "Prefer this function for issue lookup.");
     }
 
     #[test]

@@ -75,7 +75,7 @@ impl BindingFetcher {
         if rows.len() > self.max_rows_per_binding {
             return Err(DependentJoinError::RowsPerBinding {
                 source_schema: self.source_schema.to_string(),
-                table: self.table.name().to_string(),
+                table: self.table.table_name().to_string(),
                 observed: rows.len(),
                 cap: self.max_rows_per_binding,
             }

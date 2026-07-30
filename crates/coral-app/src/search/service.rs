@@ -444,6 +444,7 @@ fn table_column_preview_to_proto(preview: DomainTableColumnPreview) -> SearchTab
 
 fn column_hint_to_proto(result: ColumnHintResult) -> ColumnHint {
     ColumnHint {
+        catalog_name: result.catalog_name.unwrap_or_default(),
         schema_name: result.schema_name,
         surface_name: result.surface_name,
         surface_kind: surface_kind_to_proto(result.surface_kind) as i32,

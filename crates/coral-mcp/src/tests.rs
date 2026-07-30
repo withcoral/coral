@@ -31,6 +31,48 @@ use crate::{CoralMcpServerFactory, McpOptions};
 
 type McpServerTask = tokio::task::JoinHandle<Result<(), Box<dyn std::error::Error + Send + Sync>>>;
 
+#[tokio::test]
+async fn canonical_catalog_identity_is_preserved_by_mcp_search_tool() {
+    let temp = TempDir::new().expect("temp dir");
+    let manifest_path = write_v4_search_fixture_manifest(temp.path());
+    let manifest_yaml = fs::read_to_string(&manifest_path).expect("read manifest");
+    let mut session = start_session(&temp).await;
+    let client = &session.client;
+
+    add_demo_source(&mut session.source_client, manifest_yaml).await;
+    let task_id = start_test_task(client).await;
+    let tools = client.list_all_tools().await.expect("tools");
+    let search_tool = tool_by_name(&tools, "search");
+    let search = client
+        .call_tool(
+            CallToolRequestParams::new("search").with_arguments(task_arguments(
+                &task_id,
+                &json!({
+                    "query": "github_v4_search.issues.search",
+                    "limit": 5
+                }),
+            )),
+        )
+        .await
+        .expect("search through MCP")
+        .structured_content
+        .expect("structured search output");
+
+    let item = search["results"]
+        .as_array()
+        .expect("search results")
+        .iter()
+        .filter_map(|result| result.pointer("/catalog_metadata/item"))
+        .find(|item| item["name"] == "github_v4_search.issues.search")
+        .expect("catalog-qualified search result");
+    assert_eq!(item["catalog_name"], "github_v4_search");
+    assert_eq!(item["schema_name"], "issues");
+    assert_eq!(item["sql_reference"], "github_v4_search.issues.search");
+    assert_matches_output_schema(search_tool, &search);
+
+    session.shutdown().await;
+}
+
 fn write_fixture_manifest(root: &Path) -> PathBuf {
     let source_dir = root.join("fixture-source");
     let data_dir = root.join("fixture-data");
@@ -165,6 +207,58 @@ functions:
 ";
     let manifest_path = source_dir.join("source.yaml");
     fs::write(&manifest_path, manifest).expect("write function manifest");
+    manifest_path
+}
+
+fn write_v4_search_fixture_manifest(root: &Path) -> PathBuf {
+    let source_dir = root.join("v4-search-source");
+    fs::create_dir_all(&source_dir).expect("create v4 search source dir");
+    let openapi_path = source_dir.join("openapi.yaml");
+    fs::write(
+        &openapi_path,
+        r"
+openapi: 3.0.3
+info:
+  title: Search fixture
+paths:
+  /issues:
+    get:
+      tags: [issues]
+      operationId: issues/search
+      description: Search fixture issues
+      parameters:
+        - name: query
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: integer
+",
+    )
+    .expect("write v4 search OpenAPI fixture");
+    let manifest = format!(
+        r"
+name: github_v4_search
+dsl_version: 4
+surface:
+  type: openapi
+  file: {}
+  base_url: https://api.example.com
+",
+        openapi_path.display()
+    );
+    let manifest_path = source_dir.join("source.yaml");
+    fs::write(&manifest_path, manifest).expect("write v4 search manifest");
     manifest_path
 }
 

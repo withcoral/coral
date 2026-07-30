@@ -6,6 +6,7 @@ mod runtime;
 mod validation;
 
 pub use derive::generate_projection_catalog;
+pub(crate) use derive::projection_schema_name;
 pub use model::*;
 pub(super) use pagination::pagination_query_param_names;
 pub use runtime::{

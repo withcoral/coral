@@ -14,7 +14,7 @@ use crate::runtime::catalog::{
 };
 use crate::runtime::literal_scalar_value;
 use crate::runtime::query::{QueryRuntimeAdapter, query_parameter_scalar_value};
-use crate::runtime::scoped_table_functions::{ScopedTableFunctionName, qualified_name};
+use crate::runtime::scoped_table_functions::{TableFunctionIdentity, qualified_name};
 use crate::types::parameter_binding_is_string_shaped;
 use crate::{
     CoreError, QueryParameterValue, QueryParameters, UdfRuntimeArgument, UdfRuntimeDefinition,
@@ -87,19 +87,19 @@ pub(crate) fn udf_query_parameters(
 
 pub(crate) fn published_table_functions(
     udfs: &[UdfRuntimeDefinition],
-    source_function_names: &HashSet<ScopedTableFunctionName>,
+    source_function_names: &HashSet<TableFunctionIdentity>,
 ) -> DataFusionResult<Vec<CatalogTableFunction>> {
     PublishedTableFunctions::new(source_function_names).build(udfs)
 }
 
 struct PublishedTableFunctions<'a> {
-    source_function_names: &'a HashSet<ScopedTableFunctionName>,
-    seen_udfs: HashSet<ScopedTableFunctionName>,
+    source_function_names: &'a HashSet<TableFunctionIdentity>,
+    seen_udfs: HashSet<TableFunctionIdentity>,
     rows: Vec<CatalogTableFunction>,
 }
 
 impl<'a> PublishedTableFunctions<'a> {
-    fn new(source_function_names: &'a HashSet<ScopedTableFunctionName>) -> Self {
+    fn new(source_function_names: &'a HashSet<TableFunctionIdentity>) -> Self {
         Self {
             source_function_names,
             seen_udfs: HashSet::new(),
@@ -123,7 +123,7 @@ impl<'a> PublishedTableFunctions<'a> {
 
     fn push_udf(&mut self, udf: &UdfRuntimeDefinition) -> DataFusionResult<()> {
         let publish = &udf.publish.table_function;
-        let key = ScopedTableFunctionName::from_parts(&publish.schema, &publish.name);
+        let key = TableFunctionIdentity::from_default_catalog_parts(&publish.schema, &publish.name);
         self.reject_duplicate_udf(&key)?;
         self.reject_source_collision(&key)?;
         udf_arrow_schema(udf)?;
@@ -131,21 +131,21 @@ impl<'a> PublishedTableFunctions<'a> {
         Ok(())
     }
 
-    fn reject_duplicate_udf(&mut self, key: &ScopedTableFunctionName) -> DataFusionResult<()> {
+    fn reject_duplicate_udf(&mut self, key: &TableFunctionIdentity) -> DataFusionResult<()> {
         if self.seen_udfs.insert(key.clone()) {
             return Ok(());
         }
-        let display_name = qualified_name(&key.schema, &key.function);
+        let display_name = qualified_name(&key.schema_name, &key.function_name);
         Err(DataFusionError::Plan(format!(
             "duplicate udf table function {display_name}"
         )))
     }
 
-    fn reject_source_collision(&self, key: &ScopedTableFunctionName) -> DataFusionResult<()> {
+    fn reject_source_collision(&self, key: &TableFunctionIdentity) -> DataFusionResult<()> {
         if !self.source_function_names.contains(key) {
             return Ok(());
         }
-        let display_name = qualified_name(&key.schema, &key.function);
+        let display_name = qualified_name(&key.schema_name, &key.function_name);
         Err(DataFusionError::Plan(format!(
             "udf table function {display_name} conflicts with existing table function"
         )))
@@ -154,12 +154,13 @@ impl<'a> PublishedTableFunctions<'a> {
 
 fn catalog_table_function(
     udf: &UdfRuntimeDefinition,
-    key: &ScopedTableFunctionName,
+    key: &TableFunctionIdentity,
 ) -> CatalogTableFunction {
     let publish = &udf.publish.table_function;
     CatalogTableFunction {
-        schema_name: key.schema.clone(),
-        function_name: key.function.clone(),
+        catalog_name: None,
+        schema_name: key.schema_name.clone(),
+        function_name: key.function_name.clone(),
         kind: coral_spec::SourceTableFunctionKind::Table,
         description: publish_description(&publish.description, &udf.description),
         guide: publish.guide.clone(),

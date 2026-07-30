@@ -108,7 +108,7 @@ pub fn request_spec_for_projection(
     let IrExecutionAttachment::Rest(rest) = &operation.execution else {
         return Err(crate::ManifestError::validation(format!(
             "projection '{}' is not backed by a REST operation",
-            projection.name
+            projection.sql_reference()
         )));
     };
     let mut path = rest.path_template.clone();

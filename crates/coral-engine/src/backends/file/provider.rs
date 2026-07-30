@@ -174,7 +174,11 @@ impl MetadataFileTableProvider {
             file_schema_for_table(&ctx, table, source_schema, &listing_options, &table_path)
                 .await?;
         let file_schema = strip_partition_columns(file_schema, &partition_columns);
-        metadata_columns.reject_schema_collisions(&file_schema, source_schema, table.name())?;
+        metadata_columns.reject_schema_collisions(
+            &file_schema,
+            source_schema,
+            table.table_name(),
+        )?;
         let table_schema = TableSchema::new(file_schema, partition_columns.arrow_fields());
         let table_schema = metadata_columns.extend_table_schema_if_present(table_schema);
         let schema = Arc::clone(table_schema.table_schema());
@@ -241,7 +245,7 @@ async fn file_schema_for_table(
     if table.format == FileFormat::Parquet && !table.has_explicit_columns() {
         infer_schema_expand_dicts(ctx, listing_options, table_path).await
     } else {
-        schema_from_columns(table.columns(), source_schema, table.name())
+        schema_from_columns(table.columns(), source_schema, table.table_name())
     }
 }
 

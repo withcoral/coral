@@ -67,4 +67,4 @@ surface:
       value: coral-dsl-v4
 
 test_queries:
-  - SELECT displayname, userprincipalname FROM microsoft_graph_v4.me_user_me_user_getuser LIMIT 1
+  - SELECT displayname, userprincipalname FROM microsoft_graph_v4.me_user.me_user_me_user_getuser LIMIT 1

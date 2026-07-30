@@ -58,6 +58,12 @@ pub(crate) fn rank_catalog_hits(
 
 fn catalog_relevance_score(hit: &CatalogSearchHit, terms: &[String]) -> u32 {
     let source_name = hit.source_name.to_lowercase();
+    let catalog_name = hit
+        .catalog_name
+        .as_deref()
+        .unwrap_or_default()
+        .to_lowercase();
+    let schema_name = hit.schema_name.to_lowercase();
     let surface_name = hit.surface_name.to_lowercase();
     let field_name = hit.field_name.to_lowercase();
     let title = if field_name.is_empty() {
@@ -83,11 +89,21 @@ fn catalog_relevance_score(hit: &CatalogSearchHit, terms: &[String]) -> u32 {
         if source_name == *term {
             term_score = term_score.saturating_add(EXACT_SOURCE_NAME_TERM_RELEVANCE_BOOST);
         }
+        if (catalog_name != source_name && catalog_name == *term)
+            || (schema_name != source_name && schema_name == *term)
+        {
+            term_score = term_score.saturating_add(EXACT_SOURCE_NAME_TERM_RELEVANCE_BOOST);
+        }
         if title == term || surface_name == *term || field_name == *term {
             term_score =
                 term_score.saturating_add(EXACT_TITLE_SURFACE_OR_FIELD_TERM_RELEVANCE_BOOST);
         }
         if identifier_token_matches(&source_name, term) {
+            term_score = term_score.saturating_add(SOURCE_IDENTIFIER_TOKEN_TERM_RELEVANCE_BOOST);
+        }
+        if (catalog_name != source_name && identifier_token_matches(&catalog_name, term))
+            || (schema_name != source_name && identifier_token_matches(&schema_name, term))
+        {
             term_score = term_score.saturating_add(SOURCE_IDENTIFIER_TOKEN_TERM_RELEVANCE_BOOST);
         }
         if identifier_token_matches(&surface_name, term)
@@ -105,6 +121,11 @@ fn catalog_relevance_score(hit: &CatalogSearchHit, terms: &[String]) -> u32 {
             term_score = term_score.saturating_add(QUALIFIED_NAME_PREFIX_TERM_RELEVANCE_BOOST);
         }
         if source_name.starts_with(term) {
+            term_score = term_score.saturating_add(SOURCE_NAME_PREFIX_TERM_RELEVANCE_BOOST);
+        }
+        if (catalog_name != source_name && catalog_name.starts_with(term))
+            || (schema_name != source_name && schema_name.starts_with(term))
+        {
             term_score = term_score.saturating_add(SOURCE_NAME_PREFIX_TERM_RELEVANCE_BOOST);
         }
         if identifier_token_starts_with(&surface_name, term)
@@ -141,21 +162,27 @@ fn catalog_relevance_score(hit: &CatalogSearchHit, terms: &[String]) -> u32 {
 }
 
 fn qualified_name(hit: &CatalogSearchHit) -> String {
-    if hit.field_name.is_empty() {
-        format!("{}.{}", hit.source_name, hit.surface_name).to_lowercase()
-    } else {
-        format!(
-            "{}.{}.{}",
-            hit.source_name, hit.surface_name, hit.field_name
-        )
-        .to_lowercase()
+    let mut parts = Vec::with_capacity(4);
+    if let Some(catalog_name) = &hit.catalog_name {
+        parts.push(catalog_name.as_str());
     }
+    parts.push(&hit.schema_name);
+    parts.push(&hit.surface_name);
+    if !hit.field_name.is_empty() {
+        parts.push(&hit.field_name);
+    }
+    parts.join(".").to_lowercase()
 }
 
 fn searchable_text(hit: &CatalogSearchHit, description: &str) -> String {
     format!(
-        "{} {} {} {} {}",
-        hit.source_name, hit.surface_name, hit.field_name, hit.surface_kind, description
+        "{} {} {} {} {} {}",
+        hit.catalog_name.as_deref().unwrap_or_default(),
+        hit.schema_name,
+        hit.surface_name,
+        hit.field_name,
+        hit.surface_kind,
+        description
     )
     .to_lowercase()
 }
@@ -213,7 +240,7 @@ fn doc_kind_order(kind: CatalogIndexDocumentKind) -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use super::rank_catalog_hits;
+    use super::{catalog_relevance_score, rank_catalog_hits};
     use crate::search::catalog::sqlite_index::{CatalogIndexDocumentKind, CatalogSearchHit};
 
     const EQUAL_RETRIEVAL_SCORE_FIXTURE: u32 = 5_000;
@@ -474,6 +501,72 @@ mod tests {
         );
     }
 
+    #[test]
+    fn repeated_source_location_names_contribute_one_relevance_signal() {
+        let default_catalog_hit = hit(HitInput {
+            doc_id: "catalog:table:github.users",
+            doc_kind: CatalogIndexDocumentKind::CatalogTable,
+            source_name: "github",
+            surface_kind: "table",
+            surface_name: "users",
+            field_name: "",
+            field_role: "",
+            description: "",
+            matched_fields: vec!["qualified_name"],
+            retrieval_score: EQUAL_RETRIEVAL_SCORE_FIXTURE,
+        });
+        let mut catalog_qualified_hit = hit(HitInput {
+            doc_id: "catalog:table:warehouse.analytics.users",
+            doc_kind: CatalogIndexDocumentKind::CatalogTable,
+            source_name: "warehouse",
+            surface_kind: "table",
+            surface_name: "users",
+            field_name: "",
+            field_role: "",
+            description: "",
+            matched_fields: vec!["qualified_name"],
+            retrieval_score: EQUAL_RETRIEVAL_SCORE_FIXTURE,
+        });
+        catalog_qualified_hit.catalog_name = Some("warehouse".to_string());
+        catalog_qualified_hit.schema_name = "analytics".to_string();
+
+        assert_eq!(
+            catalog_relevance_score(&default_catalog_hit, &["github".to_string()]),
+            52_300
+        );
+        assert_eq!(
+            catalog_relevance_score(&catalog_qualified_hit, &["warehouse".to_string()]),
+            52_300
+        );
+        assert_eq!(
+            catalog_relevance_score(&catalog_qualified_hit, &["analytics".to_string()]),
+            48_800
+        );
+    }
+
+    #[test]
+    fn searchable_text_contains_each_canonical_location_once() {
+        let mut catalog_qualified_hit = hit(HitInput {
+            doc_id: "catalog:table:warehouse.analytics.users",
+            doc_kind: CatalogIndexDocumentKind::CatalogTable,
+            source_name: "warehouse",
+            surface_kind: "table",
+            surface_name: "users",
+            field_name: "",
+            field_role: "",
+            description: "",
+            matched_fields: Vec::new(),
+            retrieval_score: EQUAL_RETRIEVAL_SCORE_FIXTURE,
+        });
+        catalog_qualified_hit.catalog_name = Some("warehouse".to_string());
+        catalog_qualified_hit.schema_name = "analytics".to_string();
+
+        assert_eq!(
+            super::searchable_text(&catalog_qualified_hit, ""),
+            "warehouse analytics users  table "
+        );
+    }
+
     struct HitInput<'a> {
         doc_id: &'a str,
         doc_kind: CatalogIndexDocumentKind,
@@ -492,6 +585,8 @@ mod tests {
             doc_id: input.doc_id.to_string(),
             doc_kind: input.doc_kind,
             source_name: input.source_name.to_string(),
+            catalog_name: None,
+            schema_name: input.source_name.to_string(),
             surface_kind: input.surface_kind.to_string(),
             surface_name: input.surface_name.to_string(),
             field_name: input.field_name.to_string(),

@@ -391,6 +391,8 @@ message ColumnHint {
   repeated string matched_fields = 8;
   // How the field should be used when querying the owning surface.
   SearchFieldRole field_role = 9;
+  // Catalog that owns the surface. Empty means the default catalog.
+  string catalog_name = 10;
 }
 
 // Local observed-value result.

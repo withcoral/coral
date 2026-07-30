@@ -49,7 +49,7 @@ pub(super) async fn prepare_listing_table(
     let format = table.format;
     let (table_path, is_collection, uses_default_glob) = resolve_listing_table_url(
         source_schema,
-        table.name(),
+        table.table_name(),
         format,
         source,
         home_dir,

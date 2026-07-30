@@ -1,7 +1,7 @@
 //! HTTP-backed source runtime pieces: request client, provider, and
 //! backend-specific query errors.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -13,11 +13,11 @@ use crate::backends::shared::source_observation::{
     SourceObservationPublishers, source_observation_publishers,
 };
 use crate::backends::{
-    BackendCompileRequest, BackendRegistration, BackendRegistrationContext,
-    BackendSchemaRegistration, CompiledBackendSource, RegisteredSource, RegisteredTable,
-    SourceFunctionProviderFactory, SourceQualifiedName, build_registered_inputs,
-    build_registered_table, build_registered_table_function, registered_columns_from_specs,
-    required_filter_names, validate_lookup_key_filter_backend_support,
+    BackendCompileRequest, BackendRegistration, BackendRegistrationContext, CatalogPublication,
+    CompiledBackendSource, RegisteredTableMetadata, SourceFunctionProviderFactory,
+    build_registered_inputs, build_registered_table_function_metadata,
+    build_registered_table_metadata, registered_columns_from_specs, required_filter_names,
+    validate_lookup_key_filter_backend_support,
 };
 use crate::{
     BoundRequestIdentityHttpAuthenticator, RequestAuthenticator, SourceInputResolutionContext,
@@ -81,10 +81,6 @@ pub(crate) fn compile_manifest(
 
 #[async_trait]
 impl CompiledBackendSource for HttpCompiledSource {
-    fn qualified_name(&self) -> SourceQualifiedName {
-        SourceQualifiedName::Schema(self.manifest.common.name.clone())
-    }
-
     fn source_name(&self) -> &str {
         &self.manifest.common.name
     }
@@ -126,35 +122,6 @@ impl CompiledBackendSource for HttpCompiledSource {
             &self.request_authenticators,
             runtime,
         )?;
-        let mut tables: HashMap<String, Arc<dyn TableProvider>> = HashMap::new();
-        let mut table_infos = Vec::with_capacity(self.manifest.tables.len());
-
-        for table in &self.manifest.tables {
-            let provider: Arc<dyn TableProvider> = Arc::new(HttpSourceTableProvider::new(
-                backend.clone(),
-                self.manifest.common.name.clone(),
-                table.clone(),
-                Arc::clone(&self.source_observation_publishers),
-            )?);
-            tables.insert(table.name().to_string(), provider);
-            table_infos.push(registered_table(table));
-        }
-        let mut table_function_infos = Vec::with_capacity(self.manifest.functions.len());
-        for function in &self.manifest.functions {
-            let factory: Arc<dyn SourceFunctionProviderFactory> =
-                Arc::new(function::HttpSourceTableFunction::new(
-                    backend.clone(),
-                    self.manifest.common.name.clone(),
-                    function.clone(),
-                    Arc::clone(&self.source_observation_publishers),
-                )?);
-            table_function_infos.push(build_registered_table_function(
-                &self.manifest.common.name,
-                function,
-                factory,
-            ));
-        }
-
         let secret_keys = self
             .source_input_resolution
             .secrets()
@@ -166,26 +133,58 @@ impl CompiledBackendSource for HttpCompiledSource {
             self.source_input_resolution.variables(),
             &secret_keys,
         );
+        let mut publications = BTreeMap::<String, CatalogPublication>::new();
 
-        Ok(BackendRegistration {
-            schemas: vec![BackendSchemaRegistration {
-                tables,
-                source: RegisteredSource {
-                    qualified_name: SourceQualifiedName::Schema(self.manifest.common.name.clone()),
-                    tables: table_infos,
-                    table_functions: table_function_infos,
-                    inputs,
-                },
-            }],
-            catalogs: Vec::new(),
-        })
+        for table in &self.manifest.tables {
+            let provider: Arc<dyn TableProvider> = Arc::new(HttpSourceTableProvider::new(
+                backend.clone(),
+                self.manifest.common.name.clone(),
+                table.clone(),
+                Arc::clone(&self.source_observation_publishers),
+            )?);
+            publications
+                .entry(table.common.catalog_name.clone())
+                .or_insert_with(|| {
+                    CatalogPublication::new(table.common.catalog_name.clone(), inputs.clone())
+                })
+                .publish_table(
+                    table.common.schema_name.clone(),
+                    table.table_name(),
+                    provider,
+                    registered_table(table),
+                )?;
+        }
+        for function in &self.manifest.functions {
+            let factory: Arc<dyn SourceFunctionProviderFactory> =
+                Arc::new(function::HttpSourceTableFunction::new(
+                    backend.clone(),
+                    self.manifest.common.name.clone(),
+                    function.clone(),
+                    Arc::clone(&self.source_observation_publishers),
+                )?);
+            publications
+                .entry(function.catalog_name.clone())
+                .or_insert_with(|| {
+                    CatalogPublication::new(function.catalog_name.clone(), inputs.clone())
+                })
+                .publish_table_function(
+                    function.schema_name.clone(),
+                    function.function_name.clone(),
+                    factory,
+                    build_registered_table_function_metadata(function),
+                )?;
+        }
+
+        Ok(BackendRegistration::from_publications(
+            publications.into_values().collect(),
+        ))
     }
 }
 
-fn registered_table(table: &HttpTableSpec) -> RegisteredTable {
+fn registered_table(table: &HttpTableSpec) -> RegisteredTableMetadata {
     let required_filters = required_filter_names(table.filters());
     let columns = registered_columns_from_specs(table.columns(), table.filters());
-    build_registered_table(&table.common, columns, required_filters)
+    build_registered_table_metadata(&table.common, columns, required_filters)
 }
 
 #[cfg(test)]
@@ -203,7 +202,8 @@ mod tests {
     use crate::backends::shared::source_observation::test_support::RecordingSourceObservationPublisher;
     use crate::{
         CoralQuery, EngineExtensions, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,
-        SourceObservationPublisher, SourceObservationSurfaceKind,
+        RuntimeSourceComponent, RuntimeSourcePackage, SourceObservationPublisher,
+        SourceObservationSurfaceKind,
     };
 
     #[test]
@@ -265,7 +265,63 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn source_scan_observation_sees_full_http_batch_before_projection() {
+    async fn unified_backend_catalog_publication_static_backend_allows_repeated_schema_leaves() {
+        let validated = parse_source_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "catalog_api",
+            "version": "0.1.0",
+            "backend": "http",
+            "base_url": "https://api.example.com",
+            "tables": [{
+                "name": "items",
+                "description": "Items",
+                "request": { "path": "/items" },
+                "columns": [{ "name": "id", "type": "Utf8" }]
+            }]
+        }))
+        .expect("manifest should deserialize");
+        let mut manifest = validated.as_http().expect("HTTP manifest").clone();
+        let issues = manifest.tables.first_mut().expect("HTTP table");
+        issues.common.catalog_name = "catalog_api".to_string();
+        issues.common.schema_name = "issues".to_string();
+        let mut pulls = issues.clone();
+        pulls.common.schema_name = "pulls".to_string();
+        manifest.tables.push(pulls);
+        let source = QuerySource::from_runtime_components(
+            RuntimeSourcePackage {
+                source_name: "catalog_api".to_string(),
+                authored_version: None,
+                description: String::new(),
+                declared_inputs: Vec::new(),
+                test_queries: Vec::new(),
+                identity_requirements: None,
+                components: vec![RuntimeSourceComponent::Http(manifest)],
+            },
+            BTreeMap::new(),
+            BTreeMap::new(),
+        )
+        .expect("runtime source");
+
+        let tables = CoralQuery::list_tables(
+            &[source],
+            QueryRuntimeConfig::default(),
+            Some("catalog_api"),
+            None,
+            Some("items"),
+        )
+        .await
+        .expect("catalog metadata");
+        assert_eq!(
+            tables
+                .iter()
+                .map(|table| table.schema_name.as_str())
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from(["issues", "pulls"])
+        );
+    }
+
+    #[tokio::test]
+    async fn unified_backend_catalog_publication_http_executes_through_published_provider() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/people"))

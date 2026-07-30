@@ -637,18 +637,40 @@ fn table_metadata_contains_literal(table: &TableInfo, literal: &str) -> bool {
 }
 
 fn table_addressable_schema_name(table: &TableInfo) -> String {
-    match table.catalog_name.as_deref() {
-        Some(catalog_name) => format!("{catalog_name}.{}", table.schema_name),
-        None => table.schema_name.clone(),
-    }
+    relation_addressable_schema_name(table.catalog_name.as_deref(), &table.schema_name)
 }
 
 fn table_addressable_name(table: &TableInfo) -> String {
-    format!(
-        "{}.{}",
-        table_addressable_schema_name(table),
-        table.table_name
+    relation_addressable_name(
+        table.catalog_name.as_deref(),
+        &table.schema_name,
+        &table.table_name,
     )
+}
+
+pub(crate) fn relation_addressable_schema_name(
+    catalog_name: Option<&str>,
+    schema_name: &str,
+) -> String {
+    catalog_name.map_or_else(
+        || schema_name.to_string(),
+        |catalog_name| format!("{catalog_name}.{schema_name}"),
+    )
+}
+
+pub(crate) fn relation_addressable_name(
+    catalog_name: Option<&str>,
+    schema_name: &str,
+    relation_name: &str,
+) -> String {
+    format!(
+        "{}.{relation_name}",
+        relation_addressable_schema_name(catalog_name, schema_name)
+    )
+}
+
+pub(crate) fn relation_source_name(catalog_name: Option<&str>, schema_name: &str) -> String {
+    catalog_name.unwrap_or(schema_name).to_string()
 }
 
 fn table_matches_ref(table: &TableInfo, table_ref: CatalogTableRef<'_>) -> bool {

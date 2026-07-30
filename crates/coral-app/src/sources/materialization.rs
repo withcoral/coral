@@ -1659,6 +1659,67 @@ surface:
     }
 
     #[test]
+    fn incompatible_v4_projection_identity_version_5_name_only_requires_readd() {
+        let (_state, descriptor, layout, manifest_yaml, manifest) = setup_materialization();
+        let projection_path = layout
+            .v4_materialized_dir(&workspace_name(), &source_name())
+            .join(PROJECTIONS_FILENAME);
+        let mut catalog = installed_projection_catalog_value(&layout);
+        let catalog_mapping = catalog
+            .as_mapping_mut()
+            .expect("projection catalog mapping");
+        catalog_mapping.insert(
+            serde_yaml::Value::String("artifact_schema_version".to_string()),
+            serde_yaml::Value::Number(5.into()),
+        );
+        let projections = catalog_mapping
+            .get_mut(serde_yaml::Value::String("projections".to_string()))
+            .and_then(serde_yaml::Value::as_sequence_mut)
+            .expect("projection sequence");
+        for projection in projections {
+            let projection = projection.as_mapping_mut().expect("projection mapping");
+            let table_name = projection.remove(serde_yaml::Value::String("table_name".to_string()));
+            let function_name =
+                projection.remove(serde_yaml::Value::String("function_name".to_string()));
+            let legacy_name = table_name
+                .or(function_name)
+                .expect("projection relation name");
+            projection.remove(serde_yaml::Value::String("catalog_name".to_string()));
+            projection.remove(serde_yaml::Value::String("schema_name".to_string()));
+            projection.insert(serde_yaml::Value::String("name".to_string()), legacy_name);
+        }
+        let legacy_yaml = serde_yaml::to_string(&catalog).expect("encode legacy projections");
+        std::fs::write(&projection_path, &legacy_yaml).expect("write legacy projections");
+        drop(descriptor);
+
+        let error = load_v4_materialization(
+            &layout,
+            &workspace_name(),
+            &source_name(),
+            &manifest_yaml,
+            &manifest,
+        )
+        .expect_err("version-5 name-only projections must require explicit regeneration");
+
+        assert!(
+            matches!(
+                error,
+                AppError::MissingOrIncompatibleV4Materialization { .. }
+            ),
+            "unexpected error: {error:#}"
+        );
+        let message = error.to_string();
+        assert!(message.contains("failed to read projection catalog artifact"));
+        assert!(message.contains("missing field `catalog_name`"));
+        assert!(message.contains("Re-add the source"));
+        assert_eq!(
+            std::fs::read_to_string(&projection_path).expect("read unchanged legacy projections"),
+            legacy_yaml,
+            "runtime loading must not rewrite an incompatible projection artifact"
+        );
+    }
+
+    #[test]
     fn installed_v4_materialization_uses_the_root_level_singular_layout() {
         let (_state, _descriptor, layout, _manifest_yaml, _manifest) = setup_materialization();
         let materialized_dir = layout.v4_materialized_dir(&workspace_name(), &source_name());

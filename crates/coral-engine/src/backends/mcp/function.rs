@@ -68,8 +68,9 @@ impl McpSourceTableFunction {
         function: McpTableFunctionSpec,
         source_observation_publishers: SourceObservationPublishers,
     ) -> Result<Self> {
-        let schema = schema_from_columns(function.columns(), &source_schema, function.name())?;
-        let function_name = function.name().to_string();
+        let schema =
+            schema_from_columns(function.columns(), &source_schema, function.function_name())?;
+        let function_name = function.function_name().to_string();
         let tool_name = function.tool.clone();
         let response = function.common.response.clone();
         let columns = function.common.columns.clone();
@@ -207,7 +208,7 @@ fn bind_function_args(
 ) -> Result<HashMap<String, Value>> {
     let context = FunctionCallContext {
         source_schema,
-        function_name: function.name(),
+        function_name: function.function_name(),
     };
     ensure_no_extra_args(&context, function.args().len(), args.len())?;
 

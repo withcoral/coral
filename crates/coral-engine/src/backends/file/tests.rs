@@ -260,7 +260,7 @@ async fn parquet_provider_reads_local_files_with_partitions() {
 }
 
 #[tokio::test]
-async fn parquet_provider_exposes_inferred_schema_in_coral_columns() {
+async fn unified_backend_catalog_publication_file_exposes_inferred_schema() {
     let fixture_dir = tempdir().expect("tempdir should be created");
     write_metrics_fixture(fixture_dir.path());
 
@@ -268,12 +268,12 @@ async fn parquet_provider_exposes_inferred_schema_in_coral_columns() {
     let location = file_url_from_directory_path(fixture_dir.path());
     let manifest = parquet_manifest(&location);
 
-    let active_sources = register_sources_blocking(&ctx, compile_sources(vec![manifest]))
+    let active_publications = register_sources_blocking(&ctx, compile_sources(vec![manifest]))
         .expect("file source should register");
     catalog::register(
         &ctx,
-        &active_sources.active_sources,
-        &active_sources.column_fetchers,
+        &active_publications.active_publications,
+        &active_publications.column_fetchers,
         &[],
     )
     .expect("metadata tables should register");
@@ -347,7 +347,7 @@ async fn parquet_inferred_schema_rejects_metadata_name_collision() {
     let registration = register_sources_blocking(&ctx, compile_sources(vec![manifest]))
         .expect("source registration should collect provider failures");
 
-    assert!(registration.active_sources.is_empty());
+    assert!(registration.active_publications.is_empty());
     let failure = registration
         .failures
         .first()

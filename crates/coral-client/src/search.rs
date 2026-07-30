@@ -189,6 +189,7 @@ impl<'a> From<&'a TableSummary> for TableSummaryDetailsValue<'a> {
 #[schemars(deny_unknown_fields)]
 struct TableFunctionValue<'a> {
     kind: &'static str,
+    catalog_name: &'a str,
     schema_name: &'a str,
     name: String,
     sql_reference: String,
@@ -201,10 +202,15 @@ impl<'a> From<&'a TableFunction> for TableFunctionValue<'a> {
     fn from(function: &'a TableFunction) -> Self {
         Self {
             kind: "table_function",
+            catalog_name: &function.catalog_name,
             schema_name: &function.schema_name,
-            name: format!("{}.{}", function.schema_name, function.name),
+            name: format_table_name(
+                &function.catalog_name,
+                &function.schema_name,
+                &function.name,
+            ),
             sql_reference: format_schema_table_equivalent(
-                "",
+                &function.catalog_name,
                 &function.schema_name,
                 &function.name,
             ),
@@ -350,6 +356,7 @@ impl<'a> From<&'a SearchTableColumnPreviewColumn> for TableColumnPreviewColumnVa
 #[derive(Serialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 struct ColumnHintValue<'a> {
+    catalog_name: &'a str,
     schema_name: &'a str,
     surface_name: &'a str,
     surface_kind: &'static str,
@@ -365,11 +372,12 @@ struct ColumnHintValue<'a> {
 impl<'a> From<&'a ColumnHint> for ColumnHintValue<'a> {
     fn from(hint: &'a ColumnHint) -> Self {
         Self {
+            catalog_name: &hint.catalog_name,
             schema_name: &hint.schema_name,
             surface_name: &hint.surface_name,
             surface_kind: surface_kind_name(hint.surface_kind),
             surface_sql_reference: format_schema_table_equivalent(
-                "",
+                &hint.catalog_name,
                 &hint.schema_name,
                 &hint.surface_name,
             ),
@@ -596,12 +604,20 @@ fn catalog_metadata_text_lines(
         Some(catalog_item::Item::TableFunction(function)) => {
             let mut lines = vec![
                 format!(
-                    "{index}. [{provider}] table function {}.{}",
-                    function.schema_name, function.name
+                    "{index}. [{provider}] table function {}",
+                    format_table_name(
+                        &function.catalog_name,
+                        &function.schema_name,
+                        &function.name
+                    )
                 ),
                 format!(
                     "   SQL reference: {}",
-                    format_schema_table_equivalent("", &function.schema_name, &function.name)
+                    format_schema_table_equivalent(
+                        &function.catalog_name,
+                        &function.schema_name,
+                        &function.name
+                    )
                 ),
                 format!("   Call: {}", minimal_table_function_call_example(function)),
             ];
@@ -624,18 +640,18 @@ fn catalog_metadata_text_lines(
 }
 
 fn column_hint_text_lines(index: usize, provider: &str, hint: &ColumnHint) -> Vec<String> {
+    let surface_reference =
+        format_schema_table_equivalent(&hint.catalog_name, &hint.schema_name, &hint.surface_name);
     let mut lines = vec![
         format!(
-            "{index}. [{provider}] {} {}.{}.{}",
+            "{index}. [{provider}] {} {surface_reference}.{}",
             field_role_name(hint.field_role),
-            hint.schema_name,
-            hint.surface_name,
-            hint.name
+            format_sql_identifier(&hint.name)
         ),
         format!(
             "   Surface: {} {}",
             surface_kind_name(hint.surface_kind),
-            format_schema_table_equivalent("", &hint.schema_name, &hint.surface_name)
+            surface_reference
         ),
     ];
     if !hint.data_type.is_empty() {
@@ -724,7 +740,11 @@ fn preview_text(preview: &SearchTableColumnPreview) -> Option<String> {
 /// Formats the shortest SQL call example for a table function.
 #[must_use]
 pub fn minimal_table_function_call_example(function: &TableFunction) -> String {
-    let reference = format_schema_table_equivalent("", &function.schema_name, &function.name);
+    let reference = format_schema_table_equivalent(
+        &function.catalog_name,
+        &function.schema_name,
+        &function.name,
+    );
     let required_arguments = function
         .arguments
         .iter()
@@ -841,6 +861,60 @@ mod tests {
     use super::*;
 
     #[test]
+    fn catalog_qualified_table_function_formats_json_text_and_minimal_call() {
+        let function = TableFunction {
+            catalog_name: "github_v4".to_string(),
+            schema_name: "issues".to_string(),
+            name: "list".to_string(),
+            arguments: vec![TableFunctionArgument {
+                name: "owner".to_string(),
+                required: true,
+                values: Vec::new(),
+            }],
+            ..Default::default()
+        };
+        let response = SearchResponse {
+            results: vec![SearchResult {
+                provider: SearchProvider::CatalogMetadata as i32,
+                payload: Some(search_result::Payload::CatalogMetadata(CatalogMetadata {
+                    item: Some(CatalogItem {
+                        item: Some(catalog_item::Item::TableFunction(function.clone())),
+                    }),
+                    ..Default::default()
+                })),
+            }],
+            provider_statuses: Vec::new(),
+            truncation: None,
+        };
+
+        let json = search_response_json_value(&response);
+        let item = json
+            .pointer("/results/0/catalog_metadata/item")
+            .expect("catalog table-function item");
+        assert_eq!(item["catalog_name"], "github_v4");
+        assert_eq!(item["name"], "github_v4.issues.list");
+        assert_eq!(item["sql_reference"], "github_v4.issues.list");
+        assert_eq!(
+            item["sql_call_example"],
+            "github_v4.issues.list(owner => '<value>')"
+        );
+
+        let text = format_search_response_text(&response);
+        assert!(text.contains("table function github_v4.issues.list"));
+        assert!(text.contains("SQL reference: github_v4.issues.list"));
+        assert!(text.contains("Call: github_v4.issues.list(owner => '<value>')"));
+
+        assert_eq!(
+            minimal_table_function_call_example(&TableFunction {
+                schema_name: "github".to_string(),
+                name: "search_issues".to_string(),
+                ..Default::default()
+            }),
+            "github.search_issues()"
+        );
+    }
+
+    #[test]
     fn text_output_renders_table_function_guide() {
         let response = SearchResponse {
             results: vec![SearchResult {
@@ -894,6 +968,28 @@ mod tests {
         assert!(
             text.contains("Field path: labels.name"),
             "observed value text should include nested field path: {text}"
+        );
+    }
+
+    #[test]
+    fn column_hint_headline_quotes_the_complete_sql_reference() {
+        let lines = column_hint_text_lines(
+            1,
+            "catalog",
+            &ColumnHint {
+                catalog_name: "Data Warehouse".to_string(),
+                schema_name: "Order Data".to_string(),
+                surface_name: "Line Items".to_string(),
+                surface_kind: SearchSurfaceKind::Table as i32,
+                name: "Unit Price".to_string(),
+                field_role: SearchFieldRole::TableColumn as i32,
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(
+            lines.first().expect("column hint headline"),
+            "1. [catalog] table_column \"Data Warehouse\".\"Order Data\".\"Line Items\".\"Unit Price\""
         );
     }
 }

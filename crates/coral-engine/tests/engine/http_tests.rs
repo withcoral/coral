@@ -1172,7 +1172,7 @@ async fn internal_table_function_names_are_not_registered() {
 }
 
 #[tokio::test]
-async fn source_scoped_table_function_builds_http_search_request() {
+async fn v3_runtime_sql_identity_keeps_two_part_source_function_request() {
     assert_search_function_query(
         "SELECT title, score \
          FROM search.search_issues(mode => 'hybrid', q => 'flaky cleanup repo:withcoral/coral')",

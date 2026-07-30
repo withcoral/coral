@@ -171,7 +171,7 @@ pub(crate) fn validate_http_function(
     function: &SourceTableFunctionSpec,
 ) -> Result<()> {
     validate_identifier(
-        &function.name,
+        &function.function_name,
         &format!("source '{source_name}' function name"),
     )?;
 
@@ -183,25 +183,25 @@ pub(crate) fn validate_http_function(
             &arg.name,
             &format!(
                 "source '{source_name}' function '{}' argument",
-                function.name
+                function.function_name
             ),
         )?;
         if !arg_names.insert(arg.name.as_str()) {
             return Err(ManifestError::validation(format!(
                 "source '{source_name}' function '{}' argument '{}' is declared more than once",
-                function.name, arg.name
+                function.function_name, arg.name
             )));
         }
         validate_unique_values(
             &arg.values,
             &format!(
                 "source '{source_name}' function '{}' argument '{}'",
-                function.name, arg.name
+                function.function_name, arg.name
             ),
         )?;
         validate_function_binding(
             source_name,
-            &function.name,
+            &function.function_name,
             &arg.bind,
             &mut request_arg_names,
         )?;
@@ -210,27 +210,28 @@ pub(crate) fn validate_http_function(
     validate_columns(
         &function.columns,
         source_name,
-        &format!("function '{}'", function.name),
+        &format!("function '{}'", function.function_name),
     )?;
     validate_column_exprs(
         &function.columns,
         &HashSet::new(),
         &request_arg_names,
         source_name,
-        &format!("function '{}'", function.name),
+        &format!("function '{}'", function.function_name),
     )?;
     validate_search_metadata(
         source_name,
-        &format!("function '{}'", function.name),
+        &format!("function '{}'", function.function_name),
         function.kind == SourceTableFunctionKind::Search,
         function.search_limits.as_ref(),
         &function.detail_hints,
         &function.columns,
     )?;
     validate_function_request_bindings(source_name, function, &request_arg_names)?;
-    function
-        .pagination
-        .validate(source_name, &format!("function '{}'", function.name))?;
+    function.pagination.validate(
+        source_name,
+        &format!("function '{}'", function.function_name),
+    )?;
 
     Ok(())
 }
@@ -613,14 +614,17 @@ fn validate_function_request_bindings(
     if function.request.path.raw().trim().is_empty() {
         return Err(ManifestError::validation(format!(
             "source '{source_name}' function '{}' has an empty request.path",
-            function.name
+            function.function_name
         )));
     }
 
     validate_arg_template(
         &function.request.path,
         request_arg_names,
-        &format!("source '{source_name}' function '{}'", function.name),
+        &format!(
+            "source '{source_name}' function '{}'",
+            function.function_name
+        ),
     )?;
 
     for header in &function.request.headers {
@@ -629,7 +633,7 @@ fn validate_function_request_bindings(
             request_arg_names,
             &format!(
                 "source '{source_name}' function '{}' request header '{}'",
-                function.name, header.name
+                function.function_name, header.name
             ),
         )?;
     }
@@ -640,7 +644,7 @@ fn validate_function_request_bindings(
             request_arg_names,
             &format!(
                 "source '{source_name}' function '{}' query param '{}'",
-                function.name, param.name
+                function.function_name, param.name
             ),
         )?;
     }
@@ -653,7 +657,7 @@ fn validate_function_request_bindings(
                 {
                     return Err(ManifestError::validation(format!(
                         "source '{source_name}' function '{}' request body path '{}' references unknown request arg '{arg}' in when_arg",
-                        function.name,
+                        function.function_name,
                         field.path.join(".")
                     )));
                 }
@@ -662,7 +666,7 @@ fn validate_function_request_bindings(
                     request_arg_names,
                     &format!(
                         "source '{source_name}' function '{}' request body path '{}'",
-                        function.name,
+                        function.function_name,
                         field.path.join(".")
                     ),
                 )?;
@@ -674,7 +678,7 @@ fn validate_function_request_bindings(
                 request_arg_names,
                 &format!(
                     "source '{source_name}' function '{}' request body text",
-                    function.name
+                    function.function_name
                 ),
             )?;
         }
@@ -1120,7 +1124,9 @@ mod tests {
 
     fn function_with_request_value(value: ValueSourceSpec) -> SourceTableFunctionSpec {
         SourceTableFunctionSpec {
-            name: "search".to_string(),
+            catalog_name: "datafusion".to_string(),
+            schema_name: "demo".to_string(),
+            function_name: "search".to_string(),
             kind: SourceTableFunctionKind::Table,
             description: String::new(),
             guide: String::new(),

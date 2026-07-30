@@ -11,7 +11,11 @@ use crate::workspaces::WorkspaceName;
 fn refresh_and_search_catalog_metadata() {
     let temp = tempdir().expect("tempdir");
     let store = catalog_store(&temp);
-    let snapshot = catalog_index_snapshot();
+    let mut snapshot = catalog_index_snapshot();
+    for document in &mut snapshot.documents {
+        document.catalog_name = Some("github_v4".to_string());
+        document.schema_name = "deployments".to_string();
+    }
 
     let refresh = store
         .refresh_catalog_projection(&snapshot)
@@ -59,6 +63,32 @@ fn refresh_and_search_catalog_metadata() {
     assert_eq!(sha_hit.surface_kind, "table_function");
     assert_eq!(sha_hit.field_role, "table_function_result_column");
     assert_eq!(sha_hit.description, "Deployment commit SHA");
+    assert_eq!(sha_hit.catalog_name.as_deref(), Some("github_v4"));
+    assert_eq!(sha_hit.schema_name, "deployments");
+}
+
+#[test]
+fn catalog_hit_identity_does_not_depend_on_payload_json() {
+    let temp = tempdir().expect("tempdir");
+    let store = catalog_store(&temp);
+    let snapshot = catalog_index_snapshot();
+    store
+        .refresh_catalog_projection(&snapshot)
+        .expect("refresh catalog");
+    store
+        .connect_for_test()
+        .expect("connect")
+        .execute(
+            "UPDATE catalog_documents SET payload_json = '{not-json'",
+            [],
+        )
+        .expect("corrupt opaque payload");
+
+    let hits = store
+        .search_catalog(&["github".to_string()], 10)
+        .expect("search catalog without decoding opaque payload");
+
+    assert!(!hits.hits.is_empty());
 }
 
 #[test]
@@ -1104,6 +1134,8 @@ fn owned_document(owner_source_name: &str, input: DocumentInput<'_>) -> CatalogI
         doc_kind: input.doc_kind,
         owner_source_name: owner_source_name.to_string(),
         source_name: input.source_name.to_string(),
+        catalog_name: None,
+        schema_name: input.source_name.to_string(),
         surface_kind: input.surface_kind.to_string(),
         surface_name: input.surface_name.to_string(),
         field_name: input.field_name.to_string(),
@@ -1112,6 +1144,5 @@ fn owned_document(owner_source_name: &str, input: DocumentInput<'_>) -> CatalogI
         title: input.title.to_string(),
         description: input.description.to_string(),
         searchable_text: input.searchable_text.to_string(),
-        payload_json: "{}".to_string(),
     }
 }

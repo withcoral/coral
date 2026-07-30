@@ -613,17 +613,19 @@ async fn infer_udf_signatures_returns_per_function_results() {
 }
 
 #[tokio::test]
-async fn published_udf_table_function_executes_udf_sql() {
+async fn udf_call_executes_published_udf_sql() {
     let (_temp, source) = events_source("published_udf_events");
-    let runtime = test_runtime().with_udfs(vec![min_id_udf("published_udf_events")]);
+    let runtime = CoralQuery::prepare(&[source], test_runtime())
+        .await
+        .expect("prepare source runtime")
+        .with_udfs(vec![min_id_udf("published_udf_events")])
+        .await
+        .expect("install UDF");
 
-    let execution = CoralQuery::execute_sql(
-        &[source],
-        runtime,
-        "select id from udfs.min_id_events(min_id => 2)",
-    )
-    .await
-    .expect("published udf table function should execute");
+    let execution = runtime
+        .execute_sql("select id from udfs.min_id_events(min_id => 2)")
+        .await
+        .expect("published udf table function should execute");
 
     assert_eq!(execution_to_rows(&execution), vec![json!({"id": 2})]);
     assert_eq!(execution.provenance().sources(), ["published_udf_events"]);
@@ -641,8 +643,14 @@ async fn published_udf_table_function_executes_udf_sql() {
         .first()
         .expect("invoked UDF provenance");
     assert_eq!(function.source_name(), "udfs");
+    assert_eq!(function.catalog_name(), "datafusion");
     assert_eq!(function.schema_name(), "udfs");
     assert_eq!(function.function_name(), "min_id_events");
+
+    runtime
+        .execute_sql("select id from datafusion.udfs.min_id_events(min_id => 2)")
+        .await
+        .expect_err("UDF must retain its two-part public identity");
 }
 
 #[tokio::test]

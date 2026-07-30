@@ -80,14 +80,14 @@ use coral_spec::ValidatedSourceManifest;
 pub(crate) mod common;
 mod composite;
 pub(crate) use common::{
-    BackendCatalogRegistration, BackendCompileRequest, BackendRegistration,
-    BackendRegistrationContext, BackendSchemaRegistration, BoundSourceFunctionArg,
-    BoundSourceFunctionValue, CatalogColumnFetcher, ColumnInventoryFilter, CompiledBackendSource,
-    DatabaseColumnFetcher, DatabaseColumnRow, RegisteredInput, RegisteredSource, RegisteredTable,
-    RegisteredTableFunction, RegisteredTableFunctionArgument, SourceFunctionProviderFactory,
-    SourceQualifiedName, build_registered_inputs, build_registered_table,
-    build_registered_table_function, registered_columns_from_schema, registered_columns_from_specs,
-    required_filter_names, schema_from_columns, validate_lookup_key_filter_backend_support,
+    BackendCompileRequest, BackendRegistration, BackendRegistrationContext, BoundSourceFunctionArg,
+    BoundSourceFunctionValue, CatalogColumnFetcher, CatalogPublication, ColumnInventoryFilter,
+    CompiledBackendSource, DatabaseColumnFetcher, DatabaseColumnRow, PublishedTables,
+    RegisteredTableFunctionArgument, RegisteredTableMetadata, SchemaPublication,
+    SourceFunctionProviderFactory, build_registered_inputs,
+    build_registered_table_function_metadata, build_registered_table_metadata,
+    registered_columns_from_schema, registered_columns_from_specs, required_filter_names,
+    schema_from_columns, validate_lookup_key_filter_backend_support,
 };
 
 pub(crate) mod database;

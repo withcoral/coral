@@ -36,7 +36,7 @@ impl std::fmt::Debug for McpTableProvider {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("McpTableProvider")
             .field("source_schema", &self.source_schema)
-            .field("table", &self.table.name())
+            .field("table", &self.table.table_name())
             .field("tool", &self.table.tool)
             .finish_non_exhaustive()
     }
@@ -50,7 +50,7 @@ impl McpTableProvider {
         table: McpTableSpec,
         source_observation_publishers: SourceObservationPublishers,
     ) -> Result<Self> {
-        let schema = schema_from_columns(table.columns(), &source_schema, table.name())?;
+        let schema = schema_from_columns(table.columns(), &source_schema, table.table_name())?;
         Ok(Self {
             backend,
             source_schema,
@@ -100,13 +100,13 @@ impl TableProvider for McpTableProvider {
                                 DataFusionError::Plan(format!(
                                     "{}.{} filter '{}' is missing its MCP tool binding",
                                     self.source_schema,
-                                    self.table.name(),
+                                    self.table.table_name(),
                                     filter.name
                                 ))
                             })?;
                     let typed = coerce_filter_value(
                         &self.source_schema,
-                        self.table.name(),
+                        self.table.table_name(),
                         &filter.name,
                         filter.data_type,
                         value,
@@ -117,7 +117,7 @@ impl TableProvider for McpTableProvider {
                     return Err(DataFusionError::External(Box::new(
                         McpProviderQueryError::MissingRequiredFilter {
                             schema: self.source_schema.clone(),
-                            table: self.table.name().to_string(),
+                            table: self.table.table_name().to_string(),
                             column: filter.name.clone(),
                         },
                     )));
@@ -139,7 +139,7 @@ impl TableProvider for McpTableProvider {
         let fetcher = Arc::new(McpFetchPlan {
             backend: self.backend.clone(),
             source_schema: self.source_schema.clone(),
-            relation: self.table.name().to_string(),
+            relation: self.table.table_name().to_string(),
             tool_name: self.table.tool.clone(),
             arguments,
             source_inputs: Some(Arc::clone(&self.source_inputs)),
@@ -165,7 +165,7 @@ impl TableProvider for McpTableProvider {
 
         let exec = JsonExec::new(
             &self.source_schema,
-            self.table.name(),
+            self.table.table_name(),
             schema,
             fetcher,
             converter,
