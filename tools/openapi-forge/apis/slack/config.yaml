@@ -16,9 +16,12 @@ scope:
   # reference tables those relations need. Widened to the full read-only core
   # once the pipeline is proven.
   #
+  # Only methods Slack documents as GET are worth listing: Coral hides every
+  # non-GET operation, so a POST method such as auth.test would generate a
+  # relation nobody can query. `forge build` warns if one slips in.
+  #
   # Names are matched case-insensitively against Slack's own casing.
   methods:
-    - auth.test
     - conversations.history
     - conversations.info
     - conversations.list

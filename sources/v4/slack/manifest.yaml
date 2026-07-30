@@ -1,0 +1,78 @@
+dsl_version: 4
+name: slack_v4
+description: >-
+  Query channels, messages, thread replies, search results, and users from your
+  Slack workspace.
+inputs:
+  SLACK_TOKEN:
+    kind: secret
+    credential:
+      methods:
+        - type: oauth
+          label: Connect with Slack
+          description: Authorize Slack with OAuth and store a user token.
+          hint: |
+            Create a [user-token app](https://api.slack.com/apps?new_app=1&manifest_json=%7B%22display_information%22%3A%7B%22name%22%3A%22Coral%22%7D%2C%22oauth_config%22%3A%7B%22redirect_urls%22%3A%5B%22http%3A%2F%2Flocalhost%3A53682%2Foauth%2Fcallback%22%5D%2C%22scopes%22%3A%7B%22user%22%3A%5B%22channels%3Ahistory%22%2C%22groups%3Aread%22%2C%22channels%3Aread%22%2C%22groups%3Ahistory%22%2C%22users%3Aread%22%2C%22users%3Aread.email%22%2C%22search%3Aread%22%5D%7D%2C%22pkce_enabled%22%3Atrue%7D%2C%22settings%22%3A%7B%22org_deploy_enabled%22%3Afalse%2C%22socket_mode_enabled%22%3Afalse%2C%22token_rotation_enabled%22%3Afalse%2C%22is_mcp_enabled%22%3Afalse%7D%7D),
+            which pre-fills the scopes and redirect URL, then enter its
+            Client ID below and authorize in your browser. Reads the
+            channels the authorizing user belongs to.
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://localhost:53682/oauth/callback
+            redirect_uri_port_mode: fixed
+            endpoints:
+              authorization_url: https://slack.com/oauth/v2_user/authorize
+              token_url: https://slack.com/api/oauth.v2.user.access
+            client:
+              id:
+                input: SLACK_OAUTH_CLIENT_ID
+            scopes:
+              scope:
+                delimiter: comma
+                values:
+                  - channels:read
+                  - groups:read
+                  - channels:history
+                  - groups:history
+                  - users:read
+                  - users:read.email
+                  - search:read
+        - type: source_config
+          label: Paste Slack OAuth Token
+          description: Paste an existing Slack OAuth token with the required scopes.
+          hint: |
+            Paste the OAuth token from your app's OAuth & Permissions page.
+            `search.messages` needs `search:read`, which is only available on
+            user tokens, so a bot token will cover every relation except
+            `search_messages`.
+    hint: |
+      Slack has no general-purpose API for reading messages, so you need
+      a Slack app with an OAuth token. Both methods use these scopes:
+      `channels:read`, `channels:history`, `groups:read`,
+      `groups:history`, `users:read`, `users:read.email`, `search:read`.
+      See the
+      [Slack app setup guide](https://docs.slack.dev/app-management/quickstart-app-settings).
+  SLACK_OAUTH_CLIENT_ID:
+    kind: variable
+    hint: |
+      Client ID from your Slack app's Basic Information page. Only needed
+      for the OAuth connection method.
+surface:
+  type: openapi
+  file: ./openapi.yaml
+  base_url: https://slack.com/api
+  auth:
+    type: HeaderAuth
+    headers:
+      - name: Authorization
+        from: bearer
+        key: SLACK_TOKEN
+  rate_limit:
+    # Slack signals rate limits with 429 plus Retry-After; it sends no
+    # remaining/reset headers, so there is nothing to read ahead of time.
+    retry_after_header: Retry-After
+
+test_queries:
+  - SELECT id, name FROM slack_v4.conversations_list(types => 'public_channel') LIMIT 5

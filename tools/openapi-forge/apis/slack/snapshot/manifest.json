@@ -1,13 +1,6 @@
 {
-  "fetchedAt": "2026-07-30T10:16:02.976Z",
+  "fetchedAt": "2026-07-30T10:29:52.617Z",
   "inputs": [
-    {
-      "path": "docs/auth.test.md",
-      "url": "https://docs.slack.dev/reference/methods/auth.test.md",
-      "upstreamSha256": "0b641ce50d4e620fd7c231c4be2da9fa4d5902547d4d4726e9a3c625fc1f247c",
-      "sha256": "0b641ce50d4e620fd7c231c4be2da9fa4d5902547d4d4726e9a3c625fc1f247c",
-      "bytes": 6656
-    },
     {
       "path": "docs/conversations.history.md",
       "url": "https://docs.slack.dev/reference/methods/conversations.history.md",
@@ -70,13 +63,6 @@
       "upstreamSha256": "689244e675d1c44a06e15d81b0a7efa8044465320bb4ad50d5de05a548cfe342",
       "sha256": "689244e675d1c44a06e15d81b0a7efa8044465320bb4ad50d5de05a548cfe342",
       "bytes": 11982
-    },
-    {
-      "path": "samples/auth.test.json",
-      "url": "https://raw.githubusercontent.com/slackapi/java-slack-sdk/main/json-logs/samples/api/auth.test.json",
-      "upstreamSha256": "61e998c91815efad2f2dfe472b37c5ded7e1ed10534d02eb27ce5bee120bcf4b",
-      "sha256": "6dfedb46f73648a7816e98fe9f4af06c53c8a67987b4bd18f11579a460b5567e",
-      "bytes": 375
     },
     {
       "path": "samples/conversations.history.json",

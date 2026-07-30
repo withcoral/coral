@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises'
+import { readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 import { describe, expect, it } from 'vitest'
@@ -57,7 +57,7 @@ describe('parseDocsPage', () => {
    * a required, unfillable argument on every generated relation.
    */
   it('omits the token argument', async () => {
-    for (const slug of ['conversations.list', 'users.info', 'auth.test']) {
+    for (const slug of ['conversations.list', 'users.info']) {
       const facts = parseDocsPage(await page(slug), SERVER_URL)
 
       expect(facts.parameters.map((parameter) => parameter.name)).not.toContain('token')
@@ -81,10 +81,18 @@ describe('parseDocsPage', () => {
     expect(cursor?.description).not.toContain('](')
   })
 
+  /**
+   * Coral hides non-GET operations, so the verb decides whether an operation is
+   * usable at all. Reporting what the page says — rather than assuming GET —
+   * is what lets the build warn instead of generating a dead relation.
+   */
   it('reports a method Slack documents as POST rather than assuming GET', async () => {
-    const facts = parseDocsPage(await page('auth.test'), SERVER_URL)
+    const markdown = (await page('users.info')).replace(
+      'GET https://slack.com/api/users.info',
+      'POST https://slack.com/api/users.info',
+    )
 
-    expect(facts.httpMethod).toBe('post')
+    expect(parseDocsPage(markdown, SERVER_URL).httpMethod).toBe('post')
   })
 
   it('sorts parameters so the descriptor does not churn', async () => {
@@ -94,20 +102,14 @@ describe('parseDocsPage', () => {
     expect(names).toEqual(names.toSorted((left, right) => left.localeCompare(right)))
   })
 
+  /**
+   * Derived from the snapshot rather than hardcoded, so widening the scope
+   * widens the coverage instead of leaving this list behind.
+   */
   it('parses every page in the snapshot without warnings', async () => {
-    const slugs = [
-      'auth.test',
-      'conversations.history',
-      'conversations.info',
-      'conversations.list',
-      'conversations.members',
-      'conversations.replies',
-      'search.messages',
-      'users.conversations',
-      'users.info',
-      'users.list',
-    ]
+    const slugs = (await readdir(DOCS_DIR)).map((file) => file.replace(/\.md$/, ''))
 
+    expect(slugs.length).toBeGreaterThan(0)
     for (const slug of slugs) {
       const facts = parseDocsPage(await page(slug), SERVER_URL)
 
