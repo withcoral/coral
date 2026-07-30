@@ -19,7 +19,7 @@ use crate::state::AppStateLayout;
 use crate::storage::fs::create_new_file_private;
 use crate::workspaces::WorkspaceName;
 
-pub(crate) const SEARCH_SQLITE_SCHEMA_VERSION: u32 = 4;
+pub(crate) const SEARCH_SQLITE_SCHEMA_VERSION: u32 = 5;
 
 struct SearchSqliteMigration {
     version: u32,
@@ -45,6 +45,10 @@ const SEARCH_SQLITE_MIGRATIONS: &[SearchSqliteMigration] = &[
     SearchSqliteMigration {
         version: 4,
         sql: include_str!("migrations/0004_catalog_source_ownership.sql"),
+    },
+    SearchSqliteMigration {
+        version: 5,
+        sql: include_str!("migrations/0005_catalog_identity_columns.sql"),
     },
 ];
 
@@ -617,7 +621,14 @@ fn apply_migration(
     let transaction = connection.transaction()?;
     let initializes_catalog_source_ownership =
         migration.version == 4 && !tables_exist(&transaction, &["catalog_source_owners"])?;
-    transaction.execute_batch(migration.sql)?;
+    let initializes_typed_catalog_identity = migration.version == 5
+        && !schema_query_is_valid(
+            &transaction,
+            "SELECT catalog_name, schema_name FROM catalog_documents LIMIT 0",
+        )?;
+    if migration.version != 5 || initializes_typed_catalog_identity {
+        transaction.execute_batch(migration.sql)?;
+    }
     if initializes_catalog_source_ownership {
         // Existing catalog rows predate durable installed-owner identity. They
         // are disposable and cannot be safely backfilled for multi-component
@@ -678,6 +689,8 @@ fn catalog_schema_is_current(connection: &Connection) -> Result<bool, SqliteSear
             doc_id,
             doc_kind,
             source_name,
+            catalog_name,
+            schema_name,
             surface_kind,
             surface_name,
             field_name,
@@ -987,6 +1000,31 @@ mod tests {
             &connection,
             "idx_catalog_source_owners_workspace_owner"
         ));
+    }
+
+    #[test]
+    fn opening_v4_adds_typed_catalog_identity_and_invalidates_catalog_rows() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("search.sqlite3");
+        let mut connection = Connection::open(&path).expect("raw v4 connection");
+        for migration in SEARCH_SQLITE_MIGRATIONS.iter().take(4) {
+            super::apply_migration(&mut connection, migration).expect("apply v4 history");
+        }
+        seed_catalog_document(&connection);
+        seed_observed_queue_job(&connection);
+        drop(connection);
+
+        let connection = open_current_search_connection(&path);
+
+        assert_eq!(catalog_document_count(&connection), 0);
+        assert_eq!(observed_queue_job_count(&connection), 1);
+        assert!(
+            super::schema_query_is_valid(
+                &connection,
+                "SELECT catalog_name, schema_name FROM catalog_documents LIMIT 0"
+            )
+            .expect("typed catalog identity columns")
+        );
     }
 
     #[test]
@@ -1665,6 +1703,8 @@ mod tests {
             doc_kind: CatalogIndexDocumentKind::CatalogTable,
             owner_source_name: owner_source_name.to_string(),
             source_name: source_name.to_string(),
+            catalog_name: None,
+            schema_name: source_name.to_string(),
             surface_kind: "table".to_string(),
             surface_name: surface_name.to_string(),
             field_name: String::new(),
@@ -1673,7 +1713,6 @@ mod tests {
             title: surface_name.to_string(),
             description: String::new(),
             searchable_text: surface_name.to_string(),
-            payload_json: "{}".to_string(),
         }
     }
 

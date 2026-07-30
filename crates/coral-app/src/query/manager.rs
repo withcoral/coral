@@ -77,28 +77,20 @@ fn runtime_relation_owners(
     loaded_sources: &[LoadedQuerySource],
     catalog: &CatalogInfo,
 ) -> Result<RuntimeRelationOwners, AppError> {
-    let mut owners = BTreeMap::new();
+    let mut schema_claims = BTreeMap::new();
+    let mut catalog_claims = BTreeMap::new();
     for loaded in loaded_sources {
         let schema_names = loaded.query_source.schema_names();
         let catalog_names = loaded.query_source.catalog_names();
         claim_runtime_relation_owners(
-            &mut owners,
+            &mut schema_claims,
+            &mut catalog_claims,
             loaded.source.name.as_str(),
             &schema_names,
             &catalog_names,
-            catalog,
-        )?;
+        );
     }
-    Ok(owners)
-}
 
-fn claim_runtime_relation_owners(
-    owners: &mut RuntimeRelationOwners,
-    source_name: &str,
-    schema_names: &[&str],
-    catalog_names: &[&str],
-    catalog: &CatalogInfo,
-) -> Result<(), AppError> {
     let relation_namespaces = catalog
         .tables
         .iter()
@@ -109,38 +101,68 @@ fn claim_runtime_relation_owners(
                 function.schema_name.as_str(),
             )
         }))
-        .filter(|(catalog_name, schema_name)| {
-            catalog_name.map_or_else(
-                || schema_names.contains(schema_name),
-                |catalog_name| catalog_names.contains(&catalog_name),
-            )
-        });
+        .collect::<BTreeSet<_>>();
+    let mut owners = RuntimeRelationOwners::new();
     for (catalog_name, schema_name) in relation_namespaces {
-        let identity = (
-            catalog_name.map(ToString::to_string),
-            schema_name.to_string(),
+        let claim = catalog_name.map_or_else(
+            || schema_claims.get(schema_name),
+            |catalog_name| catalog_claims.get(catalog_name),
         );
-        match owners.entry(identity) {
-            std::collections::btree_map::Entry::Vacant(entry) => {
-                entry.insert(source_name.to_string());
-            }
-            std::collections::btree_map::Entry::Occupied(entry)
-                if entry.get().as_str() != source_name =>
-            {
-                let (catalog_name, schema_name) = entry.key();
-                let namespace = catalog_name.as_ref().map_or_else(
-                    || schema_name.clone(),
-                    |catalog_name| format!("{catalog_name}.{schema_name}"),
-                );
-                return Err(AppError::InvalidInput(format!(
-                    "catalog runtime namespace '{namespace}' is owned by both '{}' and '{source_name}'",
-                    entry.get(),
-                )));
-            }
-            std::collections::btree_map::Entry::Occupied(_) => {}
+        let Some(claim) = claim else {
+            continue;
+        };
+        if let Some(conflicting_source_name) = claim.conflicting_source_name {
+            let namespace = catalog_name.map_or_else(
+                || schema_name.to_string(),
+                |catalog_name| format!("{catalog_name}.{schema_name}"),
+            );
+            return Err(AppError::InvalidInput(format!(
+                "catalog runtime namespace '{namespace}' is owned by both '{}' and '{conflicting_source_name}'",
+                claim.source_name,
+            )));
+        }
+        owners.insert(
+            (
+                catalog_name.map(ToString::to_string),
+                schema_name.to_string(),
+            ),
+            claim.source_name.to_string(),
+        );
+    }
+    Ok(owners)
+}
+
+#[derive(Clone, Copy)]
+struct RuntimeRelationOwnerClaim<'a> {
+    source_name: &'a str,
+    conflicting_source_name: Option<&'a str>,
+}
+
+fn claim_runtime_relation_owners<'a>(
+    schema_claims: &mut BTreeMap<&'a str, RuntimeRelationOwnerClaim<'a>>,
+    catalog_claims: &mut BTreeMap<&'a str, RuntimeRelationOwnerClaim<'a>>,
+    source_name: &'a str,
+    schema_names: &[&'a str],
+    catalog_names: &[&'a str],
+) {
+    for (claims, names) in [
+        (schema_claims, schema_names),
+        (catalog_claims, catalog_names),
+    ] {
+        for name in names {
+            claims
+                .entry(name)
+                .and_modify(|claim| {
+                    if claim.source_name != source_name {
+                        claim.conflicting_source_name.get_or_insert(source_name);
+                    }
+                })
+                .or_insert(RuntimeRelationOwnerClaim {
+                    source_name,
+                    conflicting_source_name: None,
+                });
         }
     }
-    Ok(())
 }
 
 #[derive(Clone, Default)]
@@ -367,13 +389,21 @@ impl QueryManager {
                     .await?;
                 let mut failed_source_names = source_load.failed_source_names;
                 failed_source_names.extend(failure_recorder.failed_source_names());
-                let catalog = runtime
-                    .list_catalog(catalog_filter, schema_filter)
+                let ownership_catalog = runtime
+                    .list_catalog(None, None)
                     .await
                     .map_err(QueryManagerError::Core)?;
                 let runtime_relation_owners =
-                    runtime_relation_owners(&source_load.loaded, &catalog)
+                    runtime_relation_owners(&source_load.loaded, &ownership_catalog)
                         .map_err(QueryManagerError::App)?;
+                let catalog = if catalog_filter.is_none() && schema_filter.is_none() {
+                    ownership_catalog
+                } else {
+                    runtime
+                        .list_catalog(catalog_filter, schema_filter)
+                        .await
+                        .map_err(QueryManagerError::Core)?
+                };
                 Ok(CatalogResolution {
                     catalog,
                     failed_source_names,
@@ -1288,6 +1318,9 @@ fn validate_required_variables(
 }
 
 #[cfg(test)]
+mod test_support;
+
+#[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
     use std::sync::Arc;
@@ -1295,9 +1328,9 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use coral_engine::{
-        EngineExtensions, QueryExecution, QueryExecutionProvenance, QueryTableFunctionUsage,
-        QueryTableUsage, SourceDecorator, SourceDecoratorError, SourceInputResolutionContext,
-        SourceInputResolver, SourceInputResolverError,
+        EngineExtensions, QueryExecutionProvenance, QueryTableFunctionUsage, QueryTableUsage,
+        SourceDecorator, SourceDecoratorError, SourceInputResolutionContext, SourceInputResolver,
+        SourceInputResolverError,
     };
     use coral_spec::parse_source_manifest_yaml;
     use serde_json::{Value, json};
@@ -1305,6 +1338,10 @@ mod tests {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    use super::test_support::{
+        execution_to_rows, import_v4_mcp_catalog_source, import_v4_openapi_catalog_source,
+        mount_v4_mcp_catalog_server, mount_v4_openapi_catalog_server,
+    };
     use super::*;
     use crate::credentials::{CredentialStorageKind, CredentialStoragePreference, CredentialStore};
     use crate::identity::Principal;
@@ -1322,56 +1359,102 @@ mod tests {
     }
 
     #[test]
-    fn runtime_relation_owners_distinguish_catalogs_with_the_same_schema() {
-        let catalog = CatalogInfo {
-            tables: vec![
-                TableInfo {
-                    catalog_name: Some("warehouse".to_string()),
-                    schema_name: "public".to_string(),
-                    table_name: "orders".to_string(),
-                    description: String::new(),
-                    guide: String::new(),
-                    columns: Vec::new(),
-                    required_filters: Vec::new(),
-                },
-                TableInfo {
-                    catalog_name: Some("analytics".to_string()),
-                    schema_name: "public".to_string(),
-                    table_name: "events".to_string(),
-                    description: String::new(),
-                    guide: String::new(),
-                    columns: Vec::new(),
-                    required_filters: Vec::new(),
-                },
-            ],
-            table_functions: Vec::new(),
-        };
-        let mut owners = RuntimeRelationOwners::new();
+    fn runtime_relation_owner_claims_distinguish_catalogs_with_the_same_schema() {
+        let mut schema_claims = BTreeMap::new();
+        let mut catalog_claims = BTreeMap::new();
         claim_runtime_relation_owners(
-            &mut owners,
+            &mut schema_claims,
+            &mut catalog_claims,
             "warehouse_source",
             &[],
             &["warehouse"],
-            &catalog,
-        )
-        .expect("claim warehouse");
+        );
         claim_runtime_relation_owners(
-            &mut owners,
+            &mut schema_claims,
+            &mut catalog_claims,
             "analytics_source",
             &[],
             &["analytics"],
-            &catalog,
-        )
-        .expect("claim analytics");
+        );
 
         assert_eq!(
-            owners.get(&(Some("warehouse".to_string()), "public".to_string())),
-            Some(&"warehouse_source".to_string())
+            catalog_claims
+                .get("warehouse")
+                .map(|claim| claim.source_name),
+            Some("warehouse_source")
         );
         assert_eq!(
-            owners.get(&(Some("analytics".to_string()), "public".to_string())),
-            Some(&"analytics_source".to_string())
+            catalog_claims
+                .get("analytics")
+                .map(|claim| claim.source_name),
+            Some("analytics_source")
         );
+        assert!(schema_claims.is_empty());
+    }
+
+    #[test]
+    fn runtime_relation_owner_conflicts_are_detected_from_unfiltered_catalog() {
+        let loaded_sources = vec![
+            loaded_schema_owner("owner_a", "shared"),
+            loaded_schema_owner("owner_b", "shared"),
+        ];
+        let unfiltered_catalog = CatalogInfo {
+            tables: vec![TableInfo {
+                catalog_name: None,
+                schema_name: "shared".to_string(),
+                table_name: "items".to_string(),
+                description: String::new(),
+                guide: String::new(),
+                columns: Vec::new(),
+                required_filters: Vec::new(),
+            }],
+            table_functions: Vec::new(),
+        };
+
+        let error = runtime_relation_owners(&loaded_sources, &unfiltered_catalog)
+            .expect_err("unfiltered catalog must expose duplicate runtime namespace owners");
+
+        assert!(
+            error
+                .to_string()
+                .contains("runtime namespace 'shared' is owned by both 'owner_a' and 'owner_b'"),
+            "unexpected error: {error}"
+        );
+    }
+
+    fn loaded_schema_owner(installed_name: &str, runtime_schema_name: &str) -> LoadedQuerySource {
+        let source_spec = parse_source_manifest_yaml(&format!(
+            r"
+name: {runtime_schema_name}
+version: 0.1.0
+dsl_version: 3
+backend: http
+base_url: https://example.com
+tables:
+  - name: items
+    description: Items
+    request:
+      path: /items
+    columns:
+      - name: id
+        type: Utf8
+"
+        ))
+        .expect("parse source manifest");
+        LoadedQuerySource {
+            source: InstalledSource {
+                name: SourceName::parse(installed_name).expect("installed source name"),
+                version: None,
+                variables: BTreeMap::new(),
+                secrets: Vec::new(),
+                credential_storage: None,
+                credential_revision: uuid::Uuid::default(),
+                origin: SourceOrigin::Bundled,
+            },
+            query_source: QuerySource::new(source_spec, BTreeMap::new(), BTreeMap::new()),
+            runtime_contract_fingerprint: RuntimeContractFingerprint::for_test("contract"),
+            credential_material: BTreeMap::new(),
+        }
     }
 
     async fn query_manager_with(
@@ -1810,262 +1893,6 @@ mod tests {
             .iter()
             .find(|attribute| attribute.key.as_str() == name)
             .map(|attribute| attribute.value.as_str().into_owned())
-    }
-
-    fn execution_to_rows(execution: &QueryExecution) -> Vec<Value> {
-        let mut bytes = Vec::new();
-        {
-            let mut writer = arrow::json::ArrayWriter::new(&mut bytes);
-            for batch in execution.batches() {
-                writer.write(batch).expect("batch should encode to json");
-            }
-            writer.finish().expect("json writer should finish");
-        }
-        serde_json::from_slice(&bytes).expect("json rows should decode")
-    }
-
-    async fn mount_v4_openapi_catalog_server(server: &MockServer) {
-        for (path_value, id, title) in [
-            ("/tagged", 1, "Tagged"),
-            ("/public", 2, "Public"),
-            ("/search", 3, "Search"),
-        ] {
-            Mock::given(method("GET"))
-                .and(path(path_value))
-                .respond_with(
-                    ResponseTemplate::new(200).set_body_json(json!([{"id": id, "title": title}])),
-                )
-                .mount(server)
-                .await;
-        }
-    }
-
-    fn import_v4_openapi_catalog_source(
-        manager: &QueryManager,
-        workspace_name: &WorkspaceName,
-        source_name: &str,
-        server_uri: &str,
-    ) -> SourceName {
-        let source_manager = SourceManager::new_for_tests(
-            manager.config_store.clone(),
-            manager.credential_manager.clone(),
-            manager.layout.clone(),
-        );
-        let descriptor_temp = tempfile::tempdir().expect("descriptor temp dir");
-        let openapi_file = descriptor_temp.path().join("catalog-openapi.yaml");
-        std::fs::write(
-            &openapi_file,
-            format!(
-                r"
-openapi: 3.0.3
-info:
-  title: Catalog runtime
-servers:
-  - url: {server_uri}
-paths:
-  /tagged:
-    get:
-      tags: [issues]
-      operationId: issues/list_tagged
-      responses:
-        '200':
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/Item'
-  /public:
-    get:
-      operationId: list_public
-      responses:
-        '200':
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/Item'
-  /search:
-    get:
-      operationId: search_public
-      parameters:
-        - name: query
-          in: query
-          required: true
-          schema: {{type: string}}
-      responses:
-        '200':
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/Item'
-components:
-  schemas:
-    Item:
-      type: object
-      properties:
-        id: {{type: integer}}
-        title: {{type: string}}
-"
-            ),
-        )
-        .expect("write OpenAPI fixture");
-        let source_name = SourceName::parse(source_name).expect("source name");
-        source_manager
-            .import_source(
-                workspace_name,
-                &ImportSourceCommand {
-                    manifest_yaml: format!(
-                        r"
-name: {source_name}
-dsl_version: 4
-surface:
-  type: openapi
-  file: {}
-",
-                        openapi_file.display()
-                    ),
-                    bindings: SourceBindings::default(),
-                },
-            )
-            .expect("import v4 OpenAPI source");
-        source_name
-    }
-
-    fn v4_mcp_rpc_result(request: &wiremock::Request, result: &Value) -> ResponseTemplate {
-        let body: Value = request.body_json().expect("JSON-RPC request body");
-        let id = body.get("id").cloned().expect("JSON-RPC request id");
-        ResponseTemplate::new(200)
-            .append_header("Content-Type", "application/json")
-            .set_body_json(json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "result": result
-            }))
-    }
-
-    async fn mount_v4_mcp_catalog_server(server: &MockServer) {
-        Mock::given(method("POST"))
-            .respond_with(|request: &wiremock::Request| {
-                let body: Value = request.body_json().expect("JSON-RPC request body");
-                match body.get("method").and_then(Value::as_str) {
-                    Some("initialize") => v4_mcp_rpc_result(
-                        request,
-                        &json!({
-                            "protocolVersion": "2025-03-26",
-                            "capabilities": {"tools": {}},
-                            "serverInfo": {"name": "catalog-runtime", "version": "1.0.0"}
-                        }),
-                    ),
-                    Some("notifications/initialized") => ResponseTemplate::new(202),
-                    Some("tools/list") => v4_mcp_rpc_result(
-                        request,
-                        &json!({
-                            "tools": [
-                                {
-                                    "name": "list_items",
-                                    "description": "List items",
-                                    "inputSchema": {
-                                        "type": "object",
-                                        "properties": {}
-                                    },
-                                    "outputSchema": {
-                                        "type": "object",
-                                        "properties": {
-                                            "items": {
-                                                "type": "array",
-                                                "items": {"type": "object"}
-                                            }
-                                        }
-                                    },
-                                    "annotations": {"readOnlyHint": true}
-                                },
-                                {
-                                    "name": "search_items",
-                                    "description": "Search items",
-                                    "inputSchema": {
-                                        "type": "object",
-                                        "properties": {
-                                            "query": {"type": "string"}
-                                        },
-                                        "required": ["query"]
-                                    },
-                                    "outputSchema": {
-                                        "type": "object",
-                                        "properties": {
-                                            "items": {
-                                                "type": "array",
-                                                "items": {"type": "object"}
-                                            }
-                                        }
-                                    },
-                                    "annotations": {"readOnlyHint": true}
-                                }
-                            ]
-                        }),
-                    ),
-                    Some("tools/call") => {
-                        let tool_name = body
-                            .pointer("/params/name")
-                            .and_then(Value::as_str)
-                            .expect("tool name");
-                        let arguments = body
-                            .pointer("/params/arguments")
-                            .cloned()
-                            .unwrap_or_else(|| json!({}));
-                        v4_mcp_rpc_result(
-                            request,
-                            &json!({
-                                "structuredContent": {
-                                    "tool": tool_name,
-                                    "arguments": arguments
-                                }
-                            }),
-                        )
-                    }
-                    other => ResponseTemplate::new(404)
-                        .set_body_string(format!("unexpected MCP method {other:?}")),
-                }
-            })
-            .mount(server)
-            .await;
-    }
-
-    fn import_v4_mcp_catalog_source(
-        manager: &QueryManager,
-        workspace_name: &WorkspaceName,
-        source_name: &str,
-        server_uri: &str,
-    ) -> SourceName {
-        let source_manager = SourceManager::new_for_tests(
-            manager.config_store.clone(),
-            manager.credential_manager.clone(),
-            manager.layout.clone(),
-        );
-        let source_name = SourceName::parse(source_name).expect("source name");
-        source_manager
-            .import_source(
-                workspace_name,
-                &ImportSourceCommand {
-                    manifest_yaml: format!(
-                        r#"
-name: {source_name}
-dsl_version: 4
-surface:
-  type: mcp
-  server:
-    transport: streamable_http
-    url: "{server_uri}"
-"#
-                    ),
-                    bindings: SourceBindings::default(),
-                },
-            )
-            .expect("import v4 MCP source");
-        source_name
     }
 
     #[tokio::test]

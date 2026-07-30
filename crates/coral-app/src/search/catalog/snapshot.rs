@@ -7,13 +7,14 @@ use coral_engine::{
 use coral_spec::SourceTableFunctionKind;
 use sha2::{Digest as _, Sha256};
 
+use crate::catalog::discovery::{relation_addressable_name, relation_source_name};
 use crate::catalog::model::RuntimeRelationOwners;
 use crate::search::catalog::sqlite_index::{
     CatalogIndexDocument, CatalogIndexDocumentKind, CatalogIndexSnapshot,
 };
 use crate::search::result::{SearchFieldRole, SearchSurfaceKind};
 
-const CATALOG_SEARCH_SNAPSHOT_VERSION: &str = "catalog-search-snapshot-v4";
+const CATALOG_SEARCH_SNAPSHOT_VERSION: &str = "catalog-search-snapshot-v5";
 
 #[derive(Debug, Clone)]
 pub(crate) struct CatalogSearchSnapshot {
@@ -33,12 +34,26 @@ impl CatalogSearchSnapshot {
     ) -> Self {
         let runtime_relation_owners =
             normalized_runtime_relation_owners(catalog, runtime_relation_owners);
+        let borrowed_runtime_relation_owners = runtime_relation_owners
+            .iter()
+            .map(|((catalog_name, schema_name), owner_source_name)| {
+                (
+                    (catalog_name.as_deref(), schema_name.as_str()),
+                    owner_source_name.as_str(),
+                )
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
         let mut documents = catalog_documents(catalog);
         for document in &mut documents {
-            document.owner_source_name = runtime_relation_owners
-                .get(&(document.catalog_name.clone(), document.schema_name.clone()))
-                .cloned()
-                .unwrap_or_else(|| document.source_name.clone());
+            document.owner_source_name = borrowed_runtime_relation_owners
+                .get(&(
+                    document.catalog_name.as_deref(),
+                    document.schema_name.as_str(),
+                ))
+                .map_or_else(
+                    || document.source_name.clone(),
+                    |owner_source_name| (*owner_source_name).to_string(),
+                );
         }
         documents.sort_by(|left, right| left.doc_id.cmp(&right.doc_id));
         let fingerprint = catalog_snapshot_fingerprint(catalog, &runtime_relation_owners);
@@ -102,6 +117,8 @@ impl CatalogDocument {
             doc_kind: catalog_document_kind_to_index(self.doc_kind),
             owner_source_name: self.owner_source_name.clone(),
             source_name: self.source_name.clone(),
+            catalog_name: self.catalog_name.clone(),
+            schema_name: self.schema_name.clone(),
             surface_kind: surface_kind_as_str(self.surface_kind).to_string(),
             surface_name: self.surface_name.clone(),
             field_name: self.field_name.clone(),
@@ -110,11 +127,6 @@ impl CatalogDocument {
             title: self.title.clone(),
             description: self.description.clone(),
             searchable_text: self.searchable_text.clone(),
-            payload_json: serde_json::json!({
-                "catalog_name": self.catalog_name,
-                "schema_name": self.schema_name,
-            })
-            .to_string(),
         }
     }
 }
@@ -199,7 +211,7 @@ fn normalized_runtime_relation_owners(
 }
 
 fn table_documents(table: &TableInfo, documents: &mut Vec<CatalogDocument>) {
-    let qualified_name = sql_reference(
+    let qualified_name = relation_addressable_name(
         table.catalog_name.as_deref(),
         &table.schema_name,
         &table.table_name,
@@ -243,7 +255,7 @@ fn table_column_document(
     column: &ColumnInfo,
     documents: &mut Vec<CatalogDocument>,
 ) {
-    let surface_qualified_name = sql_reference(
+    let surface_qualified_name = relation_addressable_name(
         table.catalog_name.as_deref(),
         &table.schema_name,
         &table.table_name,
@@ -279,7 +291,7 @@ fn table_required_filter_document(
     filter: &str,
     documents: &mut Vec<CatalogDocument>,
 ) {
-    let surface_qualified_name = sql_reference(
+    let surface_qualified_name = relation_addressable_name(
         table.catalog_name.as_deref(),
         &table.schema_name,
         &table.table_name,
@@ -310,7 +322,7 @@ fn table_required_filter_document(
 }
 
 fn table_function_documents(function: &TableFunctionInfo, documents: &mut Vec<CatalogDocument>) {
-    let qualified_name = sql_reference(
+    let qualified_name = relation_addressable_name(
         function.catalog_name.as_deref(),
         &function.schema_name,
         &function.function_name,
@@ -374,7 +386,7 @@ fn table_function_argument_document(
     argument: &TableFunctionArgumentInfo,
     documents: &mut Vec<CatalogDocument>,
 ) {
-    let surface_qualified_name = sql_reference(
+    let surface_qualified_name = relation_addressable_name(
         function.catalog_name.as_deref(),
         &function.schema_name,
         &function.function_name,
@@ -414,7 +426,7 @@ fn table_function_result_column_document(
     column: &TableFunctionResultColumnInfo,
     documents: &mut Vec<CatalogDocument>,
 ) {
-    let surface_qualified_name = sql_reference(
+    let surface_qualified_name = relation_addressable_name(
         function.catalog_name.as_deref(),
         &function.schema_name,
         &function.function_name,
@@ -447,17 +459,6 @@ fn table_function_result_column_document(
             "table function result column",
         ]),
     });
-}
-
-fn sql_reference(catalog_name: Option<&str>, schema_name: &str, surface_name: &str) -> String {
-    catalog_name.map_or_else(
-        || format!("{schema_name}.{surface_name}"),
-        |catalog_name| format!("{catalog_name}.{schema_name}.{surface_name}"),
-    )
-}
-
-fn relation_source_name(catalog_name: Option<&str>, schema_name: &str) -> String {
-    catalog_name.unwrap_or(schema_name).to_string()
 }
 
 fn catalog_name_text(catalog_name: Option<&str>) -> &str {
@@ -691,16 +692,8 @@ mod tests {
             .into_iter()
             .find(|document| document.doc_kind == CatalogIndexDocumentKind::CatalogTable)
             .expect("indexed table");
-        let payload: serde_json::Value =
-            serde_json::from_str(&indexed.payload_json).expect("identity payload");
-        assert_eq!(
-            payload.pointer("/catalog_name"),
-            Some(&serde_json::json!("github_v4"))
-        );
-        assert_eq!(
-            payload.pointer("/schema_name"),
-            Some(&serde_json::json!("issues"))
-        );
+        assert_eq!(indexed.catalog_name.as_deref(), Some("github_v4"));
+        assert_eq!(indexed.schema_name, "issues");
     }
 
     fn catalog_with_table(table_name: &str) -> CatalogInfo {

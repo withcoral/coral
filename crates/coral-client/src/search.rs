@@ -646,7 +646,7 @@ fn column_hint_text_lines(index: usize, provider: &str, hint: &ColumnHint) -> Ve
         format!(
             "{index}. [{provider}] {} {surface_reference}.{}",
             field_role_name(hint.field_role),
-            hint.name
+            format_sql_identifier(&hint.name)
         ),
         format!(
             "   Surface: {} {}",
@@ -968,6 +968,28 @@ mod tests {
         assert!(
             text.contains("Field path: labels.name"),
             "observed value text should include nested field path: {text}"
+        );
+    }
+
+    #[test]
+    fn column_hint_headline_quotes_the_complete_sql_reference() {
+        let lines = column_hint_text_lines(
+            1,
+            "catalog",
+            &ColumnHint {
+                catalog_name: "Data Warehouse".to_string(),
+                schema_name: "Order Data".to_string(),
+                surface_name: "Line Items".to_string(),
+                surface_kind: SearchSurfaceKind::Table as i32,
+                name: "Unit Price".to_string(),
+                field_role: SearchFieldRole::TableColumn as i32,
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(
+            lines.first().expect("column hint headline"),
+            "1. [catalog] table_column \"Data Warehouse\".\"Order Data\".\"Line Items\".\"Unit Price\""
         );
     }
 }

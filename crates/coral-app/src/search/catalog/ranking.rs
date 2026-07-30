@@ -89,7 +89,9 @@ fn catalog_relevance_score(hit: &CatalogSearchHit, terms: &[String]) -> u32 {
         if source_name == *term {
             term_score = term_score.saturating_add(EXACT_SOURCE_NAME_TERM_RELEVANCE_BOOST);
         }
-        if catalog_name == *term || schema_name == *term {
+        if (catalog_name != source_name && catalog_name == *term)
+            || (schema_name != source_name && schema_name == *term)
+        {
             term_score = term_score.saturating_add(EXACT_SOURCE_NAME_TERM_RELEVANCE_BOOST);
         }
         if title == term || surface_name == *term || field_name == *term {
@@ -99,8 +101,8 @@ fn catalog_relevance_score(hit: &CatalogSearchHit, terms: &[String]) -> u32 {
         if identifier_token_matches(&source_name, term) {
             term_score = term_score.saturating_add(SOURCE_IDENTIFIER_TOKEN_TERM_RELEVANCE_BOOST);
         }
-        if identifier_token_matches(&catalog_name, term)
-            || identifier_token_matches(&schema_name, term)
+        if (catalog_name != source_name && identifier_token_matches(&catalog_name, term))
+            || (schema_name != source_name && identifier_token_matches(&schema_name, term))
         {
             term_score = term_score.saturating_add(SOURCE_IDENTIFIER_TOKEN_TERM_RELEVANCE_BOOST);
         }
@@ -121,7 +123,9 @@ fn catalog_relevance_score(hit: &CatalogSearchHit, terms: &[String]) -> u32 {
         if source_name.starts_with(term) {
             term_score = term_score.saturating_add(SOURCE_NAME_PREFIX_TERM_RELEVANCE_BOOST);
         }
-        if catalog_name.starts_with(term) || schema_name.starts_with(term) {
+        if (catalog_name != source_name && catalog_name.starts_with(term))
+            || (schema_name != source_name && schema_name.starts_with(term))
+        {
             term_score = term_score.saturating_add(SOURCE_NAME_PREFIX_TERM_RELEVANCE_BOOST);
         }
         if identifier_token_starts_with(&surface_name, term)
@@ -172,8 +176,7 @@ fn qualified_name(hit: &CatalogSearchHit) -> String {
 
 fn searchable_text(hit: &CatalogSearchHit, description: &str) -> String {
     format!(
-        "{} {} {} {} {} {} {}",
-        hit.source_name,
+        "{} {} {} {} {} {}",
         hit.catalog_name.as_deref().unwrap_or_default(),
         hit.schema_name,
         hit.surface_name,
@@ -237,7 +240,7 @@ fn doc_kind_order(kind: CatalogIndexDocumentKind) -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use super::rank_catalog_hits;
+    use super::{catalog_relevance_score, rank_catalog_hits};
     use crate::search::catalog::sqlite_index::{CatalogIndexDocumentKind, CatalogSearchHit};
 
     const EQUAL_RETRIEVAL_SCORE_FIXTURE: u32 = 5_000;
@@ -495,6 +498,72 @@ mod tests {
         assert_eq!(
             hits.first().expect("top ranked hit").hit.doc_id,
             "catalog:table:stripe.payments_api"
+        );
+    }
+
+    #[test]
+    fn repeated_source_location_names_contribute_one_relevance_signal() {
+        let default_catalog_hit = hit(HitInput {
+            doc_id: "catalog:table:github.users",
+            doc_kind: CatalogIndexDocumentKind::CatalogTable,
+            source_name: "github",
+            surface_kind: "table",
+            surface_name: "users",
+            field_name: "",
+            field_role: "",
+            description: "",
+            matched_fields: vec!["qualified_name"],
+            retrieval_score: EQUAL_RETRIEVAL_SCORE_FIXTURE,
+        });
+        let mut catalog_qualified_hit = hit(HitInput {
+            doc_id: "catalog:table:warehouse.analytics.users",
+            doc_kind: CatalogIndexDocumentKind::CatalogTable,
+            source_name: "warehouse",
+            surface_kind: "table",
+            surface_name: "users",
+            field_name: "",
+            field_role: "",
+            description: "",
+            matched_fields: vec!["qualified_name"],
+            retrieval_score: EQUAL_RETRIEVAL_SCORE_FIXTURE,
+        });
+        catalog_qualified_hit.catalog_name = Some("warehouse".to_string());
+        catalog_qualified_hit.schema_name = "analytics".to_string();
+
+        assert_eq!(
+            catalog_relevance_score(&default_catalog_hit, &["github".to_string()]),
+            52_300
+        );
+        assert_eq!(
+            catalog_relevance_score(&catalog_qualified_hit, &["warehouse".to_string()]),
+            52_300
+        );
+        assert_eq!(
+            catalog_relevance_score(&catalog_qualified_hit, &["analytics".to_string()]),
+            48_800
+        );
+    }
+
+    #[test]
+    fn searchable_text_contains_each_canonical_location_once() {
+        let mut catalog_qualified_hit = hit(HitInput {
+            doc_id: "catalog:table:warehouse.analytics.users",
+            doc_kind: CatalogIndexDocumentKind::CatalogTable,
+            source_name: "warehouse",
+            surface_kind: "table",
+            surface_name: "users",
+            field_name: "",
+            field_role: "",
+            description: "",
+            matched_fields: Vec::new(),
+            retrieval_score: EQUAL_RETRIEVAL_SCORE_FIXTURE,
+        });
+        catalog_qualified_hit.catalog_name = Some("warehouse".to_string());
+        catalog_qualified_hit.schema_name = "analytics".to_string();
+
+        assert_eq!(
+            super::searchable_text(&catalog_qualified_hit, ""),
+            "warehouse analytics users  table "
         );
     }
 
