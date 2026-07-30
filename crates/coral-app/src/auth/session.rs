@@ -489,11 +489,7 @@ mod tests {
         let issuer = test_issuer();
         let verifier = issuer.verifier();
         let access = issuer
-            .issue_access_token(
-                "issuer.example|opaque:subject/123",
-                CLIENT_ID,
-                MCP_AUDIENCE,
-            )
+            .issue_access_token("issuer.example|opaque:subject/123", CLIENT_ID, MCP_AUDIENCE)
             .unwrap();
         let header = decode_header(&access.access_token).unwrap();
         assert_eq!(header.alg, Algorithm::ES256);
@@ -654,8 +650,7 @@ mod tests {
             (CLIENT_ID, ""),
             (CLIENT_ID, "audience "),
         ] {
-            let Err(_error) = issuer.issue_access_token("user-123", client_id, audience)
-            else {
+            let Err(_error) = issuer.issue_access_token("user-123", client_id, audience) else {
                 panic!(
                     "token issuance should reject client_id={client_id:?}, audience={audience:?}"
                 );
