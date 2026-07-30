@@ -793,6 +793,14 @@ fn server_endpoint_is_loopback(endpoint: &str) -> bool {
         .is_some_and(|address| address.ip().is_loopback())
 }
 
+/// Reports whether the operator still needs to be told the listener is exposed.
+///
+/// The warning is about a listener that authenticates nobody, so configured
+/// `[auth]` suppresses it and the wording stays accurate. A non-loopback
+/// authenticated bind is cleartext h2c too, but Coral no longer lets that happen
+/// silently: `server.allow_insecure_remote_grpc_bind` makes the operator
+/// acknowledge it in `config.toml` before startup, which is a stronger signal
+/// than a line on stderr.
 fn server_requires_security_warning(endpoint: &str, authentication_enabled: bool) -> bool {
     !authentication_enabled && !server_endpoint_is_loopback(endpoint)
 }

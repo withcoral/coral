@@ -502,7 +502,7 @@ mod tests {
         let issuer = test_issuer();
         let verifier = issuer.verifier();
         let access = issuer
-            .issue_access_token("issuer.example|opaque:subject/123", CLIENT_ID, MCP_AUDIENCE)
+            .issue_access_token("opaque:subject/123", CLIENT_ID, MCP_AUDIENCE)
             .unwrap();
         let header = decode_header(&access.access_token).unwrap();
         assert_eq!(header.alg, Algorithm::ES256);
@@ -520,7 +520,9 @@ mod tests {
         assert_eq!(session.token_id, token_id);
         assert_eq!(session.audience, MCP_AUDIENCE);
         assert_eq!(session.client_id, CLIENT_ID);
-        assert_eq!(session.subject, "issuer.example|opaque:subject/123");
+        // The subject is the upstream `sub` claim verbatim: a single OIDC provider
+        // is ever configured, so nothing prefixes an issuer onto it.
+        assert_eq!(session.subject, "opaque:subject/123");
     }
 
     #[test]

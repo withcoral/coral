@@ -1,31 +1,52 @@
 //! Session authentication shared by served transport surfaces.
 
 use std::fmt;
-use std::sync::Arc;
 
 use tonic::metadata::MetadataMap;
 
 use crate::auth::session::SessionTokenVerifier;
-use crate::identity::{Principal, PrincipalProvider, PrincipalProviderError};
+use crate::identity::{BearerAuthenticator, Principal, PrincipalProvider, PrincipalProviderError};
 
 const AUTHORIZATION_METADATA: &str = "authorization";
 const UNAUTHENTICATED_MESSAGE: &str = "authentication required";
 
+/// Authenticates session tokens minted for one accepted audience.
+///
+/// The audience is a single value, not an allowlist: a served instance has one
+/// resource identifier, and a surface that must accept a different audience gets
+/// its own provider instead of widening this one.
 #[derive(Clone)]
 pub(crate) struct SessionPrincipalProvider {
     verifier: SessionTokenVerifier,
-    accepted_audiences: Arc<[String]>,
+    accepted_audience: String,
 }
 
 impl SessionPrincipalProvider {
     pub(crate) fn new(
         verifier: SessionTokenVerifier,
-        accepted_audiences: impl IntoIterator<Item = String>,
+        accepted_audience: impl Into<String>,
     ) -> Self {
         Self {
             verifier,
-            accepted_audiences: accepted_audiences.into_iter().collect(),
+            accepted_audience: accepted_audience.into(),
         }
+    }
+
+    fn principal_for_token(&self, token: &str) -> Result<Principal, PrincipalProviderError> {
+        if token.is_empty() || !token.bytes().all(|byte| byte.is_ascii_graphic()) {
+            return Err(unauthenticated());
+        }
+        let session = self
+            .verifier
+            .validate_access_token(token, &[self.accepted_audience.as_str()])
+            .map_err(|_error| unauthenticated())?;
+        Ok(
+            Principal::for_federated(&session.subject).with_access_token_attribution(
+                session.token_id,
+                session.audience,
+                session.client_id,
+            ),
+        )
     }
 }
 
@@ -43,23 +64,14 @@ impl PrincipalProvider for SessionPrincipalProvider {
         &self,
         metadata: &MetadataMap,
     ) -> Result<Principal, PrincipalProviderError> {
-        let token = strict_bearer(metadata)?;
-        let accepted_audiences = self
-            .accepted_audiences
-            .iter()
-            .map(String::as_str)
-            .collect::<Vec<_>>();
-        let session = self
-            .verifier
-            .validate_access_token(token, &accepted_audiences)
-            .map_err(|_error| unauthenticated())?;
-        Ok(
-            Principal::for_federated(&session.subject).with_access_token_attribution(
-                session.token_id,
-                session.audience,
-                session.client_id,
-            ),
-        )
+        self.principal_for_token(strict_bearer(metadata)?)
+    }
+}
+
+#[tonic::async_trait]
+impl BearerAuthenticator for SessionPrincipalProvider {
+    async fn principal_for_bearer(&self, token: &str) -> Result<Principal, PrincipalProviderError> {
+        self.principal_for_token(token)
     }
 }
 
@@ -71,10 +83,7 @@ fn strict_bearer(metadata: &MetadataMap) -> Result<&str, PrincipalProviderError>
         .and_then(|value| value.to_str().ok())
         .ok_or_else(unauthenticated)?;
     let (scheme, token) = value.split_once(' ').ok_or_else(unauthenticated)?;
-    if !scheme.eq_ignore_ascii_case("bearer")
-        || token.is_empty()
-        || !token.bytes().all(|byte| byte.is_ascii_graphic())
-    {
+    if !scheme.eq_ignore_ascii_case("bearer") {
         return Err(unauthenticated());
     }
     Ok(token)
@@ -92,10 +101,10 @@ mod tests {
 
     use super::SessionPrincipalProvider;
     use crate::auth::session::{SessionTokenIssuer, test_signing_key};
-    use crate::identity::PrincipalProvider as _;
+    use crate::identity::{BearerAuthenticator as _, PrincipalProvider as _};
 
     const MCP_AUDIENCE: &str = "https://coral.example/mcp";
-    const BFF_AUDIENCE: &str = "https://app.example";
+    const OTHER_AUDIENCE: &str = "https://app.example";
     const CLIENT_ID: &str = "https://client.example/client.json";
 
     fn session(key: &[u8]) -> SessionTokenIssuer {
@@ -120,12 +129,20 @@ mod tests {
             .issue_access_token("raw/subject with spaces", CLIENT_ID, MCP_AUDIENCE)
             .expect("session token")
             .access_token;
-        let provider = SessionPrincipalProvider::new(config.verifier(), [MCP_AUDIENCE.to_string()]);
+        let provider = SessionPrincipalProvider::new(config.verifier(), MCP_AUDIENCE);
 
         let principal = provider
             .principal_for_metadata(&bearer_metadata(&token))
             .await
             .expect("principal");
+        assert_eq!(
+            provider
+                .principal_for_bearer(&token)
+                .await
+                .expect("bare token principal"),
+            principal,
+            "the metadata and bare-token entry points must agree"
+        );
 
         assert!(principal.id().as_str().starts_with("federated-"));
         assert!(!principal.id().as_str().contains("raw"));
@@ -151,7 +168,7 @@ mod tests {
             .issue_access_token("alice", CLIENT_ID, "https://other.example/mcp")
             .expect("wrong-audience token")
             .access_token;
-        let provider = SessionPrincipalProvider::new(config.verifier(), [MCP_AUDIENCE.to_string()]);
+        let provider = SessionPrincipalProvider::new(config.verifier(), MCP_AUDIENCE);
 
         let mut duplicate = bearer_metadata(&wrong_key);
         duplicate.append(
@@ -180,40 +197,48 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn private_api_accepts_only_its_explicit_audience_allowlist() {
+    async fn a_provider_accepts_only_its_own_audience() {
         let signing_key = test_signing_key();
         let config = session(&signing_key);
-        let grpc_provider = SessionPrincipalProvider::new(
-            config.verifier(),
-            [MCP_AUDIENCE.to_string(), BFF_AUDIENCE.to_string()],
-        );
-        let mcp_provider =
-            SessionPrincipalProvider::new(config.verifier(), [MCP_AUDIENCE.to_string()]);
+        let provider = SessionPrincipalProvider::new(config.verifier(), MCP_AUDIENCE);
 
-        for audience in [MCP_AUDIENCE, BFF_AUDIENCE] {
+        let accepted = config
+            .issue_access_token("alice", CLIENT_ID, MCP_AUDIENCE)
+            .expect("token")
+            .access_token;
+        provider
+            .principal_for_metadata(&bearer_metadata(&accepted))
+            .await
+            .expect("its own audience");
+
+        for audience in [OTHER_AUDIENCE, "https://unapproved.example"] {
             let token = config
                 .issue_access_token("alice", CLIENT_ID, audience)
                 .expect("token")
                 .access_token;
-            grpc_provider
+            provider
                 .principal_for_metadata(&bearer_metadata(&token))
                 .await
-                .expect("allowlisted audience");
-            if audience == BFF_AUDIENCE {
-                mcp_provider
-                    .principal_for_metadata(&bearer_metadata(&token))
-                    .await
-                    .expect_err("MCP must reject a BFF-audience token");
-            }
+                .expect_err("any other audience");
+            provider
+                .principal_for_bearer(&token)
+                .await
+                .expect_err("any other audience");
         }
+    }
 
-        let token = config
-            .issue_access_token("alice", CLIENT_ID, "https://unapproved.example")
-            .expect("token")
-            .access_token;
-        grpc_provider
-            .principal_for_metadata(&bearer_metadata(&token))
-            .await
-            .expect_err("unapproved audience");
+    #[tokio::test]
+    async fn malformed_bare_tokens_fail_generically() {
+        let signing_key = test_signing_key();
+        let config = session(&signing_key);
+        let provider = SessionPrincipalProvider::new(config.verifier(), MCP_AUDIENCE);
+
+        for token in ["", "two words", "trailing\t"] {
+            let error = provider
+                .principal_for_bearer(token)
+                .await
+                .expect_err("malformed token must fail");
+            assert_eq!(error.client_message(), "authentication required");
+        }
     }
 }

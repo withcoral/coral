@@ -75,8 +75,8 @@ pub use bootstrap::{
 };
 pub use coral_engine::{EngineExtensions, QuerySource};
 pub use identity::{
-    LocalPrincipalProvider, Principal, PrincipalId, PrincipalKind, PrincipalProvider,
-    PrincipalProviderError,
+    BearerAuthenticator, LocalPrincipalProvider, Principal, PrincipalId, PrincipalKind,
+    PrincipalProvider, PrincipalProviderError,
 };
 pub use oauth_resource::{CanonicalOauthUrl, OauthUrlError};
 pub use query::extensions::{

@@ -16,7 +16,6 @@ use coral_mcp::{
         RunningMcpHttpServer, start_auth_disabled, start_authenticated,
     },
 };
-use tonic::metadata::{MetadataMap, MetadataValue};
 use tonic::{Code, Request};
 
 #[derive(Debug, thiserror::Error)]
@@ -137,7 +136,7 @@ pub(crate) async fn start(
 
 async fn start_mcp_http(
     settings: Option<McpHttpServeConfig>,
-    mcp_principal_provider: Option<Arc<dyn coral_app::PrincipalProvider>>,
+    mcp_principal_provider: Option<Arc<dyn coral_app::BearerAuthenticator>>,
     grpc_addr: SocketAddr,
     mcp_options: McpOptions,
 ) -> Result<Option<RunningMcpHttpServer>, McpStartError> {
@@ -156,20 +155,18 @@ async fn start_mcp_http(
             public_url,
             authorization_server,
         } => {
-            let principal_provider =
+            let authenticator =
                 mcp_principal_provider.ok_or(McpStartError::MissingSessionProvider)?;
             let config =
                 AuthenticatedMcpHttpConfig::new(bind_addr, public_url, authorization_server)?;
-            let gate_provider = Arc::clone(&principal_provider);
             let session_endpoint = grpc_endpoint_uri.clone();
             let readiness_endpoint = grpc_endpoint_uri;
             let runtime = AuthenticatedMcpHttpRuntime::new(
                 move |token| {
-                    let provider = Arc::clone(&gate_provider);
+                    let authenticator = Arc::clone(&authenticator);
                     async move {
-                        let metadata = bearer_metadata(&token)?;
-                        provider
-                            .principal_for_metadata(&metadata)
+                        authenticator
+                            .principal_for_bearer(&token)
                             .await
                             .map(|_principal| ())
                             .map_err(|_error| ())
@@ -194,16 +191,6 @@ async fn start_mcp_http(
         }
     };
     Ok(Some(server))
-}
-
-fn bearer_metadata(token: &str) -> Result<MetadataMap, ()> {
-    BearerToken::new(token).map_err(|_error| ())?;
-    let mut metadata = MetadataMap::new();
-    metadata.insert(
-        "authorization",
-        MetadataValue::try_from(format!("Bearer {token}")).map_err(|_error| ())?,
-    );
-    Ok(metadata)
 }
 
 async fn probe_catalog_reachability(endpoint: &str) -> Result<(), Code> {

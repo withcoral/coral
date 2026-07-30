@@ -110,6 +110,17 @@ impl Principal {
         }
     }
 
+    /// Derives the stable Coral user identity for a federated session subject.
+    ///
+    /// The subject alone is the identity: `[auth.provider]` holds exactly one
+    /// OIDC provider (not a list), so every subject Coral ever sees is issued
+    /// by that provider and two subjects cannot collide. The `subject` argument
+    /// is the raw upstream `sub` claim, with no issuer or provider prefix.
+    ///
+    /// The hash preimage is versioned because of that assumption. Admitting a
+    /// second provider would make the provider part of the identity, which
+    /// requires a `-v2` preimage and a migration of every stored user id — the
+    /// derivation cannot change in place without renaming existing users.
     pub(crate) fn for_federated(subject: &str) -> Self {
         let mut identity = Vec::with_capacity(subject.len() + 32);
         identity.extend_from_slice(b"coral-federated-user-v1\0");
@@ -267,6 +278,25 @@ pub trait PrincipalProvider: Send + Sync + std::fmt::Debug {
         &self,
         metadata: &tonic::metadata::MetadataMap,
     ) -> Result<Principal, PrincipalProviderError>;
+}
+
+/// Server-side authenticator for a bearer token held outside gRPC metadata.
+///
+/// A served surface that already parsed the token out of its own transport —
+/// the MCP HTTP `Authorization` header, say — authenticates it here instead of
+/// re-encoding a gRPC [`tonic::metadata::MetadataMap`] for
+/// [`PrincipalProvider`] to take apart again. The two entry points must accept
+/// the same tokens, so an implementation is expected to share one verification
+/// path between them.
+#[tonic::async_trait]
+pub trait BearerAuthenticator: Send + Sync + std::fmt::Debug {
+    /// Returns the principal a bare bearer token authenticates.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PrincipalProviderError`] when the token is malformed, fails
+    /// verification, or principal selection fails.
+    async fn principal_for_bearer(&self, token: &str) -> Result<Principal, PrincipalProviderError>;
 }
 
 /// Default OSS principal provider for local mode.
