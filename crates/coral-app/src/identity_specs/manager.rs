@@ -9,7 +9,7 @@ use coral_spec::{IdentityManifest, IdentitySpecType, parse_identity_manifest_yam
 use crate::bootstrap::AppError;
 use crate::credentials::CredentialsError;
 use crate::credentials::encryption::{CredentialEncryptionKey, CredentialKeyProvider};
-use crate::identity::decrypt_identity_spec_document;
+use crate::identity::spec_document::decrypt_identity_spec_document;
 use crate::identity_specs::inputs::{
     ResolvedIdentitySpecInputs, resolve_identity_spec_inputs_for_use,
 };
@@ -391,7 +391,9 @@ mod tests {
     use crate::credentials::CredentialsError;
     use crate::credentials::encryption::{CredentialEncryptionKey, CredentialKeyProvider};
     use crate::encrypted_document::EncryptedEnvelopeDocument;
-    use crate::identity::{encrypt_identity_spec_document, seal_identity_spec_plaintext_for_test};
+    use crate::identity::spec_document::{
+        encrypt_identity_spec_document, seal_identity_spec_plaintext_for_test,
+    };
     use crate::state::db::{
         CoralDb, CoralTx, DbRepos, IdentitySpecId, IdentitySpecKey, IdentitySpecRecord,
         IdentitySpecScope, ResolvedDatabaseConfig,
