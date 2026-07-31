@@ -726,7 +726,9 @@ impl QueryRuntimeAdapter {
 
                 let prepared = match self.prepare_sql_once(&fallback.ctx, &sql, params).await {
                     Ok(prepared) => prepared,
-                    Err(error) => return Err(self.sql_execution_failure_to_core(error, &sql).await),
+                    Err(error) => {
+                        return Err(self.sql_execution_failure_to_core(error, &sql).await);
+                    }
                 };
                 match self.execute_prepared_once(prepared).await {
                     Ok(execution) => Ok(execution),
@@ -734,8 +736,7 @@ impl QueryRuntimeAdapter {
                         if is_missing_required_filter_failure(&error) {
                             return Err(cap_core_error);
                         }
-                        let fallback_error =
-                            self.sql_execution_failure_to_core(error, &sql).await;
+                        let fallback_error = self.sql_execution_failure_to_core(error, &sql).await;
                         Err(fallback_error)
                     }
                 }
