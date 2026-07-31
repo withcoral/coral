@@ -39,6 +39,7 @@ use crate::sources::model::InstalledSource;
 use crate::sources::runtime_package::{
     RuntimeContractFingerprint, query_source_from_installed_manifest,
 };
+use crate::sources::universal_search::UniversalSearchResolution;
 use crate::state::{AppConfig, AppStateLayout, ConfigStore};
 use crate::task::id::TaskId;
 use crate::telemetry::WORKSPACE_SPAN_ATTRIBUTE;
@@ -87,8 +88,8 @@ enum CredentialResolutionMode {
 struct LoadedQuerySource {
     source: InstalledSource,
     query_source: QuerySource,
-    runtime_schema_name: String,
     runtime_contract_fingerprint: RuntimeContractFingerprint,
+    universal_search_resolution: UniversalSearchResolution,
     credential_material: BTreeMap<String, String>,
 }
 
@@ -103,21 +104,23 @@ fn runtime_schema_owners(
 ) -> Result<BTreeMap<String, String>, AppError> {
     let mut owners = BTreeMap::new();
     for loaded in loaded_sources {
-        match owners.entry(loaded.runtime_schema_name.clone()) {
-            std::collections::btree_map::Entry::Vacant(entry) => {
-                entry.insert(loaded.source.name.as_str().to_string());
+        for runtime_schema_name in loaded.query_source.schema_names() {
+            match owners.entry(runtime_schema_name.to_string()) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert(loaded.source.name.as_str().to_string());
+                }
+                std::collections::btree_map::Entry::Occupied(entry)
+                    if entry.get().as_str() != loaded.source.name.as_str() =>
+                {
+                    return Err(AppError::InvalidInput(format!(
+                        "catalog runtime schema '{}' is owned by both '{}' and '{}'",
+                        entry.key(),
+                        entry.get(),
+                        loaded.source.name
+                    )));
+                }
+                std::collections::btree_map::Entry::Occupied(_) => {}
             }
-            std::collections::btree_map::Entry::Occupied(entry)
-                if entry.get().as_str() != loaded.source.name.as_str() =>
-            {
-                return Err(AppError::InvalidInput(format!(
-                    "catalog runtime schema '{}' is owned by both '{}' and '{}'",
-                    entry.key(),
-                    entry.get(),
-                    loaded.source.name
-                )));
-            }
-            std::collections::btree_map::Entry::Occupied(_) => {}
         }
     }
     Ok(owners)
@@ -342,10 +345,19 @@ impl QueryManager {
                 failed_source_names.extend(failure_recorder.failed_source_names());
                 let runtime_schema_owners =
                     runtime_schema_owners(&source_load.loaded).map_err(QueryManagerError::App)?;
+                let universal_search_resolutions = source_load
+                    .loaded
+                    .iter()
+                    .filter(|source| {
+                        !failed_source_names.contains(source.query_source.source_name())
+                    })
+                    .map(|source| source.universal_search_resolution.clone())
+                    .collect();
                 Ok(CatalogResolution {
                     catalog: runtime.list_catalog(catalog_filter, schema_filter),
                     failed_source_names,
                     runtime_schema_owners,
+                    universal_search_resolutions,
                 })
             },
             |resolution| {
@@ -662,8 +674,8 @@ impl QueryManager {
             LoadedQuerySource {
                 source: source.clone(),
                 query_source: loaded_runtime.query_source,
-                runtime_schema_name: installed.source_spec.schema_name().to_string(),
                 runtime_contract_fingerprint: loaded_runtime.runtime_contract_fingerprint,
+                universal_search_resolution: loaded_runtime.universal_search_resolution,
                 credential_material: stored_secrets,
             },
             installed.candidate.version,
@@ -3241,12 +3253,11 @@ tables:
 ",
         )
         .expect("parse source manifest");
-        let runtime_schema_name = source_spec.schema_name().to_string();
         let loaded_source = LoadedQuerySource {
             source: installed_source,
             query_source: QuerySource::new(source_spec, BTreeMap::new(), BTreeMap::new()),
-            runtime_schema_name,
             runtime_contract_fingerprint: RuntimeContractFingerprint::for_test("contract"),
+            universal_search_resolution: UniversalSearchResolution::empty(source_name.as_str()),
             credential_material: BTreeMap::from([(
                 "API_TOKEN".to_string(),
                 "snapshot-token".to_string(),
@@ -3422,9 +3433,9 @@ tables:
                 credential_revision: uuid::Uuid::default(),
                 origin: SourceOrigin::Bundled,
             },
-            runtime_schema_name: source_spec.schema_name().to_string(),
             query_source: QuerySource::new(source_spec.clone(), BTreeMap::new(), BTreeMap::new()),
             runtime_contract_fingerprint: RuntimeContractFingerprint::for_test("contract"),
+            universal_search_resolution: UniversalSearchResolution::empty("secured_messages"),
             credential_material: BTreeMap::from([(
                 "API_TOKEN".to_string(),
                 "stored-token".to_string(),
@@ -3501,9 +3512,9 @@ tables:
                 credential_revision: uuid::Uuid::default(),
                 origin: SourceOrigin::Bundled,
             },
-            runtime_schema_name: source_spec.schema_name().to_string(),
             query_source: QuerySource::new(source_spec.clone(), BTreeMap::new(), BTreeMap::new()),
             runtime_contract_fingerprint: RuntimeContractFingerprint::for_test("contract"),
+            universal_search_resolution: UniversalSearchResolution::empty("github"),
             credential_material: BTreeMap::new(),
         }
     }

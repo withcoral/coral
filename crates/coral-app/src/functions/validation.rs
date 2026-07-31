@@ -175,6 +175,7 @@ tables:
                     .chain(secondary.components())
                     .cloned()
                     .collect(),
+                universal_search_authorizations: Vec::new(),
             },
             BTreeMap::new(),
             BTreeMap::new(),

@@ -643,6 +643,7 @@ tables:
                     http_component("github_v4_rest"),
                     http_component("github_v4_mcp"),
                 ],
+                universal_search_authorizations: Vec::new(),
             },
             BTreeMap::new(),
             BTreeMap::new(),

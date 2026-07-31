@@ -7,5 +7,6 @@ pub(crate) mod model;
 pub(crate) mod name;
 pub(crate) mod runtime_package;
 pub(crate) mod service;
+pub(crate) mod universal_search;
 
 pub(crate) use name::SourceName;

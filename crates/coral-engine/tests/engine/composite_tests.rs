@@ -7,8 +7,11 @@ use coral_engine::{
     BoundRequestIdentityHttpAuthenticator, CoralQuery, QueryRuntimeConfig, QuerySource,
     RequestIdentityHttpAuthenticatorError, RequestIdentityHttpAuthenticatorFactory,
     RequestIdentitySelectionContext, RequestIdentitySelectionError, RequestIdentitySelector,
-    RuntimeSourceComponent, RuntimeSourcePackage, SelectedRequestIdentity,
+    RuntimeSourceComponent, RuntimeSourcePackage, RuntimeTableFunctionAuthorizationInfo,
+    SelectedRequestIdentity, UniversalSearchAuthorizationDecision,
+    UniversalSearchAuthorizationInfo, UniversalSearchAuthorizationOrigin,
 };
+use coral_spec::backends::http::HttpSourceManifest;
 use coral_spec::parse_source_manifest_yaml;
 use coral_spec::v4::{AcceptedIdentityRequirement, IdentityRequirements};
 use coral_spec::{FilterMode, FilterSpec, ManifestDataType};
@@ -51,6 +54,7 @@ async fn multi_component_source_executes_across_component_tables() {
                 RuntimeSourceComponent::Http(issues),
                 RuntimeSourceComponent::Http(pulls),
             ],
+            universal_search_authorizations: Vec::new(),
         },
         BTreeMap::new(),
         BTreeMap::new(),
@@ -89,6 +93,7 @@ async fn composite_source_rejects_unsupported_lookup_key_component_backend() {
             components: vec![RuntimeSourceComponent::File(
                 file_component_with_lookup_key_filter(),
             )],
+            universal_search_authorizations: Vec::new(),
         },
         BTreeMap::new(),
         BTreeMap::new(),
@@ -139,6 +144,7 @@ async fn multi_component_source_can_register_multiple_schemas() {
                 RuntimeSourceComponent::Http(issues),
                 RuntimeSourceComponent::Http(pulls),
             ],
+            universal_search_authorizations: Vec::new(),
         },
         BTreeMap::new(),
         BTreeMap::new(),
@@ -181,6 +187,7 @@ async fn selected_sources_reject_runtime_schema_collisions() {
                 "issues",
                 "/issues",
             ))],
+            universal_search_authorizations: Vec::new(),
         },
         BTreeMap::new(),
         BTreeMap::new(),
@@ -200,6 +207,7 @@ async fn selected_sources_reject_runtime_schema_collisions() {
                 "pulls",
                 "/pulls",
             ))],
+            universal_search_authorizations: Vec::new(),
         },
         BTreeMap::new(),
         BTreeMap::new(),
@@ -235,6 +243,7 @@ async fn validate_source_reports_only_component_schemas_for_multi_schema_source(
                 RuntimeSourceComponent::Http(issues),
                 RuntimeSourceComponent::Http(pulls),
             ],
+            universal_search_authorizations: Vec::new(),
         },
         BTreeMap::new(),
         BTreeMap::new(),
@@ -413,6 +422,90 @@ async fn identity_gated_source_accepts_spec_id_and_audience_subset() {
     assert!(factory_called.load(Ordering::Relaxed));
 }
 
+#[tokio::test]
+async fn passive_authorization_attaches_by_exact_function_locator() {
+    let source = QuerySource::from_runtime_components(
+        RuntimeSourcePackage {
+            source_name: "github".to_string(),
+            authored_version: None,
+            description: "Composite GitHub runtime package".to_string(),
+            declared_inputs: Vec::new(),
+            test_queries: Vec::new(),
+            identity_requirements: None,
+            components: vec![RuntimeSourceComponent::Http(http_function_component(
+                "https://example.com",
+                "github_rest",
+            ))],
+            universal_search_authorizations: vec![RuntimeTableFunctionAuthorizationInfo {
+                schema_name: "github_rest".to_string(),
+                function_name: "search_issues".to_string(),
+                authorization: UniversalSearchAuthorizationInfo {
+                    source_name: "github".to_string(),
+                    route_id: Some("issue_search".to_string()),
+                    origin: UniversalSearchAuthorizationOrigin::Explicit,
+                    decision: UniversalSearchAuthorizationDecision::Eligible,
+                    query_argument: Some("q".to_string()),
+                    operation_id: "search_issues".to_string(),
+                },
+            }],
+        },
+        BTreeMap::new(),
+        BTreeMap::new(),
+    )
+    .expect("runtime package");
+
+    let catalog =
+        CoralQuery::list_catalog(std::slice::from_ref(&source), test_runtime(), None, None)
+            .await
+            .expect("catalog");
+    let issues = catalog
+        .table_functions
+        .iter()
+        .find(|function| function.function_name == "search_issues")
+        .expect("search_issues");
+    let authorization = issues
+        .universal_search
+        .as_ref()
+        .expect("passive authorization");
+    assert_eq!(issues.schema_name, "github_rest");
+    assert_eq!(authorization.source_name, "github");
+    assert_eq!(authorization.route_id.as_deref(), Some("issue_search"));
+
+    let pulls = catalog
+        .table_functions
+        .iter()
+        .find(|function| function.function_name == "search_pulls")
+        .expect("search_pulls");
+    assert!(pulls.universal_search.is_none());
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT universal_search_json FROM coral.table_functions WHERE schema_name = 'github_rest' AND function_name = 'search_issues'",
+        )
+        .await
+        .expect("authorization catalog query"),
+    );
+    let authorization_json = rows
+        .first()
+        .and_then(|row| row.get("universal_search_json"))
+        .and_then(serde_json::Value::as_str)
+        .expect("authorization JSON");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(authorization_json)
+            .expect("parse authorization JSON"),
+        json!({
+            "source_name": "github",
+            "route_id": "issue_search",
+            "origin": "explicit",
+            "decision": "eligible",
+            "query_argument": "q",
+            "operation_id": "search_issues",
+        })
+    );
+}
+
 fn http_component(
     base_url: &str,
     schema_name: &str,
@@ -476,6 +569,7 @@ fn identity_runtime_source_with_components(
                 .into_iter()
                 .map(RuntimeSourceComponent::Http)
                 .collect(),
+            universal_search_authorizations: Vec::new(),
         },
         BTreeMap::new(),
         BTreeMap::new(),
@@ -549,6 +643,53 @@ impl RequestIdentitySelector for UnexpectedIdentitySelector {
     ) -> Result<SelectedRequestIdentity, RequestIdentitySelectionError> {
         panic!("identity selection should not run")
     }
+}
+
+fn http_function_component(base_url: &str, schema_name: &str) -> HttpSourceManifest {
+    let manifest = parse_source_manifest_yaml(&format!(
+        r"
+name: {schema_name}
+version: 1.0.0
+dsl_version: 3
+backend: http
+base_url: {base_url}
+functions:
+  - name: search_issues
+    kind: search
+    search_limits:
+      default_top_k: 5
+      max_top_k: 10
+      max_calls_per_query: 1
+    args:
+      - name: q
+        required: true
+        bind: {{arg: q}}
+    request:
+      method: GET
+      path: /issues
+    columns:
+      - name: title
+        type: Utf8
+  - name: search_pulls
+    kind: search
+    search_limits:
+      default_top_k: 5
+      max_top_k: 10
+      max_calls_per_query: 1
+    args:
+      - name: q
+        required: true
+        bind: {{arg: q}}
+    request:
+      method: GET
+      path: /pulls
+    columns:
+      - name: title
+        type: Utf8
+"
+    ))
+    .expect("manifest");
+    manifest.as_http().expect("http manifest").clone()
 }
 
 fn file_component_with_lookup_key_filter() -> coral_spec::backends::file::FileSourceManifest {

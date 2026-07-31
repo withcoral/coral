@@ -15,7 +15,7 @@ use coral_spec::v4::IdentityRequirements;
 use coral_spec::{ManifestInputSpec, ValidatedSourceManifest};
 use opentelemetry::Context as OtelContext;
 
-use super::ColumnInfo;
+use super::{ColumnInfo, UniversalSearchAuthorizationInfo};
 use crate::{
     EngineExtensions, RequestIdentityHttpAuthenticatorFactory, RequestIdentitySelectionContext,
     RequestIdentitySelector,
@@ -31,6 +31,7 @@ pub struct QuerySource {
     test_queries: Vec<String>,
     identity_requirements: Option<IdentityRequirements>,
     components: Vec<RuntimeSourceComponent>,
+    universal_search_authorizations: Vec<RuntimeTableFunctionAuthorizationInfo>,
     variables: BTreeMap<String, String>,
     secrets: BTreeMap<String, String>,
 }
@@ -52,6 +53,19 @@ pub struct RuntimeSourcePackage {
     pub identity_requirements: Option<IdentityRequirements>,
     /// Backend-ready runtime components that make up the logical source.
     pub components: Vec<RuntimeSourceComponent>,
+    /// Passive Universal Search decisions keyed by exact query-visible locator.
+    pub universal_search_authorizations: Vec<RuntimeTableFunctionAuthorizationInfo>,
+}
+
+/// Passive Universal Search metadata keyed to one exact table-function locator.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeTableFunctionAuthorizationInfo {
+    /// Query-visible SQL schema containing the function.
+    pub schema_name: String,
+    /// Query-visible table-function name within the schema.
+    pub function_name: String,
+    /// App-resolved passive authorization metadata.
+    pub authorization: UniversalSearchAuthorizationInfo,
 }
 
 /// One backend-ready component inside an app-assembled query source package.
@@ -97,6 +111,7 @@ impl QuerySource {
             test_queries: source_spec.test_queries().to_vec(),
             identity_requirements: None,
             components,
+            universal_search_authorizations: Vec::new(),
             variables,
             secrets,
         }
@@ -135,6 +150,7 @@ impl QuerySource {
             test_queries: package.test_queries,
             identity_requirements: package.identity_requirements,
             components: package.components,
+            universal_search_authorizations: package.universal_search_authorizations,
             variables,
             secrets,
         })
@@ -188,6 +204,12 @@ impl QuerySource {
     /// Returns backend-ready runtime components supplied by the app.
     pub fn components(&self) -> &[RuntimeSourceComponent] {
         &self.components
+    }
+
+    #[must_use]
+    /// Returns app-resolved passive Universal Search metadata in source order.
+    pub fn universal_search_authorizations(&self) -> &[RuntimeTableFunctionAuthorizationInfo] {
+        &self.universal_search_authorizations
     }
 
     #[must_use]
@@ -1236,6 +1258,7 @@ mod tests {
                 test_queries: Vec::new(),
                 identity_requirements: Some(identity_requirements()),
                 components: vec![RuntimeSourceComponent::Http(http_manifest())],
+                universal_search_authorizations: Vec::new(),
             },
             BTreeMap::new(),
             BTreeMap::new(),
@@ -1265,6 +1288,7 @@ mod tests {
                 test_queries: Vec::new(),
                 identity_requirements: Some(requirements.clone()),
                 components: vec![RuntimeSourceComponent::Http(manifest)],
+                universal_search_authorizations: Vec::new(),
             },
             BTreeMap::new(),
             BTreeMap::new(),
