@@ -113,6 +113,11 @@ pub(crate) struct ServerConfig {
     feedback_publisher: Arc<dyn FeedbackPublisher>,
     feature_overrides: FeatureOverrides,
     enable_stderr_logs: bool,
+    // Test seam: a listener the gRPC server adopts instead of binding
+    // `mode.bind_addr()` itself. Lets startup-failure tests hold the reserved
+    // port continuously rather than selecting and releasing it, closing the
+    // race where another process claims the port before the server binds.
+    grpc_listener: Option<Arc<std::net::TcpListener>>,
 }
 
 impl Default for ServerConfig {
@@ -131,6 +136,7 @@ impl ServerConfig {
             feedback_publisher: Arc::new(HostedFeedbackPublisher::new()),
             feature_overrides: FeatureOverrides::default(),
             enable_stderr_logs: false,
+            grpc_listener: None,
         }
     }
 
@@ -353,6 +359,19 @@ impl ServerBuilder {
         self
     }
 
+    /// Adopts an already-bound listener for the gRPC server instead of binding
+    /// the mode's address.
+    ///
+    /// Startup-failure tests use this to reserve a port and hand the live
+    /// listener straight to the server, so the port never lapses between
+    /// selection and bind and a parallel process cannot steal it.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_prebound_grpc_listener(mut self, listener: std::net::TcpListener) -> Self {
+        self.config.grpc_listener = Some(Arc::new(listener));
+        self
+    }
+
     /// Starts the Coral gRPC server on TCP.
     ///
     /// By default, Coral keeps a real local gRPC boundary here so the public
@@ -368,6 +387,7 @@ impl ServerBuilder {
         let layout = env.app_state_layout(self.config.config_dir.clone())?;
         let mode = self.config.resolved_mode(&layout)?;
         let principal_provider = self.config.principal_provider.clone();
+        let grpc_listener = self.config.grpc_listener.clone();
         layout.ensure()?;
         let features = FeatureStore::from_layout(layout.clone())
             .load_with_overrides(&self.config.feature_overrides)?;
@@ -459,6 +479,7 @@ impl ServerBuilder {
             trace_components,
             principal_provider,
             mode,
+            grpc_listener,
         )
         .await
     }
@@ -645,6 +666,7 @@ async fn start_server(
     trace_components: TraceServerComponents,
     principal_provider: Arc<dyn PrincipalProvider>,
     mode: ServerMode,
+    grpc_listener: Option<Arc<std::net::TcpListener>>,
 ) -> Result<RunningServer, AppError> {
     let TraceServerComponents {
         service: trace_service,
@@ -713,7 +735,16 @@ async fn start_server(
         AggregateHealthService::new(EngineReadiness::from_query_manager(health_queries)),
     ));
 
-    let listener = TcpListener::bind(mode.bind_addr()).await?;
+    let listener = match grpc_listener {
+        // A test handed us a live listener; adopt it so the reserved port never
+        // lapses. `from_std` requires the socket be non-blocking.
+        Some(prebound) => {
+            let prebound = prebound.try_clone()?;
+            prebound.set_nonblocking(true)?;
+            TcpListener::from_std(prebound)?
+        }
+        None => TcpListener::bind(mode.bind_addr()).await?,
+    };
     let local_addr = listener.local_addr()?;
     let endpoint_uri = format!("http://{local_addr}");
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
@@ -1722,6 +1753,7 @@ backend = "unsupported"
             },
             Arc::new(LocalPrincipalProvider),
             ServerMode::EphemeralGrpc,
+            None,
         )
         .await
         .expect("start server");
@@ -2169,6 +2201,7 @@ tables:
             TraceServerComponents::default(),
             Arc::new(LocalPrincipalProvider),
             ServerMode::EphemeralGrpc,
+            None,
         )
         .await
         .expect("start server");
@@ -2296,6 +2329,7 @@ tables:
             TraceServerComponents::default(),
             Arc::new(LocalPrincipalProvider),
             ServerMode::EphemeralGrpc,
+            None,
         )
         .await
         .expect("start server");
@@ -2423,6 +2457,7 @@ tables:
             TraceServerComponents::default(),
             Arc::new(LocalPrincipalProvider),
             ServerMode::EphemeralGrpc,
+            None,
         )
         .await
         .expect("start server");

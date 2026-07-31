@@ -22,11 +22,6 @@ fn write_config(temp: &TempDir, config: &str) {
     std::fs::write(temp.path().join("config.toml"), config).expect("write config");
 }
 
-fn available_addr() -> SocketAddr {
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("reserve address");
-    listener.local_addr().expect("reserved address")
-}
-
 fn write_oauth_config(temp: &TempDir, oauth_bind: SocketAddr, mcp_bind: Option<SocketAddr>) {
     let signing_key =
         EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
@@ -268,16 +263,22 @@ async fn oauth_and_mcp_companions_serve_and_release_all_listeners() {
 
 #[tokio::test]
 async fn oauth_start_failure_releases_the_started_grpc_listener() {
-    let grpc_addr = available_addr();
+    let grpc_listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("reserve gRPC port");
+    let grpc_addr = grpc_listener.local_addr().expect("gRPC address");
     let occupied_oauth = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("occupy OAuth port");
     let oauth_addr = occupied_oauth.local_addr().expect("OAuth address");
     let temp = TempDir::new().expect("temp dir");
     write_oauth_config(&temp, oauth_addr, None);
 
+    // Hand the live gRPC listener to the server so the reserved port never
+    // lapses between selection and bind: a parallel process cannot claim it, so
+    // startup fails on the occupied OAuth port and must release the gRPC
+    // listener afterward.
     let result = start(
         ServerBuilder::standalone_grpc(grpc_addr)
             .with_config_dir(temp.path())
-            .with_noop_feedback_uploads(),
+            .with_noop_feedback_uploads()
+            .with_prebound_grpc_listener(grpc_listener),
         McpOptions::default(),
     )
     .await;
