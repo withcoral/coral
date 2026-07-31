@@ -47,9 +47,11 @@ pub use client::{
 pub use error::{ClientError, QueryResultError};
 pub use propagation::{BearerToken, with_task_metadata};
 pub use search::{
-    SearchResponseValue, format_schema_table_equivalent, format_search_response_json,
-    format_search_response_text, format_sql_identifier, format_table_name,
-    minimal_table_function_call_example, optional_catalog_name, search_response_json_value,
+    SearchCapabilities, SearchResponseValue, SearchRouteIdentity,
+    decode_search_capabilities_response, format_schema_table_equivalent,
+    format_search_response_json, format_search_response_text, format_sql_identifier,
+    format_table_name, minimal_table_function_call_example, optional_catalog_name,
+    search_response_json_value,
 };
 pub use sources::{SourceInputDecodeError, manifest_input_from_proto};
 pub use status_error::{

@@ -1,4 +1,4 @@
-//! Shared query metric instruments.
+//! App-owned query and bounded Universal Search metric instruments.
 
 use std::sync::RwLock;
 use std::time::Duration;
@@ -11,6 +11,12 @@ pub(crate) struct Metrics {
     count: Counter<u64>,
     duration: Histogram<f64>,
     rows: Histogram<u64>,
+    search_native_count: Counter<u64>,
+    search_native_duration: Histogram<f64>,
+    search_native_selected_calls: Histogram<u64>,
+    search_native_started_calls: Histogram<u64>,
+    search_native_rows: Histogram<u64>,
+    search_native_diagnostics: Counter<u64>,
 }
 
 impl Metrics {
@@ -28,6 +34,39 @@ impl Metrics {
 
         if let Some(row_count) = row_count {
             self.rows.record(row_count, &attributes);
+        }
+    }
+
+    /// Records only bounded Universal Search fanout dimensions. Callers must
+    /// supply stable enum-derived labels; source identities, query text,
+    /// arguments, URLs, provider messages, and raw errors never enter metrics.
+    pub(crate) fn record_search_native_fanout(
+        &self,
+        disposition: &'static str,
+        duration: Duration,
+        selected_calls: u64,
+        started_calls: u64,
+        returned_rows: u64,
+        diagnostics: &[(&'static str, &'static str)],
+    ) {
+        let attributes = [KeyValue::new("disposition", disposition)];
+        self.search_native_count.add(1, &attributes);
+        self.search_native_duration
+            .record(duration.as_secs_f64(), &attributes);
+        self.search_native_selected_calls
+            .record(selected_calls, &attributes);
+        self.search_native_started_calls
+            .record(started_calls, &attributes);
+        self.search_native_rows.record(returned_rows, &attributes);
+
+        for (state, reason) in diagnostics {
+            self.search_native_diagnostics.add(
+                1,
+                &[
+                    KeyValue::new("state", *state),
+                    KeyValue::new("reason", *reason),
+                ],
+            );
         }
     }
 }
@@ -54,6 +93,36 @@ fn build_metrics(meter: &Meter) -> Metrics {
             .u64_histogram("coral.query.rows")
             .with_unit("{rows}")
             .with_description("Rows returned per query")
+            .build(),
+        search_native_count: meter
+            .u64_counter("coral.search.native.count")
+            .with_unit("{searches}")
+            .with_description("Universal Search requests by bounded native fanout disposition")
+            .build(),
+        search_native_duration: meter
+            .f64_histogram("coral.search.native.duration")
+            .with_unit("s")
+            .with_description("Universal Search request latency by native fanout disposition")
+            .build(),
+        search_native_selected_calls: meter
+            .u64_histogram("coral.search.native.selected_calls")
+            .with_unit("{calls}")
+            .with_description("Provider functions selected for bounded native fanout")
+            .build(),
+        search_native_started_calls: meter
+            .u64_histogram("coral.search.native.started_calls")
+            .with_unit("{calls}")
+            .with_description("Provider function calls started by bounded native fanout")
+            .build(),
+        search_native_rows: meter
+            .u64_histogram("coral.search.native.rows")
+            .with_unit("{rows}")
+            .with_description("Safe native rows returned by Universal Search")
+            .build(),
+        search_native_diagnostics: meter
+            .u64_counter("coral.search.native.diagnostic.count")
+            .with_unit("{diagnostics}")
+            .with_description("Bounded native fanout diagnostic categories")
             .build(),
     }
 }
@@ -258,6 +327,69 @@ mod tests {
                 attributes: &[("operation", "execute_sql"), ("status", "ok")],
                 value: 7,
             }],
+        );
+    }
+
+    #[test]
+    fn native_search_metrics_use_only_bounded_dispositions_and_diagnostics() {
+        super::test_support::reset_metrics();
+        let exporter = super::test_support::install_metrics_exporter();
+        let metrics = metrics();
+
+        metrics.record_search_native_fanout(
+            "enabled",
+            std::time::Duration::from_millis(350),
+            3,
+            2,
+            5,
+            &[("timed_out", "call_timeout"), ("error", "rate_limited")],
+        );
+
+        super::test_support::flush_metrics();
+        let finished = exporter.get_finished_metrics().expect("finished metrics");
+        let disposition = [ExpectedMetricPoint {
+            attributes: &[("disposition", "enabled")],
+            value: 1,
+        }];
+        assert_counter_points(&finished, "coral.search.native.count", &disposition);
+        assert_histogram_counts(&finished, "coral.search.native.duration", &disposition);
+        assert_u64_histogram_points(
+            &finished,
+            "coral.search.native.selected_calls",
+            &[ExpectedMetricPoint {
+                attributes: &[("disposition", "enabled")],
+                value: 3,
+            }],
+        );
+        assert_u64_histogram_points(
+            &finished,
+            "coral.search.native.started_calls",
+            &[ExpectedMetricPoint {
+                attributes: &[("disposition", "enabled")],
+                value: 2,
+            }],
+        );
+        assert_u64_histogram_points(
+            &finished,
+            "coral.search.native.rows",
+            &[ExpectedMetricPoint {
+                attributes: &[("disposition", "enabled")],
+                value: 5,
+            }],
+        );
+        assert_counter_points(
+            &finished,
+            "coral.search.native.diagnostic.count",
+            &[
+                ExpectedMetricPoint {
+                    attributes: &[("reason", "call_timeout"), ("state", "timed_out")],
+                    value: 1,
+                },
+                ExpectedMetricPoint {
+                    attributes: &[("reason", "rate_limited"), ("state", "error")],
+                    value: 1,
+                },
+            ],
         );
     }
 

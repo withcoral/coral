@@ -1,11 +1,13 @@
 ---
 title: "Search with Coral"
-description: "Find the right SQL surface from catalog metadata or values Coral observed during earlier queries."
+description: "Find relevant data from Coral's local search state and, optionally, authorized connected-source search routes."
 ---
 
 `coral search` helps you find where to query before you write SQL. Describe a table, table function, column, filter, or value in natural language, and Coral ranks matching locations in your current workspace.
 
 Catalog search prepares the current workspace query runtime and catalog, then searches a local index. Runtime preparation can read stored credentials, initialize source providers, and inspect file metadata in local or object storage, but it does not execute your data query or return source rows. Optional observed-value search can also match samples collected while executing earlier queries; it only reads Coral's local search state.
+
+Experimental provider fanout can additionally make bounded, read-only calls to connected-source search routes. It is disabled by default: both the `search_provider_fanout` runtime feature and an eligible source-authored route must allow a call.
 
 ## Search the catalog
 
@@ -47,7 +49,7 @@ By default, Coral returns up to 10 results across all search providers. Use `--l
 
 Sometimes you remember a project name, issue ID, deployment status, or another value, but not where it lives. Observed-value search can match that value against data Coral observed in the past and show the query-visible SQL schema, table or table function, and column where it appeared.
 
-Coral builds this memory from values produced by HTTP- and MCP-backed sources while executing SQL queries. It does not crawl your sources in the background or query them when you search.
+Coral builds this memory from values produced by HTTP- and MCP-backed sources while executing queries. The observed-value provider does not crawl your sources in the background or make upstream calls when you search.
 
 <Callout icon="lock" color="#30A46C">
 The observed-values index and its stored values stay in the workspace's local search database. Coral does not upload them to a remote search service. Search matches are still returned to the CLI or MCP client that requested them.
@@ -61,9 +63,25 @@ Observed values are a sample of what Coral has encountered, not a complete index
 
 Observed-value collection, search, and maintenance are experimental and disabled by default. Enable the `observed_values_search` [runtime feature](/reference/configuration#runtime-features).
 
+## Search connected sources
+
+Provider fanout is experimental and disabled by default. Enable it persistently, then restart long-running Coral processes such as `coral mcp-stdio`:
+
+```shellscript
+coral features enable search_provider_fanout
+```
+
+For one process, use `--enable-search-provider-fanout`; use the matching `--disable-search-provider-fanout` override to roll back immediately. Disabling fanout leaves catalog and observed-value search available.
+
+Enabling the feature is only one gate. A source must also expose a valid `kind: search` function that its [Universal Search authorization policy](/reference/source-spec-reference#universal-search-authorization) allows. Search can start at most four eligible functions in one wave, requests at most five rows from each, applies a 750 ms fanout cutoff and a 600 ms per-call timeout, and does not retry or paginate.
+
+Connected-source results are compact, sanitized previews rather than raw rows. A failed or timed-out call is reported through bounded status and diagnostic fields; successful local results remain available, so a response can be partial. When `observed_values_search` is also enabled, successfully decoded source batches may be queued for the same best-effort local observation pipeline used by SQL queries. New observations can affect only later searches, not the response currently being assembled.
+
 ## Use search over MCP
 
-Coral exposes the same search through its read-only `search` MCP tool. Catalog results are always available. When observed-value search is enabled for the MCP server process, the agent also receives typed observed-value matches and can use the matching table and column to write SQL.
+Coral exposes the same search through its MCP `search` tool. Catalog results are always available. When observed-value search is enabled for the MCP server process, the agent also receives typed observed-value matches and can use the matching table and column to write SQL.
+
+The MCP server derives the tool description and annotations from the app's current Search capabilities. It says that no source-authored search function is called when fanout is disabled or has no eligible routes, and warns that Search may call connected sources when eligible routes exist or capability lookup is unavailable. Fanout is marked open-world; when observed-value collection is also enabled, successful source batches can enqueue local observations, so the tool is not described as read-only or idempotent.
 
 Ask for the result you want; you do not need to name the `search` tool:
 

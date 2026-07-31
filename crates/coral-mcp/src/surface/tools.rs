@@ -6,25 +6,26 @@ use super::context::ToolDescriptionContext;
 use super::feedback::feedback_tool;
 use super::function::add_function_tool;
 use super::search::search_tool;
+use super::search_behavior::SearchBehavior;
 use super::sql::sql_tool;
 use super::task::{end_task_tool, start_task_tool, with_task_context_arguments};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ToolAvailability {
     pub(crate) feedback_enabled: bool,
-    pub(crate) observed_values_search_enabled: bool,
+    pub(crate) search_behavior: SearchBehavior,
 }
 
 pub(crate) fn available_tools(
     context: &ToolDescriptionContext,
-    availability: ToolAvailability,
+    availability: &ToolAvailability,
 ) -> Vec<Tool> {
     let mut tools = vec![start_task_tool()];
     tools.extend(
         [
             sql_tool(context),
             add_function_tool(),
-            search_tool(context, availability.observed_values_search_enabled),
+            search_tool(context, &availability.search_behavior),
             list_catalog_tool(context),
             describe_table_tool(),
             list_columns_tool(),
@@ -50,19 +51,23 @@ mod tests {
     use rmcp::model::Tool;
     use serde_json::{Value, json};
 
-    use super::{ToolAvailability, ToolDescriptionContext, available_tools, build_tool_result};
+    use super::{
+        SearchBehavior, ToolAvailability, ToolDescriptionContext, available_tools,
+        build_tool_result,
+    };
+    use crate::surface::{SearchProviderFanoutState, SearchProviderRouteIdentity};
 
     const DEFAULT_TOOLS: ToolAvailability = ToolAvailability {
         feedback_enabled: false,
-        observed_values_search_enabled: false,
+        search_behavior: SearchBehavior::local_only(false),
     };
     const OBSERVED_VALUES_TOOLS: ToolAvailability = ToolAvailability {
         feedback_enabled: false,
-        observed_values_search_enabled: true,
+        search_behavior: SearchBehavior::local_only(true),
     };
     const FEEDBACK_TOOLS: ToolAvailability = ToolAvailability {
         feedback_enabled: true,
-        observed_values_search_enabled: false,
+        search_behavior: SearchBehavior::local_only(false),
     };
 
     #[test]
@@ -94,7 +99,7 @@ mod tests {
         let context =
             ToolDescriptionContext::new(42, 3, vec!["github".to_string(), "linear".to_string()]);
 
-        let tools = available_tools(&context, OBSERVED_VALUES_TOOLS);
+        let tools = available_tools(&context, &OBSERVED_VALUES_TOOLS);
         let sql_tool = tool_by_name(&tools, "sql");
         let sql_description = sql_tool.description.as_deref().expect("sql description");
         assert!(sql_description.contains("Connected sources/schemas include: github, linear"));
@@ -134,8 +139,8 @@ mod tests {
     #[test]
     fn search_tool_advertises_observed_values_only_when_enabled() {
         let context = ToolDescriptionContext::new(1, 0, Vec::new());
-        let disabled_tools = available_tools(&context, DEFAULT_TOOLS);
-        let enabled_tools = available_tools(&context, OBSERVED_VALUES_TOOLS);
+        let disabled_tools = available_tools(&context, &DEFAULT_TOOLS);
+        let enabled_tools = available_tools(&context, &OBSERVED_VALUES_TOOLS);
         let disabled_search = tool_by_name(&disabled_tools, "search");
         let enabled_search = tool_by_name(&enabled_tools, "search");
 
@@ -159,9 +164,66 @@ mod tests {
     }
 
     #[test]
+    fn search_tool_description_and_annotations_follow_capabilities() {
+        let context = ToolDescriptionContext::new(1, 0, vec!["github".to_string()]);
+        let route = || {
+            SearchProviderRouteIdentity::new("github", "search_issues", Some("issues".to_string()))
+        };
+        let cases = [
+            (
+                SearchBehavior::local_only(false),
+                "does not execute DSL v4 connected-source routes",
+                (Some(true), Some(true), Some(false)),
+            ),
+            (
+                SearchBehavior::local_only(true),
+                "does not execute DSL v4 connected-source routes",
+                (Some(true), Some(true), Some(false)),
+            ),
+            (
+                SearchBehavior::new(false, SearchProviderFanoutState::enabled(vec![route()], 0)),
+                "function=\"github.search_issues\", source=\"github\", route=\"issues\"",
+                (Some(true), Some(true), Some(true)),
+            ),
+            (
+                SearchBehavior::new(true, SearchProviderFanoutState::enabled(vec![route()], 0)),
+                "may be stored locally as observations",
+                (Some(false), Some(false), Some(true)),
+            ),
+            (
+                SearchBehavior::new(false, SearchProviderFanoutState::UnknownMayCall),
+                "capability is currently unknown",
+                (Some(false), Some(false), Some(true)),
+            ),
+        ];
+
+        for (search_behavior, expected_description, annotations) in cases {
+            let tools = available_tools(
+                &context,
+                &ToolAvailability {
+                    feedback_enabled: false,
+                    search_behavior,
+                },
+            );
+            let search = tool_by_name(&tools, "search");
+            assert!(
+                search
+                    .description
+                    .as_deref()
+                    .expect("search description")
+                    .contains(expected_description)
+            );
+            let actual = search.annotations.as_ref().expect("search annotations");
+            assert_eq!(actual.read_only_hint, annotations.0);
+            assert_eq!(actual.idempotent_hint, annotations.1);
+            assert_eq!(actual.open_world_hint, annotations.2);
+        }
+    }
+
+    #[test]
     fn search_output_schema_accepts_native_contract_and_feature_off_omission() {
         let context = ToolDescriptionContext::new(1, 0, Vec::new());
-        let tools = available_tools(&context, DEFAULT_TOOLS);
+        let tools = available_tools(&context, &DEFAULT_TOOLS);
         let search = tool_by_name(&tools, "search");
         let schema = Value::Object(
             search
@@ -252,7 +314,7 @@ mod tests {
     #[test]
     fn available_tools_decorate_task_aware_tools() {
         let context = ToolDescriptionContext::new(1, 0, Vec::new());
-        let tools = available_tools(&context, DEFAULT_TOOLS);
+        let tools = available_tools(&context, &DEFAULT_TOOLS);
         let sql_tool = tool_by_name(&tools, "sql");
         let task_id_schema = sql_tool
             .input_schema
@@ -317,7 +379,7 @@ mod tests {
     #[test]
     fn available_tools_add_feedback_last_when_enabled() {
         let context = ToolDescriptionContext::new(1, 0, Vec::new());
-        let tools = available_tools(&context, FEEDBACK_TOOLS);
+        let tools = available_tools(&context, &FEEDBACK_TOOLS);
 
         assert_eq!(
             tools.last().map(|tool| tool.name.as_ref()),
@@ -337,7 +399,7 @@ mod tests {
     #[test]
     fn available_tools_keep_default_order() {
         let context = ToolDescriptionContext::new(1, 0, Vec::new());
-        let tools = available_tools(&context, DEFAULT_TOOLS);
+        let tools = available_tools(&context, &DEFAULT_TOOLS);
         let names = tools
             .iter()
             .map(|tool| tool.name.as_ref())
@@ -365,7 +427,7 @@ mod tests {
             .collect::<Vec<_>>();
         let context = ToolDescriptionContext::new(1, 0, names);
 
-        let tools = available_tools(&context, DEFAULT_TOOLS);
+        let tools = available_tools(&context, &DEFAULT_TOOLS);
         let description = tool_by_name(&tools, "sql")
             .description
             .as_deref()
@@ -381,7 +443,7 @@ mod tests {
     #[test]
     fn feedback_tool_always_requires_task_context() {
         let context = ToolDescriptionContext::new(1, 0, Vec::new());
-        let tools = available_tools(&context, FEEDBACK_TOOLS);
+        let tools = available_tools(&context, &FEEDBACK_TOOLS);
         let feedback = tools.last().expect("feedback tool");
         let properties = feedback
             .input_schema
@@ -398,7 +460,7 @@ mod tests {
     fn all_advertised_tools_have_object_input_schemas() {
         let context = ToolDescriptionContext::new(1, 0, Vec::new());
 
-        for tool in available_tools(&context, FEEDBACK_TOOLS) {
+        for tool in available_tools(&context, &FEEDBACK_TOOLS) {
             assert_eq!(
                 tool.input_schema.get("type"),
                 Some(&Value::String("object".into()))

@@ -1,26 +1,28 @@
 //! RMCP server implementation for Coral's stdio MCP surface.
 
-use std::sync::Arc;
+use std::{future::Future, pin::Pin, sync::Arc};
 
 use coral_api::v1::{
     AddFunctionRequest, CatalogItemKind as ProtoCatalogItemKind, DescribeTableRequest,
     DescribeTableResponse, EndTaskRequest, ExecuteSqlRequest, FunctionWriteSurface,
-    ListCatalogRequest, ListCatalogResponse, ListColumnsRequest, ListSourcesRequest,
-    PaginationRequest, QueryGuideReadContext, SearchRequest, Source, StartTaskRequest,
-    SubmitFeedbackRequest, TableSummary as ProtoTableSummary, TaskStatus as ProtoTaskStatus,
-    catalog_item,
+    GetSearchCapabilitiesRequest, ListCatalogRequest, ListCatalogResponse, ListColumnsRequest,
+    ListSourcesRequest, PaginationRequest, QueryGuideReadContext, SearchRequest, Source,
+    StartTaskRequest, SubmitFeedbackRequest, TableSummary as ProtoTableSummary,
+    TaskStatus as ProtoTaskStatus, catalog_item,
 };
 use coral_client::{
-    AppClient, CatalogClient, FeedbackClient, FunctionClient, QueryClient, SearchClient,
-    SourceClient, TaskClient, batches_to_json_rows_json_safe_numbers, decode_execute_sql_response,
-    default_workspace, search_response_json_value, with_task_metadata,
+    AppClient, CatalogClient, FeedbackClient, FunctionClient, QueryClient, SearchCapabilities,
+    SearchClient, SourceClient, TaskClient, batches_to_json_rows_json_safe_numbers,
+    decode_execute_sql_response, decode_search_capabilities_response, default_workspace,
+    search_response_json_value, with_task_metadata,
 };
 use rmcp::{
     ErrorData, ServerHandler,
     model::{
-        CallToolRequestParams, CallToolResult, Implementation, ListResourcesResult,
-        ListToolsResult, PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResult,
-        ResourceContents, ServerCapabilities, ServerInfo,
+        CallToolRequestParams, CallToolResult, Implementation, InitializeRequestParams,
+        InitializeResult, ListResourcesResult, ListToolsResult, PaginatedRequestParams,
+        ReadResourceRequestParams, ReadResourceResult, ResourceContents, ServerCapabilities,
+        ServerInfo,
     },
     service::{RequestContext, RoleServer},
 };
@@ -36,16 +38,17 @@ use crate::{
     guide_block::GuideBlockState,
     surface::{
         AddFunctionArguments, CatalogToolKind, EndTaskArguments, FeedbackStoredValue,
-        SqlBatchValue, SqlGuideBlockValue, SqlGuideValue, SqlQueryResultValue, StartTaskArguments,
-        TaskEndedValue, TaskId, TaskStartedValue, TaskStatus, ToolAvailability,
-        ToolDescriptionContext, ToolName, add_function_arguments, available_tools,
-        build_tool_result, describe_table_arguments, describe_table_value, end_task_arguments,
-        feedback_arguments, function_added_value, guide_resource, guide_resource_content,
-        initial_instructions, list_catalog_arguments, list_catalog_value, list_columns_arguments,
-        list_columns_table_fallback_value, list_columns_value, render_function_artifact,
-        required_task_id_argument, required_tool_intent_argument, search_arguments, sql_arguments,
-        start_task_arguments, status_to_error_data, tables_resource, tables_resource_content,
-        tool_error_from_status, tool_error_result,
+        SearchBehavior, SearchProviderFanoutState, SearchProviderRouteIdentity, SqlBatchValue,
+        SqlGuideBlockValue, SqlGuideValue, SqlQueryResultValue, StartTaskArguments, TaskEndedValue,
+        TaskId, TaskStartedValue, TaskStatus, ToolAvailability, ToolDescriptionContext, ToolName,
+        add_function_arguments, available_tools, build_tool_result, describe_table_arguments,
+        describe_table_value, end_task_arguments, feedback_arguments, function_added_value,
+        guide_resource, guide_resource_content, initial_instructions, list_catalog_arguments,
+        list_catalog_value, list_columns_arguments, list_columns_table_fallback_value,
+        list_columns_value, render_function_artifact, required_task_id_argument,
+        required_tool_intent_argument, search_arguments, sql_arguments, start_task_arguments,
+        status_to_error_data, tables_resource, tables_resource_content, tool_error_from_status,
+        tool_error_result,
     },
     telemetry,
 };
@@ -56,6 +59,79 @@ const CATALOG_KIND_ALL: ProtoCatalogItemKind = ProtoCatalogItemKind::Unspecified
 const CATALOG_KIND_TABLE: ProtoCatalogItemKind = ProtoCatalogItemKind::Table;
 const CATALOG_KIND_TABLE_FUNCTION: ProtoCatalogItemKind = ProtoCatalogItemKind::TableFunction;
 const MAX_INITIAL_QUERY_EXAMPLES: usize = 5;
+
+pub(crate) trait SearchCapabilityLoader: Send + Sync {
+    fn load(
+        &self,
+        workspace: coral_api::v1::Workspace,
+    ) -> Pin<Box<dyn Future<Output = Result<SearchCapabilities, tonic::Status>> + Send + 'static>>;
+}
+
+#[derive(Clone)]
+pub(crate) struct RpcSearchCapabilityLoader {
+    search: SearchClient,
+}
+
+impl RpcSearchCapabilityLoader {
+    pub(crate) fn new(search: SearchClient) -> Self {
+        Self { search }
+    }
+}
+
+impl SearchCapabilityLoader for RpcSearchCapabilityLoader {
+    fn load(
+        &self,
+        workspace: coral_api::v1::Workspace,
+    ) -> Pin<Box<dyn Future<Output = Result<SearchCapabilities, tonic::Status>> + Send + 'static>>
+    {
+        let mut search = self.search.clone();
+        Box::pin(async move {
+            search
+                .get_search_capabilities(Request::new(GetSearchCapabilitiesRequest {
+                    workspace: Some(workspace),
+                }))
+                .await
+                .map(|response| decode_search_capabilities_response(response.into_inner()))
+        })
+    }
+}
+
+async fn load_search_provider_fanout(
+    loader: &dyn SearchCapabilityLoader,
+    workspace: coral_api::v1::Workspace,
+    fanout_may_be_enabled: bool,
+) -> SearchProviderFanoutState {
+    match loader.load(workspace).await {
+        Ok(capabilities) => search_provider_fanout_from_capabilities(capabilities),
+        Err(status) => {
+            tracing::warn!(
+                error = %status,
+                "failed to load Universal Search capabilities for MCP discovery"
+            );
+            SearchProviderFanoutState::fallback(fanout_may_be_enabled)
+        }
+    }
+}
+
+fn search_provider_fanout_from_capabilities(
+    capabilities: SearchCapabilities,
+) -> SearchProviderFanoutState {
+    if !capabilities.provider_fanout_enabled {
+        return SearchProviderFanoutState::Disabled;
+    }
+    let routes = capabilities
+        .eligible_routes
+        .into_iter()
+        .map(|route| {
+            SearchProviderRouteIdentity::new(
+                route.source_name,
+                route.function_name,
+                route.authored_route_id,
+            )
+        })
+        .collect();
+    SearchProviderFanoutState::enabled(routes, capabilities.omitted_route_count)
+}
 
 enum ToolCallOutcome {
     Payload(Value),
@@ -278,6 +354,8 @@ pub(crate) struct CoralMcpServer {
     task: TaskClient,
     guide_block: Arc<GuideBlockState>,
     startup_context: McpStartupContext,
+    startup_search_behavior: SearchBehavior,
+    search_capabilities: Arc<dyn SearchCapabilityLoader>,
     options: McpOptions,
 }
 
@@ -331,18 +409,79 @@ impl CoralMcpServer {
         startup_context: McpStartupContext,
         guide_block: Arc<GuideBlockState>,
     ) -> Self {
+        let search = app.search_client();
+        let search_capabilities = Arc::new(RpcSearchCapabilityLoader::new(search.clone()));
+        Self::new_with_startup_context_and_capability_loader(
+            app,
+            search,
+            options,
+            startup_context,
+            guide_block,
+            search_capabilities,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_with_search_capability_loader(
+        app: &AppClient,
+        options: McpOptions,
+        search_capabilities: Arc<dyn SearchCapabilityLoader>,
+    ) -> Self {
+        let startup_context = McpStartupContext::from_options(&options);
+        Self::new_with_startup_context_and_capability_loader(
+            app,
+            app.search_client(),
+            options,
+            startup_context,
+            Arc::new(GuideBlockState::default()),
+            search_capabilities,
+        )
+    }
+
+    fn new_with_startup_context_and_capability_loader(
+        app: &AppClient,
+        search: SearchClient,
+        options: McpOptions,
+        startup_context: McpStartupContext,
+        guide_block: Arc<GuideBlockState>,
+        search_capabilities: Arc<dyn SearchCapabilityLoader>,
+    ) -> Self {
+        let startup_provider_fanout =
+            SearchProviderFanoutState::fallback(options.search_provider_fanout_enabled);
+        let startup_search_behavior = SearchBehavior::new(
+            options.observed_values_search_enabled,
+            startup_provider_fanout,
+        );
         Self {
             source: app.source_client(),
             catalog: app.catalog_client(),
             query: app.query_client(),
-            search: app.search_client(),
+            search,
             function: app.function_client(),
             feedback: app.feedback_client(),
             task: app.task_client(),
             guide_block,
             startup_context,
+            startup_search_behavior,
+            search_capabilities,
             options,
         }
+    }
+
+    fn server_info(&self, search_behavior: &SearchBehavior) -> ServerInfo {
+        ServerInfo::new(
+            ServerCapabilities::builder()
+                .enable_resources()
+                .enable_tools()
+                .build(),
+        )
+        .with_server_info(Implementation::new("coral", env!("CARGO_PKG_VERSION")))
+        .with_instructions(initial_instructions(
+            &self.workspace().name,
+            self.startup_context.source_names(),
+            self.startup_context.query_examples(),
+            search_behavior,
+        ))
     }
 
     fn tool_allowed(&self, tool: ToolName) -> bool {
@@ -357,6 +496,16 @@ impl CoralMcpServer {
             .workspace
             .clone()
             .unwrap_or_else(default_workspace)
+    }
+
+    async fn load_search_behavior(&self) -> SearchBehavior {
+        let provider_fanout = load_search_provider_fanout(
+            self.search_capabilities.as_ref(),
+            self.workspace(),
+            self.options.search_provider_fanout_enabled,
+        )
+        .await;
+        SearchBehavior::new(self.options.observed_values_search_enabled, provider_fanout)
     }
 
     async fn load_sources(&self) -> Result<Vec<Source>, tonic::Status> {
@@ -913,19 +1062,17 @@ impl CoralMcpServer {
 
 impl ServerHandler for CoralMcpServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(
-            ServerCapabilities::builder()
-                .enable_resources()
-                .enable_tools()
-                .build(),
-        )
-        .with_server_info(Implementation::new("coral", env!("CARGO_PKG_VERSION")))
-        .with_instructions(initial_instructions(
-            &self.workspace().name,
-            self.startup_context.source_names(),
-            self.startup_context.query_examples(),
-            self.options.observed_values_search_enabled,
-        ))
+        self.server_info(&self.startup_search_behavior)
+    }
+
+    async fn initialize(
+        &self,
+        request: InitializeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<InitializeResult, ErrorData> {
+        context.peer.set_peer_info(request);
+        let search_behavior = self.load_search_behavior().await;
+        Ok(self.server_info(&search_behavior))
     }
 
     async fn list_tools(
@@ -935,11 +1082,14 @@ impl ServerHandler for CoralMcpServer {
     ) -> Result<ListToolsResult, ErrorData> {
         let span = telemetry::list_tools_span(self.options.trace_parent.as_deref());
         telemetry::instrument_protocol(span, async {
-            let (visible_table_count, visible_function_count) = self
-                .load_catalog_counts()
-                .await
-                .map_err(|status| status_to_error_data(&status))?;
-            let source_names = match self.load_sources().await {
+            let (catalog_counts, sources, search_behavior) = tokio::join!(
+                self.load_catalog_counts(),
+                self.load_sources(),
+                self.load_search_behavior()
+            );
+            let (visible_table_count, visible_function_count) =
+                catalog_counts.map_err(|status| status_to_error_data(&status))?;
+            let source_names = match sources {
                 Ok(sources) => sources.into_iter().map(|source| source.name).collect(),
                 Err(status) => {
                     tracing::warn!(
@@ -956,9 +1106,9 @@ impl ServerHandler for CoralMcpServer {
             );
             let tools = available_tools(
                 &tool_context,
-                ToolAvailability {
+                &ToolAvailability {
                     feedback_enabled: self.options.feedback_enabled,
-                    observed_values_search_enabled: self.options.observed_values_search_enabled,
+                    search_behavior,
                 },
             );
             Ok(ListToolsResult::with_all_items(tools))
@@ -1010,12 +1160,19 @@ impl ServerHandler for CoralMcpServer {
     ) -> Result<ListResourcesResult, ErrorData> {
         let span = telemetry::list_resources_span(self.options.trace_parent.as_deref());
         telemetry::instrument_protocol(span, async {
-            let (sources, visible_table_count, visible_function_count) = self
-                .load_sources_and_catalog_counts()
-                .await
-                .map_err(|status| status_to_error_data(&status))?;
+            let (sources_and_counts, search_behavior) = tokio::join!(
+                self.load_sources_and_catalog_counts(),
+                self.load_search_behavior()
+            );
+            let (sources, visible_table_count, visible_function_count) =
+                sources_and_counts.map_err(|status| status_to_error_data(&status))?;
             Ok(ListResourcesResult::with_all_items(vec![
-                guide_resource(&sources, visible_table_count, visible_function_count),
+                guide_resource(
+                    &sources,
+                    visible_table_count,
+                    visible_function_count,
+                    &search_behavior,
+                ),
                 tables_resource(visible_table_count),
             ]))
         })
@@ -1034,17 +1191,19 @@ impl ServerHandler for CoralMcpServer {
         telemetry::instrument_protocol(span, async {
             match request.uri.as_str() {
                 "coral://guide" => {
-                    let (sources, tables, table_function_schema_names) = self
-                        .load_sources_and_guide_catalog()
-                        .await
-                        .map_err(|status| status_to_error_data(&status))?;
+                    let (sources_and_catalog, search_behavior) = tokio::join!(
+                        self.load_sources_and_guide_catalog(),
+                        self.load_search_behavior()
+                    );
+                    let (sources, tables, table_function_schema_names) =
+                        sources_and_catalog.map_err(|status| status_to_error_data(&status))?;
                     Ok(ReadResourceResult::new(vec![
                         ResourceContents::text(
                             guide_resource_content(
                                 &sources,
                                 &tables,
                                 &table_function_schema_names,
-                                self.options.observed_values_search_enabled,
+                                &search_behavior,
                             ),
                             request.uri,
                         )
@@ -1187,8 +1346,56 @@ fn normalize_query_examples(
 
 #[cfg(test)]
 mod startup_context_tests {
-    use super::{MAX_INITIAL_QUERY_EXAMPLES, McpStartupContext, task_id_from_backend_response};
+    use coral_client::{SearchCapabilities, SearchRouteIdentity as ClientSearchRouteIdentity};
+
+    use super::{
+        MAX_INITIAL_QUERY_EXAMPLES, McpStartupContext, search_provider_fanout_from_capabilities,
+        task_id_from_backend_response,
+    };
     use crate::McpQueryExample;
+    use crate::surface::{SearchProviderFanoutState, SearchProviderRouteIdentity};
+
+    #[test]
+    fn app_capabilities_are_the_only_provider_inventory_source() {
+        let state = search_provider_fanout_from_capabilities(SearchCapabilities {
+            provider_fanout_enabled: true,
+            eligible_routes: vec![ClientSearchRouteIdentity {
+                source_name: "github".to_string(),
+                function_name: "search_issues".to_string(),
+                authored_route_id: Some("issues".to_string()),
+            }],
+            truncated: false,
+            omitted_route_count: 2,
+        });
+
+        assert_eq!(
+            state,
+            SearchProviderFanoutState::Enabled {
+                routes: vec![SearchProviderRouteIdentity::new(
+                    "github",
+                    "search_issues",
+                    Some("issues".to_string()),
+                )],
+                omitted_route_count: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn disabled_app_capability_ignores_any_malformed_route_inventory() {
+        let state = search_provider_fanout_from_capabilities(SearchCapabilities {
+            provider_fanout_enabled: false,
+            eligible_routes: vec![ClientSearchRouteIdentity {
+                source_name: "should-not-leak".to_string(),
+                function_name: "search".to_string(),
+                authored_route_id: None,
+            }],
+            truncated: true,
+            omitted_route_count: 1,
+        });
+
+        assert_eq!(state, SearchProviderFanoutState::Disabled);
+    }
 
     #[test]
     fn task_id_from_backend_response_canonicalizes_uuid() {

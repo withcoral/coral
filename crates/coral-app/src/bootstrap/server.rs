@@ -58,6 +58,7 @@ use crate::identity::{LocalPrincipalProvider, PrincipalProvider};
 use crate::query::manager::QueryManager;
 use crate::query::service::QueryService;
 use crate::search::manager::SearchManager;
+use crate::search::native::provider::{NativeFanoutProvider, NativeFanoutRegistration};
 use crate::search::observed::SearchObservationHandle;
 use crate::search::service::SearchService;
 use crate::sources::manager::SourceManager;
@@ -351,6 +352,10 @@ impl ServerBuilder {
     /// Returns [`AppError`] if the config directory cannot be determined,
     /// required directories cannot be created, the config or credential backends
     /// fail to initialize, or the gRPC server cannot be started.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the composition root keeps construction and dependency ordering explicit"
+    )]
     pub async fn start(self) -> Result<RunningServer, AppError> {
         let env = AppEnvironment::discover();
         let layout = env.app_state_layout(self.config.config_dir.clone())?;
@@ -423,6 +428,12 @@ impl ServerBuilder {
         let observed_values_search_enabled = features.enabled(Feature::ObservedValuesSearch);
         let search_observations =
             observed_values_search_enabled.then(|| SearchObservationHandle::new(layout.clone()));
+        let (source_manager, query_manager, native_fanout) = configure_search_runtime(
+            source_manager,
+            query_manager,
+            search_observations.as_ref(),
+            features.enabled(Feature::SearchProviderFanout),
+        );
         let search_manager = SearchManager::with_diagnostic_reporter(
             layout,
             &config_store,
@@ -431,7 +442,7 @@ impl ServerBuilder {
             diagnostic_reporter,
             CatalogDiscovery::new(query_manager.clone()),
             workspace_lifecycle_lock,
-            None,
+            native_fanout,
         );
         let trace_components = trace_components_for_store(active_trace_store);
         start_server(
@@ -478,6 +489,28 @@ fn trace_components_for_store(
             service: Some(TraceService::new(store.dir, store.retention)),
         }
     })
+}
+
+fn configure_search_runtime(
+    source_manager: SourceManager,
+    query_manager: QueryManager,
+    search_observations: Option<&SearchObservationHandle>,
+    provider_fanout_enabled: bool,
+) -> (
+    SourceManager,
+    QueryManager,
+    Option<NativeFanoutRegistration>,
+) {
+    let (source_manager, query_manager) = match search_observations {
+        Some(search_observations) => (
+            source_manager.with_search_observation_handle(search_observations.clone()),
+            query_manager.with_search_observation_handle(search_observations.clone()),
+        ),
+        None => (source_manager, query_manager),
+    };
+    let native_fanout =
+        provider_fanout_enabled.then(|| NativeFanoutProvider::registration(query_manager.clone()));
+    (source_manager, query_manager, native_fanout)
 }
 
 async fn init_database(layout: &AppStateLayout) -> Result<CoralDb, AppError> {
@@ -556,6 +589,15 @@ impl RunningServer {
     pub async fn wait_for_exit(&self) {
         let mut task_finished = self.task_finished.clone();
         let _finished = task_finished.wait_for(|finished| *finished).await;
+    }
+
+    #[must_use]
+    /// Returns the process-fixed provider-fanout feature state used by Search.
+    ///
+    /// This is part of the narrow sibling-facing bootstrap seam used by the
+    /// local CLI to keep MCP capability fallbacks aligned with this server.
+    pub const fn search_provider_fanout_enabled(&self) -> bool {
+        self.search.provider_fanout_enabled()
     }
 
     /// Shuts the server down and waits for the background task to finish.
@@ -664,13 +706,6 @@ async fn start_server(
         feedback,
         task,
     } = dependencies;
-    let (source, query) = match search_observations.as_ref() {
-        Some(search_observations) => (
-            source.with_search_observation_handle(search_observations.clone()),
-            query.with_search_observation_handle(search_observations.clone()),
-        ),
-        None => (source, query),
-    };
     let source_service = SourceService::new(source, query.clone(), workspace.clone());
     let workspace_service = WorkspaceService::new(workspace);
     let catalog_service = CatalogService::new(query.clone(), task.clone());
@@ -960,13 +995,15 @@ mod tests {
     use std::time::Duration;
 
     use coral_api::v1::query_service_client::QueryServiceClient;
+    use coral_api::v1::search_service_client::SearchServiceClient;
     use coral_api::v1::source_service_client::SourceServiceClient;
     use coral_api::v1::task_service_client::TaskServiceClient;
     use coral_api::v1::trace_service_client::TraceServiceClient;
     use coral_api::v1::{
-        EndTaskRequest, ExecuteSqlRequest, ImportSourceRequest, ImportSourceResponse,
-        ListSourcesRequest, ListTracesRequest, StartTaskRequest, TaskStatus, Workspace,
-        import_source_response,
+        EndTaskRequest, ExecuteSqlRequest, GetSearchCapabilitiesRequest, ImportSourceRequest,
+        ImportSourceResponse, ListSourcesRequest, ListTracesRequest, SearchProvider,
+        SearchProviderState, SearchRequest, StartTaskRequest, TaskStatus, Workspace,
+        import_source_response, search_result,
     };
     use coral_api::{HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE};
     use coral_engine::QueryRuntimeContext;
@@ -974,6 +1011,8 @@ mod tests {
     use tokio::sync::{oneshot, watch};
     use tonic::transport::Endpoint;
     use tonic::{Code, Request};
+    use wiremock::matchers::{method, path, query_param};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::{
         RunningServer, ServerBuilder, ServerDependencies, ServerMode, StaticAsset,
@@ -991,6 +1030,7 @@ mod tests {
         ObservedValuesQueueJob, ObservedValuesSurfaceKind, SearchObservationHandle,
         SqliteObservedValuesStore,
     };
+    use crate::sources::SourceName;
     use crate::sources::manager::SourceManager;
     use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig, run_state_migrations};
     use crate::state::{AppStateLayout, ConfigStore};
@@ -1047,6 +1087,417 @@ enabled = false
             .lock()
             .expect("search observation mutex")
             .is_some()
+    }
+
+    async fn import_search_source_manifest(
+        source_client: &mut SourceServiceClient<tonic::transport::Channel>,
+        manifest_yaml: String,
+        expected_name: &str,
+    ) {
+        let mut import_stream = source_client
+            .import_source(Request::new(ImportSourceRequest {
+                workspace: Some(default_workspace()),
+                manifest_yaml,
+                variables: Vec::new(),
+                secrets: Vec::new(),
+                oauth_credential_retrievals: Vec::new(),
+            }))
+            .await
+            .expect("import source")
+            .into_inner();
+        let imported = import_stream
+            .message()
+            .await
+            .expect("import source stream")
+            .and_then(|response| match response.event {
+                Some(import_source_response::Event::Source(source)) => Some(source),
+                _ => None,
+            })
+            .expect("import source response");
+        assert_eq!(imported.name, expected_name);
+    }
+
+    async fn import_authorized_search_source(
+        source_client: &mut SourceServiceClient<tonic::transport::Channel>,
+        base_url: &str,
+    ) {
+        let descriptor_dir = TempDir::new().expect("descriptor temp dir");
+        let openapi_file = descriptor_dir.path().join("tickets-openapi.yaml");
+        std::fs::write(
+            &openapi_file,
+            r"
+openapi: 3.0.3
+info:
+  title: Tickets
+  version: 1.0.0
+paths:
+  /search:
+    get:
+      tags:
+        - search
+      operationId: tickets
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Search results
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    title:
+                      type: string
+                  required:
+                    - title
+",
+        )
+        .expect("write v4 Search descriptor");
+        import_search_source_manifest(
+            source_client,
+            format!(
+                r"
+name: tickets
+dsl_version: 4
+universal_search:
+  routes:
+    primary:
+      execute: true
+      target:
+        operation_id: tickets
+      query_input:
+        location: query
+        name: q
+      result:
+        title: /title
+surface:
+  type: openapi
+  file: {}
+  base_url: {base_url}
+",
+                openapi_file.display()
+            ),
+            "tickets",
+        )
+        .await;
+    }
+
+    async fn import_legacy_v3_search_source(
+        source_client: &mut SourceServiceClient<tonic::transport::Channel>,
+        base_url: &str,
+    ) {
+        import_search_source_manifest(
+            source_client,
+            format!(
+                r"
+name: legacy_tickets
+version: 1.0.0
+dsl_version: 3
+backend: http
+base_url: {base_url}
+functions:
+  - name: search_legacy_tickets
+    kind: search
+    search_limits:
+      default_top_k: 5
+      max_top_k: 5
+      max_calls_per_query: 1
+    args:
+      - name: query
+        required: true
+        bind: {{arg: query}}
+    request:
+      method: GET
+      path: /legacy-search
+      query:
+        - name: q
+          from: arg
+          key: query
+    columns:
+      - name: title
+        type: Utf8
+"
+            ),
+            "legacy_tickets",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn search_provider_fanout_is_default_off_in_bootstrap() {
+        if !loopback_sockets_available() {
+            return;
+        }
+        let temp = TempDir::new().expect("temp dir");
+        let upstream = MockServer::start().await;
+        let config_dir = temp.path().join("coral-config");
+        disable_internal_tracing(&config_dir);
+        let server = ServerBuilder::new()
+            .with_config_dir(config_dir.clone())
+            .start()
+            .await
+            .expect("start server");
+        assert!(!server.search_provider_fanout_enabled());
+        let channel = Endpoint::from_shared(server.endpoint_uri().to_string())
+            .expect("endpoint")
+            .connect()
+            .await
+            .expect("connect");
+        let mut source_client = SourceServiceClient::new(channel.clone());
+        let mut search_client = SearchServiceClient::new(channel);
+        import_authorized_search_source(&mut source_client, &upstream.uri()).await;
+
+        let search = search_client
+            .search(Request::new(SearchRequest {
+                workspace: Some(default_workspace()),
+                query: "payment".to_string(),
+                limit: 5,
+            }))
+            .await
+            .expect("search with provider fanout disabled")
+            .into_inner();
+        let native_status = search
+            .provider_statuses
+            .iter()
+            .find(|status| status.provider == SearchProvider::NativeFanout as i32)
+            .expect("native provider status");
+        assert_eq!(native_status.state, SearchProviderState::NotEnabled as i32);
+        assert!(
+            upstream
+                .received_requests()
+                .await
+                .expect("record upstream requests")
+                .is_empty(),
+            "source authorisation must remain inert while provider fanout is disabled"
+        );
+
+        let layout = AppStateLayout::discover(Some(config_dir)).expect("layout");
+        std::fs::remove_file(layout.manifest_file(
+            &WorkspaceName::default(),
+            &SourceName::parse("tickets").expect("source name"),
+        ))
+        .expect("remove manifest to prove disabled capability does not scan sources");
+
+        let capabilities = search_client
+            .get_search_capabilities(Request::new(GetSearchCapabilitiesRequest {
+                workspace: Some(default_workspace()),
+            }))
+            .await
+            .expect("capabilities")
+            .into_inner();
+
+        assert!(!capabilities.provider_fanout_enabled);
+        assert!(capabilities.eligible_routes.is_empty());
+        assert!(!capabilities.truncated);
+        assert_eq!(capabilities.omitted_route_count, 0);
+        server.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test]
+    async fn process_override_enables_provider_fanout_capability() {
+        if !loopback_sockets_available() {
+            return;
+        }
+        let temp = TempDir::new().expect("temp dir");
+        let upstream = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "payment"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!([{"title": "Payment outage"}])),
+            )
+            .mount(&upstream)
+            .await;
+        let config_dir = temp.path().join("coral-config");
+        disable_internal_tracing(&config_dir);
+        let mut overrides = FeatureOverrides::default();
+        overrides.set(Feature::SearchProviderFanout, true);
+        let server = ServerBuilder::new()
+            .with_config_dir(config_dir)
+            .with_feature_overrides(overrides)
+            .start()
+            .await
+            .expect("start server");
+        assert!(server.search_provider_fanout_enabled());
+        let channel = Endpoint::from_shared(server.endpoint_uri().to_string())
+            .expect("endpoint")
+            .connect()
+            .await
+            .expect("connect");
+        let mut source_client = SourceServiceClient::new(channel.clone());
+        let mut search_client = SearchServiceClient::new(channel);
+        import_authorized_search_source(&mut source_client, &upstream.uri()).await;
+        import_legacy_v3_search_source(&mut source_client, &upstream.uri()).await;
+
+        let capabilities = search_client
+            .get_search_capabilities(Request::new(GetSearchCapabilitiesRequest {
+                workspace: Some(default_workspace()),
+            }))
+            .await
+            .expect("capabilities")
+            .into_inner();
+
+        assert!(capabilities.provider_fanout_enabled);
+        assert_eq!(capabilities.eligible_routes.len(), 1);
+        let route = &capabilities.eligible_routes[0];
+        assert_eq!(route.source_name, "tickets");
+        assert_eq!(route.function_name, "search_tickets");
+        assert_eq!(route.authored_route_id.as_deref(), Some("primary"));
+        assert!(!capabilities.truncated);
+        assert_eq!(capabilities.omitted_route_count, 0);
+
+        let search = search_client
+            .search(Request::new(SearchRequest {
+                workspace: Some(default_workspace()),
+                query: "payment".to_string(),
+                limit: 5,
+            }))
+            .await
+            .expect("search with provider fanout enabled")
+            .into_inner();
+        let native_status = search
+            .provider_statuses
+            .iter()
+            .find(|status| status.provider == SearchProvider::NativeFanout as i32)
+            .expect("native provider status");
+        assert_eq!(
+            native_status.state,
+            SearchProviderState::ResultsFound as i32
+        );
+        let native_result = search
+            .results
+            .iter()
+            .find_map(|result| match result.payload.as_ref() {
+                Some(search_result::Payload::NativeResult(native)) => Some(native),
+                _ => None,
+            })
+            .expect("native Search result");
+        assert_eq!(native_result.title.as_deref(), Some("Payment outage"));
+        let requests = upstream
+            .received_requests()
+            .await
+            .expect("record upstream requests");
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request.url.path() == "/search")
+                .count(),
+            1,
+            "enabled bootstrap should execute exactly one selected DSL v4 route"
+        );
+        assert!(
+            requests
+                .iter()
+                .all(|request| request.url.path() != "/legacy-search"),
+            "DSL v3 search functions must never be used as provider-fanout routes"
+        );
+        server.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test]
+    async fn all_fanout_observed_feature_combinations_enforce_runtime_gates() {
+        if !loopback_sockets_available() {
+            return;
+        }
+        let upstream = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("q", "payment"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!([{"title": "Payment outage"}])),
+            )
+            .mount(&upstream)
+            .await;
+
+        for (fanout_enabled, observed_enabled) in
+            [(false, false), (false, true), (true, false), (true, true)]
+        {
+            let temp = TempDir::new().expect("temp dir");
+            let config_dir = temp.path().join("coral-config");
+            disable_internal_tracing(&config_dir);
+            let mut overrides = FeatureOverrides::default();
+            overrides.set(Feature::SearchProviderFanout, fanout_enabled);
+            overrides.set(Feature::ObservedValuesSearch, observed_enabled);
+            let server = ServerBuilder::new()
+                .with_config_dir(config_dir)
+                .with_feature_overrides(overrides)
+                .start()
+                .await
+                .expect("start server");
+            let channel = Endpoint::from_shared(server.endpoint_uri().to_string())
+                .expect("endpoint")
+                .connect()
+                .await
+                .expect("connect");
+            let mut source_client = SourceServiceClient::new(channel.clone());
+            let mut search_client = SearchServiceClient::new(channel);
+            import_authorized_search_source(&mut source_client, &upstream.uri()).await;
+            let requests_before = upstream
+                .received_requests()
+                .await
+                .expect("record requests before Search")
+                .len();
+
+            let search = search_client
+                .search(Request::new(SearchRequest {
+                    workspace: Some(default_workspace()),
+                    query: "payment".to_string(),
+                    limit: 5,
+                }))
+                .await
+                .expect("search")
+                .into_inner();
+            let native_state = provider_state(&search, SearchProvider::NativeFanout);
+            let observed_state = provider_state(&search, SearchProvider::ObservedValues);
+            assert_eq!(
+                native_state,
+                if fanout_enabled {
+                    SearchProviderState::ResultsFound
+                } else {
+                    SearchProviderState::NotEnabled
+                }
+            );
+            assert_eq!(
+                observed_state,
+                if observed_enabled {
+                    SearchProviderState::Empty
+                } else {
+                    SearchProviderState::NotEnabled
+                }
+            );
+            let requests_after = upstream
+                .received_requests()
+                .await
+                .expect("record requests after Search")
+                .len();
+            assert_eq!(
+                requests_after - requests_before,
+                usize::from(fanout_enabled),
+                "unexpected upstream calls for fanout={fanout_enabled}, observed={observed_enabled}"
+            );
+            server.shutdown().await.expect("shutdown");
+        }
+    }
+
+    fn provider_state(
+        response: &coral_api::v1::SearchResponse,
+        provider: SearchProvider,
+    ) -> SearchProviderState {
+        let raw = response
+            .provider_statuses
+            .iter()
+            .find(|status| status.provider == provider as i32)
+            .unwrap_or_else(|| panic!("missing {provider:?} provider status"))
+            .state;
+        SearchProviderState::try_from(raw).expect("known provider state")
     }
 
     #[derive(Debug)]
@@ -1682,6 +2133,10 @@ backend = "unsupported"
         );
         let search_observations = SearchObservationHandle::new(layout.clone());
         let lifecycle_lock = workspace_manager.lifecycle_lock();
+        let source_manager =
+            source_manager.with_search_observation_handle(search_observations.clone());
+        let query_manager =
+            query_manager.with_search_observation_handle(search_observations.clone());
         let search_manager = SearchManager::new(
             layout.clone(),
             &config_store,
@@ -2135,6 +2590,10 @@ tables:
         );
         let search_observations = SearchObservationHandle::new(layout.clone());
         let lifecycle_lock = workspace_manager.lifecycle_lock();
+        let source_manager =
+            source_manager.with_search_observation_handle(search_observations.clone());
+        let query_manager =
+            query_manager.with_search_observation_handle(search_observations.clone());
         let search_manager = SearchManager::new(
             layout.clone(),
             &config_store,
@@ -2263,6 +2722,10 @@ tables:
         );
         let search_observations = SearchObservationHandle::new(layout.clone());
         let lifecycle_lock = workspace_manager.lifecycle_lock();
+        let source_manager =
+            source_manager.with_search_observation_handle(search_observations.clone());
+        let query_manager =
+            query_manager.with_search_observation_handle(search_observations.clone());
         let search_manager = SearchManager::new(
             layout.clone(),
             &config_store,
@@ -2391,6 +2854,10 @@ tables:
         );
         let search_observations = SearchObservationHandle::new(layout.clone());
         let lifecycle_lock = workspace_manager.lifecycle_lock();
+        let source_manager =
+            source_manager.with_search_observation_handle(search_observations.clone());
+        let query_manager =
+            query_manager.with_search_observation_handle(search_observations.clone());
         let search_manager = SearchManager::new(
             layout.clone(),
             &config_store,

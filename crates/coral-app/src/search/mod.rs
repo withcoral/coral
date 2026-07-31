@@ -1,5 +1,6 @@
 //! App-owned Universal Search orchestration.
 
+pub(crate) mod capabilities;
 pub(crate) mod catalog;
 mod content_safety;
 pub(crate) mod engine;

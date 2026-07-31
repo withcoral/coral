@@ -106,6 +106,11 @@ pub struct McpOptions {
     pub feedback_enabled: bool,
     /// Advertise observed-value search behavior across MCP discovery surfaces.
     pub observed_values_search_enabled: bool,
+    /// Effective-process hint used only when the Search capability RPC fails.
+    ///
+    /// A true hint makes MCP fall back to a conservative may-call-connected-
+    /// sources description instead of making a false local-only claim.
+    pub search_provider_fanout_enabled: bool,
     /// Optional W3C traceparent used to parent each MCP request span.
     pub trace_parent: Option<String>,
     /// Installed source names to include in MCP initialize instructions.

@@ -11,6 +11,8 @@ use coral_api::v1::{
     ClearSearchDataResponse as ProtoClearSearchDataResponse, ColumnHint,
     DrainSearchQueueRequest as ProtoDrainSearchQueueRequest,
     DrainSearchQueueResponse as ProtoDrainSearchQueueResponse,
+    GetSearchCapabilitiesRequest as ProtoGetSearchCapabilitiesRequest,
+    GetSearchCapabilitiesResponse as ProtoGetSearchCapabilitiesResponse,
     NativeSearchAttribute as ProtoNativeSearchAttribute,
     NativeSearchDiagnostic as ProtoNativeSearchDiagnostic,
     NativeSearchDiagnosticReason as ProtoNativeSearchDiagnosticReason,
@@ -27,6 +29,7 @@ use coral_api::v1::{
     SearchProviderCoverage, SearchProviderState, SearchProviderStatus,
     SearchRequest as ProtoSearchRequest, SearchResponse as ProtoSearchResponse,
     SearchResult as ProtoSearchResult, SearchResultTruncation,
+    SearchRouteIdentity as ProtoSearchRouteIdentity,
     SearchStorageCleanupResult as ProtoSearchStorageCleanupResult,
     SearchSurfaceKind as ProtoSearchSurfaceKind, SearchTableColumnPreview,
     SearchTableColumnPreviewColumn,
@@ -35,6 +38,7 @@ use tonic::{Request, Response, Status};
 
 use crate::bootstrap::{AppError, app_status};
 use crate::query::QueryAttribution;
+use crate::search::capabilities::SearchCapabilities;
 use crate::search::maintenance::{
     CatalogClearMaintenanceResult, CatalogRebuildMaintenanceResult,
     ClearSearchDataRequest as DomainClearSearchDataRequest,
@@ -107,6 +111,32 @@ impl SearchServiceApi for SearchService {
         .await
     }
 
+    async fn get_search_capabilities(
+        &self,
+        request: Request<ProtoGetSearchCapabilitiesRequest>,
+    ) -> Result<Response<ProtoGetSearchCapabilitiesResponse>, Status> {
+        let span = grpc_span(&request);
+        let search = self.search.clone();
+        let tasks = self.tasks.clone();
+        let request_context = request_context(&request)?.clone();
+        Box::pin(instrument_grpc(span, async move {
+            let request = request.into_inner();
+            let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            let attribution = QueryAttribution::new(
+                tasks
+                    .validate_attribution(&workspace_name, request_context.task_id())
+                    .await
+                    .map_err(task_manager_status)?,
+            );
+            let capabilities = search
+                .capabilities(&workspace_name, &attribution)
+                .await
+                .map_err(search_status)?;
+            Ok(Response::new(search_capabilities_to_proto(capabilities)))
+        }))
+        .await
+    }
+
     async fn rebuild_search_index(
         &self,
         request: Request<ProtoRebuildSearchIndexRequest>,
@@ -167,6 +197,25 @@ impl SearchServiceApi for SearchService {
             Ok(Response::new(clear_response_to_proto(response)))
         })
         .await
+    }
+}
+
+fn search_capabilities_to_proto(
+    capabilities: SearchCapabilities,
+) -> ProtoGetSearchCapabilitiesResponse {
+    ProtoGetSearchCapabilitiesResponse {
+        provider_fanout_enabled: capabilities.provider_fanout_enabled,
+        eligible_routes: capabilities
+            .eligible_routes
+            .into_iter()
+            .map(|route| ProtoSearchRouteIdentity {
+                source_name: route.source_name,
+                function_name: route.function_name,
+                authored_route_id: route.authored_route_id,
+            })
+            .collect(),
+        truncated: capabilities.truncated,
+        omitted_route_count: capabilities.omitted_route_count,
     }
 }
 
@@ -667,14 +716,19 @@ mod tests {
         NativeSearchDiagnosticReason as ProtoNativeSearchDiagnosticReason,
         NativeSearchDiagnosticState as ProtoNativeSearchDiagnosticState,
         SearchClearTarget as ProtoSearchClearTarget,
-        SearchProviderState as ProtoSearchProviderState, search_clear_target,
+        SearchProviderState as ProtoSearchProviderState,
+        SearchRouteIdentity as ProtoSearchRouteIdentity, search_clear_target,
     };
     use prost::Message as _;
     use tonic::Code;
 
     use super::{
         Payload, clear_target_from_proto, native_diagnostic_reason_to_proto,
-        native_diagnostic_state_to_proto, provider_status_to_proto, search_payload_to_proto,
+        native_diagnostic_state_to_proto, provider_status_to_proto, search_capabilities_to_proto,
+        search_payload_to_proto,
+    };
+    use crate::search::capabilities::{
+        SearchCapabilities, SearchRouteIdentity as DomainSearchRouteIdentity,
     };
     use crate::search::maintenance::SearchClearTarget;
     use crate::search::result::{
@@ -713,6 +767,27 @@ mod tests {
             proto.coverage.is_none(),
             "skipped provider coverage should be absent"
         );
+    }
+
+    #[test]
+    fn capability_route_mapping_exposes_one_source_identity() {
+        let response = search_capabilities_to_proto(SearchCapabilities {
+            provider_fanout_enabled: true,
+            eligible_routes: vec![DomainSearchRouteIdentity {
+                source_name: "github".to_string(),
+                function_name: "search_issues".to_string(),
+                authored_route_id: Some("issues".to_string()),
+            }],
+            truncated: false,
+            omitted_route_count: 0,
+        });
+        let route = response.eligible_routes.first().expect("capability route");
+        let route = ProtoSearchRouteIdentity::decode(route.encode_to_vec().as_slice())
+            .expect("capability route protobuf round trip");
+
+        assert_eq!(route.source_name, "github");
+        assert_eq!(route.function_name, "search_issues");
+        assert_eq!(route.authored_route_id.as_deref(), Some("issues"));
     }
 
     #[test]

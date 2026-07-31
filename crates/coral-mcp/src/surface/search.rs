@@ -2,13 +2,14 @@ use std::sync::Arc;
 
 use coral_client::SearchResponseValue;
 use rmcp::ErrorData;
-use rmcp::model::{Tool, ToolAnnotations};
+use rmcp::model::Tool;
 use schemars::JsonSchema;
 use serde_json::{Map, Value};
 
 use super::arguments::{optional_u32_argument, required_string_argument};
 use super::context::ToolDescriptionContext;
 use super::schema::{tool_input_schema, tool_output_schema};
+use super::search_behavior::SearchBehavior;
 use super::tool_names::ToolName;
 
 const DEFAULT_SEARCH_LIMIT: u32 = 10;
@@ -16,7 +17,6 @@ const MIN_SEARCH_LIMIT: u32 = 1;
 const MAX_SEARCH_LIMIT: u32 = 50;
 const CATALOG_QUERY_DESCRIPTION: &str =
     "Natural language text for finding relevant Coral catalog entries.";
-const OBSERVED_VALUES_QUERY_DESCRIPTION: &str = "Natural language text for finding relevant Coral catalog entries or values observed during earlier queries.";
 
 #[derive(JsonSchema)]
 pub(crate) struct SearchArguments {
@@ -35,7 +35,7 @@ pub(crate) struct SearchArguments {
 
 pub(crate) fn search_tool(
     context: &ToolDescriptionContext,
-    observed_values_search_enabled: bool,
+    search_behavior: &SearchBehavior,
 ) -> Tool {
     let mut input_schema = tool_input_schema::<SearchArguments>();
     let query_schema = Arc::make_mut(&mut input_schema)
@@ -46,29 +46,16 @@ pub(crate) fn search_tool(
         .expect("search query input schema");
     query_schema.insert(
         "description".to_string(),
-        Value::String(
-            if observed_values_search_enabled {
-                OBSERVED_VALUES_QUERY_DESCRIPTION
-            } else {
-                CATALOG_QUERY_DESCRIPTION
-            }
-            .to_string(),
-        ),
+        Value::String(search_behavior.query_description().to_string()),
     );
 
     Tool::new(
         ToolName::Search.as_str(),
-        search_description(context, observed_values_search_enabled),
+        search_description(context, search_behavior),
         input_schema,
     )
     .with_raw_output_schema(tool_output_schema::<SearchResponseValue<'static>>())
-    .with_annotations(
-        ToolAnnotations::with_title("Search Coral")
-            .read_only(true)
-            .destructive(false)
-            .idempotent(true)
-            .open_world(false),
-    )
+    .with_annotations(search_behavior.annotations())
 }
 
 pub(crate) fn search_arguments(
@@ -88,15 +75,12 @@ pub(crate) fn search_arguments(
 
 fn search_description(
     context: &ToolDescriptionContext,
-    observed_values_search_enabled: bool,
+    search_behavior: &SearchBehavior,
 ) -> String {
-    let search_scope = if observed_values_search_enabled {
-        "tables, table functions, columns, filters, and locally observed values"
-    } else {
-        "tables, table functions, columns, and filters in Coral's local catalog"
-    };
+    let search_scope = search_behavior.local_search_scope();
+    let provider_behavior = search_behavior.provider_behavior_sentence();
     format!(
-        "Find relevant Coral {search_scope}. {} {} table(s) and {} table function(s) are currently visible. Runtime preparation may read stored credentials, initialize source providers, and inspect file metadata in local or object storage, but it does not execute your data query or return source rows. Returns typed results plus provider statuses; use `sql` to query current data.",
+        "Find relevant Coral {search_scope}. {} {} table(s) and {} table function(s) are currently visible. Runtime preparation may read stored credentials, initialize source providers, and inspect file metadata in local or object storage, but it does not execute your data query or return source rows. {provider_behavior} Returns typed results plus provider statuses; use `sql` to query current data.",
         context.connected_sources_sentence(),
         context.visible_table_count,
         context.visible_function_count

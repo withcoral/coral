@@ -31,24 +31,24 @@ use coral_api::v1::{
     DeleteWorkspaceRequest, DeleteWorkspaceResponse, DescribeTableRequest, DescribeTableResponse,
     DiscoverSourcesRequest, DiscoverSourcesResponse, DrainSearchQueueRequest,
     DrainSearchQueueResponse, EndTaskRequest, EndTaskResponse, ExecuteSqlRequest,
-    ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse, GetSourceInfoRequest,
-    GetSourceInfoResponse, GetSourceRequest, GetSourceResponse, ImportSourceRequest,
-    ImportSourceResponse, ListCatalogRequest, ListCatalogResponse, ListColumnsRequest,
-    ListColumnsResponse, ListFunctionsRequest, ListFunctionsResponse, ListSourcesRequest,
-    ListSourcesResponse, ListWorkspacesRequest, ListWorkspacesResponse, NativeSearchAttribute,
-    NativeSearchDiagnostic, NativeSearchDiagnosticReason, NativeSearchDiagnosticState,
-    NativeSearchResult, ObservedDrainResult, ObservedRebuildResult, PaginationRequest,
-    PaginationResponse, QueryPlan, RebuildSearchIndexRequest, RebuildSearchIndexResponse,
-    SearchCatalogRequest, SearchCatalogResponse, SearchFieldRole, SearchMaintenanceResult,
-    SearchMaintenanceState, SearchProvider, SearchProviderCoverage, SearchProviderState,
-    SearchRequest, SearchResponse, SearchResult, SearchResultTruncation,
-    SearchStorageCleanupResult, SearchSurfaceKind, SearchTableColumnPreview,
-    SearchTableColumnPreviewColumn, Source, SourceCredentialStorage, SourceInfo, SourceInputSpec,
-    SourceOrigin, SourceSecretInput, StartTaskRequest, StartTaskResponse, Table, TableFunction,
-    TableSummary, Task as ProtoTask, TaskEnd as ProtoTaskEnd, TaskStatus, ValidateSourceRequest,
-    ValidateSourceResponse, Workspace, catalog_item, create_bundled_source_with_o_auth_response,
-    import_source_response, search_maintenance_result, search_result,
-    source_input_spec::Input as ProtoSourceInput,
+    ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse, GetSearchCapabilitiesRequest,
+    GetSearchCapabilitiesResponse, GetSourceInfoRequest, GetSourceInfoResponse, GetSourceRequest,
+    GetSourceResponse, ImportSourceRequest, ImportSourceResponse, ListCatalogRequest,
+    ListCatalogResponse, ListColumnsRequest, ListColumnsResponse, ListFunctionsRequest,
+    ListFunctionsResponse, ListSourcesRequest, ListSourcesResponse, ListWorkspacesRequest,
+    ListWorkspacesResponse, NativeSearchAttribute, NativeSearchDiagnostic,
+    NativeSearchDiagnosticReason, NativeSearchDiagnosticState, NativeSearchResult,
+    ObservedDrainResult, ObservedRebuildResult, PaginationRequest, PaginationResponse, QueryPlan,
+    RebuildSearchIndexRequest, RebuildSearchIndexResponse, SearchCatalogRequest,
+    SearchCatalogResponse, SearchFieldRole, SearchMaintenanceResult, SearchMaintenanceState,
+    SearchProvider, SearchProviderCoverage, SearchProviderState, SearchRequest, SearchResponse,
+    SearchResult, SearchResultTruncation, SearchStorageCleanupResult, SearchSurfaceKind,
+    SearchTableColumnPreview, SearchTableColumnPreviewColumn, Source, SourceCredentialStorage,
+    SourceInfo, SourceInputSpec, SourceOrigin, SourceSecretInput, StartTaskRequest,
+    StartTaskResponse, Table, TableFunction, TableSummary, Task as ProtoTask,
+    TaskEnd as ProtoTaskEnd, TaskStatus, ValidateSourceRequest, ValidateSourceResponse, Workspace,
+    catalog_item, create_bundled_source_with_o_auth_response, import_source_response,
+    search_maintenance_result, search_result, source_input_spec::Input as ProtoSourceInput,
 };
 use coral_api::{
     CORAL_ERROR_DOMAIN, CORAL_ERROR_REASON_SOURCE_NOT_FOUND, CORAL_TASK_ID_METADATA_KEY,
@@ -757,6 +757,7 @@ impl<T> MockResult<T> {
 pub(crate) struct MockServerConfig {
     execute_sql_override: Option<MockResult<ExecuteSqlResponse>>,
     search: MockResult<SearchResponse>,
+    search_capabilities: MockResult<GetSearchCapabilitiesResponse>,
     rebuild_search_index: MockResult<RebuildSearchIndexResponse>,
     drain_search_queue: MockResult<DrainSearchQueueResponse>,
     clear_search_data: MockResult<ClearSearchDataResponse>,
@@ -775,6 +776,12 @@ impl Default for MockServerConfig {
         Self {
             execute_sql_override: None,
             search: MockResult::ok(mock_search_response()),
+            search_capabilities: MockResult::ok(GetSearchCapabilitiesResponse {
+                provider_fanout_enabled: false,
+                eligible_routes: Vec::new(),
+                truncated: false,
+                omitted_route_count: 0,
+            }),
             rebuild_search_index: MockResult::ok(mock_rebuild_search_index_response()),
             drain_search_queue: MockResult::ok(mock_drain_search_queue_response()),
             clear_search_data: MockResult::ok(mock_clear_search_data_response()),
@@ -821,6 +828,23 @@ impl Default for MockServerConfig {
 impl MockServerConfig {
     pub(crate) fn with_search_response(mut self, response: SearchResponse) -> Self {
         self.search = MockResult::ok(response);
+        self
+    }
+
+    pub(crate) fn with_search_capabilities_response(
+        mut self,
+        response: GetSearchCapabilitiesResponse,
+    ) -> Self {
+        self.search_capabilities = MockResult::ok(response);
+        self
+    }
+
+    pub(crate) fn with_search_capabilities_error(
+        mut self,
+        code: Code,
+        message: impl Into<String>,
+    ) -> Self {
+        self.search_capabilities = MockResult::err(code, message);
         self
     }
 
@@ -944,6 +968,7 @@ fn list_catalog_response(request: &ListCatalogRequest) -> ListCatalogResponse {
 struct Captured {
     execute_sql: Mutex<Vec<ExecuteSqlRequest>>,
     search: Mutex<Vec<SearchRequest>>,
+    search_capabilities: Mutex<Vec<GetSearchCapabilitiesRequest>>,
     execute_sql_task_ids: Mutex<Vec<Option<String>>>,
     rebuild_search_index: Mutex<Vec<RebuildSearchIndexRequest>>,
     drain_search_queue: Mutex<Vec<DrainSearchQueueRequest>>,
@@ -1005,6 +1030,23 @@ impl SearchService for MockSearchService {
             .push(request.into_inner());
         Ok(Response::new(
             self.config.search.clone().into_tonic_result()?,
+        ))
+    }
+
+    async fn get_search_capabilities(
+        &self,
+        request: Request<GetSearchCapabilitiesRequest>,
+    ) -> Result<Response<GetSearchCapabilitiesResponse>, Status> {
+        self.captured
+            .search_capabilities
+            .lock()
+            .expect("search capabilities capture")
+            .push(request.into_inner());
+        Ok(Response::new(
+            self.config
+                .search_capabilities
+                .clone()
+                .into_tonic_result()?,
         ))
     }
 

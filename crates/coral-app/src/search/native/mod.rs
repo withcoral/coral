@@ -12,6 +12,7 @@ use serde::Serialize;
 use crate::search::result::{NativeSearchAttribute, NativeSearchResult};
 
 pub(super) const MAX_RESULTS_PER_FUNCTION: usize = 5;
+pub(crate) const MAX_SELECTED_FUNCTIONS: usize = 4;
 pub(super) const MAX_RESULTS_PER_REQUEST: usize = 20;
 pub(super) const MAX_RESULT_BYTES: usize = 8 * 1_024;
 pub(super) const MAX_REQUEST_BYTES: usize = 256 * 1_024;

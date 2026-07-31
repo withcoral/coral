@@ -6,6 +6,7 @@ use rmcp::model::{AnnotateAble, RawResource, Resource};
 use serde::Serialize;
 use serde_json::Value;
 
+use super::search_behavior::SearchBehavior;
 use super::source_names::{connected_source_names_text, prompt_safe_text};
 use super::values::queryable_table_summary_values;
 use crate::McpQueryExample;
@@ -22,14 +23,17 @@ pub(crate) fn initial_instructions(
     workspace_name: &str,
     source_names: &[String],
     query_examples: &[McpQueryExample],
-    observed_values_search_enabled: bool,
+    search_behavior: impl Into<SearchBehavior>,
 ) -> String {
+    let search_behavior = search_behavior.into();
     let workspace_name = prompt_safe_text(workspace_name);
-    let search_instruction = if observed_values_search_enabled {
+    let local_search_instruction = if search_behavior.observed_values_search_enabled() {
         OBSERVED_VALUES_SEARCH_INSTRUCTION
     } else {
         CATALOG_SEARCH_INSTRUCTION
     };
+    let provider_behavior = search_behavior.provider_behavior_sentence();
+    let search_instruction = format!("{local_search_instruction} {provider_behavior}");
     let mut instructions = format!(
         "{INITIAL_INSTRUCTIONS_PREFIX} {search_instruction} {INITIAL_INSTRUCTIONS_SUFFIX}\n\n{TASK_LIFECYCLE_INSTRUCTION}\n\nCurrent Coral workspace: {workspace_name}."
     );
@@ -50,12 +54,14 @@ pub(crate) fn guide_resource(
     sources: &[Source],
     visible_table_count: usize,
     visible_function_count: usize,
+    search_behavior: &SearchBehavior,
 ) -> Resource {
     RawResource::new("coral://guide", "guide")
         .with_description(guide_resource_description(
             sources,
             visible_table_count,
             visible_function_count,
+            search_behavior,
         ))
         .with_mime_type("text/markdown")
         .no_annotation()
@@ -72,8 +78,9 @@ pub(crate) fn guide_resource_content(
     sources: &[Source],
     tables: &[TableSummary],
     table_function_schema_names: &[String],
-    observed_values_search_enabled: bool,
+    search_behavior: impl Into<SearchBehavior>,
 ) -> String {
+    let search_behavior = search_behavior.into();
     let mut sources_section = String::from("## Available Schemas\n\n");
     sources_section.push_str(
         "- coral: System catalog schema. Query `coral.tables`, `coral.columns`, `coral.filters`, `coral.table_functions`, and `coral.inputs` like database catalog tables to discover queryable tables, table functions, columns, and filter metadata.\n",
@@ -129,22 +136,27 @@ FROM coral.columns WHERE catalog_name = {catalog_name} AND schema_name = {schema
         },
     );
 
-    let search_discovery_guidance = if observed_values_search_enabled {
+    let local_search_discovery_guidance = if search_behavior.observed_values_search_enabled() {
         "Search catalog metadata and local observations, inspect tables, parameterized table functions, and columns, then answer with set-based SQL."
     } else {
         "Search catalog metadata, inspect tables, parameterized table functions, and columns, then answer with set-based SQL."
     };
-    let search_tool_guidance = if observed_values_search_enabled {
+    let local_search_tool_guidance = if search_behavior.observed_values_search_enabled() {
         "- `search` finds relevant tables, table functions, columns, filters, and values Coral observed during earlier queries. Observed-value matches are local routing clues, not proof that the value is still present or absent from a connected source."
     } else {
         "- `search` finds relevant tables, table functions, columns, and filters in Coral's local catalog."
     };
+    let provider_behavior = search_behavior.provider_behavior_sentence();
+    let search_tool_guidance = format!("{local_search_tool_guidance} {provider_behavior}");
 
     GUIDE_TEMPLATE
         .replace("{{SOURCES_SECTION}}", &sources_section)
         .replace("{{COLUMNS_EXAMPLE}}", &columns_example)
-        .replace("{{SEARCH_DISCOVERY_GUIDANCE}}", search_discovery_guidance)
-        .replace("{{SEARCH_TOOL_GUIDANCE}}", search_tool_guidance)
+        .replace(
+            "{{SEARCH_DISCOVERY_GUIDANCE}}",
+            local_search_discovery_guidance,
+        )
+        .replace("{{SEARCH_TOOL_GUIDANCE}}", &search_tool_guidance)
 }
 
 pub(crate) fn tables_resource_content(
@@ -164,9 +176,11 @@ fn guide_resource_description(
     sources: &[Source],
     visible_table_count: usize,
     visible_function_count: usize,
+    search_behavior: &SearchBehavior,
 ) -> String {
+    let provider_behavior = search_behavior.provider_behavior_sentence();
     format!(
-        "Database workflow and catalog discovery guidance for {} configured connection(s), {} visible table(s), and {} visible table function(s).",
+        "Database workflow and catalog discovery guidance for {} configured connection(s), {} visible table(s), and {} visible table function(s). {provider_behavior}",
         sources.len(),
         visible_table_count,
         visible_function_count
@@ -306,6 +320,7 @@ mod tests {
     use super::{guide_resource_content, initial_instructions};
     use crate::McpQueryExample;
     use crate::surface::values::format_schema_table_equivalent;
+    use crate::surface::{SearchBehavior, SearchProviderFanoutState, SearchProviderRouteIdentity};
 
     fn source(name: &str) -> Source {
         Source {
@@ -612,6 +627,44 @@ WHERE title LIKE '%bug%'",
         assert!(enabled.contains("values Coral observed during earlier queries"));
         assert!(!disabled.contains("{{SEARCH_"));
         assert!(!enabled.contains("{{SEARCH_"));
+    }
+
+    #[test]
+    fn initialize_and_guide_render_app_owned_provider_inventory() {
+        let behavior = SearchBehavior::new(
+            true,
+            SearchProviderFanoutState::enabled(
+                vec![SearchProviderRouteIdentity::new(
+                    "github",
+                    "search_issues",
+                    Some("issues".to_string()),
+                )],
+                3,
+            ),
+        );
+
+        let instructions = initial_instructions("default", &[], &[], &behavior);
+        assert!(instructions.contains("bounded read-only calls"));
+        assert!(instructions.contains("function=\"github.search_issues\""));
+        assert!(instructions.contains("plus 3 additional eligible DSL v4 route(s)"));
+        assert!(instructions.contains("may be stored locally as observations"));
+
+        let guide = guide_resource_content(&[], &[], &[], &behavior);
+        assert!(guide.contains("function=\"github.search_issues\""));
+        assert!(guide.contains("may be stored locally as observations"));
+    }
+
+    #[test]
+    fn guide_uses_truthful_unknown_capability_fallback() {
+        let behavior = SearchBehavior::new(false, SearchProviderFanoutState::UnknownMayCall);
+        let guide = guide_resource_content(&[], &[], &[], behavior);
+
+        assert!(guide.contains("capability is currently unknown"));
+        assert!(
+            guide
+                .contains("may make bounded read-only calls through eligible DSL v4 source routes")
+        );
+        assert!(!guide.contains("does not execute DSL v4 connected-source routes"));
     }
 
     #[test]

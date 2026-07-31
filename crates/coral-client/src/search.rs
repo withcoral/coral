@@ -3,16 +3,92 @@
 use std::fmt::Write as _;
 
 use coral_api::v1::{
-    CatalogItem, CatalogMetadata, ColumnHint, NativeSearchAttribute, NativeSearchDiagnostic,
-    NativeSearchDiagnosticReason, NativeSearchDiagnosticState, NativeSearchResult, ObservedValue,
-    SearchFieldRole, SearchLimits, SearchProvider, SearchProviderCoverage, SearchProviderState,
-    SearchResponse, SearchResult, SearchResultTruncation, SearchSurfaceKind,
+    CatalogItem, CatalogMetadata, ColumnHint, GetSearchCapabilitiesResponse, NativeSearchAttribute,
+    NativeSearchDiagnostic, NativeSearchDiagnosticReason, NativeSearchDiagnosticState,
+    NativeSearchResult, ObservedValue, SearchFieldRole, SearchLimits, SearchProvider,
+    SearchProviderCoverage, SearchProviderState, SearchResponse, SearchResult,
+    SearchResultTruncation, SearchRouteIdentity as ProtoSearchRouteIdentity, SearchSurfaceKind,
     SearchTableColumnPreview, SearchTableColumnPreviewColumn, TableFunction, TableFunctionArgument,
     TableFunctionKind, TableFunctionResultColumn, TableSummary, catalog_item, search_result,
 };
 use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::Value;
+
+const MAX_SEARCH_CAPABILITY_ROUTES: usize = 16;
+
+/// Effective Universal Search behavior reported by the local Coral server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchCapabilities {
+    /// Whether bounded provider fanout is effective for this process.
+    pub provider_fanout_enabled: bool,
+    /// Bounded identities of source-authorised DSL v4 routes visible in the
+    /// workspace.
+    pub eligible_routes: Vec<SearchRouteIdentity>,
+    /// Whether the complete eligible route inventory was truncated.
+    pub truncated: bool,
+    /// Number of eligible routes omitted from this decoded inventory.
+    pub omitted_route_count: u32,
+}
+
+/// Safe identity of one source-authorised DSL v4 Universal Search route.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchRouteIdentity {
+    /// Source that owns the route and its query-visible function.
+    pub source_name: String,
+    /// Query-visible function generated for the authorised DSL v4 operation.
+    pub function_name: String,
+    /// Authored route identifier when this route was explicit.
+    pub authored_route_id: Option<String>,
+}
+
+/// Decodes and defensively bounds a Search capabilities response.
+///
+/// A newer or faulty server cannot make a thin adapter render an unbounded
+/// route inventory: entries beyond the public cap are counted as omitted.
+#[must_use]
+pub fn decode_search_capabilities_response(
+    response: GetSearchCapabilitiesResponse,
+) -> SearchCapabilities {
+    let GetSearchCapabilitiesResponse {
+        provider_fanout_enabled,
+        mut eligible_routes,
+        truncated,
+        omitted_route_count,
+    } = response;
+    if !provider_fanout_enabled {
+        return SearchCapabilities {
+            provider_fanout_enabled: false,
+            eligible_routes: Vec::new(),
+            truncated: false,
+            omitted_route_count: 0,
+        };
+    }
+    let client_omitted = eligible_routes
+        .len()
+        .saturating_sub(MAX_SEARCH_CAPABILITY_ROUTES);
+    eligible_routes.truncate(MAX_SEARCH_CAPABILITY_ROUTES);
+    let omitted_route_count =
+        omitted_route_count.saturating_add(u32::try_from(client_omitted).unwrap_or(u32::MAX));
+
+    SearchCapabilities {
+        provider_fanout_enabled,
+        eligible_routes: eligible_routes
+            .into_iter()
+            .map(search_route_identity_from_proto)
+            .collect(),
+        truncated: truncated || omitted_route_count != 0,
+        omitted_route_count,
+    }
+}
+
+fn search_route_identity_from_proto(route: ProtoSearchRouteIdentity) -> SearchRouteIdentity {
+    SearchRouteIdentity {
+        source_name: route.source_name,
+        function_name: route.function_name,
+        authored_route_id: route.authored_route_id,
+    }
+}
 
 /// Shared machine-readable Universal Search response shape used by local
 /// adapters.
@@ -1111,6 +1187,56 @@ fn table_function_kind_name(kind: i32) -> &'static str {
 )]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capabilities_decoder_defensively_caps_routes() {
+        let response = GetSearchCapabilitiesResponse {
+            provider_fanout_enabled: true,
+            eligible_routes: (0..20)
+                .map(|index| ProtoSearchRouteIdentity {
+                    source_name: "source".to_string(),
+                    function_name: format!("search_{index:02}"),
+                    authored_route_id: Some(format!("route-{index:02}")),
+                })
+                .collect(),
+            truncated: false,
+            omitted_route_count: 2,
+        };
+
+        let capabilities = decode_search_capabilities_response(response);
+
+        assert!(capabilities.provider_fanout_enabled);
+        assert_eq!(capabilities.eligible_routes.len(), 16);
+        assert!(capabilities.truncated);
+        assert_eq!(capabilities.omitted_route_count, 6);
+        assert_eq!(capabilities.eligible_routes[0].source_name, "source");
+        assert_eq!(capabilities.eligible_routes[0].function_name, "search_00");
+        assert_eq!(
+            capabilities.eligible_routes[15]
+                .authored_route_id
+                .as_deref(),
+            Some("route-15")
+        );
+    }
+
+    #[test]
+    fn capabilities_decoder_ignores_routes_when_fanout_is_disabled() {
+        let capabilities = decode_search_capabilities_response(GetSearchCapabilitiesResponse {
+            provider_fanout_enabled: false,
+            eligible_routes: vec![ProtoSearchRouteIdentity {
+                source_name: "source".to_string(),
+                function_name: "search".to_string(),
+                authored_route_id: None,
+            }],
+            truncated: true,
+            omitted_route_count: 3,
+        });
+
+        assert!(!capabilities.provider_fanout_enabled);
+        assert!(capabilities.eligible_routes.is_empty());
+        assert!(!capabilities.truncated);
+        assert_eq!(capabilities.omitted_route_count, 0);
+    }
 
     fn native_response() -> SearchResponse {
         SearchResponse {
