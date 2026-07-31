@@ -745,7 +745,9 @@ pub fn format_table_name(catalog_name: &str, schema_name: &str, table_name: &str
     }
 }
 
-/// Formats a schema-qualified SQL table or table-function reference.
+/// Formats a SQL table or table-function reference, qualified by schema and, when
+/// `catalog_name` is non-empty, by catalog. Pass `""` for a two-part reference —
+/// table functions and the surfaces whose protos carry no catalog field.
 #[must_use]
 pub fn format_schema_table_equivalent(
     catalog_name: &str,

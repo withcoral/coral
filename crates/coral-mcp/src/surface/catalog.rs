@@ -155,7 +155,7 @@ pub(crate) fn list_catalog_arguments(
     arguments: Option<&Map<String, Value>>,
 ) -> Result<ListCatalogArguments, ErrorData> {
     Ok(ListCatalogArguments {
-        catalog: optional_string_argument(arguments, "catalog")?,
+        catalog: optional_non_empty_string_argument(arguments, "catalog")?,
         schema: optional_string_argument(arguments, "schema")?,
         kind: optional_catalog_kind_argument(arguments)?,
         pagination: parse_pagination(arguments)?,
@@ -166,7 +166,7 @@ pub(crate) fn describe_table_arguments(
     arguments: Option<&Map<String, Value>>,
 ) -> Result<DescribeTableArguments, ErrorData> {
     Ok(DescribeTableArguments {
-        catalog: optional_string_argument(arguments, "catalog")?,
+        catalog: optional_non_empty_string_argument(arguments, "catalog")?,
         schema: required_string_argument(arguments, "schema")?,
         table: required_string_argument(arguments, "table")?,
     })
@@ -176,7 +176,7 @@ pub(crate) fn list_columns_arguments(
     arguments: Option<&Map<String, Value>>,
 ) -> Result<ListColumnsArguments, ErrorData> {
     Ok(ListColumnsArguments {
-        catalog: optional_string_argument(arguments, "catalog")?,
+        catalog: optional_non_empty_string_argument(arguments, "catalog")?,
         schema: required_string_argument(arguments, "schema")?,
         table: required_string_argument(arguments, "table")?,
         pattern: optional_non_empty_string_argument(arguments, "pattern")?,

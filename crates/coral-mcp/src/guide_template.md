@@ -38,7 +38,15 @@ SELECT schema_name, key FROM coral.inputs
 WHERE kind = 'secret' AND is_set;
 ```
 
-Database source inputs are addressed by catalog instead: their rows have an empty `schema_name` and set `catalog_name`. When joining `coral.inputs` to `coral.tables`, join on `schema_name` for two-part sources and on `catalog_name` for database sources.
+Database source inputs are addressed by catalog instead: their rows have an empty `schema_name` and set `catalog_name`. Both columns use `''` rather than NULL for the side that does not apply, so joining `coral.inputs` to `coral.tables` on either column alone matches every two-part row against every other one via `'' = ''`. Guard each side:
+
+```sql
+SELECT t.catalog_name, t.schema_name, t.table_name, i.key
+FROM coral.tables t
+JOIN coral.inputs i
+  ON (i.catalog_name <> '' AND i.catalog_name = t.catalog_name)
+  OR (i.catalog_name = '' AND t.catalog_name = '' AND i.schema_name = t.schema_name);
+```
 
 ## JSON Columns
 

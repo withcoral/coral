@@ -81,13 +81,16 @@ pub(crate) fn guide_resource_content(
     let mut schemas = tables
         .iter()
         .filter(|table| !is_coral_system_schema(table))
-        .map(addressable_schema_name)
+        .map(visible_schema_entry)
         .collect::<BTreeSet<_>>();
+    // Sanitized like the table schemas above: source names are only validated
+    // as path segments, so a schema publishing table functions could otherwise
+    // carry a newline and break out of its `Visible schemas:` bullet.
     schemas.extend(
         table_function_schema_names
             .iter()
             .filter(|schema| *schema != "coral")
-            .cloned(),
+            .map(|schema| prompt_safe_text(schema)),
     );
     if schemas.is_empty() {
         if sources.is_empty() {
@@ -97,7 +100,7 @@ pub(crate) fn guide_resource_content(
         }
     } else {
         sources_section.push_str("\nVisible schemas:\n");
-        for schema in schemas {
+        for schema in &schemas {
             writeln!(sources_section, "- {schema}").expect("writing to String is infallible");
         }
     }
@@ -202,12 +205,22 @@ fn is_coral_system_schema(table: &TableSummary) -> bool {
     table.catalog_name.is_empty() && table.schema_name == "coral"
 }
 
-fn addressable_schema_name(table: &TableSummary) -> String {
+/// Renders one entry for the visible-schema list.
+///
+/// A catalog-backed table names its catalog separately rather than joining the
+/// two into `catalog.schema`: this list is labelled as schemas, and
+/// `warehouse.public` is not a schema — the schema is `public` and the catalog
+/// is `warehouse`. Keeping them apart is also what the `coral.*` metadata
+/// tables expect, since they filter on `catalog_name` and `schema_name`.
+fn visible_schema_entry(table: &TableSummary) -> String {
     let schema_name = prompt_safe_text(&table.schema_name);
     if table.catalog_name.is_empty() {
         schema_name
     } else {
-        format!("{}.{schema_name}", prompt_safe_text(&table.catalog_name))
+        format!(
+            "{schema_name} (catalog: {})",
+            prompt_safe_text(&table.catalog_name)
+        )
     }
 }
 
@@ -569,7 +582,7 @@ WHERE title LIKE '%bug%'",
             false,
         );
 
-        assert!(content.contains("Visible schemas:\n- warehouse.public"));
+        assert!(content.contains("Visible schemas:\n- public (catalog: warehouse)"));
         assert!(content.contains(
             "FROM coral.columns WHERE catalog_name = 'warehouse' AND schema_name = 'public' \
              AND table_name = 'orders' ORDER BY ordinal_position;"
