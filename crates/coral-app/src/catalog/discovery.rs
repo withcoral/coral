@@ -583,7 +583,7 @@ fn available_table_schemas(tables: &[TableInfo]) -> Vec<String> {
 fn same_schema_tables(tables: &[TableInfo], table_ref: CatalogTableRef<'_>) -> Vec<TableInfo> {
     tables
         .iter()
-        .filter(|table| table_qualifier_matches(table, table_ref))
+        .filter(|table| schema_qualifier_matches(table, table_ref))
         .take(MISSING_TABLE_SUGGESTION_LIMIT)
         .cloned()
         .collect()
@@ -596,7 +596,7 @@ fn missing_table_suggestions(
 ) -> Vec<TableInfo> {
     let mut suggestions = all_tables
         .iter()
-        .filter(|table| same_schema_tables.is_empty() || table_qualifier_matches(table, table_ref))
+        .filter(|table| same_schema_tables.is_empty() || schema_qualifier_matches(table, table_ref))
         .filter(|table| table_metadata_contains_literal(table, table_ref.table_name))
         .take(MISSING_TABLE_SUGGESTION_LIMIT)
         .cloned()
@@ -655,6 +655,17 @@ fn table_matches_ref(table: &TableInfo, table_ref: CatalogTableRef<'_>) -> bool 
 
 fn table_qualifier_matches(table: &TableInfo, table_ref: CatalogTableRef<'_>) -> bool {
     table.catalog_name.as_deref() == table_ref.catalog_name
+        && table.schema_name == table_ref.schema_name
+}
+
+/// Matches recovery hints rather than lookups: an absent catalog matches every
+/// catalog, so a two-part miss still surfaces its three-part neighbors. Lookups
+/// keep using [`table_qualifier_matches`], which stays an exact match so a bare
+/// reference never resolves into a catalog-backed table.
+fn schema_qualifier_matches(table: &TableInfo, table_ref: CatalogTableRef<'_>) -> bool {
+    table_ref
+        .catalog_name
+        .is_none_or(|catalog| table.catalog_name.as_deref() == Some(catalog))
         && table.schema_name == table_ref.schema_name
 }
 
