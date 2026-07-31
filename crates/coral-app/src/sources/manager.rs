@@ -529,7 +529,7 @@ impl SourceManager {
         materialization_manifest_yaml: String,
         origin: SourceOrigin,
     ) -> Result<InstalledSource, AppError> {
-        self.validate_source_features(materialization_manifest_yaml)?;
+        self.validate_source_features(&materialization_manifest_yaml)?;
         self.validate_runtime_schema_names_available(
             &workspace_name,
             &candidate.name,
