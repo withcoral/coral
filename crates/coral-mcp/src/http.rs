@@ -52,6 +52,13 @@ use url::{Position, Url};
 
 use crate::{CoralMcpServerFactory, McpOptions};
 
+/// How long `/readyz` waits on the gRPC readiness probe before answering itself.
+///
+/// On the authenticated route this bounds the health RPC that coral-app already
+/// bounds server-side with `READINESS_PROBE_TIMEOUT`, and it has to stay above
+/// it. Were this the smaller of the two, `/readyz` would give up before the
+/// server got to answer, reporting an engine unready on a deadline that says
+/// nothing about it. Changing either constant means revisiting both.
 const READINESS_TIMEOUT: Duration = Duration::from_secs(2);
 const SHUTDOWN_GRACE_PERIOD: Duration = Duration::from_secs(1);
 const SESSION_ID_HEADER: &str = "mcp-session-id";

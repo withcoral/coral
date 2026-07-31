@@ -14,7 +14,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::watch;
 
 use tonic_health::pb::health_check_response::ServingStatus;
 use tonic_health::pb::health_server::Health;
@@ -22,7 +22,8 @@ use tonic_health::pb::{HealthCheckRequest, HealthCheckResponse};
 
 use crate::catalog::discovery::CatalogDiscovery;
 use crate::query::QueryAttribution;
-use crate::query::manager::QueryManager;
+use crate::query::manager::{QueryManager, QueryManagerError};
+use crate::transport::query_status;
 use crate::workspaces::WorkspaceName;
 
 /// Health service name reporting whether the engine can answer for its catalog.
@@ -38,6 +39,26 @@ pub const READINESS_SERVICE_NAME: &str = "coral.readiness";
 /// keeps a normal orchestrator poll interval from doing the work every time.
 const READINESS_CACHE_TTL: Duration = Duration::from_secs(2);
 
+/// How long a caller waits on the running probe before answering unready.
+///
+/// Without a deadline the health RPC hangs on exactly the fault it exists to
+/// report: catalog resolution connects to every configured source and has no
+/// bound of its own, so a wedged source would wedge the answer instead of
+/// reporting `NotServing`. This bounds only how long an answer is waited for —
+/// the resolution itself runs to completion in the background — so a slow
+/// engine converges to ready over successive polls rather than restarting a
+/// doomed resolution on every one.
+///
+/// It bounds the asynchronous part of that work. A probe stalled inside a
+/// blocking call — `load_query_sources` takes the state lock with a blocking
+/// `flock` — cannot be preempted, so it holds a runtime thread until it
+/// returns; this deadline still frees the RPC to answer.
+///
+/// Keep it below coral-mcp's `READINESS_TIMEOUT`, the client-side deadline the
+/// authenticated `/readyz` applies to this RPC, so the answer comes from here
+/// rather than from the client giving up. Changing either means revisiting both.
+const READINESS_PROBE_TIMEOUT: Duration = Duration::from_millis(1_500);
+
 type ReadinessFuture = Pin<Box<dyn Future<Output = bool> + Send>>;
 
 /// Whether the server can still answer for its catalog.
@@ -51,14 +72,14 @@ type ReadinessFuture = Pin<Box<dyn Future<Output = bool> + Send>>;
 pub(super) struct EngineReadiness {
     probe: Arc<dyn Fn() -> ReadinessFuture + Send + Sync>,
     cached: Arc<Mutex<Option<(Instant, bool)>>>,
-    /// Serializes probes so concurrent callers share one catalog resolution.
+    /// The resolution currently running, shared by everyone waiting on it.
     ///
     /// The TTL alone bounds the steady-state rate but not concurrency: every
-    /// caller arriving in the instant the cache expires would otherwise launch its
-    /// own resolution, letting unauthenticated health traffic fan out into
-    /// arbitrary engine work. Holding this across the await costs a public probe
-    /// nothing it would not already wait for.
-    probing: Arc<AsyncMutex<()>>,
+    /// caller arriving in the instant the cache expires would otherwise launch
+    /// its own resolution, letting unauthenticated health traffic fan out into
+    /// arbitrary engine work. Occupying this slot for the length of one probe is
+    /// what collapses that burst into a single catalog resolution.
+    in_flight: Arc<Mutex<Option<watch::Receiver<Option<bool>>>>>,
 }
 
 impl EngineReadiness {
@@ -66,7 +87,7 @@ impl EngineReadiness {
         Self {
             probe,
             cached: Arc::new(Mutex::new(None)),
-            probing: Arc::new(AsyncMutex::new(())),
+            in_flight: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -76,17 +97,19 @@ impl EngineReadiness {
         Self::new(Arc::new(move || {
             let catalog = CatalogDiscovery::new(queries.clone());
             Box::pin(async move {
-                catalog
-                    // Neither the catalog nor the schema is filtered: the probe
-                    // asks the same unqualified question `ListCatalog` does.
-                    .catalog_info(
-                        &WorkspaceName::default(),
-                        None,
-                        None,
-                        &QueryAttribution::new(None),
-                    )
-                    .await
-                    .is_ok()
+                readiness_from_catalog(
+                    catalog
+                        // Neither the catalog nor the schema is filtered: the
+                        // probe asks the same unqualified question `ListCatalog`
+                        // does.
+                        .catalog_info(
+                            &WorkspaceName::default(),
+                            None,
+                            None,
+                            &QueryAttribution::new(None),
+                        )
+                        .await,
+                )
             })
         }))
     }
@@ -96,25 +119,70 @@ impl EngineReadiness {
         Self::new(Arc::new(move || Box::pin(std::future::ready(ready))))
     }
 
-    /// Reads the cached answer while it is fresh, else probes once and caches.
+    /// Reads the cached answer while it is fresh, else waits on one probe.
     ///
-    /// Exactly one probe runs at a time. Callers that queue behind it re-read the
-    /// cache first, so a burst of health traffic resolves the catalog once rather
-    /// than once per request.
+    /// Exactly one probe runs at a time and every caller arriving during it
+    /// shares that one answer, so a burst of health traffic resolves the catalog
+    /// once rather than once per request.
+    ///
+    /// The deadline bounds this *answer*, not the resolution behind it. A
+    /// catalog that legitimately takes longer than one poll allows keeps
+    /// resolving after this returns unready and records what it finds, so the
+    /// next poll reports ready — whereas cancelling it would discard the work
+    /// and restart from nothing every time, and an engine slower than the
+    /// deadline could never report ready at all.
     async fn is_ready(&self) -> bool {
         if let Some(ready) = self.fresh_answer() {
             return ready;
         }
-        let _probing = self.probing.lock().await;
-        // The probe that held the lock may have just answered this.
-        if let Some(ready) = self.fresh_answer() {
-            return ready;
+        let mut answer = self.in_flight_probe();
+        let settled = tokio::time::timeout(READINESS_PROBE_TIMEOUT, async move {
+            loop {
+                if let Some(ready) = *answer.borrow_and_update() {
+                    return ready;
+                }
+                // The sender is dropped without a value only if the probe task
+                // panicked, which is not an engine that can answer.
+                if answer.changed().await.is_err() {
+                    return false;
+                }
+            }
+        });
+        settled.await.unwrap_or(false)
+    }
+
+    /// Subscribes to the running probe, starting one if none is running.
+    ///
+    /// The probe is spawned rather than awaited in place so that neither this
+    /// caller's deadline nor its disconnection can cancel a resolution already
+    /// under way: whoever asks next still gets the answer it paid for.
+    fn in_flight_probe(&self) -> watch::Receiver<Option<bool>> {
+        let Ok(mut slot) = self.in_flight.lock() else {
+            // A poisoned slot costs single-flight, not correctness.
+            let (_, receiver) = watch::channel(Some(false));
+            return receiver;
+        };
+        if let Some(running) = slot.as_ref() {
+            return running.clone();
         }
-        let ready = (self.probe)().await;
-        if let Ok(mut cached) = self.cached.lock() {
-            *cached = Some((Instant::now(), ready));
-        }
-        ready
+        let (sender, receiver) = watch::channel(None);
+        let probing = self.clone();
+        tokio::spawn(async move {
+            let ready = (probing.probe)().await;
+            // Recorded before the slot is released, so a caller that misses this
+            // probe reads its answer instead of starting another.
+            if let Ok(mut cached) = probing.cached.lock() {
+                *cached = Some((Instant::now(), ready));
+            }
+            if let Ok(mut slot) = probing.in_flight.lock() {
+                *slot = None;
+            }
+            // Fails only when every waiter already gave up on this probe, which
+            // the cache above has answered for.
+            let _delivered = sender.send(Some(ready));
+        });
+        *slot = Some(receiver.clone());
+        receiver
     }
 
     fn fresh_answer(&self) -> Option<bool> {
@@ -122,6 +190,36 @@ impl EngineReadiness {
         cached
             .filter(|(recorded, _)| recorded.elapsed() < READINESS_CACHE_TTL)
             .map(|(_, ready)| ready)
+    }
+}
+
+/// Turns one catalog resolution into a readiness answer.
+///
+/// A rejection is not automatically an unready instance. The auth-disabled
+/// `/readyz` asks the identical question through `ListCatalog` and classifies
+/// the answer with `catalog_rejection_is_reachable` in coral-mcp's `http`
+/// module, which deliberately reads request-shaped codes — a missing default
+/// workspace, two sources claiming one runtime schema — as proof the engine is
+/// reachable. Those faults are instance-wide and therefore identical on every
+/// replica, so calling them unready here would pull a whole fleet out of
+/// rotation for a condition the other surface reports as reachable. The two
+/// predicates must
+/// stay in step: change one and change the other.
+fn readiness_from_catalog<T>(outcome: Result<T, QueryManagerError>) -> bool {
+    match outcome {
+        Ok(_) => true,
+        // Reuse the data plane's mapping so the code classified here is the
+        // same one `/readyz` would have seen over the wire.
+        Err(error) => !matches!(
+            query_status(error).code(),
+            tonic::Code::Cancelled
+                | tonic::Code::Unknown
+                | tonic::Code::DeadlineExceeded
+                | tonic::Code::Unimplemented
+                | tonic::Code::Internal
+                | tonic::Code::Unavailable
+                | tonic::Code::DataLoss
+        ),
     }
 }
 
@@ -185,12 +283,20 @@ impl Health for AggregateHealthService {
 mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
 
     use tonic_health::pb::HealthCheckRequest;
     use tonic_health::pb::health_check_response::ServingStatus;
     use tonic_health::pb::health_server::Health as _;
 
-    use super::{AggregateHealthService, EngineReadiness, READINESS_SERVICE_NAME};
+    use coral_engine::CoreError;
+
+    use super::{
+        AggregateHealthService, EngineReadiness, READINESS_PROBE_TIMEOUT, READINESS_SERVICE_NAME,
+        readiness_from_catalog,
+    };
+    use crate::bootstrap::AppError;
+    use crate::query::manager::QueryManagerError;
 
     async fn check(service: &str, ready: bool) -> Result<i32, tonic::Status> {
         AggregateHealthService::new(EngineReadiness::fixed(ready))
@@ -284,5 +390,104 @@ mod tests {
             1,
             "concurrent public health traffic must not fan out into parallel engine work"
         );
+    }
+
+    // Paused time lets the probe deadline elapse without a wall-clock wait.
+    #[tokio::test(start_paused = true)]
+    async fn a_wedged_probe_answers_unready_instead_of_hanging() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&calls);
+        // Never resolves: the catalog resolution wedging is precisely the fault
+        // this service exists to report, so it must not also silence it.
+        let readiness = EngineReadiness::new(Arc::new(move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+            Box::pin(std::future::pending::<bool>())
+        }));
+
+        assert!(
+            !readiness.is_ready().await,
+            "a wedged probe must answer NotServing rather than hold the health RPC"
+        );
+        assert!(!readiness.is_ready().await);
+
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "a wedged probe still occupies the slot, so polling must not pile up resolutions"
+        );
+    }
+
+    /// The regression that makes a deadline dangerous: cancelling the
+    /// resolution to answer on time would discard the work, so an engine slower
+    /// than the deadline would restart from nothing every poll and never report
+    /// ready. The answer is bounded; the resolution is not.
+    #[tokio::test(start_paused = true)]
+    async fn a_slow_engine_reports_ready_on_a_later_poll() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&calls);
+        let slow = READINESS_PROBE_TIMEOUT + Duration::from_millis(200);
+        let readiness = EngineReadiness::new(Arc::new(move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                tokio::time::sleep(slow).await;
+                true
+            })
+        }));
+
+        assert!(
+            !readiness.is_ready().await,
+            "the first poll gives up waiting before the catalog finishes"
+        );
+
+        // Let the resolution the first poll walked away from finish.
+        tokio::time::sleep(Duration::from_millis(400)).await;
+
+        assert!(
+            readiness.is_ready().await,
+            "the resolution must survive the deadline and record what it found"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "the second poll must read the first probe's answer, not start another"
+        );
+    }
+
+    #[test]
+    fn a_resolved_catalog_reports_ready() {
+        assert!(readiness_from_catalog(Ok(())));
+    }
+
+    #[test]
+    fn instance_wide_catalog_rejections_still_report_ready() {
+        // Each of these is identical on every replica, so reporting unready
+        // would empty the fleet for a rejection the auth-disabled `/readyz`
+        // reports as reachable.
+        for error in [
+            AppError::WorkspaceNotFound("default".to_string()),
+            AppError::InvalidInput(
+                "catalog runtime schema 'public' is owned by both 'a' and 'b'".to_string(),
+            ),
+            AppError::FailedPrecondition("source 'a' is missing credentials".to_string()),
+        ] {
+            let described = error.to_string();
+            assert!(
+                readiness_from_catalog::<()>(Err(QueryManagerError::App(error))),
+                "request-shaped rejection must not report the instance unready: {described}"
+            );
+        }
+    }
+
+    #[test]
+    fn infrastructure_faults_report_unready() {
+        assert!(
+            !readiness_from_catalog::<()>(Err(QueryManagerError::App(AppError::Internal(
+                "config store lock poisoned".to_string()
+            )))),
+            "an engine that cannot answer at all is not ready"
+        );
+        assert!(!readiness_from_catalog::<()>(Err(QueryManagerError::Core(
+            CoreError::Unavailable("backend down".to_string())
+        ))),);
     }
 }
