@@ -148,11 +148,19 @@ pub(crate) struct CatalogTableRef<'a> {
 }
 
 impl<'a> CatalogTableRef<'a> {
+    /// Builds a table reference with the catalog reduced to its meaning:
+    /// `catalog_name` is `None` exactly when the table is addressed as two
+    /// parts. Blank and whitespace-only catalogs are absent, and the
+    /// default-catalog sentinel names schema-backed tables, so callers do not
+    /// have to trim before constructing one.
     pub(crate) fn new(
         catalog_name: Option<&'a str>,
         schema_name: &'a str,
         table_name: &'a str,
     ) -> Self {
+        let catalog_name = catalog_name
+            .map(str::trim)
+            .filter(|catalog_name| !catalog_name.is_empty());
         Self {
             catalog_name: normalize_catalog_name(catalog_name),
             schema_name,
@@ -231,7 +239,11 @@ impl CatalogDiscovery {
         schema_name: Option<&str>,
         attribution: &QueryAttribution,
     ) -> Result<CatalogInfo, QueryManagerError> {
-        let catalog_name = normalize_catalog_name(catalog_name);
+        // Pass the filter through untouched. `None` here means "every catalog",
+        // so normalizing `datafusion` to `None` would widen an exact-match
+        // request into a wildcard, contradicting both the proto contract and
+        // `describe_table`, which resolves the same value to two-part tables.
+        // The engine normalizes the sentinel on the value side instead.
         self.queries
             .list_catalog(workspace_name, catalog_name, schema_name, attribution)
             .await
