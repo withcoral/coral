@@ -124,7 +124,10 @@ export async function runSourcesAction(
       const secretValues = formData.getAll('secret_value')
       const secrets = formData
         .getAll('secret_key')
-        .map((key, index) => ({ key: String(key), value: String(secretValues[index] ?? '') }))
+        .map((key, index) => ({
+          key: typeof key === 'string' ? key.trim() : '',
+          value: typeof secretValues[index] === 'string' ? secretValues[index].trim() : '',
+        }))
         .filter((secret) => secret.key && secret.value)
       await importSourceManifest(sourceClient, workspace, manifestYaml, secrets)
       return actionSuccess('import', name)

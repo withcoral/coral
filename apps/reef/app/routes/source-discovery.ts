@@ -225,6 +225,7 @@ function jsonAuthAlternatives(
 
 function inspectYamlAuth(lines: string[]): SourceDetectedAuth {
   const requirements = yamlSecurityRequirements(lines)
+  if (requirements === null) return unknownAuth()
   if (requirements?.length === 0) return detectedAuth([[NO_AUTH_SCHEME]])
 
   const componentsIndex = findYamlKey(lines, 'components', 0)
@@ -256,16 +257,17 @@ function inspectYamlAuth(lines: string[]): SourceDetectedAuth {
  * Scheme names under a root `security:` block, one entry per requirement. A `- name:`
  * line opens a requirement and every key indented within it joins the same one, which
  * is how a document spells "all of these at once" — Datadog's two API keys, for
- * instance. Returns nothing when there is no such block, or when it is written as a
- * flow sequence this line-based scanner cannot read. Sequence items may be indented
- * beneath `security:` or start at the same indentation, as YAML permits both.
+ * instance. Returns `undefined` when there is no such block and `null` when a present
+ * block uses syntax this line-based scanner cannot safely interpret. Sequence items
+ * may be indented beneath `security:` or start at the same indentation, as YAML
+ * permits both.
  */
-function yamlSecurityRequirements(lines: string[]): string[][] | undefined {
+function yamlSecurityRequirements(lines: string[]): string[][] | null | undefined {
   const index = findYamlKey(lines, 'security', 0)
   if (index < 0) return undefined
   const scalar = yamlScalar(lines[index])
   if (scalar === '[]') return []
-  if (scalar) return undefined
+  if (scalar) return null
 
   const requirements: string[][] = []
   let itemIndent = -1
@@ -287,7 +289,7 @@ function yamlSecurityRequirements(lines: string[]): string[][] | undefined {
     const key = indent > itemIndent ? yamlKey(trimmed) : null
     if (key) requirements[requirements.length - 1]?.push(key)
   }
-  return requirements.length > 0 ? requirements : undefined
+  return requirements.length > 0 ? requirements : null
 }
 
 function authFromScheme(scheme: Record<string, unknown> | undefined): AuthScheme {
@@ -387,12 +389,9 @@ function namedSchemes(alternative: AuthAlternative): AuthScheme[] {
 
 function isUsableAlternative(schemes: AuthAlternative): boolean {
   const kinds = new Set(schemes.map((scheme) => scheme.kind))
-  return (
-    kinds.size === 1 &&
-    schemes.every(
-      (scheme) => scheme.kind === 'bearer' || scheme.kind === 'header' || scheme.kind === 'none',
-    )
-  )
+  if (kinds.size !== 1) return false
+  const kind = schemes[0].kind
+  return kind === 'header' || (schemes.length === 1 && (kind === 'bearer' || kind === 'none'))
 }
 
 function headerNames(alternative: AuthAlternative): string[] {

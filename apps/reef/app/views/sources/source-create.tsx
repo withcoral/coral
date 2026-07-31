@@ -19,6 +19,12 @@ import type {
   SourceDocumentFormat,
 } from '@/routes/source-discovery'
 
+import {
+  detectedHeaders,
+  type DraftHeader,
+  HeaderCredentialsEditor,
+  headerInputs,
+} from './source-create-headers'
 import * as styles from './source-create.css'
 import { formatFieldName, SourceError, SourceField, SourceHeader } from './source-presentation'
 
@@ -35,13 +41,6 @@ const AUTH_CHOICE_LABELS: Record<AuthChoice, string> = {
   header: 'Custom header',
   none: 'None',
   oauthDevice: 'OAuth device flow',
-}
-
-/** One header a request carries. An API needing several gets a row for each. */
-interface DraftHeader {
-  id: number
-  name: string
-  value: string
 }
 
 interface Draft {
@@ -190,7 +189,7 @@ function SourceCreateDialogContent({
         result.auth.kind !== 'unknown' &&
         result.auth.kind !== 'unsupported' &&
         result.auth.headerNames.length > 0
-          ? result.auth.headerNames.map((name, id) => ({ id, name, value: '' }))
+          ? detectedHeaders(result.auth.headerNames, current.headers)
           : current.headers,
       name: result.name,
       surfaceType:
@@ -627,16 +626,10 @@ function CredentialsStep({
   disabled: boolean
 }) {
   const idBearerToken = useId()
-  const idHeaderName = useId()
-  const idHeaderToken = useId()
   const idOAuthClientId = useId()
   const idOAuthDeviceAuthorizationUrl = useId()
   const idOAuthScopes = useId()
   const idOAuthTokenUrl = useId()
-  const updateHeader = (index: number, patch: Partial<DraftHeader>) =>
-    update({
-      headers: draft.headers.map((header, at) => (at === index ? { ...header, ...patch } : header)),
-    })
   // A custom header is an OpenAPI notion; an MCP server carries a bearer token.
   const authChoices: AuthChoice[] =
     draft.surfaceType === 'openapi'
@@ -751,72 +744,11 @@ function CredentialsStep({
             draft.auth !== 'header' && styles.authPanelHidden,
           )}
         >
-          {draft.headers.map((header, index) => (
-            <div className={styles.headerRow} key={header.id}>
-              <SourceField
-                className={styles.fieldItem}
-                htmlFor={`${idHeaderName}-${index}`}
-                label="Header name"
-              >
-                <TextInput
-                  id={`${idHeaderName}-${index}`}
-                  value={header.name}
-                  onChange={(name) => updateHeader(index, { name })}
-                  placeholder="X-Api-Key"
-                  disabled={disabled || draft.auth !== 'header'}
-                />
-              </SourceField>
-              <SourceField
-                className={styles.fieldItem}
-                htmlFor={`${idHeaderToken}-${index}`}
-                label={`${header.name.trim() || 'Header'} value`}
-              >
-                <TextInput
-                  id={`${idHeaderToken}-${index}`}
-                  type="password"
-                  value={header.value}
-                  onChange={(value) => updateHeader(index, { value })}
-                  placeholder="Paste token"
-                  disabled={disabled || draft.auth !== 'header'}
-                />
-              </SourceField>
-              {draft.headers.length > 1 ? (
-                <ButtonContainer
-                  ariaLabel={`Remove ${header.name.trim() || `header ${index + 1}`}`}
-                  className={styles.headerRemove}
-                  disabled={disabled || draft.auth !== 'header'}
-                  onClick={() =>
-                    update({ headers: draft.headers.filter(({ id }) => id !== header.id) })
-                  }
-                  size="32"
-                  variant="bare"
-                >
-                  <ButtonText>Remove header</ButtonText>
-                </ButtonContainer>
-              ) : null}
-            </div>
-          ))}
-          <div className={styles.headerActions}>
-            <ButtonContainer
-              disabled={disabled || draft.auth !== 'header'}
-              onClick={() =>
-                update({
-                  headers: [
-                    ...draft.headers,
-                    {
-                      id: Math.max(...draft.headers.map(({ id }) => id)) + 1,
-                      name: '',
-                      value: '',
-                    },
-                  ],
-                })
-              }
-              size="32"
-              variant="secondary"
-            >
-              <ButtonText>Add header</ButtonText>
-            </ButtonContainer>
-          </div>
+          <HeaderCredentialsEditor
+            disabled={disabled || draft.auth !== 'header'}
+            headers={draft.headers}
+            onChange={(headers) => update({ headers })}
+          />
         </div>
       </div>
     </div>
@@ -982,38 +914,9 @@ function buildManifestYaml(draft: Draft): string {
   return lines.join('\n') + '\n'
 }
 
-/**
- * The secret input backing each header. Keys are derived from the header name so a
- * manifest with several of them reads, and a suffix breaks ties between names that
- * normalize to the same key.
- */
-function headerInputs(headers: DraftHeader[]): { key: string; name: string; value: string }[] {
-  const taken = new Set<string>()
-  return headers.map((header) => {
-    const name = header.name.trim()
-    const base = headerInputKey(name)
-    let key = base
-    let suffix = 2
-    while (taken.has(key)) {
-      key = `${base}_${suffix}`
-      suffix += 1
-    }
-    taken.add(key)
-    return { key, name, value: header.value.trim() }
-  })
-}
-
 function orList(items: string[]): string {
   if (items.length < 3) return items.join(' or ')
   return `${items.slice(0, -1).join(', ')}, or ${items.at(-1)}`
-}
-
-function headerInputKey(name: string): string {
-  const key = name
-    .toUpperCase()
-    .replace(/[^A-Z0-9]+/g, '_')
-    .replace(/^_+|_+$/g, '')
-  return /^[A-Z]/.test(key) ? key : `HEADER_${key}`
 }
 
 function oauthScopes(value: string): string[] {

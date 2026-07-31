@@ -204,6 +204,27 @@ components:
     })
   })
 
+  it('rejects a requirement that combines bearer schemes the wizard cannot send separately', () => {
+    expect(
+      inspectSourceDocument(
+        JSON.stringify({
+          components: {
+            securitySchemes: {
+              userToken: { scheme: 'bearer', type: 'http' },
+              appToken: { flows: {}, type: 'oauth2' },
+            },
+          },
+          info: { title: 'Two Token API' },
+          openapi: '3.1.0',
+          security: [{ userToken: [], appToken: [] }],
+        }),
+      ).auth,
+    ).toEqual({
+      kind: 'unsupported',
+      label: 'a bearer token and an OAuth 2.0 bearer token',
+    })
+  })
+
   // The three schemes X's own document declares, which between them cover both
   // reasons an alternative is left out of the label.
   it('names a credential once, and leaves out one it cannot send', () => {
@@ -341,6 +362,22 @@ components:
       name: X-Api-Key
 `).auth,
     ).toEqual({ headerNames: [], kind: 'none', kinds: ['none'] })
+  })
+
+  it('does not guess when YAML security uses an unreadable flow sequence', () => {
+    expect(
+      inspectSourceDocument(`openapi: 3.0.0
+info:
+  title: Optional API
+security: [ {} ]
+components:
+  securitySchemes:
+    apiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-Api-Key
+`).auth,
+    ).toEqual({ kind: 'unknown' })
   })
 
   it('keeps optional authentication beside the scheme it is optional against', () => {
