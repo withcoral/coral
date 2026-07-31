@@ -76,6 +76,17 @@ impl ClientMetadataResolver for HttpClientMetadataResolver {
     ) -> Result<OAuthClientRegistration, ClientMetadataError> {
         let metadata_url = EndpointUrl::<PublicMetadata>::parse(client_id)
             .map_err(|_error| ClientMetadataError::InvalidClientId)?;
+        // A client ID must already be the URL Coral fetches, character for
+        // character. Parsing normalizes — it strips tab, CR, and LF from
+        // anywhere in the input, trims surrounding spaces, lowercases the host,
+        // and drops a default port — so without this check one document is
+        // reachable under unboundedly many client IDs that all fetch it. The ID
+        // is the client's identity: it is echoed back by the document, recorded
+        // on an approval, and compared at the token endpoint, so it has to be a
+        // single canonical string rather than a family of equivalent ones.
+        if metadata_url.as_url().as_str() != client_id {
+            return Err(ClientMetadataError::InvalidClientId);
+        }
         let response = self.fetcher.fetch(&metadata_url).await?;
         registration_from_response(client_id, response).await
     }
@@ -332,6 +343,30 @@ mod tests {
             "https://user:secret@client.example.test/client.json",
             "https://client.example.test/a/../client.json",
             "https://client.example.test/client.json#fragment",
+        ] {
+            assert_eq!(
+                resolver.resolve(client_id).await.expect_err(client_id),
+                ClientMetadataError::InvalidClientId
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_client_ids_that_are_not_their_own_fetched_url() {
+        let resolver = HttpClientMetadataResolver::with_fetcher(Arc::new(PanicFetcher));
+        for client_id in [
+            // Each of these parses, and parsing rewrites it into a URL that
+            // names a different — or differently spelled — document than the ID
+            // Coral was handed. The tab case is the sharpest: it fetches
+            // `client.example.test.evil.test`.
+            "https://client.example.test\t.evil.test/client.json",
+            "https://client.exa\tmple.test/client.json",
+            "https://client.example.test/cli\rent.json",
+            "https://client.example.test/client.json\n",
+            " https://client.example.test/client.json",
+            "https://client.example.test/client.json ",
+            "https://CLIENT.example.test/client.json",
+            "https://client.example.test:443/client.json",
         ] {
             assert_eq!(
                 resolver.resolve(client_id).await.expect_err(client_id),
