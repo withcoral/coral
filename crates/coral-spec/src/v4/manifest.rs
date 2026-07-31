@@ -83,6 +83,19 @@ pub struct OpenApiRuntimeConfig {
     pub auth: AuthSpec,
     pub request_headers: Vec<HeaderSpec>,
     pub rate_limit: RateLimitSpec,
+    pub injected_parameters: Vec<InjectedParameterSpec>,
+}
+
+/// Parameter to inject into the `OpenAPI` surface when parsed.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct InjectedParameterSpec {
+    /// Optional list of operation IDs this parameter applies to. If empty or missing, it applies to all operations.
+    #[serde(default)]
+    pub operations: Option<Vec<String>>,
+    /// The `OpenAPI` parameter object to inject.
+    #[serde(flatten)]
+    pub parameter_obj: serde_json::Map<String, Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -164,6 +177,8 @@ struct RawV4Surface {
     request_headers: Vec<HeaderSpec>,
     #[serde(default)]
     rate_limit: RateLimitSpec,
+    #[serde(default)]
+    injected_parameters: Vec<InjectedParameterSpec>,
     #[serde(default)]
     server: Option<McpServerSpec>,
 }
@@ -270,6 +285,7 @@ fn parse_openapi_surface(
             auth: raw_surface.auth,
             request_headers: raw_surface.request_headers,
             rate_limit: raw_surface.rate_limit,
+            injected_parameters: raw_surface.injected_parameters,
         }),
     })
 }
@@ -285,7 +301,13 @@ fn parse_mcp_surface(
             "source '{source_name}' MCP surface must not declare url or file"
         )));
     }
-    for field in ["base_url", "auth", "request_headers", "rate_limit"] {
+    for field in [
+        "base_url",
+        "auth",
+        "request_headers",
+        "rate_limit",
+        "injected_parameters",
+    ] {
         if surface_value.get(field).is_some() {
             return Err(ManifestError::validation(format!(
                 "source '{source_name}' MCP surface must not declare OpenAPI field '{field}'"

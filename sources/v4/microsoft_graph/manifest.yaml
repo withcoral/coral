@@ -65,6 +65,11 @@ surface:
     - name: User-Agent
       from: literal
       value: coral-dsl-v4
+  injected_parameters:
+    - name: $orderby
+      in: query
+      schema:
+        type: string
 
 test_queries:
   - SELECT displayname, userprincipalname FROM microsoft_graph_v4.me_user_me_user_getuser LIMIT 1

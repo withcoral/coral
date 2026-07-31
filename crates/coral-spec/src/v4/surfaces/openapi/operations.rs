@@ -153,6 +153,22 @@ impl OpenApiImporter<'_> {
         operation_id: &str,
         diagnostics: &mut Vec<Diagnostic>,
     ) -> Vec<IrOperationInput> {
+        let injected = self
+            .surface
+            .openapi_runtime()
+            .map_or(&[] as &[_], |r| r.injected_parameters.as_slice());
+        let matching_injected = injected
+            .iter()
+            .filter(|inj| {
+                inj.operations.as_ref().is_none_or(|ops| {
+                    ops.is_empty()
+                        || ops
+                            .iter()
+                            .any(|op| normalize_identifier(op, "operation") == operation_id)
+                })
+            })
+            .map(|inj| Value::Object(inj.parameter_obj.clone()));
+
         let mut merged: BTreeMap<(IrInputLocation, String), Value> = BTreeMap::new();
         for parameter in path_item
             .get("parameters")
@@ -166,8 +182,10 @@ impl OpenApiImporter<'_> {
                     .into_iter()
                     .flatten(),
             )
+            .cloned()
+            .chain(matching_injected)
         {
-            let Some(resolved) = self.resolve_ref(parameter, operation_id, diagnostics) else {
+            let Some(resolved) = self.resolve_ref(&parameter, operation_id, diagnostics) else {
                 continue;
             };
             let Some(parameter_obj) = resolved.as_object() else {
