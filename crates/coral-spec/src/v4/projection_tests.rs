@@ -874,13 +874,26 @@ paths:
         .expect("id input");
     assert_eq!(id_input.sql_exposure, SqlInputExposure::FunctionArg);
     assert!(!id_input.required);
-    assert_eq!(id_input.default_value.as_deref(), Some("public"));
+    assert_eq!(
+        id_input
+            .default_value
+            .as_ref()
+            .map(crate::DeclaredDefaultValue::value),
+        Some(&json!("public"))
+    );
 
     let id_arg = projection_arg_specs(projection)
         .into_iter()
         .find(|arg| arg.name == "id")
         .expect("id arg");
     assert!(!id_arg.required);
+    assert_eq!(
+        id_arg
+            .default
+            .as_ref()
+            .map(crate::DeclaredDefaultValue::value),
+        Some(&json!("public"))
+    );
 }
 
 #[test]
@@ -1032,6 +1045,158 @@ components:
         namespace_request.path.raw(),
         "/namespaces/{{arg.namespace|%252E}}/items"
     );
+}
+
+#[test]
+fn projection_metadata_preserves_typed_defaults_while_runtime_omits_null() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: demo
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = &v4.surface;
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+components:
+  schemas:
+    LimitParameter: {type: integer, default: 25}
+    ExactParameter: {type: boolean, default: false}
+    ScopeParameter: {type: string, nullable: true, default: null}
+paths:
+  /search:
+    get:
+      operationId: items/search
+      parameters:
+        - {name: query, in: query, required: true, schema: {type: string}}
+        - {name: limit, in: query, schema: {$ref: '#/components/schemas/LimitParameter'}}
+        - name: component_override
+          in: query
+          schema:
+            $ref: '#/components/schemas/LimitParameter'
+            default: 50
+        - name: component_null_override
+          in: query
+          schema:
+            $ref: '#/components/schemas/LimitParameter'
+            default: null
+        - {name: exact, in: query, schema: {$ref: '#/components/schemas/ExactParameter'}}
+        - {name: scope, in: query, schema: {$ref: '#/components/schemas/ScopeParameter'}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {type: object, properties: {id: {type: string}}}
+"
+        .as_bytes(),
+    )
+    .expect("import");
+    let catalog =
+        generate_projection_catalog(v4, &ir.validated_plan().expect("plan")).expect("catalog");
+    let projection = catalog.projections.first().expect("projection");
+    let operation = ir.operations.first().expect("operation");
+
+    let defaults = projection_arg_specs(projection)
+        .into_iter()
+        .map(|arg| {
+            (
+                arg.name,
+                arg.default.map(crate::DeclaredDefaultValue::into_value),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(defaults.get("query"), Some(&None));
+    assert_eq!(defaults.get("limit"), Some(&Some(json!(25))));
+    assert_eq!(defaults.get("component_override"), Some(&Some(json!(50))));
+    assert_eq!(
+        defaults.get("component_null_override"),
+        Some(&Some(serde_json::Value::Null))
+    );
+    assert_eq!(defaults.get("exact"), Some(&Some(json!(false))));
+    assert_eq!(defaults.get("scope"), Some(&Some(serde_json::Value::Null)));
+
+    let request = request_spec_for_projection(projection, operation).expect("request");
+    let request_defaults = request
+        .query
+        .iter()
+        .map(|parameter| {
+            let default = match &parameter.value {
+                crate::ValueSourceSpec::Arg { default, .. } => default.clone(),
+                other => panic!("unexpected query value source: {other:?}"),
+            };
+            (parameter.name.as_str(), default)
+        })
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(request_defaults.get("limit"), Some(&Some(json!(25))));
+    assert_eq!(
+        request_defaults.get("component_override"),
+        Some(&Some(json!(50)))
+    );
+    assert_eq!(request_defaults.get("component_null_override"), Some(&None));
+    assert_eq!(request_defaults.get("exact"), Some(&Some(json!(false))));
+    assert_eq!(request_defaults.get("scope"), Some(&None));
+}
+
+#[test]
+fn explicit_null_is_not_a_usable_required_rest_input_default() {
+    let manifest = openapi_manifest();
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.0.3
+paths:
+  /scopes/{scope}:
+    get:
+      operationId: scopes/get
+      parameters:
+        - name: scope
+          in: path
+          required: true
+          schema: {type: string, nullable: true, default: null}
+        - name: cursor
+          in: query
+          required: true
+          schema: {type: string, nullable: true, default: null}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {type: object, properties: {id: {type: string}}}
+"
+        .as_bytes(),
+    )
+    .expect("import");
+    let catalog =
+        generate_projection_catalog(v4, &ir.validated_plan().expect("plan")).expect("catalog");
+    let projection = catalog.projections.first().expect("projection");
+    let operation = ir.operations.first().expect("operation");
+    let args = projection_arg_specs(projection)
+        .into_iter()
+        .map(|arg| (arg.name, arg.required))
+        .collect::<BTreeMap<_, _>>();
+
+    assert_eq!(args.get("scope"), Some(&true));
+    assert_eq!(args.get("cursor"), Some(&true));
+
+    let request = request_spec_for_projection(projection, operation).expect("request");
+    assert_eq!(request.path.raw(), "/scopes/{{arg.scope}}");
+    assert!(matches!(
+        request.query.first().map(|parameter| &parameter.value),
+        Some(crate::ValueSourceSpec::Arg { default: None, .. })
+    ));
 }
 
 #[test]
@@ -1227,6 +1392,20 @@ surface:
     .expect("manifest")
 }
 
+fn openapi_manifest() -> crate::ValidatedSourceManifest {
+    parse_source_manifest_yaml(
+        r"
+name: github_rest
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.github.com
+",
+    )
+    .expect("manifest")
+}
+
 fn search_issues_mcp_catalog() -> McpToolCatalog {
     McpToolCatalog {
         tools: vec![McpToolDescriptor {
@@ -1256,6 +1435,7 @@ fn search_issues_mcp_catalog() -> McpToolCatalog {
                 }
             })),
             read_only_hint: Some(true),
+            idempotent_hint: None,
         }],
     }
 }
@@ -1315,12 +1495,192 @@ paths:
 }
 
 #[test]
-fn generated_mcp_projection_exposes_current_row_result_columns() {
+fn generated_mcp_projection_projects_authored_top_level_raw_field() {
+    let manifest = mcp_manifest();
+    let v4 = manifest.as_v4().expect("v4");
+    let mcp_surface = &v4.surface;
+    let mcp_ir = import_mcp_surface(
+        v4,
+        mcp_surface,
+        &McpToolCatalog {
+            tools: vec![McpToolDescriptor {
+                name: "get_raw_item".to_string(),
+                title: None,
+                description: None,
+                input_schema: json!({"type": "object", "properties": {}}),
+                output_schema: Some(json!({
+                    "type": "object",
+                    "properties": {
+                        "raw": {"type": "string"},
+                        "id": {"type": "integer"}
+                    }
+                })),
+                read_only_hint: Some(true),
+                idempotent_hint: Some(true),
+            }],
+        },
+    )
+    .expect("MCP import");
+
+    let operation = mcp_ir.operations.first().expect("operation");
+    let row_type = mcp_ir
+        .types
+        .iter()
+        .find(|ty| ty.id == operation.output.type_ref)
+        .expect("row type");
+    let IrTypeShape::Object { fields } = &row_type.shape else {
+        panic!("row type should be an object");
+    };
+    let raw_field = fields
+        .iter()
+        .find(|field| field.name == "raw")
+        .expect("authored raw field");
+    assert!(!raw_field.synthetic);
+
+    let plan = mcp_ir.validated_plan().expect("plan");
+    let catalog = generate_projection_catalog(v4, &plan).expect("catalog");
+    let projection = catalog.projections.first().expect("projection");
+    let raw_column = projection
+        .columns
+        .iter()
+        .find(|column| column.name == "raw")
+        .expect("authored raw projection column");
+    assert_eq!(raw_column.data_type, ManifestDataType::Utf8);
+    assert_eq!(raw_column.source_path, ["raw"]);
+    validate_projection_compatibility(&plan, &catalog)
+        .expect("provider-authored raw fields must remain addressable");
+}
+
+#[test]
+fn projection_compatibility_rejects_synthetic_mcp_raw_field() {
+    let manifest = mcp_manifest();
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_mcp_surface(
+        v4,
+        &v4.surface,
+        &McpToolCatalog {
+            tools: vec![McpToolDescriptor {
+                name: "get_item".to_string(),
+                title: None,
+                description: None,
+                input_schema: json!({"type": "object", "properties": {}}),
+                output_schema: Some(json!({
+                    "type": "object",
+                    "properties": {"id": {"type": "string"}}
+                })),
+                read_only_hint: Some(true),
+                idempotent_hint: Some(true),
+            }],
+        },
+    )
+    .expect("MCP import");
+    let plan = ir.validated_plan().expect("plan");
+    let generated = generate_projection_catalog(v4, &plan).expect("catalog");
+    let catalog = compatibility_of_source_path(&generated, &["raw"]);
+
+    let error = validate_projection_compatibility(&plan, &catalog)
+        .expect_err("the importer-only raw field is not present in runtime rows");
+
+    assert!(
+        error.to_string().contains("reads synthetic field 'raw'"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn generated_mcp_projection_exposes_structured_object_and_list_paths() {
+    let manifest = mcp_manifest();
+    let v4 = manifest.as_v4().expect("v4");
+    let mcp_surface = &v4.surface;
+    let ir = import_mcp_surface(
+        v4,
+        mcp_surface,
+        &McpToolCatalog {
+            tools: vec![McpToolDescriptor {
+                name: "get_item".to_string(),
+                title: None,
+                description: None,
+                input_schema: json!({"type": "object", "properties": {}}),
+                output_schema: Some(json!({
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "details": {
+                            "type": "object",
+                            "properties": {
+                                "owner": {"type": "string"}
+                            }
+                        },
+                        "tags": {
+                            "type": "array",
+                            "items": {"type": "string"}
+                        }
+                    }
+                })),
+                read_only_hint: Some(true),
+                idempotent_hint: Some(true),
+            }],
+        },
+    )
+    .expect("MCP import");
+
+    let plan = ir.validated_plan().expect("plan");
+    assert!(
+        plan.output_row_path("get_item").is_empty(),
+        "a singleton resource must project from the response root"
+    );
+    let catalog = generate_projection_catalog(v4, &plan).expect("catalog");
+    let projection = catalog.projections.first().expect("projection");
+    for (name, source_path) in [("details", ["details"]), ("tags", ["tags"])] {
+        let column = projection
+            .columns
+            .iter()
+            .find(|column| column.name == name)
+            .expect("structured column");
+        assert_eq!(column.data_type, ManifestDataType::Json);
+        assert_eq!(column.source_path, source_path);
+    }
+    assert!(projection.columns.iter().any(|column| {
+        column.name == "details__owner"
+            && column.data_type == ManifestDataType::Utf8
+            && column.source_path == ["details", "owner"]
+    }));
+    assert!(
+        projection
+            .columns
+            .iter()
+            .all(|column| column.source_path != ["raw"])
+    );
+}
+
+#[test]
+fn generated_mcp_projection_paths_are_relative_to_the_effective_row() {
     let manifest = mcp_manifest();
     let v4 = manifest.as_v4().expect("v4");
     let mcp_surface = &v4.surface;
     let mcp_ir =
         import_mcp_surface(v4, mcp_surface, &search_issues_mcp_catalog()).expect("mcp import");
+
+    let operation = mcp_ir
+        .operations
+        .iter()
+        .find(|operation| operation.id == "search_issues")
+        .expect("operation");
+    let row_type = mcp_ir
+        .types
+        .iter()
+        .find(|ty| ty.id == operation.output.type_ref)
+        .expect("row type");
+    let IrTypeShape::Object { fields } = &row_type.shape else {
+        panic!("row type should be an object");
+    };
+    assert!(
+        fields
+            .iter()
+            .find(|field| field.name == "raw")
+            .expect("compatibility raw field")
+            .synthetic
+    );
 
     let catalog =
         generate_projection_catalog(v4, &mcp_ir.validated_plan().expect("plan")).expect("catalog");
@@ -1349,8 +1709,414 @@ fn generated_mcp_projection_exposes_current_row_result_columns() {
                 "result_json".to_string(),
                 ManifestDataType::Json,
                 Vec::new()
-            )
+            ),
+            (
+                "id".to_string(),
+                ManifestDataType::Int64,
+                vec!["id".to_string()]
+            ),
+            (
+                "title".to_string(),
+                ManifestDataType::Utf8,
+                vec!["title".to_string()]
+            ),
         ]
+    );
+}
+
+#[test]
+fn rest_and_mcp_projections_expose_exact_nested_scalar_paths() {
+    let rest_manifest = openapi_manifest();
+    let rest_v4 = rest_manifest.as_v4().expect("REST v4");
+    let rest_ir = import_openapi_surface(
+        rest_v4,
+        &rest_v4.surface,
+        r#"
+openapi: 3.0.3
+paths:
+  /items:
+    get:
+      operationId: items/get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  repository:
+                    type: object
+                    properties:
+                      "owner/name": {type: string}
+"#
+        .as_bytes(),
+    )
+    .expect("REST import");
+    let rest_catalog =
+        generate_projection_catalog(rest_v4, &rest_ir.validated_plan().expect("REST plan"))
+            .expect("REST catalog");
+    let rest_projection = rest_catalog.projections.first().expect("REST projection");
+    assert!(rest_projection.columns.iter().any(|column| {
+        column.name == "repository"
+            && column.data_type == ManifestDataType::Json
+            && column.source_path == ["repository"]
+    }));
+
+    let mcp_manifest = mcp_manifest();
+    let mcp_v4 = mcp_manifest.as_v4().expect("MCP v4");
+    let mcp_ir = import_mcp_surface(
+        mcp_v4,
+        &mcp_v4.surface,
+        &McpToolCatalog {
+            tools: vec![McpToolDescriptor {
+                name: "get_item".to_string(),
+                title: None,
+                description: None,
+                input_schema: json!({"type": "object", "properties": {}}),
+                output_schema: Some(json!({
+                    "type": "object",
+                    "properties": {
+                        "repository": {
+                            "type": "object",
+                            "properties": {
+                                "owner/name": {"type": "string"}
+                            }
+                        }
+                    }
+                })),
+                read_only_hint: Some(true),
+                idempotent_hint: Some(true),
+            }],
+        },
+    )
+    .expect("MCP import");
+    let mcp_catalog =
+        generate_projection_catalog(mcp_v4, &mcp_ir.validated_plan().expect("MCP plan"))
+            .expect("MCP catalog");
+    let mcp_projection = mcp_catalog.projections.first().expect("MCP projection");
+    assert!(
+        mcp_projection
+            .columns
+            .iter()
+            .any(|column| column.name == "result_json" && column.source_path.is_empty())
+    );
+
+    for projection in [rest_projection, mcp_projection] {
+        // RFC 6901 `/repository/owner~1name` decodes to these exact raw
+        // segments. SQL-name normalization must not alter the source path.
+        let leaf = projection
+            .columns
+            .iter()
+            .find(|column| column.source_path == ["repository", "owner/name"])
+            .expect("nested scalar leaf");
+        assert_eq!(leaf.name, "repository__owner_name");
+        assert_eq!(leaf.data_type, ManifestDataType::Utf8);
+    }
+}
+
+#[test]
+fn nested_column_names_do_not_reuse_collision_resolved_top_level_names() {
+    let manifest = openapi_manifest();
+    let v4 = manifest.as_v4().expect("v4");
+    let suffix = crate::v4::naming::stable_suffix("foo_bar");
+    let literal_name = format!("foo_bar__{suffix}");
+    let openapi = format!(
+        r"
+openapi: 3.0.3
+components:
+  schemas:
+    FooBarObject:
+      type: object
+      properties:
+        {suffix}: {{type: string}}
+paths:
+  /items:
+    get:
+      operationId: items/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    foo-bar: {{type: string}}
+                    foo_bar: {{$ref: '#/components/schemas/FooBarObject'}}
+                    {literal_name}: {{type: string}}
+"
+    );
+    let ir = import_openapi_surface(v4, &v4.surface, openapi.as_bytes()).expect("REST import");
+    let plan = ir.validated_plan().expect("plan");
+    let catalog = generate_projection_catalog(v4, &plan).expect("catalog");
+    let projection = catalog.projections.first().expect("projection");
+
+    let names = projection
+        .columns
+        .iter()
+        .map(|column| column.name.as_str())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        names.len(),
+        projection.columns.len(),
+        "every emitted column name must be unique"
+    );
+
+    for source_path in [
+        vec!["foo-bar"],
+        vec!["foo_bar"],
+        vec![literal_name.as_str()],
+        vec!["foo_bar", suffix.as_str()],
+    ] {
+        assert!(
+            projection.columns.iter().any(|column| {
+                column
+                    .source_path
+                    .iter()
+                    .map(String::as_str)
+                    .eq(source_path.iter().copied())
+            }),
+            "missing source path {source_path:?}; columns: {:?}",
+            projection.columns
+        );
+    }
+
+    let top_level = projection
+        .columns
+        .iter()
+        .find(|column| column.source_path == ["foo_bar"])
+        .expect("collision-resolved top-level column");
+    let nested = projection
+        .columns
+        .iter()
+        .find(|column| {
+            column
+                .source_path
+                .iter()
+                .map(String::as_str)
+                .eq(["foo_bar", suffix.as_str()])
+        })
+        .expect("nested scalar column");
+    assert_ne!(top_level.name, nested.name);
+
+    validate_projection_compatibility(&plan, &catalog)
+        .expect("generated collision-safe columns must remain compatible");
+}
+
+#[test]
+fn generated_nested_columns_skip_numeric_object_keys() {
+    let rest_manifest = openapi_manifest();
+    let rest_v4 = rest_manifest.as_v4().expect("REST v4");
+    let rest_ir = import_openapi_surface(
+        rest_v4,
+        &rest_v4.surface,
+        r#"
+openapi: 3.0.3
+paths:
+  /items:
+    get:
+      operationId: items/get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  details:
+                    type: object
+                    properties:
+                      safe: {type: string}
+                      "0": {type: string}
+                      "2024":
+                        type: object
+                        properties:
+                          label: {type: string}
+"#
+        .as_bytes(),
+    )
+    .expect("REST import");
+    let rest_plan = rest_ir.validated_plan().expect("REST plan");
+    let rest_catalog = generate_projection_catalog(rest_v4, &rest_plan).expect("REST catalog");
+    validate_projection_compatibility(&rest_plan, &rest_catalog)
+        .expect("generated REST catalog should validate");
+
+    let mcp_manifest = mcp_manifest();
+    let mcp_v4 = mcp_manifest.as_v4().expect("MCP v4");
+    let mcp_ir = import_mcp_surface(
+        mcp_v4,
+        &mcp_v4.surface,
+        &McpToolCatalog {
+            tools: vec![McpToolDescriptor {
+                name: "get_item".to_string(),
+                title: None,
+                description: None,
+                input_schema: json!({"type": "object", "properties": {}}),
+                output_schema: Some(json!({
+                    "type": "object",
+                    "properties": {
+                        "details": {
+                            "type": "object",
+                            "properties": {
+                                "safe": {"type": "string"},
+                                "0": {"type": "string"},
+                                "2024": {
+                                    "type": "object",
+                                    "properties": {
+                                        "label": {"type": "string"}
+                                    }
+                                }
+                            }
+                        }
+                    }
+                })),
+                read_only_hint: Some(true),
+                idempotent_hint: Some(true),
+            }],
+        },
+    )
+    .expect("MCP import");
+    let mcp_plan = mcp_ir.validated_plan().expect("MCP plan");
+    let mcp_catalog = generate_projection_catalog(mcp_v4, &mcp_plan).expect("MCP catalog");
+    validate_projection_compatibility(&mcp_plan, &mcp_catalog)
+        .expect("generated MCP catalog should validate");
+
+    for projection in [
+        rest_catalog.projections.first().expect("REST projection"),
+        mcp_catalog.projections.first().expect("MCP projection"),
+    ] {
+        assert!(
+            projection
+                .columns
+                .iter()
+                .any(|column| column.source_path == ["details", "safe"])
+        );
+        assert!(projection.columns.iter().all(|column| {
+            column
+                .source_path
+                .iter()
+                .all(|segment| segment.parse::<usize>().is_err())
+        }));
+    }
+}
+
+#[test]
+fn rest_projection_exposes_nested_object_path_without_duplicating_top_level_object() {
+    let manifest = openapi_manifest();
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.0.3
+paths:
+  /items/{id}:
+    get:
+      operationId: items/get
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  author:
+                    type: object
+                    properties:
+                      profile:
+                        type: object
+                        properties:
+                          display_name: {type: string}
+"
+        .as_bytes(),
+    )
+    .expect("REST import");
+
+    let catalog =
+        generate_projection_catalog(v4, &ir.validated_plan().expect("plan")).expect("catalog");
+    let projection = catalog.projections.first().expect("projection");
+    assert_eq!(
+        projection
+            .columns
+            .iter()
+            .filter(|column| column.source_path == ["author"])
+            .count(),
+        1
+    );
+    let profile = projection
+        .columns
+        .iter()
+        .find(|column| column.source_path == ["author", "profile"])
+        .expect("nested profile object column");
+    assert_eq!(profile.name, "author__profile");
+    assert_eq!(profile.data_type, ManifestDataType::Json);
+    assert!(projection.columns.iter().any(|column| {
+        column.name == "author__profile__display_name"
+            && column.data_type == ManifestDataType::Utf8
+            && column.source_path == ["author", "profile", "display_name"]
+    }));
+}
+
+#[test]
+fn recursive_openapi_schema_projection_terminates_and_preserves_scalar_leaves() {
+    let manifest = openapi_manifest();
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.0.3
+components:
+  schemas:
+    Node:
+      type: object
+      properties:
+        id: {type: string}
+        child: {$ref: '#/components/schemas/Node'}
+        metadata:
+          type: object
+          properties:
+            label: {type: string}
+paths:
+  /node:
+    get:
+      operationId: nodes/get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Node'}
+"
+        .as_bytes(),
+    )
+    .expect("REST import");
+
+    let catalog = generate_projection_catalog(v4, &ir.validated_plan().expect("plan"))
+        .expect("projection generation");
+    let projection = catalog.projections.first().expect("projection");
+    assert!(projection.columns.iter().any(|column| {
+        column.name == "id"
+            && column.data_type == ManifestDataType::Utf8
+            && column.source_path == ["id"]
+    }));
+    assert!(projection.columns.iter().any(|column| {
+        column.name == "child__id"
+            && column.data_type == ManifestDataType::Utf8
+            && column.source_path == ["child", "id"]
+    }));
+    assert!(projection.columns.iter().any(|column| {
+        column.name == "metadata__label"
+            && column.data_type == ManifestDataType::Utf8
+            && column.source_path == ["metadata", "label"]
+    }));
+    assert!(
+        projection
+            .columns
+            .iter()
+            .all(|column| column.source_path.len() <= 3)
     );
 }
 
@@ -1393,6 +2159,7 @@ fn generated_mcp_projection_keeps_an_inferred_cursor_internal() {
                 }
             })),
             read_only_hint: Some(true),
+            idempotent_hint: None,
         }],
     };
     let mcp_ir = import_mcp_surface(v4, mcp_surface, &catalog).expect("mcp import");
@@ -1456,6 +2223,7 @@ fn generated_mcp_projection_with_only_an_inferred_cursor_is_a_table() {
                 }
             })),
             read_only_hint: Some(true),
+            idempotent_hint: None,
         }],
     };
     let mcp_ir = import_mcp_surface(v4, mcp_surface, &catalog).expect("mcp import");
@@ -1510,6 +2278,7 @@ fn generated_mcp_projection_snake_cases_camel_input_names() {
                 }
             })),
             read_only_hint: Some(true),
+            idempotent_hint: None,
         }],
     };
     let mcp_ir = import_mcp_surface(v4, mcp_surface, &catalog).expect("mcp import");
@@ -1580,6 +2349,32 @@ paths:
     (manifest, imported)
 }
 
+fn imported_defaulted_inputs_surface() -> (V4SourceManifest, ImportedSurface) {
+    let manifest = openapi_manifest().as_v4().expect("v4").clone();
+    let imported = import_openapi_surface(
+        &manifest,
+        &manifest.surface,
+        br"
+openapi: 3.0.3
+paths:
+  /items:
+    get:
+      operationId: items/list
+      parameters:
+        - {name: missing_default, in: query, schema: {type: string}}
+        - {name: null_default, in: query, schema: {type: string, nullable: true, default: null}}
+        - {name: value_default, in: query, schema: {type: integer, default: 7}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {type: array, items: {type: object}}
+",
+    )
+    .expect("import");
+    (manifest, imported)
+}
+
 fn imported_mcp_items_surface() -> (V4SourceManifest, ImportedSurface) {
     let manifest = mcp_manifest().as_v4().expect("v4").clone();
     let catalog = McpToolCatalog {
@@ -1611,6 +2406,7 @@ fn imported_mcp_items_surface() -> (V4SourceManifest, ImportedSurface) {
                 }
             })),
             read_only_hint: Some(true),
+            idempotent_hint: None,
         }],
     };
     let mut imported =
@@ -2011,7 +2807,7 @@ fn projection_compatibility_rejects_field_columns_when_the_row_type_is_absent() 
         .expect("projections");
     override_row_path(&mut imported, "items_list", &["blobs"]);
     let plan = imported.validated_plan().expect("plan");
-    assert_eq!(plan.rest_output_type_ref("items_list"), "json");
+    assert_eq!(plan.output_row_type_ref("items_list"), "json");
 
     let error = validate_projection_compatibility(&plan, &catalog)
         .expect_err("field columns must not survive an opaque row path");
@@ -2047,9 +2843,9 @@ fn projection_compatibility_accepts_whole_row_columns_for_non_object_rows() {
     }
 }
 
-/// The generator never nests a source path, but an authored override may, and
-/// runtime follows every segment. Each case is the shape reached *before* the
-/// final segment deciding whether that segment is selectable.
+/// Generated and authored source paths may both nest, and runtime follows every
+/// segment. Each case is the shape reached *before* the final segment deciding
+/// whether that segment is selectable.
 #[test]
 fn projection_compatibility_walks_every_segment_of_a_nested_source_path() {
     let (manifest, imported) = imported_nested_row_surface();
@@ -2151,6 +2947,40 @@ fn projection_compatibility_rejects_input_missing_from_operation() {
             .contains("input 'stale' does not match a Query input named 'renamed_upstream'"),
         "unexpected error: {error}"
     );
+}
+
+#[test]
+fn projection_compatibility_rejects_changed_imported_defaults() {
+    let (manifest, imported) = imported_defaulted_inputs_surface();
+    let plan = imported.validated_plan().expect("plan");
+    let generated = generate_projection_catalog(&manifest, &plan).expect("projections");
+    validate_projection_compatibility(&plan, &generated)
+        .expect("an unmodified generated catalog must remain compatible");
+
+    for (wire_name, replacement) in [
+        (
+            "missing_default",
+            Some(crate::DeclaredDefaultValue::new(serde_json::Value::Null)),
+        ),
+        ("null_default", None),
+        (
+            "value_default",
+            Some(crate::DeclaredDefaultValue::new(json!(8))),
+        ),
+    ] {
+        let mut catalog = generated.clone();
+        projection_input_mut(&mut catalog, wire_name).default_value = replacement;
+
+        let error = validate_projection_compatibility(&plan, &catalog)
+            .expect_err("a projection override must not change request defaults");
+
+        assert!(
+            error.to_string().contains(&format!(
+                "input '{wire_name}' on operation 'items_list' changes the imported default_value"
+            )),
+            "unexpected error: {error}"
+        );
+    }
 }
 
 #[test]

@@ -87,10 +87,13 @@ fn validate_operation_metadata(
                 pagination,
             },
         ) => {
-            // MCP output types stay opaque JSON, so an MCP row path is only
-            // checked for hygiene; the runtime resolves it against the decoded
-            // tool result.
             validate_row_path(operation, row_path)?;
+            resolve_output_row_type_ref(&operation.output, row_path, types).map_err(|error| {
+                ManifestError::validation(format!(
+                    "operation '{}' output row path is invalid: {error}",
+                    operation.id
+                ))
+            })?;
             validate_mcp_pagination(operation, pagination)
         }
         (IrExecutionAttachment::Rest(_), OperationMetadata::Mcp { .. }) => {

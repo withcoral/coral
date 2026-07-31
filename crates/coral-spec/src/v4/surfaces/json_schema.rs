@@ -272,6 +272,22 @@ pub(crate) fn json_schema_default_to_string(value: &Value) -> String {
     }
 }
 
+pub(crate) fn merge_json_schema_properties_exact(
+    target: &mut BTreeMap<String, Value>,
+    source: BTreeMap<String, Value>,
+) -> Result<(), JsonSchemaComparisonError> {
+    for (name, property) in source {
+        if let Some(existing) = target.get(&name) {
+            if existing != &property {
+                return Err(JsonSchemaComparisonError::PropertyConflict(name));
+            }
+        } else {
+            target.insert(name, property);
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn merge_json_object_shape_annotation_insensitive(
     target: &mut JsonObjectShape,
     source: JsonObjectShape,
@@ -1114,17 +1130,6 @@ mod tests {
         assert_eq!(
             merge_json_object_shape_annotation_insensitive(&mut target, source, 0, 1),
             Err(JsonSchemaComparisonError::DepthExceeded)
-        );
-    }
-
-    #[test]
-    fn default_to_string_preserves_string_values_and_serializes_other_json() {
-        assert_eq!(json_schema_default_to_string(&json!("text")), "text");
-        assert_eq!(json_schema_default_to_string(&json!(30)), "30");
-        assert_eq!(json_schema_default_to_string(&json!(true)), "true");
-        assert_eq!(
-            json_schema_default_to_string(&json!({"enabled": true})),
-            r#"{"enabled":true}"#
         );
     }
 }

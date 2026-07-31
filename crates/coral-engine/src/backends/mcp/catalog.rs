@@ -55,5 +55,9 @@ fn tool_descriptor(tool: Tool) -> McpToolDescriptor {
             .annotations
             .as_ref()
             .and_then(|annotations| annotations.read_only_hint),
+        idempotent_hint: tool
+            .annotations
+            .as_ref()
+            .and_then(|annotations| annotations.idempotent_hint),
     }
 }

@@ -20,6 +20,8 @@ use super::names::{
 };
 type TypeIndex<'a> = HashMap<&'a str, &'a IrType>;
 
+const MAX_SCALAR_LEAF_PROJECTION_DEPTH: usize = 64;
+
 pub fn generate_projection_catalog(
     manifest: &V4SourceManifest,
     plan: &ValidatedSurfacePlan,
@@ -237,7 +239,12 @@ fn generated_projection_name(operation: &IrOperation, is_search: bool) -> String
 }
 
 fn projection_input_required(input: &IrOperationInput) -> bool {
-    input.required && (input.default_value.is_none() || input.location == IrInputLocation::ToolArg)
+    input.required
+        && (input.location == IrInputLocation::ToolArg
+            || input
+                .default_value
+                .as_ref()
+                .is_none_or(|default| default.value().is_null()))
 }
 
 fn rest_input_exposure(
@@ -305,10 +312,11 @@ fn projection_columns(
     operation: &IrOperation,
 ) -> Vec<ProjectionColumn> {
     if matches!(&operation.execution, IrExecutionAttachment::Mcp(_)) {
-        // MCP output schemas drive row cardinality and response extraction, but
-        // SQL columns stay opaque until Coral has stable per-tool payload
-        // normalization semantics.
-        return vec![
+        // Keep the two opaque compatibility columns while also projecting
+        // deterministic scalar leaves from an authored output schema. The
+        // original property segments remain in `source_path`, so route result
+        // pointers can resolve without relying on normalized SQL names.
+        let mut columns = vec![
             ProjectionColumn {
                 name: "result".to_string(),
                 data_type: ManifestDataType::Utf8,
@@ -326,10 +334,25 @@ fn projection_columns(
                 do_not_index: false,
             },
         ];
+        // The runtime applies the operation row path before it projects
+        // columns. Derive structured columns from that effective row type so
+        // their source paths are relative to the row rather than the response
+        // envelope.
+        {
+            let mut collector = ScalarLeafCollector::new(type_by_id, &mut columns);
+            collector.append(
+                plan.output_row_type_ref(&operation.id),
+                &mut Vec::new(),
+                false,
+                "",
+                0,
+            );
+        }
+        return columns;
     }
     // A wrapped-list operation declares an envelope but yields the rows nested
     // inside it, so columns come from the type its row path selects.
-    let Some(row_type) = type_by_id.get(plan.rest_output_type_ref(&operation.id)) else {
+    let Some(row_type) = type_by_id.get(plan.output_row_type_ref(&operation.id)) else {
         return vec![ProjectionColumn {
             name: "value".to_string(),
             data_type: ManifestDataType::Json,
@@ -352,11 +375,7 @@ fn projection_columns(
     let mut columns = Vec::new();
     let mut names = HashSet::new();
     for field in fields {
-        let mut name = normalize_identifier(&field.name, "column");
-        if !names.insert(name.clone()) {
-            let suffix = stable_suffix(&field.name);
-            name = format!("{name}__{suffix}");
-        }
+        let name = unique_top_level_column_name(&field.name, &mut names);
         let data_type = type_by_id
             .get(field.type_ref.as_str())
             .map_or(ManifestDataType::Json, |ty| projection_data_type(ty));
@@ -369,7 +388,197 @@ fn projection_columns(
             do_not_index: false,
         });
     }
+    // Preserve every established top-level REST column above, including JSON
+    // object columns, and add addressable scalar descendants beside them.
+    {
+        // Seed the collector once from every emitted top-level column. Besides
+        // keeping derivation linear, this reserves collision-resolved names
+        // before nested leaves choose theirs.
+        let mut collector = ScalarLeafCollector::new(type_by_id, &mut columns);
+        for field in fields {
+            let Some(field_type) = type_by_id.get(field.type_ref.as_str()) else {
+                continue;
+            };
+            if !matches!(field_type.shape, IrTypeShape::Object { .. }) {
+                continue;
+            }
+            collector.append(
+                field.type_ref.as_str(),
+                &mut vec![field.name.clone()],
+                field.nullable || field_type.nullable,
+                &field.description,
+                0,
+            );
+        }
+    }
     columns
+}
+
+fn unique_top_level_column_name(field_name: &str, names: &mut HashSet<String>) -> String {
+    let base = normalize_identifier(field_name, "column");
+    if names.insert(base.clone()) {
+        return base;
+    }
+    let mut attempt = 0_u32;
+    loop {
+        let suffix_key = if attempt == 0 {
+            field_name.to_string()
+        } else {
+            format!("{field_name}:{attempt}")
+        };
+        let candidate = format!("{base}__{}", stable_suffix(&suffix_key));
+        if names.insert(candidate.clone()) {
+            return candidate;
+        }
+        attempt += 1;
+    }
+}
+
+struct ScalarLeafCollector<'a, 'ir> {
+    type_by_id: &'a TypeIndex<'ir>,
+    names: HashSet<String>,
+    columns: &'a mut Vec<ProjectionColumn>,
+    source_paths: HashSet<Vec<String>>,
+    type_stack: HashSet<String>,
+}
+
+impl<'a, 'ir> ScalarLeafCollector<'a, 'ir> {
+    fn new(type_by_id: &'a TypeIndex<'ir>, columns: &'a mut Vec<ProjectionColumn>) -> Self {
+        let names = columns.iter().map(|column| column.name.clone()).collect();
+        let source_paths = columns
+            .iter()
+            .filter(|column| !column.source_path.is_empty())
+            .map(|column| column.source_path.clone())
+            .collect();
+        ScalarLeafCollector {
+            type_by_id,
+            names,
+            columns,
+            source_paths,
+            type_stack: HashSet::new(),
+        }
+    }
+
+    fn append(
+        &mut self,
+        type_ref: &str,
+        path: &mut Vec<String>,
+        inherited_nullable: bool,
+        description: &str,
+        depth: usize,
+    ) {
+        // Collector paths traverse object fields only. Runtime reserves a
+        // numeric path segment for list indexing, so a numeric object key and
+        // everything below it could never be read from the projected row.
+        if path
+            .last()
+            .is_some_and(|segment| segment.parse::<usize>().is_ok())
+        {
+            return;
+        }
+        let Some(ty) = self.type_by_id.get(type_ref) else {
+            return;
+        };
+        match &ty.shape {
+            IrTypeShape::Scalar(_) | IrTypeShape::Enum { .. } if !path.is_empty() => {
+                self.append_column(
+                    path,
+                    projection_data_type(ty),
+                    inherited_nullable || ty.nullable,
+                    description,
+                );
+            }
+            IrTypeShape::Object { fields } => {
+                if !path.is_empty() {
+                    self.append_column(
+                        path,
+                        ManifestDataType::Json,
+                        inherited_nullable || ty.nullable,
+                        description,
+                    );
+                }
+                if depth >= MAX_SCALAR_LEAF_PROJECTION_DEPTH
+                    || !self.type_stack.insert(ty.id.clone())
+                {
+                    return;
+                }
+                for field in fields {
+                    if path.is_empty() && field.name == "raw" && field.synthetic {
+                        continue;
+                    }
+                    path.push(field.name.clone());
+                    self.append(
+                        field.type_ref.as_str(),
+                        path,
+                        inherited_nullable || field.nullable,
+                        &field.description,
+                        depth + 1,
+                    );
+                    path.pop();
+                }
+                self.type_stack.remove(&ty.id);
+            }
+            IrTypeShape::List { .. } | IrTypeShape::Map { .. } if !path.is_empty() => {
+                self.append_column(
+                    path,
+                    ManifestDataType::Json,
+                    inherited_nullable || ty.nullable,
+                    description,
+                );
+            }
+            IrTypeShape::Scalar(_)
+            | IrTypeShape::Enum { .. }
+            | IrTypeShape::Json
+            | IrTypeShape::List { .. }
+            | IrTypeShape::Map { .. } => {}
+        }
+    }
+
+    fn append_column(
+        &mut self,
+        path: &[String],
+        data_type: ManifestDataType,
+        nullable: bool,
+        description: &str,
+    ) {
+        if !self.source_paths.insert(path.to_vec()) {
+            return;
+        }
+        let base = path
+            .iter()
+            .map(|segment| normalize_identifier(segment, "column"))
+            .collect::<Vec<_>>()
+            .join("__");
+        let name = unique_leaf_column_name(&base, path, &mut self.names);
+        self.columns.push(ProjectionColumn {
+            name,
+            data_type,
+            source_path: path.to_vec(),
+            nullable,
+            description: description.to_string(),
+            do_not_index: false,
+        });
+    }
+}
+
+fn unique_leaf_column_name(base: &str, path: &[String], names: &mut HashSet<String>) -> String {
+    if names.insert(base.to_string()) {
+        return base.to_string();
+    }
+    let path_key = format!("{path:?}");
+    let mut attempt = 0_u32;
+    loop {
+        let suffix_key = if attempt == 0 {
+            path_key.clone()
+        } else {
+            format!("{path_key}:{attempt}")
+        };
+        let candidate = format!("{base}__{}", stable_suffix(&suffix_key));
+        if names.insert(candidate.clone()) {
+            return candidate;
+        }
+        attempt += 1;
+    }
 }
 
 fn projection_data_type(ty: &IrType) -> ManifestDataType {

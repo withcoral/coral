@@ -71,6 +71,7 @@ surface:
                 "properties": {"id": {"type": "string"}}
             })),
             read_only_hint: Some(true),
+            idempotent_hint: Some(true),
         }],
     };
     import_mcp_surface(v4, &v4.surface, &catalog).expect("import")
@@ -252,6 +253,30 @@ fn plan_rejects_blank_or_unresolvable_rest_row_paths() {
         error
             .to_string()
             .contains("row path must be empty when the response root is already a list"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn plan_rejects_unresolvable_mcp_row_paths() {
+    let mut imported = imported_mcp();
+    let OperationMetadata::Mcp { row_path, .. } = imported
+        .operation_metadata
+        .operations
+        .values_mut()
+        .next()
+        .expect("metadata")
+    else {
+        panic!("expected MCP metadata");
+    };
+    *row_path = vec!["id".to_string()];
+
+    let error = imported
+        .validated_plan()
+        .expect_err("an MCP row path that does not select a list must fail");
+
+    assert!(
+        error.to_string().contains("is not a list"),
         "unexpected error: {error}"
     );
 }

@@ -380,6 +380,7 @@ impl OpenApiImporter<'_> {
                     required: required.contains(name),
                     nullable: true,
                     description: self.field_description(schema),
+                    synthetic: false,
                 }
             })
             .collect()
