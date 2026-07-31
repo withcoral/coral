@@ -25,13 +25,14 @@ test_queries:
   - SELECT * FROM my_source.messages LIMIT 1
 ```
 
-| Field         | Description                                        |
-| ------------- | -------------------------------------------------- |
-| `name`        | Source name, also used as the SQL schema name      |
-| `version`     | Source spec version string                         |
-| `dsl_version` | Coral source spec DSL version (currently `3`)      |
-| `backend`     | How data is fetched: `http`, `file`, or `mcp` |
-| `test_queries` | Optional read-only SQL checks Coral runs during source validation |
+| Field          | Description                                                                      |
+| -------------- | -------------------------------------------------------------------------------- |
+| `name`         | Source name, also used as the SQL schema name                                    |
+| `version`      | DSL v3 source spec version string                                                |
+| `dsl_version`  | Coral source spec DSL version: `3`, or `4` for a preview imported-surface source |
+| `backend`      | DSL v3 fetch backend: `http`, `file`, or `mcp`                                   |
+| `surface`      | DSL v4 imported OpenAPI or MCP surface                                            |
+| `test_queries` | Optional read-only SQL checks Coral runs during source validation                |
 
 ## Test queries
 
@@ -661,6 +662,88 @@ per provider call, and `max_calls_per_query` caps provider calls for one SQL
 query. Values must be positive. `default_top_k` and `max_top_k` are capped at
 1000, `max_calls_per_query` is capped at 100, and
 `max_top_k * max_calls_per_query` cannot exceed 10000 candidates.
+
+### Universal Search authorization
+
+Universal Search fan-out is available only for DSL v4 sources. DSL v3 sources
+cannot author `functions[].universal_search` and do not participate in native
+fan-out. To make a provider available, define a DSL v4 imported-surface source.
+
+DSL v4 table functions are generated from one imported surface. Author routes
+at the top level and bind them to the original imported operation identity:
+
+```yaml
+name: github_v4
+dsl_version: 4
+surface:
+  type: openapi
+  url: https://example.com/openapi.json
+
+universal_search:
+  routes:
+    issue_search:
+      execute: true
+      target:
+        operation_id: search_issues_and_pull_requests
+      query_input:
+        location: query
+        name: q
+      result:
+        entity_type: issue
+        identity_fields: [/node_id]
+        provider_id: /id
+        title: /title
+        url: /html_url
+        snippet: /body
+        attributes: [/state, /author/login]
+```
+
+The route map key, such as `issue_search`, is the authored authorization ID and
+must match `[a-z][a-z0-9_]*`. Because each DSL v4 source has exactly one
+surface, `operation_id` is its exact current target. Generated schema and
+function names are not authorization identities. `query_input.location` must
+be `path`, `query`, or `tool_arg`;
+header, cookie, and body inputs cannot be selected.
+
+Coral derives route arguments and defaults from the imported OpenAPI or MCP
+operation. The selected query input must lower to an exposed `Utf8` argument
+with no default. Every other exposed input must have a type-compatible default
+in the imported operation; these defaults are imported surface facts, not
+fields authored in the DSL v4 manifest.
+
+DSL v4 result fields are RFC 6901 JSON Pointers rooted at the imported result
+row. Use escapes `~0` for `~` and `~1` for `/`. Manifest validation checks the
+pointer syntax; during route resolution, every pointer must resolve to exactly
+one imported result field. Identity and display fields must be scalar. An
+attribute may select a structured value only when its schema permits bounded
+canonical JSON.
+
+To deny a DSL v4 route, keep the exact target and omit `query_input`:
+
+```yaml
+universal_search:
+  routes:
+    issue_search:
+      execute: false
+      target:
+        operation_id: search_issues_and_pull_requests
+```
+
+Authorization fails closed:
+
+- Any authored DSL v4 `universal_search` policy puts the source in explicit mode;
+  unlisted routes are not inferred.
+- Without authored policy, only one unambiguous, safe generated search route
+  can be inferred.
+- Duplicate or missing targets, ambiguous query inputs, missing or
+  type-incompatible imported defaults, and unresolved result fields do not fall
+  back to a guessed operation.
+- `execute: true` is the source author's assertion that the target is
+  retrieval-only and idempotent. Verify that assertion against the upstream
+  API. Inference is stricter: HTTP operations must use a safe retrieval method,
+  and MCP tools must declare read-only and idempotent annotations.
+- Changing result identity or display mappings does not create a new
+  authorization.
 
 ### MCP sources
 

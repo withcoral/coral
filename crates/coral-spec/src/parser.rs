@@ -207,8 +207,16 @@ impl ValidatedSourceManifest {
 /// Returns a [`ManifestError`] if the `YAML` cannot be parsed or the source
 /// spec violates any validation rules.
 pub fn parse_source_manifest_yaml(raw: &str) -> Result<ValidatedSourceManifest> {
-    let manifest_value: Value = serde_yaml::from_str(raw).map_err(ManifestError::parse_yaml)?;
+    let manifest_value = parse_yaml_value(raw)?;
     parse_source_manifest_value(manifest_value)
+}
+
+pub(crate) fn parse_yaml_value(raw: &str) -> Result<Value> {
+    // Deserialize through serde_yaml's mapping representation first because it
+    // rejects duplicate keys instead of silently keeping the last value.
+    let yaml_value: serde_yaml::Value =
+        serde_yaml::from_str(raw).map_err(ManifestError::parse_yaml)?;
+    serde_yaml::from_value(yaml_value).map_err(ManifestError::parse_yaml)
 }
 
 /// Parse and validate a source spec from structured source-spec data.
@@ -265,6 +273,8 @@ fn parse_source_backend(value: &Value) -> Result<SourceBackend> {
 #[cfg(test)]
 mod tests {
     use super::parse_source_manifest_yaml;
+    use crate::backends::{http::HttpSourceManifest, mcp::McpSourceManifest};
+    use serde_json::json;
 
     #[test]
     fn parse_source_manifest_preserves_test_query_order() {
@@ -291,6 +301,252 @@ tables:
         .expect("manifest should parse");
 
         assert_eq!(manifest.test_queries(), &["SELECT 1", "SELECT 2"]);
+    }
+
+    #[test]
+    fn parse_source_manifest_rejects_duplicate_yaml_mapping_keys() {
+        let error = parse_source_manifest_yaml(
+            r"
+name: demo
+dsl_version: 4
+universal_search:
+  routes:
+    issue_search:
+      execute: false
+      target:
+        operation_id: search_issues
+    issue_search:
+      execute: true
+      target:
+        operation_id: search_issues
+      query_input:
+        location: query
+        name: q
+surface:
+  type: openapi
+  file: /tmp/openapi.yaml
+",
+        )
+        .expect_err("a duplicate route key must not override an earlier policy");
+
+        assert!(
+            error
+                .to_string()
+                .contains("duplicate entry with key \"issue_search\""),
+            "unexpected duplicate-key error: {error}"
+        );
+    }
+
+    #[test]
+    fn parse_source_manifest_rejects_v3_universal_search_authoring() {
+        let manifests = [
+            (
+                "HTTP",
+                r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+base_url: https://example.com
+functions:
+  - name: search_items
+    kind: search
+    search_limits:
+      default_top_k: 10
+      max_top_k: 100
+      max_calls_per_query: 1
+    universal_search:
+      id: item_search
+      execute: true
+      query_arg: query
+    args:
+      - name: query
+        bind:
+          arg: query
+    request:
+      path: /search
+    columns:
+      - name: id
+        type: Utf8
+",
+            ),
+            (
+                "MCP",
+                r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: mcp
+server:
+  transport: stdio
+  command: demo-mcp-server
+functions:
+  - name: search_items
+    tool: search_items
+    universal_search:
+      id: item_search
+      execute: true
+      query_arg: query
+    args:
+      - name: query
+        bind:
+          arg: query
+    columns:
+      - name: id
+        type: Utf8
+",
+            ),
+        ];
+
+        for (backend, manifest) in manifests {
+            let error = parse_source_manifest_yaml(manifest)
+                .expect_err("DSL v3 Universal Search authoring must be rejected");
+
+            assert!(
+                error.to_string().contains(
+                    "/functions/0: Additional properties are not allowed ('universal_search' was unexpected)"
+                ),
+                "unexpected {backend} schema error: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_source_manifest_rejects_v3_table_function_defaults() {
+        let manifests = [
+            (
+                "HTTP",
+                r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+base_url: https://example.com
+functions:
+  - name: search_items
+    args:
+      - name: exact
+        type: Boolean
+        default: false
+        bind:
+          arg: exact
+    request:
+      path: /search
+      query:
+        - name: exact
+          from: arg
+          key: exact
+    columns:
+      - name: id
+        type: Utf8
+",
+            ),
+            (
+                "MCP",
+                r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: mcp
+server:
+  transport: stdio
+  command: demo-mcp-server
+functions:
+  - name: search_items
+    tool: search_items
+    args:
+      - name: exact
+        type: Boolean
+        default: false
+        bind:
+          arg: exact
+    columns:
+      - name: id
+        type: Utf8
+",
+            ),
+        ];
+
+        for (backend, manifest) in manifests {
+            let error = parse_source_manifest_yaml(manifest)
+                .expect_err("DSL v3 table-function defaults must be rejected");
+            let message = error.to_string();
+
+            assert!(
+                message.contains("/functions/0/args/0")
+                    && message.contains("'default' was unexpected"),
+                "unexpected {backend} schema error: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn backend_parsers_reject_v3_table_function_defaults() {
+        let errors = [
+            (
+                "HTTP",
+                HttpSourceManifest::parse_manifest_value(json!({
+                    "name": "demo",
+                    "version": "1.0.0",
+                    "dsl_version": 3,
+                    "backend": "http",
+                    "base_url": "https://example.com",
+                    "functions": [{
+                        "name": "search_items",
+                        "args": [{
+                            "name": "exact",
+                            "type": "Boolean",
+                            "default": false,
+                            "bind": { "arg": "exact" }
+                        }],
+                        "request": {
+                            "path": "/search",
+                            "query": [{
+                                "name": "exact",
+                                "from": "arg",
+                                "key": "exact"
+                            }]
+                        },
+                        "columns": [{ "name": "id", "type": "Utf8" }]
+                    }]
+                }))
+                .expect_err("the HTTP backend parser must reject DSL v3 defaults"),
+            ),
+            (
+                "MCP",
+                McpSourceManifest::parse_manifest_value(json!({
+                    "name": "demo",
+                    "version": "1.0.0",
+                    "dsl_version": 3,
+                    "backend": "mcp",
+                    "server": {
+                        "transport": "stdio",
+                        "command": "demo-mcp-server"
+                    },
+                    "functions": [{
+                        "name": "search_items",
+                        "tool": "search_items",
+                        "args": [{
+                            "name": "exact",
+                            "type": "Boolean",
+                            "default": false,
+                            "bind": { "arg": "exact" }
+                        }],
+                        "columns": [{ "name": "id", "type": "Utf8" }]
+                    }]
+                }))
+                .expect_err("the MCP backend parser must reject DSL v3 defaults"),
+            ),
+        ];
+
+        for (backend, error) in errors {
+            let message = error.to_string();
+            assert!(
+                message.contains("DSL v3 function 'search_items' argument 'exact'")
+                    && message.contains("defaults are imported only from DSL v4 surfaces"),
+                "unexpected {backend} validation error: {error}"
+            );
+        }
     }
 
     #[test]

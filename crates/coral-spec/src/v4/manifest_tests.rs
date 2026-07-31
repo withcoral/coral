@@ -4,6 +4,23 @@ use crate::{
     ManifestOAuthScopeDelimiter, parse_source_manifest_yaml,
 };
 
+use super::manifest::V4UniversalSearchInputLocation;
+
+fn v4_manifest_with_routes(routes: &str) -> String {
+    format!(
+        r"
+name: demo
+dsl_version: 4
+universal_search:
+  routes:
+{routes}
+surface:
+  type: openapi
+  file: /tmp/openapi.yaml
+"
+    )
+}
+
 #[test]
 fn parses_v4_manifest_top_level_inputs() {
     let manifest = parse_source_manifest_yaml(
@@ -38,6 +55,295 @@ surface:
         .map(|input| input.key.as_str())
         .collect::<Vec<_>>();
     assert_eq!(keys, ["ZZZ_TOKEN", "AAA_BASE"]);
+}
+
+#[test]
+fn parses_v4_universal_search_allow_deny_and_result_pointers() {
+    let raw = v4_manifest_with_routes(
+        r"    issue_search:
+      execute: true
+      target:
+        operation_id: search_issues
+      query_input:
+        location: query
+        name: q
+      result:
+        entity_type: issue
+        identity_fields: [/node_id, /repository/owner~1name]
+        provider_id: /id
+        title: /title
+        url: /html_url
+        snippet: /body~0text
+        attributes: [/state, /author/login]
+    issue_search_disabled:
+      execute: false
+      target:
+        operation_id: search_issues_legacy
+",
+    );
+
+    let manifest = parse_source_manifest_yaml(&raw).expect("v4 Universal Search policy");
+    let policy = manifest
+        .as_v4()
+        .expect("v4 manifest")
+        .universal_search
+        .as_ref()
+        .expect("Universal Search policy");
+    let allowed = policy.routes.get("issue_search").expect("allowed route");
+    assert!(allowed.execute);
+    assert_eq!(allowed.target.operation_id, "search_issues");
+    let query_input = allowed.query_input.as_ref().expect("query input");
+    assert_eq!(query_input.location, V4UniversalSearchInputLocation::Query);
+    assert_eq!(query_input.name, "q");
+    let result = allowed.result.as_ref().expect("result mapping");
+    assert_eq!(result.entity_type.as_deref(), Some("issue"));
+    assert_eq!(
+        result.identity_fields,
+        ["/node_id", "/repository/owner~1name"]
+    );
+    assert_eq!(result.snippet.as_deref(), Some("/body~0text"));
+
+    let denied = policy
+        .routes
+        .get("issue_search_disabled")
+        .expect("denied route");
+    assert!(!denied.execute);
+    assert!(denied.query_input.is_none());
+}
+
+#[test]
+fn parses_v4_universal_search_path_and_tool_arg_locations() {
+    let raw = v4_manifest_with_routes(
+        r"    rest_search:
+      execute: true
+      target:
+        operation_id: find_by_path
+      query_input:
+        location: path
+        name: query
+    mcp_search:
+      execute: true
+      target:
+        operation_id: search_tool
+      query_input:
+        location: tool_arg
+        name: query
+",
+    );
+
+    let manifest = parse_source_manifest_yaml(&raw).expect("valid input locations");
+    let routes = &manifest
+        .as_v4()
+        .expect("v4 manifest")
+        .universal_search
+        .as_ref()
+        .expect("Universal Search policy")
+        .routes;
+    assert_eq!(
+        routes
+            .get("rest_search")
+            .and_then(|route| route.query_input.as_ref())
+            .map(|input| input.location),
+        Some(V4UniversalSearchInputLocation::Path)
+    );
+    assert_eq!(
+        routes
+            .get("mcp_search")
+            .and_then(|route| route.query_input.as_ref())
+            .map(|input| input.location),
+        Some(V4UniversalSearchInputLocation::ToolArg)
+    );
+}
+
+#[test]
+fn rejects_invalid_v4_universal_search_route_ids() {
+    for route_id in ["IssueSearch", "9search", "issue-search"] {
+        let raw = v4_manifest_with_routes(&format!(
+            r"    {route_id}:
+      execute: false
+      target:
+        operation_id: search_issues
+"
+        ));
+        let error = parse_source_manifest_yaml(&raw).expect_err("invalid route id should fail");
+        assert!(
+            error.to_string().contains(route_id),
+            "unexpected error for {route_id}: {error}"
+        );
+    }
+}
+
+#[test]
+fn rejects_duplicate_v4_universal_search_operation_targets() {
+    let raw = v4_manifest_with_routes(
+        r"    issue_search:
+      execute: true
+      target:
+        operation_id: search_issues
+      query_input:
+        location: query
+        name: q
+    issue_search_disabled:
+      execute: false
+      target:
+        operation_id: search_issues
+",
+    );
+
+    let error = parse_source_manifest_yaml(&raw)
+        .expect_err("distinct route ids must not target the same operation");
+    let message = error.to_string();
+    assert!(
+        message.contains("operation_id 'search_issues'")
+            && message.contains("declared by more than one route"),
+        "unexpected duplicate-target error: {message}"
+    );
+}
+
+#[test]
+fn enforces_v4_universal_search_allow_deny_query_input_shape() {
+    let allow_without_query = v4_manifest_with_routes(
+        r"    issue_search:
+      execute: true
+      target:
+        operation_id: search_issues
+",
+    );
+    let error = parse_source_manifest_yaml(&allow_without_query)
+        .expect_err("an executable route needs query_input");
+    assert!(error.to_string().contains("query_input"));
+
+    let deny_with_query = v4_manifest_with_routes(
+        r"    issue_search:
+      execute: false
+      target:
+        operation_id: search_issues
+      query_input:
+        location: query
+        name: q
+",
+    );
+    let error = parse_source_manifest_yaml(&deny_with_query)
+        .expect_err("a denied route must not declare query_input");
+    assert!(error.to_string().contains("query_input"));
+}
+
+#[test]
+fn rejects_empty_v4_universal_search_target_and_input_fields() {
+    for (field, operation_id, query_name) in
+        [("operation_id", "", "q"), ("name", "search_issues", "   ")]
+    {
+        let raw = v4_manifest_with_routes(&format!(
+            r#"    issue_search:
+      execute: true
+      target:
+        operation_id: "{operation_id}"
+      query_input:
+        location: query
+        name: "{query_name}"
+"#
+        ));
+        let error = parse_source_manifest_yaml(&raw).expect_err("empty field should fail");
+        assert!(
+            error.to_string().contains(field),
+            "unexpected error for {field}: {error}"
+        );
+    }
+}
+
+#[test]
+fn rejects_unsupported_v4_universal_search_input_locations() {
+    for location in ["header", "cookie", "body"] {
+        let raw = v4_manifest_with_routes(&format!(
+            r"    issue_search:
+      execute: true
+      target:
+        operation_id: search_issues
+      query_input:
+        location: {location}
+        name: q
+"
+        ));
+        let error =
+            parse_source_manifest_yaml(&raw).expect_err("unsupported input location should fail");
+        assert!(
+            error.to_string().contains(location),
+            "unexpected error for {location}: {error}"
+        );
+    }
+}
+
+#[test]
+fn rejects_invalid_v4_universal_search_result_pointers() {
+    for result_field in [
+        "identity_fields: [node_id]",
+        "provider_id: ''",
+        "provider_id: /provider~2id",
+        "title: /title~",
+        "url: '#/url'",
+        "snippet: body",
+        "attributes: [/state, /author~name]",
+    ] {
+        let raw = v4_manifest_with_routes(&format!(
+            r"    issue_search:
+      execute: true
+      target:
+        operation_id: search_issues
+      query_input:
+        location: query
+        name: q
+      result:
+        entity_type: issue
+        {result_field}
+"
+        ));
+        let error = parse_source_manifest_yaml(&raw).expect_err("invalid pointer should fail");
+        assert!(
+            error.to_string().contains("RFC 6901") || error.to_string().contains("does not match"),
+            "unexpected error for {result_field}: {error}"
+        );
+    }
+}
+
+#[test]
+fn rejects_duplicate_v4_universal_search_result_pointers() {
+    let raw = v4_manifest_with_routes(
+        r"    issue_search:
+      execute: true
+      target:
+        operation_id: search_issues
+      query_input:
+        location: query
+        name: q
+      result:
+        identity_fields: [/node_id, /node_id]
+",
+    );
+    let error = parse_source_manifest_yaml(&raw).expect_err("duplicate pointers should fail");
+
+    let message = error.to_string();
+    assert!(
+        message.contains("duplicate pointer") || message.contains("unique"),
+        "unexpected duplicate-pointer error: {message}"
+    );
+}
+
+#[test]
+fn rejects_unknown_v4_universal_search_fields() {
+    let raw = v4_manifest_with_routes(
+        r"    issue_search:
+      execute: true
+      target:
+        operation_id: search_issues
+        fallback_operation_id: find_issues
+      query_input:
+        location: query
+        name: q
+",
+    );
+
+    let error = parse_source_manifest_yaml(&raw).expect_err("unknown route field should fail");
+    assert!(error.to_string().contains("fallback_operation_id"));
 }
 
 #[test]

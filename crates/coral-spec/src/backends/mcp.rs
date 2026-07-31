@@ -19,9 +19,9 @@ use crate::{
     inputs::{
         collect_source_inputs_value, declared_secret_input_names, required_secret_input_names,
     },
-    validate_columns, validate_declared_relation_namespace, validate_filters_and_column_exprs,
-    validate_identifier, validate_required_guide, validate_source_name, validate_test_queries,
-    validate_unique_values,
+    reject_dsl_v3_table_function_arg_default, validate_columns,
+    validate_declared_relation_namespace, validate_filters_and_column_exprs, validate_identifier,
+    validate_required_guide, validate_source_name, validate_test_queries, validate_unique_values,
 };
 
 /// Validated top-level manifest for a Model Context Protocol-backed source.
@@ -642,6 +642,7 @@ fn validate_mcp_function(source_name: &str, function: &RawMcpTableFunctionSpec) 
                 function.name, arg.name
             ),
         )?;
+        reject_dsl_v3_table_function_arg_default(source_name, &function.name, arg)?;
         validate_function_binding(
             source_name,
             &function.name,

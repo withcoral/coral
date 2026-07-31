@@ -88,6 +88,37 @@ Additional hint guidance:
 - Do not model provider-native search as a table filter. Use `mode: contains` only for ordinary substring filters on normal list/detail tables. Provider-ranked retrieval belongs in a `kind: search` function.
 - If a search result is not a complete entity, make sure the returned identifier can be used with ordinary detail tables or required filters.
 
+## Universal Search Authorization
+
+- Universal Search fan-out is DSL v4-only. Reject
+  `functions[].universal_search` in DSL v3 sources; they do not participate in
+  native fan-out.
+- Keep authorization attached to source-authored DSL v4 identity. Use top-level
+  `universal_search.routes.<route_id>` with an exact `target.operation_id` on
+  the source's singular surface. Make every authored route ID match
+  `[a-z][a-z0-9_]*`.
+- For an allowed DSL v4 route, select the original imported input with
+  `query_input.location` (`path`, `query`, or `tool_arg`) and
+  `query_input.name`. Never authorize a generated projection or function name.
+- The selected DSL v4 query input must import as an exposed `Utf8` argument
+  with no default. Every other exposed input must already have a
+  type-compatible default in the imported OpenAPI or MCP operation. These
+  defaults are imported facts, not fields authored in the DSL v4 manifest.
+- Use optional `result` mapping only for identity, display, and explicitly
+  selected `result.attributes`. DSL v4 mappings use RFC 6901 JSON Pointers to
+  original imported output fields. Pointers must be syntactically valid in the
+  manifest and resolve exactly once during route resolution. Identity and
+  display fields must be scalar; an attribute may select a structured value
+  only when its schema permits bounded canonical JSON.
+- Use `execute: false` for a denial. A denied DSL v4 route keeps its target and
+  omits `query_input`. If the source contains any authored Universal Search
+  policy, treat unlisted routes as unauthorized.
+- Verify every explicit allow is retrieval-only and idempotent upstream. Do not
+  infer authorization from legacy `mode: search`, a mutating HTTP method, or an
+  unannotated MCP tool. Missing targets, ambiguous inputs, missing or
+  type-incompatible imported defaults, duplicate targets, and unresolved
+  result fields must fail closed rather than retargeting another operation.
+
 ## Response Extraction
 
 - Set `rows_path` to the array Coral should read as rows.

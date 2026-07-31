@@ -421,7 +421,74 @@ pub struct TableFunctionArgSpec {
     pub required: bool,
     #[serde(default)]
     pub values: Vec<String>,
+    /// A typed runtime default imported for a generated DSL v4 argument.
+    ///
+    /// DSL v3 manifests cannot author this field. The outer option records
+    /// whether an imported default was present, so an explicit JSON `null`
+    /// remains distinct from no default.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_declared_default",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub default: Option<DeclaredDefaultValue>,
     pub bind: FunctionArgBinding,
+}
+
+/// A type-preserving imported DSL v4 table-function argument default.
+///
+/// This wrapper deliberately preserves JSON `null`: using `Option<Value>`
+/// directly would collapse an explicit null into the same state as a missing
+/// field during deserialization.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(transparent)]
+pub struct DeclaredDefaultValue(Value);
+
+impl DeclaredDefaultValue {
+    #[must_use]
+    pub fn new(value: Value) -> Self {
+        Self(value)
+    }
+
+    #[must_use]
+    pub fn value(&self) -> &Value {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn into_value(self) -> Value {
+        self.0
+    }
+}
+
+fn deserialize_declared_default<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<DeclaredDefaultValue>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Value::deserialize(deserializer).map(|value| Some(DeclaredDefaultValue::new(value)))
+}
+
+/// Result-display and entity-identity mapping for a DSL v4 Universal Search
+/// route.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UniversalSearchResultMappingSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entity_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub identity_fields: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snippet: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attributes: Vec<String>,
 }
 
 fn default_table_function_arg_data_type() -> ManifestDataType {
@@ -1212,6 +1279,43 @@ mod tests {
     use super::*;
     use crate::backends::http::test_http_table_spec;
     use std::collections::HashSet;
+
+    #[test]
+    fn runtime_table_function_arg_default_distinguishes_missing_from_explicit_null() {
+        let missing = TableFunctionArgSpec {
+            name: "options".to_string(),
+            data_type: ManifestDataType::Json,
+            required: false,
+            values: Vec::new(),
+            default: None,
+            bind: FunctionArgBinding {
+                arg: "options".to_string(),
+            },
+        };
+        assert!(missing.default.is_none());
+
+        let explicit_null = TableFunctionArgSpec {
+            default: Some(DeclaredDefaultValue::new(serde_json::Value::Null)),
+            ..missing
+        };
+        assert_eq!(
+            explicit_null
+                .default
+                .as_ref()
+                .map(DeclaredDefaultValue::value),
+            Some(&serde_json::Value::Null)
+        );
+        let encoded =
+            serde_json::to_value(explicit_null).expect("serialize explicit null runtime default");
+        assert_eq!(encoded.get("default"), Some(&serde_json::Value::Null));
+
+        let decoded = serde_json::from_value::<TableFunctionArgSpec>(encoded)
+            .expect("deserialize explicit null runtime default");
+        assert_eq!(
+            decoded.default.as_ref().map(DeclaredDefaultValue::value),
+            Some(&serde_json::Value::Null)
+        );
+    }
 
     #[test]
     fn resolve_request_returns_default_when_no_routes() {
