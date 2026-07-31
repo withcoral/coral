@@ -1,5 +1,5 @@
 import classNames from 'classnames'
-import { type FormEvent, type RefObject, useEffect, useId, useRef, useState } from 'react'
+import { Fragment, type FormEvent, type RefObject, useEffect, useId, useRef, useState } from 'react'
 import { Form, useFetcher, useNavigation } from 'react-router'
 
 import { Container as ButtonContainer } from '@/wax/components/button/container'
@@ -29,6 +29,21 @@ const RESERVED_SOURCE_NAMES = new Set(['coral', 'coral_admin', 'public'])
 type SurfaceType = 'openapi' | 'mcp'
 type AuthChoice = 'none' | 'bearer' | 'header' | 'oauthDevice'
 
+/** Named once, so the radio group and the detection summary say the same words. */
+const AUTH_CHOICE_LABELS: Record<AuthChoice, string> = {
+  bearer: 'Bearer token',
+  header: 'Custom header',
+  none: 'None',
+  oauthDevice: 'OAuth device flow',
+}
+
+/** One header a request carries. An API needing several gets a row for each. */
+interface DraftHeader {
+  id: number
+  name: string
+  value: string
+}
+
 interface Draft {
   name: string
   description: string
@@ -36,7 +51,7 @@ interface Draft {
   url: string
   baseUrl: string
   auth: AuthChoice
-  headerName: string
+  headers: DraftHeader[]
   oauthClientId: string
   oauthDeviceAuthorizationUrl: string
   oauthScopes: string
@@ -51,7 +66,7 @@ const EMPTY_DRAFT: Draft = {
   url: '',
   baseUrl: '',
   auth: 'bearer',
-  headerName: '',
+  headers: [{ id: 0, name: '', value: '' }],
   oauthClientId: '',
   oauthDeviceAuthorizationUrl: '',
   oauthScopes: '',
@@ -171,7 +186,12 @@ function SourceCreateDialogContent({
       ...(detectedAuth ? { auth: detectedAuth } : {}),
       baseUrl: result.serverUrl || current.baseUrl,
       description: result.description || current.description,
-      headerName: result.auth.headerName || current.headerName,
+      headers:
+        result.auth.kind !== 'unknown' &&
+        result.auth.kind !== 'unsupported' &&
+        result.auth.headerNames.length > 0
+          ? result.auth.headerNames.map((name, id) => ({ id, name, value: '' }))
+          : current.headers,
       name: result.name,
       surfaceType:
         result.format === 'mcp'
@@ -208,7 +228,9 @@ function SourceCreateDialogContent({
       if (draft.surfaceType === 'openapi' && baseUrlValidationError(draft.baseUrl)) return false
       return true
     }
-    if (draft.auth === 'header' && draft.headerName.trim().length === 0) return false
+    if (draft.auth === 'header') {
+      return draft.headers.every((header) => header.name.trim() && header.value.trim())
+    }
     if (draft.auth === 'oauthDevice') {
       return (
         isHttpsUrl(draft.oauthDeviceAuthorizationUrl) &&
@@ -242,12 +264,20 @@ function SourceCreateDialogContent({
       <input type="hidden" name="_intent" value="import" />
       <input type="hidden" name="name" value={draft.name.trim()} />
       <input type="hidden" name="manifest_yaml" value={buildManifestYaml(draft)} />
-      {draft.auth === 'bearer' || draft.auth === 'header' ? (
+      {draft.auth === 'bearer' ? (
         <>
           <input type="hidden" name="secret_key" value={SECRET_KEY} />
           <input type="hidden" name="secret_value" value={draft.token.trim()} />
         </>
       ) : null}
+      {draft.auth === 'header'
+        ? headerInputs(draft.headers).map((header) => (
+            <Fragment key={header.key}>
+              <input type="hidden" name="secret_key" value={header.key} />
+              <input type="hidden" name="secret_value" value={header.value} />
+            </Fragment>
+          ))
+        : null}
       {draft.auth === 'oauthDevice' ? (
         <>
           <input type="hidden" name="oauth_input_key" value={SECRET_KEY} />
@@ -603,19 +633,15 @@ function CredentialsStep({
   const idOAuthDeviceAuthorizationUrl = useId()
   const idOAuthScopes = useId()
   const idOAuthTokenUrl = useId()
-  const authChoices: { key: AuthChoice; label: string }[] =
+  const updateHeader = (index: number, patch: Partial<DraftHeader>) =>
+    update({
+      headers: draft.headers.map((header, at) => (at === index ? { ...header, ...patch } : header)),
+    })
+  // A custom header is an OpenAPI notion; an MCP server carries a bearer token.
+  const authChoices: AuthChoice[] =
     draft.surfaceType === 'openapi'
-      ? [
-          { key: 'none', label: 'None' },
-          { key: 'bearer', label: 'Bearer token' },
-          { key: 'oauthDevice', label: 'OAuth device flow' },
-          { key: 'header', label: 'Custom header' },
-        ]
-      : [
-          { key: 'none', label: 'None' },
-          { key: 'bearer', label: 'Bearer token' },
-          { key: 'oauthDevice', label: 'OAuth device flow' },
-        ]
+      ? ['none', 'bearer', 'oauthDevice', 'header']
+      : ['none', 'bearer', 'oauthDevice']
   return (
     <div className={styles.fieldGroup}>
       {discovery && discovery.auth.kind !== 'unknown' ? (
@@ -628,8 +654,8 @@ function CredentialsStep({
           onValueChange={(auth) => update({ auth })}
         >
           {authChoices.map((choice) => (
-            <Radio.Item key={choice.key} value={choice.key}>
-              {choice.label}
+            <Radio.Item key={choice} value={choice}>
+              {AUTH_CHOICE_LABELS[choice]}
             </Radio.Item>
           ))}
         </Radio.Group>
@@ -725,40 +751,98 @@ function CredentialsStep({
             draft.auth !== 'header' && styles.authPanelHidden,
           )}
         >
-          <SourceField className={styles.fieldItem} htmlFor={idHeaderName} label="Header name">
-            <TextInput
-              id={idHeaderName}
-              value={draft.headerName}
-              onChange={(value) => update({ headerName: value })}
-              placeholder="X-Api-Key"
+          {draft.headers.map((header, index) => (
+            <div className={styles.headerRow} key={header.id}>
+              <SourceField
+                className={styles.fieldItem}
+                htmlFor={`${idHeaderName}-${index}`}
+                label="Header name"
+              >
+                <TextInput
+                  id={`${idHeaderName}-${index}`}
+                  value={header.name}
+                  onChange={(name) => updateHeader(index, { name })}
+                  placeholder="X-Api-Key"
+                  disabled={disabled || draft.auth !== 'header'}
+                />
+              </SourceField>
+              <SourceField
+                className={styles.fieldItem}
+                htmlFor={`${idHeaderToken}-${index}`}
+                label={`${header.name.trim() || 'Header'} value`}
+              >
+                <TextInput
+                  id={`${idHeaderToken}-${index}`}
+                  type="password"
+                  value={header.value}
+                  onChange={(value) => updateHeader(index, { value })}
+                  placeholder="Paste token"
+                  disabled={disabled || draft.auth !== 'header'}
+                />
+              </SourceField>
+              {draft.headers.length > 1 ? (
+                <ButtonContainer
+                  ariaLabel={`Remove ${header.name.trim() || `header ${index + 1}`}`}
+                  className={styles.headerRemove}
+                  disabled={disabled || draft.auth !== 'header'}
+                  onClick={() =>
+                    update({ headers: draft.headers.filter(({ id }) => id !== header.id) })
+                  }
+                  size="32"
+                  variant="bare"
+                >
+                  <ButtonText>Remove header</ButtonText>
+                </ButtonContainer>
+              ) : null}
+            </div>
+          ))}
+          <div className={styles.headerActions}>
+            <ButtonContainer
               disabled={disabled || draft.auth !== 'header'}
-            />
-          </SourceField>
-          <SourceField
-            className={styles.fieldItem}
-            htmlFor={idHeaderToken}
-            label={`${draft.headerName.trim() || 'Header'} value`}
-          >
-            <TextInput
-              id={idHeaderToken}
-              type="password"
-              value={draft.token}
-              onChange={(value) => update({ token: value })}
-              placeholder="Paste token"
-              disabled={disabled || draft.auth !== 'header'}
-            />
-          </SourceField>
+              onClick={() =>
+                update({
+                  headers: [
+                    ...draft.headers,
+                    {
+                      id: Math.max(...draft.headers.map(({ id }) => id)) + 1,
+                      name: '',
+                      value: '',
+                    },
+                  ],
+                })
+              }
+              size="32"
+              variant="secondary"
+            >
+              <ButtonText>Add header</ButtonText>
+            </ButtonContainer>
+          </div>
         </div>
       </div>
     </div>
   )
 }
 
+/**
+ * What the document accepts, named as the methods below rather than as the schemes it
+ * declares: a reader who has to pick one of these radios is not helped by learning
+ * that the API calls its key `X-Figma-Token`, which the header field is prefilled with
+ * anyway.
+ */
 function authSummary(auth: SourceDetectedAuth): string {
   if (auth.kind === 'unsupported') {
     return `Detected ${auth.label}, which isn’t supported. Choose another method below.`
   }
-  return `Detected ${auth.label}.`
+  if (auth.kind === 'unknown') return ''
+  if (auth.kinds.length === 1) {
+    if (auth.kind === 'none') return 'Detected no authentication.'
+    return `Detected ${auth.kind === 'bearer' ? 'bearer token' : 'custom header'} authentication.`
+  }
+  const methods = auth.kinds.map((kind) => {
+    if (kind === 'none') return 'no authentication'
+    return kind === 'bearer' ? 'a bearer token' : 'a custom header'
+  })
+  return `This API accepts ${orList(methods)}.`
 }
 
 function authChoiceFromDiscovery(auth: SourceDetectedAuth): AuthChoice | null {
@@ -767,10 +851,7 @@ function authChoiceFromDiscovery(auth: SourceDetectedAuth): AuthChoice | null {
 }
 
 function draftIsDirty(draft: Draft): boolean {
-  return Object.keys(EMPTY_DRAFT).some((key) => {
-    const draftKey = key as keyof Draft
-    return draft[draftKey] !== EMPTY_DRAFT[draftKey]
-  })
+  return JSON.stringify(draft) !== JSON.stringify(EMPTY_DRAFT)
 }
 
 function sourceNameIsValid(name: string): boolean {
@@ -819,7 +900,16 @@ function buildManifestYaml(draft: Draft): string {
   const url = draft.url.trim()
   const lines: string[] = [`name: ${s(name)}`, 'dsl_version: 4']
   if (draft.description.trim()) lines.push(`description: ${s(draft.description.trim())}`)
-  if (draft.auth !== 'none') {
+  if (draft.auth === 'header') {
+    lines.push('inputs:')
+    for (const header of headerInputs(draft.headers)) {
+      lines.push(
+        `  ${header.key}:`,
+        '    kind: secret',
+        `    hint: ${s(`Value sent in the ${header.name} header`)}`,
+      )
+    }
+  } else if (draft.auth !== 'none') {
     lines.push(
       'inputs:',
       `  ${SECRET_KEY}:`,
@@ -867,17 +957,21 @@ function buildManifestYaml(draft: Draft): string {
     // Omitted base_url leaves coral-app to derive it from the document's servers block.
     if (draft.baseUrl.trim()) lines.push(`  base_url: ${s(draft.baseUrl.trim())}`)
     if (draft.auth !== 'none') {
-      const bearerAuth = draft.auth === 'bearer' || draft.auth === 'oauthDevice'
-      const headerName = bearerAuth ? 'Authorization' : draft.headerName.trim()
-      const template = bearerAuth ? `Bearer {{input.${SECRET_KEY}}}` : `{{input.${SECRET_KEY}}}`
-      lines.push(
-        '  auth:',
-        '    type: HeaderAuth',
-        '    headers:',
-        `      - name: ${s(headerName)}`,
-        '        from: template',
-        `        template: ${s(template)}`,
-      )
+      const headers =
+        draft.auth === 'header'
+          ? headerInputs(draft.headers).map((header) => ({
+              name: header.name,
+              template: `{{input.${header.key}}}`,
+            }))
+          : [{ name: 'Authorization', template: `Bearer {{input.${SECRET_KEY}}}` }]
+      lines.push('  auth:', '    type: HeaderAuth', '    headers:')
+      for (const header of headers) {
+        lines.push(
+          `      - name: ${s(header.name)}`,
+          '        from: template',
+          `        template: ${s(header.template)}`,
+        )
+      }
     }
   } else {
     lines.push('  type: mcp', '  server:', '    transport: streamable_http', `    url: ${s(url)}`)
@@ -886,6 +980,40 @@ function buildManifestYaml(draft: Draft): string {
     }
   }
   return lines.join('\n') + '\n'
+}
+
+/**
+ * The secret input backing each header. Keys are derived from the header name so a
+ * manifest with several of them reads, and a suffix breaks ties between names that
+ * normalize to the same key.
+ */
+function headerInputs(headers: DraftHeader[]): { key: string; name: string; value: string }[] {
+  const taken = new Set<string>()
+  return headers.map((header) => {
+    const name = header.name.trim()
+    const base = headerInputKey(name)
+    let key = base
+    let suffix = 2
+    while (taken.has(key)) {
+      key = `${base}_${suffix}`
+      suffix += 1
+    }
+    taken.add(key)
+    return { key, name, value: header.value.trim() }
+  })
+}
+
+function orList(items: string[]): string {
+  if (items.length < 3) return items.join(' or ')
+  return `${items.slice(0, -1).join(', ')}, or ${items.at(-1)}`
+}
+
+function headerInputKey(name: string): string {
+  const key = name
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+  return /^[A-Z]/.test(key) ? key : `HEADER_${key}`
 }
 
 function oauthScopes(value: string): string[] {
