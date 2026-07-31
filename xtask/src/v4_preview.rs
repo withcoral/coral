@@ -503,6 +503,7 @@ fn pagination_mode_label(mode: PaginationMode) -> &'static str {
         PaginationMode::Page => "page",
         PaginationMode::Offset => "offset",
         PaginationMode::LinkHeader => "link_header",
+        PaginationMode::NextUrlBody => "next_url_body",
     }
 }
 
