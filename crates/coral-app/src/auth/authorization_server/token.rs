@@ -684,19 +684,12 @@ redirect_uri = "{AUTH_ISSUER}/auth/oidc/callback"
         assert_eq!(validated.audience, RESOURCE);
         assert_eq!(validated.client_id, CLIENT);
         assert_eq!(validated.subject, "raw/provider/subject");
-        invalid_grant(state.clone(), "success-code").await;
-
-        seed(store.as_ref(), "concurrent-code", VERIFIER).await;
-        let first = redeem(state.clone(), "concurrent-code", VERIFIER);
-        let second = redeem(state, "concurrent-code", VERIFIER);
-        let (first, second) = tokio::join!(first, second);
-        assert_eq!(
-            [first.0, second.0]
-                .into_iter()
-                .filter(|status| *status == StatusCode::OK)
-                .count(),
-            1
-        );
-        assert!(first.1.contains("invalid_grant") || second.1.contains("invalid_grant"));
+        // Single use is the store's guarantee rather than this handler's:
+        // `take_authorization_code_for_request` does its get-check-remove under
+        // one lock, so two redemptions of a code cannot both observe it. This
+        // handler only turns the resulting `None` into `invalid_grant`, which
+        // is what the replay below asserts. The atomicity itself is covered by
+        // `state_store`'s `authorization_codes_are_consumed_only_after_all_bindings_match`.
+        invalid_grant(state, "success-code").await;
     }
 }
