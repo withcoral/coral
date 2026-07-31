@@ -77,8 +77,11 @@ impl EngineReadiness {
             let catalog = CatalogDiscovery::new(queries.clone());
             Box::pin(async move {
                 catalog
+                    // Neither the catalog nor the schema is filtered: the probe
+                    // asks the same unqualified question `ListCatalog` does.
                     .catalog_info(
                         &WorkspaceName::default(),
+                        None,
                         None,
                         &QueryAttribution::new(None),
                     )

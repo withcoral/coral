@@ -102,6 +102,7 @@ async fn assert_grpc_rejects_unauthenticated(endpoint: &str) {
         .catalog_client()
         .list_catalog(Request::new(ListCatalogRequest {
             workspace: Some(default_workspace()),
+            catalog_name: String::new(),
             schema_name: String::new(),
             kind: CatalogItemKind::Unspecified as i32,
             pagination: Some(PaginationRequest {
