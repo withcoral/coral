@@ -104,7 +104,13 @@ pub(crate) struct ServerConfig {
     config_dir: Option<PathBuf>,
     mode: ServerModeSelection,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
-    principal_provider: Arc<dyn PrincipalProvider>,
+    /// Provider the caller installed, or `None` to fall back to the local one.
+    ///
+    /// The fallback is applied at startup rather than here because a trait
+    /// object has no identity to compare against: keeping the choice absent
+    /// until then is what lets mode resolution tell a caller that composed
+    /// authentication from one that never had any.
+    principal_provider: Option<Arc<dyn PrincipalProvider>>,
     feedback_publisher: Arc<dyn FeedbackPublisher>,
     feature_overrides: FeatureOverrides,
     enable_stderr_logs: bool,
@@ -122,7 +128,7 @@ impl ServerConfig {
             config_dir: None,
             mode: ServerModeSelection::Explicit(ServerMode::EphemeralGrpc),
             engine_extensions_providers: Vec::new(),
-            principal_provider: Arc::new(LocalPrincipalProvider),
+            principal_provider: None,
             feedback_publisher: Arc::new(HostedFeedbackPublisher::new()),
             feature_overrides: FeatureOverrides::default(),
             enable_stderr_logs: false,
@@ -147,14 +153,64 @@ impl ServerConfig {
     fn resolved_mode(&self, layout: &AppStateLayout) -> Result<ServerMode, AppError> {
         match &self.mode {
             ServerModeSelection::Explicit(mode @ ServerMode::StandaloneGrpc { .. }) => {
-                LoadedServerConfig::load(layout)?.reject_removed_auth()?;
+                let config = LoadedServerConfig::load(layout)?;
+                config.reject_removed_auth()?;
+                self.reject_unauthenticated_standalone(&config)?;
                 Ok(mode.clone())
             }
             ServerModeSelection::Explicit(mode) => Ok(mode.clone()),
-            ServerModeSelection::ConfiguredStandaloneGrpc => Ok(ServerMode::StandaloneGrpc {
-                bind: LoadedServerConfig::load(layout)?.grpc_settings()?.bind_addr,
-            }),
+            ServerModeSelection::ConfiguredStandaloneGrpc => {
+                let config = LoadedServerConfig::load(layout)?;
+                let bind = config.grpc_settings()?.bind_addr;
+                self.reject_unauthenticated_standalone(&config)?;
+                Ok(ServerMode::StandaloneGrpc { bind })
+            }
         }
+    }
+
+    /// The provider to authenticate requests with, defaulting to the local one.
+    ///
+    /// Reaching this with nothing installed means no caller composed
+    /// authentication, which [`Self::reject_unauthenticated_standalone`] has
+    /// already refused for the standalone modes whose `[auth]` requires it.
+    fn resolved_principal_provider(&self) -> Arc<dyn PrincipalProvider> {
+        self.principal_provider
+            .clone()
+            .unwrap_or_else(|| Arc::new(LocalPrincipalProvider))
+    }
+
+    /// Refuses to bind a standalone listener that `[auth]` says must
+    /// authenticate but that nothing authenticates.
+    ///
+    /// The provider enforcing session tokens is composed from the resolved
+    /// `[auth]` settings by whoever owns the served surfaces — `coral-cli`'s
+    /// `serve::compose_session_policies` — so a standalone server reaching
+    /// startup without one would fall back to the local principal and admit
+    /// every caller its address is reachable from, while the config says
+    /// otherwise.
+    ///
+    /// Only standalone mode is gated. The ephemeral and embedded-UI modes read
+    /// the same config directory but are in-process loopback listeners for the
+    /// local user, who holds no session token to present: gating them would fail
+    /// every CLI command on a host configured for `coral server` without
+    /// closing any exposure.
+    ///
+    /// A supplied provider short-circuits the `[auth]` parse: the caller that
+    /// composed it resolved the section already, so startup adds no second
+    /// opinion on configuration it does not own.
+    fn reject_unauthenticated_standalone(
+        &self,
+        config: &LoadedServerConfig,
+    ) -> Result<(), AppError> {
+        if self.principal_provider.is_some() || !config.auth_is_configured()? {
+            return Ok(());
+        }
+        Err(AppError::FailedPrecondition(
+            "configured [auth] requires an authenticated gRPC listener: start the standalone \
+             server with `coral server`, which composes session authentication, or install a \
+             principal provider on the builder"
+                .to_string(),
+        ))
     }
 
     pub(crate) fn add_engine_extensions_provider(
@@ -306,11 +362,15 @@ impl ServerBuilder {
     /// The default provider returns the local principal for every
     /// request. Product runtimes can authenticate inbound metadata and select
     /// any canonical principal by installing their own provider.
+    ///
+    /// A standalone server whose configuration has an `[auth]` section refuses
+    /// to start without this call, because the default would admit every caller
+    /// the listener's address is reachable from, unauthenticated.
     pub fn with_principal_provider(
         mut self,
         principal_provider: Arc<dyn PrincipalProvider>,
     ) -> Self {
-        self.config.principal_provider = principal_provider;
+        self.config.principal_provider = Some(principal_provider);
         self
     }
 
@@ -354,7 +414,7 @@ impl ServerBuilder {
         let env = AppEnvironment::discover();
         let layout = env.app_state_layout(self.config.config_dir.clone())?;
         let mode = self.config.resolved_mode(&layout)?;
-        let principal_provider = Arc::clone(&self.config.principal_provider);
+        let principal_provider = self.config.resolved_principal_provider();
         layout.ensure()?;
         let features = FeatureStore::from_layout(layout.clone())
             .load_with_overrides(&self.config.feature_overrides)?;
@@ -1239,6 +1299,111 @@ enabled = false
             builder.config.resolved_mode(&layout).is_err(),
             "removed standalone auth config must fail closed"
         );
+    }
+
+    /// Writes a config whose `[auth]` marks the instance authenticated.
+    ///
+    /// The signing key the section names is never created: startup only asks
+    /// whether authentication is configured, so nothing here resolves.
+    fn configure_session_auth(config_dir: &Path) {
+        std::fs::create_dir_all(config_dir).expect("create config dir");
+        std::fs::write(
+            config_dir.join("config.toml"),
+            r"
+[trace_history]
+enabled = false
+
+[auth.authorization_server]
+issuer = 'https://auth.example.test'
+
+[auth.session]
+signing_key_file = 'session.key'
+
+[auth.provider]
+issuer = 'https://accounts.example.test'
+client_id = 'upstream-client'
+client_secret = 'test-secret'
+redirect_uri = 'https://auth.example.test/auth/oidc/callback'
+",
+        )
+        .expect("write auth config");
+    }
+
+    /// Both standalone entry points bind a real address, so neither may serve
+    /// the local principal to it while the configuration asks for session
+    /// authentication.
+    #[test]
+    fn standalone_grpc_rejects_configured_auth_without_a_principal_provider() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+        configure_session_auth(&config_dir);
+        let layout = AppStateLayout::discover(Some(config_dir)).expect("layout");
+
+        for builder in [
+            ServerBuilder::standalone_grpc(SocketAddr::from((Ipv4Addr::LOCALHOST, 14555))),
+            ServerBuilder::configured_standalone_grpc(),
+        ] {
+            let error = builder
+                .config
+                .resolved_mode(&layout)
+                .err()
+                .expect("configured auth without a provider must fail closed");
+            assert!(error.to_string().contains("[auth]"), "error: {error}");
+        }
+    }
+
+    #[test]
+    fn standalone_grpc_accepts_configured_auth_with_a_principal_provider() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+        configure_session_auth(&config_dir);
+        let layout = AppStateLayout::discover(Some(config_dir)).expect("layout");
+        let builder = ServerBuilder::configured_standalone_grpc()
+            .with_principal_provider(Arc::new(RejectingPrincipalProvider));
+
+        builder
+            .config
+            .resolved_mode(&layout)
+            .expect("a composed provider satisfies configured auth");
+    }
+
+    /// `[auth]` configures `coral server`, and every local mode reads the same
+    /// config directory. Gating them would leave a host configured for a
+    /// standalone server unable to run a single CLI command, so the loopback
+    /// in-process modes resolve regardless.
+    #[test]
+    fn local_server_modes_resolve_with_configured_auth() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+        configure_session_auth(&config_dir);
+        let layout = AppStateLayout::discover(Some(config_dir)).expect("layout");
+
+        for builder in [
+            ServerBuilder::ephemeral_grpc(),
+            ServerBuilder::embedded_ui_loopback(0, Arc::new(StubAssets)),
+        ] {
+            builder
+                .config
+                .resolved_mode(&layout)
+                .expect("local modes must not require session authentication");
+        }
+    }
+
+    /// The regression guard for the CLI: `bootstrap()` starts this server on a
+    /// host whose config may well be a `coral server` config.
+    #[tokio::test]
+    async fn ephemeral_grpc_starts_with_configured_auth() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+        configure_session_auth(&config_dir);
+
+        let server = ServerBuilder::new()
+            .with_config_dir(config_dir)
+            .start()
+            .await
+            .expect("configured auth must not block the local ephemeral server");
+
+        server.shutdown().await.expect("shutdown server");
     }
 
     #[test]
