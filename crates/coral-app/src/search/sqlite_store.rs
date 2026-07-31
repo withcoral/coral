@@ -20,7 +20,7 @@ use crate::state::AppStateLayout;
 use crate::storage::fs::create_new_file_private;
 use crate::workspaces::WorkspaceName;
 
-pub(crate) const SEARCH_SQLITE_SCHEMA_VERSION: u32 = 5;
+pub(crate) const SEARCH_SQLITE_SCHEMA_VERSION: u32 = 6;
 
 struct SearchSqliteMigration {
     version: u32,
@@ -50,6 +50,10 @@ const SEARCH_SQLITE_MIGRATIONS: &[SearchSqliteMigration] = &[
     SearchSqliteMigration {
         version: 5,
         sql: include_str!("migrations/0005_observed_source_identity.sql"),
+    },
+    SearchSqliteMigration {
+        version: 6,
+        sql: include_str!("migrations/0006_catalog_source_identity.sql"),
     },
 ];
 
@@ -946,8 +950,6 @@ fn apply_migration(
 ) -> Result<(), SqliteSearchError> {
     let started_at = Instant::now();
     let transaction = connection.transaction()?;
-    let initializes_catalog_source_ownership =
-        migration.version == 4 && !tables_exist(&transaction, &["catalog_source_owners"])?;
     let legacy_observed = if migration.version == 5 {
         LegacyObservedIdentity::detect(&transaction)?
     } else {
@@ -969,17 +971,6 @@ fn apply_migration(
             duration_ms = started_at.elapsed().as_millis(),
             "migrated observed-values storage to singular source identity"
         );
-    }
-    if initializes_catalog_source_ownership {
-        // Existing catalog rows predate durable installed-owner identity. They
-        // are disposable and cannot be safely backfilled for multi-component
-        // sources without loading source artifacts during migration.
-        transaction.execute("DELETE FROM catalog_documents_fts", [])?;
-        transaction.execute("DELETE FROM catalog_documents", [])?;
-        transaction.execute(
-            "DELETE FROM search_meta WHERE key GLOB 'catalog_snapshot_fingerprint:*'",
-            [],
-        )?;
     }
     transaction.execute(
         "
@@ -1009,13 +1000,13 @@ fn schema_is_current(connection: &Connection) -> Result<bool, SqliteSearchError>
 fn catalog_schema_is_current(connection: &Connection) -> Result<bool, SqliteSearchError> {
     if !tables_exist(
         connection,
-        &[
-            "search_meta",
-            "catalog_documents",
-            "catalog_documents_fts",
-            "catalog_source_owners",
-        ],
+        &["search_meta", "catalog_documents", "catalog_documents_fts"],
     )? {
+        return Ok(false);
+    }
+    // 0006 removed the ownership projection for good, so its presence means the
+    // schema predates v6 no matter what version it claims to be.
+    if tables_exist(connection, &["catalog_source_owners"])? {
         return Ok(false);
     }
     let search_meta_is_valid = schema_query_is_valid(
@@ -1058,26 +1049,7 @@ fn catalog_schema_is_current(connection: &Connection) -> Result<bool, SqliteSear
         LIMIT 0
         ",
     )?;
-    let catalog_source_owners_is_valid = schema_query_is_valid(
-        connection,
-        "
-        SELECT
-            workspace,
-            source_name,
-            owner_source_name,
-            snapshot_fingerprint,
-            updated_at
-        FROM catalog_source_owners
-        LIMIT 0
-        ",
-    )?;
-    let catalog_source_owner_index_is_valid =
-        indexes_exist(connection, &["idx_catalog_source_owners_workspace_owner"])?;
-    Ok(search_meta_is_valid
-        && catalog_table_is_valid
-        && catalog_fts_is_valid
-        && catalog_source_owners_is_valid
-        && catalog_source_owner_index_is_valid)
+    Ok(search_meta_is_valid && catalog_table_is_valid && catalog_fts_is_valid)
 }
 
 fn observed_values_schema_is_current(connection: &Connection) -> Result<bool, SqliteSearchError> {
@@ -1318,7 +1290,7 @@ mod tests {
     }
 
     #[test]
-    fn opening_v3_invalidates_catalog_rows_without_durable_source_ownership() {
+    fn opening_v3_preserves_catalog_rows_and_removes_the_ownership_table() {
         let temp = tempdir().expect("tempdir");
         let path = temp.path().join("search.sqlite3");
         let mut connection = Connection::open(&path).expect("raw v3 connection");
@@ -1337,26 +1309,20 @@ mod tests {
         drop(connection);
 
         let connection = open_current_search_connection(&path);
-        let catalog_fingerprint = connection
-            .query_row(
-                "SELECT value FROM search_meta WHERE key = 'catalog_snapshot_fingerprint:default'",
-                [],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()
-            .expect("catalog fingerprint query");
 
-        assert_eq!(catalog_document_count(&connection), 0);
+        // Catalog documents are preserved, not wiped: the snapshot-version bump
+        // is what stops them being trusted, and it forces exactly one refresh.
+        assert_eq!(catalog_document_count(&connection), 1);
         assert_eq!(observed_queue_job_count(&connection), 1);
-        assert_eq!(catalog_fingerprint, None);
-        assert!(index_exists(
+        assert!(!tables_exist_for_test(&connection, "catalog_source_owners"));
+        assert!(!index_exists(
             &connection,
             "idx_catalog_source_owners_workspace_owner"
         ));
     }
 
     #[test]
-    fn opening_v1_repairs_missing_search_meta_and_discards_unowned_catalog() {
+    fn opening_v1_repairs_missing_search_meta_and_keeps_untrusted_catalog() {
         let temp = tempdir().expect("tempdir");
         let path = temp.path().join("search.sqlite3");
         let connection = v1_search_connection(&path);
@@ -1367,7 +1333,12 @@ mod tests {
         drop(connection);
 
         let connection = open_current_search_connection(&path);
-        assert_eq!(catalog_document_count(&connection), 0);
+
+        // Pre-v6 documents survive the repair. They are not trusted: no stored
+        // fingerprint can match one recomputed under the bumped snapshot
+        // version, so the next search refreshes the whole workspace.
+        assert_eq!(catalog_document_count(&connection), 1);
+        assert!(!catalog_projection_is_current_for_test(&path));
     }
 
     #[test]
@@ -1385,7 +1356,7 @@ mod tests {
     }
 
     #[test]
-    fn opening_v1_repairs_missing_catalog_fts_and_discards_unowned_catalog() {
+    fn opening_v1_repairs_missing_catalog_fts_and_keeps_untrusted_catalog() {
         let temp = tempdir().expect("tempdir");
         let path = temp.path().join("search.sqlite3");
         let connection = v1_search_connection(&path);
@@ -1396,7 +1367,12 @@ mod tests {
         drop(connection);
 
         let connection = open_current_search_connection(&path);
-        assert_eq!(catalog_document_count(&connection), 0);
+
+        // The document survives without its FTS row, which is safe precisely
+        // because the projection cannot be current: the refresh that follows
+        // replaces every workspace row.
+        assert_eq!(catalog_document_count(&connection), 1);
+        assert!(!catalog_projection_is_current_for_test(&path));
     }
 
     #[test]
@@ -1646,12 +1622,6 @@ mod tests {
             .expect("seed catalog document");
         connection
             .execute(
-                "INSERT INTO catalog_source_owners (workspace, source_name, owner_source_name, snapshot_fingerprint) VALUES ('default', 'github', 'github', 'fingerprint')",
-                [],
-            )
-            .expect("seed catalog source owner");
-        connection
-            .execute(
                 "INSERT INTO observed_values (workspace, source_name, source_scope_id, surface_kind, surface_name, column_name, value_key, display_value, search_text, source_generation, workspace_generation) VALUES ('default', 'github', 'scope', 'table', 'issues', 'title', 'value', 'Payment issue', 'payment issue', 0, 0)",
                 [],
             )
@@ -1682,13 +1652,6 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("observed count");
-        let catalog_owner_count: i64 = connection
-            .query_row(
-                "SELECT COUNT(*) FROM catalog_source_owners WHERE workspace = 'default' AND owner_source_name = 'github'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("catalog owner count");
         let generation_count: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM observed_source_generations WHERE workspace = 'default' AND source_name = 'github'",
@@ -1698,7 +1661,6 @@ mod tests {
             .expect("generation count");
         assert_eq!(catalog_count, 1);
         assert_eq!(observed_count, 1);
-        assert_eq!(catalog_owner_count, 1);
         assert_eq!(generation_count, 0);
     }
 
@@ -1728,18 +1690,18 @@ mod tests {
     }
 
     #[test]
-    fn source_all_clear_uses_persisted_catalog_ownership_after_restart() {
+    fn source_all_clear_removes_only_that_source_after_restart() {
         let temp = tempdir().expect("tempdir");
         let path = temp.path().join("search.sqlite3");
         let workspace = WorkspaceName::parse("default").expect("workspace");
         let store = SqliteSearchStore::open(&path, workspace.clone()).expect("store");
         store
             .refresh_catalog_projection(&CatalogIndexSnapshot {
-                fingerprint: "multi-component-v1".to_string(),
+                fingerprint: "singular-identity-v1".to_string(),
                 documents: vec![
-                    catalog_document("github_v4", "github_v4_rest", "issues"),
-                    catalog_document("github_v4", "github_v4_mcp", "search_issues"),
-                    catalog_document("slack_v4", "slack_v4_rest", "messages"),
+                    catalog_document("github_v4", "issues"),
+                    catalog_document("github_mcp_v4", "search_issues"),
+                    catalog_document("slack_v4", "messages"),
                 ],
             })
             .expect("refresh catalog projection");
@@ -1758,12 +1720,14 @@ mod tests {
         drop(connection);
         drop(store);
 
+        // Source clear is a direct delete now -- no persisted ownership table to
+        // consult, so a restart changes nothing about what it removes.
         let reopened = SqliteSearchStore::open(&path, workspace).expect("reopen store");
         let (catalog, observed) = reopened
             .clear_source_all("github_v4")
             .expect("clear installed source");
 
-        assert_eq!(catalog.deleted_document_count, 2);
+        assert_eq!(catalog.deleted_document_count, 1);
         assert_eq!(observed.values, 1);
         let connection = reopened.connect_for_test().expect("reconnect");
         let remaining_catalog_sources = connection
@@ -1784,7 +1748,7 @@ mod tests {
             .expect("query observed sources")
             .collect::<Result<Vec<_>, _>>()
             .expect("observed sources");
-        assert_eq!(remaining_catalog_sources, ["slack_v4_rest"]);
+        assert_eq!(remaining_catalog_sources, ["github_mcp_v4", "slack_v4"]);
         assert_eq!(remaining_observed_sources, ["slack_v4"]);
     }
 
@@ -1831,12 +1795,7 @@ mod tests {
         let store =
             SqliteSearchStore::open(&path, WorkspaceName::default()).expect("repair schema");
         let connection = store.connect_for_test().expect("connect");
-        for table_name in [
-            "search_meta",
-            "catalog_documents",
-            "catalog_documents_fts",
-            "catalog_source_owners",
-        ] {
+        for table_name in ["search_meta", "catalog_documents", "catalog_documents_fts"] {
             let exists: bool = connection
                 .query_row(
                     "
@@ -1855,7 +1814,7 @@ mod tests {
     }
 
     #[test]
-    fn opening_current_version_repairs_missing_catalog_ownership_and_invalidates_rows() {
+    fn repair_replay_on_a_healthy_schema_preserves_the_catalog() {
         let temp = tempdir().expect("tempdir");
         let path = temp.path().join("search.sqlite3");
         let connection = open_current_search_connection(&path);
@@ -1867,8 +1826,19 @@ mod tests {
             )
             .expect("seed catalog fingerprint");
         connection
-            .execute_batch("DROP TABLE catalog_source_owners")
-            .expect("remove ownership table");
+            .execute(
+                "
+                INSERT INTO catalog_documents_fts (workspace, doc_id, title, qualified_name, description, searchable_text)
+                VALUES ('default', 'fixture', 'Fixture', 'fixture.table', '', 'fixture')
+                ",
+                [],
+            )
+            .expect("seed catalog FTS row");
+        // Damage only the observed side, so the repair path replays the whole
+        // migration history against an intact catalog.
+        connection
+            .execute_batch("DROP TABLE observed_values")
+            .expect("damage the observed schema");
         drop(connection);
 
         let connection = open_current_search_connection(&path);
@@ -1881,12 +1851,18 @@ mod tests {
             .optional()
             .expect("catalog fingerprint query");
 
-        assert_eq!(catalog_document_count(&connection), 0);
-        assert_eq!(catalog_fingerprint, None);
-        assert!(index_exists(
-            &connection,
-            "idx_catalog_source_owners_workspace_owner"
-        ));
+        // Pins the version-4 hook neutering: with its DELETEs still in place,
+        // every post-v6 repair replay would wipe the catalog, forever.
+        assert_eq!(catalog_document_count(&connection), 1);
+        assert_eq!(
+            matching_row_count(
+                &connection,
+                "SELECT COUNT(*) FROM catalog_documents_fts",
+                "catalog FTS rows after repair",
+            ),
+            1
+        );
+        assert_eq!(catalog_fingerprint.as_deref(), Some("current"));
     }
 
     #[test]
@@ -2020,16 +1996,11 @@ mod tests {
             .expect("seed catalog document");
     }
 
-    fn catalog_document(
-        owner_source_name: &str,
-        source_name: &str,
-        surface_name: &str,
-    ) -> CatalogIndexDocument {
+    fn catalog_document(source_name: &str, surface_name: &str) -> CatalogIndexDocument {
         let qualified_name = format!("{source_name}.{surface_name}");
         CatalogIndexDocument {
             doc_id: format!("catalog:table:{qualified_name}"),
             doc_kind: CatalogIndexDocumentKind::CatalogTable,
-            owner_source_name: owner_source_name.to_string(),
             source_name: source_name.to_string(),
             surface_kind: "table".to_string(),
             surface_name: surface_name.to_string(),
@@ -2047,7 +2018,6 @@ mod tests {
     struct WorkspaceAllClearRollbackSnapshot {
         catalog_documents: i64,
         catalog_fts_documents: i64,
-        catalog_source_owners: i64,
         catalog_fingerprints: i64,
         observed_values: i64,
         observed_fts_values: i64,
@@ -2063,8 +2033,6 @@ mod tests {
                 VALUES ('default', 'doc', 'catalog_table', 'github', 'Issues', 'fingerprint');
                 INSERT INTO catalog_documents_fts (workspace, doc_id, title, qualified_name, description, searchable_text)
                 VALUES ('default', 'doc', 'Issues', 'github.issues', 'GitHub issues', 'github issues');
-                INSERT INTO catalog_source_owners (workspace, source_name, owner_source_name, snapshot_fingerprint)
-                VALUES ('default', 'github', 'github', 'fingerprint');
                 INSERT INTO search_meta (key, value)
                 VALUES ('catalog_snapshot_fingerprint:default', 'fingerprint');
                 INSERT INTO observed_values (workspace, source_name, source_scope_id, surface_kind, surface_name, column_name, value_key, display_value, search_text, source_generation, workspace_generation)
@@ -2095,11 +2063,6 @@ mod tests {
                 connection,
                 "SELECT COUNT(*) FROM catalog_documents_fts WHERE workspace = 'default' AND doc_id = 'doc' AND title = 'Issues' AND qualified_name = 'github.issues' AND description = 'GitHub issues' AND searchable_text = 'github issues'",
                 "catalog FTS document count",
-            ),
-            catalog_source_owners: matching_row_count(
-                connection,
-                "SELECT COUNT(*) FROM catalog_source_owners WHERE workspace = 'default'",
-                "catalog source owner count",
             ),
             catalog_fingerprints: matching_row_count(
                 connection,
@@ -2133,7 +2096,6 @@ mod tests {
         WorkspaceAllClearRollbackSnapshot {
             catalog_documents: 1,
             catalog_fts_documents: 1,
-            catalog_source_owners: 1,
             catalog_fingerprints: 1,
             observed_values: 1,
             observed_fts_values: 1,
@@ -2589,6 +2551,26 @@ mod tests {
                 [],
             )
             .expect("seed observed queue job");
+    }
+
+    /// Recomputes what a live catalog snapshot would fingerprint to and asks
+    /// the store whether its stored projection matches.
+    fn catalog_projection_is_current_for_test(path: &std::path::Path) -> bool {
+        let store = SqliteSearchStore::open(path, WorkspaceName::default()).expect("open store");
+        let fingerprint = crate::search::catalog::snapshot::CatalogSearchSnapshot::from_catalog(
+            &coral_engine::CatalogInfo {
+                tables: Vec::new(),
+                table_functions: Vec::new(),
+            },
+        )
+        .fingerprint;
+        store
+            .catalog_projection_is_current(&fingerprint)
+            .expect("projection current check")
+    }
+
+    fn tables_exist_for_test(connection: &Connection, table_name: &str) -> bool {
+        super::tables_exist(connection, &[table_name]).expect("table lookup")
     }
 
     fn catalog_document_count(connection: &Connection) -> i64 {

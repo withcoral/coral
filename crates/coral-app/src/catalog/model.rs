@@ -1,6 +1,6 @@
 //! App-private catalog resolution models.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use coral_engine::CatalogInfo;
 
@@ -9,6 +9,4 @@ use coral_engine::CatalogInfo;
 pub(crate) struct CatalogResolution {
     pub(crate) catalog: CatalogInfo,
     pub(crate) failed_source_names: BTreeSet<String>,
-    /// Runtime schema name to canonical installed source owner.
-    pub(crate) runtime_schema_owners: BTreeMap<String, String>,
 }

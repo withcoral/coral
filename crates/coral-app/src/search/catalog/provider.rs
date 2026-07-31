@@ -142,11 +142,7 @@ impl CatalogMetadataProvider {
         request: &SearchRequest,
         resolution: &CatalogResolution,
     ) -> Result<CatalogProjection, SqliteSearchError> {
-        let catalog_fingerprint =
-            CatalogSearchSnapshot::fingerprint_catalog_with_runtime_schema_owners(
-                &resolution.catalog,
-                &resolution.runtime_schema_owners,
-            );
+        let catalog_fingerprint = CatalogSearchSnapshot::fingerprint_catalog(&resolution.catalog);
         let store = SqliteSearchStore::open_workspace(&self.layout, &request.workspace_name)?;
         let capabilities = store.capabilities();
         tracing::debug!(
@@ -193,10 +189,7 @@ impl CatalogMetadataProvider {
             });
         }
 
-        let snapshot = CatalogSearchSnapshot::from_catalog_with_runtime_schema_owners(
-            &resolution.catalog,
-            &resolution.runtime_schema_owners,
-        );
+        let snapshot = CatalogSearchSnapshot::from_catalog(&resolution.catalog);
         let expected_document_count = u32::try_from(snapshot.documents.len()).unwrap_or(u32::MAX);
         let index_snapshot = snapshot.index_snapshot();
         match store.refresh_catalog_projection(&index_snapshot) {
@@ -235,11 +228,7 @@ impl CatalogMetadataProvider {
         resolution: &CatalogResolution,
         force: bool,
     ) -> Result<SearchMaintenanceResult, SearchManagerError> {
-        let snapshot = CatalogSearchSnapshot::from_catalog_with_runtime_schema_owners(
-            &resolution.catalog,
-            &resolution.runtime_schema_owners,
-        )
-        .index_snapshot();
+        let snapshot = CatalogSearchSnapshot::from_catalog(&resolution.catalog).index_snapshot();
         let store = SqliteSearchStore::open_workspace(&self.layout, workspace_name)
             .map_err(|error| search_sqlite_app_error(&error))?;
         let result = store

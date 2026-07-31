@@ -45,9 +45,8 @@ example.
 
 Here, `github` is the query-visible SQL schema. JSON and MCP results include it
 in `sql_reference`. A catalog-backed table uses a three-part
-`catalog.schema.table` reference. For a source with multiple runtime components,
-the query-visible schema can differ from the installed source name because each
-component can publish its own SQL schema.
+`catalog.schema.table` reference. The schema is also the installed source name:
+one source publishes one SQL namespace.
 
 When more fields matched than were shown, the result reports how many were left
 out so you can widen the query rather than assume the column does not exist.
@@ -102,7 +101,7 @@ To remove observed values for a workspace:
 coral search-index clear --scope observed-values --workspace default --yes
 ```
 
-To remove them for one installed source and every runtime schema and surface it owns, pass the canonical installed source name:
+To remove them for one installed source, pass its name:
 
 ```shellscript
 coral search-index clear --scope observed-values --source github --workspace default --yes

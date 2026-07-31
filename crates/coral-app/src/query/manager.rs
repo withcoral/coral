@@ -94,7 +94,6 @@ enum CatalogColumnLoading {
 struct LoadedQuerySource {
     source: InstalledSource,
     query_source: QuerySource,
-    runtime_schema_name: String,
     runtime_contract_fingerprint: RuntimeContractFingerprint,
     credential_material: BTreeMap<String, String>,
 }
@@ -102,32 +101,6 @@ struct LoadedQuerySource {
 struct QuerySourceLoad {
     loaded: Vec<LoadedQuerySource>,
     failed_source_names: BTreeSet<String>,
-}
-
-/// Maps each loaded runtime schema to its canonical installed source owner.
-fn runtime_schema_owners(
-    loaded_sources: &[LoadedQuerySource],
-) -> Result<BTreeMap<String, String>, AppError> {
-    let mut owners = BTreeMap::new();
-    for loaded in loaded_sources {
-        match owners.entry(loaded.runtime_schema_name.clone()) {
-            std::collections::btree_map::Entry::Vacant(entry) => {
-                entry.insert(loaded.source.name.as_str().to_string());
-            }
-            std::collections::btree_map::Entry::Occupied(entry)
-                if entry.get().as_str() != loaded.source.name.as_str() =>
-            {
-                return Err(AppError::InvalidInput(format!(
-                    "catalog runtime schema '{}' is owned by both '{}' and '{}'",
-                    entry.key(),
-                    entry.get(),
-                    loaded.source.name
-                )));
-            }
-            std::collections::btree_map::Entry::Occupied(_) => {}
-        }
-    }
-    Ok(owners)
 }
 
 #[derive(Clone, Default)]
@@ -386,8 +359,6 @@ impl QueryManager {
                     .await?;
                 let mut failed_source_names = source_load.failed_source_names;
                 failed_source_names.extend(failure_recorder.failed_source_names());
-                let runtime_schema_owners =
-                    runtime_schema_owners(&source_load.loaded).map_err(QueryManagerError::App)?;
                 let mut catalog = runtime
                     .list_catalog(catalog_filter, schema_filter)
                     .await
@@ -401,7 +372,6 @@ impl QueryManager {
                 Ok(CatalogResolution {
                     catalog,
                     failed_source_names,
-                    runtime_schema_owners,
                 })
             },
             |resolution| {
@@ -728,7 +698,6 @@ impl QueryManager {
             LoadedQuerySource {
                 source: source.clone(),
                 query_source: loaded_runtime.query_source,
-                runtime_schema_name: installed.source_spec.schema_name().to_string(),
                 runtime_contract_fingerprint: loaded_runtime.runtime_contract_fingerprint,
                 credential_material: stored_secrets,
             },
@@ -3389,11 +3358,9 @@ tables:
 ",
         )
         .expect("parse source manifest");
-        let runtime_schema_name = source_spec.schema_name().to_string();
         let loaded_source = LoadedQuerySource {
             source: installed_source,
             query_source: QuerySource::new(source_spec, BTreeMap::new(), BTreeMap::new()),
-            runtime_schema_name,
             runtime_contract_fingerprint: RuntimeContractFingerprint::for_test("contract"),
             credential_material: BTreeMap::from([(
                 "API_TOKEN".to_string(),
@@ -3570,7 +3537,6 @@ tables:
                 credential_revision: uuid::Uuid::default(),
                 origin: SourceOrigin::Bundled,
             },
-            runtime_schema_name: source_spec.schema_name().to_string(),
             query_source: QuerySource::new(source_spec.clone(), BTreeMap::new(), BTreeMap::new()),
             runtime_contract_fingerprint: RuntimeContractFingerprint::for_test("contract"),
             credential_material: BTreeMap::from([(
@@ -3649,7 +3615,6 @@ tables:
                 credential_revision: uuid::Uuid::default(),
                 origin: SourceOrigin::Bundled,
             },
-            runtime_schema_name: source_spec.schema_name().to_string(),
             query_source: QuerySource::new(source_spec.clone(), BTreeMap::new(), BTreeMap::new()),
             runtime_contract_fingerprint: RuntimeContractFingerprint::for_test("contract"),
             credential_material: BTreeMap::new(),
