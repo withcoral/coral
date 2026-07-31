@@ -155,7 +155,11 @@ impl<'a> From<&'a TableSummary> for TableSummaryValue<'a> {
             kind: "table",
             catalog_name: &table.catalog_name,
             schema_name: &table.schema_name,
-            name: format_table_name(&table.catalog_name, &table.schema_name, &table.name),
+            name: format_table_name(
+                optional_catalog_name(&table.catalog_name),
+                &table.schema_name,
+                &table.name,
+            ),
             sql_reference: format_schema_table_equivalent(
                 optional_catalog_name(&table.catalog_name),
                 &table.schema_name,
@@ -582,7 +586,11 @@ fn catalog_metadata_text_lines(
         Some(catalog_item::Item::Table(table)) => vec![
             format!(
                 "{index}. [{provider}] table {}",
-                format_table_name(&table.catalog_name, &table.schema_name, &table.name)
+                format_table_name(
+                    optional_catalog_name(&table.catalog_name),
+                    &table.schema_name,
+                    &table.name,
+                )
             ),
             format!(
                 "   SQL: {}",
@@ -737,11 +745,14 @@ pub fn minimal_table_function_call_example(function: &TableFunction) -> String {
 
 /// Formats a display table name with its query-visible schema and optional catalog.
 #[must_use]
-pub fn format_table_name(catalog_name: &str, schema_name: &str, table_name: &str) -> String {
-    if catalog_name.is_empty() {
-        format!("{schema_name}.{table_name}")
-    } else {
-        format!("{catalog_name}.{schema_name}.{table_name}")
+pub fn format_table_name(
+    catalog_name: Option<&str>,
+    schema_name: &str,
+    table_name: &str,
+) -> String {
+    match catalog_name {
+        Some(catalog_name) => format!("{catalog_name}.{schema_name}.{table_name}"),
+        None => format!("{schema_name}.{table_name}"),
     }
 }
 

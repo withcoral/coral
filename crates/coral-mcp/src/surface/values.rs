@@ -42,7 +42,11 @@ impl<'a> From<&'a TableSummary> for QueryableTableSummaryValue<'a> {
             catalog_name: &table.catalog_name,
             schema_name: &table.schema_name,
             table_name: &table.name,
-            name: format_table_name(&table.catalog_name, &table.schema_name, &table.name),
+            name: format_table_name(
+                optional_catalog_name(&table.catalog_name),
+                &table.schema_name,
+                &table.name,
+            ),
             sql_reference: format_schema_table_equivalent(
                 optional_catalog_name(&table.catalog_name),
                 &table.schema_name,
@@ -72,7 +76,11 @@ impl<'a> From<&'a TableSummary> for MissingTableSummaryValue<'a> {
             catalog_name: &table.catalog_name,
             schema_name: &table.schema_name,
             table_name: &table.name,
-            name: format_table_name(&table.catalog_name, &table.schema_name, &table.name),
+            name: format_table_name(
+                optional_catalog_name(&table.catalog_name),
+                &table.schema_name,
+                &table.name,
+            ),
             description: &table.description,
             required_filters: &table.required_filters,
         }

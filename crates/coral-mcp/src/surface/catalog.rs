@@ -505,7 +505,11 @@ impl<'a> From<&'a ProtoTable> for FoundTableValue<'a> {
             catalog_name: &table.catalog_name,
             schema_name: &table.schema_name,
             table_name: &table.name,
-            name: format_table_name(&table.catalog_name, &table.schema_name, &table.name),
+            name: format_table_name(
+                optional_catalog_name(&table.catalog_name),
+                &table.schema_name,
+                &table.name,
+            ),
             description: &table.description,
             guide: &table.guide,
             required_filters: &table.required_filters,
@@ -579,7 +583,11 @@ impl<'a> From<&'a ProtoTableSummary> for CatalogTableItemValue<'a> {
             kind: CatalogTableKind::Table,
             catalog_name: &table.catalog_name,
             schema_name: &table.schema_name,
-            name: format_table_name(&table.catalog_name, &table.schema_name, &table.name),
+            name: format_table_name(
+                optional_catalog_name(&table.catalog_name),
+                &table.schema_name,
+                &table.name,
+            ),
             sql_reference: format_schema_table_equivalent(
                 optional_catalog_name(&table.catalog_name),
                 &table.schema_name,
