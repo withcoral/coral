@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.9.0](https://github.com/withcoral/coral/compare/v0.8.3...v0.9.0) (2026-07-31)
+
+
+### ⚠ BREAKING CHANGES
+
+* **spec:** read allOf-composed responses as page envelopes ([#1998](https://github.com/withcoral/coral/issues/1998))
+* **spec:** follow next-page URLs embedded in response bodies ([#1997](https://github.com/withcoral/coral/issues/1997))
+
+### Features
+
+* **app:** complete upstream OIDC callbacks ([#1641](https://github.com/withcoral/coral/issues/1641)) ([468e658](https://github.com/withcoral/coral/commit/468e65831b41e3d801da55d3ed15010f93fad113))
+* **app:** handle OAuth authorization requests ([#1640](https://github.com/withcoral/coral/issues/1640)) ([1107905](https://github.com/withcoral/coral/commit/1107905bd27e343f4614a60cd65a49b03f19fba2))
+* **mcp:** add reusable function tool ([#1873](https://github.com/withcoral/coral/issues/1873)) ([c812769](https://github.com/withcoral/coral/commit/c81276965988443d2cc2f397ee43e301db26fc22))
+* **spec:** follow next-page URLs embedded in response bodies ([#1997](https://github.com/withcoral/coral/issues/1997)) ([fc77cd2](https://github.com/withcoral/coral/commit/fc77cd2a95577f9356c1c00141cfcf09acafc96a))
+* **spec:** read allOf-composed responses as page envelopes ([#1998](https://github.com/withcoral/coral/issues/1998)) ([11d82d3](https://github.com/withcoral/coral/commit/11d82d3611d6aa61c44beb5eb30b040b92c83a21))
+* **xtask:** report inferred v4 row paths and pagination ([#1996](https://github.com/withcoral/coral/issues/1996)) ([4deb346](https://github.com/withcoral/coral/commit/4deb346a8045be29dce97505b3ecd545d8392b38))
+
 ## [0.8.3](https://github.com/withcoral/coral/compare/v0.8.2...v0.8.3) (2026-07-30)
 
 
