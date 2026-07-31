@@ -1,9 +1,9 @@
 import { useRouteLoaderData } from 'react-router'
 import type { loader as appShellLoader } from './app-shell'
 
-import { McpClientsSettings, useDesktopMcpClients } from '@/components/mcp-clients-settings'
+import { McpClientsList, useDesktopMcpClients } from '@/components/mcp-clients-list'
 import { isCoralDesktopBuild } from '@/lib/coral-desktop'
-import { Typography } from '@/wax/components'
+import { Banner, Button, Typography } from '@/wax/components'
 
 import * as styles from './settings.css'
 
@@ -15,8 +15,29 @@ export default function SettingsRoute() {
   return (
     <main className={styles.page}>
       <div className={styles.container}>
-        <Typography.HeadingLarge as="h1">Settings</Typography.HeadingLarge>
-        {desktop && <McpClientsSettings {...mcpClients} workspaces={workspaces} />}
+        {desktop && (
+          <section className={styles.section}>
+            <header className={styles.sectionHeader}>
+              <Typography.HeadingLarge as="h1">MCP Clients</Typography.HeadingLarge>
+              <Typography.Body variant="secondary">
+                Choose the Coral workspace each MCP client can access.{' '}
+                <Button.ExternalLink
+                  href="https://withcoral.com/docs/guides/use-coral-over-mcp"
+                  size="small"
+                >
+                  Learn more
+                </Button.ExternalLink>
+              </Typography.Body>
+            </header>
+
+            <Banner>
+              This page shows only global MCP configurations. Project-specific and other connections
+              will not appear here.
+            </Banner>
+
+            <McpClientsList {...mcpClients} workspaces={workspaces} />
+          </section>
+        )}
       </div>
     </main>
   )

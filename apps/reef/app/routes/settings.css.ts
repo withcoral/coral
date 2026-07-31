@@ -19,6 +19,18 @@ export const page = style({
   },
 })
 
+export const section = style({
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '24px',
+})
+
+export const sectionHeader = style({
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '4px',
+})
+
 export const container = style({
   display: 'flex',
   flexDirection: 'column',
