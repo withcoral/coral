@@ -169,7 +169,7 @@ coral source lint ./my-source.yaml
 coral source add --file ./my-source.yaml
 coral source test my_source
 coral sql "SELECT catalog_name, schema_name, table_name, description, required_filters FROM coral.tables WHERE schema_name = 'my_source' OR catalog_name = 'my_source' ORDER BY catalog_name, schema_name, table_name LIMIT 50 OFFSET 0"
-coral sql "SELECT function_name, kind, arguments_json, result_columns_json, search_limits_json FROM coral.table_functions WHERE schema_name = 'my_source' OR catalog_name = 'my_source' ORDER BY function_name LIMIT 50 OFFSET 0"
+coral sql "SELECT function_name, kind, arguments_json, result_columns_json, search_limits_json FROM coral.table_functions WHERE schema_name = 'my_source' ORDER BY function_name LIMIT 50 OFFSET 0"
 coral sql "SELECT table_name, filter_name, filter_mode, is_required, data_type, description FROM coral.filters WHERE schema_name = 'my_source' OR catalog_name = 'my_source' ORDER BY table_name, filter_name LIMIT 100 OFFSET 0"
 coral sql "SELECT table_name, column_name, data_type, is_virtual, is_required_filter, filter_mode, description FROM coral.columns WHERE schema_name = 'my_source' OR catalog_name = 'my_source' ORDER BY table_name, ordinal_position LIMIT 100 OFFSET 0"
 coral sql "SELECT catalog_name, key, kind, value, default_value, hint, required, is_set FROM coral.inputs WHERE schema_name = 'my_source' OR catalog_name = 'my_source' ORDER BY key"
