@@ -16,6 +16,7 @@ use crate::backends::shared::json_exec::RowFetcher;
 use crate::backends::shared::json_path::get_path_value;
 use crate::backends::shared::response_rows::extract_rows;
 use crate::backends::shared::template::{RenderContext, resolve_value_source};
+use crate::{QueryExecutionControls, QueryExecutionFailureKind, QueryPaginationPolicy};
 
 const DEFAULT_MCP_MAX_PAGES: usize = 100;
 
@@ -36,7 +37,14 @@ pub(super) struct McpFetchPlan {
 
 #[async_trait]
 impl RowFetcher for McpFetchPlan {
-    async fn fetch(&self) -> Result<Vec<Value>> {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "The cursor and offset pagination state machine is clearest as one fetch loop."
+    )]
+    async fn fetch(&self, controls: &QueryExecutionControls) -> Result<Vec<Value>> {
+        controls
+            .check_active()
+            .map_err(|kind| self.execution_stopped(kind))?;
         let mut all_rows = Vec::new();
         let mut next_cursor: Option<Value> = None;
         let mut next_offset = self
@@ -57,6 +65,9 @@ impl RowFetcher for McpFetchPlan {
             .unwrap_or(DEFAULT_MCP_MAX_PAGES);
 
         loop {
+            controls
+                .check_active()
+                .map_err(|kind| self.execution_stopped(kind))?;
             let offset_page_limit =
                 offset_page_limit(self.offset_pagination.as_ref(), self.limit, all_rows.len());
             if offset_page_limit == Some(0) {
@@ -76,11 +87,16 @@ impl RowFetcher for McpFetchPlan {
             }
 
             let arguments = self
-                .arguments_for_page(next_cursor.as_ref(), next_offset, offset_page_limit)
+                .arguments_for_page(
+                    next_cursor.as_ref(),
+                    next_offset,
+                    offset_page_limit,
+                    controls,
+                )
                 .await?;
             let payload = self
                 .backend
-                .call_tool(&self.relation, &self.tool_name, arguments)
+                .call_tool(&self.relation, &self.tool_name, arguments, controls)
                 .await?;
             if let Some(detail) = detect_payload_error(&self.response, &payload) {
                 return Err(DataFusionError::External(Box::new(
@@ -95,10 +111,24 @@ impl RowFetcher for McpFetchPlan {
             let mut rows = extract_rows(&self.response, &payload);
             let rows_on_page = rows.len();
             all_rows.append(&mut rows);
+            if controls.pagination_policy() == QueryPaginationPolicy::FirstPageOnly
+                && self
+                    .pagination
+                    .as_ref()
+                    .is_some_and(|pagination| next_page_cursor(pagination, &payload).is_some())
+            {
+                controls.mark_explicit_continuation();
+            }
             if let Some(limit) = self.limit
                 && all_rows.len() >= limit
             {
                 all_rows.truncate(limit);
+                break;
+            }
+            if matches!(
+                controls.pagination_policy(),
+                QueryPaginationPolicy::FirstPageOnly
+            ) {
                 break;
             }
 
@@ -144,6 +174,7 @@ impl McpFetchPlan {
         cursor: Option<&Value>,
         offset: Option<usize>,
         limit: Option<usize>,
+        controls: &QueryExecutionControls,
     ) -> Result<JsonObject> {
         let mut arguments = JsonObject::new();
         if !self.source_tool_args.is_empty() {
@@ -153,7 +184,10 @@ impl McpFetchPlan {
                     self.source_schema, self.relation
                 ))
             })?;
-            let resolved_inputs = source_inputs.resolve_for_request().await?;
+            let resolved_inputs = controls
+                .run_until_stopped(source_inputs.resolve_for_request())
+                .await
+                .map_err(|kind| self.execution_stopped(kind))??;
             let render_context = RenderContext::source_scoped(&resolved_inputs);
             for (name, source) in self.source_tool_args.iter() {
                 if let Some(value) = resolve_value_source(source, &render_context)? {
@@ -172,6 +206,15 @@ impl McpFetchPlan {
             arguments.insert(pagination.offset_arg.clone(), Value::from(offset));
         }
         Ok(arguments)
+    }
+
+    fn execution_stopped(&self, kind: QueryExecutionFailureKind) -> DataFusionError {
+        DataFusionError::External(Box::new(McpProviderQueryError::ExecutionStopped {
+            source_schema: self.source_schema.clone(),
+            relation: self.relation.clone(),
+            tool: self.tool_name.clone(),
+            kind,
+        }))
     }
 }
 

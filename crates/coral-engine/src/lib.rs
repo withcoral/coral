@@ -80,17 +80,18 @@ pub use composition::{
 };
 pub use contracts::{
     CatalogInfo, ColumnInfo, CoreError, DependentJoinConfig, DependentJoinSourceConfig,
-    DescribeTableInfo, EffectiveDependentJoinConfig, MemorySize, QueryExecution,
-    QueryExecutionProvenance, QueryMemoryConfig, QueryParameterValue, QueryParameters, QueryPlan,
-    QueryRuntimeConfig, QueryRuntimeContext, QuerySource, QueryTableFunctionUsage, QueryTableUsage,
-    QueryTestFailure, QueryTestResult, QueryTestSuccess, ResolvedQueryResources,
-    RuntimeSourceComponent, RuntimeSourcePackage, RuntimeTableFunctionAuthorizationInfo,
-    SourceValidationReport, StatusCode, StructuredQueryError, TableFunctionArgumentInfo,
-    TableFunctionInfo, TableFunctionResultColumnInfo, TableInfo, UdfRuntimeArgument,
-    UdfRuntimeDefinition, UdfRuntimeImplementation, UdfRuntimePublish, UdfRuntimeResultColumn,
-    UdfRuntimeSignature, UdfRuntimeSqlDefinition, UdfRuntimeTableFunctionPublish,
-    UniversalSearchAuthorizationDecision, UniversalSearchAuthorizationInfo,
-    UniversalSearchAuthorizationOrigin,
+    DescribeTableInfo, EffectiveDependentJoinConfig, MemorySize, QueryCancellationToken,
+    QueryExecution, QueryExecutionControls, QueryExecutionFailureKind, QueryExecutionProvenance,
+    QueryMemoryConfig, QueryPaginationPolicy, QueryParameterValue, QueryParameters, QueryPlan,
+    QueryRetryPolicy, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,
+    QueryTableFunctionUsage, QueryTableUsage, QueryTestFailure, QueryTestResult, QueryTestSuccess,
+    ResolvedQueryResources, RuntimeSourceComponent, RuntimeSourcePackage,
+    RuntimeTableFunctionAuthorizationInfo, SourceValidationReport, StatusCode,
+    StructuredQueryError, TableFunctionArgumentInfo, TableFunctionInfo,
+    TableFunctionResultColumnInfo, TableInfo, UdfRuntimeArgument, UdfRuntimeDefinition,
+    UdfRuntimeImplementation, UdfRuntimePublish, UdfRuntimeResultColumn, UdfRuntimeSignature,
+    UdfRuntimeSqlDefinition, UdfRuntimeTableFunctionPublish, UniversalSearchAuthorizationDecision,
+    UniversalSearchAuthorizationInfo, UniversalSearchAuthorizationOrigin,
 };
 pub use runtime::normalize_catalog_name;
 
@@ -252,6 +253,32 @@ impl PreparedQueryRuntime {
             runtime: self,
             inner: self.inner.prepare_sql(sql, params).await?,
         })
+    }
+
+    /// Executes one parameterized statement with caller-owned deadline,
+    /// cancellation, pagination, and retry controls.
+    ///
+    /// This engine-to-application seam returns only a safe failure
+    /// classification. Provider messages, request details, and credentials are
+    /// intentionally not exposed through the controlled execution result.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QueryExecutionFailureKind`] when execution is stopped or the
+    /// query cannot be completed.
+    #[doc(hidden)]
+    pub async fn execute_sql_with_controls(
+        &self,
+        sql: &str,
+        params: QueryParameters,
+        controls: QueryExecutionControls,
+    ) -> Result<QueryExecution, QueryExecutionFailureKind> {
+        if sql.trim().is_empty() {
+            return Err(QueryExecutionFailureKind::Execution);
+        }
+        self.inner
+            .execute_sql_with_controls(sql, &params, &controls)
+            .await
     }
 
     /// Explains one `SQL` statement against this prepared runtime.

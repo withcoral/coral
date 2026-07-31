@@ -86,6 +86,7 @@ reqwest = { version = "0.13", default-features = false, features = ["blocking", 
 regex = "1"
 ring = "0.17.14"
 rmcp = { version = "1.8.0", features = ["client", "reqwest", "transport-child-process", "transport-streamable-http-client-reqwest", "transport-streamable-http-server"] }
+sse-stream = "0.2.3"
 rusqlite = { version = "0.37", features = ["bundled"] }
 rust-embed = { version = "8", features = ["mime-guess"] }
 serde = { version = "1", features = ["derive"] }
@@ -101,6 +102,7 @@ strsim = "0.11"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
+tokio-util = { version = "0.7", features = ["rt"] }
 toml = "0.9"
 toml_edit = "0.25.10"
 tonic = { version = "0.14.2", features = ["tls-native-roots", "tls-ring"] }

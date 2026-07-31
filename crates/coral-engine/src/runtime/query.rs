@@ -20,6 +20,7 @@ use tokio::sync::OnceCell;
 use tracing::{Instrument as _, info_span};
 
 use crate::backends::http::ProviderQueryError;
+use crate::backends::mcp::McpProviderQueryError;
 use crate::backends::{RegisteredSource, compile_query_source};
 use crate::runtime::catalog;
 use crate::runtime::dependent_join::error::resolver_rows_exceeded;
@@ -45,14 +46,15 @@ use crate::runtime::udf_calls::{
 use crate::runtime::udfs::published_table_functions;
 use crate::{
     BoundRequestIdentityHttpAuthenticator, CatalogInfo, CoreError, DependentJoinConfig,
-    DescribeTableInfo, MemorySize, QueryExecution, QueryExecutionProvenance, QueryMemoryConfig,
-    QueryParameterValue, QueryParameters, QueryPlan, QueryResultObserver, QueryResultObserverError,
+    DescribeTableInfo, MemorySize, QueryExecution, QueryExecutionControls,
+    QueryExecutionFailureKind, QueryExecutionProvenance, QueryMemoryConfig, QueryParameterValue,
+    QueryParameters, QueryPlan, QueryResultObserver, QueryResultObserverError, QueryRetryPolicy,
     QueryRuntimeConfig, QueryRuntimeContext, QuerySource, QueryTableFunctionUsage, QueryTableUsage,
     RequestAuthenticator, RequestIdentityHttpAuthenticatorError,
     RequestIdentityHttpAuthenticatorFactory, RequestIdentitySelectionContext,
     RequestIdentitySelectionError, RequestIdentitySelector, ResolvedQueryResources,
     SelectedRequestIdentity, SourceDecorator, SourceInputResolver, SourceObservationPublisher,
-    TableFunctionInfo, TableInfo, UdfRuntimeDefinition, normalize_catalog_name,
+    StatusCode, TableFunctionInfo, TableInfo, UdfRuntimeDefinition, normalize_catalog_name,
 };
 
 pub(crate) struct QueryRuntimeAdapter {
@@ -141,6 +143,11 @@ enum SqlExecutionFailure {
     Planning(DataFusionError),
     Collection(DataFusionError),
     Observer(CoreError),
+}
+
+enum RuntimeSqlFailure {
+    Sql(SqlExecutionFailure),
+    Core(CoreError),
 }
 
 pub(crate) async fn build_runtime(
@@ -694,7 +701,8 @@ impl QueryRuntimeAdapter {
         sql: &str,
         params: QueryParameters,
     ) -> Result<PreparedSql, CoreError> {
-        self.prepare_sql_once(&self.ctx, sql, params)
+        let controls = QueryExecutionControls::default();
+        self.prepare_sql_once(&self.ctx, sql, params, &controls)
             .await
             .map_err(|error| self.sql_execution_failure_to_core(error, sql))
     }
@@ -704,8 +712,40 @@ impl QueryRuntimeAdapter {
         prepared: PreparedSql,
     ) -> Result<QueryExecution, CoreError> {
         let sql = prepared.sql.clone();
+        let controls = QueryExecutionControls::default();
+        Box::pin(self.execute_prepared_inner(prepared, &controls))
+            .await
+            .map_err(|error| self.runtime_sql_failure_to_core(error, &sql))
+    }
+
+    pub(crate) async fn execute_sql_with_controls(
+        &self,
+        sql: &str,
+        params: &QueryParameters,
+        controls: &QueryExecutionControls,
+    ) -> Result<QueryExecution, QueryExecutionFailureKind> {
+        // The controlled entry point always activates backend-owned hard stop
+        // boundaries, even when the caller supplies `Default` controls. The
+        // ordinary `execute_sql` path deliberately leaves them inactive so its
+        // transport lifecycle and error rendering remain unchanged.
+        let controls = controls.clone().with_transport_enforcement();
+        let prepared = self
+            .prepare_sql_once(&self.ctx, sql, params.clone(), &controls)
+            .await
+            .map_err(|error| sql_execution_failure_kind(&error))?;
+        Box::pin(self.execute_prepared_inner(prepared, &controls))
+            .await
+            .map_err(|error| Self::runtime_sql_failure_kind(&error))
+    }
+
+    async fn execute_prepared_inner(
+        &self,
+        prepared: PreparedSql,
+        controls: &QueryExecutionControls,
+    ) -> Result<QueryExecution, RuntimeSqlFailure> {
+        let sql = prepared.sql.clone();
         let params = prepared.params.clone();
-        match self.execute_prepared_once(prepared).await {
+        match self.execute_prepared_once(prepared, controls).await {
             Ok(execution) => Ok(execution),
             Err(SqlExecutionFailure::Collection(error)) => {
                 // Resolver-row overflow is a dependent-join buffering limit, not
@@ -713,11 +753,16 @@ impl QueryRuntimeAdapter {
                 // the dependent-join rewrite disabled; binding fanout and
                 // per-binding fetch caps remain hard execution errors.
                 let Some(cap_error) = resolver_rows_exceeded(&error) else {
-                    return Err(self.collection_error_to_core(&error));
+                    return Err(RuntimeSqlFailure::Sql(SqlExecutionFailure::Collection(
+                        error,
+                    )));
                 };
                 let cap_core_error = self.collection_error_to_core(&error);
+                if controls.retry_policy() == QueryRetryPolicy::Disabled {
+                    return Err(RuntimeSqlFailure::Core(cap_core_error));
+                }
                 let Some(fallback_runtime) = &self.fallback_runtime else {
-                    return Err(cap_core_error);
+                    return Err(RuntimeSqlFailure::Core(cap_core_error));
                 };
 
                 tracing::warn!(
@@ -730,26 +775,27 @@ impl QueryRuntimeAdapter {
                     "dependent join resolver row cap exceeded",
                 );
 
-                let fallback = fallback_runtime
-                    .get_or_build_without_dependent_join()
-                    .await?;
+                let fallback = controls
+                    .run_until_stopped(fallback_runtime.get_or_build_without_dependent_join())
+                    .await
+                    .map_err(|kind| RuntimeSqlFailure::Sql(control_collection_failure(kind)))?
+                    .map_err(RuntimeSqlFailure::Core)?;
 
                 let prepared = self
-                    .prepare_sql_once(&fallback.ctx, &sql, params)
+                    .prepare_sql_once(&fallback.ctx, &sql, params, controls)
                     .await
-                    .map_err(|error| self.sql_execution_failure_to_core(error, &sql))?;
-                match self.execute_prepared_once(prepared).await {
+                    .map_err(RuntimeSqlFailure::Sql)?;
+                match self.execute_prepared_once(prepared, controls).await {
                     Ok(execution) => Ok(execution),
                     Err(error) => {
                         if is_missing_required_filter_failure(&error) {
-                            return Err(cap_core_error);
+                            return Err(RuntimeSqlFailure::Core(cap_core_error));
                         }
-                        let fallback_error = self.sql_execution_failure_to_core(error, &sql);
-                        Err(fallback_error)
+                        Err(RuntimeSqlFailure::Sql(error))
                     }
                 }
             }
-            Err(error) => Err(self.sql_execution_failure_to_core(error, &sql)),
+            Err(error) => Err(RuntimeSqlFailure::Sql(error)),
         }
     }
 
@@ -809,12 +855,16 @@ impl QueryRuntimeAdapter {
         ctx: &SessionContext,
         sql: &str,
         params: QueryParameters,
+        controls: &QueryExecutionControls,
     ) -> Result<PreparedSql, SqlExecutionFailure> {
-        let df = ctx
-            .sql_with_options(sql, read_only_sql_options())
+        controls.check_active().map_err(control_planning_failure)?;
+        let df = controls
+            .run_until_stopped(ctx.sql_with_options(sql, read_only_sql_options()))
             .await
+            .map_err(control_planning_failure)?
             .map_err(SqlExecutionFailure::Planning)?;
         let df = apply_query_parameters(df, &params).map_err(SqlExecutionFailure::Planning)?;
+        controls.check_active().map_err(control_planning_failure)?;
         let resources = self
             .resolve_query_resources(df.logical_plan())
             .map_err(SqlExecutionFailure::Planning)?;
@@ -829,22 +879,58 @@ impl QueryRuntimeAdapter {
     async fn execute_prepared_once(
         &self,
         prepared: PreparedSql,
+        controls: &QueryExecutionControls,
     ) -> Result<QueryExecution, SqlExecutionFailure> {
+        controls.check_active().map_err(control_planning_failure)?;
         let PreparedSql {
             dataframe,
             sql,
             resources,
             ..
         } = prepared;
-        let task_ctx = Arc::new(dataframe.task_ctx());
-        let physical_plan = dataframe
-            .create_physical_plan()
+        let (mut session_state, logical_plan) = dataframe.into_parts();
+        session_state
+            .config_mut()
+            .set_extension(Arc::new(controls.clone()));
+        let task_ctx = session_state.task_ctx();
+        let physical_plan = controls
+            .run_until_stopped(session_state.create_physical_plan(&logical_plan))
             .await
+            .map_err(control_collection_failure)?
             .map_err(SqlExecutionFailure::Collection)?;
         let arrow_schema = physical_plan.schema();
-        let batches = collect(physical_plan, task_ctx)
-            .await
-            .map_err(SqlExecutionFailure::Collection)?;
+        let collection = collect(physical_plan, task_ctx);
+        tokio::pin!(collection);
+        let batches = tokio::select! {
+            biased;
+            kind = wait_until_execution_stops(controls) => {
+                // Source adapters observe the same absolute deadline/token.
+                // Keep polling briefly so isolated transports can send their
+                // cancellation signal and synchronously close their session
+                // before the physical-plan future is dropped.
+                let cleanup_deadline = controls.cleanup_deadline(kind);
+                if tokio::time::timeout_at(cleanup_deadline, &mut collection)
+                .await
+                .is_err()
+                {
+                    tracing::debug!(
+                        ?kind,
+                        cleanup_deadline = ?cleanup_deadline,
+                        "controlled query cleanup grace elapsed"
+                    );
+                }
+                return Err(control_collection_failure(kind));
+            }
+            result = &mut collection => {
+                controls
+                    .check_active()
+                    .map_err(control_collection_failure)?;
+                result.map_err(SqlExecutionFailure::Collection)?
+            }
+        };
+        controls
+            .check_active()
+            .map_err(control_collection_failure)?;
         let execution = QueryExecution::new(arrow_schema, batches, &sql, resources);
         self.observe_query_result(
             &sql,
@@ -853,7 +939,24 @@ impl QueryRuntimeAdapter {
             execution.provenance(),
         )
         .map_err(SqlExecutionFailure::Observer)?;
+        controls
+            .check_active()
+            .map_err(control_collection_failure)?;
         Ok(execution)
+    }
+
+    fn runtime_sql_failure_to_core(&self, error: RuntimeSqlFailure, sql: &str) -> CoreError {
+        match error {
+            RuntimeSqlFailure::Sql(error) => self.sql_execution_failure_to_core(error, sql),
+            RuntimeSqlFailure::Core(error) => error,
+        }
+    }
+
+    fn runtime_sql_failure_kind(error: &RuntimeSqlFailure) -> QueryExecutionFailureKind {
+        match error {
+            RuntimeSqlFailure::Sql(error) => sql_execution_failure_kind(error),
+            RuntimeSqlFailure::Core(error) => core_execution_failure_kind(error),
+        }
     }
 
     fn sql_execution_failure_to_core(&self, error: SqlExecutionFailure, sql: &str) -> CoreError {
@@ -1310,6 +1413,67 @@ fn is_missing_required_filter_failure(error: &SqlExecutionFailure) -> bool {
         inner.downcast_ref::<ProviderQueryError>(),
         Some(ProviderQueryError::MissingRequiredFilter { .. })
     )
+}
+
+fn control_planning_failure(kind: QueryExecutionFailureKind) -> SqlExecutionFailure {
+    SqlExecutionFailure::Planning(DataFusionError::External(Box::new(kind)))
+}
+
+fn control_collection_failure(kind: QueryExecutionFailureKind) -> SqlExecutionFailure {
+    SqlExecutionFailure::Collection(DataFusionError::External(Box::new(kind)))
+}
+
+async fn wait_until_execution_stops(
+    controls: &QueryExecutionControls,
+) -> QueryExecutionFailureKind {
+    match controls
+        .run_until_stopped(std::future::pending::<std::convert::Infallible>())
+        .await
+    {
+        Err(kind) => kind,
+        Ok(never) => match never {},
+    }
+}
+
+fn sql_execution_failure_kind(error: &SqlExecutionFailure) -> QueryExecutionFailureKind {
+    match error {
+        SqlExecutionFailure::Planning(error) | SqlExecutionFailure::Collection(error) => {
+            datafusion_execution_failure_kind(error)
+        }
+        SqlExecutionFailure::Observer(error) => core_execution_failure_kind(error),
+    }
+}
+
+fn datafusion_execution_failure_kind(error: &DataFusionError) -> QueryExecutionFailureKind {
+    match error.find_root() {
+        DataFusionError::External(inner) => {
+            if let Some(kind) = inner.downcast_ref::<QueryExecutionFailureKind>() {
+                return *kind;
+            }
+            if let Some(error) = inner.downcast_ref::<ProviderQueryError>() {
+                return error
+                    .execution_failure_kind()
+                    .unwrap_or(QueryExecutionFailureKind::Execution);
+            }
+            if let Some(error) = inner.downcast_ref::<McpProviderQueryError>() {
+                return error.execution_failure_kind();
+            }
+            QueryExecutionFailureKind::Execution
+        }
+        DataFusionError::ObjectStore(_) => QueryExecutionFailureKind::UpstreamUnavailable,
+        _ => QueryExecutionFailureKind::Execution,
+    }
+}
+
+fn core_execution_failure_kind(error: &CoreError) -> QueryExecutionFailureKind {
+    match error.status_code() {
+        StatusCode::Unavailable => QueryExecutionFailureKind::UpstreamUnavailable,
+        StatusCode::InvalidArgument
+        | StatusCode::NotFound
+        | StatusCode::FailedPrecondition
+        | StatusCode::Unimplemented
+        | StatusCode::Internal => QueryExecutionFailureKind::Execution,
+    }
 }
 
 fn memory_budget_error(error: &DataFusionError, limit: MemorySize) -> Option<CoreError> {

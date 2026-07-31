@@ -7,6 +7,7 @@ use arrow::datatypes::{Schema, SchemaRef};
 use coral_spec::backends::http::HttpTableSpec;
 use datafusion::common::{DataFusionError, Result};
 
+use crate::QueryExecutionControls;
 use crate::backends::schema_from_columns;
 use crate::backends::shared::mapping::convert_items;
 use crate::backends::shared::source_observation::{
@@ -30,12 +31,14 @@ pub(crate) struct BuildJoinedBatchesConfig<'a> {
     pub(crate) dependent_first: bool,
     pub(crate) output_schema: &'a SchemaRef,
     pub(crate) source_observation: Option<&'a SourceObservationConfig>,
+    pub(crate) controls: &'a QueryExecutionControls,
 }
 
 pub(crate) fn build_joined_batches(
     config: &BuildJoinedBatchesConfig<'_>,
     output_memory: RetainedMemory,
 ) -> Result<RetainedRecordBatches> {
+    check_execution_controls(config.controls)?;
     let dependent_schema = schema_from_columns(
         config.dependent_table.columns(),
         config.dependent_source_schema,
@@ -44,6 +47,7 @@ pub(crate) fn build_joined_batches(
     let mut output_batches = RetainedRecordBatches::new(output_memory);
 
     for tuple in config.state.binding_tuples() {
+        check_execution_controls(config.controls)?;
         let Some(rows) = config.state.buffered_rows_for_tuple(tuple) else {
             continue;
         };
@@ -61,6 +65,7 @@ pub(crate) fn build_joined_batches(
             &HashMap::new(),
             rows,
         )?;
+        check_execution_controls(config.controls)?;
         if let Some(source_observation) = config.source_observation {
             publish_source_scan_batch(
                 config.dependent_source_schema,
@@ -74,8 +79,12 @@ pub(crate) fn build_joined_batches(
         // redirects, case-insensitive identifiers), so enforce the join
         // equality here: keep only rows whose key columns match the binding,
         // exactly as the unrewritten hash join would.
-        let dependent_batch =
-            filter_rows_matching_binding(&dependent_batch, config.binding_filters, tuple)?;
+        let dependent_batch = filter_rows_matching_binding(
+            &dependent_batch,
+            config.binding_filters,
+            tuple,
+            config.controls,
+        )?;
         if dependent_batch.num_rows() == 0 {
             continue;
         }
@@ -91,6 +100,7 @@ pub(crate) fn build_joined_batches(
         }
 
         for (resolver_batch_idx, resolver_row_indices) in resolver_rows_by_batch {
+            check_execution_controls(config.controls)?;
             // Arrow `take` allocates the fanout arrays before a RecordBatch
             // exists, so reserve an estimate first and resize to the actual
             // retained batch memory after construction.
@@ -110,6 +120,7 @@ pub(crate) fn build_joined_batches(
                 config.resolver_projection_len,
                 config.dependent_first,
                 Arc::clone(config.output_schema),
+                config.controls,
             ) {
                 Ok(batch) => batch,
                 Err(error) => {
@@ -217,6 +228,10 @@ fn estimate_taken_array_memory(array: &dyn Array, output_rows: usize) -> Result<
     })
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The join batch builder receives the already-separated resolver, dependent, schema, memory, and execution-control inputs needed for one bounded allocation."
+)]
 fn build_fanout_join_batch(
     state: &DependentJoinRuntimeState,
     resolver_batch_idx: usize,
@@ -225,7 +240,9 @@ fn build_fanout_join_batch(
     resolver_projection_len: usize,
     dependent_first: bool,
     output_schema: SchemaRef,
+    controls: &QueryExecutionControls,
 ) -> Result<RecordBatch> {
+    check_execution_controls(controls)?;
     let resolver_batch = state
         .resolver_batch(resolver_batch_idx)
         .ok_or_else(|| DataFusionError::Internal("dependent join resolver batch missing".into()))?;
@@ -244,6 +261,7 @@ fn build_fanout_join_batch(
     let mut dependent_indices = Vec::with_capacity(output_rows);
 
     for row_idx in resolver_row_indices {
+        check_execution_controls(controls)?;
         let row_idx = u32::try_from(*row_idx).map_err(|error| {
             DataFusionError::Execution(format!(
                 "dependent join resolver row index cannot fit Arrow take index: {error}"
@@ -255,17 +273,20 @@ fn build_fanout_join_batch(
 
     let resolver_indices = UInt32Array::from(resolver_indices);
     let dependent_indices = UInt32Array::from(dependent_indices);
-    let resolver_arrays = resolver_batch
+    let mut resolver_arrays = Vec::with_capacity(resolver_projection_len);
+    for array in resolver_batch
         .columns()
         .iter()
         .take(resolver_projection_len)
-        .map(|array| take(array.as_ref(), &resolver_indices, None).map_err(arrow_error))
-        .collect::<Result<Vec<_>>>()?;
-    let dependent_arrays = dependent_batch
-        .columns()
-        .iter()
-        .map(|array| take(array.as_ref(), &dependent_indices, None).map_err(arrow_error))
-        .collect::<Result<Vec<_>>>()?;
+    {
+        check_execution_controls(controls)?;
+        resolver_arrays.push(take(array.as_ref(), &resolver_indices, None).map_err(arrow_error)?);
+    }
+    let mut dependent_arrays = Vec::with_capacity(dependent_batch.num_columns());
+    for array in dependent_batch.columns() {
+        check_execution_controls(controls)?;
+        dependent_arrays.push(take(array.as_ref(), &dependent_indices, None).map_err(arrow_error)?);
+    }
     let mut arrays = Vec::with_capacity(resolver_arrays.len() + dependent_batch.num_columns());
 
     if dependent_first {
@@ -293,7 +314,9 @@ fn filter_rows_matching_binding(
     batch: &RecordBatch,
     binding_filters: &[String],
     tuple: &Tuple,
+    controls: &QueryExecutionControls,
 ) -> Result<RecordBatch> {
+    check_execution_controls(controls)?;
     let schema = batch.schema();
     let mut key_columns = Vec::with_capacity(binding_filters.len());
     for (filter, expected) in binding_filters.iter().zip(tuple.values()) {
@@ -307,6 +330,7 @@ fn filter_rows_matching_binding(
 
     let mut mask = Vec::with_capacity(batch.num_rows());
     for row in 0..batch.num_rows() {
+        check_execution_controls(controls)?;
         let mut matches = true;
         for (array, expected) in &key_columns {
             if array.is_null(row) {
@@ -323,6 +347,12 @@ fn filter_rows_matching_binding(
     }
 
     filter_record_batch(batch, &BooleanArray::from(mask)).map_err(arrow_error)
+}
+
+fn check_execution_controls(controls: &QueryExecutionControls) -> Result<()> {
+    controls
+        .check_active()
+        .map_err(|kind| DataFusionError::External(Box::new(kind)))
 }
 
 fn project_dependent_batch(batch: &RecordBatch, projection: &[usize]) -> Result<RecordBatch> {

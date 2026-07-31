@@ -27,14 +27,9 @@ pub(super) async fn inspect_tools(
             .await
         }
         McpServerSpec::StreamableHttp { .. } => {
-            StreamableHttpMcpToolCaller {
-                source_name,
-                server,
-                source_inputs,
-                body_capture,
-            }
-            .list_tools()
-            .await
+            StreamableHttpMcpToolCaller::new(source_name, server, source_inputs, body_capture)
+                .list_tools()
+                .await
         }
     }?;
     let mut tools = tools.into_iter().map(tool_descriptor).collect::<Vec<_>>();

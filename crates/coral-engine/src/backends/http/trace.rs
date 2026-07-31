@@ -52,6 +52,12 @@ impl HttpBodyCapture {
         Self { max_bytes }
     }
 
+    pub(super) fn capped(self, max_bytes: usize) -> Self {
+        Self {
+            max_bytes: self.max_bytes.map(|configured| configured.min(max_bytes)),
+        }
+    }
+
     fn enabled_max_bytes(&self) -> Option<usize> {
         self.max_bytes
     }

@@ -78,6 +78,11 @@ use crate::{
 use coral_spec::ValidatedSourceManifest;
 
 pub(crate) mod common;
+
+/// Maximum response bytes decoded synchronously by a controlled upstream
+/// execution. The cap keeps one serde/SSE poll bounded so cancellation cannot
+/// be hidden behind provider-controlled CPU work.
+pub(crate) const CONTROLLED_RESPONSE_BODY_LIMIT_BYTES: usize = 64 * 1024;
 mod composite;
 pub(crate) use common::{
     BackendCatalogRegistration, BackendCompileRequest, BackendRegistration,

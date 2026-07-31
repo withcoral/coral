@@ -7,7 +7,8 @@ use std::time::Duration;
 
 use coral_engine::{
     CoralQuery, CoreError, DependentJoinConfig, DependentJoinSourceConfig, MemorySize,
-    QueryRuntimeConfig, QuerySource, StatusCode,
+    QueryCancellationToken, QueryExecutionControls, QueryPaginationPolicy, QueryParameters,
+    QueryRetryPolicy, QueryRuntimeConfig, QuerySource, StatusCode,
 };
 use coral_spec::{ValidatedSourceManifest, parse_source_manifest_yaml};
 use serde_json::{Value, json};
@@ -940,6 +941,78 @@ async fn rows_per_binding_cap_stops_paginated_fetch_after_overflow_is_known() {
 }
 
 #[tokio::test]
+async fn controlled_dependent_join_keeps_the_first_page_only_policy() {
+    let temp = TempDir::new().expect("temp dir");
+    write_jsonl_file(
+        temp.path(),
+        "issues.jsonl",
+        &[issue_row("First", "withcoral", "coral", 123)],
+    );
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/repos/withcoral/coral/pulls/123"))
+        .and(query_param("page", "1"))
+        .and(query_param("per_page", "1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{
+                "owner": "withcoral",
+                "repo": "coral",
+                "number": 123,
+                "state": "open"
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/withcoral/coral/pulls/123"))
+        .and(query_param("page", "2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": [] })))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let mut github = github_paginated_manifest(&server.uri());
+    first_table_object_mut(&mut github).insert(
+        "pagination".to_string(),
+        json!({
+            "mode": "page",
+            "page_param": "page",
+            "page_start": 1,
+            "page_size": {
+                "default": 1,
+                "max": 1,
+                "query_param": "per_page"
+            }
+        }),
+    );
+    let sources = [
+        build_source(issues_manifest(temp.path())),
+        build_source(github),
+    ];
+    let runtime = CoralQuery::prepare(&sources, test_runtime())
+        .await
+        .expect("runtime should prepare");
+    let controls = QueryExecutionControls::new(
+        None,
+        QueryCancellationToken::new(),
+        QueryPaginationPolicy::FirstPageOnly,
+        QueryRetryPolicy::Disabled,
+    );
+
+    let execution = runtime
+        .execute_sql_with_controls(dependent_join_sql(), QueryParameters::new(), controls)
+        .await
+        .expect("controlled dependent join should succeed from one page");
+
+    assert_eq!(
+        execution_to_rows(&execution),
+        vec![json!({ "issue_title": "First", "pr_state": "open" })]
+    );
+}
+
+#[tokio::test]
 async fn resolver_rows_cap_retries_original_query_without_dependent_join_rewrite() {
     let temp = TempDir::new().expect("temp dir");
     let issues = (1..=10_001)
@@ -1020,6 +1093,54 @@ async fn resolver_rows_cap_retries_original_query_without_dependent_join_rewrite
         execution_to_rows(&execution),
         vec![json!({ "row_count": 10001 })]
     );
+}
+
+#[tokio::test]
+async fn disabled_retry_policy_does_not_reexecute_after_resolver_row_overflow() {
+    let temp = TempDir::new().expect("temp dir");
+    write_jsonl_file(
+        temp.path(),
+        "issues.jsonl",
+        &[
+            issue_row("First", "withcoral", "coral", 1),
+            issue_row("Second", "withcoral", "coral", 2),
+        ],
+    );
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/pulls"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("must not execute fallback"))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let sources = [
+        build_source(issues_manifest(temp.path())),
+        build_source(github_broad_query_manifest(&server.uri())),
+    ];
+    let runtime = CoralQuery::prepare(
+        &sources,
+        runtime_with_dependent_join(DependentJoinConfig {
+            max_resolver_rows: 1,
+            ..DependentJoinConfig::default()
+        }),
+    )
+    .await
+    .expect("runtime should prepare");
+    let controls = QueryExecutionControls::new(
+        None,
+        QueryCancellationToken::new(),
+        QueryPaginationPolicy::FirstPageOnly,
+        QueryRetryPolicy::Disabled,
+    );
+
+    let error = runtime
+        .execute_sql_with_controls(dependent_join_sql(), QueryParameters::new(), controls)
+        .await
+        .expect_err("retry-disabled resolver overflow must remain a hard error");
+
+    assert_eq!(error, coral_engine::QueryExecutionFailureKind::Execution);
+    server.verify().await;
 }
 
 #[tokio::test]

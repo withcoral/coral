@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use crate::contracts::{StatusCode, StructuredQueryError};
+use crate::contracts::{QueryExecutionFailureKind, StatusCode, StructuredQueryError};
 
 /// Structured query-time failures for MCP-backed tables and functions.
 #[derive(Debug, thiserror::Error)]
@@ -33,6 +33,7 @@ pub(crate) enum McpProviderQueryError {
     Initialize {
         source_schema: String,
         detail: String,
+        failure_kind: QueryExecutionFailureKind,
     },
 
     #[error("MCP HTTP transport for source '{source_schema}' requires authorization: {detail}")]
@@ -53,6 +54,15 @@ pub(crate) enum McpProviderQueryError {
         relation: String,
         tool: String,
         detail: String,
+        failure_kind: QueryExecutionFailureKind,
+    },
+
+    #[error("{source_schema}.{relation}: MCP tool '{tool}' {kind}")]
+    ExecutionStopped {
+        source_schema: String,
+        relation: String,
+        tool: String,
+        kind: QueryExecutionFailureKind,
     },
 
     #[error("{source_schema}.{relation}: MCP tool '{tool}' returned an error: {detail}")]
@@ -85,12 +95,14 @@ pub(crate) enum McpProviderQueryError {
     HttpRequestFailed {
         source_schema: String,
         detail: String,
+        failure_kind: QueryExecutionFailureKind,
     },
 
     #[error("MCP HTTP server for source '{source_schema}' returned an unexpected status: {detail}")]
     HttpStatusFailed {
         source_schema: String,
         detail: String,
+        failure_kind: QueryExecutionFailureKind,
     },
 
     #[error(
@@ -113,6 +125,27 @@ pub(crate) enum McpProviderQueryError {
 }
 
 impl McpProviderQueryError {
+    pub(crate) fn execution_failure_kind(&self) -> QueryExecutionFailureKind {
+        match self {
+            Self::ExecutionStopped { kind, .. } => *kind,
+            Self::AuthRequired { .. } => QueryExecutionFailureKind::Authentication,
+            Self::AuthFailed { .. } => QueryExecutionFailureKind::PermissionDenied,
+            Self::ServerStart { .. } | Self::SessionExpired { .. } => {
+                QueryExecutionFailureKind::UpstreamUnavailable
+            }
+            Self::Initialize { failure_kind, .. }
+            | Self::HttpRequestFailed { failure_kind, .. }
+            | Self::HttpStatusFailed { failure_kind, .. }
+            | Self::ToolCall { failure_kind, .. } => *failure_kind,
+            Self::ResultDecode { .. }
+            | Self::Pagination { .. }
+            | Self::HttpSseDecodeFailed { .. } => QueryExecutionFailureKind::InvalidResponse,
+            Self::MissingRequiredFilter { .. }
+            | Self::MissingRequiredFunctionArg { .. }
+            | Self::ToolReturnedError { .. } => QueryExecutionFailureKind::Execution,
+        }
+    }
+
     /// Converts this MCP-specific error into the canonical structured error.
     #[expect(
         clippy::too_many_lines,
@@ -192,6 +225,7 @@ impl McpProviderQueryError {
             Self::Initialize {
                 source_schema,
                 detail,
+                ..
             } => {
                 let mut metadata = HashMap::new();
                 metadata.insert("source".to_string(), source_schema.clone());
@@ -257,6 +291,7 @@ impl McpProviderQueryError {
                 relation,
                 tool,
                 detail,
+                ..
             } => {
                 let mut metadata = HashMap::new();
                 metadata.insert("source".to_string(), source_schema.clone());
@@ -277,6 +312,12 @@ impl McpProviderQueryError {
                     metadata,
                 )
             }
+            Self::ExecutionStopped {
+                source_schema,
+                relation,
+                tool,
+                kind,
+            } => execution_stopped_to_structured(source_schema, relation, tool, *kind),
             Self::ToolReturnedError {
                 source_schema,
                 relation,
@@ -356,6 +397,7 @@ impl McpProviderQueryError {
             Self::HttpRequestFailed {
                 source_schema,
                 detail,
+                ..
             } => {
                 let mut metadata = HashMap::new();
                 metadata.insert("source".to_string(), source_schema.clone());
@@ -377,6 +419,7 @@ impl McpProviderQueryError {
             Self::HttpStatusFailed {
                 source_schema,
                 detail,
+                ..
             } => {
                 let mut metadata = HashMap::new();
                 metadata.insert("source".to_string(), source_schema.clone());
@@ -442,10 +485,56 @@ impl McpProviderQueryError {
     }
 }
 
+fn execution_stopped_to_structured(
+    source_schema: &str,
+    relation: &str,
+    tool: &str,
+    kind: QueryExecutionFailureKind,
+) -> StructuredQueryError {
+    let mut metadata = HashMap::new();
+    metadata.insert("source".to_string(), source_schema.to_string());
+    metadata.insert("relation".to_string(), relation.to_string());
+    metadata.insert("tool".to_string(), tool.to_string());
+    metadata.insert("mcp_stage".to_string(), "execution_control".to_string());
+
+    let (reason, summary, detail, hint, retryable) = match kind {
+        QueryExecutionFailureKind::Timeout => (
+            "MCP_EXECUTION_TIMEOUT",
+            format!("MCP tool `{tool}` timed out for {source_schema}.{relation}"),
+            "The MCP call exceeded the query execution deadline.".to_string(),
+            Some("Retry with a later deadline or reduce the requested work.".to_string()),
+            true,
+        ),
+        QueryExecutionFailureKind::Cancelled => (
+            "MCP_EXECUTION_CANCELLED",
+            format!("MCP tool `{tool}` was cancelled for {source_schema}.{relation}"),
+            "The caller cancelled the query execution.".to_string(),
+            None,
+            false,
+        ),
+        _ => (
+            "MCP_EXECUTION_FAILED",
+            format!("MCP tool `{tool}` failed for {source_schema}.{relation}"),
+            kind.to_string(),
+            None,
+            false,
+        ),
+    };
+    StructuredQueryError::new(
+        reason,
+        summary,
+        detail,
+        hint,
+        retryable,
+        StatusCode::Unavailable,
+        metadata,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::McpProviderQueryError;
-    use crate::contracts::StatusCode;
+    use crate::contracts::{QueryExecutionFailureKind, StatusCode};
 
     #[test]
     fn missing_required_filter_sets_reason_and_metadata() {
@@ -497,6 +586,7 @@ mod tests {
         let error = McpProviderQueryError::Initialize {
             source_schema: "demo_mcp".to_string(),
             detail: "handshake timed out".to_string(),
+            failure_kind: QueryExecutionFailureKind::UpstreamUnavailable,
         }
         .to_structured();
         assert_eq!(error.reason(), "MCP_INITIALIZE_FAILED");
@@ -511,6 +601,7 @@ mod tests {
             relation: "issues".to_string(),
             tool: "list_issues".to_string(),
             detail: "broken pipe".to_string(),
+            failure_kind: QueryExecutionFailureKind::UpstreamUnavailable,
         }
         .to_structured();
         assert_eq!(error.reason(), "MCP_TOOL_CALL_FAILED");
@@ -550,6 +641,7 @@ mod tests {
         let error = McpProviderQueryError::HttpRequestFailed {
             source_schema: "demo_mcp".to_string(),
             detail: "connection refused".to_string(),
+            failure_kind: QueryExecutionFailureKind::UpstreamUnavailable,
         }
         .to_structured();
         assert_eq!(error.reason(), "MCP_HTTP_REQUEST_FAILED");
@@ -559,15 +651,30 @@ mod tests {
     }
 
     #[test]
-    fn http_status_failed_is_retryable_unavailable() {
+    fn http_status_failed_keeps_legacy_structured_reason() {
         let error = McpProviderQueryError::HttpStatusFailed {
             source_schema: "demo_mcp".to_string(),
             detail: "HTTP 502: bad gateway".to_string(),
+            failure_kind: QueryExecutionFailureKind::UpstreamUnavailable,
         }
         .to_structured();
         assert_eq!(error.reason(), "MCP_HTTP_STATUS_FAILED");
         assert_eq!(error.metadata().get("mcp_stage").unwrap(), "http_status");
         assert!(error.retryable());
+    }
+
+    #[test]
+    fn pagination_failure_is_invalid_upstream_response() {
+        let error = McpProviderQueryError::Pagination {
+            source_schema: "demo_mcp".to_string(),
+            relation: "issues".to_string(),
+            tool: "list_issues".to_string(),
+            detail: "repeated cursor".to_string(),
+        };
+        assert_eq!(
+            error.execution_failure_kind(),
+            QueryExecutionFailureKind::InvalidResponse
+        );
     }
 
     #[test]

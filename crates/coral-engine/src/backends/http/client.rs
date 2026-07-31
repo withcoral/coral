@@ -16,8 +16,9 @@ use crate::backends::http::registration_checks::validate_source_scoped_http_conf
 use crate::backends::http::target::HttpFetchTarget;
 use crate::backends::http::trace::HttpBodyCapture;
 use crate::{
-    BoundRequestIdentityHttpAuthenticator, RequestAuthenticator, SourceInputResolutionContext,
-    SourceInputResolver, SourceInputResolverError,
+    BoundRequestIdentityHttpAuthenticator, QueryExecutionControls, QueryRetryPolicy,
+    RequestAuthenticator, SourceInputResolutionContext, SourceInputResolver,
+    SourceInputResolverError,
 };
 use coral_spec::backends::http::{HttpSourceManifest, RateLimitSpec};
 use coral_spec::{AuthSpec, HeaderSpec, ParsedTemplate, RequestSpec as ManifestRequestSpec};
@@ -28,6 +29,7 @@ const DEFAULT_HTTP_USER_AGENT: &str = concat!("coral/", env!("CARGO_PKG_VERSION"
 #[derive(Clone)]
 pub(crate) struct HttpSourceClient {
     pub(super) http: reqwest::Client,
+    pub(super) single_attempt_http: reqwest::Client,
     pub(super) request_timeout: Duration,
     pub(super) source_schema: String,
     pub(super) base_url: ParsedTemplate,
@@ -50,6 +52,7 @@ pub(crate) struct HttpSourceClientRuntime {
     body_capture_max_bytes: Option<usize>,
     trace_context: Option<OtelContext>,
     http: reqwest::Client,
+    single_attempt_http: reqwest::Client,
 }
 
 impl HttpSourceClientRuntime {
@@ -60,6 +63,7 @@ impl HttpSourceClientRuntime {
         body_capture_max_bytes: Option<usize>,
         trace_context: Option<OtelContext>,
         http: reqwest::Client,
+        single_attempt_http: reqwest::Client,
     ) -> Self {
         Self {
             source_input_resolution_context: Some(source_input_resolution_context),
@@ -68,6 +72,7 @@ impl HttpSourceClientRuntime {
             body_capture_max_bytes,
             trace_context,
             http,
+            single_attempt_http,
         }
     }
 
@@ -79,6 +84,7 @@ impl HttpSourceClientRuntime {
             request_identity_http_authenticator: None,
             body_capture_max_bytes,
             trace_context: None,
+            single_attempt_http: http.clone(),
             http,
         }
     }
@@ -135,6 +141,27 @@ fn credential_safe_redirect_policy() -> reqwest::redirect::Policy {
 
 fn credential_safe_redirect_target(previous: &reqwest::Url, next: &reqwest::Url) -> bool {
     previous.origin() == next.origin() && is_credential_safe_auth_transport(next)
+}
+
+pub(super) fn single_attempt_http_client(
+    registration: &BackendRegistrationContext,
+    source_name: &str,
+) -> Result<reqwest::Client> {
+    registration
+        .single_attempt_http_client(|| {
+            reqwest::Client::builder()
+                .timeout(Duration::from_secs(DEFAULT_HTTP_REQUEST_TIMEOUT_SECS))
+                .user_agent(DEFAULT_HTTP_USER_AGENT)
+                .retry(reqwest::retry::never())
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .map_err(|error| error.to_string())
+        })
+        .map_err(|error| {
+            DataFusionError::Execution(format!(
+                "failed to build single-attempt HTTP client for source '{source_name}': {error}"
+            ))
+        })
 }
 
 impl HttpSourceClient {
@@ -201,6 +228,7 @@ impl HttpSourceClient {
 
         Ok(Self {
             http: runtime.http,
+            single_attempt_http: runtime.single_attempt_http,
             request_timeout,
             source_schema: manifest.common.name.clone(),
             base_url: manifest.base_url.clone(),
@@ -230,6 +258,7 @@ impl HttpSourceClient {
         filter_values: &HashMap<String, String>,
         arg_values: &HashMap<String, String>,
         sql_limit: Option<usize>,
+        controls: &QueryExecutionControls,
     ) -> Result<Vec<Value>> {
         fetch_rows(
             self,
@@ -239,6 +268,7 @@ impl HttpSourceClient {
             sql_limit.or(target.fetch_limit_default()),
             sql_limit,
             FetchCompleteness::Default,
+            controls,
         )
         .await
     }
@@ -250,6 +280,7 @@ impl HttpSourceClient {
         arg_values: &HashMap<String, String>,
         row_limit: Option<usize>,
         page_hint: Option<usize>,
+        controls: &QueryExecutionControls,
     ) -> Result<Vec<Value>> {
         fetch_rows(
             self,
@@ -259,6 +290,7 @@ impl HttpSourceClient {
             row_limit,
             page_hint,
             FetchCompleteness::Complete,
+            controls,
         )
         .await
     }
@@ -278,6 +310,13 @@ impl HttpSourceClient {
             .map(Arc::new)
             .map_err(source_input_error)
     }
+
+    pub(super) fn http_for(&self, controls: &QueryExecutionControls) -> &reqwest::Client {
+        match controls.retry_policy() {
+            QueryRetryPolicy::SourceDefault => &self.http,
+            QueryRetryPolicy::Disabled => &self.single_attempt_http,
+        }
+    }
 }
 
 fn source_input_error(error: SourceInputResolverError) -> DataFusionError {
@@ -286,7 +325,11 @@ fn source_input_error(error: SourceInputResolverError) -> DataFusionError {
 
 #[cfg(test)]
 mod tests {
-    use super::credential_safe_redirect_target;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    use super::{credential_safe_redirect_target, single_attempt_http_client};
+    use crate::backends::BackendRegistrationContext;
 
     #[test]
     fn credential_safe_redirects_stay_on_a_safe_origin() {
@@ -302,5 +345,37 @@ mod tests {
             let next = reqwest::Url::parse(next).expect("next URL");
             assert_eq!(credential_safe_redirect_target(&previous, &next), allowed);
         }
+    }
+
+    #[tokio::test]
+    async fn single_attempt_http_client_does_not_follow_redirects() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/redirect"))
+            .respond_with(
+                ResponseTemplate::new(307)
+                    .append_header("Location", format!("{}/destination", server.uri())),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/destination"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let registration = BackendRegistrationContext::default();
+        let client = single_attempt_http_client(&registration, "demo")
+            .expect("build production single-attempt client");
+        let response = client
+            .get(format!("{}/redirect", server.uri()))
+            .send()
+            .await
+            .expect("redirect response");
+
+        assert_eq!(response.status(), reqwest::StatusCode::TEMPORARY_REDIRECT);
+        server.verify().await;
     }
 }

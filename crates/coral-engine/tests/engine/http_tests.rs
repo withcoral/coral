@@ -9,9 +9,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use coral_engine::{
-    CoralQuery, CoreError, EngineExtensions, QueryParameterValue, QueryParameters,
-    QueryRuntimeConfig, QueryRuntimeContext, RequestAuthenticator, RequestAuthenticatorError,
-    StatusCode,
+    CoralQuery, CoreError, EngineExtensions, QueryCancellationToken, QueryExecutionControls,
+    QueryExecutionFailureKind, QueryPaginationPolicy, QueryParameterValue, QueryParameters,
+    QueryRetryPolicy, QueryRuntimeConfig, QueryRuntimeContext, RequestAuthenticator,
+    RequestAuthenticatorError, StatusCode,
 };
 use reqwest::header::{AUTHORIZATION, HeaderName, HeaderValue};
 use serde_json::{Value, json};
@@ -50,6 +51,47 @@ fn base_http_manifest(name: &str, base_url: &str) -> Value {
             ]
         }]
     })
+}
+
+#[tokio::test]
+async fn prepared_runtime_honours_pre_cancelled_execution_without_an_http_call() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": [] })))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let source = build_source(base_http_manifest("controlled_http", &server.uri()));
+    let runtime = CoralQuery::prepare(&[source], test_runtime())
+        .await
+        .expect("runtime should prepare");
+    let cancellation = QueryCancellationToken::new();
+    cancellation.cancel();
+    let controls = QueryExecutionControls::new(
+        None,
+        cancellation,
+        QueryPaginationPolicy::SourceDefault,
+        QueryRetryPolicy::SourceDefault,
+    );
+
+    let error = runtime
+        .execute_sql_with_controls(
+            "SELECT * FROM controlled_http.users",
+            QueryParameters::new(),
+            controls,
+        )
+        .await
+        .expect_err("cancelled execution should stop before source work");
+
+    assert_eq!(error, QueryExecutionFailureKind::Cancelled);
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("requests")
+            .is_empty()
+    );
 }
 
 fn search_function_manifest(name: &str, base_url: &str) -> Value {
