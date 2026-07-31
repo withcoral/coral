@@ -318,10 +318,6 @@ mod tests {
             .expect("prepared from snapshot");
     }
 
-    /// `AuthSettings` has no public constructor other than `from_toml`, so the
-    /// unsafe-bind guard cannot be bypassed by building a value directly; the
-    /// parsing boundary is the only place it needs to hold.
-
     #[test]
     fn rejects_session_tokens_resolved_from_different_settings() {
         let dir = authorization_server("");
