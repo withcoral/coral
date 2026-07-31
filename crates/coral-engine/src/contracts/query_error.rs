@@ -601,7 +601,9 @@ fn sql_string_literal(value: &str) -> String {
 /// Either a truly unqualified `FROM X` or a qualified `FROM schema.table`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ParsedTableRef {
-    Unqualified { table: String },
+    Unqualified {
+        table: String,
+    },
     Qualified {
         qualifier: ParsedQualifier,
         table: String,
@@ -1071,8 +1073,7 @@ mod tests {
     #[test]
     fn table_not_found_schema_reference_has_no_catalog_metadata() {
         let tables = vec![table("hockey", "master")];
-        let err =
-            StructuredQueryError::table_not_found(&tr(&["hockey", "missing_table"]), &tables);
+        let err = StructuredQueryError::table_not_found(&tr(&["hockey", "missing_table"]), &tables);
 
         assert_eq!(err.metadata().get("catalog"), None);
         assert_eq!(
