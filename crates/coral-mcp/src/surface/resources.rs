@@ -617,23 +617,23 @@ WHERE title LIKE '%bug%'",
     #[test]
     fn sql_reference_quotes_each_identifier_independently() {
         assert_eq!(
-            format_schema_table_equivalent("", "github", "pulls"),
+            format_schema_table_equivalent(None, "github", "pulls"),
             "github.pulls"
         );
         assert_eq!(
-            format_schema_table_equivalent("", "github", "Pull.Requests"),
+            format_schema_table_equivalent(None, "github", "Pull.Requests"),
             "github.\"Pull.Requests\""
         );
         assert_eq!(
-            format_schema_table_equivalent("", "git.hub", "pulls"),
+            format_schema_table_equivalent(None, "git.hub", "pulls"),
             "\"git.hub\".pulls"
         );
         assert_eq!(
-            format_schema_table_equivalent("", "git\"hub", "pulls"),
+            format_schema_table_equivalent(None, "git\"hub", "pulls"),
             "\"git\"\"hub\".pulls"
         );
         assert_eq!(
-            format_schema_table_equivalent("coral_db", "Main.Schema", "users"),
+            format_schema_table_equivalent(Some("coral_db"), "Main.Schema", "users"),
             "coral_db.\"Main.Schema\".users"
         );
     }

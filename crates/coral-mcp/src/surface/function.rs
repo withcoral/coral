@@ -157,7 +157,7 @@ pub(crate) fn function_added_value(function: &Function) -> Result<Value, tonic::
         .as_ref()
         .ok_or_else(|| tonic::Status::internal("add function response missing publish target"))?;
     let sql_reference =
-        format_schema_table_equivalent("", &table_function.schema_name, &table_function.name);
+        format_schema_table_equivalent(None, &table_function.schema_name, &table_function.name);
     let arguments = ready
         .arguments
         .iter()

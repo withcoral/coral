@@ -1,5 +1,7 @@
 use coral_api::v1::TableSummary;
-pub(crate) use coral_client::{format_schema_table_equivalent, format_table_name};
+pub(crate) use coral_client::{
+    format_schema_table_equivalent, format_table_name, optional_catalog_name,
+};
 use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::Value;
@@ -42,7 +44,7 @@ impl<'a> From<&'a TableSummary> for QueryableTableSummaryValue<'a> {
             table_name: &table.name,
             name: format_table_name(&table.catalog_name, &table.schema_name, &table.name),
             sql_reference: format_schema_table_equivalent(
-                &table.catalog_name,
+                optional_catalog_name(&table.catalog_name),
                 &table.schema_name,
                 &table.name,
             ),

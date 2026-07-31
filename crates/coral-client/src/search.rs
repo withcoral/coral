@@ -157,7 +157,7 @@ impl<'a> From<&'a TableSummary> for TableSummaryValue<'a> {
             schema_name: &table.schema_name,
             name: format_table_name(&table.catalog_name, &table.schema_name, &table.name),
             sql_reference: format_schema_table_equivalent(
-                &table.catalog_name,
+                optional_catalog_name(&table.catalog_name),
                 &table.schema_name,
                 &table.name,
             ),
@@ -204,7 +204,7 @@ impl<'a> From<&'a TableFunction> for TableFunctionValue<'a> {
             schema_name: &function.schema_name,
             name: format!("{}.{}", function.schema_name, function.name),
             sql_reference: format_schema_table_equivalent(
-                "",
+                None,
                 &function.schema_name,
                 &function.name,
             ),
@@ -369,7 +369,7 @@ impl<'a> From<&'a ColumnHint> for ColumnHintValue<'a> {
             surface_name: &hint.surface_name,
             surface_kind: surface_kind_name(hint.surface_kind),
             surface_sql_reference: format_schema_table_equivalent(
-                "",
+                None,
                 &hint.schema_name,
                 &hint.surface_name,
             ),
@@ -405,7 +405,7 @@ impl<'a> From<&'a ObservedValue> for ObservedValueValue<'a> {
             surface_name: &observed.surface_name,
             surface_kind: surface_kind_name(observed.surface_kind),
             surface_sql_reference: format_schema_table_equivalent(
-                "",
+                None,
                 &observed.schema_name,
                 &observed.surface_name,
             ),
@@ -587,7 +587,7 @@ fn catalog_metadata_text_lines(
             format!(
                 "   SQL: {}",
                 format_schema_table_equivalent(
-                    &table.catalog_name,
+                    optional_catalog_name(&table.catalog_name),
                     &table.schema_name,
                     &table.name
                 )
@@ -601,7 +601,7 @@ fn catalog_metadata_text_lines(
                 ),
                 format!(
                     "   SQL reference: {}",
-                    format_schema_table_equivalent("", &function.schema_name, &function.name)
+                    format_schema_table_equivalent(None, &function.schema_name, &function.name)
                 ),
                 format!("   Call: {}", minimal_table_function_call_example(function)),
             ];
@@ -635,7 +635,7 @@ fn column_hint_text_lines(index: usize, provider: &str, hint: &ColumnHint) -> Ve
         format!(
             "   Surface: {} {}",
             surface_kind_name(hint.surface_kind),
-            format_schema_table_equivalent("", &hint.schema_name, &hint.surface_name)
+            format_schema_table_equivalent(None, &hint.schema_name, &hint.surface_name)
         ),
     ];
     if !hint.data_type.is_empty() {
@@ -724,7 +724,7 @@ fn preview_text(preview: &SearchTableColumnPreview) -> Option<String> {
 /// Formats the shortest SQL call example for a table function.
 #[must_use]
 pub fn minimal_table_function_call_example(function: &TableFunction) -> String {
-    let reference = format_schema_table_equivalent("", &function.schema_name, &function.name);
+    let reference = format_schema_table_equivalent(None, &function.schema_name, &function.name);
     let required_arguments = function
         .arguments
         .iter()
@@ -746,28 +746,34 @@ pub fn format_table_name(catalog_name: &str, schema_name: &str, table_name: &str
 }
 
 /// Formats a SQL table or table-function reference, qualified by schema and, when
-/// `catalog_name` is non-empty, by catalog. Pass `""` for a two-part reference —
+/// `catalog_name` is `Some`, by catalog. Pass `None` for a two-part reference —
 /// table functions and the surfaces whose protos carry no catalog field.
 #[must_use]
 pub fn format_schema_table_equivalent(
-    catalog_name: &str,
+    catalog_name: Option<&str>,
     schema_name: &str,
     table_name: &str,
 ) -> String {
-    if catalog_name.is_empty() {
-        format!(
-            "{}.{}",
-            format_sql_identifier(schema_name),
-            format_sql_identifier(table_name)
-        )
-    } else {
-        format!(
+    match catalog_name {
+        Some(catalog_name) => format!(
             "{}.{}.{}",
             format_sql_identifier(catalog_name),
             format_sql_identifier(schema_name),
             format_sql_identifier(table_name)
-        )
+        ),
+        None => format!(
+            "{}.{}",
+            format_sql_identifier(schema_name),
+            format_sql_identifier(table_name)
+        ),
     }
+}
+
+/// Reads a catalog qualifier off a proto message, where an empty field means the
+/// surface is two-part and carries no catalog.
+#[must_use]
+pub fn optional_catalog_name(catalog_name: &str) -> Option<&str> {
+    (!catalog_name.is_empty()).then_some(catalog_name)
 }
 
 /// Formats one SQL identifier, quoting it only when required.

@@ -23,7 +23,10 @@ use super::context::ToolDescriptionContext;
 use super::discovery::{DefaultPaginationInput, Pagination, parse_pagination};
 use super::schema::{tool_input_schema, tool_output_schema};
 use super::tool_names::ToolName;
-use super::values::{MissingTableSummaryValue, format_schema_table_equivalent, format_table_name};
+use super::values::{
+    MissingTableSummaryValue, format_schema_table_equivalent, format_table_name,
+    optional_catalog_name,
+};
 
 const DEFAULT_IGNORE_CASE: bool = true;
 const DEFAULT_REQUIRED_ONLY: bool = false;
@@ -578,7 +581,7 @@ impl<'a> From<&'a ProtoTableSummary> for CatalogTableItemValue<'a> {
             schema_name: &table.schema_name,
             name: format_table_name(&table.catalog_name, &table.schema_name, &table.name),
             sql_reference: format_schema_table_equivalent(
-                &table.catalog_name,
+                optional_catalog_name(&table.catalog_name),
                 &table.schema_name,
                 &table.name,
             ),
@@ -625,7 +628,7 @@ impl<'a> From<&'a ProtoTableFunction> for CatalogTableFunctionItemValue<'a> {
             schema_name: &function.schema_name,
             name: format!("{}.{}", function.schema_name, function.name),
             sql_reference: format_schema_table_equivalent(
-                "",
+                None,
                 &function.schema_name,
                 &function.name,
             ),
