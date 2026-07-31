@@ -368,9 +368,14 @@ fn endpoint_allows_loopback_authorization(endpoint_uri: &str) -> bool {
 
 /// Extracts the host from the endpoint as written, before URL normalization.
 ///
+/// Only the host is read raw: the scheme is matched case-insensitively so this
+/// agrees with the parsed-`Url` checks, which see an already-lowercased scheme.
 /// IPv6 hosts are returned without their brackets.
 fn raw_authority_host(endpoint_uri: &str) -> Option<&str> {
-    let rest = endpoint_uri.strip_prefix("http://")?;
+    let rest = endpoint_uri
+        .split_once("://")
+        .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("http"))
+        .map(|(_, rest)| rest)?;
     let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
     let authority = authority
         .rsplit_once('@')
@@ -561,6 +566,7 @@ mod tests {
             "http://127.0.0.1:50051",
             "http://127.255.255.254",
             "http://[::1]:50051",
+            "HTTP://127.0.0.1:50051",
         ] {
             assert!(
                 endpoint_allows_loopback_authorization(endpoint),
