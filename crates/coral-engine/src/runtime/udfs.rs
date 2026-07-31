@@ -170,6 +170,7 @@ fn catalog_table_function(
             .iter()
             .map(|argument| CatalogTableFunctionArgument {
                 name: argument.name.clone(),
+                data_type: argument.data_type.to_string(),
                 required: true,
                 values: Vec::new(),
             })

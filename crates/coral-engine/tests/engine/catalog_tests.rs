@@ -500,10 +500,15 @@ async fn coral_table_functions_lists_source_functions() {
     assert_eq!(
         serde_json::from_str::<Value>(row["arguments_json"].as_str().unwrap()).unwrap(),
         json!([
-            { "name": "q", "required": true, "values": [] },
-            { "name": "mode", "required": false, "values": ["lexical", "semantic", "hybrid"] },
-            { "name": "metadata", "required": false, "values": [] },
-            { "name": "since", "required": false, "values": [] }
+            { "name": "q", "type": "Utf8", "required": true, "values": [] },
+            {
+                "name": "mode",
+                "type": "Utf8",
+                "required": false,
+                "values": ["lexical", "semantic", "hybrid"]
+            },
+            { "name": "metadata", "type": "Json", "required": false, "values": [] },
+            { "name": "since", "type": "Timestamp", "required": false, "values": [] }
         ])
     );
     assert_eq!(

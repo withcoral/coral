@@ -982,6 +982,7 @@ mod tests {
             require_guide_read: true,
             arguments: vec![coral_engine::TableFunctionArgumentInfo {
                 name: "payload".to_string(),
+                data_type: "Utf8".to_string(),
                 required: true,
                 values: Vec::new(),
             }],
