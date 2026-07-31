@@ -147,10 +147,22 @@ bind_addr = "0.0.0.0:14555"
 The signing key file must contain a PKCS#8 DER-encoded P-256 private key and is
 resolved relative to Coral's config directory. `access_token_ttl_seconds`
 defaults to 30 days (`2592000`), which is a long life for a bearer token that
-grants everything — set it explicitly to the shortest value your clients can
-re-authenticate within. A public surface accepts only tokens whose audience is its
-own canonical `public_url`, so a token minted for one surface cannot be replayed
-at another.
+grants everything — set it explicitly. A public surface accepts only tokens whose
+audience is its own canonical `public_url`, so a token minted for one surface
+cannot be replayed at another.
+
+The TTL also bounds how long an MCP session lasts, so the shortest value is not
+automatically the right one. An MCP session is bound to the token that opened it.
+Once that token expires, the surface answers `401` with a `WWW-Authenticate`
+challenge, and a request that carries a freshly issued token under the same
+`Mcp-Session-Id` is answered with `403` — not the `404` that tells an MCP client
+its session is gone and a new one should be initialized. Sessions are therefore
+not carried across a token rotation: the client has to open a new session after
+re-authenticating, and not every client does that on its own. Coral issues no
+refresh tokens either, so every rotation is a full authorization round trip
+through the identity provider. Choose a TTL short enough to bound how long a
+leaked token grants everything, and long enough that clients are not reconnecting
+constantly.
 
 `auth.http_bind_addr` is where Coral serves the OAuth endpoints — discovery,
 authorize, and token — that `auth.authorization_server.issuer` advertises. It
@@ -179,7 +191,7 @@ they mean:
   Coral does not stop you binding remotely — that is a deployment decision. But a
   non-loopback bind is only safe behind TLS termination that fronts the listener,
   with untrusted clients kept off it. `coral server` prints a warning on startup
-  for a non-loopback gRPC bind.
+  for any non-loopback bind it serves, gRPC or MCP HTTP.
 </Warning>
 
 While MCP HTTP and gRPC run in one process started by `coral server`, the gRPC
