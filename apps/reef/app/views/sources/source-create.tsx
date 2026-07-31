@@ -478,9 +478,7 @@ function DetailsStep({
   return (
     <div className={styles.fieldGroup}>
       {discovery ? (
-        <Typography.BodySmall variant="tertiary">
-          {discoverySummary(discovery)} Review the source details.
-        </Typography.BodySmall>
+        <Typography.BodySmall variant="primary">{discoverySummary(discovery)}</Typography.BodySmall>
       ) : null}
       <SourceField
         className={styles.fieldItem}
@@ -554,16 +552,33 @@ function DetailsStep({
 }
 
 function discoverySummary(discovery: {
+  description: string
   format: SourceDocumentFormat
   inspectionError?: string
+  serverUrl: string
+  title: string
 }): string {
-  if (discovery.format === 'mcp') return 'Detected an MCP endpoint from its URL.'
-  if (discovery.format === 'openapi-json') return 'Detected an OpenAPI JSON document.'
-  if (discovery.format === 'openapi-yaml') return 'Detected an OpenAPI YAML document.'
-  if (discovery.inspectionError) {
-    return `The source document could not be inspected. ${asSentence(discovery.inspectionError)}`
+  if (discovery.format === 'mcp') {
+    return 'Detected an MCP endpoint from its URL. Review the details below.'
   }
-  return 'No OpenAPI document was detected.'
+  if (discovery.format === 'unknown') {
+    const reason = discovery.inspectionError
+      ? `The source document could not be inspected. ${asSentence(discovery.inspectionError)}`
+      : 'No OpenAPI document was detected.'
+    return `${reason} Fill in the details below.`
+  }
+  const fields = [
+    ...(discovery.title ? ['name'] : []),
+    ...(discovery.description ? ['description'] : []),
+    ...(discovery.serverUrl ? ['base URL'] : []),
+    'type',
+  ]
+  return `Detected the ${sentenceList(fields)} from the URL provided. Review the details below.`
+}
+
+function sentenceList(items: string[]): string {
+  if (items.length < 3) return items.join(' and ')
+  return `${items.slice(0, -1).join(', ')}, and ${items.at(-1)}`
 }
 
 function asSentence(value: string): string {
@@ -604,9 +619,7 @@ function CredentialsStep({
   return (
     <div className={styles.fieldGroup}>
       {discovery && discovery.auth.kind !== 'unknown' ? (
-        <Typography.BodySmall variant="tertiary">
-          Detected authentication: {discovery.auth.label}.
-        </Typography.BodySmall>
+        <Typography.BodySmall variant="primary">{authSummary(discovery.auth)}</Typography.BodySmall>
       ) : null}
       <SourceField className={styles.fieldItem} label="Authentication">
         <Radio.Group
@@ -739,6 +752,13 @@ function CredentialsStep({
       </div>
     </div>
   )
+}
+
+function authSummary(auth: SourceDetectedAuth): string {
+  if (auth.kind === 'unsupported') {
+    return `Detected ${auth.label}, which isn’t supported. Choose another method below.`
+  }
+  return `Detected ${auth.label}.`
 }
 
 function authChoiceFromDiscovery(auth: SourceDetectedAuth): AuthChoice | null {

@@ -20,6 +20,7 @@ export type SourceDiscoveryData =
       name: string
       serverUrl: string
       status: 'success'
+      title: string
       url: string
     }
   | {
@@ -172,7 +173,7 @@ function inspectJsonAuth(document: Record<string, unknown>): SourceDetectedAuth 
     security?.length === 0 ||
     security?.some((requirement) => objectKeys(requirement).length === 0)
   ) {
-    return { kind: 'none', label: 'No authentication' }
+    return { kind: 'none', label: 'no authentication' }
   }
 
   const components = objectValue(document.components)
@@ -190,7 +191,7 @@ function inspectJsonAuth(document: Record<string, unknown>): SourceDetectedAuth 
 function inspectYamlAuth(lines: string[]): SourceDetectedAuth {
   const rootSecurity = lines.find((line) => indentation(line) === 0 && yamlKey(line) === 'security')
   if (rootSecurity && yamlScalar(rootSecurity) === '[]') {
-    return { kind: 'none', label: 'No authentication' }
+    return { kind: 'none', label: 'no authentication' }
   }
 
   const componentsIndex = findYamlKey(lines, 'components', 0)
@@ -214,21 +215,21 @@ function authFromScheme(scheme: Record<string, unknown> | undefined): SourceDete
   const name = stringValue(scheme.name)
 
   if (type === 'http' && httpScheme === 'bearer') {
-    return { kind: 'bearer', label: 'Bearer token' }
+    return { kind: 'bearer', label: 'a bearer token' }
   }
   if (type === 'oauth2') {
-    return { kind: 'bearer', label: 'OAuth 2.0 bearer token' }
+    return { kind: 'bearer', label: 'an OAuth 2.0 bearer token' }
   }
   if (type === 'openidconnect') {
-    return { kind: 'bearer', label: 'OpenID Connect bearer token' }
+    return { kind: 'bearer', label: 'an OpenID Connect bearer token' }
   }
   if (type === 'apikey' && location === 'header' && name) {
-    return { headerName: name, kind: 'header', label: `Header ${name}` }
+    return { headerName: name, kind: 'header', label: `an API key in the ${name} header` }
   }
   if (type === 'apikey') {
     return {
       kind: 'unsupported',
-      label: `${location || 'non-header'} API key`,
+      label: `a ${location || 'non-header'} API key`,
     }
   }
   if (type === 'http' && httpScheme) {
@@ -579,6 +580,7 @@ function discoveredSource(
     name: sourceName(metadata.title || fallbackTitle(sourceUrl)),
     serverUrl: metadata.serverUrl,
     status: 'success',
+    title: metadata.title,
     url,
     ...(metadata.inspectionError ? { inspectionError: metadata.inspectionError } : {}),
   }

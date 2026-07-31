@@ -12,12 +12,13 @@ type SuccessfulDiscovery = Extract<SourceDiscoveryData, { status: 'success' }>
 type DiscoveryLoader = (request: Request) => SourceDiscoveryData | Promise<SourceDiscoveryData>
 
 const DISCOVERY: SuccessfulDiscovery = {
-  auth: { kind: 'bearer', label: 'Bearer token' },
+  auth: { kind: 'bearer', label: 'a bearer token' },
   description: 'Weather observations and forecasts',
   format: 'openapi-yaml' as const,
   name: 'weather_api',
   serverUrl: 'https://weather.example/v1',
   status: 'success' as const,
+  title: 'Weather API',
   url: 'https://weather.example/openapi.yaml',
 }
 
@@ -135,7 +136,13 @@ describe('SourceCreateDialog', () => {
     await expect
       .element(screen.getByLabelText('Description (optional)'))
       .toHaveValue('Weather observations and forecasts')
-    await expect.element(screen.getByText('Detected an OpenAPI YAML document.')).toBeVisible()
+    await expect
+      .element(
+        screen.getByText(
+          'Detected the name, description, base URL, and type from the URL provided. Review the details below.',
+        ),
+      )
+      .toBeVisible()
 
     await screen.getByRole('button', { name: 'Next' }).click()
 
@@ -151,7 +158,11 @@ describe('SourceCreateDialog', () => {
   it('resets source-specific draft state when the URL changes', async () => {
     const discovery: SuccessfulDiscovery = {
       ...DISCOVERY,
-      auth: { headerName: 'X-Weather-Key', kind: 'header', label: 'Header X-Weather-Key' },
+      auth: {
+        headerName: 'X-Weather-Key',
+        kind: 'header',
+        label: 'an API key in the X-Weather-Key header',
+      },
     }
     const { screen } = await renderSourceCreate(discovery)
 
@@ -200,6 +211,7 @@ describe('SourceCreateDialog', () => {
       name: 'status_api',
       serverUrl: '',
       status: 'success',
+      title: '',
       url: 'https://status.example/openapi.yaml',
     }
     let resolveFirst: ((result: SourceDiscoveryData) => void) | undefined
@@ -293,13 +305,16 @@ describe('SourceCreateDialog', () => {
       name: 'tools',
       serverUrl: '',
       status: 'success',
+      title: '',
       url,
     })
 
     await screen.getByLabelText('Source URL').fill(url)
     await screen.getByRole('button', { name: 'Next' }).click()
 
-    await expect.element(screen.getByText('No OpenAPI document was detected.')).toBeVisible()
+    await expect
+      .element(screen.getByText('No OpenAPI document was detected. Fill in the details below.'))
+      .toBeVisible()
     await screen.getByRole('radio', { name: 'MCP server' }).click()
     await expect.element(screen.getByRole('radio', { name: 'MCP server' })).toBeChecked()
   })
@@ -313,20 +328,27 @@ describe('SourceCreateDialog', () => {
       name: 'mcp',
       serverUrl: '',
       status: 'success',
+      title: '',
       url,
     })
 
     await screen.getByLabelText('Source URL').fill(url)
     await screen.getByRole('button', { name: 'Next' }).click()
 
-    await expect.element(screen.getByText('Detected an MCP endpoint from its URL.')).toBeVisible()
+    await expect
+      .element(screen.getByText('Detected an MCP endpoint from its URL. Review the details below.'))
+      .toBeVisible()
     await expect.element(screen.getByRole('radio', { name: 'MCP server' })).toBeChecked()
   })
 
   it('prefills detected header authentication on the credentials step', async () => {
     const { screen } = await renderSourceCreate({
       ...DISCOVERY,
-      auth: { headerName: 'X-Api-Key', kind: 'header', label: 'Header X-Api-Key' },
+      auth: {
+        headerName: 'X-Api-Key',
+        kind: 'header',
+        label: 'an API key in the X-Api-Key header',
+      },
     })
 
     await screen.getByLabelText('Source URL').fill(DISCOVERY.url)
@@ -335,7 +357,7 @@ describe('SourceCreateDialog', () => {
     await screen.getByRole('button', { name: 'Next' }).click()
 
     await expect
-      .element(screen.getByText('Detected authentication: Header X-Api-Key.'))
+      .element(screen.getByText('Detected an API key in the X-Api-Key header.'))
       .toBeVisible()
     await expect.element(screen.getByRole('radio', { name: 'Custom header' })).toBeChecked()
     await expect.element(screen.getByLabelText('Header name')).toHaveValue('X-Api-Key')

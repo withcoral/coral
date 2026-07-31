@@ -37,7 +37,7 @@ describe('source discovery', () => {
         }),
       ),
     ).toEqual({
-      auth: { kind: 'bearer', label: 'Bearer token' },
+      auth: { kind: 'bearer', label: 'a bearer token' },
       description: 'Weather observations and forecasts',
       format: 'openapi-json',
       probePath: '',
@@ -66,7 +66,11 @@ components:
       name: X-Api-Key
 `),
     ).toEqual({
-      auth: { headerName: 'X-Api-Key', kind: 'header', label: 'Header X-Api-Key' },
+      auth: {
+        headerName: 'X-Api-Key',
+        kind: 'header',
+        label: 'an API key in the X-Api-Key header',
+      },
       description: 'Weather observations and forecasts',
       format: 'openapi-yaml',
       probePath: '',
@@ -114,7 +118,7 @@ components:
           security: [{ oauth: [] }],
         }),
       ).auth,
-    ).toEqual({ kind: 'bearer', label: 'OAuth 2.0 bearer token' })
+    ).toEqual({ kind: 'bearer', label: 'an OAuth 2.0 bearer token' })
   })
 
   it('reports unsupported authentication without selecting an incompatible credential', () => {
@@ -129,7 +133,7 @@ components:
           security: [{ queryKey: [] }],
         }),
       ).auth,
-    ).toEqual({ kind: 'unsupported', label: 'query API key' })
+    ).toEqual({ kind: 'unsupported', label: 'a query API key' })
   })
 
   it('loads the URL and returns a query-safe source name', async () => {
@@ -152,12 +156,13 @@ components:
     )
 
     await expect(loader({ request } as Parameters<typeof loader>[0])).resolves.toEqual({
-      auth: { kind: 'none', label: 'No authentication' },
+      auth: { kind: 'none', label: 'no authentication' },
       description: 'Status checks',
       format: 'openapi-json',
       name: 'source_123_status_api',
       serverUrl: 'https://status.example/api',
       status: 'success',
+      title: '123 Status API',
       url: 'https://status.example/openapi.json',
     })
   })
@@ -448,6 +453,7 @@ components:
       name: 'mcp',
       serverUrl: '',
       status: 'success',
+      title: '',
       url: 'https://tools.example/mcp',
     })
   })
@@ -468,6 +474,7 @@ components:
       name: 'sse',
       serverUrl: '',
       status: 'success',
+      title: '',
       url: 'https://tools.example/events/sse/?token=secret',
     })
   })
