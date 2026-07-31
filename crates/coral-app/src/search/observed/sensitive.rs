@@ -7,44 +7,20 @@
 use serde_json::Value;
 use url::{Url, form_urlencoded};
 
-const SENSITIVE_COLUMN_NAMES: &[&str] = &[
-    "apikey",
-    "authorization",
-    "authtoken",
-    "cookie",
-    "credential",
-    "password",
-    "passwd",
-    "privatekey",
-    "refreshtoken",
-    "secret",
-    "session",
-    "token",
-];
+use crate::search::content_safety::{
+    JsonSanitization, is_sensitive_name, is_sensitive_pair, sanitize_json_value,
+};
 
 /// Returns whether a field name resembles a credential-bearing field.
 pub(super) fn is_sensitive_column(column_name: &str) -> bool {
-    let normalized = column_name
-        .chars()
-        .filter(char::is_ascii_alphanumeric)
-        .collect::<String>()
-        .to_ascii_lowercase();
-    SENSITIVE_COLUMN_NAMES
-        .iter()
-        .any(|name| normalized.contains(name))
+    is_sensitive_name(column_name)
 }
 
 /// Returns whether a value contains one of the obvious secret shapes we know.
 ///
 /// A `false` result does not mean the value is generally non-sensitive.
 pub(super) fn is_sensitive_value(value: &str) -> bool {
-    let trimmed = value.trim();
-    if trimmed.contains("-----BEGIN ") || trimmed.contains(" PRIVATE KEY-----") {
-        return true;
-    }
-    is_sensitive_token(trimmed)
-        || contains_sensitive_token(trimmed)
-        || contains_sensitive_key_value_pair(trimmed)
+    crate::search::content_safety::is_sensitive_value(value)
 }
 
 /// Removes recognized secret-bearing fields while preserving safe structured content.
@@ -87,69 +63,6 @@ fn sanitize_json(value: &str) -> Option<SanitizedValue> {
                 .map_or(SanitizedValue::Drop, SanitizedValue::Changed),
         ),
         JsonSanitization::Drop => Some(SanitizedValue::Drop),
-    }
-}
-
-enum JsonSanitization {
-    Unchanged,
-    Changed,
-    Drop,
-}
-
-fn sanitize_json_value(value: &mut Value) -> JsonSanitization {
-    match value {
-        Value::Object(fields) => {
-            let mut changed = false;
-            fields.retain(|name, value| {
-                if is_sensitive_column(name) {
-                    changed = true;
-                    return false;
-                }
-                match sanitize_json_value(value) {
-                    JsonSanitization::Unchanged => true,
-                    JsonSanitization::Changed => {
-                        changed = true;
-                        true
-                    }
-                    JsonSanitization::Drop => {
-                        changed = true;
-                        false
-                    }
-                }
-            });
-            if !changed {
-                JsonSanitization::Unchanged
-            } else if fields.values().any(has_observable_content) {
-                JsonSanitization::Changed
-            } else {
-                JsonSanitization::Drop
-            }
-        }
-        Value::Array(values) => {
-            let mut changed = false;
-            values.retain_mut(|value| match sanitize_json_value(value) {
-                JsonSanitization::Unchanged => true,
-                JsonSanitization::Changed => {
-                    changed = true;
-                    true
-                }
-                JsonSanitization::Drop => {
-                    changed = true;
-                    false
-                }
-            });
-            if !changed {
-                JsonSanitization::Unchanged
-            } else if values.iter().any(has_observable_content) {
-                JsonSanitization::Changed
-            } else {
-                JsonSanitization::Drop
-            }
-        }
-        Value::String(value) if is_sensitive_value(value) => JsonSanitization::Drop,
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {
-            JsonSanitization::Unchanged
-        }
     }
 }
 
@@ -250,89 +163,6 @@ fn sanitize_form(value: &str) -> Option<SanitizedValue> {
             .map(|(key, value)| (key.as_str(), value.as_str())),
     );
     Some(SanitizedValue::Changed(serializer.finish()))
-}
-
-fn is_sensitive_pair(key: &str, value: &str) -> bool {
-    is_sensitive_column(key) || is_sensitive_value(value)
-}
-
-fn has_observable_content(value: &Value) -> bool {
-    match value {
-        Value::Null => false,
-        Value::String(value) => !value.trim().is_empty(),
-        Value::Array(values) => values.iter().any(has_observable_content),
-        Value::Object(fields) => fields.values().any(has_observable_content),
-        Value::Bool(_) | Value::Number(_) => true,
-    }
-}
-
-fn is_sensitive_token(value: &str) -> bool {
-    let lower = value.to_ascii_lowercase();
-    if (lower.starts_with("sk-") && value.len() >= 20)
-        || lower.starts_with("ghp_")
-        || lower.starts_with("github_pat_")
-        || lower.starts_with("xoxb-")
-        || lower.starts_with("xoxp-")
-        || lower.starts_with("xoxa-")
-        || lower.starts_with("ya29.")
-    {
-        return true;
-    }
-    looks_like_jwt(value)
-}
-
-fn contains_sensitive_token(value: &str) -> bool {
-    value
-        .split(|ch: char| !(ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.')))
-        .any(is_sensitive_token)
-}
-
-fn contains_sensitive_key_value_pair(value: &str) -> bool {
-    value
-        .char_indices()
-        .filter(|(_, character)| matches!(character, '=' | ':'))
-        .filter_map(|(separator_index, _)| sensitive_key_before(value, separator_index))
-        .any(is_sensitive_column)
-}
-
-fn sensitive_key_before(value: &str, separator_index: usize) -> Option<&str> {
-    let prefix = value
-        .get(..separator_index)?
-        .trim_end_matches(|character: char| {
-            character.is_whitespace() || matches!(character, '"' | '\'')
-        });
-    let key_start = prefix
-        .char_indices()
-        .rev()
-        .find(|(_, character)| !is_sensitive_key_character(*character))
-        .map_or(0, |(index, character)| index + character.len_utf8());
-    prefix.get(key_start..).filter(|key| !key.is_empty())
-}
-
-fn is_sensitive_key_character(character: char) -> bool {
-    character.is_ascii_alphanumeric() || matches!(character, '_' | '-' | '.')
-}
-
-fn looks_like_jwt(value: &str) -> bool {
-    let mut parts = value.split('.');
-    let Some(header) = parts.next() else {
-        return false;
-    };
-    let Some(payload) = parts.next() else {
-        return false;
-    };
-    let Some(signature) = parts.next() else {
-        return false;
-    };
-    if parts.next().is_some() {
-        return false;
-    }
-    [header, payload, signature].iter().all(|part| {
-        part.len() >= 8
-            && part
-                .chars()
-                .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
-    })
 }
 
 #[cfg(test)]
