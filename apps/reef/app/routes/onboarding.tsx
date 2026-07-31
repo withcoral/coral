@@ -4,14 +4,22 @@ import type { SourcesActionData } from './sources-action'
 import { getOnboardingStepState } from '@/components/onboarding/onboarding-steps'
 import { isCoralDesktopBuild } from '@/lib/coral-desktop'
 import { loadOnboardingSampleQuery } from '@/lib/onboarding-query.server'
-import { firstWorkspaceForRequest } from '@/lib/workspaces.server'
+import { firstWorkspaceForRequest, listWorkspacesForRequest } from '@/lib/workspaces.server'
 import { OnboardingView } from '@/views/onboarding/onboarding'
 
 import { runSourcesAction } from './sources-action'
 import { loadSourcesRouteData } from './sources-loader'
 
 export async function loader({ request }: Route.LoaderArgs) {
-  const workspace = await firstWorkspaceForRequest(request)
+  const workspaces = await listWorkspacesForRequest(request)
+  const [workspace] = workspaces
+  if (!workspace) {
+    throw new Response('No Coral workspace is configured.', {
+      status: 404,
+      statusText: 'Workspace Not Found',
+    })
+  }
+
   const sources = await loadSourcesRouteData(request, workspace)
   const step = getOnboardingStepState(new URL(request.url).searchParams.get('step'))
   const shouldRunSampleQuery =
@@ -25,6 +33,7 @@ export async function loader({ request }: Route.LoaderArgs) {
     sampleQuery: shouldRunSampleQuery ? loadOnboardingSampleQuery(request, workspace.name) : null,
     step,
     workspaceId: workspace.name,
+    workspaces: workspaces.map(({ name }) => ({ name })),
   }
 }
 

@@ -7,10 +7,11 @@ import { getOnboardingStepState } from './onboarding-steps'
 
 const meta = {
   args: {
-    mcpLaunchConfig: { status: 'unavailable' },
+    mcpClients: { clients: [], onWorkspaceChange: fn() },
     onContinue: fn(),
     runtime: 'web',
     step: getOnboardingStepState('next-steps'),
+    workspaces: [{ name: 'default' }, { name: 'analytics' }],
   },
   component: OnboardingNextStepsPage,
   parameters: {
@@ -25,14 +26,19 @@ type Story = StoryObj<typeof meta>
 
 export const Web: Story = {}
 
+// Enough clients that the list scrolls under its sticky header.
 export const Desktop: Story = {
   args: {
-    mcpLaunchConfig: {
-      config: {
-        args: ['mcp-stdio'],
-        command: '/Applications/Coral.app/Contents/Resources/coral/coral',
-      },
-      status: 'success',
+    mcpClients: {
+      clients: ['Claude Code', 'Claude Desktop', 'Codex', 'Cursor', 'VS Code', 'Zed'].map(
+        (name, index) => ({
+          configuredWorkspace: index === 0 ? 'default' : undefined,
+          id: name.toLowerCase().replaceAll(' ', '-'),
+          name,
+        }),
+      ),
+      onWorkspaceChange: fn(),
+      pendingClientIds: ['codex'],
     },
     runtime: 'desktop',
   },

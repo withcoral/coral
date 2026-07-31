@@ -1,4 +1,4 @@
-import type { McpLaunchConfig } from '@/lib/coral-desktop'
+import { McpClientsList, type DesktopMcpClientsState } from '@/components/mcp-clients-list'
 import { Inputs, ScrollArea, Tabs, Typography } from '@/wax/components'
 import { CopyButton } from '@/wax/components/button'
 
@@ -53,17 +53,19 @@ export function coralAgentSetupPrompt(runtime: 'desktop' | 'web'): string {
 }
 
 export interface OnboardingNextStepsPageProps {
-  mcpLaunchConfig: McpLaunchConfigState
+  mcpClients: DesktopMcpClientsState
   onContinue?: () => void
   runtime: 'desktop' | 'web'
   step: OnboardingStepState
+  workspaces: ReadonlyArray<{ name: string }>
 }
 
 export function OnboardingNextStepsPage({
-  mcpLaunchConfig,
+  mcpClients,
   onContinue,
   runtime,
   step,
+  workspaces,
 }: OnboardingNextStepsPageProps) {
   const agentSetupPrompt = coralAgentSetupPrompt(runtime)
 
@@ -105,31 +107,12 @@ export function OnboardingNextStepsPage({
                 <Typography.HeadingXSmall as="h2">
                   1. Connect your agent over MCP
                 </Typography.HeadingXSmall>
-                <Typography.Body variant="tertiary">
-                  In your agent&apos;s MCP settings, add a local stdio server named{' '}
-                  <Typography.CodeInline as="code">coral</Typography.CodeInline>.
-                </Typography.Body>
               </header>
 
-              <ManualMcpConfig state={mcpLaunchConfig} />
-
-              {mcpLaunchConfig.status === 'success' ? (
-                <Typography.Body variant="tertiary">
-                  Copy these values into your client&apos;s MCP configuration. Restart your agent or
-                  open a new chat, then ask it to list the tables available in Coral. See the{' '}
-                  <OnboardingLink href="https://withcoral.com/docs/guides/use-coral-over-mcp">
-                    MCP setup guide
-                  </OnboardingLink>{' '}
-                  for client-specific instructions.
-                </Typography.Body>
+              {runtime === 'desktop' ? (
+                <ConnectClients mcpClients={mcpClients} workspaces={workspaces} />
               ) : (
-                <Typography.Body variant="tertiary">
-                  See the{' '}
-                  <OnboardingLink href="https://withcoral.com/docs/guides/use-coral-over-mcp">
-                    MCP setup guide
-                  </OnboardingLink>{' '}
-                  for supported clients and troubleshooting.
-                </Typography.Body>
+                <ManualConnectInstructions />
               )}
             </section>
 
@@ -192,55 +175,50 @@ export function OnboardingNextStepsPage({
   )
 }
 
-export type McpLaunchConfigState =
-  | { status: 'error'; message: string }
-  | { status: 'loading' }
-  | { status: 'success'; config: McpLaunchConfig }
-  | { status: 'unavailable' }
-
-function ManualMcpConfig({ state }: { state: McpLaunchConfigState }) {
-  if (state.status === 'loading') {
-    return (
-      <Typography.BodySmall role="status" variant="tertiary">
-        Finding Coral Desktop&apos;s bundled executable…
-      </Typography.BodySmall>
-    )
-  }
-
-  if (state.status === 'unavailable') {
-    return (
-      <Typography.BodySmall variant="tertiary">
-        Open this step in Coral Desktop to see the exact command for its bundled runtime. This
-        browser cannot provide a local executable path, and web agents cannot launch a local stdio
-        MCP server.
-      </Typography.BodySmall>
-    )
-  }
-
-  if (state.status === 'error') {
-    return (
-      <Typography.BodySmall variant="error">
-        Coral Desktop could not find its bundled executable: {state.message}
-      </Typography.BodySmall>
-    )
-  }
-
-  const configText = formatMcpLaunchConfig(state.config)
+function ConnectClients({
+  mcpClients,
+  workspaces,
+}: Pick<OnboardingNextStepsPageProps, 'mcpClients' | 'workspaces'>) {
   return (
-    <div className={styles.mcpConfigField}>
-      <pre aria-label="Coral MCP server configuration" className={styles.mcpConfig}>
-        {configText}
-      </pre>
-      <CopyButton
-        ariaLabel="Copy Coral MCP server configuration"
-        className={styles.copyButton}
-        textToCopy={configText}
-        variant="bare"
-      />
-    </div>
+    <>
+      <Typography.Body variant="tertiary">
+        Connecting a client lets it query your sources over MCP.
+      </Typography.Body>
+
+      {/* Bounded so a long client list scrolls instead of pushing step 2 out of the panel. */}
+      <McpClientsList {...mcpClients} maxHeight={260} workspaces={workspaces} />
+
+      <Typography.Body variant="tertiary">
+        Only global MCP configurations appear here. See the{' '}
+        <OnboardingLink href="https://withcoral.com/docs/guides/use-coral-over-mcp">
+          MCP setup guide
+        </OnboardingLink>{' '}
+        for supported clients and troubleshooting.
+      </Typography.Body>
+    </>
   )
 }
 
-function formatMcpLaunchConfig(config: McpLaunchConfig): string {
-  return `command: ${JSON.stringify(config.command)}\nargs: ${JSON.stringify(config.args)}`
+function ManualConnectInstructions() {
+  return (
+    <>
+      <Typography.Body variant="tertiary">
+        In your agent&apos;s MCP settings, add a local stdio server named{' '}
+        <Typography.CodeInline as="code">coral</Typography.CodeInline>.
+      </Typography.Body>
+
+      <Typography.BodySmall variant="tertiary">
+        Open this step in Coral Desktop to connect a client for you. This browser cannot configure a
+        local MCP server, and web agents cannot launch a local stdio one.
+      </Typography.BodySmall>
+
+      <Typography.Body variant="tertiary">
+        See the{' '}
+        <OnboardingLink href="https://withcoral.com/docs/guides/use-coral-over-mcp">
+          MCP setup guide
+        </OnboardingLink>{' '}
+        for supported clients and troubleshooting.
+      </Typography.Body>
+    </>
+  )
 }

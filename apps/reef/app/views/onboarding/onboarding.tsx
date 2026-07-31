@@ -3,18 +3,18 @@ import { Await, useNavigate, useNavigation, useRevalidator } from 'react-router'
 
 import type { SourcesActionData } from '@/routes/sources-action'
 
+import { useDesktopMcpClients } from '@/components/mcp-clients-list'
 import { OnboardingNextStepsPage } from '@/components/onboarding/onboarding-next-steps-page'
-import type { McpLaunchConfigState } from '@/components/onboarding/onboarding-next-steps-page'
 import { OnboardingSampleQueryPage } from '@/components/onboarding/onboarding-sample-query-page'
 import type { SampleQueryLoadState } from '@/components/onboarding/onboarding-sample-query-page'
 import { OnboardingSourcesPage } from '@/components/onboarding/onboarding-sources-page'
 import type { OnboardingStepState } from '@/components/onboarding/onboarding-steps'
-import { coralDesktopApi, desktopErrorMessage } from '@/lib/coral-desktop'
 import type { OnboardingSampleQueryResult } from '@/lib/onboarding-query'
 import type { CatalogEntry } from '@/lib/sources'
 import { routePath } from '@/routing/routemap'
 import { SourceDetailDialog } from '@/views/sources/source-detail'
 import { SourceInstallDialog } from '@/views/sources/source-install'
+import { ToastContainer } from '@/wax/components/toast'
 
 export function OnboardingView({
   actionData,
@@ -28,6 +28,7 @@ export function OnboardingView({
     sampleQuery: OnboardingSampleQueryResult | Promise<OnboardingSampleQueryResult> | null
     step: OnboardingStepState
     workspaceId: string
+    workspaces: ReadonlyArray<{ name: string }>
   }
 }) {
   const navigate = useNavigate()
@@ -88,6 +89,7 @@ export function OnboardingView({
           }
           runtime={loaderData.runtime}
           step={step}
+          workspaces={loaderData.workspaces}
         />
       )
     default: {
@@ -101,48 +103,31 @@ function OnboardingNextStepsStep({
   onContinue,
   runtime,
   step,
+  workspaces,
 }: {
   onContinue: () => void
   runtime: 'desktop' | 'web'
   step: OnboardingStepState
+  workspaces: ReadonlyArray<{ name: string }>
 }) {
-  const [mcpLaunchConfig, setMcpLaunchConfig] = useState<McpLaunchConfigState>(
-    runtime === 'desktop' ? { status: 'loading' } : { status: 'unavailable' },
-  )
-
-  useEffect(() => {
-    if (runtime !== 'desktop') return
-
-    const desktop = coralDesktopApi()
-    if (!desktop) {
-      setMcpLaunchConfig({ status: 'unavailable' })
-      return
-    }
-
-    let cancelled = false
-    desktop
-      .getMcpLaunchConfig()
-      .then((config) => {
-        if (!cancelled) setMcpLaunchConfig({ config, status: 'success' })
-      })
-      .catch((error: unknown) => {
-        if (!cancelled) {
-          setMcpLaunchConfig({ message: desktopErrorMessage(error), status: 'error' })
-        }
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [runtime])
+  const mcpClients = useDesktopMcpClients(runtime === 'desktop')
 
   return (
-    <OnboardingNextStepsPage
-      mcpLaunchConfig={mcpLaunchConfig}
-      onContinue={onContinue}
-      runtime={runtime}
-      step={step}
-    />
+    <>
+      <OnboardingNextStepsPage
+        mcpClients={mcpClients}
+        onContinue={onContinue}
+        runtime={runtime}
+        step={step}
+        workspaces={workspaces}
+      />
+      {/*
+        Onboarding renders outside the app shell, which is where the rest of the app
+        mounts its toast host. Without one here, connecting a client would silently
+        drop both its confirmation and its failures.
+      */}
+      <ToastContainer />
+    </>
   )
 }
 
