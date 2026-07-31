@@ -229,13 +229,58 @@ When your agent has many tools available, name Coral explicitly:
 
 > "Use Coral to find where `payments-api` appeared, then query the matching data."
 
-When the right table or table function is not obvious, ask the agent to [search with Coral](/guides/search-with-coral). The `search` tool always searches local catalog metadata and can optionally search locally observed values. With experimental provider fanout enabled and an eligible source-authorized DSL v4 route, it can also make bounded, read-only calls to connected sources.
+> "Use Coral Search to find GitHub issues about cancellation. If it returns a
+> connected-source preview, query the full issue through the best matching
+> table or table function."
+
+When the right table or table function is not obvious, ask the agent to
+[search with Coral](/guides/search-with-coral). The `search` tool always
+searches local catalog metadata and can optionally search locally observed
+values. With experimental provider fanout enabled and an eligible
+source-authorized DSL v4 route, the same request can make bounded, read-only
+calls to connected sources. Local results remain available if an upstream route
+fails or times out.
 
 ### Search behavior
 
-Coral asks the app for Search capabilities before MCP initialization and refreshes them when the client lists tools or reads dynamic guide resources. Tool descriptions say that no DSL v4 connected-source route is executed when fanout is disabled or no route is eligible. When fanout can run, they name a bounded set of eligible DSL v4 source surfaces and say that Search may call them. If capability lookup fails while fanout may be enabled, the description conservatively says the capability is unknown and calls through eligible DSL v4 source routes may occur.
+Coral asks the app for Search capabilities before MCP initialization and
+refreshes them when the client lists tools or reads dynamic guide resources.
+The description therefore follows source installation, removal, and reimport
+without claiming that every installed source can be searched. It says that no
+DSL v4 connected-source route is executed when fanout is disabled or no route
+is eligible. When fanout can run, it names a bounded set of eligible DSL v4
+source surfaces and says that Search may call them. If capability lookup fails
+while fanout may be enabled, it conservatively says the capability is unknown
+and calls through eligible DSL v4 source routes may occur:
 
-Fanout-enabled Search is annotated as open-world. If observed-value collection is disabled, authorized upstream search operations remain read-only and idempotent. When `observed_values_search` is also enabled, successful source batches can enqueue new local observations, so Search is not annotated as read-only or idempotent. These observations can become searchable only on a later request.
+| Effective behavior | Search tool description |
+| --- | --- |
+| Fanout disabled | Does not execute DSL v4 connected-source routes |
+| Fanout enabled, no eligible route | Does not execute DSL v4 connected-source routes; no eligible route is resolved |
+| Fanout enabled, eligible routes | May call a capped inventory of named generated functions and authored DSL v4 routes |
+| Capability lookup unavailable while fanout may be enabled | Capability unknown; calls through eligible DSL v4 source routes may occur |
+
+MCP annotations are conservative as capabilities change:
+
+| Effective behavior | Read-only | Idempotent | Open-world |
+| --- | --- | --- | --- |
+| Fanout disabled | Yes | Yes | No |
+| Fanout enabled, observed-value collection disabled | Yes | Yes | Yes |
+| Fanout enabled, observed-value collection enabled | No | No | Yes |
+| Capability unknown and fanout may be enabled | No | No | Yes |
+
+With observation enabled, a successfully decoded provider batch can enqueue
+new local observations before final Search normalization. Those observations
+can become searchable only on a later request. The upstream operation remains
+source-authorized, and its source policy asserts that it is retrieval-only and
+idempotent; the annotation changes because the Search call may mutate Coral's
+local observation state.
+
+Connected-source results are sanitized previews, not raw rows. The Search
+response can be partial and reports bounded safe diagnostics instead of raw
+provider errors. See [Search connected
+sources](/guides/search-with-coral#search-connected-sources) for the execution
+budgets, caps, observation boundary, and rollback command.
 
 If an answer needs data from multiple connected sources, ask the agent to combine the data in Coral when possible.
 

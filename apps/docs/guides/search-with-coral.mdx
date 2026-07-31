@@ -1,13 +1,13 @@
 ---
 title: "Search with Coral"
-description: "Find relevant data from Coral's local search state and, optionally, authorized connected-source search routes."
+description: "Find relevant data from Coral's local search state and, optionally, authorized DSL v4 connected-source search routes."
 ---
 
 `coral search` helps you find where to query before you write SQL. Describe a table, table function, column, filter, or value in natural language, and Coral ranks matching locations in your current workspace.
 
 Catalog search prepares the current workspace query runtime and catalog, then searches a local index. Runtime preparation can read stored credentials, initialize source providers, and inspect file metadata in local or object storage, but it does not execute your data query or return source rows. Optional observed-value search can also match samples collected while executing earlier queries; it only reads Coral's local search state.
 
-Experimental provider fanout can additionally make bounded, read-only calls to connected-source search routes. It is disabled by default: both the `search_provider_fanout` runtime feature and an eligible source-authored route must allow a call.
+Experimental provider fanout can additionally make bounded, read-only calls to eligible DSL v4 connected-source routes. It is disabled by default: both the `search_provider_fanout` runtime feature and a source-authored DSL v4 route must allow a call.
 
 ## Search the catalog
 
@@ -65,23 +65,116 @@ Observed-value collection, search, and maintenance are experimental and disabled
 
 ## Search connected sources
 
-Provider fanout is experimental and disabled by default. Enable it persistently, then restart long-running Coral processes such as `coral mcp-stdio`:
+Provider fanout is experimental and disabled by default. It adds live provider
+matches to the local catalog and observed-value matches described above; it
+does not replace either local provider.
+
+<Note>
+Provider fanout is available only for DSL v4 sources. DSL v3 sources remain
+queryable through SQL and discoverable through local catalog and observed-value
+search, but Search never executes their functions as fanout routes. Migrate the
+source to DSL v4 and author a top-level `universal_search` route to enable
+fanout.
+</Note>
+
+### Enable fanout and authorize a route
+
+Enable fanout persistently, then restart long-running Coral processes such as
+`coral mcp-stdio`:
 
 ```shellscript
 coral features enable search_provider_fanout
 ```
 
-For one process, use `--enable-search-provider-fanout`; use the matching `--disable-search-provider-fanout` override to roll back immediately. Disabling fanout leaves catalog and observed-value search available.
+For one process, put `--enable-search-provider-fanout` before the command:
 
-Enabling the feature is only one gate. A source must also expose a valid `kind: search` function that its [Universal Search authorization policy](/reference/source-spec-reference#universal-search-authorization) allows. Search can start at most four eligible functions in one wave, requests at most five rows from each, applies a 750 ms fanout cutoff and a 600 ms per-call timeout, and does not retry or paginate.
+```shellscript
+coral --enable-search-provider-fanout search github issues cancellation timeout
+```
 
-Connected-source results are compact, sanitized previews rather than raw rows. A failed or timed-out call is reported through bounded status and diagnostic fields; successful local results remain available, so a response can be partial. When `observed_values_search` is also enabled, successfully decoded source batches may be queued for the same best-effort local observation pipeline used by SQL queries. New observations can affect only later searches, not the response currently being assembled.
+The runtime feature is only one gate. A DSL v4 source must also authorize an
+imported operation through its top-level [Universal Search authorization
+policy](/reference/source-spec-reference#universal-search-authorization).
+Explicit policy is strongest; without one, Coral infers a route only when the
+source has one unambiguous, safe generated search route. Enabling the feature
+never authorizes an ordinary or ambiguous operation.
+
+For each selected route, Coral sends the current Search text through the
+source-designated query input, along with source-authored default arguments and
+the credentials that route normally requires, to the configured upstream
+provider.
+
+When a route returns safe display fields, the normal output might include:
+
+```text
+3. [native_fanout] native result github.search_issues row 0
+   Entity type: issue
+   Provider id: 12345
+   Title: Cancel provider work at the fanout deadline
+   URL: https://github.com/withcoral/coral/issues/12345
+   Attributes: state=open
+```
+
+This is a compact preview for choosing what to inspect next. Use the named
+table function or another source table with `coral sql` when you need the full
+record.
+
+### Limits and partial results
+
+Fanout uses one concurrent wave. It selects at most four eligible DSL v4 routes,
+requests at most five rows from each, and returns at most 20 native previews
+before the overall Search result limit is applied. It does not retry or
+paginate.
+
+The 750 ms fanout cutoff starts when the Search request starts, not when an
+upstream call starts. Each call gets at most 600 ms, and Coral will not start a
+call with less than 100 ms left. At the cutoff Coral signals cancellation and
+allows at most 25 ms for cleanup. A remote server may still finish work it
+already accepted.
+
+Each native preview is capped at 8 KiB and all native result previews in one
+response at 256 KiB. A preview has at most eight selected attributes. Provider
+status includes at most 16 stable per-route diagnostics; excess diagnostics
+are reported only as an omitted count.
+
+Local matches remain in the response when native work times out, fails, or is
+skipped. In those cases `provider_statuses` reports partial coverage and safe
+reason categories such as `call_timeout` or `rate_limited`, never raw provider
+errors, request URLs, credentials, query arguments, or response bodies.
+
+### Observation is not a fanout cache
+
+When `observed_values_search` is also enabled, successfully decoded source
+batches enter the existing best-effort observation pipeline before native
+preview normalization and the five-row preview cap. A batch can therefore be
+queued even if a later stage omits its rows or fails. It can affect only a
+later Search request after asynchronous projection, never the response being
+assembled.
+
+<Note>
+Provider fanout runs only because you made a Search request. Coral does not
+crawl sources in the background, cache provider responses, return raw source
+rows, upload observed values, or use observed data for Coral's own purposes.
+</Note>
+
+### Roll back
+
+Disable the stored feature and restart long-running Coral processes:
+
+```shellscript
+coral features disable search_provider_fanout
+```
+
+For a single invocation, use `--disable-search-provider-fanout`. The disable
+override wins over stored enablement. Rolling back does not require a database
+migration, observed-value purge, or source reinstall; catalog and
+observed-value search remain available.
 
 ## Use search over MCP
 
 Coral exposes the same search through its MCP `search` tool. Catalog results are always available. When observed-value search is enabled for the MCP server process, the agent also receives typed observed-value matches and can use the matching table and column to write SQL.
 
-The MCP server derives the tool description and annotations from the app's current Search capabilities. It says that no source-authored search function is called when fanout is disabled or has no eligible routes, and warns that Search may call connected sources when eligible routes exist or capability lookup is unavailable. Fanout is marked open-world; when observed-value collection is also enabled, successful source batches can enqueue local observations, so the tool is not described as read-only or idempotent.
+The MCP server derives the tool description and annotations from the app's current Search capabilities. It says that no DSL v4 connected-source route is executed when fanout is disabled or has no eligible routes, and warns that Search may call connected sources through eligible DSL v4 routes when routes exist or capability lookup is unavailable. Fanout is marked open-world; when observed-value collection is also enabled, successful source batches can enqueue local observations, so the tool is not described as read-only or idempotent.
 
 Ask for the result you want; you do not need to name the `search` tool:
 

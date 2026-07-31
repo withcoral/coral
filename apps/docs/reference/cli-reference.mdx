@@ -71,6 +71,7 @@ has observed during earlier queries.
 ```shellscript
 coral search github issues assigned to me
 coral search --limit 5 --json slack messages text
+coral --enable-search-provider-fanout search github issues cancellation timeout
 ```
 
 Search prepares the current workspace query runtime and catalog, then searches a
@@ -86,10 +87,12 @@ Experimental connected-source fanout is disabled by default. When
 `search_provider_fanout` is enabled and a source authorizes an eligible
 top-level DSL v4 `universal_search` route, Search may make bounded, read-only
 upstream calls. It starts at most four routes in one wave, requests at most five
-rows from each, applies a 750 ms fanout cutoff and 600 ms per-call timeout, and
-does not retry or paginate. DSL v3 functions are never fanout routes. Local
-matches survive native failures, and status fields report partial, skipped,
-timed-out, or failed work without returning raw provider errors.
+rows from each, applies a 750 ms fanout cutoff and 600 ms per-call timeout, and does not
+retry or paginate. Calls do not start with less than 100 ms remaining; after
+the cutoff, Coral allows at most 25 ms for cancellation cleanup. Local matches
+survive native failures. Aggregate status reports partial, skipped, or failed
+work, while per-route diagnostics identify timeouts without returning raw
+provider errors. DSL v3 functions are never fanout routes.
 
 Observed-value collection, retrieval, and maintenance are disabled by default.
 Enable them persistently using Coral [runtime features](/reference/configuration#runtime-features).
@@ -120,10 +123,15 @@ provider statuses report whether each provider found matches, completed with no
 matches, returned partial coverage, was skipped, or failed. Native results
 contain compact, sanitized display fields rather than raw source rows, plus
 bounded per-route diagnostics that distinguish timeouts and other safe failure
-categories. An empty observed-value result only
-describes Coral's local observations; it does not prove that the value is absent
-from a connected source. `truncation` reports when more matches were available
-than returned.
+categories. Native output is capped at 20 previews, 8 KiB per preview, 256 KiB
+across native result previews, and 16 diagnostics. An empty observed-value
+result only describes Coral's local observations; it does not prove that the
+value is absent from a connected source. `truncation` reports when more matches
+were available than returned.
+
+See [Search connected
+sources](/guides/search-with-coral#search-connected-sources) for an annotated
+native result example, the source-policy gate, and rollback behavior.
 
 ## `coral search-index`
 
@@ -538,7 +546,7 @@ By default, this server exposes:
 | -------- | ---------------- | ----------- |
 | Tool     | `sql`            | Execute read-only SQL against the Coral database |
 | Tool     | `add_function`   | Create a reusable table function in the current workspace |
-| Tool     | `search`         | Find relevant catalog entries and, when enabled, locally observed values |
+| Tool     | `search`         | Search local catalog state and effective optional Search providers |
 | Tool     | `list_catalog`   | List database tables and table functions with pagination |
 | Tool     | `describe_table` | Show compact metadata for one database table |
 | Tool     | `list_columns`   | List columns for one database table with pagination |
@@ -549,10 +557,18 @@ By default, this server exposes:
 
 When the `feedback` feature is enabled, the server also exposes a non-read-only `feedback` tool for blocked-agent reports. Feedback reports are stored locally and anonymous copies may be uploaded to Coral.
 
-When `observed_values_search` is disabled, the `search` tool and
-`coral://guide` advertise catalog discovery only. Enable observed-value search
-for one MCP server process with
-`coral --enable-observed-values-search mcp-stdio`.
+The `search` tool description and annotations follow effective capabilities.
+When `observed_values_search` is disabled, observed values are omitted from the
+advertised local scope. Enable observed-value search for one MCP server process
+with `coral --enable-observed-values-search mcp-stdio`.
+
+When `search_provider_fanout` is enabled but no DSL v4 route is eligible, the
+description says that Search does not execute DSL v4 connected-source routes;
+otherwise it names a capped inventory of eligible DSL v4 routes that Search may
+call. Enable fanout for one MCP server process with
+`coral --enable-search-provider-fanout mcp-stdio`. See [Use Coral over
+MCP](/guides/use-coral-over-mcp#search-behavior) for dynamic descriptions and
+annotations.
 
 Discovery helpers include the `coral` system schema, so `search`,
 `list_catalog`, `describe_table`, `list_columns`, and `coral://tables` can
