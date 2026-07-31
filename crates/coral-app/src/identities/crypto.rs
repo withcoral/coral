@@ -153,7 +153,9 @@ mod tests {
     };
     use crate::encrypted_document::EncryptedEnvelopeDocument;
     use crate::identities::model::{IdentityName, IdentityOwner, IdentitySpecReference};
-    use crate::identity::{decrypt_identity_spec_document, encrypt_identity_spec_document};
+    use crate::identity::spec_document::{
+        decrypt_identity_spec_document, encrypt_identity_spec_document,
+    };
     use crate::sources::SourceName;
     use crate::state::db::IdentitySpecKey;
     use crate::workspaces::WorkspaceName;
