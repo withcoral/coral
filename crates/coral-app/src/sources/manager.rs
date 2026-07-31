@@ -867,6 +867,7 @@ impl SourceManager {
             } else {
                 previous_credential_revision
             },
+            installation_revision: Uuid::new_v4(),
             origin: request.origin,
         };
         if let Err(error) = self
@@ -2519,6 +2520,7 @@ surface:
                     secrets: vec!["OTHER_TOKEN".to_string()],
                     credential_storage: Some(CredentialStorageKind::Keychain),
                     credential_revision: uuid::Uuid::default(),
+                    installation_revision: uuid::Uuid::default(),
                     origin: SourceOrigin::Imported,
                 },
             )
@@ -3116,6 +3118,7 @@ surface:
             )
             .expect("initial import");
         assert!(!first.credential_revision.is_nil());
+        assert!(!first.installation_revision.is_nil());
 
         let unchanged = manager
             .import_source(
@@ -3127,6 +3130,7 @@ surface:
             )
             .expect("reimport with stored credential material");
         assert_eq!(unchanged.credential_revision, first.credential_revision);
+        assert_ne!(unchanged.installation_revision, first.installation_revision);
 
         let replaced = manager
             .import_source(
@@ -3144,6 +3148,10 @@ surface:
             )
             .expect("credential replacement");
         assert_ne!(replaced.credential_revision, first.credential_revision);
+        assert_ne!(
+            replaced.installation_revision,
+            unchanged.installation_revision
+        );
     }
 
     #[test]

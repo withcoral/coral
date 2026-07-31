@@ -16,6 +16,7 @@ use super::error::McpProviderQueryError;
 use super::fetch::McpFetchPlan;
 use crate::SourceObservationSurfaceKind;
 use crate::backends::schema_from_columns;
+use crate::backends::shared::function_args::function_argument_display_value;
 use crate::backends::shared::json_exec::JsonExec;
 use crate::backends::shared::mapping::convert_items;
 use crate::backends::shared::source_observation::SourceObservationPublishers;
@@ -265,10 +266,7 @@ fn arg_values_as_strings(arg_values: &HashMap<String, Value>) -> HashMap<String,
     arg_values
         .iter()
         .map(|(key, value)| {
-            let text = match value {
-                Value::String(text) => text.clone(),
-                other => other.to_string(),
-            };
+            let text = function_argument_display_value(value);
             (key.clone(), text)
         })
         .collect()

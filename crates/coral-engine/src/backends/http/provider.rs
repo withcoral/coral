@@ -21,6 +21,9 @@ use crate::backends::shared::filter_expr::{
     FilterExtraction, classify_filter_pushdown_for_consumed, extract_exact_filter_values_checked,
     extract_filter_values, extract_filter_values_checked,
 };
+use crate::backends::shared::function_args::{
+    FunctionArgumentValues, function_argument_display_value,
+};
 use crate::backends::shared::json_exec::{JsonExec, RowFetcher};
 use crate::backends::shared::mapping::{convert_items, filter_items_by_column_values};
 use crate::backends::shared::source_observation::SourceObservationPublishers;
@@ -93,7 +96,7 @@ struct HttpFetchPlan {
     backend: HttpSourceClient,
     target: Arc<HttpFetchTarget>,
     request_filter_values: Arc<HashMap<String, String>>,
-    arg_values: Arc<HashMap<String, String>>,
+    arguments: Arc<FunctionArgumentValues>,
     limit: Option<usize>,
     has_residual_filters: bool,
 }
@@ -107,7 +110,7 @@ pub(crate) struct HttpJsonExecRequest<'a> {
     pub(crate) local_filter_values: HashMap<String, String>,
     pub(crate) active_filter_values: HashMap<String, String>,
     pub(crate) has_residual_filters: bool,
-    pub(crate) arg_values: HashMap<String, String>,
+    pub(crate) arguments: FunctionArgumentValues,
     pub(crate) projection: Option<&'a Vec<usize>>,
     pub(crate) limit: Option<usize>,
     pub(crate) surface_kind: SourceObservationSurfaceKind,
@@ -123,7 +126,7 @@ impl RowFetcher for HttpFetchPlan {
                 .fetch_complete(
                     self.target.as_ref(),
                     &self.request_filter_values,
-                    &self.arg_values,
+                    &self.arguments,
                     None,
                     None,
                     controls,
@@ -135,7 +138,7 @@ impl RowFetcher for HttpFetchPlan {
             .fetch(
                 self.target.as_ref(),
                 &self.request_filter_values,
-                &self.arg_values,
+                &self.arguments,
                 self.limit,
                 controls,
             )
@@ -155,6 +158,13 @@ fn merge_filter_values(
     values
 }
 
+fn stringify_argument_values(values: &HashMap<String, Value>) -> HashMap<String, String> {
+    values
+        .iter()
+        .map(|(key, value)| (key.clone(), function_argument_display_value(value)))
+        .collect()
+}
+
 pub(crate) fn http_json_exec(request: HttpJsonExecRequest<'_>) -> Result<Arc<dyn ExecutionPlan>> {
     let HttpJsonExecRequest {
         backend,
@@ -165,7 +175,7 @@ pub(crate) fn http_json_exec(request: HttpJsonExecRequest<'_>) -> Result<Arc<dyn
         local_filter_values,
         active_filter_values,
         has_residual_filters,
-        arg_values,
+        arguments,
         projection,
         limit,
         surface_kind,
@@ -181,7 +191,8 @@ pub(crate) fn http_json_exec(request: HttpJsonExecRequest<'_>) -> Result<Arc<dyn
     let request_filter_values = Arc::new(request_filter_values);
     let local_filter_values = Arc::new(local_filter_values);
     let active_filter_values = Arc::new(active_filter_values);
-    let arg_values = Arc::new(arg_values);
+    let arguments = Arc::new(arguments);
+    let arg_string_values = Arc::new(stringify_argument_values(arguments.values()));
     let post_filter_limit = if local_filter_values.is_empty() || has_residual_filters {
         None
     } else {
@@ -191,7 +202,7 @@ pub(crate) fn http_json_exec(request: HttpJsonExecRequest<'_>) -> Result<Arc<dyn
         backend,
         target: target.clone(),
         request_filter_values: request_filter_values.clone(),
-        arg_values: arg_values.clone(),
+        arguments,
         limit,
         has_residual_filters,
     });
@@ -202,7 +213,7 @@ pub(crate) fn http_json_exec(request: HttpJsonExecRequest<'_>) -> Result<Arc<dyn
         let conversion_filter_values = Arc::new(conversion_filter_values);
         let local_filter_values = local_filter_values.clone();
         let active_filter_values = active_filter_values.clone();
-        let arg_values = arg_values.clone();
+        let arg_values = Arc::clone(&arg_string_values);
         Arc::new(move |items: &[Value]| {
             let mut filtered_items;
             let items = if local_filter_values.is_empty() {
@@ -233,7 +244,7 @@ pub(crate) fn http_json_exec(request: HttpJsonExecRequest<'_>) -> Result<Arc<dyn
         let target = target.clone();
         let schema = schema.clone();
         let filters = Arc::clone(&observation_filter_values);
-        let args = Arc::clone(&arg_values);
+        let args = Arc::clone(&arg_string_values);
         Arc::new(move |items: &[Value]| {
             convert_items(target.columns(), schema.clone(), &filters, &args, items)
         })
@@ -348,7 +359,7 @@ impl TableProvider for HttpSourceTableProvider {
             local_filter_values,
             active_filter_values: filter_values,
             has_residual_filters,
-            arg_values: HashMap::new(),
+            arguments: FunctionArgumentValues::default(),
             projection,
             limit,
             surface_kind: SourceObservationSurfaceKind::Table,

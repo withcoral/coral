@@ -1370,6 +1370,7 @@ pub(crate) fn query_parameter_scalar_value(value: &QueryParameterValue) -> Scala
         QueryParameterValue::Timestamp(value) => {
             ScalarValue::TimestampMicrosecond(*value, Some("+00:00".into()))
         }
+        QueryParameterValue::Json(value) => ScalarValue::Utf8(Some(value.to_string())),
     }
 }
 

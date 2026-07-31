@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
-use coral_spec::{ManifestDataType, SourceTableFunctionSpec};
+use coral_spec::SourceTableFunctionSpec;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::datasource::TableProvider;
 use datafusion::error::{DataFusionError, Result};
@@ -23,6 +23,7 @@ use crate::backends::http::HttpSourceClient;
 use crate::backends::http::provider::{HttpJsonExecRequest, http_json_exec};
 use crate::backends::http::target::HttpFetchTarget;
 use crate::backends::schema_from_columns;
+use crate::backends::shared::function_args::FunctionArgumentValues;
 use crate::backends::shared::source_observation::SourceObservationPublishers;
 use crate::backends::{BoundSourceFunctionArg, SourceFunctionProviderFactory};
 
@@ -88,10 +89,10 @@ impl SourceFunctionProviderFactory for HttpSourceTableFunction {
     }
 
     fn provider_for_args(&self, args: &[BoundSourceFunctionArg]) -> Result<Arc<dyn TableProvider>> {
-        let arg_values = bind_function_args(&self.state.source_schema, &self.spec, args)?;
+        let arguments = bind_function_args(&self.state.source_schema, &self.spec, args)?;
         Ok(Arc::new(HttpSourceFunctionCallTableProvider {
             state: Arc::clone(&self.state),
-            arg_values,
+            arguments,
         }))
     }
 }
@@ -100,7 +101,7 @@ impl SourceFunctionProviderFactory for HttpSourceTableFunction {
 /// already bound into HTTP request values.
 struct HttpSourceFunctionCallTableProvider {
     state: Arc<HttpSourceFunctionState>,
-    arg_values: HashMap<String, String>,
+    arguments: FunctionArgumentValues,
 }
 
 impl fmt::Debug for HttpSourceFunctionCallTableProvider {
@@ -108,7 +109,7 @@ impl fmt::Debug for HttpSourceFunctionCallTableProvider {
         f.debug_struct("HttpSourceFunctionCallTableProvider")
             .field("source_schema", &self.state.source_schema)
             .field("function", &self.state.function_name)
-            .field("arg_values", &self.arg_values.keys())
+            .field("arg_values", &self.arguments.values().keys())
             .finish_non_exhaustive()
     }
 }
@@ -151,7 +152,7 @@ impl TableProvider for HttpSourceFunctionCallTableProvider {
             local_filter_values: HashMap::new(),
             active_filter_values: HashMap::new(),
             has_residual_filters: false,
-            arg_values: self.arg_values.clone(),
+            arguments: self.arguments.clone(),
             projection,
             limit,
             surface_kind: SourceObservationSurfaceKind::Function,
@@ -164,7 +165,7 @@ fn bind_function_args(
     source_schema: &str,
     function: &SourceTableFunctionSpec,
     args: &[BoundSourceFunctionArg],
-) -> Result<HashMap<String, String>> {
+) -> Result<FunctionArgumentValues> {
     let context = FunctionCallContext {
         source_schema,
         function_name: function.name.as_str(),
@@ -172,7 +173,7 @@ fn bind_function_args(
     ensure_no_extra_args(&context, function.args.len(), args.len())?;
 
     let mut required_missing = Vec::new();
-    let mut arg_values = HashMap::with_capacity(function.args.len());
+    let mut arguments = FunctionArgumentValues::with_capacity(function.args.len());
 
     for (index, spec) in function.args.iter().enumerate() {
         let Some(value) = args.get(index).and_then(Option::as_ref) else {
@@ -187,12 +188,7 @@ fn bind_function_args(
             &value.source_text,
             &spec.values,
         )?;
-        let value = match (spec.data_type, &value.value) {
-            (ManifestDataType::Json, value) => value.to_string(),
-            (_, serde_json::Value::String(value)) => value.clone(),
-            (_, value) => value.to_string(),
-        };
-        arg_values.insert(spec.bind.arg.clone(), value);
+        arguments.insert(spec.bind.arg.clone(), value.value.clone(), spec.data_type);
     }
 
     if !required_missing.is_empty() {
@@ -204,7 +200,7 @@ fn bind_function_args(
         )));
     }
 
-    Ok(arg_values)
+    Ok(arguments)
 }
 
 fn ensure_no_extra_args(

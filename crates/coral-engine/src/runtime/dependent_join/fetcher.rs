@@ -8,6 +8,7 @@ use serde_json::Value;
 use crate::QueryExecutionControls;
 use crate::backends::http::HttpSourceClient;
 use crate::backends::http::target::HttpFetchTarget;
+use crate::backends::shared::function_args::FunctionArgumentValues;
 use crate::runtime::dependent_join::bindings::{Tuple, filter_values_for_tuple};
 use crate::runtime::dependent_join::error::DependentJoinError;
 
@@ -68,12 +69,13 @@ impl BindingFetcher {
         )?;
         let target = http_target_for_filters(&self.table, &filter_values);
         let row_limit = dependent_row_limit(self.max_rows_per_binding, self.page_hint);
+        let arguments = FunctionArgumentValues::default();
         let rows = self
             .client
             .fetch_complete(
                 &target,
                 &filter_values,
-                &HashMap::new(),
+                &arguments,
                 row_limit,
                 row_limit,
                 &self.controls,

@@ -375,6 +375,7 @@ impl UdfParameterTypeBinding {
             {
                 Some(value.clone())
             }
+            (ManifestDataType::Json, QueryParameterValue::Json(_)) => Some(value.clone()),
             (ManifestDataType::Int64, QueryParameterValue::Integer(_))
             | (ManifestDataType::Float64, QueryParameterValue::Float(_))
             | (ManifestDataType::Boolean, QueryParameterValue::Boolean(_))
@@ -453,6 +454,7 @@ fn query_parameter_value_kind(value: &QueryParameterValue) -> &'static str {
         QueryParameterValue::Float(_) => "float",
         QueryParameterValue::Boolean(_) => "boolean",
         QueryParameterValue::Timestamp(_) => "timestamp",
+        QueryParameterValue::Json(_) => "json",
     }
 }
 

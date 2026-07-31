@@ -3,7 +3,9 @@
 use datafusion::error::{DataFusionError, Result};
 use serde_json::{Map, Value};
 
-use crate::backends::shared::template::{RenderContext, resolve_value_source, value_to_string};
+use crate::backends::shared::template::{
+    RenderContext, resolve_text_value_source, resolve_value_source,
+};
 use coral_spec::BodySpec;
 
 #[derive(Debug, Clone)]
@@ -19,9 +21,9 @@ pub(super) fn build_query_pairs(
     let mut params = Vec::new();
 
     for param in &request.query {
-        let value = resolve_value_source(&param.value, render_context)?;
+        let value = resolve_text_value_source(&param.value, render_context)?;
         if let Some(value) = value {
-            params.push((param.name.clone(), value_to_string(&value)));
+            params.push((param.name.clone(), value));
         }
     }
 
@@ -59,10 +61,10 @@ pub(super) fn build_request_body(
             }
         }
         BodySpec::Text { content } => {
-            let Some(value) = resolve_value_source(content, render_context)? else {
+            let Some(value) = resolve_text_value_source(content, render_context)? else {
                 return Ok(None);
             };
-            Ok(Some(RequestBody::Text(value_to_string(&value))))
+            Ok(Some(RequestBody::Text(value)))
         }
     }
 }
@@ -155,7 +157,10 @@ mod tests {
         );
 
         for explicit in ["", "null"] {
-            let args = HashMap::from([("scope".to_string(), explicit.to_string())]);
+            let args = HashMap::from([(
+                "scope".to_string(),
+                serde_json::Value::String(explicit.to_string()),
+            )]);
             let context = RenderContext::new(&filters, &args, &state, &resolved_inputs);
             assert_eq!(
                 build_query_pairs(&request, &context).expect("query should render"),
@@ -271,6 +276,77 @@ mod tests {
         assert!(
             matches!(body, Some(RequestBody::Json(value)) if value == json!({
                 "logStreamNames": ["stream-a", "stream-b"]
+            }))
+        );
+    }
+
+    #[test]
+    fn json_arguments_use_serialized_text_for_query_and_typed_values_for_body() {
+        let request = RequestSpec {
+            method: HttpMethod::POST,
+            path: ParsedTemplate::parse("/items").expect("template"),
+            query: vec![QueryParamSpec {
+                name: "q".to_string(),
+                value: ValueSourceSpec::Arg {
+                    key: "string_json".to_string(),
+                    default: None,
+                },
+            }],
+            body: BodySpec::Json {
+                fields: vec![
+                    BodyFieldSpec {
+                        path: vec!["label".to_string()],
+                        when_arg: None,
+                        value: ValueSourceSpec::Arg {
+                            key: "string_json".to_string(),
+                            default: None,
+                        },
+                    },
+                    BodyFieldSpec {
+                        path: vec!["options".to_string()],
+                        when_arg: None,
+                        value: ValueSourceSpec::Arg {
+                            key: "object_json".to_string(),
+                            default: None,
+                        },
+                    },
+                ],
+            },
+            headers: vec![],
+        };
+        let filters = HashMap::new();
+        let args = HashMap::from([
+            ("string_json".to_string(), json!("exact")),
+            (
+                "object_json".to_string(),
+                json!({"sort": "recent", "tags": ["bug"]}),
+            ),
+        ]);
+        let arg_texts = HashMap::from([
+            ("string_json".to_string(), r#""exact""#.to_string()),
+            (
+                "object_json".to_string(),
+                r#"{"sort":"recent","tags":["bug"]}"#.to_string(),
+            ),
+        ]);
+        let state = HashMap::new();
+        let resolved_inputs = BTreeMap::new();
+        let context = RenderContext::with_argument_texts(
+            &filters,
+            &args,
+            &arg_texts,
+            &state,
+            &resolved_inputs,
+        );
+
+        let query = build_query_pairs(&request, &context).expect("query should render");
+        let body = build_request_body(&request, &context).expect("body should render");
+
+        assert_eq!(query, vec![("q".to_string(), r#""exact""#.to_string())]);
+        assert!(
+            matches!(body, Some(RequestBody::Json(value)) if value == json!({
+                "label": "exact",
+                "options": {"sort": "recent", "tags": ["bug"]}
             }))
         );
     }

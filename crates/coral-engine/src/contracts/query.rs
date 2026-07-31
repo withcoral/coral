@@ -943,6 +943,11 @@ pub enum QueryParameterValue {
     Boolean(Option<bool>),
     /// UTC timestamp as microseconds since the Unix epoch, or a typed timestamp NULL.
     Timestamp(Option<i64>),
+    /// Type-preserving JSON value.
+    ///
+    /// JSON `null` is represented as [`serde_json::Value::Null`], which stays
+    /// distinct from a SQL NULL string parameter.
+    Json(serde_json::Value),
 }
 
 impl QueryParameterValue {
@@ -1004,6 +1009,12 @@ impl QueryParameterValue {
     #[must_use]
     pub fn null_timestamp() -> Self {
         Self::Timestamp(None)
+    }
+
+    /// Builds a type-preserving JSON parameter.
+    #[must_use]
+    pub fn json(value: serde_json::Value) -> Self {
+        Self::Json(value)
     }
 }
 

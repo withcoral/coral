@@ -351,6 +351,7 @@ tables:
                     secrets: Vec::new(),
                     credential_storage: None,
                     credential_revision: Uuid::default(),
+                    installation_revision: Uuid::default(),
                     origin: SourceOrigin::Imported,
                 },
             )
@@ -375,6 +376,7 @@ tables:
                     secrets: Vec::new(),
                     credential_storage: None,
                     credential_revision: Uuid::default(),
+                    installation_revision: Uuid::default(),
                     origin: SourceOrigin::Imported,
                 },
             )
@@ -445,6 +447,7 @@ tables:
             secrets: vec!["API_TOKEN".to_string()],
             credential_storage: None,
             credential_revision,
+            installation_revision: Uuid::default(),
             origin: SourceOrigin::Imported,
         };
         config_store

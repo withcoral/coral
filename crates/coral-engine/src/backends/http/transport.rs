@@ -27,7 +27,7 @@ use crate::backends::http::trace::{
     record_trace_http_endpoint, request_body_size, sanitize_trace_url, trace_http_endpoint,
     trace_reqwest_error, trace_reqwest_error_type,
 };
-use crate::backends::shared::template::{RenderContext, resolve_value_source, value_to_string};
+use crate::backends::shared::template::{RenderContext, resolve_text_value_source};
 use crate::{
     BoundRequestIdentityHttpAuthenticator, QueryExecutionControls, QueryRetryPolicy,
     RequestAuthenticator, RequestIdentityHttpAuthenticatorError,
@@ -120,20 +120,19 @@ pub(super) async fn execute_request(
 
         let mut header_map = HeaderMap::new();
         for header in request_headers.iter().chain(table_headers.iter()) {
-            if let Some(value) = resolve_value_source(&header.value, &render_context)? {
+            if let Some(value) = resolve_text_value_source(&header.value, &render_context)? {
                 let name = HeaderName::try_from(header.name.as_str()).map_err(|error| {
                     DataFusionError::Execution(format!(
                         "invalid request header name '{}': {error}",
                         header.name
                     ))
                 })?;
-                let value =
-                    HeaderValue::try_from(value_to_string(&value).as_str()).map_err(|error| {
-                        DataFusionError::Execution(format!(
-                            "invalid request header value for '{}': {error}",
-                            header.name
-                        ))
-                    })?;
+                let value = HeaderValue::try_from(value.as_str()).map_err(|error| {
+                    DataFusionError::Execution(format!(
+                        "invalid request header value for '{}': {error}",
+                        header.name
+                    ))
+                })?;
                 header_map.insert(name, value);
             }
         }
