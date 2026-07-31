@@ -21,6 +21,17 @@ parameters:
       as a float is wrong for every caller.
 
 operations:
+  team.externalTeams.list:
+    scopeRelation: all
+    reason: >-
+      Slack lists a method's scopes without saying how they relate, and the
+      relationship differs. The four `channels`/`groups`/`im`/`mpim` scopes on
+      the conversations methods are alternatives — one per conversation type,
+      any of which is sufficient — so `any` is the right default. This method is
+      the exception in scope: `team:read` and `conversations.connect:manage`
+      are unrelated scope families that a caller needs both of. Nothing in the
+      page distinguishes the two cases, so it is declared here.
+
   files.info:
     response:
       dropProperties:

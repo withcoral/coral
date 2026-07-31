@@ -115,6 +115,11 @@ export function sampleUrlFor(method: string): string {
   return `${SAMPLE_RAW_BASE}/${method}.json`
 }
 
+/** The reference page for one scope, e.g. `channels.read`. */
+export function scopeUrlFor(slug: string): string {
+  return `${DOCS_ORIGIN}/reference/scopes/${slug}.md`
+}
+
 /**
  * Join the two indexes.
  *

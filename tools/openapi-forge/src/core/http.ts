@@ -45,6 +45,18 @@ export async function fetchText(url: string): Promise<string> {
   return new TextDecoder().decode(await fetchBytes(url))
 }
 
+export interface FetchAllOptions {
+  concurrency?: number
+  /**
+   * Treat a "not found" as an absent result rather than a failure.
+   *
+   * For inputs a provider links to but does not always publish — Slack links
+   * to a reference page for `identity:read` that returns 404 — the alternative
+   * is failing the whole fetch over one missing page.
+   */
+  optional?: boolean
+}
+
 /**
  * Fetch many URLs with a bounded number in flight.
  *
@@ -53,24 +65,29 @@ export async function fetchText(url: string): Promise<string> {
  */
 export async function fetchAllBytes(
   urls: readonly string[],
-  concurrency: number = DEFAULT_CONCURRENCY,
-  onProgress?: (completed: number, total: number) => void,
+  options: FetchAllOptions = {},
 ): Promise<Map<string, Uint8Array>> {
   const results = new Map<string, Uint8Array>()
   const queue = [...new Set(urls)]
-  let completed = 0
 
-  const workers = Array.from({ length: Math.min(concurrency, queue.length) }, async () => {
-    for (;;) {
-      const url = queue.shift()
-      if (url === undefined) {
-        return
+  const workers = Array.from(
+    { length: Math.min(options.concurrency ?? DEFAULT_CONCURRENCY, queue.length) },
+    async () => {
+      for (;;) {
+        const url = queue.shift()
+        if (url === undefined) {
+          return
+        }
+        try {
+          results.set(url, await fetchBytes(url))
+        } catch (error) {
+          if (!(options.optional === true && error instanceof FetchError)) {
+            throw error
+          }
+        }
       }
-      results.set(url, await fetchBytes(url))
-      completed += 1
-      onProgress?.(completed, results.size + queue.length)
-    }
-  })
+    },
+  )
 
   await Promise.all(workers)
   return results

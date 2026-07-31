@@ -15,7 +15,7 @@ import { readFile } from 'node:fs/promises'
 
 import { parse } from 'yaml'
 
-import type { ApiModel, Operation, Parameter, ScalarType } from './model.ts'
+import type { ApiModel, Operation, Parameter, ScalarType, SecurityRequirement } from './model.ts'
 
 export class OverlayError extends Error {}
 
@@ -46,6 +46,16 @@ export interface ResponseOverride {
   reason?: string
 }
 
+/**
+ * How an operation's documented scopes relate to one another.
+ *
+ * Providers routinely list several scopes without saying whether they are
+ * alternatives or a set that must all be held, and the answer differs per
+ * operation. `any` treats each scope as sufficient on its own; `all` requires
+ * the whole set.
+ */
+export type ScopeRelation = 'any' | 'all'
+
 export interface OperationOverride {
   summary?: string
   description?: string
@@ -54,6 +64,8 @@ export interface OperationOverride {
   drop?: boolean
   parameters?: Record<string, ParameterOverride>
   response?: ResponseOverride
+  /** Defaults to `any`; set `all` where the scopes are jointly required. */
+  scopeRelation?: ScopeRelation
   reason?: string
 }
 
@@ -181,7 +193,35 @@ function applyToOperation(
     ...(override?.deprecated === undefined ? {} : { deprecated: override.deprecated }),
     parameters,
     response: dropResponseProperties(operation, override?.response?.dropProperties, usage),
+    security: applyScopeRelation(operation.security, override?.scopeRelation),
   }
+}
+
+/**
+ * Regroup an operation's security requirements.
+ *
+ * Extraction emits one requirement per scope, which is what `any` means. `all`
+ * collapses every requirement for the same scheme into one, since scopes listed
+ * together inside a single requirement are jointly required.
+ */
+function applyScopeRelation(
+  security: SecurityRequirement[],
+  relation: ScopeRelation | undefined,
+): SecurityRequirement[] {
+  if (relation !== 'all' || security.length === 0) {
+    return security
+  }
+  const byScheme = new Map<string, string[]>()
+  for (const requirement of security) {
+    const scopes = byScheme.get(requirement.scheme) ?? []
+    for (const scope of requirement.scopes) {
+      if (!scopes.includes(scope)) {
+        scopes.push(scope)
+      }
+    }
+    byScheme.set(requirement.scheme, scopes)
+  }
+  return [...byScheme].map(([scheme, scopes]) => ({ scheme, scopes }))
 }
 
 function dropResponseProperties(

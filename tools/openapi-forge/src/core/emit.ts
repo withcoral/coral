@@ -17,7 +17,7 @@
 
 import { stringify } from 'yaml'
 
-import type { ApiModel, Operation, Parameter, SchemaNode } from './model.ts'
+import type { ApiModel, Operation, Parameter, SchemaNode, SecurityScheme } from './model.ts'
 
 export const OPENAPI_VERSION = '3.0.3'
 
@@ -74,10 +74,44 @@ function buildDocument(model: ApiModel, options: EmitOptions): JsonObject {
     paths,
   }
   const schemas = components.schemas()
-  if (Object.keys(schemas).length > 0) {
-    document.components = { schemas }
+  const securitySchemes = buildSecuritySchemes(model.securitySchemes)
+  if (Object.keys(schemas).length > 0 || Object.keys(securitySchemes).length > 0) {
+    document.components = {
+      ...(Object.keys(securitySchemes).length > 0 ? { securitySchemes } : {}),
+      ...(Object.keys(schemas).length > 0 ? { schemas } : {}),
+    }
   }
   return document
+}
+
+/**
+ * The declared authorization schemes.
+ *
+ * Every provider modelled here issues tokens through an authorization-code
+ * flow, which is the only flow OpenAPI can describe well enough to be worth
+ * emitting: it names the endpoints and enumerates the scopes.
+ */
+function buildSecuritySchemes(schemes: readonly SecurityScheme[]): JsonObject {
+  const emitted: JsonObject = {}
+  for (const scheme of schemes) {
+    if (Object.keys(scheme.scopes).length === 0) {
+      // A scheme no in-scope operation accepts would declare an empty scope
+      // map, which says nothing.
+      continue
+    }
+    emitted[scheme.name] = {
+      type: 'oauth2',
+      description: scheme.description,
+      flows: {
+        authorizationCode: {
+          authorizationUrl: scheme.authorizationUrl,
+          tokenUrl: scheme.tokenUrl,
+          scopes: scheme.scopes,
+        },
+      },
+    }
+  }
+  return emitted
 }
 
 function buildOperation(operation: Operation, components: ComponentRegistry): JsonObject {
@@ -92,6 +126,12 @@ function buildOperation(operation: Operation, components: ComponentRegistry): Js
   }
   if (operation.parameters.length > 0) {
     emitted.parameters = operation.parameters.map((parameter) => buildParameter(parameter))
+  }
+  if (operation.security.length > 0) {
+    // Each entry is an alternative; scopes within an entry are all required.
+    emitted.security = operation.security.map((requirement) => ({
+      [requirement.scheme]: requirement.scopes,
+    }))
   }
   emitted.responses = {
     '200': {
@@ -309,6 +349,64 @@ export function assertImportable(document: JsonObject): void {
   }
 
   assertUniqueOperationIds(document)
+  assertSecurityResolves(document)
+}
+
+/**
+ * Every scheme and scope named by an operation must be declared.
+ *
+ * OpenAPI requires it, and it is the check that catches drift: an operation
+ * that gains a scope upstream would otherwise reference one the scheme never
+ * declares, which most tooling silently ignores.
+ */
+function assertSecurityResolves(document: JsonObject): void {
+  const components = isJsonObject(document.components) ? document.components : {}
+  const schemes = isJsonObject(components.securitySchemes) ? components.securitySchemes : {}
+
+  const declared = new Map<string, Set<string>>()
+  for (const [name, scheme] of Object.entries(schemes)) {
+    const flows = isJsonObject(scheme) && isJsonObject(scheme.flows) ? scheme.flows : {}
+    const scopes = new Set<string>()
+    for (const flow of Object.values(flows)) {
+      if (isJsonObject(flow) && isJsonObject(flow.scopes)) {
+        for (const scope of Object.keys(flow.scopes)) {
+          scopes.add(scope)
+        }
+      }
+    }
+    declared.set(name, scopes)
+  }
+
+  for (const [path, item] of Object.entries(isJsonObject(document.paths) ? document.paths : {})) {
+    if (!isJsonObject(item)) {
+      continue
+    }
+    for (const [method, operation] of Object.entries(item)) {
+      if (!isJsonObject(operation) || !Array.isArray(operation.security)) {
+        continue
+      }
+      for (const requirement of operation.security) {
+        if (!isJsonObject(requirement)) {
+          continue
+        }
+        for (const [scheme, scopes] of Object.entries(requirement)) {
+          const known = declared.get(scheme)
+          if (known === undefined) {
+            throw new EmitError(
+              `${method.toUpperCase()} ${path} requires undeclared security scheme '${scheme}'`,
+            )
+          }
+          for (const scope of Array.isArray(scopes) ? scopes : []) {
+            if (typeof scope === 'string' && !known.has(scope)) {
+              throw new EmitError(
+                `${method.toUpperCase()} ${path} requires scope '${scope}', which '${scheme}' does not declare`,
+              )
+            }
+          }
+        }
+      }
+    }
+  }
 }
 
 function assertUniqueOperationIds(document: JsonObject): void {

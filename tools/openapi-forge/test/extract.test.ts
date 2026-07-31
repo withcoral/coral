@@ -30,12 +30,14 @@ describe('extractApiModel', () => {
 
   /**
    * Listed rather than counted, so a new warning fails here rather than
-   * scrolling past in build output. Two are arguments Coral cannot represent;
-   * the other two are real gaps in Slack's own reference pages, found by
-   * cross-checking against the SDK's request types.
+   * scrolling past in build output. Two are arguments Coral cannot represent,
+   * two are real gaps in Slack's reference pages found by cross-checking
+   * against the SDK's request types, and one is a scope page Slack links to
+   * but does not publish.
    */
-  it('warns only about the four known discrepancies', () => {
+  it('warns only about the five known discrepancies', () => {
     expect(collectWarnings(model).toSorted()).toEqual([
+      'Slack publishes no reference page for these scopes, so they are emitted without a description: identity:read',
       'files.list: @slack/web-api accepts arguments the reference page does not document: count, page',
       'team.accessLogs: @slack/web-api accepts arguments the reference page does not document: before',
       "team.externalTeams.list: argument 'slack_connect_pref_filter' has unsupported type 'array'; omitted",

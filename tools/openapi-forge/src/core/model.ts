@@ -85,10 +85,39 @@ export interface Parameter {
   example?: string | number | boolean
 }
 
-/** Provider-documented auth scopes. Informational — Coral ignores them. */
+/** Provider-documented auth scopes, grouped by the token class that grants them. */
 export interface Scopes {
   bot: string[]
   user: string[]
+}
+
+/**
+ * One OAuth2 security scheme, emitted under `components.securitySchemes`.
+ *
+ * Providers that issue more than one class of token — an app/bot credential
+ * and a user credential, say — get one scheme each, because the scopes
+ * available to them differ and an operation may accept only one of the two.
+ */
+export interface SecurityScheme {
+  /** Key under `components.securitySchemes`, e.g. `slackBotToken`. */
+  name: string
+  description: string
+  authorizationUrl: string
+  tokenUrl: string
+  /** Scope name to its documented description. */
+  scopes: Record<string, string>
+}
+
+/**
+ * One way to authorize an operation.
+ *
+ * Scopes listed together are all required; alternatives are expressed by
+ * listing several requirements, matching OpenAPI's own semantics.
+ */
+export interface SecurityRequirement {
+  /** The {@link SecurityScheme} this satisfies. */
+  scheme: string
+  scopes: string[]
 }
 
 export interface Operation {
@@ -111,6 +140,11 @@ export interface Operation {
   /** Where this operation was extracted from, for provenance. */
   docsUrl?: string
   scopes?: Scopes
+  /**
+   * Accepted authorizations, as alternatives. Empty when the provider
+   * documents no scopes for the operation.
+   */
+  security: SecurityRequirement[]
   /** The provider's rate-limit tier label, if it publishes one. */
   rateLimitTier?: string
   parameters: Parameter[]
@@ -127,6 +161,8 @@ export interface ApiModel {
   description: string
   /** Absolute URL every operation path is relative to. */
   serverUrl: string
+  /** Schemes referenced by {@link Operation.security}. */
+  securitySchemes: SecurityScheme[]
   operations: Operation[]
   /** Problems that are not specific to one operation. */
   warnings: string[]

@@ -15,6 +15,7 @@ function operation(overrides: Partial<Operation> = {}): Operation {
     description: 'Lists all channels.',
     deprecated: false,
     parameters: [],
+    security: [],
     response: { kind: 'object', properties: { ok: { kind: 'scalar', type: 'boolean' } } },
     warnings: [],
     ...overrides,
@@ -27,6 +28,7 @@ function model(operations: Operation[]): ApiModel {
     title: 'Demo',
     description: 'Demo API.',
     serverUrl: 'https://example.com/api',
+    securitySchemes: [],
     operations,
     warnings: [],
   }

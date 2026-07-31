@@ -30,6 +30,7 @@ function operation(overrides: Partial<Operation> = {}): Operation {
     description: 'Lists channels.',
     deprecated: false,
     parameters: [parameter()],
+    security: [],
     response: { kind: 'object', properties: {} },
     warnings: [],
     ...overrides,
@@ -42,6 +43,7 @@ function model(operations: Operation[]): ApiModel {
     title: 'Slack',
     description: 'Slack.',
     serverUrl: 'https://slack.com/api',
+    securitySchemes: [],
     operations,
     warnings: [],
   }
@@ -196,6 +198,58 @@ describe('applyOverlay', () => {
         operations: { 'conversations.list': { response: { dropProperties: ['nope'] } } },
       }),
     ).toThrow(/operations\.conversations\.list\.response\.dropProperties\.nope/)
+  })
+
+  /**
+   * Extraction emits one requirement per scope, which is what `any` means;
+   * `all` regroups them because scopes inside a single requirement are jointly
+   * required.
+   */
+  it('collapses security requirements when the scopes are jointly required', () => {
+    const source = model([
+      operation({
+        security: [
+          { scheme: 'botToken', scopes: ['team:read'] },
+          { scheme: 'botToken', scopes: ['connect:manage'] },
+        ],
+      }),
+    ])
+
+    const result = applyOverlay(source, {
+      operations: { 'conversations.list': { scopeRelation: 'all' } },
+    })
+
+    expect(result.operations[0]?.security).toEqual([
+      { scheme: 'botToken', scopes: ['team:read', 'connect:manage'] },
+    ])
+  })
+
+  it('keeps requirements separate per scheme when collapsing', () => {
+    const source = model([
+      operation({
+        security: [
+          { scheme: 'botToken', scopes: ['a'] },
+          { scheme: 'userToken', scopes: ['a'] },
+          { scheme: 'botToken', scopes: ['b'] },
+        ],
+      }),
+    ])
+
+    const result = applyOverlay(source, {
+      operations: { 'conversations.list': { scopeRelation: 'all' } },
+    })
+
+    expect(result.operations[0]?.security).toEqual([
+      { scheme: 'botToken', scopes: ['a', 'b'] },
+      { scheme: 'userToken', scopes: ['a'] },
+    ])
+  })
+
+  it('leaves security untouched under the default relation', () => {
+    const security = [{ scheme: 'botToken', scopes: ['a'] }]
+    const result = applyOverlay(model([operation({ security })]), {})
+
+    expect(result.operations[0]?.security).toEqual(security)
   })
 
   it('leaves a model with no overlay untouched', () => {

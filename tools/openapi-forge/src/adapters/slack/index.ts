@@ -21,12 +21,14 @@ import { applyOverlay, loadOverlay } from '../../core/overlay.ts'
 import { pruneSample } from '../../core/prune.ts'
 import { Snapshot, SnapshotWriter } from '../../core/snapshot.ts'
 import { extractApiModel } from './extract.ts'
+import { parseDocsPage } from './docs.ts'
 import {
   joinIndexes,
   parseMethodIndex,
   parseSampleIndex,
   parseSdkIndex,
   SAMPLE_INDEX_URL,
+  scopeUrlFor,
   SDK_INDEX_URL,
   sdkFilesFor,
   sdkUrlFor,
@@ -175,6 +177,33 @@ async function fetchSnapshot(): Promise<void> {
     sampleBytes += sample.length
     prunedBytes += pruned.length
     writer.add(samplePath(method), method.sampleUrl, sample, pruned)
+  }
+
+  // Which scope pages matter is only knowable from the method pages, so this
+  // round happens after they are in hand.
+  const scopeSlugs = new Set<string>()
+  for (const method of selected) {
+    const docs = bodies.get(method.docsUrl)
+    if (docs !== undefined) {
+      const facts = parseDocsPage(new TextDecoder().decode(docs), config.serverUrl)
+      for (const slug of Object.values(facts.scopeSlugs)) {
+        scopeSlugs.add(slug)
+      }
+    }
+  }
+  const scopeUrls = [...scopeSlugs].toSorted().map((slug) => scopeUrlFor(slug))
+  log(`downloading ${scopeUrls.length} scope reference pages`)
+  // Slack links to pages it does not always publish — `identity:read` 404s —
+  // so a missing one is recorded rather than fatal. The build then warns that
+  // the scope has no description.
+  const scopeBodies = await fetchAllBytes(scopeUrls, { optional: true })
+  for (const slug of [...scopeSlugs].toSorted()) {
+    const body = scopeBodies.get(scopeUrlFor(slug))
+    if (body === undefined) {
+      log(`  ${slug}: no scope reference page published`)
+      continue
+    }
+    writer.add(`scopes/${slug}.md`, scopeUrlFor(slug), body, new TextDecoder().decode(body))
   }
 
   const sdkFiles = sdkFilesFor(config.methods, parseSdkIndex(await fetchText(SDK_INDEX_URL)))

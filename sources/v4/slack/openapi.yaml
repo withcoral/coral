@@ -6,7 +6,7 @@ openapi: 3.0.3
 info:
   title: Slack Web API
   description: "Read-only coverage of the Slack Web API, generated from Slack's published reference documentation and the response samples recorded in slackapi/java-slack-sdk. Slack publishes no OpenAPI 3.0 description of its own: the official slackapi/slack-api-specs is Swagger 2.0, was last updated in August 2020, and the repository was archived in March 2024."
-  version: 2026-07-30
+  version: 2026-07-31
 servers:
   - url: https://slack.com/api
 tags:
@@ -45,6 +45,11 @@ paths:
           schema:
             type: string
           description: encoded team id or enterprise id where the bot exists, required if org token is used
+      security:
+        - slackBotToken:
+            - users:read
+        - slackUserToken:
+            - users:read
       responses:
         "200":
           description: "Response envelope. Slack reports failures here with `ok: false`."
@@ -143,6 +148,23 @@ paths:
             type: string
             default: "0"
           description: Only messages after this Unix timestamp will be included in results.
+      security:
+        - slackBotToken:
+            - channels:history
+        - slackBotToken:
+            - groups:history
+        - slackBotToken:
+            - im:history
+        - slackBotToken:
+            - mpim:history
+        - slackUserToken:
+            - channels:history
+        - slackUserToken:
+            - groups:history
+        - slackUserToken:
+            - im:history
+        - slackUserToken:
+            - mpim:history
       responses:
         "200":
           description: "Response envelope. Slack reports failures here with `ok: false`."
@@ -208,6 +230,23 @@ paths:
             default: false
           description: Set to `true` to include the member count for the specified conversation. Defaults to `false`
           example: true
+      security:
+        - slackBotToken:
+            - channels:read
+        - slackBotToken:
+            - groups:read
+        - slackBotToken:
+            - im:read
+        - slackBotToken:
+            - mpim:read
+        - slackUserToken:
+            - channels:read
+        - slackUserToken:
+            - groups:read
+        - slackUserToken:
+            - im:read
+        - slackUserToken:
+            - mpim:read
       responses:
         "200":
           description: "Response envelope. Slack reports failures here with `ok: false`."
@@ -395,6 +434,23 @@ paths:
             default: public_channel
           description: Mix and match channel types by providing a comma-separated list of any combination of `public_channel`, `private_channel`, `mpim`, `im`
           example: public_channel,private_channel
+      security:
+        - slackBotToken:
+            - channels:read
+        - slackBotToken:
+            - groups:read
+        - slackBotToken:
+            - im:read
+        - slackBotToken:
+            - mpim:read
+        - slackUserToken:
+            - channels:read
+        - slackUserToken:
+            - groups:read
+        - slackUserToken:
+            - im:read
+        - slackUserToken:
+            - mpim:read
       responses:
         "200":
           description: "Response envelope. Slack reports failures here with `ok: false`."
@@ -455,6 +511,23 @@ paths:
             default: 100
           description: The maximum number of items to return. Fewer than the requested number of items may be returned, even if the end of the users list hasn't been reached.
           example: 20
+      security:
+        - slackBotToken:
+            - channels:read
+        - slackBotToken:
+            - groups:read
+        - slackBotToken:
+            - im:read
+        - slackBotToken:
+            - mpim:read
+        - slackUserToken:
+            - channels:read
+        - slackUserToken:
+            - groups:read
+        - slackUserToken:
+            - im:read
+        - slackUserToken:
+            - mpim:read
       responses:
         "200":
           description: "Response envelope. Slack reports failures here with `ok: false`."
@@ -545,6 +618,23 @@ paths:
           schema:
             type: string
           description: Unique identifier of either a thread’s parent message or a message in the thread. `ts` must be the timestamp of an existing message with 0 or more replies. If there are no replies then just the single message referenced by `ts` will return - it is just an ordinary, unthreaded message.
+      security:
+        - slackBotToken:
+            - channels:history
+        - slackBotToken:
+            - groups:history
+        - slackBotToken:
+            - im:history
+        - slackBotToken:
+            - mpim:history
+        - slackUserToken:
+            - channels:history
+        - slackUserToken:
+            - groups:history
+        - slackUserToken:
+            - im:history
+        - slackUserToken:
+            - mpim:history
       responses:
         "200":
           description: "Response envelope. Slack reports failures here with `ok: false`."
@@ -593,6 +683,11 @@ paths:
             type: string
           description: User to fetch status for (defaults to current user)
           example: U1234
+      security:
+        - slackBotToken:
+            - dnd:read
+        - slackUserToken:
+            - dnd:read
       responses:
         "200":
           description: "Response envelope. Slack reports failures here with `ok: false`."
@@ -638,6 +733,11 @@ paths:
             type: string
           description: Comma-separated list of users to fetch Do Not Disturb status for
           example: U1234,W4567
+      security:
+        - slackBotToken:
+            - dnd:read
+        - slackUserToken:
+            - dnd:read
       responses:
         "200":
           description: "Response envelope. Slack reports failures here with `ok: false`."
@@ -691,6 +791,11 @@ paths:
           schema:
             type: boolean
           description: Include a list of categories for Unicode emoji and the emoji in each category
+      security:
+        - slackBotToken:
+            - emoji:read
+        - slackUserToken:
+            - emoji:read
       responses:
         "200":
           description: "Response envelope. Slack reports failures here with `ok: false`."
@@ -765,6 +870,11 @@ paths:
           schema:
             type: integer
             default: 1
+      security:
+        - slackBotToken:
+            - files:read
+        - slackUserToken:
+            - files:read
       responses:
         "200":
           description: "Response envelope. Slack reports failures here with `ok: false`."
@@ -1302,6 +1412,11 @@ paths:
           schema:
             type: string
           description: Filter files created by a single user.
+      security:
+        - slackBotToken:
+            - files:read
+        - slackUserToken:
+            - files:read
       responses:
         "200":
           description: "Response envelope. Slack reports failures here with `ok: false`."
@@ -1355,6 +1470,11 @@ paths:
             type: string
           description: Specify a file by providing its ID.
           example: F2147483862
+      security:
+        - slackBotToken:
+            - remote_files:read
+        - slackUserToken:
+            - remote_files:read
       responses:
         "200":
           description: "Response envelope. Slack reports failures here with `ok: false`."
@@ -1859,6 +1979,11 @@ paths:
             default: now
           description: Filter files created before this timestamp (inclusive).
           example: "123456789"
+      security:
+        - slackBotToken:
+            - remote_files:read
+        - slackUserToken:
+            - remote_files:read
       responses:
         "200":
           description: "Response envelope. Slack reports failures here with `ok: false`."
@@ -1898,6 +2023,11 @@ paths:
           schema:
             type: string
           description: Channel to get pinned items for.
+      security:
+        - slackBotToken:
+            - pins:read
+        - slackUserToken:
+            - pins:read
       responses:
         "200":
           description: "Response envelope. Slack reports failures here with `ok: false`."
@@ -1959,6 +2089,11 @@ paths:
             type: string
           description: Timestamp of the message to get reactions for.
           example: "1524523204.000192"
+      security:
+        - slackBotToken:
+            - reactions:read
+        - slackUserToken:
+            - reactions:read
       responses:
         "200":
           description: "Response envelope. Slack reports failures here with `ok: false`."
@@ -2166,6 +2301,11 @@ paths:
           schema:
             type: string
           description: Show reactions made by this user. Defaults to the authed user.
+      security:
+        - slackBotToken:
+            - reactions:read
+        - slackUserToken:
+            - reactions:read
       responses:
         "200":
           description: "Response envelope. Slack reports failures here with `ok: false`."
@@ -2223,6 +2363,9 @@ paths:
           schema:
             type: string
           description: Encoded team id, required if org token is passed
+      security:
+        - slackUserToken:
+            - reminders:read
       responses:
         "200":
           description: "Response envelope. Slack reports failures here with `ok: false`."
@@ -2270,6 +2413,9 @@ paths:
           schema:
             type: string
           description: Encoded team id, required if org token is passed
+      security:
+        - slackUserToken:
+            - reminders:read
       responses:
         "200":
           description: "Response envelope. Slack reports failures here with `ok: false`."
@@ -2346,6 +2492,9 @@ paths:
           schema:
             type: string
           description: encoded team id to search in, required if org token is used
+      security:
+        - slackUserToken:
+            - search:read
       responses:
         "200":
           description: "Response envelope. Slack reports failures here with `ok: false`."
@@ -2499,6 +2648,9 @@ paths:
           schema:
             type: string
           description: encoded team id to search in, required if org token is used
+      security:
+        - slackUserToken:
+            - search:read
       responses:
         "200":
           description: "Response envelope. Slack reports failures here with `ok: false`."
@@ -2615,6 +2767,9 @@ paths:
           schema:
             type: string
           description: encoded team id to search in, required if org token is used
+      security:
+        - slackUserToken:
+            - search:read
       responses:
         "200":
           description: "Response envelope. Slack reports failures here with `ok: false`."
@@ -2708,6 +2863,9 @@ paths:
           schema:
             type: string
           description: encoded team id to list stars in, required if org token is used
+      security:
+        - slackUserToken:
+            - stars:read
       responses:
         "200":
           description: "Response envelope. Slack reports failures here with `ok: false`."
@@ -2781,6 +2939,9 @@ paths:
           schema:
             type: string
           description: encoded team id to get logs from, required if org token is used
+      security:
+        - slackUserToken:
+            - admin
       responses:
         "200":
           description: "Response envelope. Slack reports failures here with `ok: false`."
@@ -2857,6 +3018,9 @@ paths:
           schema:
             type: string
           description: A user to retrieve the billable information for. Defaults to all users.
+      security:
+        - slackUserToken:
+            - admin
       responses:
         "200":
           description: "Response envelope. Slack reports failures here with `ok: false`."
@@ -2935,6 +3099,10 @@ paths:
             type: string
             default: team_name
           description: Name of the parameter that we are sorting by
+      security:
+        - slackBotToken:
+            - conversations.connect:manage
+            - team:read
       responses:
         "200":
           description: "Response envelope. Slack reports failures here with `ok: false`."
@@ -2988,6 +3156,11 @@ paths:
           schema:
             type: string
           description: Team to get info about; if omitted, will return information about the current team.
+      security:
+        - slackBotToken:
+            - team:read
+        - slackUserToken:
+            - team:read
       responses:
         "200":
           description: "Response envelope. Slack reports failures here with `ok: false`."
@@ -3120,6 +3293,9 @@ paths:
           schema:
             type: string
           description: Filter logs generated by this user’s actions. Defaults to all logs.
+      security:
+        - slackUserToken:
+            - admin
       responses:
         "200":
           description: "Response envelope. Slack reports failures here with `ok: false`."
@@ -3168,6 +3344,11 @@ paths:
             type: string
           description: Filter by visibility.
           example: all
+      security:
+        - slackBotToken:
+            - users.profile:read
+        - slackUserToken:
+            - users.profile:read
       responses:
         "200":
           description: "Response envelope. Slack reports failures here with `ok: false`."
@@ -3232,6 +3413,11 @@ paths:
           schema:
             type: string
           description: The user group's encoded team ID. Required if org token is used.
+      security:
+        - slackBotToken:
+            - usergroups:read
+        - slackUserToken:
+            - usergroups:read
       responses:
         "200":
           description: "Response envelope. Slack reports failures here with `ok: false`."
@@ -3282,6 +3468,11 @@ paths:
             type: string
           description: The encoded ID of the User Group.
           example: S0604QSJC
+      security:
+        - slackBotToken:
+            - usergroups:read
+        - slackUserToken:
+            - usergroups:read
       responses:
         "200":
           description: "Response envelope. Slack reports failures here with `ok: false`."
@@ -3356,6 +3547,23 @@ paths:
             type: string
           description: Browse conversations by a specific user ID's membership. Non-public channels are restricted to those where the calling user shares membership.
           example: W0B2345D
+      security:
+        - slackBotToken:
+            - channels:read
+        - slackBotToken:
+            - groups:read
+        - slackBotToken:
+            - im:read
+        - slackBotToken:
+            - mpim:read
+        - slackUserToken:
+            - channels:read
+        - slackUserToken:
+            - groups:read
+        - slackUserToken:
+            - im:read
+        - slackUserToken:
+            - mpim:read
       responses:
         "200":
           description: "Response envelope. Slack reports failures here with `ok: false`."
@@ -3399,6 +3607,11 @@ paths:
           schema:
             type: string
           description: User to get presence info on. Defaults to the authed user.
+      security:
+        - slackBotToken:
+            - users:read
+        - slackUserToken:
+            - users:read
       responses:
         "200":
           description: "Response envelope. Slack reports failures here with `ok: false`."
@@ -3436,6 +3649,9 @@ paths:
         - users
       summary: Get a user's identity.
       description: "Get a user's identity. Requires one of the scopes: identity:read. Rate limit: Tier 3: 50+ per minute. See https://docs.slack.dev/reference/methods/users.identity."
+      security:
+        - slackUserToken:
+            - identity:read
       responses:
         "200":
           description: "Response envelope. Slack reports failures here with `ok: false`."
@@ -3502,6 +3718,11 @@ paths:
           schema:
             type: string
           description: User to get info on
+      security:
+        - slackBotToken:
+            - users:read
+        - slackUserToken:
+            - users:read
       responses:
         "200":
           description: "Response envelope. Slack reports failures here with `ok: false`."
@@ -3707,6 +3928,11 @@ paths:
           schema:
             type: string
           description: encoded team id to list users in, required if org token is used
+      security:
+        - slackBotToken:
+            - users:read
+        - slackUserToken:
+            - users:read
       responses:
         "200":
           description: "Response envelope. Slack reports failures here with `ok: false`."
@@ -3755,6 +3981,11 @@ paths:
             type: string
           description: An email address belonging to a user in the workspace
           example: spengler@ghostbusters.example.com
+      security:
+        - slackBotToken:
+            - users:read.email
+        - slackUserToken:
+            - users:read.email
       responses:
         "200":
           description: "Response envelope. Slack reports failures here with `ok: false`."
@@ -3913,6 +4144,11 @@ paths:
           schema:
             type: string
           description: User to retrieve profile info for
+      security:
+        - slackBotToken:
+            - users.profile:read
+        - slackUserToken:
+            - users.profile:read
       responses:
         "200":
           description: "Response envelope. Slack reports failures here with `ok: false`."
@@ -4008,6 +4244,67 @@ paths:
                   warning:
                     type: string
 components:
+  securitySchemes:
+    slackBotToken:
+      type: oauth2
+      description: A bot token (xoxb-), issued to the app itself. Reads what the bot user can see, which is the channels it has been added to.
+      flows:
+        authorizationCode:
+          authorizationUrl: https://slack.com/oauth/v2/authorize
+          tokenUrl: https://slack.com/api/oauth.v2.access
+          scopes:
+            channels:history: View messages and other content in public channels that your Slack app has been added to
+            channels:read: View basic information about public channels in a workspace
+            conversations.connect:manage: Allows your Slack app to manage Slack Connect channels
+            dnd:read: View Do Not Disturb settings for people in a workspace
+            emoji:read: View custom emoji in a workspace
+            files:read: View files shared in channels and conversations that your Slack app has been added to
+            groups:history: View messages and other content in private channels that your Slack app has been added to
+            groups:read: View basic information about private channels that your Slack app has been added to
+            im:history: View messages and other content in direct messages that your Slack app has been added to
+            im:read: View basic information about direct messages that your Slack app has been added to
+            mpim:history: View messages and other content in group direct messages that your Slack app has been added to
+            mpim:read: View basic information about group direct messages that your Slack app has been added to
+            pins:read: View pinned content in channels and conversations that your Slack app has been added to
+            reactions:read: View emoji reactions and their associated content in channels and conversations that your Slack app has been added to
+            remote_files:read: View remote files added by the app in a workspace
+            team:read: View the name, email domain, and icon for workspaces your Slack app is connected to
+            usergroups:read: View user groups in a workspace
+            users:read: View people in a workspace
+            users:read.email: View email addresses of people in a workspace
+            users.profile:read: View profile details about people in a workspace
+    slackUserToken:
+      type: oauth2
+      description: A user token (xoxp-), issued on behalf of the authorizing user. Reads what that user can see, and is the only class Slack grants search:read.
+      flows:
+        authorizationCode:
+          authorizationUrl: https://slack.com/oauth/v2_user/authorize
+          tokenUrl: https://slack.com/api/oauth.v2.user.access
+          scopes:
+            admin: Administer a workspace
+            channels:history: View messages and other content in public channels that your Slack app has been added to
+            channels:read: View basic information about public channels in a workspace
+            dnd:read: View Do Not Disturb settings for people in a workspace
+            emoji:read: View custom emoji in a workspace
+            files:read: View files shared in channels and conversations that your Slack app has been added to
+            groups:history: View messages and other content in private channels that your Slack app has been added to
+            groups:read: View basic information about private channels that your Slack app has been added to
+            identity:read: ""
+            im:history: View messages and other content in direct messages that your Slack app has been added to
+            im:read: View basic information about direct messages that your Slack app has been added to
+            mpim:history: View messages and other content in group direct messages that your Slack app has been added to
+            mpim:read: View basic information about group direct messages that your Slack app has been added to
+            pins:read: View pinned content in channels and conversations that your Slack app has been added to
+            reactions:read: View emoji reactions and their associated content in channels and conversations that your Slack app has been added to
+            reminders:read: View reminders created by your Slack app
+            remote_files:read: View remote files added by the app in a workspace
+            search:read: Search a workspace's content
+            stars:read: View a user's starred messages and files
+            team:read: View the name, email domain, and icon for workspaces your Slack app is connected to
+            usergroups:read: View user groups in a workspace
+            users:read: View people in a workspace
+            users:read.email: View email addresses of people in a workspace
+            users.profile:read: View profile details about people in a workspace
   schemas:
     Category:
       type: object

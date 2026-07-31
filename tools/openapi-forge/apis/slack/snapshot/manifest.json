@@ -1,5 +1,5 @@
 {
-  "fetchedAt": "2026-07-30T10:51:36.382Z",
+  "fetchedAt": "2026-07-31T06:00:16.131Z",
   "inputs": [
     {
       "path": "docs/bots.info.md",
@@ -518,6 +518,174 @@
       "upstreamSha256": "cc4f49ee5d2861cfc5cb20e888454c75c5a018dba3422bbdcd2eff266995cf0f",
       "sha256": "7d7d3e7c898c429ccfa17fdea081066b3fea7152729ad8e82e5a996e4f092f75",
       "bytes": 1420
+    },
+    {
+      "path": "scopes/admin.md",
+      "url": "https://docs.slack.dev/reference/scopes/admin.md",
+      "upstreamSha256": "d322c6ab6952609879a0ddd2fed4a0fd22f39754947181751b33542b060c11f5",
+      "sha256": "d322c6ab6952609879a0ddd2fed4a0fd22f39754947181751b33542b060c11f5",
+      "bytes": 953
+    },
+    {
+      "path": "scopes/channels.history.md",
+      "url": "https://docs.slack.dev/reference/scopes/channels.history.md",
+      "upstreamSha256": "895b7d364df09660c2eadd7fbe0431538ec261d7775c6f01665a3f06ae021f2f",
+      "sha256": "895b7d364df09660c2eadd7fbe0431538ec261d7775c6f01665a3f06ae021f2f",
+      "bytes": 1424
+    },
+    {
+      "path": "scopes/channels.read.md",
+      "url": "https://docs.slack.dev/reference/scopes/channels.read.md",
+      "upstreamSha256": "2cd2de7d9466ef7d46064ba4a3f1217811533dea9933fafe2498d5beb9c643d9",
+      "sha256": "2cd2de7d9466ef7d46064ba4a3f1217811533dea9933fafe2498d5beb9c643d9",
+      "bytes": 1260
+    },
+    {
+      "path": "scopes/conversations.connect.manage.md",
+      "url": "https://docs.slack.dev/reference/scopes/conversations.connect.manage.md",
+      "upstreamSha256": "057d361e7af0e6b23b8b0d2a45a5056033df44584c1277bf6f3bf2ca20a591fc",
+      "sha256": "057d361e7af0e6b23b8b0d2a45a5056033df44584c1277bf6f3bf2ca20a591fc",
+      "bytes": 1489
+    },
+    {
+      "path": "scopes/dnd.read.md",
+      "url": "https://docs.slack.dev/reference/scopes/dnd.read.md",
+      "upstreamSha256": "1e42ec4b5209cdccbaba5be5577d8c5918acf2da7f712b2ca27ce134fb70dbd7",
+      "sha256": "1e42ec4b5209cdccbaba5be5577d8c5918acf2da7f712b2ca27ce134fb70dbd7",
+      "bytes": 495
+    },
+    {
+      "path": "scopes/emoji.read.md",
+      "url": "https://docs.slack.dev/reference/scopes/emoji.read.md",
+      "upstreamSha256": "4610cc846552e7374db30a8f60049af59863f4e6df61ca89db817c7ca6aea547",
+      "sha256": "4610cc846552e7374db30a8f60049af59863f4e6df61ca89db817c7ca6aea547",
+      "bytes": 427
+    },
+    {
+      "path": "scopes/files.read.md",
+      "url": "https://docs.slack.dev/reference/scopes/files.read.md",
+      "upstreamSha256": "c36944c0ce771440e9233835d723c5ad7c63cbaa24670a4af5f6d5694666f127",
+      "sha256": "c36944c0ce771440e9233835d723c5ad7c63cbaa24670a4af5f6d5694666f127",
+      "bytes": 1117
+    },
+    {
+      "path": "scopes/groups.history.md",
+      "url": "https://docs.slack.dev/reference/scopes/groups.history.md",
+      "upstreamSha256": "331c1864dd0abb0236882ef8ad25d21ff3e534711db890bdf9fe5dad31bb478c",
+      "sha256": "331c1864dd0abb0236882ef8ad25d21ff3e534711db890bdf9fe5dad31bb478c",
+      "bytes": 1485
+    },
+    {
+      "path": "scopes/groups.read.md",
+      "url": "https://docs.slack.dev/reference/scopes/groups.read.md",
+      "upstreamSha256": "0deafa43d4a88b52158f4b0f3939d5dfe8bc3315677c3061f9c0c08da668d584",
+      "sha256": "0deafa43d4a88b52158f4b0f3939d5dfe8bc3315677c3061f9c0c08da668d584",
+      "bytes": 1298
+    },
+    {
+      "path": "scopes/im.history.md",
+      "url": "https://docs.slack.dev/reference/scopes/im.history.md",
+      "upstreamSha256": "301379d83fb555b9d53664bbeb64b85c38b181f9110837f5a72434c496b9073d",
+      "sha256": "301379d83fb555b9d53664bbeb64b85c38b181f9110837f5a72434c496b9073d",
+      "bytes": 1390
+    },
+    {
+      "path": "scopes/im.read.md",
+      "url": "https://docs.slack.dev/reference/scopes/im.read.md",
+      "upstreamSha256": "5d97d1cd2bf74c3ee48703cdcce2ade81db64b19ef1bb08e2585486800cf32d5",
+      "sha256": "5d97d1cd2bf74c3ee48703cdcce2ade81db64b19ef1bb08e2585486800cf32d5",
+      "bytes": 760
+    },
+    {
+      "path": "scopes/mpim.history.md",
+      "url": "https://docs.slack.dev/reference/scopes/mpim.history.md",
+      "upstreamSha256": "95ee5cf3a63347ea85374e2fffc377afc43aefb56106f5b445f29c265538ccd8",
+      "sha256": "95ee5cf3a63347ea85374e2fffc377afc43aefb56106f5b445f29c265538ccd8",
+      "bytes": 1414
+    },
+    {
+      "path": "scopes/mpim.read.md",
+      "url": "https://docs.slack.dev/reference/scopes/mpim.read.md",
+      "upstreamSha256": "75f9ea196677d3bced7f36f80c52a692597628d388cebaac6a3567c5ebe3697d",
+      "sha256": "75f9ea196677d3bced7f36f80c52a692597628d388cebaac6a3567c5ebe3697d",
+      "bytes": 773
+    },
+    {
+      "path": "scopes/pins.read.md",
+      "url": "https://docs.slack.dev/reference/scopes/pins.read.md",
+      "upstreamSha256": "87be5ea5ea1cfa17419c66d0763da97bb47f850be7609aa22456dcf5cb6468d5",
+      "sha256": "87be5ea5ea1cfa17419c66d0763da97bb47f850be7609aa22456dcf5cb6468d5",
+      "bytes": 586
+    },
+    {
+      "path": "scopes/reactions.read.md",
+      "url": "https://docs.slack.dev/reference/scopes/reactions.read.md",
+      "upstreamSha256": "160246361841ebf2dc682c1ce6ed1ae1872973d4cf26963eb150a0815d997409",
+      "sha256": "160246361841ebf2dc682c1ce6ed1ae1872973d4cf26963eb150a0815d997409",
+      "bytes": 641
+    },
+    {
+      "path": "scopes/reminders.read.md",
+      "url": "https://docs.slack.dev/reference/scopes/reminders.read.md",
+      "upstreamSha256": "00b4fde17bed940ed4a8c7ec1f2ed6116b8ed3744fb9417e69ace6e639d18f86",
+      "sha256": "00b4fde17bed940ed4a8c7ec1f2ed6116b8ed3744fb9417e69ace6e639d18f86",
+      "bytes": 431
+    },
+    {
+      "path": "scopes/remote_files.read.md",
+      "url": "https://docs.slack.dev/reference/scopes/remote_files.read.md",
+      "upstreamSha256": "e2289f47760359a1eb64bede431dc56ecca6dcdfd625c85caba305d93e6082d2",
+      "sha256": "e2289f47760359a1eb64bede431dc56ecca6dcdfd625c85caba305d93e6082d2",
+      "bytes": 458
+    },
+    {
+      "path": "scopes/search.read.md",
+      "url": "https://docs.slack.dev/reference/scopes/search.read.md",
+      "upstreamSha256": "917a498afc66b798484b7d876cfbdc1a2374212f9bfa2206915b1825b2b79b56",
+      "sha256": "917a498afc66b798484b7d876cfbdc1a2374212f9bfa2206915b1825b2b79b56",
+      "bytes": 610
+    },
+    {
+      "path": "scopes/stars.read.md",
+      "url": "https://docs.slack.dev/reference/scopes/stars.read.md",
+      "upstreamSha256": "2cf994b37f900dce83cb5793c6864d3fa5b25f75c7fcc6047fbf44c25c05eee2",
+      "sha256": "2cf994b37f900dce83cb5793c6864d3fa5b25f75c7fcc6047fbf44c25c05eee2",
+      "bytes": 391
+    },
+    {
+      "path": "scopes/team.read.md",
+      "url": "https://docs.slack.dev/reference/scopes/team.read.md",
+      "upstreamSha256": "d46719a46ca2199849d30f8ef692b878b4f9fb11fb998af921f6477c73896722",
+      "sha256": "d46719a46ca2199849d30f8ef692b878b4f9fb11fb998af921f6477c73896722",
+      "bytes": 713
+    },
+    {
+      "path": "scopes/usergroups.read.md",
+      "url": "https://docs.slack.dev/reference/scopes/usergroups.read.md",
+      "upstreamSha256": "8de4850a3d5130a68595793cba60515cfdfd5876f656a0af9b0561e2362e7cbd",
+      "sha256": "8de4850a3d5130a68595793cba60515cfdfd5876f656a0af9b0561e2362e7cbd",
+      "bytes": 775
+    },
+    {
+      "path": "scopes/users.profile.read.md",
+      "url": "https://docs.slack.dev/reference/scopes/users.profile.read.md",
+      "upstreamSha256": "9edc5c02401ec64b6c115365fa5fb9edf3a9c299bfcb172b670b3e376425dc32",
+      "sha256": "9edc5c02401ec64b6c115365fa5fb9edf3a9c299bfcb172b670b3e376425dc32",
+      "bytes": 457
+    },
+    {
+      "path": "scopes/users.read.email.md",
+      "url": "https://docs.slack.dev/reference/scopes/users.read.email.md",
+      "upstreamSha256": "cef11c05a7cd4e64584b170f81c3a5e26972038baa20eb2bc6461edb61efc01a",
+      "sha256": "cef11c05a7cd4e64584b170f81c3a5e26972038baa20eb2bc6461edb61efc01a",
+      "bytes": 1346
+    },
+    {
+      "path": "scopes/users.read.md",
+      "url": "https://docs.slack.dev/reference/scopes/users.read.md",
+      "upstreamSha256": "f184c9ddb6344c1de7377698720a7afcd9599468ce7b2631ae2dae124b3b7635",
+      "sha256": "f184c9ddb6344c1de7377698720a7afcd9599468ce7b2631ae2dae124b3b7635",
+      "bytes": 744
     },
     {
       "path": "sdk/bots.ts",

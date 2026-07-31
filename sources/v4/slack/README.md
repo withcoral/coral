@@ -61,6 +61,25 @@ the query — see the first known limitation below.
 
 Verify with `coral source test slack_v4`.
 
+## Auth in the descriptor
+
+`openapi.yaml` declares `slackBotToken` and `slackUserToken` as OAuth2 schemes
+and gives every operation a `security` block naming the scopes it accepts, with
+the description Slack publishes for each.
+
+Coral ignores `securitySchemes` entirely — auth comes from `manifest.yaml` — so
+this is documentation rather than configuration, and `catalog-preview.md` is
+unchanged by it. It is *checked* documentation, though: the generator fails if
+an operation references a scope its scheme does not declare, which is what
+catches a method quietly gaining a scope upstream.
+
+Two details the block gets right that prose could not. An operation offers only
+the token classes Slack documents for it, so `search_messages` shows
+`slackUserToken` alone and `team_externalteams_list` shows `slackBotToken`
+alone. And scopes listed together are alternatives by default — any one of
+`channels:read`/`groups:read`/`im:read`/`mpim:read` is enough for
+`conversations_list` — except where the overlay says otherwise.
+
 ## What the catalog looks like
 
 `catalog-preview.md` in this directory is generated from the descriptor by

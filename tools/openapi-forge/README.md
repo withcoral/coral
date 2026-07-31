@@ -31,6 +31,10 @@ discover → extract (per-API adapters) → ApiModel → emit OpenAPI 3.0.3 → 
   about the other.
 - **overlay** — hand-written corrections applied to the model before emission.
   The only file a human edits, so regenerating never discards their work.
+  It also carries judgements the source material cannot express: providers list
+  a method's scopes without saying whether they are alternatives or a required
+  set, and the answer differs per method, so `scopeRelation` declares the
+  exceptions to the `any` default.
 - **emit** — `ApiModel` to OpenAPI 3.0.3, with assertions for the constraints
   Coral's importer places on a descriptor.
 - **validate** — `cargo run -p xtask -- v4-preview <manifest>` renders the SQL

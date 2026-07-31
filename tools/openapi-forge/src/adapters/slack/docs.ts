@@ -46,6 +46,12 @@ export interface DocsFacts {
    * omission from reading as a documentation gap.
    */
   documentedArguments: string[]
+  /**
+   * Scope name to the slug of its reference page. Taken from the link href
+   * rather than derived from the name, because the two differ:
+   * `conversations.connect:manage` lives at `conversations.connect.manage`.
+   */
+  scopeSlugs: Record<string, string>
   warnings: string[]
 }
 
@@ -60,7 +66,7 @@ const SOURCE_LINE = /^Source:\s*(\S+)/m
 const DESCRIPTION = /^\*\*Description\*\*(.*)$/m
 const REQUEST_LINE = /^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+(https?:\/\/\S+)$/m
 const RATE_LIMIT = /^\*\*Rate Limits\*\*\[([^\]]+)]/m
-const SCOPE_LINK = /\[`([^`]+)`]\(\/reference\/scopes\//g
+const SCOPE_LINK = /\[`([^`]+)`]\(\/reference\/scopes\/([^)]+)\)/g
 const ARGUMENT_HEADING = /^\*\*`([^`]+)`\*\*`([^`]+)`(Required|Optional)$/gm
 const DEFAULT_VALUE = /^_Default:_\s*`?([^`\n]*)`?$/m
 const EXAMPLE_VALUE = /^_Example:_\s*`?([^`\n]*)`?$/m
@@ -100,6 +106,7 @@ export function parseDocsPage(markdown: string, serverUrl: string): DocsFacts {
     httpMethod,
     description: cleanText(DESCRIPTION.exec(markdown)?.[1] ?? ''),
     scopes: parseScopes(markdown),
+    scopeSlugs: parseScopeSlugs(markdown),
     ...(rateLimitTier === undefined ? {} : { rateLimitTier }),
     parameters,
     documentedArguments,
@@ -128,6 +135,21 @@ function parseScopes(markdown: string): Scopes {
   const botPart = userIndex === -1 ? section : section.slice(0, userIndex)
   const userPart = userIndex === -1 ? '' : section.slice(userIndex)
   return { bot: scopeNames(botPart), user: scopeNames(userPart) }
+}
+
+/** Every scope the page links to, mapped to its reference-page slug. */
+function parseScopeSlugs(markdown: string): Record<string, string> {
+  const slugs: Record<string, string> = {}
+  const section = sliceBetween(markdown, '**Scopes**', '**Content types**')
+  for (const match of (section ?? '').matchAll(SCOPE_LINK)) {
+    const [, name, slug] = match
+    if (name !== undefined && slug !== undefined) {
+      slugs[name] = slug
+    }
+  }
+  return Object.fromEntries(
+    Object.entries(slugs).toSorted(([left], [right]) => left.localeCompare(right)),
+  )
 }
 
 function scopeNames(text: string): string[] {

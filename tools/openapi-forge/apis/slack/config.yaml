@@ -10,6 +10,31 @@ serverUrl: https://slack.com/api
 # Written by `forge build`, relative to this file.
 output: ../../../../sources/v4/slack/openapi.yaml
 
+security:
+  # Slack issues two classes of token with different scope sets, and a method
+  # may accept only one of them — reminders.list is user-only, while
+  # team.externalTeams.list is bot-only. One scheme each is what lets an
+  # operation say which it takes.
+  #
+  # The endpoints are declared here rather than extracted: Slack documents them
+  # in prose at /authentication/installing-with-oauth, not in a form worth
+  # scraping. Both pairs are taken from that page.
+  schemes:
+    - name: slackBotToken
+      tokenClass: bot
+      description: >-
+        A bot token (xoxb-), issued to the app itself. Reads what the bot user
+        can see, which is the channels it has been added to.
+      authorizationUrl: https://slack.com/oauth/v2/authorize
+      tokenUrl: https://slack.com/api/oauth.v2.access
+    - name: slackUserToken
+      tokenClass: user
+      description: >-
+        A user token (xoxp-), issued on behalf of the authorizing user. Reads
+        what that user can see, and is the only class Slack grants search:read.
+      authorizationUrl: https://slack.com/oauth/v2_user/authorize
+      tokenUrl: https://slack.com/api/oauth.v2.user.access
+
 scope:
   # The read-only core of the Web API. Selected by two filters over the
   # thirteen non-admin families (bots, conversations, dnd, emoji, files, pins,
