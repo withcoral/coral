@@ -88,7 +88,8 @@ pub use contracts::{
     StructuredQueryError, TableFunctionArgumentInfo, TableFunctionInfo,
     TableFunctionResultColumnInfo, TableInfo, UdfRuntimeArgument, UdfRuntimeDefinition,
     UdfRuntimeImplementation, UdfRuntimePublish, UdfRuntimeResultColumn, UdfRuntimeSignature,
-    UdfRuntimeSqlDefinition, UdfRuntimeTableFunctionPublish,
+    UdfRuntimeSqlDefinition, UdfRuntimeTableFunctionPublish, UniversalSearchAuthorizationDecision,
+    UniversalSearchAuthorizationInfo, UniversalSearchAuthorizationOrigin,
 };
 pub use runtime::normalize_catalog_name;
 

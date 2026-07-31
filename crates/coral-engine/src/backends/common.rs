@@ -5,13 +5,13 @@ use std::sync::{Arc, OnceLock};
 
 use crate::{
     BoundRequestIdentityHttpAuthenticator, QueryRuntimeContext, QuerySource, RequestAuthenticator,
-    SourceInputResolver, SourceObservationPublisher,
+    SourceInputResolver, SourceObservationPublisher, UniversalSearchAuthorizationInfo,
 };
 use async_trait::async_trait;
 use coral_spec::{
-    ColumnSpec, DO_NOT_INDEX_COLUMN_METADATA_KEY, FilterSpec, ManifestDataType, ManifestInputKind,
-    ManifestInputSpec, SearchLimitsSpec, SourceBackend, SourceTableFunctionKind,
-    SourceTableFunctionSpec, TableCommon,
+    ColumnSpec, DO_NOT_INDEX_COLUMN_METADATA_KEY, DeclaredDefaultValue, FilterSpec,
+    ManifestDataType, ManifestInputKind, ManifestInputSpec, SearchLimitsSpec, SourceBackend,
+    SourceTableFunctionKind, SourceTableFunctionSpec, TableCommon,
 };
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::catalog::CatalogProvider;
@@ -88,6 +88,7 @@ pub(crate) struct RegisteredTableFunction {
     pub(crate) arguments: Vec<RegisteredTableFunctionArgument>,
     pub(crate) result_columns: Vec<RegisteredTableFunctionResultColumn>,
     pub(crate) search_limits: Option<SearchLimitsSpec>,
+    pub(crate) universal_search: Option<UniversalSearchAuthorizationInfo>,
 }
 
 #[derive(Debug, Clone)]
@@ -105,6 +106,7 @@ pub(crate) struct RegisteredTableFunctionArgument {
     pub(crate) data_type: ManifestDataType,
     pub(crate) required: bool,
     pub(crate) values: Vec<String>,
+    pub(crate) default: Option<DeclaredDefaultValue>,
 }
 
 #[derive(Debug, Clone)]
@@ -410,6 +412,7 @@ pub(crate) fn build_registered_table_function(
             data_type: arg.data_type,
             required: arg.required,
             values: arg.values.clone(),
+            default: arg.default.clone(),
         })
         .collect::<Vec<_>>();
     let result_columns = registered_columns_from_specs(&function.columns, &[])
@@ -433,6 +436,7 @@ pub(crate) fn build_registered_table_function(
         arguments,
         result_columns,
         search_limits: function.search_limits.clone(),
+        universal_search: None,
     }
 }
 

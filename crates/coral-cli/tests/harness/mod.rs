@@ -375,6 +375,7 @@ fn mock_validate_response() -> ValidateSourceResponse {
             result_columns: Vec::new(),
             kind: 0,
             search_limits: None,
+            universal_search: None,
         }],
         query_tests: Vec::new(),
     }

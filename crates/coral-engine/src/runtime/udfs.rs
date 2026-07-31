@@ -170,8 +170,10 @@ fn catalog_table_function(
             .iter()
             .map(|argument| CatalogTableFunctionArgument {
                 name: argument.name.clone(),
+                data_type: argument.data_type.as_manifest_str().to_string(),
                 required: true,
                 values: Vec::new(),
+                default: None,
             })
             .collect(),
         result_columns: udf
@@ -185,6 +187,7 @@ fn catalog_table_function(
             })
             .collect(),
         search_limits: None,
+        universal_search: None,
     }
 }
 

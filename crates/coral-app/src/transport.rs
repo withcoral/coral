@@ -13,6 +13,9 @@ use coral_api::{
         DescribeTableResponse as ProtoDescribeTableResponse, PaginationResponse, QueryTestFailure,
         QueryTestResult, QueryTestSuccess, SearchLimits, Source, Table, TableFunction,
         TableFunctionArgument, TableFunctionKind, TableFunctionResultColumn, TableSummary,
+        UniversalSearchAuthorization as ProtoUniversalSearchAuthorization,
+        UniversalSearchAuthorizationDecision as ProtoUniversalSearchAuthorizationDecision,
+        UniversalSearchAuthorizationOrigin as ProtoUniversalSearchAuthorizationOrigin,
         ValidateSourceResponse, Workspace, catalog_item, query_test_result,
     },
 };
@@ -456,6 +459,7 @@ pub(crate) fn table_function_to_proto(
                 name: argument.name,
                 required: argument.required,
                 values: argument.values,
+                data_type: argument.data_type,
             })
             .collect(),
         result_columns: function
@@ -471,6 +475,37 @@ pub(crate) fn table_function_to_proto(
         kind: table_function_kind_to_proto(function.kind) as i32,
         search_limits: function.search_limits.as_ref().map(search_limits_to_proto),
         guide: function.guide,
+        universal_search: function
+            .universal_search
+            .as_ref()
+            .map(universal_search_authorization_to_proto),
+    }
+}
+
+fn universal_search_authorization_to_proto(
+    authorization: &coral_engine::UniversalSearchAuthorizationInfo,
+) -> ProtoUniversalSearchAuthorization {
+    ProtoUniversalSearchAuthorization {
+        source_name: authorization.source_name.clone(),
+        route_id: authorization.route_id.clone(),
+        origin: match authorization.origin {
+            coral_engine::UniversalSearchAuthorizationOrigin::Explicit => {
+                ProtoUniversalSearchAuthorizationOrigin::Explicit
+            }
+            coral_engine::UniversalSearchAuthorizationOrigin::Inferred => {
+                ProtoUniversalSearchAuthorizationOrigin::Inferred
+            }
+        } as i32,
+        decision: match authorization.decision {
+            coral_engine::UniversalSearchAuthorizationDecision::Eligible => {
+                ProtoUniversalSearchAuthorizationDecision::Eligible
+            }
+            coral_engine::UniversalSearchAuthorizationDecision::Denied => {
+                ProtoUniversalSearchAuthorizationDecision::Denied
+            }
+        } as i32,
+        query_argument: authorization.query_argument.clone(),
+        operation_id: authorization.operation_id.clone(),
     }
 }
 
@@ -613,11 +648,17 @@ mod tests {
     use coral_api::{
         CORAL_ERROR_DOMAIN, CORAL_ERROR_METADATA_SUMMARY, CORAL_TASK_ID_METADATA_KEY,
         grpc_response_status_code,
-        v1::{QueryTestFailure, Workspace, query_test_result},
+        v1::{
+            QueryTestFailure, SearchLimits, TableFunction, TableFunctionArgument,
+            TableFunctionResultColumn, UniversalSearchAuthorization,
+            UniversalSearchAuthorizationDecision, UniversalSearchAuthorizationOrigin, Workspace,
+            query_test_result,
+        },
     };
     use opentelemetry::Value;
     use opentelemetry::trace::{Status as OtelStatus, TracerProvider as _};
     use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider, SpanData};
+    use prost::Message;
     use tonic::{Code, Request, Status};
     use tonic_types::{ErrorDetail, StatusExt as _};
     use tracing_subscriber::layer::SubscriberExt as _;
@@ -634,9 +675,41 @@ mod tests {
     use crate::workspaces::WorkspaceName;
     use coral_engine::{
         ColumnInfo, CoreError, QueryTestResult as EngineQueryTestResult, TableFunctionInfo,
-        TableInfo,
+        TableInfo, UniversalSearchAuthorizationDecision as EngineAuthorizationDecision,
+        UniversalSearchAuthorizationInfo,
+        UniversalSearchAuthorizationOrigin as EngineAuthorizationOrigin,
     };
     use coral_spec::SourceTableFunctionKind;
+
+    #[derive(Clone, PartialEq, Message)]
+    struct LegacyTableFunctionArgument {
+        #[prost(string, tag = "1")]
+        name: String,
+        #[prost(bool, tag = "2")]
+        required: bool,
+        #[prost(string, repeated, tag = "3")]
+        values: Vec<String>,
+    }
+
+    #[derive(Clone, PartialEq, Message)]
+    struct LegacyTableFunction {
+        #[prost(message, optional, tag = "1")]
+        workspace: Option<Workspace>,
+        #[prost(string, tag = "2")]
+        schema_name: String,
+        #[prost(string, tag = "3")]
+        name: String,
+        #[prost(string, tag = "4")]
+        description: String,
+        #[prost(message, repeated, tag = "5")]
+        arguments: Vec<LegacyTableFunctionArgument>,
+        #[prost(message, repeated, tag = "6")]
+        result_columns: Vec<TableFunctionResultColumn>,
+        #[prost(int32, tag = "7")]
+        kind: i32,
+        #[prost(message, optional, tag = "8")]
+        search_limits: Option<SearchLimits>,
+    }
 
     #[test]
     fn query_status_maps_app_errors() {
@@ -986,12 +1059,22 @@ mod tests {
             require_guide_read: true,
             arguments: vec![coral_engine::TableFunctionArgumentInfo {
                 name: "payload".to_string(),
+                data_type: "Json".to_string(),
                 required: true,
                 values: Vec::new(),
+                default_json: Some("null".to_string()),
             }],
             result_columns: Vec::new(),
             kind: SourceTableFunctionKind::Search,
             search_limits: None,
+            universal_search: Some(UniversalSearchAuthorizationInfo {
+                source_name: "installed_demo".to_string(),
+                route_id: Some("primary".to_string()),
+                origin: EngineAuthorizationOrigin::Explicit,
+                decision: EngineAuthorizationDecision::Eligible,
+                query_argument: Some("payload".to_string()),
+                operation_id: "search".to_string(),
+            }),
         };
 
         let proto = table_function_to_proto(&workspace_name, function);
@@ -1005,6 +1088,104 @@ mod tests {
         assert_eq!(proto.arguments[0].name, "payload");
         assert!(proto.arguments[0].required);
         assert!(proto.arguments[0].values.is_empty());
+        assert_eq!(proto.arguments[0].data_type, "Json");
+        let authorization = proto.universal_search.expect("authorization");
+        assert_eq!(authorization.source_name, "installed_demo");
+        assert_eq!(authorization.route_id.as_deref(), Some("primary"));
+        assert_eq!(
+            UniversalSearchAuthorizationOrigin::try_from(authorization.origin)
+                .expect("authorization origin"),
+            UniversalSearchAuthorizationOrigin::Explicit
+        );
+        assert_eq!(
+            UniversalSearchAuthorizationDecision::try_from(authorization.decision)
+                .expect("authorization decision"),
+            UniversalSearchAuthorizationDecision::Eligible
+        );
+        assert_eq!(authorization.query_argument.as_deref(), Some("payload"));
+        assert_eq!(authorization.operation_id, "search");
+    }
+
+    #[test]
+    fn table_function_proto_is_wire_compatible_with_legacy_clients() {
+        let legacy = LegacyTableFunction {
+            workspace: Some(Workspace {
+                name: "default".to_string(),
+            }),
+            schema_name: "demo".to_string(),
+            name: "search".to_string(),
+            description: "Search demo records".to_string(),
+            arguments: vec![LegacyTableFunctionArgument {
+                name: "mode".to_string(),
+                required: true,
+                values: vec!["lexical".to_string(), "semantic".to_string()],
+            }],
+            result_columns: vec![TableFunctionResultColumn {
+                name: "title".to_string(),
+                data_type: "Utf8".to_string(),
+                nullable: false,
+                description: "Result title".to_string(),
+            }],
+            kind: 2,
+            search_limits: Some(SearchLimits {
+                default_top_k: 10,
+                max_top_k: 25,
+                max_calls_per_query: 2,
+            }),
+        };
+        let current = TableFunction {
+            workspace: legacy.workspace.clone(),
+            schema_name: legacy.schema_name.clone(),
+            name: legacy.name.clone(),
+            description: legacy.description.clone(),
+            guide: String::new(),
+            arguments: vec![TableFunctionArgument {
+                name: legacy.arguments[0].name.clone(),
+                required: legacy.arguments[0].required,
+                values: legacy.arguments[0].values.clone(),
+                data_type: "Utf8".to_string(),
+            }],
+            result_columns: legacy.result_columns.clone(),
+            kind: legacy.kind,
+            search_limits: legacy.search_limits,
+            universal_search: Some(UniversalSearchAuthorization {
+                source_name: "installed_demo".to_string(),
+                route_id: Some("primary".to_string()),
+                origin: UniversalSearchAuthorizationOrigin::Explicit as i32,
+                decision: UniversalSearchAuthorizationDecision::Eligible as i32,
+                query_argument: Some("mode".to_string()),
+                operation_id: "search".to_string(),
+            }),
+        };
+
+        let decoded_by_legacy =
+            LegacyTableFunction::decode(current.encode_to_vec().as_slice()).expect("legacy decode");
+        assert_eq!(decoded_by_legacy, legacy);
+
+        let decoded_by_current =
+            TableFunction::decode(legacy.encode_to_vec().as_slice()).expect("current decode");
+        assert_eq!(decoded_by_current.workspace, current.workspace);
+        assert_eq!(decoded_by_current.schema_name, current.schema_name);
+        assert_eq!(decoded_by_current.name, current.name);
+        assert_eq!(decoded_by_current.description, current.description);
+        assert_eq!(decoded_by_current.arguments.len(), 1);
+        assert_eq!(
+            decoded_by_current.arguments[0].name,
+            current.arguments[0].name
+        );
+        assert_eq!(
+            decoded_by_current.arguments[0].required,
+            current.arguments[0].required
+        );
+        assert_eq!(
+            decoded_by_current.arguments[0].values,
+            current.arguments[0].values
+        );
+        assert_eq!(decoded_by_current.result_columns, current.result_columns);
+        assert_eq!(decoded_by_current.kind, current.kind);
+        assert_eq!(decoded_by_current.search_limits, current.search_limits);
+        assert!(decoded_by_current.arguments[0].data_type.is_empty());
+        assert!(decoded_by_current.universal_search.is_none());
     }
 
     #[test]

@@ -8,7 +8,8 @@ mod udfs;
 
 pub use catalog::{
     CatalogInfo, ColumnInfo, DescribeTableInfo, TableFunctionArgumentInfo, TableFunctionInfo,
-    TableFunctionResultColumnInfo, TableInfo,
+    TableFunctionResultColumnInfo, TableInfo, UniversalSearchAuthorizationDecision,
+    UniversalSearchAuthorizationInfo, UniversalSearchAuthorizationOrigin,
 };
 pub use error::{CoreError, StatusCode, StructuredQueryError};
 pub use query::{

@@ -6,7 +6,10 @@
 
 use std::collections::BTreeMap;
 
-use coral_engine::{CoralQuery, CoreError, QuerySource, TableInfo};
+use coral_engine::{
+    CoralQuery, CoreError, QuerySource, RuntimeSourceComponent, RuntimeSourcePackage, TableInfo,
+};
+use coral_spec::{DeclaredDefaultValue, parse_source_manifest_value};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -395,9 +398,6 @@ fn http_manifest_with_function() -> Value {
                     "values": ["lexical", "semantic", "hybrid"],
                     "bind": { "arg": "search_type" }
                 },
-                // OpenAPI v4 generation does not produce Json HTTP function args.
-                // This fixture verifies typed args still register and list even
-                // though public catalog metadata does not expose arg types yet.
                 {
                     "name": "metadata",
                     "type": "Json",
@@ -427,6 +427,48 @@ fn http_manifest_with_function() -> Value {
             ]
         }]
     })
+}
+
+fn build_materialized_v4_runtime_source_with_function() -> QuerySource {
+    // coral-engine consumes the backend-ready runtime component produced by
+    // DSL v4 materialization, not the authored DSL v4 manifest. Start from the
+    // validated HTTP component fixture, mark that generated component as v4,
+    // and attach the typed defaults that materialization preserves.
+    let parsed = parse_source_manifest_value(http_manifest_with_function())
+        .expect("base HTTP manifest should parse");
+    let mut runtime_manifest = parsed.as_http().expect("HTTP manifest").clone();
+    runtime_manifest.common.dsl_version = 4;
+    let function = runtime_manifest
+        .functions
+        .first_mut()
+        .expect("search function");
+    function
+        .args
+        .iter_mut()
+        .find(|argument| argument.name == "mode")
+        .expect("mode argument")
+        .default = Some(DeclaredDefaultValue::new(json!("lexical")));
+    function
+        .args
+        .iter_mut()
+        .find(|argument| argument.name == "metadata")
+        .expect("metadata argument")
+        .default = Some(DeclaredDefaultValue::new(Value::Null));
+
+    QuerySource::from_runtime_components(
+        RuntimeSourcePackage {
+            source_name: parsed.schema_name().to_string(),
+            authored_version: None,
+            description: parsed.description().to_string(),
+            declared_inputs: parsed.declared_inputs().to_vec(),
+            test_queries: parsed.test_queries().to_vec(),
+            identity_requirements: None,
+            components: vec![RuntimeSourceComponent::Http(runtime_manifest)],
+        },
+        BTreeMap::new(),
+        BTreeMap::new(),
+    )
+    .expect("DSL v4 runtime source should assemble")
 }
 
 fn build_demo_source(variables: &[(&str, &str)], secrets: &[(&str, &str)]) -> QuerySource {
@@ -483,7 +525,7 @@ async fn coral_table_functions_lists_source_functions() {
         &CoralQuery::execute_sql(
             &sources,
             test_runtime(),
-            "SELECT schema_name, function_name, kind, description, arguments_json, result_columns_json, search_limits_json, guide \
+            "SELECT schema_name, function_name, kind, description, arguments_json, result_columns_json, search_limits_json, guide, universal_search_json \
              FROM coral.table_functions WHERE schema_name = 'searchy'",
         )
         .await
@@ -500,12 +542,13 @@ async fn coral_table_functions_lists_source_functions() {
     assert_eq!(
         serde_json::from_str::<Value>(row["arguments_json"].as_str().unwrap()).unwrap(),
         json!([
-            { "name": "q", "required": true, "values": [] },
-            { "name": "mode", "required": false, "values": ["lexical", "semantic", "hybrid"] },
-            { "name": "metadata", "required": false, "values": [] },
-            { "name": "since", "required": false, "values": [] }
+            { "name": "q", "type": "Utf8", "required": true, "values": [] },
+            { "name": "mode", "type": "Utf8", "required": false, "values": ["lexical", "semantic", "hybrid"] },
+            { "name": "metadata", "type": "Json", "required": false, "values": [] },
+            { "name": "since", "type": "Timestamp", "required": false, "values": [] }
         ])
     );
+    assert!(row["universal_search_json"].is_null());
     assert_eq!(
         serde_json::from_str::<Value>(row["result_columns_json"].as_str().unwrap()).unwrap(),
         json!([
@@ -521,6 +564,33 @@ async fn coral_table_functions_lists_source_functions() {
             "max_top_k": 100,
             "max_calls_per_query": 1
         })
+    );
+}
+
+#[tokio::test]
+async fn coral_table_functions_preserves_materialized_v4_typed_defaults() {
+    let sources = vec![build_materialized_v4_runtime_source_with_function()];
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &sources,
+            test_runtime(),
+            "SELECT arguments_json FROM coral.table_functions \
+             WHERE schema_name = 'searchy' AND function_name = 'search_issues'",
+        )
+        .await
+        .expect("table function catalog query should succeed"),
+    );
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        serde_json::from_str::<Value>(rows[0]["arguments_json"].as_str().unwrap()).unwrap(),
+        json!([
+            { "name": "q", "type": "Utf8", "required": true, "values": [] },
+            { "name": "mode", "type": "Utf8", "required": false, "values": ["lexical", "semantic", "hybrid"], "default": "lexical" },
+            { "name": "metadata", "type": "Json", "required": false, "values": [], "default": null },
+            { "name": "since", "type": "Timestamp", "required": false, "values": [] }
+        ])
     );
 }
 
@@ -634,6 +704,7 @@ async fn coral_search_metadata_appends_columns_without_shifting_existing_ordinal
             "kind",
             "search_limits_json",
             "guide",
+            "universal_search_json",
         ]
     );
 
@@ -752,7 +823,7 @@ async fn coral_columns_exposes_filter_mode_for_virtual_filters() {
 
 #[tokio::test]
 async fn list_catalog_matches_table_function_metadata() {
-    let sources = vec![build_source(http_manifest_with_function())];
+    let sources = vec![build_materialized_v4_runtime_source_with_function()];
 
     let catalog = CoralQuery::list_catalog(&sources, test_runtime(), None, Some("searchy"))
         .await
@@ -767,12 +838,16 @@ async fn list_catalog_matches_table_function_metadata() {
     assert_eq!(function.guide, "Prefer this function for issue lookup.");
     assert_eq!(function.arguments.len(), 4);
     assert_eq!(function.arguments[0].name, "q");
+    assert_eq!(function.arguments[0].data_type, "Utf8");
+    assert!(function.arguments[0].default_json.is_none());
     assert!(function.arguments[0].required);
     assert_eq!(
         function.arguments[1].values,
         ["lexical", "semantic", "hybrid"]
     );
     assert_eq!(function.arguments[2].name, "metadata");
+    assert_eq!(function.arguments[2].data_type, "Json");
+    assert_eq!(function.arguments[2].default_json.as_deref(), Some("null"));
     assert_eq!(function.arguments[3].name, "since");
     assert_eq!(function.result_columns.len(), 3);
     assert_eq!(function.result_columns[0].name, "id");
