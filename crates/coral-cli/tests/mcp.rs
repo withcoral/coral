@@ -21,7 +21,10 @@ use coral_api::v1::{
 };
 use coral_app::{ServerBuilder, shutdown_tracing};
 use coral_client::{AppClient, default_workspace};
-use harness::{MockServer, MockServerConfig, assert_default_workspace, assert_workspace_name};
+use harness::{
+    MockServer, MockServerConfig, assert_default_workspace, assert_workspace_name,
+    mock_native_search_response,
+};
 use rmcp::{
     RoleClient, ServiceExt,
     model::{CallToolRequestParams, CallToolResult, ReadResourceRequestParams},
@@ -1294,6 +1297,52 @@ async fn mcp_stdio_sql_and_catalog_tools_return_structured_content()
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_search_returns_native_result_and_diagnostic_contracts()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start_with_config(
+        MockServerConfig::default().with_search_response(mock_native_search_response()),
+    )
+    .await;
+    let client = start_mcp_client(&server).await?;
+    let task_id = start_test_task(&client).await?;
+
+    let search = structured_tool_content(
+        &client,
+        CallToolRequestParams::new("search").with_arguments(task_arguments(
+            &task_id,
+            &json!({
+                "query": "native",
+                "limit": 10
+            }),
+        )),
+    )
+    .await?;
+    assert_eq!(search["results"][0]["kind"], "native_result");
+    assert_eq!(
+        search["results"][0]["native_result"]["attributes"][0]["name"],
+        "state"
+    );
+    assert!(
+        search["results"][0]["native_result"]
+            .get("snippet")
+            .is_none()
+    );
+    let diagnostic = &search["provider_statuses"][0]["diagnostics"][0];
+    assert_eq!(diagnostic["source_name"], "github");
+    assert!(diagnostic.get("installed_source_name").is_none());
+    assert!(diagnostic.get("schema_name").is_none());
+    assert_eq!(diagnostic["reason"], "fanout_limit_reached");
+    assert_eq!(
+        search["provider_statuses"][0]["omitted_diagnostic_count"],
+        2
+    );
+
+    client.cancel().await?;
+    server.shutdown().await;
+    Ok(())
+}
+
 async fn assert_list_catalog_tool(
     client: &RunningService<RoleClient, ()>,
     server: &MockServer,
@@ -1407,6 +1456,14 @@ async fn assert_search_tool(
     );
     assert_eq!(search["provider_statuses"][0]["state"], "results_found");
     assert!(search["provider_statuses"][1]["coverage"].is_null());
+    for status in search["provider_statuses"]
+        .as_array()
+        .expect("provider statuses")
+    {
+        assert!(status.get("diagnostics").is_none());
+        assert!(status.get("diagnostics_truncated").is_none());
+        assert!(status.get("omitted_diagnostic_count").is_none());
+    }
 
     let search_requests = server.search_requests();
     let request = search_requests.last().expect("search request");

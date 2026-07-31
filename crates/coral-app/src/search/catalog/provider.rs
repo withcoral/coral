@@ -435,6 +435,9 @@ fn catalog_search_outcome(
                 stale_index: projection.stale_index || has_failures,
                 ..ProviderCoverage::default()
             }),
+            diagnostics: Vec::new(),
+            diagnostics_truncated: false,
+            omitted_diagnostic_count: 0,
         },
     }
 }
@@ -736,6 +739,9 @@ fn catalog_query_error_outcome(error: &QueryManagerError) -> ProviderSearchOutco
             state: SearchProviderState::Error,
             note: format!("Workspace catalog is unavailable: {detail}"),
             coverage: Some(ProviderCoverage::default()),
+            diagnostics: Vec::new(),
+            diagnostics_truncated: false,
+            omitted_diagnostic_count: 0,
         },
     }
 }
@@ -754,6 +760,9 @@ fn catalog_index_note_outcome(note: String) -> ProviderSearchOutcome {
             state: SearchProviderState::Error,
             note,
             coverage: Some(ProviderCoverage::default()),
+            diagnostics: Vec::new(),
+            diagnostics_truncated: false,
+            omitted_diagnostic_count: 0,
         },
     }
 }

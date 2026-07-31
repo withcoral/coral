@@ -29,7 +29,7 @@ use tonic::Code;
 
 use harness::{
     MockServer, MockServerConfig, assert_default_workspace, assert_workspace_name,
-    encode_arrow_ipc_stream,
+    encode_arrow_ipc_stream, mock_native_search_response,
 };
 
 #[cfg(feature = "embedded-ui")]
@@ -977,6 +977,10 @@ async fn search_command_renders_text_output_and_provider_statuses() {
         stdout.contains("- native_fanout: skipped"),
         "skipped provider should remain visible: {stdout}"
     );
+    assert!(
+        !stdout.contains("Diagnostics"),
+        "empty native diagnostics must not change existing text output: {stdout}"
+    );
 
     let requests = server.search_requests();
     assert_eq!(requests.len(), 1, "expected one search call");
@@ -1022,6 +1026,21 @@ async fn search_json_output_preserves_typed_payloads_and_statuses() {
     assert!(response["provider_statuses"][1]["coverage"].is_null());
     assert_eq!(response["provider_statuses"][2]["state"], "skipped");
     assert!(response["provider_statuses"][2]["coverage"].is_null());
+    assert!(
+        response["provider_statuses"][2]
+            .get("diagnostics")
+            .is_none()
+    );
+    assert!(
+        response["provider_statuses"][2]
+            .get("diagnostics_truncated")
+            .is_none()
+    );
+    assert!(
+        response["provider_statuses"][2]
+            .get("omitted_diagnostic_count")
+            .is_none()
+    );
     assert_eq!(response["truncation"]["returned_count"], 2);
 
     let requests = server.search_requests();
@@ -1029,6 +1048,50 @@ async fn search_json_output_preserves_typed_payloads_and_statuses() {
     assert_eq!(requests[0].query, "messages");
     assert_eq!(requests[0].limit, 5);
     assert_default_workspace(requests[0].workspace.as_ref());
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn search_command_renders_native_results_and_bounded_diagnostics() {
+    let server = MockServer::start_with_config(
+        MockServerConfig::default().with_search_response(mock_native_search_response()),
+    )
+    .await;
+
+    let json_assert = server
+        .cmd()
+        .args(["search", "--json", "native"])
+        .assert()
+        .success();
+    let json_stdout = String::from_utf8_lossy(&json_assert.get_output().stdout);
+    let response: serde_json::Value =
+        serde_json::from_str(json_stdout.trim()).expect("native search JSON");
+    let result = &response["results"][0];
+    assert_eq!(result["kind"], "native_result");
+    assert_eq!(result["native_result"]["schema_name"], "github");
+    assert_eq!(result["native_result"]["function_name"], "search_issues");
+    assert!(result["native_result"].get("snippet").is_none());
+    assert_eq!(result["native_result"]["attributes"][0]["name"], "state");
+    assert_eq!(result["native_result"]["attributes"][1]["name"], "author");
+    let status = &response["provider_statuses"][0];
+    let diagnostic = &status["diagnostics"][0];
+    assert_eq!(diagnostic["source_name"], "github");
+    assert!(diagnostic.get("installed_source_name").is_none());
+    assert!(diagnostic.get("schema_name").is_none());
+    assert_eq!(diagnostic["state"], "skipped");
+    assert_eq!(diagnostic["reason"], "fanout_limit_reached");
+    assert_eq!(diagnostic["elapsed_ms"], 0);
+    assert_eq!(status["omitted_diagnostic_count"], 2);
+
+    let text_assert = server.cmd().args(["search", "native"]).assert().success();
+    let text = String::from_utf8_lossy(&text_assert.get_output().stdout);
+    assert!(text.contains("native result github.search_issues row 0"));
+    assert!(text.contains("Attributes: state=open, author=octocat"));
+    assert!(text.contains("github.search_pull_requests: skipped/fanout_limit_reached"));
+    assert!(!text.contains("github (github.search_pull_requests)"));
+    assert!(text.contains("skipped/fanout_limit_reached (0 ms, 0 candidate(s))"));
+    assert!(text.contains("Diagnostics truncated: 2 omitted"));
 
     server.shutdown().await;
 }

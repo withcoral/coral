@@ -3,11 +3,12 @@
 use std::fmt::Write as _;
 
 use coral_api::v1::{
-    CatalogItem, CatalogMetadata, ColumnHint, ObservedValue, SearchFieldRole, SearchLimits,
-    SearchProvider, SearchProviderCoverage, SearchProviderState, SearchResponse, SearchResult,
-    SearchResultTruncation, SearchSurfaceKind, SearchTableColumnPreview,
-    SearchTableColumnPreviewColumn, TableFunction, TableFunctionArgument, TableFunctionKind,
-    TableFunctionResultColumn, TableSummary, catalog_item, search_result,
+    CatalogItem, CatalogMetadata, ColumnHint, NativeSearchAttribute, NativeSearchDiagnostic,
+    NativeSearchDiagnosticReason, NativeSearchDiagnosticState, NativeSearchResult, ObservedValue,
+    SearchFieldRole, SearchLimits, SearchProvider, SearchProviderCoverage, SearchProviderState,
+    SearchResponse, SearchResult, SearchResultTruncation, SearchSurfaceKind,
+    SearchTableColumnPreview, SearchTableColumnPreviewColumn, TableFunction, TableFunctionArgument,
+    TableFunctionKind, TableFunctionResultColumn, TableSummary, catalog_item, search_result,
 };
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -62,6 +63,11 @@ enum SearchResultValue<'a> {
         kind: &'static str,
         observed_value: ObservedValueValue<'a>,
     },
+    NativeResult {
+        provider: &'static str,
+        kind: &'static str,
+        native_result: NativeSearchResultValue<'a>,
+    },
     Unknown {
         provider: &'static str,
         kind: &'static str,
@@ -86,6 +92,11 @@ impl<'a> From<&'a SearchResult> for SearchResultValue<'a> {
                 provider,
                 kind: "observed_value",
                 observed_value: ObservedValueValue::from(observed),
+            },
+            Some(search_result::Payload::NativeResult(native)) => Self::NativeResult {
+                provider,
+                kind: "native_result",
+                native_result: NativeSearchResultValue::from(native),
             },
             None => Self::Unknown {
                 provider,
@@ -423,11 +434,76 @@ impl<'a> From<&'a ObservedValue> for ObservedValueValue<'a> {
 
 #[derive(Serialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
+struct NativeSearchResultValue<'a> {
+    schema_name: &'a str,
+    function_name: &'a str,
+    row_ordinal: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    entity_type: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    title: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    url: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    snippet: Option<&'a str>,
+    attributes: Vec<NativeSearchAttributeValue<'a>>,
+    omitted_attribute_count: u32,
+    content_truncated: bool,
+}
+
+impl<'a> From<&'a NativeSearchResult> for NativeSearchResultValue<'a> {
+    fn from(result: &'a NativeSearchResult) -> Self {
+        Self {
+            schema_name: &result.schema_name,
+            function_name: &result.function_name,
+            row_ordinal: result.row_ordinal,
+            entity_type: result.entity_type.as_deref(),
+            provider_id: result.provider_id.as_deref(),
+            title: result.title.as_deref(),
+            url: result.url.as_deref(),
+            snippet: result.snippet.as_deref(),
+            attributes: result
+                .attributes
+                .iter()
+                .map(NativeSearchAttributeValue::from)
+                .collect(),
+            omitted_attribute_count: result.omitted_attribute_count,
+            content_truncated: result.content_truncated,
+        }
+    }
+}
+
+#[derive(Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+struct NativeSearchAttributeValue<'a> {
+    name: &'a str,
+    display_value: &'a str,
+}
+
+impl<'a> From<&'a NativeSearchAttribute> for NativeSearchAttributeValue<'a> {
+    fn from(attribute: &'a NativeSearchAttribute) -> Self {
+        Self {
+            name: &attribute.name,
+            display_value: &attribute.display_value,
+        }
+    }
+}
+
+#[derive(Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 struct SearchProviderStatusValue<'a> {
     provider: &'static str,
     state: &'static str,
     note: &'a str,
     coverage: Option<SearchProviderCoverageValue>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    diagnostics: Vec<NativeSearchDiagnosticValue<'a>>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    diagnostics_truncated: bool,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    omitted_diagnostic_count: u32,
 }
 
 impl<'a> From<&'a coral_api::v1::SearchProviderStatus> for SearchProviderStatusValue<'a> {
@@ -440,8 +516,61 @@ impl<'a> From<&'a coral_api::v1::SearchProviderStatus> for SearchProviderStatusV
                 .coverage
                 .as_ref()
                 .map(SearchProviderCoverageValue::from),
+            diagnostics: status
+                .diagnostics
+                .iter()
+                .map(NativeSearchDiagnosticValue::from)
+                .collect(),
+            diagnostics_truncated: status.diagnostics_truncated,
+            omitted_diagnostic_count: status.omitted_diagnostic_count,
         }
     }
+}
+
+#[derive(Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+struct NativeSearchDiagnosticValue<'a> {
+    source_name: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    function_name: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    authored_route_id: Option<&'a str>,
+    state: &'static str,
+    reason: &'static str,
+    elapsed_ms: u64,
+    safe_candidate_count: u32,
+    has_more: bool,
+}
+
+impl<'a> From<&'a NativeSearchDiagnostic> for NativeSearchDiagnosticValue<'a> {
+    fn from(diagnostic: &'a NativeSearchDiagnostic) -> Self {
+        Self {
+            source_name: &diagnostic.source_name,
+            function_name: diagnostic.function_name.as_deref(),
+            authored_route_id: diagnostic.authored_route_id.as_deref(),
+            state: native_diagnostic_state_name(diagnostic.state),
+            reason: native_diagnostic_reason_name(diagnostic.reason),
+            elapsed_ms: diagnostic.elapsed_ms,
+            safe_candidate_count: diagnostic.safe_candidate_count,
+            has_more: diagnostic.has_more,
+        }
+    }
+}
+
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde skip_serializing_if callbacks receive a reference"
+)]
+fn is_false(value: &bool) -> bool {
+    !value
+}
+
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde skip_serializing_if callbacks receive a reference"
+)]
+fn is_zero(value: &u32) -> bool {
+    *value == 0
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -573,6 +702,9 @@ fn result_text_lines(index: usize, result: &SearchResult) -> Vec<String> {
         Some(search_result::Payload::ObservedValue(observed)) => {
             observed_value_text_lines(index, provider, observed)
         }
+        Some(search_result::Payload::NativeResult(native)) => {
+            native_result_text_lines(index, provider, native)
+        }
         None => vec![format!("{index}. [{provider}] unknown result payload")],
     }
 }
@@ -678,6 +810,49 @@ fn observed_value_text_lines(
     lines
 }
 
+fn native_result_text_lines(
+    index: usize,
+    provider: &str,
+    result: &NativeSearchResult,
+) -> Vec<String> {
+    let mut lines = vec![format!(
+        "{index}. [{provider}] native result {}.{} row {}",
+        result.schema_name, result.function_name, result.row_ordinal
+    )];
+    for (label, value) in [
+        ("Entity type", result.entity_type.as_deref()),
+        ("Provider id", result.provider_id.as_deref()),
+        ("Title", result.title.as_deref()),
+        ("URL", result.url.as_deref()),
+        ("Snippet", result.snippet.as_deref()),
+    ] {
+        if let Some(value) = value {
+            lines.push(format!("   {label}: {value}"));
+        }
+    }
+    if !result.attributes.is_empty() {
+        lines.push(format!(
+            "   Attributes: {}",
+            result
+                .attributes
+                .iter()
+                .map(|attribute| format!("{}={}", attribute.name, attribute.display_value))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if result.omitted_attribute_count > 0 {
+        lines.push(format!(
+            "   Omitted attributes: {}",
+            result.omitted_attribute_count
+        ));
+    }
+    if result.content_truncated {
+        lines.push("   Content truncated: true".to_string());
+    }
+    lines
+}
+
 fn provider_status_text(status: &coral_api::v1::SearchProviderStatus) -> String {
     let mut line = format!(
         "- {}: {}",
@@ -699,7 +874,43 @@ fn provider_status_text(status: &coral_api::v1::SearchProviderStatus) -> String 
         line.push_str(": ");
         line.push_str(&status.note);
     }
+    for diagnostic in &status.diagnostics {
+        write!(
+            line,
+            "\n  - {}: {}/{} ({} ms, {} candidate(s){}{})",
+            diagnostic_identity_text(diagnostic),
+            native_diagnostic_state_name(diagnostic.state),
+            native_diagnostic_reason_name(diagnostic.reason),
+            diagnostic.elapsed_ms,
+            diagnostic.safe_candidate_count,
+            if diagnostic.has_more {
+                ", has more"
+            } else {
+                ""
+            },
+            diagnostic
+                .authored_route_id
+                .as_deref()
+                .map_or_else(String::new, |route_id| format!(", route {route_id}"))
+        )
+        .expect("writing to string should not fail");
+    }
+    if status.diagnostics_truncated || status.omitted_diagnostic_count > 0 {
+        write!(
+            line,
+            "\n  Diagnostics truncated: {} omitted",
+            status.omitted_diagnostic_count
+        )
+        .expect("writing to string should not fail");
+    }
     line
+}
+
+fn diagnostic_identity_text(diagnostic: &NativeSearchDiagnostic) -> String {
+    diagnostic.function_name.as_deref().map_or_else(
+        || diagnostic.source_name.clone(),
+        |function| format!("{}.{function}", diagnostic.source_name),
+    )
 }
 
 fn push_optional_fields_line(lines: &mut Vec<String>, label: &str, fields: &[String]) {
@@ -829,6 +1040,44 @@ fn provider_state_name(state: i32) -> &'static str {
     }
 }
 
+fn native_diagnostic_state_name(state: i32) -> &'static str {
+    match NativeSearchDiagnosticState::try_from(state) {
+        Ok(NativeSearchDiagnosticState::ResultsFound) => "results_found",
+        Ok(NativeSearchDiagnosticState::Empty) => "empty",
+        Ok(NativeSearchDiagnosticState::Skipped) => "skipped",
+        Ok(NativeSearchDiagnosticState::TimedOut) => "timed_out",
+        Ok(NativeSearchDiagnosticState::Cancelled) => "cancelled",
+        Ok(NativeSearchDiagnosticState::Error) => "error",
+        Ok(NativeSearchDiagnosticState::Unspecified) | Err(_) => "unspecified",
+    }
+}
+
+fn native_diagnostic_reason_name(reason: i32) -> &'static str {
+    match NativeSearchDiagnosticReason::try_from(reason) {
+        Ok(NativeSearchDiagnosticReason::NotAuthorized) => "not_authorized",
+        Ok(NativeSearchDiagnosticReason::AmbiguousRoute) => "ambiguous_route",
+        Ok(NativeSearchDiagnosticReason::InvalidSearchLimits) => "invalid_search_limits",
+        Ok(NativeSearchDiagnosticReason::QueryInputUnmappable) => "query_input_unmappable",
+        Ok(NativeSearchDiagnosticReason::MissingArgumentDefault) => "missing_argument_default",
+        Ok(NativeSearchDiagnosticReason::RouteStale) => "route_stale",
+        Ok(NativeSearchDiagnosticReason::UnsafeOperation) => "unsafe_operation",
+        Ok(NativeSearchDiagnosticReason::NoSafeDisplayFields) => "no_safe_display_fields",
+        Ok(NativeSearchDiagnosticReason::FanoutLimitReached) => "fanout_limit_reached",
+        Ok(NativeSearchDiagnosticReason::InsufficientBudget) => "insufficient_budget",
+        Ok(NativeSearchDiagnosticReason::GlobalBudgetExhausted) => "global_budget_exhausted",
+        Ok(NativeSearchDiagnosticReason::CallTimeout) => "call_timeout",
+        Ok(NativeSearchDiagnosticReason::Cancelled) => "cancelled",
+        Ok(NativeSearchDiagnosticReason::RateLimited) => "rate_limited",
+        Ok(NativeSearchDiagnosticReason::AuthOrPermissionFailed) => "auth_or_permission_failed",
+        Ok(NativeSearchDiagnosticReason::UpstreamUnavailable) => "upstream_unavailable",
+        Ok(NativeSearchDiagnosticReason::InvalidResponse) => "invalid_response",
+        Ok(NativeSearchDiagnosticReason::ExecutionFailed) => "execution_failed",
+        Ok(NativeSearchDiagnosticReason::UnsupportedCancellation) => "unsupported_cancellation",
+        Ok(NativeSearchDiagnosticReason::InternalError) => "internal_error",
+        Ok(NativeSearchDiagnosticReason::Unspecified) | Err(_) => "unspecified",
+    }
+}
+
 fn surface_kind_name(kind: i32) -> &'static str {
     match SearchSurfaceKind::try_from(kind) {
         Ok(SearchSurfaceKind::Table) => "table",
@@ -856,8 +1105,61 @@ fn table_function_kind_name(kind: i32) -> &'static str {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "unit test assertions use fixed fixture indexes for readability"
+)]
 mod tests {
     use super::*;
+
+    fn native_response() -> SearchResponse {
+        SearchResponse {
+            results: vec![SearchResult {
+                provider: SearchProvider::NativeFanout as i32,
+                payload: Some(search_result::Payload::NativeResult(NativeSearchResult {
+                    schema_name: "github".to_string(),
+                    function_name: "search_issues".to_string(),
+                    row_ordinal: 1,
+                    entity_type: Some("issue".to_string()),
+                    provider_id: None,
+                    title: Some("Fix native search".to_string()),
+                    url: None,
+                    snippet: Some("Compact preview".to_string()),
+                    attributes: vec![
+                        NativeSearchAttribute {
+                            name: "state".to_string(),
+                            display_value: "open".to_string(),
+                        },
+                        NativeSearchAttribute {
+                            name: "author".to_string(),
+                            display_value: "octocat".to_string(),
+                        },
+                    ],
+                    omitted_attribute_count: 2,
+                    content_truncated: true,
+                })),
+            }],
+            provider_statuses: vec![coral_api::v1::SearchProviderStatus {
+                provider: SearchProvider::NativeFanout as i32,
+                state: SearchProviderState::Partial as i32,
+                note: "one route was skipped".to_string(),
+                coverage: None,
+                diagnostics: vec![NativeSearchDiagnostic {
+                    source_name: "github".to_string(),
+                    function_name: None,
+                    authored_route_id: Some("issues".to_string()),
+                    state: NativeSearchDiagnosticState::Skipped as i32,
+                    reason: NativeSearchDiagnosticReason::InsufficientBudget as i32,
+                    elapsed_ms: 19,
+                    safe_candidate_count: 0,
+                    has_more: false,
+                }],
+                diagnostics_truncated: true,
+                omitted_diagnostic_count: 3,
+            }],
+            truncation: None,
+        }
+    }
 
     #[test]
     fn text_output_renders_table_function_guide() {
@@ -914,5 +1216,223 @@ mod tests {
             text.contains("Field path: labels.name"),
             "observed value text should include nested field path: {text}"
         );
+    }
+
+    #[test]
+    fn native_json_omits_absent_fields_and_preserves_attribute_order() {
+        let json = search_response_json_value(&native_response());
+        let result = &json["results"][0]["native_result"];
+
+        assert_eq!(result["schema_name"], "github");
+        assert_eq!(result["function_name"], "search_issues");
+        assert_eq!(result["row_ordinal"], 1);
+        assert_eq!(result["entity_type"], "issue");
+        assert!(result.get("provider_id").is_none());
+        assert!(result.get("url").is_none());
+        assert_eq!(result["attributes"][0]["name"], "state");
+        assert_eq!(result["attributes"][1]["name"], "author");
+
+        let diagnostic = &json["provider_statuses"][0]["diagnostics"][0];
+        assert_eq!(diagnostic["source_name"], "github");
+        assert!(diagnostic.get("installed_source_name").is_none());
+        assert!(diagnostic.get("schema_name").is_none());
+        assert!(diagnostic.get("function_name").is_none());
+        assert_eq!(diagnostic["authored_route_id"], "issues");
+        assert_eq!(diagnostic["state"], "skipped");
+        assert_eq!(diagnostic["reason"], "insufficient_budget");
+        assert_eq!(diagnostic["elapsed_ms"], 19);
+        assert_eq!(json["provider_statuses"][0]["omitted_diagnostic_count"], 3);
+    }
+
+    #[test]
+    fn native_text_renders_only_present_display_fields_and_diagnostics() {
+        let text = format_search_response_text(&native_response());
+
+        assert!(text.contains("native result github.search_issues row 1"));
+        assert!(text.contains("Entity type: issue"));
+        assert!(text.contains("Title: Fix native search"));
+        assert!(!text.contains("Provider id:"));
+        assert!(!text.contains("URL:"));
+        assert!(text.contains("Attributes: state=open, author=octocat"));
+        assert!(
+            text.contains(
+                "github: skipped/insufficient_budget (19 ms, 0 candidate(s), route issues)"
+            )
+        );
+        assert!(text.contains("Diagnostics truncated: 3 omitted"));
+    }
+
+    #[test]
+    fn native_text_renders_resolved_diagnostic_as_source_and_function() {
+        let mut response = native_response();
+        response.provider_statuses[0].diagnostics[0].function_name =
+            Some("search_pull_requests".to_string());
+
+        let text = format_search_response_text(&response);
+
+        assert!(text.contains(
+            "github.search_pull_requests: skipped/insufficient_budget \
+             (19 ms, 0 candidate(s), route issues)"
+        ));
+        assert!(!text.contains("github (github."));
+    }
+
+    #[test]
+    fn native_diagnostic_enum_names_cover_every_stable_wire_value() {
+        let states = [
+            (NativeSearchDiagnosticState::ResultsFound, "results_found"),
+            (NativeSearchDiagnosticState::Empty, "empty"),
+            (NativeSearchDiagnosticState::Skipped, "skipped"),
+            (NativeSearchDiagnosticState::TimedOut, "timed_out"),
+            (NativeSearchDiagnosticState::Cancelled, "cancelled"),
+            (NativeSearchDiagnosticState::Error, "error"),
+        ];
+        for (state, expected) in states {
+            assert_eq!(native_diagnostic_state_name(state as i32), expected);
+        }
+
+        let reasons = [
+            (
+                NativeSearchDiagnosticReason::NotAuthorized,
+                "not_authorized",
+            ),
+            (
+                NativeSearchDiagnosticReason::AmbiguousRoute,
+                "ambiguous_route",
+            ),
+            (
+                NativeSearchDiagnosticReason::InvalidSearchLimits,
+                "invalid_search_limits",
+            ),
+            (
+                NativeSearchDiagnosticReason::QueryInputUnmappable,
+                "query_input_unmappable",
+            ),
+            (
+                NativeSearchDiagnosticReason::MissingArgumentDefault,
+                "missing_argument_default",
+            ),
+            (NativeSearchDiagnosticReason::RouteStale, "route_stale"),
+            (
+                NativeSearchDiagnosticReason::UnsafeOperation,
+                "unsafe_operation",
+            ),
+            (
+                NativeSearchDiagnosticReason::NoSafeDisplayFields,
+                "no_safe_display_fields",
+            ),
+            (
+                NativeSearchDiagnosticReason::FanoutLimitReached,
+                "fanout_limit_reached",
+            ),
+            (
+                NativeSearchDiagnosticReason::InsufficientBudget,
+                "insufficient_budget",
+            ),
+            (
+                NativeSearchDiagnosticReason::GlobalBudgetExhausted,
+                "global_budget_exhausted",
+            ),
+            (NativeSearchDiagnosticReason::CallTimeout, "call_timeout"),
+            (NativeSearchDiagnosticReason::Cancelled, "cancelled"),
+            (NativeSearchDiagnosticReason::RateLimited, "rate_limited"),
+            (
+                NativeSearchDiagnosticReason::AuthOrPermissionFailed,
+                "auth_or_permission_failed",
+            ),
+            (
+                NativeSearchDiagnosticReason::UpstreamUnavailable,
+                "upstream_unavailable",
+            ),
+            (
+                NativeSearchDiagnosticReason::InvalidResponse,
+                "invalid_response",
+            ),
+            (
+                NativeSearchDiagnosticReason::ExecutionFailed,
+                "execution_failed",
+            ),
+            (
+                NativeSearchDiagnosticReason::UnsupportedCancellation,
+                "unsupported_cancellation",
+            ),
+            (
+                NativeSearchDiagnosticReason::InternalError,
+                "internal_error",
+            ),
+        ];
+        for (reason, expected) in reasons {
+            assert_eq!(native_diagnostic_reason_name(reason as i32), expected);
+        }
+    }
+
+    #[test]
+    fn unknown_native_diagnostic_enums_are_rendered_as_unspecified() {
+        let mut response = native_response();
+        response.provider_statuses[0].diagnostics[0].state = 999;
+        response.provider_statuses[0].diagnostics[0].reason = 998;
+
+        let json = search_response_json_value(&response);
+        let diagnostic = &json["provider_statuses"][0]["diagnostics"][0];
+        assert_eq!(diagnostic["state"], "unspecified");
+        assert_eq!(diagnostic["reason"], "unspecified");
+    }
+
+    #[test]
+    fn feature_off_rendering_omits_all_new_diagnostic_fields() {
+        let response = SearchResponse {
+            results: Vec::new(),
+            provider_statuses: vec![coral_api::v1::SearchProviderStatus {
+                provider: SearchProvider::NativeFanout as i32,
+                state: SearchProviderState::NotEnabled as i32,
+                note: "search provider fanout disabled".to_string(),
+                coverage: None,
+                diagnostics: Vec::new(),
+                diagnostics_truncated: false,
+                omitted_diagnostic_count: 0,
+            }],
+            truncation: None,
+        };
+
+        let json = format_search_response_json(&response).expect("JSON response");
+        assert_eq!(
+            json,
+            r#"{
+  "results": [],
+  "provider_statuses": [
+    {
+      "provider": "native_fanout",
+      "state": "not_enabled",
+      "note": "search provider fanout disabled",
+      "coverage": null
+    }
+  ],
+  "truncation": null
+}"#
+        );
+        assert_eq!(
+            format_search_response_text(&response),
+            "Results\nNo results.\n\nProvider statuses\n- native_fanout: not_enabled: search provider fanout disabled\n"
+        );
+    }
+
+    #[test]
+    fn native_rendering_does_not_fabricate_internal_or_provider_details() {
+        let rendered = format_search_response_json(&native_response()).expect("JSON response");
+
+        for forbidden in [
+            "internal_key",
+            "rendered_sql",
+            "query_text",
+            "arguments",
+            "raw_error",
+            "response_body",
+            "request_url",
+        ] {
+            assert!(
+                !rendered.contains(forbidden),
+                "native rendering leaked forbidden field {forbidden}: {rendered}"
+            );
+        }
     }
 }

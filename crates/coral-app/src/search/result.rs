@@ -82,6 +82,9 @@ pub(crate) struct ProviderStatus {
     pub(crate) state: SearchProviderState,
     pub(crate) note: String,
     pub(crate) coverage: Option<ProviderCoverage>,
+    pub(crate) diagnostics: Vec<NativeSearchDiagnostic>,
+    pub(crate) diagnostics_truncated: bool,
+    pub(crate) omitted_diagnostic_count: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,6 +138,7 @@ impl SearchCandidate {
             SearchPayload::CatalogMetadata(_) => 0,
             SearchPayload::ColumnHint(_) => 1,
             SearchPayload::ObservedValue(_) => 2,
+            SearchPayload::NativeResult(_) => 3,
         }
     }
 }
@@ -176,6 +180,95 @@ pub(crate) enum SearchPayload {
     CatalogMetadata(CatalogMetadataResult),
     ColumnHint(ColumnHintResult),
     ObservedValue(ObservedValueResult),
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the additive native result contract is populated by the follow-up fanout implementation"
+        )
+    )]
+    NativeResult(NativeSearchResult),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativeSearchResult {
+    pub(crate) schema_name: String,
+    pub(crate) function_name: String,
+    pub(crate) row_ordinal: u32,
+    pub(crate) entity_type: Option<String>,
+    pub(crate) provider_id: Option<String>,
+    pub(crate) title: Option<String>,
+    pub(crate) url: Option<String>,
+    pub(crate) snippet: Option<String>,
+    pub(crate) attributes: Vec<NativeSearchAttribute>,
+    pub(crate) omitted_attribute_count: u32,
+    pub(crate) content_truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativeSearchAttribute {
+    pub(crate) name: String,
+    pub(crate) display_value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativeSearchDiagnostic {
+    pub(crate) source_name: String,
+    pub(crate) function_name: Option<String>,
+    pub(crate) authored_route_id: Option<String>,
+    pub(crate) state: NativeSearchDiagnosticState,
+    pub(crate) reason: NativeSearchDiagnosticReason,
+    pub(crate) elapsed_ms: u64,
+    pub(crate) safe_candidate_count: u32,
+    pub(crate) has_more: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "native diagnostics are populated by the follow-up fanout implementation"
+    )
+)]
+pub(crate) enum NativeSearchDiagnosticState {
+    ResultsFound,
+    Empty,
+    Skipped,
+    TimedOut,
+    Cancelled,
+    Error,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "native diagnostics are populated by the follow-up fanout implementation"
+    )
+)]
+pub(crate) enum NativeSearchDiagnosticReason {
+    NotAuthorized,
+    AmbiguousRoute,
+    InvalidSearchLimits,
+    QueryInputUnmappable,
+    MissingArgumentDefault,
+    RouteStale,
+    UnsafeOperation,
+    NoSafeDisplayFields,
+    FanoutLimitReached,
+    InsufficientBudget,
+    GlobalBudgetExhausted,
+    CallTimeout,
+    Cancelled,
+    RateLimited,
+    AuthOrPermissionFailed,
+    UpstreamUnavailable,
+    InvalidResponse,
+    ExecutionFailed,
+    UnsupportedCancellation,
+    InternalError,
 }
 
 #[derive(Debug, Clone)]

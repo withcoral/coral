@@ -35,18 +35,20 @@ use coral_api::v1::{
     GetSourceInfoResponse, GetSourceRequest, GetSourceResponse, ImportSourceRequest,
     ImportSourceResponse, ListCatalogRequest, ListCatalogResponse, ListColumnsRequest,
     ListColumnsResponse, ListFunctionsRequest, ListFunctionsResponse, ListSourcesRequest,
-    ListSourcesResponse, ListWorkspacesRequest, ListWorkspacesResponse, ObservedDrainResult,
-    ObservedRebuildResult, PaginationRequest, PaginationResponse, QueryPlan,
-    RebuildSearchIndexRequest, RebuildSearchIndexResponse, SearchCatalogRequest,
-    SearchCatalogResponse, SearchFieldRole, SearchMaintenanceResult, SearchMaintenanceState,
-    SearchProvider, SearchProviderCoverage, SearchProviderState, SearchRequest, SearchResponse,
-    SearchResult, SearchResultTruncation, SearchStorageCleanupResult, SearchSurfaceKind,
-    SearchTableColumnPreview, SearchTableColumnPreviewColumn, Source, SourceCredentialStorage,
-    SourceInfo, SourceInputSpec, SourceOrigin, SourceSecretInput, StartTaskRequest,
-    StartTaskResponse, Table, TableFunction, TableSummary, Task as ProtoTask,
-    TaskEnd as ProtoTaskEnd, TaskStatus, ValidateSourceRequest, ValidateSourceResponse, Workspace,
-    catalog_item, create_bundled_source_with_o_auth_response, import_source_response,
-    search_maintenance_result, search_result, source_input_spec::Input as ProtoSourceInput,
+    ListSourcesResponse, ListWorkspacesRequest, ListWorkspacesResponse, NativeSearchAttribute,
+    NativeSearchDiagnostic, NativeSearchDiagnosticReason, NativeSearchDiagnosticState,
+    NativeSearchResult, ObservedDrainResult, ObservedRebuildResult, PaginationRequest,
+    PaginationResponse, QueryPlan, RebuildSearchIndexRequest, RebuildSearchIndexResponse,
+    SearchCatalogRequest, SearchCatalogResponse, SearchFieldRole, SearchMaintenanceResult,
+    SearchMaintenanceState, SearchProvider, SearchProviderCoverage, SearchProviderState,
+    SearchRequest, SearchResponse, SearchResult, SearchResultTruncation,
+    SearchStorageCleanupResult, SearchSurfaceKind, SearchTableColumnPreview,
+    SearchTableColumnPreviewColumn, Source, SourceCredentialStorage, SourceInfo, SourceInputSpec,
+    SourceOrigin, SourceSecretInput, StartTaskRequest, StartTaskResponse, Table, TableFunction,
+    TableSummary, Task as ProtoTask, TaskEnd as ProtoTaskEnd, TaskStatus, ValidateSourceRequest,
+    ValidateSourceResponse, Workspace, catalog_item, create_bundled_source_with_o_auth_response,
+    import_source_response, search_maintenance_result, search_result,
+    source_input_spec::Input as ProtoSourceInput,
 };
 use coral_api::{
     CORAL_ERROR_DOMAIN, CORAL_ERROR_REASON_SOURCE_NOT_FOUND, CORAL_TASK_ID_METADATA_KEY,
@@ -467,6 +469,64 @@ fn mock_search_response() -> SearchResponse {
     }
 }
 
+pub(crate) fn mock_native_search_response() -> SearchResponse {
+    SearchResponse {
+        results: vec![SearchResult {
+            provider: SearchProvider::NativeFanout as i32,
+            payload: Some(search_result::Payload::NativeResult(NativeSearchResult {
+                schema_name: "github".to_string(),
+                function_name: "search_issues".to_string(),
+                row_ordinal: 0,
+                entity_type: Some("issue".to_string()),
+                provider_id: Some("I_kwDO123".to_string()),
+                title: Some("Fix native search".to_string()),
+                url: Some("https://github.com/withcoral/coral/issues/1".to_string()),
+                snippet: None,
+                attributes: vec![
+                    NativeSearchAttribute {
+                        name: "state".to_string(),
+                        display_value: "open".to_string(),
+                    },
+                    NativeSearchAttribute {
+                        name: "author".to_string(),
+                        display_value: "octocat".to_string(),
+                    },
+                ],
+                omitted_attribute_count: 1,
+                content_truncated: true,
+            })),
+        }],
+        provider_statuses: vec![coral_api::v1::SearchProviderStatus {
+            provider: SearchProvider::NativeFanout as i32,
+            state: SearchProviderState::Partial as i32,
+            note: "one eligible route was not attempted".to_string(),
+            coverage: Some(SearchProviderCoverage {
+                eligible_units: 2,
+                searched_units: 1,
+                failed_units: 0,
+                returned_count: 1,
+                has_more: false,
+                budget_exhausted: true,
+                timed_out: false,
+                stale_index: false,
+            }),
+            diagnostics: vec![NativeSearchDiagnostic {
+                source_name: "github".to_string(),
+                function_name: Some("search_pull_requests".to_string()),
+                authored_route_id: None,
+                state: NativeSearchDiagnosticState::Skipped as i32,
+                reason: NativeSearchDiagnosticReason::FanoutLimitReached as i32,
+                elapsed_ms: 0,
+                safe_candidate_count: 0,
+                has_more: false,
+            }],
+            diagnostics_truncated: true,
+            omitted_diagnostic_count: 2,
+        }],
+        truncation: None,
+    }
+}
+
 fn mock_rebuild_search_index_response() -> RebuildSearchIndexResponse {
     RebuildSearchIndexResponse {
         results: vec![
@@ -566,6 +626,9 @@ fn mock_provider_status(
         state: state as i32,
         note: note.to_string(),
         coverage,
+        diagnostics: Vec::new(),
+        diagnostics_truncated: false,
+        omitted_diagnostic_count: 0,
     }
 }
 
@@ -756,6 +819,11 @@ impl Default for MockServerConfig {
 }
 
 impl MockServerConfig {
+    pub(crate) fn with_search_response(mut self, response: SearchResponse) -> Self {
+        self.search = MockResult::ok(response);
+        self
+    }
+
     pub(crate) fn with_rebuild_search_index(
         mut self,
         response: RebuildSearchIndexResponse,

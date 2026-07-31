@@ -11,7 +11,11 @@ use coral_api::v1::{
     ClearSearchDataResponse as ProtoClearSearchDataResponse, ColumnHint,
     DrainSearchQueueRequest as ProtoDrainSearchQueueRequest,
     DrainSearchQueueResponse as ProtoDrainSearchQueueResponse,
-    ObservedClearResult as ProtoObservedClearResult,
+    NativeSearchAttribute as ProtoNativeSearchAttribute,
+    NativeSearchDiagnostic as ProtoNativeSearchDiagnostic,
+    NativeSearchDiagnosticReason as ProtoNativeSearchDiagnosticReason,
+    NativeSearchDiagnosticState as ProtoNativeSearchDiagnosticState,
+    NativeSearchResult as ProtoNativeSearchResult, ObservedClearResult as ProtoObservedClearResult,
     ObservedDrainResult as ProtoObservedDrainResult,
     ObservedRebuildResult as ProtoObservedRebuildResult, ObservedValue as ProtoObservedValue,
     RebuildSearchIndexRequest as ProtoRebuildSearchIndexRequest,
@@ -45,8 +49,9 @@ use crate::search::maintenance::{
 };
 use crate::search::manager::SearchManager;
 use crate::search::result::{
-    CatalogMetadataResult, ColumnHintResult, ObservedValueResult, ProviderCoverage, ProviderStatus,
-    SearchFieldRole, SearchManagerError, SearchPayload, SearchProviderKind,
+    CatalogMetadataResult, ColumnHintResult, NativeSearchDiagnostic, NativeSearchDiagnosticReason,
+    NativeSearchDiagnosticState, NativeSearchResult, ObservedValueResult, ProviderCoverage,
+    ProviderStatus, SearchFieldRole, SearchManagerError, SearchPayload, SearchProviderKind,
     SearchProviderState as DomainProviderState, SearchRequest, SearchResponse, SearchSurfaceKind,
     TableColumnPreview as DomainTableColumnPreview,
 };
@@ -408,6 +413,9 @@ fn search_payload_to_proto(
         SearchPayload::ObservedValue(result) => {
             Payload::ObservedValue(observed_value_to_proto(result))
         }
+        SearchPayload::NativeResult(result) => {
+            Payload::NativeResult(native_result_to_proto(result))
+        }
     }
 }
 
@@ -469,6 +477,29 @@ fn observed_value_to_proto(result: ObservedValueResult) -> ProtoObservedValue {
     }
 }
 
+fn native_result_to_proto(result: NativeSearchResult) -> ProtoNativeSearchResult {
+    ProtoNativeSearchResult {
+        schema_name: result.schema_name,
+        function_name: result.function_name,
+        row_ordinal: result.row_ordinal,
+        entity_type: result.entity_type,
+        provider_id: result.provider_id,
+        title: result.title,
+        url: result.url,
+        snippet: result.snippet,
+        attributes: result
+            .attributes
+            .into_iter()
+            .map(|attribute| ProtoNativeSearchAttribute {
+                name: attribute.name,
+                display_value: attribute.display_value,
+            })
+            .collect(),
+        omitted_attribute_count: result.omitted_attribute_count,
+        content_truncated: result.content_truncated,
+    }
+}
+
 fn provider_status_to_proto(status: ProviderStatus) -> SearchProviderStatus {
     let coverage = if matches!(
         status.state,
@@ -483,6 +514,98 @@ fn provider_status_to_proto(status: ProviderStatus) -> SearchProviderStatus {
         state: provider_state_to_proto(status.state) as i32,
         note: status.note,
         coverage,
+        diagnostics: status
+            .diagnostics
+            .into_iter()
+            .map(native_diagnostic_to_proto)
+            .collect(),
+        diagnostics_truncated: status.diagnostics_truncated,
+        omitted_diagnostic_count: status.omitted_diagnostic_count,
+    }
+}
+
+fn native_diagnostic_to_proto(diagnostic: NativeSearchDiagnostic) -> ProtoNativeSearchDiagnostic {
+    ProtoNativeSearchDiagnostic {
+        source_name: diagnostic.source_name,
+        function_name: diagnostic.function_name,
+        authored_route_id: diagnostic.authored_route_id,
+        state: native_diagnostic_state_to_proto(diagnostic.state) as i32,
+        reason: native_diagnostic_reason_to_proto(diagnostic.reason) as i32,
+        elapsed_ms: diagnostic.elapsed_ms,
+        safe_candidate_count: diagnostic.safe_candidate_count,
+        has_more: diagnostic.has_more,
+    }
+}
+
+fn native_diagnostic_state_to_proto(
+    state: NativeSearchDiagnosticState,
+) -> ProtoNativeSearchDiagnosticState {
+    match state {
+        NativeSearchDiagnosticState::ResultsFound => ProtoNativeSearchDiagnosticState::ResultsFound,
+        NativeSearchDiagnosticState::Empty => ProtoNativeSearchDiagnosticState::Empty,
+        NativeSearchDiagnosticState::Skipped => ProtoNativeSearchDiagnosticState::Skipped,
+        NativeSearchDiagnosticState::TimedOut => ProtoNativeSearchDiagnosticState::TimedOut,
+        NativeSearchDiagnosticState::Cancelled => ProtoNativeSearchDiagnosticState::Cancelled,
+        NativeSearchDiagnosticState::Error => ProtoNativeSearchDiagnosticState::Error,
+    }
+}
+
+fn native_diagnostic_reason_to_proto(
+    reason: NativeSearchDiagnosticReason,
+) -> ProtoNativeSearchDiagnosticReason {
+    match reason {
+        NativeSearchDiagnosticReason::NotAuthorized => {
+            ProtoNativeSearchDiagnosticReason::NotAuthorized
+        }
+        NativeSearchDiagnosticReason::AmbiguousRoute => {
+            ProtoNativeSearchDiagnosticReason::AmbiguousRoute
+        }
+        NativeSearchDiagnosticReason::InvalidSearchLimits => {
+            ProtoNativeSearchDiagnosticReason::InvalidSearchLimits
+        }
+        NativeSearchDiagnosticReason::QueryInputUnmappable => {
+            ProtoNativeSearchDiagnosticReason::QueryInputUnmappable
+        }
+        NativeSearchDiagnosticReason::MissingArgumentDefault => {
+            ProtoNativeSearchDiagnosticReason::MissingArgumentDefault
+        }
+        NativeSearchDiagnosticReason::RouteStale => ProtoNativeSearchDiagnosticReason::RouteStale,
+        NativeSearchDiagnosticReason::UnsafeOperation => {
+            ProtoNativeSearchDiagnosticReason::UnsafeOperation
+        }
+        NativeSearchDiagnosticReason::NoSafeDisplayFields => {
+            ProtoNativeSearchDiagnosticReason::NoSafeDisplayFields
+        }
+        NativeSearchDiagnosticReason::FanoutLimitReached => {
+            ProtoNativeSearchDiagnosticReason::FanoutLimitReached
+        }
+        NativeSearchDiagnosticReason::InsufficientBudget => {
+            ProtoNativeSearchDiagnosticReason::InsufficientBudget
+        }
+        NativeSearchDiagnosticReason::GlobalBudgetExhausted => {
+            ProtoNativeSearchDiagnosticReason::GlobalBudgetExhausted
+        }
+        NativeSearchDiagnosticReason::CallTimeout => ProtoNativeSearchDiagnosticReason::CallTimeout,
+        NativeSearchDiagnosticReason::Cancelled => ProtoNativeSearchDiagnosticReason::Cancelled,
+        NativeSearchDiagnosticReason::RateLimited => ProtoNativeSearchDiagnosticReason::RateLimited,
+        NativeSearchDiagnosticReason::AuthOrPermissionFailed => {
+            ProtoNativeSearchDiagnosticReason::AuthOrPermissionFailed
+        }
+        NativeSearchDiagnosticReason::UpstreamUnavailable => {
+            ProtoNativeSearchDiagnosticReason::UpstreamUnavailable
+        }
+        NativeSearchDiagnosticReason::InvalidResponse => {
+            ProtoNativeSearchDiagnosticReason::InvalidResponse
+        }
+        NativeSearchDiagnosticReason::ExecutionFailed => {
+            ProtoNativeSearchDiagnosticReason::ExecutionFailed
+        }
+        NativeSearchDiagnosticReason::UnsupportedCancellation => {
+            ProtoNativeSearchDiagnosticReason::UnsupportedCancellation
+        }
+        NativeSearchDiagnosticReason::InternalError => {
+            ProtoNativeSearchDiagnosticReason::InternalError
+        }
     }
 }
 
@@ -539,17 +662,35 @@ fn field_role_to_proto(field_role: SearchFieldRole) -> ProtoSearchFieldRole {
 #[cfg(test)]
 mod tests {
     use coral_api::v1::{
+        NativeSearchDiagnostic as ProtoNativeSearchDiagnostic,
+        NativeSearchDiagnosticReason as ProtoNativeSearchDiagnosticReason,
+        NativeSearchDiagnosticState as ProtoNativeSearchDiagnosticState,
         SearchClearTarget as ProtoSearchClearTarget,
         SearchProviderState as ProtoSearchProviderState, search_clear_target,
     };
+    use prost::Message as _;
     use tonic::Code;
 
-    use super::{clear_target_from_proto, provider_status_to_proto};
+    use super::{
+        Payload, clear_target_from_proto, native_diagnostic_reason_to_proto,
+        native_diagnostic_state_to_proto, provider_status_to_proto, search_payload_to_proto,
+    };
     use crate::search::maintenance::SearchClearTarget;
     use crate::search::result::{
-        ProviderCoverage, ProviderStatus, SearchProviderKind,
-        SearchProviderState as DomainProviderState,
+        NativeSearchAttribute, NativeSearchDiagnostic, NativeSearchDiagnosticReason,
+        NativeSearchDiagnosticState, NativeSearchResult, ProviderCoverage, ProviderStatus,
+        SearchPayload, SearchProviderKind, SearchProviderState as DomainProviderState,
     };
+
+    fn round_trip_diagnostic(state: i32, reason: i32) -> ProtoNativeSearchDiagnostic {
+        let diagnostic = ProtoNativeSearchDiagnostic {
+            state,
+            reason,
+            ..ProtoNativeSearchDiagnostic::default()
+        };
+        ProtoNativeSearchDiagnostic::decode(diagnostic.encode_to_vec().as_slice())
+            .expect("native diagnostic protobuf round trip")
+    }
 
     #[test]
     fn skipped_provider_status_maps_without_coverage() {
@@ -558,6 +699,9 @@ mod tests {
             state: DomainProviderState::Skipped,
             note: "not eligible for this request".to_string(),
             coverage: Some(ProviderCoverage::default()),
+            diagnostics: Vec::new(),
+            diagnostics_truncated: false,
+            omitted_diagnostic_count: 0,
         });
 
         assert_eq!(
@@ -588,6 +732,96 @@ mod tests {
     }
 
     #[test]
+    fn native_result_mapping_preserves_optional_fields_and_attribute_order() {
+        let payload = search_payload_to_proto(
+            &crate::workspaces::WorkspaceName::default(),
+            SearchPayload::NativeResult(NativeSearchResult {
+                schema_name: "github".to_string(),
+                function_name: "search_issues".to_string(),
+                row_ordinal: 2,
+                entity_type: Some("issue".to_string()),
+                provider_id: None,
+                title: Some("Fix native search".to_string()),
+                url: None,
+                snippet: Some("Compact preview".to_string()),
+                attributes: vec![
+                    NativeSearchAttribute {
+                        name: "state".to_string(),
+                        display_value: "open".to_string(),
+                    },
+                    NativeSearchAttribute {
+                        name: "author".to_string(),
+                        display_value: "octocat".to_string(),
+                    },
+                ],
+                omitted_attribute_count: 3,
+                content_truncated: true,
+            }),
+        );
+        let Payload::NativeResult(proto) = payload else {
+            panic!("native result should map to the native protobuf payload");
+        };
+        let proto = coral_api::v1::NativeSearchResult::decode(proto.encode_to_vec().as_slice())
+            .expect("native result protobuf round trip");
+
+        assert_eq!(proto.schema_name, "github");
+        assert_eq!(proto.function_name, "search_issues");
+        assert_eq!(proto.row_ordinal, 2);
+        assert_eq!(proto.entity_type.as_deref(), Some("issue"));
+        assert_eq!(proto.provider_id, None);
+        assert_eq!(proto.title.as_deref(), Some("Fix native search"));
+        assert_eq!(proto.url, None);
+        assert_eq!(proto.snippet.as_deref(), Some("Compact preview"));
+        assert_eq!(
+            proto
+                .attributes
+                .iter()
+                .map(|attribute| attribute.name.as_str())
+                .collect::<Vec<_>>(),
+            ["state", "author"]
+        );
+        assert_eq!(proto.omitted_attribute_count, 3);
+        assert!(proto.content_truncated);
+    }
+
+    #[test]
+    fn every_native_diagnostic_state_maps_to_the_stable_wire_value() {
+        let cases = [
+            (
+                NativeSearchDiagnosticState::ResultsFound,
+                ProtoNativeSearchDiagnosticState::ResultsFound,
+            ),
+            (
+                NativeSearchDiagnosticState::Empty,
+                ProtoNativeSearchDiagnosticState::Empty,
+            ),
+            (
+                NativeSearchDiagnosticState::Skipped,
+                ProtoNativeSearchDiagnosticState::Skipped,
+            ),
+            (
+                NativeSearchDiagnosticState::TimedOut,
+                ProtoNativeSearchDiagnosticState::TimedOut,
+            ),
+            (
+                NativeSearchDiagnosticState::Cancelled,
+                ProtoNativeSearchDiagnosticState::Cancelled,
+            ),
+            (
+                NativeSearchDiagnosticState::Error,
+                ProtoNativeSearchDiagnosticState::Error,
+            ),
+        ];
+
+        for (index, (domain, expected)) in cases.into_iter().enumerate() {
+            let actual = native_diagnostic_state_to_proto(domain);
+            assert_eq!(actual, expected);
+            assert_eq!(actual as i32, i32::try_from(index + 1).expect("wire value"));
+            assert_eq!(round_trip_diagnostic(actual as i32, 0).state, actual as i32);
+        }
+    }
+
+    #[test]
     fn clear_source_target_rejects_unsafe_source_identities() {
         for source_name in [
             "",
@@ -611,5 +845,153 @@ mod tests {
                 "source={source_name:?}"
             );
         }
+    }
+
+    #[test]
+    fn every_native_diagnostic_reason_maps_to_the_stable_wire_value() {
+        let cases = [
+            (
+                NativeSearchDiagnosticReason::NotAuthorized,
+                ProtoNativeSearchDiagnosticReason::NotAuthorized,
+            ),
+            (
+                NativeSearchDiagnosticReason::AmbiguousRoute,
+                ProtoNativeSearchDiagnosticReason::AmbiguousRoute,
+            ),
+            (
+                NativeSearchDiagnosticReason::InvalidSearchLimits,
+                ProtoNativeSearchDiagnosticReason::InvalidSearchLimits,
+            ),
+            (
+                NativeSearchDiagnosticReason::QueryInputUnmappable,
+                ProtoNativeSearchDiagnosticReason::QueryInputUnmappable,
+            ),
+            (
+                NativeSearchDiagnosticReason::MissingArgumentDefault,
+                ProtoNativeSearchDiagnosticReason::MissingArgumentDefault,
+            ),
+            (
+                NativeSearchDiagnosticReason::RouteStale,
+                ProtoNativeSearchDiagnosticReason::RouteStale,
+            ),
+            (
+                NativeSearchDiagnosticReason::UnsafeOperation,
+                ProtoNativeSearchDiagnosticReason::UnsafeOperation,
+            ),
+            (
+                NativeSearchDiagnosticReason::NoSafeDisplayFields,
+                ProtoNativeSearchDiagnosticReason::NoSafeDisplayFields,
+            ),
+            (
+                NativeSearchDiagnosticReason::FanoutLimitReached,
+                ProtoNativeSearchDiagnosticReason::FanoutLimitReached,
+            ),
+            (
+                NativeSearchDiagnosticReason::InsufficientBudget,
+                ProtoNativeSearchDiagnosticReason::InsufficientBudget,
+            ),
+            (
+                NativeSearchDiagnosticReason::GlobalBudgetExhausted,
+                ProtoNativeSearchDiagnosticReason::GlobalBudgetExhausted,
+            ),
+            (
+                NativeSearchDiagnosticReason::CallTimeout,
+                ProtoNativeSearchDiagnosticReason::CallTimeout,
+            ),
+            (
+                NativeSearchDiagnosticReason::Cancelled,
+                ProtoNativeSearchDiagnosticReason::Cancelled,
+            ),
+            (
+                NativeSearchDiagnosticReason::RateLimited,
+                ProtoNativeSearchDiagnosticReason::RateLimited,
+            ),
+            (
+                NativeSearchDiagnosticReason::AuthOrPermissionFailed,
+                ProtoNativeSearchDiagnosticReason::AuthOrPermissionFailed,
+            ),
+            (
+                NativeSearchDiagnosticReason::UpstreamUnavailable,
+                ProtoNativeSearchDiagnosticReason::UpstreamUnavailable,
+            ),
+            (
+                NativeSearchDiagnosticReason::InvalidResponse,
+                ProtoNativeSearchDiagnosticReason::InvalidResponse,
+            ),
+            (
+                NativeSearchDiagnosticReason::ExecutionFailed,
+                ProtoNativeSearchDiagnosticReason::ExecutionFailed,
+            ),
+            (
+                NativeSearchDiagnosticReason::UnsupportedCancellation,
+                ProtoNativeSearchDiagnosticReason::UnsupportedCancellation,
+            ),
+            (
+                NativeSearchDiagnosticReason::InternalError,
+                ProtoNativeSearchDiagnosticReason::InternalError,
+            ),
+        ];
+
+        for (index, (domain, expected)) in cases.into_iter().enumerate() {
+            let actual = native_diagnostic_reason_to_proto(domain);
+            assert_eq!(actual, expected);
+            assert_eq!(actual as i32, i32::try_from(index + 1).expect("wire value"));
+            assert_eq!(
+                round_trip_diagnostic(0, actual as i32).reason,
+                actual as i32
+            );
+        }
+    }
+
+    #[test]
+    fn protobuf_round_trip_preserves_unknown_native_diagnostic_enums() {
+        let diagnostic = round_trip_diagnostic(999, 998);
+
+        assert_eq!(diagnostic.state, 999);
+        assert_eq!(diagnostic.reason, 998);
+    }
+
+    #[test]
+    fn native_diagnostic_tag_one_decodes_as_source_and_retired_tag_two_is_ignored() {
+        let diagnostic =
+            ProtoNativeSearchDiagnostic::decode(b"\x0a\x06github\x12\x06github".as_slice())
+                .expect("decode source name plus retired schema field");
+
+        assert_eq!(diagnostic.source_name, "github");
+        assert_eq!(
+            diagnostic.encode_to_vec(),
+            b"\x0a\x06github",
+            "prost should discard the retired tag-2 schema field"
+        );
+    }
+
+    #[test]
+    fn native_diagnostics_preserve_resolution_absence_and_elapsed_width() {
+        let proto = provider_status_to_proto(ProviderStatus {
+            provider: SearchProviderKind::NativeFanout,
+            state: DomainProviderState::Partial,
+            note: "one route was unresolved".to_string(),
+            coverage: Some(ProviderCoverage::default()),
+            diagnostics: vec![NativeSearchDiagnostic {
+                source_name: "github".to_string(),
+                function_name: None,
+                authored_route_id: Some("issues".to_string()),
+                state: NativeSearchDiagnosticState::Skipped,
+                reason: NativeSearchDiagnosticReason::AmbiguousRoute,
+                elapsed_ms: u64::MAX,
+                safe_candidate_count: 0,
+                has_more: false,
+            }],
+            diagnostics_truncated: true,
+            omitted_diagnostic_count: 7,
+        });
+
+        let diagnostic = proto.diagnostics.first().expect("diagnostic");
+        assert_eq!(diagnostic.source_name, "github");
+        assert_eq!(diagnostic.function_name, None);
+        assert_eq!(diagnostic.authored_route_id.as_deref(), Some("issues"));
+        assert_eq!(diagnostic.elapsed_ms, u64::MAX);
+        assert!(proto.diagnostics_truncated);
+        assert_eq!(proto.omitted_diagnostic_count, 7);
     }
 }
