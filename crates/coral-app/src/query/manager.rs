@@ -444,10 +444,11 @@ impl QueryManager {
                     // Unfiltered on both qualifiers: a required guide has to be
                     // found wherever the query's tables live, including
                     // catalog-backed sources.
-                    let required_guides = required_query_guides(
-                        &runtime.list_catalog(None, None),
-                        prepared.resources(),
-                    );
+                    let catalog = runtime
+                        .list_catalog(None, None)
+                        .await
+                        .map_err(QueryManagerError::Core)?;
+                    let required_guides = required_query_guides(&catalog, prepared.resources());
                     let unseen_guides = required_guides
                         .into_iter()
                         .filter(|guide| !shown_guide_ids.contains(&guide.guide_id))

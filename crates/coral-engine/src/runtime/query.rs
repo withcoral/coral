@@ -683,9 +683,10 @@ impl QueryRuntimeAdapter {
         sql: &str,
         params: QueryParameters,
     ) -> Result<PreparedSql, CoreError> {
-        self.prepare_sql_once(&self.ctx, sql, params)
-            .await
-            .map_err(|error| self.sql_execution_failure_to_core(error, sql))
+        match self.prepare_sql_once(&self.ctx, sql, params).await {
+            Ok(prepared) => Ok(prepared),
+            Err(error) => Err(self.sql_execution_failure_to_core(error, sql).await),
+        }
     }
 
     pub(crate) async fn execute_prepared(
@@ -723,10 +724,10 @@ impl QueryRuntimeAdapter {
                     .get_or_build_without_dependent_join()
                     .await?;
 
-                let prepared = self
-                    .prepare_sql_once(&fallback.ctx, &sql, params)
-                    .await
-                    .map_err(|error| self.sql_execution_failure_to_core(error, &sql))?;
+                let prepared = match self.prepare_sql_once(&fallback.ctx, &sql, params).await {
+                    Ok(prepared) => prepared,
+                    Err(error) => return Err(self.sql_execution_failure_to_core(error, &sql).await),
+                };
                 match self.execute_prepared_once(prepared).await {
                     Ok(execution) => Ok(execution),
                     Err(error) => {

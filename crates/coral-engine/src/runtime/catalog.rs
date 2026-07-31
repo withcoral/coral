@@ -767,6 +767,11 @@ fn collect_table_infos_from_batches(batches: &[RecordBatch]) -> Result<Vec<Table
                 table_name: table_names.value(row).to_string(),
                 description: descriptions.value(row).to_string(),
                 guide: guides.value(row).to_string(),
+                // `coral.tables` publishes `guide` but not `require_guide_read`,
+                // so this SQL-backed path cannot recover the flag. Tables
+                // collected here are therefore never guide-gated; closing that
+                // gap means publishing the column on `coral.tables`.
+                require_guide_read: false,
                 columns: Vec::new(),
                 required_filters: split_required_filters(required_filters.value(row)),
             });
@@ -1459,6 +1464,7 @@ mod tests {
                 table_name: "orders".to_string(),
                 description: String::new(),
                 guide: String::new(),
+                require_guide_read: false,
                 columns: vec![RegisteredColumn {
                     name: "id".to_string(),
                     data_type: "Int64".to_string(),

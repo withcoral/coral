@@ -316,6 +316,9 @@ fn database_relation_inventory(relations: &[DatabaseRelation]) -> Vec<Registered
             table_name: relation.table_name.clone(),
             description: String::new(),
             guide: String::new(),
+            // Discovered from the remote database rather than authored, so
+            // there is no guide to require reading.
+            require_guide_read: false,
             columns: Vec::new(),
             filters: Vec::new(),
             required_filters: Vec::new(),
