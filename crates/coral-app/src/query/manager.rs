@@ -7,18 +7,21 @@ use std::time::{Duration, Instant};
 
 use chrono::DateTime;
 use coral_engine::{
-    CatalogInfo, CoralQuery, CoreError, DescribeTableInfo, PreparedQueryRuntime,
-    QueryCancellationToken, QueryExecution, QueryExecutionControls, QueryExecutionFailureKind,
-    QueryExecutionProvenance, QueryParameterValue, QueryParameters, QueryPlan, QueryRuntimeConfig,
-    QueryRuntimeContext, QuerySource, ResolvedQueryResources, SourceDecorator,
-    SourceDecoratorError, SourceFailurePolicy, SourceInputResolver, SourceTables,
-    SourceValidationReport, StatusCode, TableInfo, UdfRuntimeDefinition,
+    CatalogInfo, CoralQuery, CoreError, DescribeTableInfo, PreparedQueryRuntime, QueryExecution,
+    QueryExecutionControls, QueryExecutionFailureKind, QueryExecutionProvenance,
+    QueryParameterValue, QueryParameters, QueryPlan, QueryRuntimeConfig, QueryRuntimeContext,
+    QuerySource, ResolvedQueryResources, SourceDecorator, SourceDecoratorError,
+    SourceFailurePolicy, SourceInputResolver, SourceTables, SourceValidationReport, StatusCode,
+    TableInfo, UdfRuntimeDefinition,
 };
 use coral_spec::{ManifestDataType, ManifestInputKind, ManifestInputSpec};
 use opentelemetry::trace::Status as OtelStatus;
 use serde_json::json;
 use tracing::Instrument as _;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
+
+#[cfg(test)]
+use coral_engine::QueryCancellationToken;
 
 use crate::bootstrap::AppError;
 use crate::catalog::model::CatalogResolution;
@@ -80,8 +83,8 @@ pub(crate) struct ExecuteSelectedTableFunction {
     pub(crate) workspace_name: WorkspaceName,
     pub(crate) route: ResolvedUniversalSearchRoute,
     pub(crate) query: String,
-    pub(crate) deadline: tokio::time::Instant,
-    pub(crate) cancellation: QueryCancellationToken,
+    pub(crate) controls: QueryExecutionControls,
+    pub(crate) search_origin: uuid::Uuid,
     pub(crate) row_limit: usize,
 }
 
@@ -522,7 +525,9 @@ impl QueryManager {
                         &source_load.loaded,
                         &config,
                         CredentialResolutionMode::Refreshing,
-                        SourceObservationMode::Enabled,
+                        SourceObservationMode::Enabled {
+                            search_origin: None,
+                        },
                     )
                     .await?;
                 let prepared = runtime
@@ -568,13 +573,6 @@ impl QueryManager {
 
     /// Executes one previously resolved source table function under fanout
     /// controls without accepting caller-authored SQL.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "native fanout calls this seam in the next stacked PR"
-        )
-    )]
     #[expect(
         clippy::too_many_lines,
         reason = "the audited freshness, credential, runtime, and telemetry ordering stays linear"
@@ -584,8 +582,7 @@ impl QueryManager {
         command: ExecuteSelectedTableFunction,
     ) -> Result<SelectedTableFunctionExecution, SelectedTableFunctionExecutionError> {
         let started_at = Instant::now();
-        let controls =
-            QueryExecutionControls::for_fanout(command.deadline, command.cancellation.clone());
+        let controls = command.controls.clone();
         let span = tracing::info_span!(
             "coral.query.selected_table_function",
             otel.name = "coral.query.selected_table_function",
@@ -739,7 +736,9 @@ impl QueryManager {
                     std::slice::from_ref(&selected_source),
                     &config,
                     CredentialResolutionMode::StoredOnly,
-                    SourceObservationMode::Enabled,
+                    SourceObservationMode::Enabled {
+                        search_origin: Some(command.search_origin),
+                    },
                 )
                 .map_err(|_error| SelectedTableFunctionExecutionError::internal(&controls))?;
             let runtime = controls
@@ -991,7 +990,9 @@ impl QueryManager {
             selected_sources,
             config,
             CredentialResolutionMode::Refreshing,
-            SourceObservationMode::Enabled,
+            SourceObservationMode::Enabled {
+                search_origin: None,
+            },
         )
     }
 
@@ -1021,7 +1022,7 @@ impl QueryManager {
         let query_sources = query_sources_from_loaded(selected_sources);
         let mut extensions =
             engine_extensions_for_providers(&self.engine_extensions_providers, &query_sources);
-        if matches!(source_observation_mode, SourceObservationMode::Enabled)
+        if let SourceObservationMode::Enabled { search_origin } = source_observation_mode
             && let Some(search_observations) = &self.search_observations
         {
             let observation_sources = selected_sources
@@ -1034,8 +1035,11 @@ impl QueryManager {
                     )
                 })
                 .collect::<Vec<_>>();
-            let observed_extensions =
-                search_observations.extensions_for(workspace_name, &observation_sources);
+            let observed_extensions = search_observations.extensions_for(
+                workspace_name,
+                &observation_sources,
+                search_origin,
+            );
             extensions
                 .source_observation_publishers
                 .extend(observed_extensions.source_observation_publishers);
@@ -1494,7 +1498,7 @@ enum QueryOperation {
 
 #[derive(Clone, Copy)]
 enum SourceObservationMode {
-    Enabled,
+    Enabled { search_origin: Option<uuid::Uuid> },
     Disabled,
 }
 
@@ -4246,8 +4250,11 @@ surface:
                 workspace_name: WorkspaceName::default(),
                 route,
                 query: query.to_string(),
-                deadline: tokio::time::Instant::now() + Duration::from_secs(2),
-                cancellation: QueryCancellationToken::new(),
+                controls: QueryExecutionControls::for_fanout(
+                    tokio::time::Instant::now() + Duration::from_secs(2),
+                    QueryCancellationToken::new(),
+                ),
+                search_origin: uuid::Uuid::from_u128(1),
                 row_limit,
             })
             .await
@@ -4583,8 +4590,11 @@ surface:
                 workspace_name: WorkspaceName::default(),
                 route: route.clone(),
                 query: "query".to_string(),
-                deadline: tokio::time::Instant::now() + Duration::from_secs(1),
-                cancellation,
+                controls: QueryExecutionControls::for_fanout(
+                    tokio::time::Instant::now() + Duration::from_secs(1),
+                    cancellation,
+                ),
+                search_origin: uuid::Uuid::from_u128(2),
                 row_limit: 5,
             })
             .await
@@ -4601,8 +4611,11 @@ surface:
                 workspace_name: WorkspaceName::default(),
                 route,
                 query: "query".to_string(),
-                deadline: tokio::time::Instant::now(),
-                cancellation: QueryCancellationToken::new(),
+                controls: QueryExecutionControls::for_fanout(
+                    tokio::time::Instant::now(),
+                    QueryCancellationToken::new(),
+                ),
+                search_origin: uuid::Uuid::from_u128(3),
                 row_limit: 5,
             })
             .await
@@ -4704,6 +4717,11 @@ surface:
             payloads.join("\n").contains("observable selected value"),
             "selected function rows should flow through source observations"
         );
+        assert!(payloads.iter().all(|payload| {
+            serde_json::from_str::<Value>(payload).is_ok_and(|payload| {
+                payload.get("search_origin") == Some(&json!(uuid::Uuid::from_u128(1)))
+            })
+        }));
     }
 
     fn selected_route_with_defaults(

@@ -28,6 +28,7 @@ use crate::search::sqlite_store::{SqliteSearchError, SqliteSearchStore};
 use crate::state::AppStateLayout;
 use crate::workspaces::WorkspaceName;
 use tempfile::tempdir;
+use uuid::Uuid;
 
 #[test]
 fn queue_job_is_durable_across_store_reopen() {
@@ -478,6 +479,240 @@ fn drain_queue_projects_observed_values_into_searchable_fts() {
     assert_eq!(hit.column_name, "title");
     assert_eq!(hit.display_value, "Payment outage");
     assert_eq!(hit.observation_count, 1);
+}
+
+#[test]
+fn before_search_drain_defers_new_current_origin_job_until_next_request() {
+    let temp = tempdir().expect("tempdir");
+    let layout = AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+    let workspace = WorkspaceName::default();
+    let store = SqliteObservedValuesStore::new(layout);
+    let epoch = store.capture_epoch(&workspace, "github").expect("epoch");
+    let current_origin = Uuid::from_u128(101);
+    let mut previous_job = test_job_with("previous", "issues", "Previous payment");
+    previous_job.payload_json = payload_json_with_origin("Previous payment", Uuid::from_u128(100));
+    let mut current_job = test_job_with("current", "issues", "Current payment");
+    current_job.payload_json = payload_json_with_origin("Current payment", current_origin);
+    store
+        .enqueue_if_current(&workspace, &previous_job, epoch)
+        .expect("enqueue previous observation");
+    store
+        .enqueue_if_current(&workspace, &current_job, epoch)
+        .expect("enqueue current observation");
+
+    let current_drain = store
+        .drain_queue_before_search(&workspace, drain_budget(), Some(current_origin))
+        .expect("drain before current search");
+
+    assert_eq!(current_drain.queue_jobs_processed, 1);
+    assert_eq!(current_drain.failed_jobs, 0);
+    assert_eq!(current_drain.remaining_queue_depth, 0);
+    assert!(!current_drain.budget_exhausted);
+    assert_eq!(
+        store
+            .pending_queue_job_count(&workspace)
+            .expect("physical queue depth"),
+        1,
+        "the current-origin job stays durable but is not eligible work"
+    );
+    assert_eq!(
+        store
+            .projected_value_count(&workspace)
+            .expect("projected value count"),
+        1
+    );
+    let current_search_hits = store
+        .search(
+            &workspace,
+            &["payment".to_string()],
+            10,
+            &test_policy(&[("previous", "issues"), ("current", "issues")]),
+        )
+        .expect("search after current-origin drain");
+    let current_search_values = current_search_hits
+        .hits
+        .iter()
+        .map(|hit| hit.display_value.as_str())
+        .collect::<Vec<_>>();
+    assert!(current_search_values.contains(&"Previous payment"));
+    assert!(!current_search_values.contains(&"Current payment"));
+
+    let next_drain = store
+        .drain_queue_before_search(&workspace, drain_budget(), Some(Uuid::from_u128(102)))
+        .expect("drain before next search");
+    assert_eq!(next_drain.queue_jobs_processed, 1);
+    assert_eq!(next_drain.remaining_queue_depth, 0);
+    assert_eq!(
+        store
+            .pending_queue_job_count(&workspace)
+            .expect("empty physical queue"),
+        0
+    );
+    assert_eq!(
+        store
+            .projected_value_count(&workspace)
+            .expect("projected value count"),
+        2
+    );
+    let next_search_hits = store
+        .search(
+            &workspace,
+            &["payment".to_string()],
+            10,
+            &test_policy(&[("previous", "issues"), ("current", "issues")]),
+        )
+        .expect("search after next-origin drain");
+    let next_search_values = next_search_hits
+        .hits
+        .iter()
+        .map(|hit| hit.display_value.as_str())
+        .collect::<Vec<_>>();
+    assert!(next_search_values.contains(&"Previous payment"));
+    assert!(next_search_values.contains(&"Current payment"));
+}
+
+#[test]
+fn before_search_drain_defers_same_scope_upsert_with_current_origin() {
+    let temp = tempdir().expect("tempdir");
+    let layout = AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+    let workspace = WorkspaceName::default();
+    let store = SqliteObservedValuesStore::new(layout);
+    let epoch = store.capture_epoch(&workspace, "github").expect("epoch");
+    let current_origin = Uuid::from_u128(201);
+    let mut superseded_job = test_job_with("same-scope", "issues", "Superseded value");
+    superseded_job.payload_json =
+        payload_json_with_origin("Superseded value", Uuid::from_u128(200));
+    let mut current_job = test_job_with("same-scope", "issues", "Current value");
+    current_job.payload_json = payload_json_with_origin("Current value", current_origin);
+    store
+        .enqueue_if_current(&workspace, &superseded_job, epoch)
+        .expect("enqueue superseded observation");
+    store
+        .enqueue_if_current(&workspace, &current_job, epoch)
+        .expect("upsert current observation into same queue row");
+    assert_eq!(
+        store
+            .pending_queue_job_count(&workspace)
+            .expect("deduplicated queue depth"),
+        1
+    );
+
+    let current_drain = store
+        .drain_queue_before_search(&workspace, drain_budget(), Some(current_origin))
+        .expect("drain before current search");
+
+    assert_eq!(current_drain.queue_jobs_processed, 0);
+    assert_eq!(current_drain.failed_jobs, 0);
+    assert_eq!(current_drain.remaining_queue_depth, 0);
+    assert!(!current_drain.budget_exhausted);
+    assert_eq!(
+        store
+            .pending_queue_job_count(&workspace)
+            .expect("physical queue depth"),
+        1
+    );
+    assert_eq!(
+        store
+            .projected_value_count(&workspace)
+            .expect("projected value count"),
+        0
+    );
+
+    let next_drain = store
+        .drain_queue_before_search(&workspace, drain_budget(), Some(Uuid::from_u128(202)))
+        .expect("drain before next search");
+    assert_eq!(next_drain.queue_jobs_processed, 1);
+    assert_eq!(next_drain.failed_jobs, 0);
+    assert_eq!(next_drain.remaining_queue_depth, 0);
+    assert_eq!(
+        store
+            .projected_value_count(&workspace)
+            .expect("projected value count"),
+        1
+    );
+    let next_search_hits = store
+        .search(
+            &workspace,
+            &["value".to_string()],
+            10,
+            &test_policy(&[("same-scope", "issues")]),
+        )
+        .expect("search projected same-scope value");
+    assert_eq!(next_search_hits.hits.len(), 1);
+    assert_eq!(
+        next_search_hits
+            .hits
+            .first()
+            .expect("current same-scope hit")
+            .display_value,
+        "Current value"
+    );
+    assert!(
+        next_search_hits
+            .hits
+            .iter()
+            .all(|hit| hit.display_value != "Superseded value")
+    );
+    assert!(
+        store
+            .queue_payloads(&workspace)
+            .expect("empty queue")
+            .is_empty()
+    );
+}
+
+#[test]
+fn request_cutoff_excludes_current_origin_even_after_concurrent_drain() {
+    let temp = tempdir().expect("tempdir");
+    let layout = AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+    let workspace = WorkspaceName::default();
+    let store = SqliteObservedValuesStore::new(layout);
+    let epoch = store.capture_epoch(&workspace, "github").expect("epoch");
+    let current_origin = Uuid::from_u128(301);
+    let mut current_job = test_job_with("current", "issues", "Current payment");
+    current_job.payload_json = payload_json_with_origin("Current payment", current_origin);
+    store
+        .enqueue_if_current(&workspace, &current_job, epoch)
+        .expect("enqueue current native observation");
+
+    // Model another Search or maintenance worker draining after this
+    // request captured its cutoff but before its observed SELECT.
+    store
+        .drain_queue(&workspace, drain_budget())
+        .expect("concurrent drainer projects current observation");
+
+    let policy = test_policy(&[("current", "issues")]);
+    let current_hits = store
+        .search_before(
+            &workspace,
+            &["payment".to_string()],
+            10,
+            &policy,
+            Some("1970-01-01T00:00:00.000Z"),
+        )
+        .expect("current request search");
+    assert_eq!(current_hits.value_count, 0);
+    assert!(current_hits.hits.is_empty());
+
+    let next_hits = store
+        .search_before(
+            &workspace,
+            &["payment".to_string()],
+            10,
+            &policy,
+            Some("9999-12-31T23:59:59.999Z"),
+        )
+        .expect("next request search");
+    assert_eq!(next_hits.value_count, 1);
+    assert_eq!(next_hits.hits.len(), 1);
+    assert_eq!(
+        next_hits
+            .hits
+            .first()
+            .expect("future request finds projected value")
+            .display_value,
+        "Current payment"
+    );
 }
 
 #[test]
@@ -3139,6 +3374,20 @@ fn payload_json(display_value: &str) -> String {
         r#"{{"values":[{{"column_name":"title","display_value":"{display_value}","search_text":"{}","value_key":"{value_key}"}}]}}"#,
         display_value.to_ascii_lowercase()
     )
+}
+
+fn payload_json_with_origin(display_value: &str, search_origin: Uuid) -> String {
+    let value_key = display_value.to_ascii_lowercase().replace(' ', "-");
+    serde_json::to_string(&serde_json::json!({
+        "search_origin": search_origin,
+        "values": [{
+            "column_name": "title",
+            "display_value": display_value,
+            "search_text": display_value.to_ascii_lowercase(),
+            "value_key": value_key,
+        }],
+    }))
+    .expect("serialize origin-aware test payload")
 }
 
 fn test_policy(scopes: &[(&str, &str)]) -> ObservedValuesRetrievalPolicy {

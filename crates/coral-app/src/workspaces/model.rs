@@ -111,6 +111,24 @@ impl WorkspaceLifecycleLock {
     }
 
     #[cfg(test)]
+    pub(crate) fn snapshot_for_test(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> WorkspaceLifecycleReadLease {
+        assert!(
+            !self.workspace_is_deleting(workspace_name),
+            "fresh test workspace should be active"
+        );
+        WorkspaceLifecycleReadLease {
+            guard: self
+                .inner
+                .try_read_arc()
+                .expect("fresh test lifecycle lock should be readable"),
+            deleting_workspaces: Arc::clone(&self.deleting_workspaces),
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) fn snapshot_if_unchanged(
         &self,
         revision: WorkspaceLifecycleRevision,

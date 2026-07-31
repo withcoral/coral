@@ -154,11 +154,12 @@ fn truncation_note(
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex, mpsc as std_mpsc};
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     use tokio::sync::{Barrier, oneshot};
-    use tokio::time::timeout;
+    use tokio::time::{Instant, timeout};
     use tracing::Instrument as _;
+    use uuid::Uuid;
 
     use super::{UniversalSearchEngine, providers_have_more, truncation_note};
     use crate::bootstrap::AppError;
@@ -405,6 +406,38 @@ mod tests {
         drop(guard);
     }
 
+    #[tokio::test]
+    async fn native_failure_keeps_local_results_and_reports_native_error() {
+        let registry = SearchProviderRegistry::from_ordered(vec![
+            SearchProviderRegistration::Provider(Arc::new(StaticProvider {
+                outcome: ProviderSearchOutcome {
+                    candidates: vec![observed_candidate("local-survivor")],
+                    status: ProviderStatus {
+                        provider: SearchProviderKind::ObservedValues,
+                        state: SearchProviderState::ResultsFound,
+                        note: String::new(),
+                        coverage: None,
+                        diagnostics: Vec::new(),
+                        diagnostics_truncated: false,
+                        omitted_diagnostic_count: 0,
+                    },
+                },
+            })),
+            SearchProviderRegistration::Provider(Arc::new(PanickingProvider {
+                kind: SearchProviderKind::NativeFanout,
+            })),
+        ]);
+        let response = UniversalSearchEngine::new(registry)
+            .search(test_context().await)
+            .await;
+
+        assert_eq!(response.results.len(), 1);
+        assert!(response.provider_statuses.iter().any(|status| {
+            status.provider == SearchProviderKind::NativeFanout
+                && status.state == SearchProviderState::Error
+        }));
+    }
+
     struct StaticProvider {
         outcome: ProviderSearchOutcome,
     }
@@ -530,6 +563,8 @@ mod tests {
         SearchExecutionContext::new(
             Instant::now(),
             lifecycle_lease,
+            None,
+            Uuid::nil(),
             SearchRequest::new(WorkspaceName::default(), "issue", 10).expect("search request"),
             Err(QueryManagerError::App(AppError::Internal(
                 "catalog resolution is unused by test providers".to_string(),

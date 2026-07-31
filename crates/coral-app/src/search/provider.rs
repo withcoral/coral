@@ -4,9 +4,10 @@ use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, Weak};
-use std::time::Instant;
 
 use tokio::task;
+use tokio::time::Instant;
+use uuid::Uuid;
 
 use crate::bootstrap::AppError;
 use crate::catalog::model::CatalogResolution;
@@ -36,6 +37,12 @@ pub(crate) struct SearchExecutionContext {
     // Search request cancellation detaches spawned provider work, and blocking
     // provider tasks cannot be cancelled once started.
     _lifecycle_lease: WorkspaceLifecycleReadLease,
+    /// UTC wall-clock cutoff in `SQLite`'s millisecond timestamp format.
+    ///
+    /// Observed rows projected at or after this instant belong to this or a
+    /// concurrent request and must not enter this response.
+    pub(crate) observed_values_cutoff: Option<String>,
+    pub(crate) search_origin: Uuid,
     pub(crate) request: SearchRequest,
     pub(crate) catalog_resolution: Result<CatalogResolution, QueryManagerError>,
     pub(crate) observed_values_policy: Option<ObservedValuesPolicyInput>,
@@ -45,6 +52,8 @@ impl SearchExecutionContext {
     pub(crate) fn new(
         request_started_at: Instant,
         lifecycle_lease: WorkspaceLifecycleReadLease,
+        observed_values_cutoff: Option<String>,
+        search_origin: Uuid,
         request: SearchRequest,
         catalog_resolution: Result<CatalogResolution, QueryManagerError>,
         observed_values_policy: Option<ObservedValuesPolicyInput>,
@@ -52,6 +61,8 @@ impl SearchExecutionContext {
         Self {
             request_started_at,
             _lifecycle_lease: lifecycle_lease,
+            observed_values_cutoff,
+            search_origin,
             request,
             catalog_resolution,
             observed_values_policy,
@@ -117,10 +128,12 @@ impl SearchProviderRegistry {
     pub(crate) fn local(
         catalog: CatalogMetadataProvider,
         observed: Option<ObservedValuesProvider>,
+        native: Option<Arc<dyn SearchProvider>>,
     ) -> Self {
         let ordered = local_registrations(
             Arc::new(catalog),
             observed.map(|provider| Arc::new(provider) as Arc<dyn SearchProvider>),
+            native,
         );
         Self {
             ordered: ordered.into(),
@@ -142,6 +155,7 @@ impl SearchProviderRegistry {
 fn local_registrations(
     catalog: Arc<dyn SearchProvider>,
     observed: Option<Arc<dyn SearchProvider>>,
+    native: Option<Arc<dyn SearchProvider>>,
 ) -> Vec<SearchProviderRegistration> {
     let observed = observed.map_or_else(
         || SearchProviderRegistration::StaticStatus(observed_not_enabled_status()),
@@ -150,7 +164,10 @@ fn local_registrations(
     vec![
         SearchProviderRegistration::Provider(catalog),
         observed,
-        SearchProviderRegistration::StaticStatus(native_not_enabled_status()),
+        native.map_or_else(
+            || SearchProviderRegistration::StaticStatus(native_not_enabled_status()),
+            SearchProviderRegistration::Provider,
+        ),
     ]
 }
 
@@ -199,7 +216,15 @@ impl SearchProvider for ObservedValuesProvider {
                     .observed_values_policy
                     .as_ref()
                     .expect("registry enables observed provider only with a retrieval policy");
-                provider.search(&context.request, policy.as_ref())
+                provider.search_with_origin(
+                    &context.request,
+                    policy.as_ref(),
+                    context
+                        .observed_values_cutoff
+                        .as_ref()
+                        .map(|_| context.search_origin),
+                    context.observed_values_cutoff.as_deref(),
+                )
             })
             .await
         })
@@ -269,6 +294,7 @@ mod tests {
     fn disabled_observed_search_is_registered_as_a_static_status() {
         let registrations = local_registrations(
             Arc::new(UnusedProvider(SearchProviderKind::CatalogMetadata)),
+            None,
             None,
         );
 

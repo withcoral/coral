@@ -1,6 +1,7 @@
 //! Durable observed-values queue records.
 
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 /// Snapshot of the workspace-wide and source-local invalidation counters.
 ///
@@ -50,6 +51,20 @@ impl ObservedValuesQueuePayload {
     pub(crate) fn is_empty(&self) -> bool {
         self.values.is_empty()
     }
+}
+
+/// JSON envelope persisted in `observed_queue_jobs.payload_json`.
+///
+/// The optional origin is deliberately stored in the existing payload rather
+/// than a schema column. Legacy jobs deserialize with no origin, and ordinary
+/// SQL keeps producing the byte-for-byte-compatible `{ "values": ... }`
+/// shape.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct ObservedValuesQueueEnvelope {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) search_origin: Option<Uuid>,
+    #[serde(flatten)]
+    pub(crate) payload: ObservedValuesQueuePayload,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

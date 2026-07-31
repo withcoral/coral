@@ -2,6 +2,8 @@
 
 use std::time::Duration;
 
+use uuid::Uuid;
+
 use crate::bootstrap::AppError;
 use crate::search::maintenance::{
     ObservedClearMaintenanceResult, ObservedDrainMaintenanceResult,
@@ -56,17 +58,28 @@ impl ObservedValuesProvider {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn search(
         &self,
         request: &SearchRequest,
         policy: Result<&ObservedValuesRetrievalPolicy, &AppError>,
+    ) -> ProviderSearchOutcome {
+        self.search_with_origin(request, policy, None, None)
+    }
+
+    pub(crate) fn search_with_origin(
+        &self,
+        request: &SearchRequest,
+        policy: Result<&ObservedValuesRetrievalPolicy, &AppError>,
+        search_origin: Option<Uuid>,
+        observed_values_cutoff: Option<&str>,
     ) -> ProviderSearchOutcome {
         let policy = match policy {
             Ok(policy) => policy,
             Err(error) => return observed_policy_error_outcome(error),
         };
         self.write_coordinator.run(&request.workspace_name, || {
-            self.search_with_policy(request, policy)
+            self.search_with_policy(request, policy, search_origin, observed_values_cutoff)
         })
     }
 
@@ -74,17 +87,20 @@ impl ObservedValuesProvider {
         &self,
         request: &SearchRequest,
         policy: &ObservedValuesRetrievalPolicy,
+        search_origin: Option<Uuid>,
+        observed_values_cutoff: Option<&str>,
     ) -> ProviderSearchOutcome {
-        let (drain, drain_error) = self.drain_before_search(&request.workspace_name);
+        let (drain, drain_error) = self.drain_before_search(&request.workspace_name, search_origin);
         let retrieval_limit = usize::try_from(request.limit)
             .unwrap_or(usize::MAX)
             .saturating_mul(OBSERVED_PROVIDER_RETRIEVAL_MULTIPLIER)
             .max(OBSERVED_PROVIDER_MIN_RETRIEVAL_LIMIT);
-        let hits = match self.store.search(
+        let hits = match self.store.search_before(
             &request.workspace_name,
             &request.terms,
             retrieval_limit,
             policy,
+            observed_values_cutoff,
         ) {
             Ok(hits) => hits,
             Err(error) => return observed_error_outcome(&error),
@@ -116,8 +132,12 @@ impl ObservedValuesProvider {
     fn drain_before_search(
         &self,
         workspace_name: &WorkspaceName,
+        search_origin: Option<Uuid>,
     ) -> (ObservedValuesDrainResult, Option<String>) {
-        let pending_queue_depth = match self.store.pending_queue_job_count(workspace_name) {
+        let pending_queue_depth = match self
+            .store
+            .pending_queue_job_count_before_search(workspace_name, search_origin)
+        {
             Ok(0) => return (ObservedValuesDrainResult::default(), None),
             Ok(count) => u32::try_from(count).unwrap_or(u32::MAX),
             Err(error) => {
@@ -132,12 +152,13 @@ impl ObservedValuesProvider {
                 );
             }
         };
-        match self.store.drain_queue(
+        match self.store.drain_queue_before_search(
             workspace_name,
             ObservedValuesDrainBudget::new(
                 OBSERVED_DRAIN_BEFORE_SEARCH_MAX_JOBS,
                 Duration::from_millis(OBSERVED_DRAIN_BEFORE_SEARCH_MS),
             ),
+            search_origin,
         ) {
             Ok(drain) => {
                 log_storage_drops(workspace_name, &drain);

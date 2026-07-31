@@ -14,9 +14,5 @@ pub(crate) struct CatalogResolution {
     /// Runtime schema name to canonical installed source owner.
     pub(crate) runtime_schema_owners: BTreeMap<String, String>,
     /// Passive route decisions derived from the exact runtime source snapshot.
-    #[expect(
-        dead_code,
-        reason = "native fanout consumes passive route decisions later in the child stack"
-    )]
     pub(crate) universal_search_resolutions: Vec<UniversalSearchResolution>,
 }
