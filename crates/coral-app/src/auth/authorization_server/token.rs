@@ -81,7 +81,10 @@ pub(super) async fn oauth_token(
     {
         Ok(Some(authorization)) => authorization,
         Ok(None) => return token_error(TokenError::InvalidGrant),
-        Err(_error) => return token_error(TokenError::ServerError),
+        Err(error) => {
+            tracing::warn!(%error, "token endpoint could not take the authorization code");
+            return token_error(TokenError::ServerError);
+        }
     };
     let issued = match state.session_tokens.issue_access_token(
         &authorization.user_id,
@@ -89,13 +92,20 @@ pub(super) async fn oauth_token(
         &authorization.resource,
     ) {
         Ok(issued) => issued,
-        Err(_error) => return token_error(TokenError::ServerError),
+        Err(error) => {
+            tracing::warn!(%error, "token endpoint could not issue an access token");
+            return token_error(TokenError::ServerError);
+        }
     };
     let now = match SystemTime::now().duration_since(UNIX_EPOCH) {
         Ok(duration) => duration.as_secs(),
-        Err(_error) => return token_error(TokenError::ServerError),
+        Err(error) => {
+            tracing::warn!(%error, "token endpoint could not read the system clock");
+            return token_error(TokenError::ServerError);
+        }
     };
     let Some(expires_in) = issued.expires_at.checked_sub(now).filter(|ttl| *ttl > 0) else {
+        tracing::warn!("token endpoint issued an access token that had already expired");
         return token_error(TokenError::ServerError);
     };
     json_response(
