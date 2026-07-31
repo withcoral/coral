@@ -109,8 +109,12 @@ pub(super) fn redirect(location: &str) -> Response {
 ///
 /// Authorization codes travel in URLs, so `no-store`/`no-cache` keep one out of
 /// a shared cache and `no-referrer` keeps one out of the `Referer` a client's
-/// page sends onward.
-fn security_headers() -> [(header::HeaderName, &'static str); 3] {
+/// page sends onward. The token endpoint composes these with its own
+/// `content-type` rather than listing them again, so a header added here
+/// reaches every response that carries a code, a token, or an error. The
+/// discovery metadata document is deliberately not among them: it is public and
+/// meant to be cached.
+pub(super) fn security_headers() -> [(header::HeaderName, &'static str); 3] {
     [
         (header::CACHE_CONTROL, "no-store"),
         (header::PRAGMA, "no-cache"),

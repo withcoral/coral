@@ -11,11 +11,15 @@ use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
 
 use super::AuthorizationServerHttpState;
+use super::query::{MAX_PARAMETER_NAME_BYTES, MAX_PARAMETER_VALUE_BYTES, MAX_PARAMETERS};
+use super::response::security_headers;
 
+/// The largest form body this endpoint reads.
+///
+/// This is the endpoint's own limit rather than one of the shared parameter
+/// limits: it bounds a request body, which the parameter limits do not, and it
+/// is enforced while reading rather than while parsing.
 const MAX_BODY_BYTES: usize = 8 * 1024;
-const MAX_PARAMETERS: usize = 32;
-const MAX_PARAMETER_NAME_BYTES: usize = 64;
-const MAX_PARAMETER_VALUE_BYTES: usize = 2 * 1024;
 
 pub(super) async fn oauth_token(
     State(state): State<AuthorizationServerHttpState>,
@@ -278,12 +282,8 @@ fn token_error(error: TokenError) -> Response {
 fn json_response(status: StatusCode, body: &serde_json::Value) -> Response {
     (
         status,
-        [
-            (header::CONTENT_TYPE, "application/json"),
-            (header::CACHE_CONTROL, "no-store"),
-            (header::PRAGMA, "no-cache"),
-            (header::REFERRER_POLICY, "no-referrer"),
-        ],
+        security_headers(),
+        [(header::CONTENT_TYPE, "application/json")],
         body.to_string(),
     )
         .into_response()
@@ -303,6 +303,7 @@ mod tests {
     use serde_json::Value;
     use url::form_urlencoded;
 
+    use super::super::query;
     use super::*;
     use crate::auth::config::AuthSettings;
     use crate::auth::provider_client::OidcProviderClient;
@@ -482,10 +483,6 @@ redirect_uri = "{AUTH_ISSUER}/auth/oidc/callback"
         duplicate_type
             .headers_mut()
             .append(header::CONTENT_TYPE, content_type);
-        let too_many = (0..33)
-            .map(|index| format!("unknown{index}=x"))
-            .collect::<Vec<_>>()
-            .join("&");
         let requests = [
             Request::builder()
                 .method("POST")
@@ -504,10 +501,10 @@ redirect_uri = "{AUTH_ISSUER}/auth/oidc/callback"
                 "{}&resource=duplicate",
                 form("code", CLIENT, REDIRECT, VERIFIER)
             )),
-            request(too_many),
-            request(format!("{}=x", "n".repeat(65))),
-            request(format!("unknown={}", "x".repeat(2049))),
         ];
+        let requests = requests
+            .into_iter()
+            .chain(query::rejected_parameter_lists().into_iter().map(request));
         for invalid in requests {
             let body = expect_error(state.clone(), invalid, "invalid_request").await;
             assert!(!body.contains("secret"));
