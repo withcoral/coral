@@ -426,9 +426,6 @@ async fn session_authenticated_companion_gates_grpc_and_mcp() {
         reqwest::StatusCode::SERVICE_UNAVAILABLE,
         "an unreachable engine must not report ready"
     );
-    if let Some(oauth) = oauth {
-        oauth.shutdown().await.expect("shutdown OAuth server");
-    }
     mcp_http
         .expect("MCP HTTP server")
         .shutdown()
