@@ -193,11 +193,11 @@ fn normalized_runtime_schema_owners(
 }
 
 fn table_documents(table: &TableInfo, documents: &mut Vec<CatalogDocument>) {
-    debug_assert!(
-        table.catalog_name.is_none(),
-        "catalog search documents do not yet support catalog-qualified tables"
+    let qualified_name = qualified_name(
+        table.catalog_name.as_deref(),
+        &table.schema_name,
+        &table.table_name,
     );
-    let qualified_name = qualified_name(&table.schema_name, &table.table_name);
     documents.push(CatalogDocument {
         doc_id: format!("catalog:table:{qualified_name}"),
         doc_kind: CatalogDocumentKind::CatalogTable,
@@ -233,7 +233,11 @@ fn table_column_document(
     column: &ColumnInfo,
     documents: &mut Vec<CatalogDocument>,
 ) {
-    let surface_qualified_name = qualified_name(&table.schema_name, &table.table_name);
+    let surface_qualified_name = qualified_name(
+        table.catalog_name.as_deref(),
+        &table.schema_name,
+        &table.table_name,
+    );
     documents.push(CatalogDocument {
         doc_id: format!("column:table:{surface_qualified_name}:{}", column.name),
         doc_kind: CatalogDocumentKind::ColumnHint,
@@ -261,7 +265,11 @@ fn table_required_filter_document(
     filter: &str,
     documents: &mut Vec<CatalogDocument>,
 ) {
-    let surface_qualified_name = qualified_name(&table.schema_name, &table.table_name);
+    let surface_qualified_name = qualified_name(
+        table.catalog_name.as_deref(),
+        &table.schema_name,
+        &table.table_name,
+    );
     documents.push(CatalogDocument {
         doc_id: format!("filter:table:{surface_qualified_name}:{filter}"),
         doc_kind: CatalogDocumentKind::ColumnHint,
@@ -284,7 +292,7 @@ fn table_required_filter_document(
 }
 
 fn table_function_documents(function: &TableFunctionInfo, documents: &mut Vec<CatalogDocument>) {
-    let qualified_name = qualified_name(&function.schema_name, &function.function_name);
+    let qualified_name = qualified_name(None, &function.schema_name, &function.function_name);
     let source_native_search_keywords = if function.kind == SourceTableFunctionKind::Search {
         "source native search provider route fanout"
     } else {
@@ -340,7 +348,8 @@ fn table_function_argument_document(
     argument: &TableFunctionArgumentInfo,
     documents: &mut Vec<CatalogDocument>,
 ) {
-    let surface_qualified_name = qualified_name(&function.schema_name, &function.function_name);
+    let surface_qualified_name =
+        qualified_name(None, &function.schema_name, &function.function_name);
     let values = argument.values.join(" ");
     documents.push(CatalogDocument {
         doc_id: format!(
@@ -372,7 +381,8 @@ fn table_function_result_column_document(
     column: &TableFunctionResultColumnInfo,
     documents: &mut Vec<CatalogDocument>,
 ) {
-    let surface_qualified_name = qualified_name(&function.schema_name, &function.function_name);
+    let surface_qualified_name =
+        qualified_name(None, &function.schema_name, &function.function_name);
     documents.push(CatalogDocument {
         doc_id: format!(
             "result_column:function:{surface_qualified_name}:{}",
@@ -399,8 +409,14 @@ fn table_function_result_column_document(
     });
 }
 
-fn qualified_name(schema_name: &str, surface_name: &str) -> String {
-    format!("{schema_name}.{surface_name}")
+/// Renders the addressable name a document is keyed and searched by. Two-part
+/// surfaces keep `schema.surface`; catalog-backed tables carry the catalog so
+/// two catalogs exposing the same `schema.table` stay distinct documents.
+fn qualified_name(catalog_name: Option<&str>, schema_name: &str, surface_name: &str) -> String {
+    match catalog_name {
+        Some(catalog_name) => format!("{catalog_name}.{schema_name}.{surface_name}"),
+        None => format!("{schema_name}.{surface_name}"),
+    }
 }
 
 fn join_search_text<const N: usize>(parts: [&str; N]) -> String {
