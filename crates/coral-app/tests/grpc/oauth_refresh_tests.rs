@@ -13,7 +13,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64_URL_SAFE_NO_PAD;
 use coral_api::v1::{
     ExecuteSqlRequest, ImportSourceRequest, SearchRequest, SourceSecret, SourceVariable,
-    catalog_item, import_source_response, search_result,
+    import_source_response,
 };
 use coral_client::{batches_to_json_rows, decode_execute_sql_response, default_workspace};
 use serde_json::json;
@@ -208,13 +208,12 @@ async fn search_catalog_does_not_refresh_expired_oauth_access_token() {
         .expect("search")
         .into_inner();
 
-    assert!(response.results.iter().any(|result| matches!(
-        result.payload.as_ref(),
-        Some(search_result::Payload::CatalogMetadata(metadata))
-            if metadata.item.as_ref().and_then(|item| item.item.as_ref()).is_some_and(|item| {
-                matches!(item, catalog_item::Item::Table(table) if table.name == "messages")
-            })
-    )));
+    assert!(response.results.iter().any(|result| {
+        result
+            .surface
+            .as_ref()
+            .is_some_and(|entry| entry.name == "messages")
+    }));
     assert!(
         fixture.token_forms().is_empty(),
         "catalog search should not call the token endpoint"

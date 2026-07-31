@@ -23,30 +23,29 @@ use coral_api::v1::task_service_server::{TaskService, TaskServiceServer};
 use coral_api::v1::workspace_service_server::{WorkspaceService, WorkspaceServiceServer};
 use coral_api::v1::{
     AddFunctionRequest, AddFunctionResponse, CatalogClearResult, CatalogCounts, CatalogItem,
-    CatalogMetadata, CatalogRebuildResult, CatalogSearchResult, ClearSearchDataRequest,
-    ClearSearchDataResponse, Column, ColumnHint, ColumnSearchResult, CreateBundledSourceRequest,
-    CreateBundledSourceResponse, CreateBundledSourceWithOAuthRequest,
-    CreateBundledSourceWithOAuthResponse, CreateWorkspaceRequest, CreateWorkspaceResponse,
-    DeleteFunctionRequest, DeleteFunctionResponse, DeleteSourceRequest, DeleteSourceResponse,
-    DeleteWorkspaceRequest, DeleteWorkspaceResponse, DescribeTableRequest, DescribeTableResponse,
-    DiscoverSourcesRequest, DiscoverSourcesResponse, DrainSearchQueueRequest,
-    DrainSearchQueueResponse, EndTaskRequest, EndTaskResponse, ExecuteSqlRequest,
-    ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse, GetSourceInfoRequest,
-    GetSourceInfoResponse, GetSourceRequest, GetSourceResponse, ImportSourceRequest,
-    ImportSourceResponse, ListCatalogRequest, ListCatalogResponse, ListColumnsRequest,
-    ListColumnsResponse, ListFunctionsRequest, ListFunctionsResponse, ListSourcesRequest,
-    ListSourcesResponse, ListWorkspacesRequest, ListWorkspacesResponse, ObservedDrainResult,
-    ObservedRebuildResult, PaginationRequest, PaginationResponse, QueryPlan,
+    CatalogRebuildResult, CatalogSearchResult, ClearSearchDataRequest, ClearSearchDataResponse,
+    Column, ColumnSearchResult, CreateBundledSourceRequest, CreateBundledSourceResponse,
+    CreateBundledSourceWithOAuthRequest, CreateBundledSourceWithOAuthResponse,
+    CreateWorkspaceRequest, CreateWorkspaceResponse, DeleteFunctionRequest, DeleteFunctionResponse,
+    DeleteSourceRequest, DeleteSourceResponse, DeleteWorkspaceRequest, DeleteWorkspaceResponse,
+    DescribeTableRequest, DescribeTableResponse, DiscoverSourcesRequest, DiscoverSourcesResponse,
+    DrainSearchQueueRequest, DrainSearchQueueResponse, EndTaskRequest, EndTaskResponse,
+    ExecuteSqlRequest, ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse,
+    GetSourceInfoRequest, GetSourceInfoResponse, GetSourceRequest, GetSourceResponse,
+    ImportSourceRequest, ImportSourceResponse, ListCatalogRequest, ListCatalogResponse,
+    ListColumnsRequest, ListColumnsResponse, ListFunctionsRequest, ListFunctionsResponse,
+    ListSourcesRequest, ListSourcesResponse, ListWorkspacesRequest, ListWorkspacesResponse,
+    ObservedDrainResult, ObservedRebuildResult, PaginationRequest, PaginationResponse, QueryPlan,
     RebuildSearchIndexRequest, RebuildSearchIndexResponse, SearchCatalogRequest,
-    SearchCatalogResponse, SearchFieldRole, SearchMaintenanceResult, SearchMaintenanceState,
+    SearchCatalogResponse, SearchField, SearchMaintenanceResult, SearchMaintenanceState,
     SearchProvider, SearchProviderCoverage, SearchProviderState, SearchRequest, SearchResponse,
     SearchResult, SearchResultTruncation, SearchStorageCleanupResult, SearchSurfaceKind,
-    SearchTableColumnPreview, SearchTableColumnPreviewColumn, Source, SourceCredentialStorage,
-    SourceInfo, SourceInputSpec, SourceOrigin, SourceSecretInput, StartTaskRequest,
-    StartTaskResponse, Table, TableFunction, TableSummary, Task as ProtoTask,
-    TaskEnd as ProtoTaskEnd, TaskStatus, ValidateSourceRequest, ValidateSourceResponse, Workspace,
-    catalog_item, create_bundled_source_with_o_auth_response, import_source_response,
-    search_maintenance_result, search_result, source_input_spec::Input as ProtoSourceInput,
+    SearchSurfaceRef, SearchTableShape, Source, SourceCredentialStorage, SourceInfo,
+    SourceInputSpec, SourceOrigin, SourceSecretInput, StartTaskRequest, StartTaskResponse, Table,
+    TableFunction, TableSummary, Task as ProtoTask, TaskEnd as ProtoTaskEnd, TaskStatus,
+    ValidateSourceRequest, ValidateSourceResponse, Workspace, catalog_item,
+    create_bundled_source_with_o_auth_response, import_source_response, search_maintenance_result,
+    search_result, source_input_spec::Input as ProtoSourceInput,
 };
 use coral_api::{
     CORAL_ERROR_DOMAIN, CORAL_ERROR_REASON_SOURCE_NOT_FOUND, CORAL_TASK_ID_METADATA_KEY,
@@ -380,51 +379,31 @@ fn mock_validate_response() -> ValidateSourceResponse {
 fn mock_search_response() -> SearchResponse {
     let table = mock_visible_table();
     SearchResponse {
-        results: vec![
-            SearchResult {
-                provider: SearchProvider::CatalogMetadata as i32,
-                payload: Some(search_result::Payload::CatalogMetadata(CatalogMetadata {
-                    item: Some(CatalogItem {
-                        item: Some(catalog_item::Item::Table(table_summary(&table))),
-                    }),
-                    matched_fields: vec!["description".to_string()],
-                    table_column_preview: Some(SearchTableColumnPreview {
-                        column_count: 3,
-                        columns: vec![
-                            SearchTableColumnPreviewColumn {
-                                name: "owner".to_string(),
-                                data_type: "Utf8".to_string(),
-                                is_required_filter: true,
-                                description: "Repository owner filter".to_string(),
-                                matched_fields: Vec::new(),
-                            },
-                            SearchTableColumnPreviewColumn {
-                                name: "text".to_string(),
-                                data_type: "Utf8".to_string(),
-                                is_required_filter: false,
-                                description: "Message text".to_string(),
-                                matched_fields: vec!["description".to_string()],
-                            },
-                        ],
-                        omitted_column_count: 1,
-                    }),
-                })),
-            },
-            SearchResult {
-                provider: SearchProvider::CatalogMetadata as i32,
-                payload: Some(search_result::Payload::ColumnHint(ColumnHint {
-                    schema_name: "local_messages".to_string(),
-                    surface_name: "messages".to_string(),
-                    surface_kind: SearchSurfaceKind::Table as i32,
-                    name: "text".to_string(),
-                    data_type: "Utf8".to_string(),
-                    required: false,
-                    description: "Message text".to_string(),
-                    matched_fields: vec!["column_name".to_string()],
-                    field_role: SearchFieldRole::TableColumn as i32,
-                })),
-            },
-        ],
+        results: vec![SearchResult {
+            surface: Some(SearchSurfaceRef {
+                schema_name: table.schema_name.clone(),
+                name: table.name.clone(),
+                kind: SearchSurfaceKind::Table as i32,
+            }),
+            description: table.description.clone(),
+            guide: table.guide.clone(),
+            shape: Some(search_result::Shape::Table(SearchTableShape {
+                fields: vec![
+                    SearchField {
+                        name: "owner".to_string(),
+                        data_type: "Utf8".to_string(),
+                        required: true,
+                    },
+                    SearchField {
+                        name: "text".to_string(),
+                        data_type: "Utf8".to_string(),
+                        required: false,
+                    },
+                ],
+            })),
+            matching_values: Vec::new(),
+            omitted_matching_field_count: 1,
+        }],
         provider_statuses: vec![
             mock_provider_status(
                 SearchProvider::CatalogMetadata,

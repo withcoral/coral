@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Instant;
 
@@ -15,7 +16,8 @@ use crate::search::catalog::provider::CatalogMetadataProvider;
 use crate::search::observed::ObservedValuesRetrievalPolicy;
 use crate::search::observed::provider::ObservedValuesProvider;
 use crate::search::result::{
-    ProviderStatus, SearchCandidate, SearchProviderKind, SearchProviderState, SearchRequest,
+    ProviderCoverage, ProviderStatus, Ranking, RetrieverId, SearchProviderKind,
+    SearchProviderState, SearchRequest, SurfaceMatch,
 };
 use crate::workspaces::{WorkspaceLifecycleReadLease, WorkspaceName};
 
@@ -24,8 +26,39 @@ pub(crate) type ProviderSearchFuture =
 
 #[derive(Debug, Clone)]
 pub(crate) struct ProviderSearchOutcome {
-    pub(crate) candidates: Vec<SearchCandidate>,
+    /// One ranked list per retriever that succeeded. Fusion flattens these
+    /// across every provider; positions are ranks and no score escapes.
+    pub(crate) rankings: Vec<Ranking>,
     pub(crate) status: ProviderStatus,
+}
+
+/// A provider could not produce any ranking — shared setup failed, so no
+/// retriever ran.
+#[derive(Debug, Clone)]
+pub(crate) struct ProviderFailure {
+    pub(crate) state: SearchProviderState,
+    pub(crate) note: String,
+    pub(crate) coverage: Option<ProviderCoverage>,
+}
+
+impl ProviderFailure {
+    pub(crate) fn into_outcome(self, provider: SearchProviderKind) -> ProviderSearchOutcome {
+        ProviderSearchOutcome {
+            rankings: Vec::new(),
+            status: ProviderStatus {
+                provider,
+                state: self.state,
+                note: self.note,
+                coverage: self.coverage,
+            },
+        }
+    }
+}
+
+/// One retriever failed. Its siblings still reach fusion.
+#[derive(Debug, Clone)]
+pub(crate) struct RetrieverError {
+    pub(crate) note: String,
 }
 
 pub(crate) type ObservedValuesPolicyInput = Result<ObservedValuesRetrievalPolicy, AppError>;
@@ -93,13 +126,144 @@ impl LocalSearchWriteCoordinator {
     }
 }
 
+/// One way to interrogate a provider.
+///
+/// Retrievers are constructed per request over whatever their provider prepared,
+/// so they can share an expensive projection without the registry knowing about
+/// it.
+pub(crate) trait Retriever: Send {
+    fn id(&self) -> RetrieverId;
+
+    /// Best-first. Vector position is the rank fusion uses; no score escapes.
+    fn retrieve(&self, request: &SearchRequest) -> Result<Vec<SurfaceMatch>, RetrieverError>;
+}
+
+/// A configured search provider.
+///
+/// Implementations supply their retrievers; the provided `search` drives them
+/// and composes status, so no provider can forget to isolate a failing
+/// retriever from its siblings. Provider work is synchronous — the registry
+/// owns the blocking-task boundary.
 pub(crate) trait SearchProvider: Send + Sync {
     fn kind(&self) -> SearchProviderKind;
 
-    /// Returns candidates in best-first provider-local order. When native
-    /// fanout contributes candidates, fusion treats each vector position as
-    /// that provider's rank instead of re-sorting provider-local evidence.
-    fn search(&self, context: Arc<SearchExecutionContext>) -> ProviderSearchFuture;
+    /// Acquire per-request resources once, then hand back the retrievers bound
+    /// to them. Failing here fails the provider; failing inside one retriever
+    /// does not.
+    fn retrievers(
+        &self,
+        context: &SearchExecutionContext,
+    ) -> Result<PreparedRetrievers, ProviderFailure>;
+
+    fn search(&self, context: &SearchExecutionContext) -> ProviderSearchOutcome {
+        let prepared = match self.retrievers(context) {
+            Ok(prepared) => prepared,
+            Err(failure) => return failure.into_outcome(self.kind()),
+        };
+
+        let mut rankings = Vec::new();
+        let mut failed = Vec::new();
+        for retriever in prepared.retrievers {
+            match retriever.retrieve(&context.request) {
+                Ok(matches) => rankings.push(Ranking {
+                    retriever: retriever.id(),
+                    matches,
+                }),
+                Err(error) => failed.push((retriever.id(), error)),
+            }
+        }
+
+        let coverage = prepared.coverage.map(|coverage| ProviderCoverage {
+            has_more: coverage.has_more || prepared.retrieval_limited.load(Ordering::Relaxed),
+            ..coverage
+        });
+        ProviderSearchOutcome {
+            status: provider_status(
+                self.kind(),
+                &rankings,
+                &failed,
+                coverage,
+                prepared.degraded.as_deref(),
+            ),
+            rankings,
+        }
+    }
+}
+
+/// What preparation produced: the retrievers, plus anything only preparation
+/// could know.
+pub(crate) struct PreparedRetrievers {
+    pub(crate) retrievers: Vec<Box<dyn Retriever>>,
+    /// Provider-specific coverage. `returned_count` is filled in centrally once
+    /// the retrievers have run.
+    pub(crate) coverage: Option<ProviderCoverage>,
+    /// Degradation detected during preparation — a stale index, a drained
+    /// queue, sources that failed to load. Independent of retriever failure,
+    /// but reported the same way.
+    pub(crate) degraded: Option<String>,
+    /// Set by a retriever when its candidate window filled, so the response can
+    /// say more matched rather than implying the index held nothing else.
+    pub(crate) retrieval_limited: Arc<AtomicBool>,
+}
+
+/// Every provider degrades the same way: surviving siblings keep their
+/// rankings, and a provider only reports `Error` when nothing survived.
+fn provider_status(
+    provider: SearchProviderKind,
+    rankings: &[Ranking],
+    failed: &[(RetrieverId, RetrieverError)],
+    coverage: Option<ProviderCoverage>,
+    degraded: Option<&str>,
+) -> ProviderStatus {
+    let returned = rankings
+        .iter()
+        .map(|ranking| ranking.matches.len())
+        .sum::<usize>();
+    let has_more = coverage.as_ref().is_some_and(|coverage| coverage.has_more);
+    let state = if !failed.is_empty() && rankings.is_empty() {
+        SearchProviderState::Error
+    } else if !failed.is_empty() || degraded.is_some() || has_more {
+        // More matched than was returned, so the provider is reporting a
+        // partial view rather than everything it holds.
+        SearchProviderState::Partial
+    } else if returned == 0 {
+        SearchProviderState::Empty
+    } else {
+        SearchProviderState::ResultsFound
+    };
+    let coverage = coverage.map(|coverage| ProviderCoverage {
+        returned_count: u32::try_from(returned).unwrap_or(u32::MAX),
+        ..coverage
+    });
+    ProviderStatus {
+        provider,
+        state,
+        note: status_note(failed, degraded),
+        coverage,
+    }
+}
+
+fn status_note(failed: &[(RetrieverId, RetrieverError)], degraded: Option<&str>) -> String {
+    let mut notes = Vec::new();
+    if let Some(degraded) = degraded {
+        notes.push(degraded.to_string());
+    }
+    if !failed.is_empty() {
+        notes.push(retriever_failure_note(failed));
+    }
+    notes.join(" ")
+}
+
+fn retriever_failure_note(failed: &[(RetrieverId, RetrieverError)]) -> String {
+    if failed.is_empty() {
+        return String::new();
+    }
+    let detail = failed
+        .iter()
+        .map(|(retriever, error)| format!("{}: {}", retriever.as_str(), error.note))
+        .collect::<Vec<_>>()
+        .join("; ");
+    format!("some retrieval failed without discarding other results ({detail})")
 }
 
 #[derive(Clone)]
@@ -163,66 +327,41 @@ fn native_not_enabled_status() -> ProviderStatus {
     }
 }
 
-impl SearchProvider for CatalogMetadataProvider {
-    fn kind(&self) -> SearchProviderKind {
-        SearchProviderKind::CatalogMetadata
-    }
-
-    fn search(&self, context: Arc<SearchExecutionContext>) -> ProviderSearchFuture {
-        let provider = self.clone();
-        Box::pin(async move {
-            run_blocking_provider(SearchProviderKind::CatalogMetadata, move || {
-                provider.search(&context.request, context.catalog_resolution.as_ref())
+/// Runs one provider's synchronous work on a blocking task.
+///
+/// Providers read `SQLite`, so their work must leave the async worker. Owning the
+/// boundary here rather than in each provider is what lets `SearchProvider` stay
+/// synchronous, which in turn lets retrievers borrow request-scoped state
+/// without a `'static` future having to hold it.
+pub(crate) fn run_provider(
+    provider: Arc<dyn SearchProvider>,
+    context: Arc<SearchExecutionContext>,
+) -> ProviderSearchFuture {
+    let kind = provider.kind();
+    Box::pin(async move {
+        let span = tracing::Span::current();
+        // The blocking thread has no subscriber of its own, so carry the
+        // caller's dispatcher across with the span or provider work is untraced.
+        let dispatch = tracing::dispatcher::get_default(tracing::Dispatch::clone);
+        match task::spawn_blocking(move || {
+            tracing::dispatcher::with_default(&dispatch, || {
+                span.in_scope(|| provider.search(&context))
             })
-            .await
         })
-    }
-}
-
-impl SearchProvider for ObservedValuesProvider {
-    fn kind(&self) -> SearchProviderKind {
-        SearchProviderKind::ObservedValues
-    }
-
-    fn search(&self, context: Arc<SearchExecutionContext>) -> ProviderSearchFuture {
-        let provider = self.clone();
-        Box::pin(async move {
-            if context.observed_values_policy.is_none() {
-                tracing::error!("enabled observed-values provider received no retrieval policy");
-                return provider_error_outcome(SearchProviderKind::ObservedValues);
+        .await
+        {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                tracing::error!(?kind, ?error, "Universal Search provider task failed");
+                provider_error_outcome(kind)
             }
-            run_blocking_provider(SearchProviderKind::ObservedValues, move || {
-                let policy = context
-                    .observed_values_policy
-                    .as_ref()
-                    .expect("registry enables observed provider only with a retrieval policy");
-                provider.search(&context.request, policy.as_ref())
-            })
-            .await
-        })
-    }
-}
-
-async fn run_blocking_provider<F>(
-    provider: SearchProviderKind,
-    operation: F,
-) -> ProviderSearchOutcome
-where
-    F: FnOnce() -> ProviderSearchOutcome + Send + 'static,
-{
-    let span = tracing::Span::current();
-    match task::spawn_blocking(move || span.in_scope(operation)).await {
-        Ok(outcome) => outcome,
-        Err(error) => {
-            tracing::error!(?provider, ?error, "Universal Search provider task failed");
-            provider_error_outcome(provider)
         }
-    }
+    })
 }
 
 pub(crate) fn provider_error_outcome(provider: SearchProviderKind) -> ProviderSearchOutcome {
     ProviderSearchOutcome {
-        candidates: Vec::new(),
+        rankings: Vec::new(),
         status: ProviderStatus {
             provider,
             state: SearchProviderState::Error,
@@ -249,9 +388,8 @@ mod tests {
     use std::thread;
 
     use super::{
-        LocalSearchWriteCoordinator, ProviderSearchFuture, SearchExecutionContext, SearchProvider,
-        SearchProviderRegistration, local_registrations, provider_error_outcome,
-        run_blocking_provider,
+        LocalSearchWriteCoordinator, PreparedRetrievers, ProviderFailure, SearchExecutionContext,
+        SearchProvider, SearchProviderRegistration, local_registrations,
     };
     use crate::search::result::{SearchProviderKind, SearchProviderState};
     use crate::workspaces::WorkspaceName;
@@ -272,26 +410,6 @@ mod tests {
         assert_eq!(status.state, SearchProviderState::NotEnabled);
         assert!(status.coverage.is_none());
         assert!(status.note.contains("`observed_values_search`"));
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn local_provider_work_runs_off_the_async_worker() {
-        let async_thread = thread::current().id();
-        let (thread_tx, thread_rx) = std_mpsc::sync_channel(1);
-        let outcome = run_blocking_provider(SearchProviderKind::CatalogMetadata, move || {
-            thread_tx
-                .send(thread::current().id())
-                .expect("record blocking thread");
-            provider_error_outcome(SearchProviderKind::CatalogMetadata)
-        })
-        .await;
-
-        assert_ne!(
-            thread_rx.recv().expect("blocking thread id"),
-            async_thread,
-            "provider work must leave the async worker thread"
-        );
-        assert_eq!(outcome.status.provider, SearchProviderKind::CatalogMetadata);
     }
 
     #[test]
@@ -365,8 +483,11 @@ mod tests {
             self.0
         }
 
-        fn search(&self, _context: Arc<SearchExecutionContext>) -> ProviderSearchFuture {
-            panic!("static registration must not invoke disabled provider")
+        fn retrievers(
+            &self,
+            _context: &SearchExecutionContext,
+        ) -> Result<PreparedRetrievers, ProviderFailure> {
+            unreachable!("static registration must not invoke disabled provider")
         }
     }
 }

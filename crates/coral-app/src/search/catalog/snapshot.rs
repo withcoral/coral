@@ -12,7 +12,7 @@ use sha2::{Digest as _, Sha256};
 use crate::search::catalog::sqlite_index::{
     CatalogIndexDocument, CatalogIndexDocumentKind, CatalogIndexSnapshot,
 };
-use crate::search::result::{SearchFieldRole, SearchSurfaceKind};
+use crate::search::result::{FieldRole, SearchSurfaceKind};
 
 const CATALOG_SEARCH_SNAPSHOT_VERSION: &str = "catalog-search-snapshot-v3";
 
@@ -80,7 +80,7 @@ pub(crate) struct CatalogDocument {
     pub(crate) surface_kind: Option<SearchSurfaceKind>,
     pub(crate) surface_name: String,
     pub(crate) field_name: String,
-    pub(crate) field_role: Option<SearchFieldRole>,
+    pub(crate) field_role: Option<FieldRole>,
     pub(crate) qualified_name: String,
     pub(crate) title: String,
     pub(crate) description: String,
@@ -138,22 +138,22 @@ pub(crate) fn surface_kind_from_str(value: &str) -> Option<SearchSurfaceKind> {
     }
 }
 
-pub(crate) fn field_role_as_str(field_role: Option<SearchFieldRole>) -> &'static str {
+pub(crate) fn field_role_as_str(field_role: Option<FieldRole>) -> &'static str {
     match field_role {
-        Some(SearchFieldRole::TableColumn) => "table_column",
-        Some(SearchFieldRole::TableFilter) => "table_filter",
-        Some(SearchFieldRole::TableFunctionArgument) => "table_function_argument",
-        Some(SearchFieldRole::TableFunctionResultColumn) => "table_function_result_column",
+        Some(FieldRole::Column) => "table_column",
+        Some(FieldRole::Filter) => "table_filter",
+        Some(FieldRole::Argument) => "table_function_argument",
+        Some(FieldRole::ResultColumn) => "table_function_result_column",
         None => "",
     }
 }
 
-pub(crate) fn field_role_from_str(value: &str) -> Option<SearchFieldRole> {
+pub(crate) fn field_role_from_str(value: &str) -> Option<FieldRole> {
     match value {
-        "table_column" => Some(SearchFieldRole::TableColumn),
-        "table_filter" => Some(SearchFieldRole::TableFilter),
-        "table_function_argument" => Some(SearchFieldRole::TableFunctionArgument),
-        "table_function_result_column" => Some(SearchFieldRole::TableFunctionResultColumn),
+        "table_column" => Some(FieldRole::Column),
+        "table_filter" => Some(FieldRole::Filter),
+        "table_function_argument" => Some(FieldRole::Argument),
+        "table_function_result_column" => Some(FieldRole::ResultColumn),
         _ => None,
     }
 }
@@ -238,7 +238,7 @@ fn table_column_document(
         surface_kind: Some(SearchSurfaceKind::Table),
         surface_name: table.table_name.clone(),
         field_name: column.name.clone(),
-        field_role: Some(SearchFieldRole::TableColumn),
+        field_role: Some(FieldRole::Column),
         qualified_name: format!("{surface_qualified_name}.{}", column.name),
         title: column.name.clone(),
         description: column.description.clone(),
@@ -266,7 +266,7 @@ fn table_required_filter_document(
         surface_kind: Some(SearchSurfaceKind::Table),
         surface_name: table.table_name.clone(),
         field_name: filter.to_string(),
-        field_role: Some(SearchFieldRole::TableFilter),
+        field_role: Some(FieldRole::Filter),
         qualified_name: format!("{surface_qualified_name}.{filter}"),
         title: filter.to_string(),
         description: "Required table filter".to_string(),
@@ -349,7 +349,7 @@ fn table_function_argument_document(
         surface_kind: Some(SearchSurfaceKind::TableFunction),
         surface_name: function.function_name.clone(),
         field_name: argument.name.clone(),
-        field_role: Some(SearchFieldRole::TableFunctionArgument),
+        field_role: Some(FieldRole::Argument),
         qualified_name: format!("{surface_qualified_name}.{}", argument.name),
         title: argument.name.clone(),
         description: "Table function argument".to_string(),
@@ -380,7 +380,7 @@ fn table_function_result_column_document(
         surface_kind: Some(SearchSurfaceKind::TableFunction),
         surface_name: function.function_name.clone(),
         field_name: column.name.clone(),
-        field_role: Some(SearchFieldRole::TableFunctionResultColumn),
+        field_role: Some(FieldRole::ResultColumn),
         qualified_name: format!("{surface_qualified_name}.{}", column.name),
         title: column.name.clone(),
         description: column.description.clone(),

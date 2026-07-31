@@ -19,33 +19,45 @@ Among the ranked results, you might see:
 
 ```text
 Results
-1. [catalog_metadata] table github.issues
-   SQL: github.issues
-2. [catalog_metadata] table function github.search_issues
-   SQL reference: github.search_issues
-   Call: github.search_issues(q => '<value>')
+1. [table] github.issues
+   Issues opened against a repository
+   required: owner, repo
+   fields: labels, state
+   matched labels = urgent
+2. [function] github.search_issues
+   Full-text search across issues
+   required: q
+   returns: number, title, state
 ```
 
-The `SQL` line gives you the table reference. For a table function, `SQL reference` identifies the function and `Call` shows its required arguments.
+Every result is something you can query. Matching columns, arguments, and
+values are not separate results — they appear under the table or function that
+owns them, so one entry tells you what to select, what you must constrain, and
+which literal values to filter by.
 
-Use a catalog result's `SQL` reference or `Call` example in a query with `coral sql` to fetch rows. See [Query your data](/getting-started/quickstart#3-query-your-data) for a complete example.
+`required` lists what you must supply before the entry will return rows: filters
+for a table, arguments for a function. `matched` lines give you values Coral has
+previously observed on that field, ready to use in a `WHERE` clause or as an
+argument.
 
-When observed-value search is enabled and Coral has previously seen a matching value, the same ranked list can also include:
+Use the reference on the first line with `coral sql` to fetch rows. See
+[Query your data](/getting-started/quickstart#3-query-your-data) for a complete
+example.
 
-```text
-3. [observed_values] observed value github.issues.label_names
-   Value: urgent
-   Field path: label_names
-   Last observed: 2026-07-03T10:00:00Z (2 observation(s))
-```
+Here, `github` is the query-visible SQL schema; JSON and MCP results return it as `schema_name`. For a source with multiple runtime components, it can differ from the installed source name because each component can publish its own SQL schema.
 
-Here, `github` is the query-visible SQL schema; JSON and MCP results return it as `schema_name`. For a source with multiple runtime components, it can differ from the installed source name because each component can publish its own SQL schema. Use it with the result's table or table function and column when you write SQL.
+When more fields matched than were shown, the result reports how many were left
+out so you can widen the query rather than assume the column does not exist.
 
-By default, Coral returns up to 10 results across all search providers. Use `--limit` to request between 1 and 50. See the complete [`coral search` reference](/reference/cli-reference#coral-search).
+By default, Coral returns up to 10 results. Use `--limit` to request between 1 and 50. See the complete [`coral search` reference](/reference/cli-reference#coral-search).
 
 ## Find values Coral has seen
 
-Sometimes you remember a project name, issue ID, deployment status, or another value, but not where it lives. Observed-value search can match that value against data Coral observed in the past and show the query-visible SQL schema, table or table function, and column where it appeared.
+Sometimes you remember a project name, issue ID, deployment status, or another value, but not where it lives. Observed-value search can match that value against data Coral observed in the past and surface the table or table function where it appeared, with the value attached to the column that holds it.
+
+A value only counts as a match when your query names it outright. That keeps a
+common value like `open` from pulling in every entry that happens to have a
+status column.
 
 Coral builds this memory from values produced by HTTP- and MCP-backed sources while executing SQL queries. It does not crawl your sources in the background or query them when you search.
 

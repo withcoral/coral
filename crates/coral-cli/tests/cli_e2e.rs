@@ -955,12 +955,12 @@ async fn search_command_renders_text_output_and_provider_statuses() {
         "expected results section: {stdout}"
     );
     assert!(
-        stdout.contains("[catalog_metadata] table local_messages.messages"),
+        stdout.contains("[table] local_messages.messages"),
         "expected catalog table result: {stdout}"
     );
     assert!(
-        stdout.contains("SQL: local_messages.messages"),
-        "expected SQL reference: {stdout}"
+        stdout.contains("required: owner"),
+        "expected required filters on the entry: {stdout}"
     );
     assert!(
         stdout.contains("Provider statuses"),
@@ -998,16 +998,15 @@ async fn search_json_output_preserves_typed_payloads_and_statuses() {
     let response: serde_json::Value =
         serde_json::from_str(stdout.trim()).expect("search --json should emit JSON");
 
-    assert_eq!(response["results"][0]["provider"], "catalog_metadata");
-    assert_eq!(response["results"][0]["kind"], "catalog_metadata");
+    assert_eq!(response["results"][0]["kind"], "table");
     assert_eq!(
-        response["results"][0]["catalog_metadata"]["item"]["sql_reference"],
+        response["results"][0]["sql_reference"],
         "local_messages.messages"
     );
-    assert_eq!(
-        response["results"][1]["column_hint"]["field_role"],
-        "table_column"
-    );
+    // Matching columns nest under the entry rather than arriving as peers.
+    assert_eq!(response["results"][0]["fields"]["text"], "Utf8");
+    assert_eq!(response["results"][0]["required"][0], "owner");
+    assert_eq!(response["results"].as_array().map(Vec::len), Some(1));
     assert_eq!(
         response["provider_statuses"][0]["coverage"]["searched_units"],
         3

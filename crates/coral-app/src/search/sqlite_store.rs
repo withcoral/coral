@@ -7,8 +7,9 @@ use std::time::Duration;
 use rusqlite::{Connection, ErrorCode, TransactionBehavior};
 
 use crate::search::catalog::sqlite_index::{
-    CatalogClearResult, CatalogIndexSnapshot, CatalogRebuildResult, CatalogRefreshResult,
-    CatalogSearchHits, SqliteCatalogIndex, clear_catalog_source_documents_in_transaction,
+    CatalogClearResult, CatalogDocumentClass, CatalogIndexSnapshot, CatalogRebuildResult,
+    CatalogRefreshResult, CatalogSearchHits, SqliteCatalogIndex,
+    clear_catalog_source_documents_in_transaction,
     clear_catalog_workspace_documents_in_transaction,
 };
 use crate::search::observed::{
@@ -246,9 +247,16 @@ impl SqliteSearchStore {
         &self,
         terms: &[String],
         limit: usize,
+        class: CatalogDocumentClass,
     ) -> Result<CatalogSearchHits, SqliteSearchError> {
         let connection = self.connect()?;
-        SqliteCatalogIndex::new().search(&connection, &self.workspace_name, terms, limit)
+        SqliteCatalogIndex::new().search_ranked(
+            &connection,
+            &self.workspace_name,
+            terms,
+            limit,
+            class,
+        )
     }
 }
 

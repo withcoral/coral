@@ -1,15 +1,17 @@
 //! Transport-neutral Universal Search request and result models.
 
-use std::cmp::Reverse;
-
-use coral_engine::ColumnInfo;
-
 use crate::bootstrap::AppError;
-use crate::catalog::discovery::CatalogItem;
 use crate::workspaces::WorkspaceName;
 
 pub(crate) const DEFAULT_UNIVERSAL_SEARCH_LIMIT: u32 = 10;
 pub(crate) const MAX_UNIVERSAL_SEARCH_LIMIT: u32 = 50;
+/// Shortest term the catalog index can match.
+///
+/// The FTS table is tokenized as trigrams, so a term under three characters has
+/// no representation in the index at all — `id` matches nothing. Rejecting the
+/// query is honest; returning an empty result set reads as "no such thing"
+/// rather than "ask me differently".
+pub(crate) const MIN_SEARCHABLE_TERM_CHARS: usize = 3;
 const MAX_UNIVERSAL_SEARCH_QUERY_BYTES: usize = 512;
 
 #[derive(Debug)]
@@ -51,6 +53,15 @@ impl SearchRequest {
         }
         let limit = normalized_search_limit(limit)?;
         let terms = query_terms(query);
+        if !terms
+            .iter()
+            .any(|term| term.chars().count() >= MIN_SEARCHABLE_TERM_CHARS)
+        {
+            return Err(AppError::InvalidInput(format!(
+                "search query must contain a term of at least {MIN_SEARCHABLE_TERM_CHARS} characters"
+            ))
+            .into());
+        }
         Ok(Self {
             workspace_name,
             query: query.to_string(),
@@ -62,7 +73,8 @@ impl SearchRequest {
 
 #[derive(Debug, Clone)]
 pub(crate) struct SearchResponse {
-    pub(crate) workspace_name: WorkspaceName,
+    /// Ranked catalog entries. Every element is something the caller can query;
+    /// matched fields and values are evidence nested under the owning entry.
     pub(crate) results: Vec<SearchResult>,
     pub(crate) provider_statuses: Vec<ProviderStatus>,
     pub(crate) truncation: SearchTruncation,
@@ -119,126 +131,159 @@ pub(crate) struct ProviderCoverage {
     pub(crate) stale_index: bool,
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct SearchCandidate {
-    /// Provider-scoped stable ordering key, not a cross-provider identity.
-    /// Equal keys emitted by different providers remain separate candidates.
-    pub(crate) key: String,
-    pub(crate) score: u32,
-    pub(crate) provider: SearchProviderKind,
-    pub(crate) payload: SearchPayload,
-}
-
-impl SearchCandidate {
-    pub(crate) fn type_order(&self) -> u8 {
-        match &self.payload {
-            SearchPayload::CatalogMetadata(_) => 0,
-            SearchPayload::ColumnHint(_) => 1,
-            SearchPayload::ObservedValue(_) => 2,
-        }
-    }
-}
-
-impl Eq for SearchCandidate {}
-
-impl PartialEq for SearchCandidate {
-    fn eq(&self, other: &Self) -> bool {
-        self.score == other.score
-            && self.type_order() == other.type_order()
-            && self.key == other.key
-    }
-}
-
-impl Ord for SearchCandidate {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        (Reverse(self.score), self.type_order(), self.key.as_str()).cmp(&(
-            Reverse(other.score),
-            other.type_order(),
-            other.key.as_str(),
-        ))
-    }
-}
-
-impl PartialOrd for SearchCandidate {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct SearchResult {
-    pub(crate) provider: SearchProviderKind,
-    pub(crate) payload: SearchPayload,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) enum SearchPayload {
-    CatalogMetadata(CatalogMetadataResult),
-    ColumnHint(ColumnHintResult),
-    ObservedValue(ObservedValueResult),
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct CatalogMetadataResult {
-    pub(crate) item: CatalogItem,
-    pub(crate) matched_fields: Vec<String>,
-    pub(crate) table_column_preview: Option<TableColumnPreview>,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct TableColumnPreview {
-    pub(crate) column_count: u32,
-    pub(crate) columns: Vec<TableColumnPreviewColumn>,
-    pub(crate) omitted_column_count: u32,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct TableColumnPreviewColumn {
-    pub(crate) column: ColumnInfo,
-    pub(crate) matched_fields: Vec<String>,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct ColumnHintResult {
+/// Identity of one queryable catalog entry.
+///
+/// This is both the fusion key and the SQL reference. `kind` is load-bearing:
+/// `CatalogInfo` keeps tables and table functions in separate collections, so
+/// `(schema_name, name)` alone does not resolve to an entry.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct SearchSurfaceId {
     pub(crate) schema_name: String,
-    pub(crate) surface_name: String,
-    pub(crate) surface_kind: SearchSurfaceKind,
     pub(crate) name: String,
-    pub(crate) data_type: String,
-    pub(crate) required: bool,
-    pub(crate) description: String,
-    pub(crate) matched_fields: Vec<String>,
-    pub(crate) field_role: SearchFieldRole,
+    pub(crate) kind: SearchSurfaceKind,
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct ObservedValueResult {
-    pub(crate) value: String,
-    pub(crate) schema_name: String,
-    pub(crate) surface_name: String,
-    pub(crate) column_name: String,
-    pub(crate) surface_kind: SearchSurfaceKind,
-    pub(crate) field_path: String,
-    pub(crate) observed_count: u64,
-    pub(crate) last_observed_at: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum SearchSurfaceKind {
     Table,
     TableFunction,
 }
 
+/// What the catalog knows about an entry. Carries no query-dependent state, so
+/// it is resolved once per surviving entry rather than repeated per match.
+#[derive(Debug, Clone)]
+pub(crate) struct CatalogSurface {
+    pub(crate) id: SearchSurfaceId,
+    pub(crate) description: String,
+    pub(crate) guide: String,
+    pub(crate) shape: SurfaceShape,
+}
+
+/// A table's columns are both selectable and filterable, so they share one
+/// list. A function separates the values you supply from the ones you get back.
+#[derive(Debug, Clone)]
+pub(crate) enum SurfaceShape {
+    Table {
+        fields: Vec<Field>,
+    },
+    Function {
+        arguments: Vec<Field>,
+        returns: Vec<Field>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Field {
+    pub(crate) name: String,
+    pub(crate) data_type: String,
+    pub(crate) required: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FieldValues {
+    pub(crate) field: String,
+    pub(crate) values: Vec<String>,
+}
+
+/// Names one field on an entry. The role disambiguates a function argument
+/// from a result column that happens to share its name.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct FieldRef {
+    pub(crate) name: String,
+    pub(crate) role: FieldRole,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum FieldRole {
+    Column,
+    Filter,
+    Argument,
+    ResultColumn,
+}
+
+/// What a retriever found: an entry identity plus the evidence for it. A
+/// retriever cannot emit shape, which is why catalog metadata is resolved once
+/// downstream instead of being repeated by every provider.
+#[derive(Debug, Clone)]
+pub(crate) struct SurfaceMatch {
+    pub(crate) id: SearchSurfaceId,
+    pub(crate) evidence: MatchEvidence,
+}
+
+/// Accumulates across retrievers. Merging is a fold, so union must not depend
+/// on the order retrievers ran in.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct MatchEvidence {
+    pub(crate) matched_fields: Vec<FieldRef>,
+    pub(crate) matching_values: Vec<FieldValues>,
+}
+
+impl MatchEvidence {
+    pub(crate) fn merge(&mut self, other: Self) {
+        for field in other.matched_fields {
+            if !self.matched_fields.contains(&field) {
+                self.matched_fields.push(field);
+            }
+        }
+        for values in other.matching_values {
+            if let Some(existing) = self
+                .matching_values
+                .iter_mut()
+                .find(|existing| existing.field == values.field)
+            {
+                for value in values.values {
+                    if !existing.values.contains(&value) {
+                        existing.values.push(value);
+                    }
+                }
+            } else {
+                self.matching_values.push(values);
+            }
+        }
+        // Values are literals a caller pastes into a query, so their order must
+        // not depend on which retriever happened to run first.
+        for values in &mut self.matching_values {
+            values.values.sort();
+            values.values.dedup();
+        }
+        self.matching_values
+            .sort_by(|left, right| left.field.cmp(&right.field));
+    }
+}
+
+/// Names one ranked list so a failing retriever can be reported in its
+/// provider's status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[expect(
-    clippy::enum_variant_names,
-    reason = "field roles intentionally mirror the protobuf role names"
-)]
-pub(crate) enum SearchFieldRole {
-    TableColumn,
-    TableFilter,
-    TableFunctionArgument,
-    TableFunctionResultColumn,
+pub(crate) enum RetrieverId {
+    CatalogEntries,
+    CatalogFields,
+    ObservedValues,
+}
+
+impl RetrieverId {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::CatalogEntries => "catalog.entries",
+            Self::CatalogFields => "catalog.fields",
+            Self::ObservedValues => "observed.values",
+        }
+    }
+}
+
+/// One retriever's ranked output. Vector position is the rank fusion uses; no
+/// score crosses this boundary.
+#[derive(Debug, Clone)]
+pub(crate) struct Ranking {
+    pub(crate) retriever: RetrieverId,
+    pub(crate) matches: Vec<SurfaceMatch>,
+}
+
+/// What we return: catalog knowledge plus what this query found.
+#[derive(Debug, Clone)]
+pub(crate) struct SearchResult {
+    pub(crate) surface: CatalogSurface,
+    pub(crate) matching_values: Vec<FieldValues>,
+    pub(crate) omitted_matching_field_count: u32,
 }
 
 fn normalized_search_limit(limit: u32) -> Result<u32, AppError> {
@@ -281,8 +326,8 @@ fn normalize_query_part(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        DEFAULT_UNIVERSAL_SEARCH_LIMIT, MAX_UNIVERSAL_SEARCH_LIMIT,
-        MAX_UNIVERSAL_SEARCH_QUERY_BYTES, SearchRequest,
+        AppError, DEFAULT_UNIVERSAL_SEARCH_LIMIT, MAX_UNIVERSAL_SEARCH_LIMIT,
+        MAX_UNIVERSAL_SEARCH_QUERY_BYTES, SearchManagerError, SearchRequest,
     };
     use crate::workspaces::WorkspaceName;
 
@@ -303,6 +348,40 @@ mod tests {
         assert!(request.terms.iter().any(|term| term == "payments-api"));
         assert!(request.terms.iter().any(|term| term == "#eng"));
         assert!(request.terms.iter().any(|term| term == "acme/repo"));
+    }
+
+    #[test]
+    fn a_query_the_index_cannot_represent_is_rejected() {
+        // Both catalog and observed-value indexes are tokenized as trigrams, so
+        // a query of only short terms retrieves nothing from either. Failing
+        // loudly beats an empty result set, which reads as "no such thing".
+        let error = SearchRequest::new(WorkspaceName::default(), "id", 10)
+            .expect_err("a two-character query cannot be served");
+        let SearchManagerError::App(error) = error;
+        let AppError::InvalidInput(message) = error else {
+            panic!("a query the index cannot represent is invalid input");
+        };
+        assert!(
+            message.contains("at least 3 characters"),
+            "message should say what to do instead, got {message:?}"
+        );
+
+        SearchRequest::new(WorkspaceName::default(), "ts", 10)
+            .expect_err("a two-character query cannot be served");
+
+        // The whole query is itself a term, so a short pair is still searchable
+        // as a phrase. Only text the index has no representation for is refused.
+        SearchRequest::new(WorkspaceName::default(), "ts of", 10)
+            .expect("a phrase long enough to reach the index");
+    }
+
+    #[test]
+    fn a_short_term_is_kept_when_another_term_can_be_searched() {
+        let request = SearchRequest::new(WorkspaceName::default(), "slack message id", 10)
+            .expect("search request");
+
+        assert!(request.terms.iter().any(|term| term == "id"));
+        assert!(request.terms.iter().any(|term| term == "message"));
     }
 
     #[test]
