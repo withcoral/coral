@@ -653,6 +653,53 @@ fn key_id_for_bytes(bytes: &[u8; KEY_LEN]) -> String {
     format!("local-file-{}", hex.get(..16).unwrap_or(hex.as_str()))
 }
 
+/// Deterministic key providers shared by every envelope-crypto test suite.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::{CredentialEncryptionKey, CredentialKeyProvider, CredentialsError};
+
+    /// Serves one fixed key and refuses every other key identifier.
+    #[derive(Clone)]
+    pub(crate) struct StaticKeyProvider {
+        pub(crate) key: CredentialEncryptionKey,
+    }
+
+    impl CredentialKeyProvider for StaticKeyProvider {
+        fn active_key(&self) -> Result<CredentialEncryptionKey, CredentialsError> {
+            Ok(self.key.clone())
+        }
+
+        fn key(&self, key_id: &str) -> Result<CredentialEncryptionKey, CredentialsError> {
+            if self.key.key_id() == key_id {
+                Ok(self.key.clone())
+            } else {
+                Err(CredentialsError::Crypto("missing test key".to_string()))
+            }
+        }
+    }
+
+    /// Wraps with `active` while keeping every key in `keys` unwrappable.
+    #[derive(Clone)]
+    pub(crate) struct RotatingKeyProvider {
+        pub(crate) active: CredentialEncryptionKey,
+        pub(crate) keys: Vec<CredentialEncryptionKey>,
+    }
+
+    impl CredentialKeyProvider for RotatingKeyProvider {
+        fn active_key(&self) -> Result<CredentialEncryptionKey, CredentialsError> {
+            Ok(self.active.clone())
+        }
+
+        fn key(&self, key_id: &str) -> Result<CredentialEncryptionKey, CredentialsError> {
+            self.keys
+                .iter()
+                .find(|key| key.key_id() == key_id)
+                .cloned()
+                .ok_or_else(|| CredentialsError::Crypto("missing test key".to_string()))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use base64::Engine as _;

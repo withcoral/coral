@@ -7,6 +7,7 @@ use tempfile::tempdir;
 use zeroize::Zeroizing;
 
 use super::CredentialsError;
+use super::encryption::test_support::{RotatingKeyProvider, StaticKeyProvider};
 use super::encryption::{
     CREDENTIAL_DOCUMENT_BINDING_VERSION, CredentialEncryptionKey, CredentialKeyProvider,
     ENVELOPE_DOCUMENT_ALGORITHM, EnvelopeContext, LocalFileCredentialKeyProvider,
@@ -16,45 +17,6 @@ use super::encryption::{
 use crate::sources::SourceName;
 use crate::state::AppStateLayout;
 use crate::workspaces::WorkspaceName;
-
-#[derive(Clone)]
-struct StaticKeyProvider {
-    key: CredentialEncryptionKey,
-}
-
-impl CredentialKeyProvider for StaticKeyProvider {
-    fn active_key(&self) -> Result<CredentialEncryptionKey, CredentialsError> {
-        Ok(self.key.clone())
-    }
-
-    fn key(&self, key_id: &str) -> Result<CredentialEncryptionKey, CredentialsError> {
-        if self.key.key_id() == key_id {
-            Ok(self.key.clone())
-        } else {
-            Err(CredentialsError::Crypto("missing test key".to_string()))
-        }
-    }
-}
-
-#[derive(Clone)]
-struct RotatingKeyProvider {
-    active: CredentialEncryptionKey,
-    keys: Vec<CredentialEncryptionKey>,
-}
-
-impl CredentialKeyProvider for RotatingKeyProvider {
-    fn active_key(&self) -> Result<CredentialEncryptionKey, CredentialsError> {
-        Ok(self.active.clone())
-    }
-
-    fn key(&self, key_id: &str) -> Result<CredentialEncryptionKey, CredentialsError> {
-        self.keys
-            .iter()
-            .find(|key| key.key_id() == key_id)
-            .cloned()
-            .ok_or_else(|| CredentialsError::Crypto("missing test key".to_string()))
-    }
-}
 
 #[test]
 fn encrypt_decrypt_authenticates_context_and_redacts_key_debug() {
