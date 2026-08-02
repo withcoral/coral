@@ -16,6 +16,8 @@
 //!   - `release-desktop-macos-package` packages, signs, notarizes, and verifies
 //!     the prepared macOS desktop app.
 //!   - `openapi-hydrate` produces a self-contained JSON `OpenAPI` descriptor.
+//!   - `v4-metadata-report` reports inferred row paths and pagination contracts
+//!     for the v4 source catalog, for diffing across inference changes.
 
 #![allow(
     clippy::print_stderr,
@@ -36,6 +38,7 @@ mod benchmarks;
 mod detect;
 mod docs;
 mod env;
+mod metadata_report;
 mod openapi;
 mod perf;
 mod release;
@@ -73,6 +76,8 @@ enum Command {
     ReleaseDesktopMacosPackage(release::DesktopMacosPackageArgs),
     /// Hydrate reachable external `OpenAPI` references into JSON.
     OpenapiHydrate(openapi::HydrateArgs),
+    /// Report inferred row paths and pagination contracts for v4 sources.
+    V4MetadataReport(metadata_report::Args),
 }
 
 #[derive(Debug, clap::Args)]
@@ -125,5 +130,6 @@ fn run(command: &Command) -> Result<bool> {
         Command::ReleaseMacosSignNotarize(args) => release::macos_sign_notarize(args),
         Command::ReleaseDesktopMacosPackage(args) => release::desktop_macos_package(args),
         Command::OpenapiHydrate(args) => openapi::hydrate(args),
+        Command::V4MetadataReport(args) => metadata_report::run(args),
     }
 }

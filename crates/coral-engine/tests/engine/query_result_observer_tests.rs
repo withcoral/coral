@@ -195,6 +195,34 @@ async fn execution_and_observer_include_table_provenance() {
 }
 
 #[tokio::test]
+async fn explicit_datafusion_catalog_keeps_schema_table_provenance() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    write_jsonl_file(temp.path(), "users.jsonl", &users_rows());
+    let source = build_source(jsonl_manifest("observer_qualified", temp.path()));
+    let observer = Arc::new(ProvenanceObserver::default());
+    let runtime = runtime_with_observer(observer.clone());
+    let sql = "SELECT id FROM datafusion.observer_qualified.users WHERE id >= 2 ORDER BY id";
+
+    let execution = CoralQuery::execute_sql(&[source], runtime, sql)
+        .await
+        .expect("query should succeed");
+
+    let expected = ObservedProvenance {
+        sql: sql.to_string(),
+        sources: vec!["observer_qualified".to_string()],
+        tables: vec![(
+            "observer_qualified".to_string(),
+            "observer_qualified".to_string(),
+            "users".to_string(),
+        )],
+        table_functions: Vec::new(),
+        row_count: 2,
+    };
+    assert_eq!(ObservedProvenance::from(execution.provenance()), expected);
+    assert_eq!(observer.calls(), vec![expected]);
+}
+
+#[tokio::test]
 async fn observer_called_after_successful_query_and_sees_final_batches() {
     let temp = tempfile::tempdir().expect("tempdir");
     write_jsonl_file(temp.path(), "users.jsonl", &users_rows());

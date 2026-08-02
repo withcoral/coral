@@ -14,13 +14,20 @@
 //! envelope (see [`has_envelope_evidence`]). A missed envelope leaves a JSON
 //! column the user can still unnest; a wrong envelope silently discards the
 //! declared resource.
+//!
+//! `allOf` is folded before any of this runs, because providers routinely
+//! assemble an envelope from a shared pagination base and a rows branch rather
+//! than declaring it whole — every `OData` collection response is written that
+//! way. `anyOf`, `oneOf`, and `not` are still refused: they describe a choice
+//! between shapes, and there is no single property map to ask questions of.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 use crate::v4::surfaces::json_schema::{
-    JsonSchemaWalkError, json_schema_type_contains, with_resolved_json_schema,
+    JsonSchemaWalkError, json_schema_type_contains, merged_all_of_object_view,
+    schema_uses_alternation, with_resolved_json_schema,
 };
 
 const MAX_DEPTH: usize = 8;
@@ -51,6 +58,13 @@ const METADATA_STRING_NAMES: &[&str] = &[
     "nexttoken",
     "nexturl",
     "nextlink",
+    // OData spells its annotations `@odata.nextLink`, which normalizes with the
+    // prefix intact. Listed explicitly rather than stripping `@odata.` in
+    // `normalized_name`, because that function also decides which arrays are
+    // *excluded* as metadata — stripping there would silently reclassify every
+    // `@odata.*` property in every source.
+    "odatanextlink",
+    "odatadeltalink",
     "endcursor",
     "continuationtoken",
     "scrollid",
@@ -63,6 +77,7 @@ const METADATA_INTEGER_NAMES: &[&str] = &[
     "totalsize",
     "totalitems",
     "resultcount",
+    "odatacount",
     "page",
     "pages",
     "pagecount",
@@ -147,17 +162,19 @@ fn candidate_row_path<'a>(
         depth,
         MAX_DEPTH,
         |resolved, resolving_refs, next_depth| {
-            // Composed schemas describe a merge Coral does not model here, so
-            // their properties cannot be read as a complete envelope.
-            if schema_uses_composition(resolved) {
-                return Ok(None);
-            }
-            if !json_schema_type_contains(resolved, "object") {
-                return Ok(None);
-            }
-            let Some(properties) = resolved.get("properties").and_then(Value::as_object) else {
+            // `allOf` is folded in, so an envelope assembled from a shared
+            // pagination base and a rows branch reads as one object. `anyOf`,
+            // `oneOf`, and `not` still bail: they describe a choice of shapes,
+            // not one shape.
+            let Some(view) =
+                merged_all_of_object_view(root, resolved, resolving_refs, next_depth, MAX_DEPTH)
+            else {
                 return Ok(None);
             };
+            let properties = &view.properties;
+            if properties.is_empty() {
+                return Ok(None);
+            }
             let evidence = has_envelope_evidence(root, properties, resolving_refs, next_depth);
             let accept_preferred = paginated_operation || inherited_evidence || evidence;
             let accept_fallback = paginated_operation || evidence;
@@ -174,6 +191,13 @@ fn candidate_row_path<'a>(
             // such as `results.data` are worth finding, an unrestricted walk of
             // every resource child is not.
             for name in PREFERRED_ROW_PROPERTIES {
+                // The error cannot propagate: `JsonSchemaWalkError` borrows
+                // from the schema it walked, and these properties belong to
+                // the merged view rather than the document, so `?` would hand
+                // back a reference to a local. Skipping is sound in itself — a
+                // branch that cannot be walked holds no rows — but it leaves
+                // the sole-array fallback below reachable for an envelope
+                // whose preferred branch is an unresolvable `$ref`.
                 if let Some(property) = properties.get(*name)
                     && let Some(mut path) = candidate_row_path(
                         root,
@@ -182,7 +206,9 @@ fn candidate_row_path<'a>(
                         inherited_evidence || evidence,
                         resolving_refs,
                         next_depth,
-                    )?
+                    )
+                    .ok()
+                    .flatten()
                 {
                     path.insert(0, (*name).to_string());
                     return Ok(Some(path));
@@ -214,7 +240,7 @@ fn candidate_row_path<'a>(
 /// `has_more` boolean or a `next_cursor` string on a plain resource.
 fn has_envelope_evidence(
     root: &Value,
-    properties: &Map<String, Value>,
+    properties: &BTreeMap<String, Value>,
     resolving_refs: &mut BTreeSet<String>,
     depth: usize,
 ) -> bool {
@@ -239,14 +265,14 @@ fn is_metadata_name(name: &str) -> bool {
         .any(|(names, _)| names.contains(&normalized.as_str()))
 }
 
-fn schema_uses_composition(schema: &Value) -> bool {
-    ["allOf", "anyOf", "oneOf", "not"]
-        .iter()
-        .any(|keyword| schema.get(*keyword).is_some())
-}
-
 /// An unresolvable or cyclic property simply does not declare the type asked
 /// about; it must not abandon inference for its siblings.
+///
+/// `allOf` branches count for `object`, so a property assembled from a base and
+/// an extension still reads as one. Other types do not: the merged view is
+/// object-only, so a composed `array` or `string` still has to declare its type
+/// outright. An alternation never counts — a property that is one of several
+/// shapes has no single type to check against.
 fn schema_has_type(
     root: &Value,
     schema: &Value,
@@ -260,8 +286,20 @@ fn schema_has_type(
         resolving_refs,
         depth,
         MAX_DEPTH,
-        |resolved, _, _| {
-            Ok(!schema_uses_composition(resolved) && json_schema_type_contains(resolved, expected))
+        |resolved, resolving_refs, next_depth| {
+            if schema_uses_alternation(resolved) {
+                return Ok(false);
+            }
+            if json_schema_type_contains(resolved, expected) {
+                return Ok(true);
+            }
+            if resolved.get("allOf").is_none() {
+                return Ok(false);
+            }
+            Ok(
+                merged_all_of_object_view(root, resolved, resolving_refs, next_depth, MAX_DEPTH)
+                    .is_some_and(|view| view.declares_type(expected)),
+            )
         },
     )
     .unwrap_or(false)
@@ -502,7 +540,7 @@ mod tests {
     }
 
     #[test]
-    fn ignores_composed_schemas() {
+    fn merges_all_of_branches_into_one_envelope() {
         let schema = json!({
             "allOf": [{
                 "type": "object",
@@ -512,6 +550,128 @@ mod tests {
                 },
             }],
         });
+
+        assert_eq!(row_path(&schema, false), ["items"]);
+    }
+
+    #[test]
+    fn ignores_alternation_schemas() {
+        // `anyOf`/`oneOf`/`not` describe a choice of shapes, so there is no one
+        // property map to read as an envelope.
+        for keyword in ["anyOf", "oneOf"] {
+            let schema = json!({
+                keyword: [{
+                    "type": "object",
+                    "properties": {
+                        "total_count": {"type": "integer"},
+                        "items": {"type": "array", "items": {"type": "object"}},
+                    },
+                }],
+            });
+
+            assert!(
+                row_path(&schema, false).is_empty(),
+                "{keyword} must not be read as an envelope"
+            );
+        }
+
+        let negated = json!({
+            "type": "object",
+            "not": {"type": "string"},
+            "properties": {
+                "total_count": {"type": "integer"},
+                "items": {"type": "array", "items": {"type": "object"}},
+            },
+        });
+        assert!(row_path(&negated, false).is_empty());
+    }
+
+    /// The Microsoft Graph shape, and every other `OData` collection response:
+    /// a shared pagination base merged with a branch declaring the rows, with
+    /// the annotations that make it recognizable spelled `@odata.*`.
+    #[test]
+    fn selects_rows_through_an_odata_collection_envelope() {
+        let schema = json!({
+            "$ref": "#/components/schemas/ChatCollectionResponse",
+            "components": {
+                "schemas": {
+                    "BaseCollectionPaginationCountResponse": {
+                        "type": "object",
+                        "properties": {
+                            "@odata.count": {"type": "integer", "format": "int64"},
+                            "@odata.nextLink": {"type": "string"},
+                        },
+                    },
+                    "ChatCollectionResponse": {
+                        "title": "Collection of chat",
+                        "type": "object",
+                        "allOf": [
+                            {"$ref": "#/components/schemas/BaseCollectionPaginationCountResponse"},
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "value": {
+                                        "type": "array",
+                                        "items": {"type": "object"},
+                                    },
+                                },
+                            },
+                        ],
+                    },
+                },
+            },
+        });
+
+        assert_eq!(
+            row_path(&schema, false),
+            ["value"],
+            "the OData annotations are the envelope evidence; no pagination contract is needed"
+        );
+    }
+
+    #[test]
+    fn odata_annotations_count_as_envelope_evidence_without_composition() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "@odata.count": {"type": "integer"},
+                "@odata.nextLink": {"type": "string"},
+                "value": {"type": "array", "items": {"type": "object"}},
+            },
+        });
+
+        assert_eq!(row_path(&schema, false), ["value"]);
+    }
+
+    #[test]
+    fn ignores_an_all_of_branch_that_cycles() {
+        let schema = json!({
+            "$ref": "#/components/schemas/Node",
+            "components": {
+                "schemas": {
+                    "Node": {
+                        "type": "object",
+                        "allOf": [{"$ref": "#/components/schemas/Node"}],
+                    },
+                },
+            },
+        });
+
+        assert!(row_path(&schema, false).is_empty());
+    }
+
+    #[test]
+    fn ignores_all_of_branches_nested_past_the_depth_cap() {
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "has_more": {"type": "boolean"},
+                "data": {"type": "array", "items": {"type": "object"}},
+            },
+        });
+        for _ in 0..super::MAX_DEPTH {
+            schema = json!({"type": "object", "allOf": [schema]});
+        }
 
         assert!(row_path(&schema, false).is_empty());
     }
@@ -566,6 +726,24 @@ mod tests {
                 "properties": {"results": schema},
             });
         }
+
+        assert!(row_path(&schema, false).is_empty());
+    }
+
+    /// Declaring `properties` is not a claim to be an object. In JSON Schema
+    /// `properties` constrains an instance only if it happens to be one, so
+    /// `{properties: {...}}` validates a string quite happily — treating it as
+    /// an envelope would promote a shape the author never asserted.
+    ///
+    /// Deliberate and load-bearing: the sole-array fallback below would make
+    /// `warnings` the whole relation, discarding the declared resource.
+    #[test]
+    fn refuses_a_response_that_declares_properties_without_a_type() {
+        let schema = json!({
+            "properties": {
+                "warnings": {"type": "array", "items": {"type": "string"}},
+            },
+        });
 
         assert!(row_path(&schema, false).is_empty());
     }

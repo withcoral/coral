@@ -64,4 +64,30 @@ impl FromStr for FunctionName {
 pub(crate) struct InstalledFunction {
     /// Stable function name.
     pub(crate) name: FunctionName,
+    /// Coral surface that wrote the current function definition.
+    #[serde(default)]
+    pub(crate) write_surface: FunctionWriteSurface,
+}
+
+/// Coral surface that wrote the current installed function definition.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum FunctionWriteSurface {
+    /// The function predates write-surface metadata or its source is unknown.
+    #[default]
+    Unknown,
+    /// Coral's command-line interface wrote the function.
+    Cli,
+    /// Coral's MCP server wrote the function.
+    Mcp,
+}
+
+impl FunctionWriteSurface {
+    pub(crate) fn as_config_value(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Cli => "cli",
+            Self::Mcp => "mcp",
+        }
+    }
 }

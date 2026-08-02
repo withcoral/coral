@@ -14,6 +14,7 @@ use coral_spec::{
     SourceTableFunctionSpec, TableCommon,
 };
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+use datafusion::catalog::CatalogProvider;
 use datafusion::datasource::TableProvider;
 use datafusion::error::DataFusionError;
 use datafusion::prelude::SessionContext;
@@ -62,6 +63,9 @@ pub(crate) struct RegisteredColumn {
 
 #[derive(Debug, Clone)]
 pub(crate) struct RegisteredTable {
+    /// SQL schema containing this table when it differs from the source's
+    /// default schema. Database tables set this to their remote schema.
+    pub(crate) schema_name: Option<String>,
     pub(crate) table_name: String,
     pub(crate) description: String,
     pub(crate) guide: String,
@@ -125,9 +129,33 @@ pub(crate) struct RegisteredInput {
     pub(crate) is_set: bool,
 }
 
+/// The source's portion of a fully qualified table name
+/// (`catalog.schema.table`): which position its name occupies and what that
+/// name is. Names for all selected sources share one flat namespace
+/// regardless of variant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SourceQualifiedName {
+    /// Two-part source: tables resolve as `datafusion.<name>.<table>`.
+    Schema(String),
+}
+
+impl SourceQualifiedName {
+    pub(crate) fn name(&self) -> &str {
+        match self {
+            Self::Schema(name) => name,
+        }
+    }
+
+    pub(crate) fn catalog_name(&self) -> Option<&str> {
+        match self {
+            Self::Schema(_) => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct RegisteredSource {
-    pub(crate) schema_name: String,
+    pub(crate) qualified_name: SourceQualifiedName,
     pub(crate) tables: Vec<RegisteredTable>,
     pub(crate) table_functions: Vec<RegisteredTableFunction>,
     pub(crate) inputs: Vec<RegisteredInput>,
@@ -135,10 +163,16 @@ pub(crate) struct RegisteredSource {
 
 pub(crate) struct BackendRegistration {
     pub(crate) schemas: Vec<BackendSchemaRegistration>,
+    pub(crate) catalogs: Vec<BackendCatalogRegistration>,
 }
 
 pub(crate) struct BackendSchemaRegistration {
     pub(crate) tables: HashMap<String, Arc<dyn TableProvider>>,
+    pub(crate) source: RegisteredSource,
+}
+
+pub(crate) struct BackendCatalogRegistration {
+    pub(crate) catalog: Arc<dyn CatalogProvider>,
     pub(crate) source: RegisteredSource,
 }
 
@@ -186,7 +220,9 @@ impl BackendRegistrationContext {
 
 #[async_trait]
 pub(crate) trait CompiledBackendSource: Send + Sync {
-    fn schema_name(&self) -> &str;
+    /// Runtime qualified name: the SQL schema for two-part sources, the SQL
+    /// catalog for catalog-backed sources.
+    fn qualified_name(&self) -> SourceQualifiedName;
 
     fn source_name(&self) -> &str;
 
@@ -349,6 +385,7 @@ pub(crate) fn build_registered_table(
     required_filters: Vec<String>,
 ) -> RegisteredTable {
     RegisteredTable {
+        schema_name: None,
         table_name: common.name.clone(),
         description: common.description.clone(),
         guide: common.guide.clone(),

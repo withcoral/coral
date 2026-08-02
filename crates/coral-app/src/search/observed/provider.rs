@@ -5,6 +5,7 @@ use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use crate::bootstrap::AppError;
+use crate::search::catalog::provider::resolve_surface_id;
 use crate::search::maintenance::{
     ObservedClearMaintenanceResult, ObservedDrainMaintenanceResult,
     ObservedRebuildMaintenanceResult, SearchClearTarget, SearchDataScope, SearchMaintenanceDetail,
@@ -306,6 +307,7 @@ fn observed_entry_matches(
             continue;
         }
         let id = SearchSurfaceId {
+            catalog_name: None,
             schema_name: hit.source_name,
             name: hit.surface_name,
             kind: surface_kind(hit.surface_kind),
@@ -380,11 +382,18 @@ impl SearchProvider for ObservedValuesProvider {
         let outcome = self.search(&context.request, Ok(policy));
         let degraded = (outcome.status.state == SearchProviderState::Partial)
             .then(|| outcome.status.note.clone());
-        let matches = outcome
+        let mut matches = outcome
             .rankings
             .into_iter()
             .flat_map(|ranking| ranking.matches)
-            .collect();
+            .collect::<Vec<_>>();
+        if let Ok(resolution) = context.catalog_resolution.as_ref() {
+            for entry_match in &mut matches {
+                if let Some(id) = resolve_surface_id(&resolution.catalog, &entry_match.id) {
+                    entry_match.id = id;
+                }
+            }
+        }
         Ok(PreparedRetrievers {
             retrievers: vec![Box::new(RetrievedValues { matches })],
             coverage: outcome.status.coverage,

@@ -63,6 +63,8 @@ enum SearchResultValue<'a> {
 struct TableResultValue<'a> {
     kind: &'static str,
     sql_reference: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    providers: Vec<&'static str>,
     description: &'a str,
     #[serde(default, skip_serializing_if = "str::is_empty")]
     guide: &'a str,
@@ -81,6 +83,8 @@ struct TableResultValue<'a> {
 struct FunctionResultValue<'a> {
     kind: &'static str,
     sql_reference: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    providers: Vec<&'static str>,
     description: &'a str,
     #[serde(default, skip_serializing_if = "str::is_empty")]
     guide: &'a str,
@@ -113,6 +117,7 @@ impl<'a> From<&'a SearchResult> for SearchResultValue<'a> {
             Some(search_result::Shape::Table(table)) => Self::Table(TableResultValue {
                 kind: "table",
                 sql_reference,
+                providers: result_provider_names(result),
                 description: &result.description,
                 guide: &result.guide,
                 fields: field_map(&table.fields),
@@ -123,6 +128,7 @@ impl<'a> From<&'a SearchResult> for SearchResultValue<'a> {
             Some(search_result::Shape::Function(function)) => Self::Function(FunctionResultValue {
                 kind: "function",
                 sql_reference,
+                providers: result_provider_names(result),
                 description: &result.description,
                 guide: &result.guide,
                 arguments: field_map(&function.arguments),
@@ -137,7 +143,19 @@ impl<'a> From<&'a SearchResult> for SearchResultValue<'a> {
 }
 
 fn entry_sql_reference(entry: &SearchSurfaceRef) -> String {
-    format_schema_table_equivalent(&entry.schema_name, &entry.name)
+    format_schema_table_equivalent(
+        optional_catalog_name(&entry.catalog_name),
+        &entry.schema_name,
+        &entry.name,
+    )
+}
+
+fn result_provider_names(result: &SearchResult) -> Vec<&'static str> {
+    result
+        .providers
+        .iter()
+        .map(|provider| provider_name(*provider))
+        .collect()
 }
 
 fn field_map(fields: &[SearchField]) -> BTreeMap<&str, &str> {
@@ -402,7 +420,7 @@ fn provider_status_text(status: &coral_api::v1::SearchProviderStatus) -> String 
 /// Formats the shortest SQL call example for a table function.
 #[must_use]
 pub fn minimal_table_function_call_example(function: &TableFunction) -> String {
-    let reference = format_schema_table_equivalent(&function.schema_name, &function.name);
+    let reference = format_schema_table_equivalent(None, &function.schema_name, &function.name);
     let required_arguments = function
         .arguments
         .iter()
@@ -413,14 +431,48 @@ pub fn minimal_table_function_call_example(function: &TableFunction) -> String {
     format!("{reference}({required_arguments})")
 }
 
-/// Formats a schema-qualified SQL table or table-function reference.
+/// Formats a display table name with its query-visible schema and optional catalog.
 #[must_use]
-pub fn format_schema_table_equivalent(schema_name: &str, table_name: &str) -> String {
-    format!(
-        "{}.{}",
-        format_sql_identifier(schema_name),
-        format_sql_identifier(table_name)
-    )
+pub fn format_table_name(
+    catalog_name: Option<&str>,
+    schema_name: &str,
+    table_name: &str,
+) -> String {
+    match catalog_name {
+        Some(catalog_name) => format!("{catalog_name}.{schema_name}.{table_name}"),
+        None => format!("{schema_name}.{table_name}"),
+    }
+}
+
+/// Formats a SQL table or table-function reference, qualified by schema and, when
+/// `catalog_name` is `Some`, by catalog. Pass `None` for a two-part reference —
+/// table functions and the surfaces whose protos carry no catalog field.
+#[must_use]
+pub fn format_schema_table_equivalent(
+    catalog_name: Option<&str>,
+    schema_name: &str,
+    table_name: &str,
+) -> String {
+    match catalog_name {
+        Some(catalog_name) => format!(
+            "{}.{}.{}",
+            format_sql_identifier(catalog_name),
+            format_sql_identifier(schema_name),
+            format_sql_identifier(table_name)
+        ),
+        None => format!(
+            "{}.{}",
+            format_sql_identifier(schema_name),
+            format_sql_identifier(table_name)
+        ),
+    }
+}
+
+/// Reads a catalog qualifier off a proto message, where an empty field means the
+/// surface is two-part and carries no catalog.
+#[must_use]
+pub fn optional_catalog_name(catalog_name: &str) -> Option<&str> {
+    (!catalog_name.is_empty()).then_some(catalog_name)
 }
 
 /// Formats one SQL identifier, quoting it only when required.
@@ -481,6 +533,7 @@ mod tests {
     fn table_result() -> SearchResult {
         SearchResult {
             surface: Some(SearchSurfaceRef {
+                catalog_name: String::new(),
                 schema_name: "github".to_string(),
                 name: "repo_action_jobs".to_string(),
                 kind: SearchSurfaceKind::Table as i32,
@@ -506,6 +559,7 @@ mod tests {
                 values: vec!["acme".to_string()],
             }],
             omitted_matching_field_count: 2,
+            providers: vec![SearchProvider::CatalogMetadata as i32],
         }
     }
 
@@ -576,11 +630,16 @@ mod tests {
                 .and_then(Value::as_u64),
             Some(2)
         );
+        assert_eq!(
+            result.pointer("/providers/0").and_then(Value::as_str),
+            Some("catalog_metadata")
+        );
     }
 
     #[test]
     fn json_omits_empty_collections_so_a_bare_entry_stays_short() {
         let bare = SearchResult {
+            providers: Vec::new(),
             matching_values: Vec::new(),
             omitted_matching_field_count: 0,
             guide: String::new(),
@@ -598,6 +657,7 @@ mod tests {
         assert!(result.get("matching_values").is_none());
         assert!(result.get("guide").is_none());
         assert!(result.get("omitted_matching_field_count").is_none());
+        assert!(result.get("providers").is_none());
     }
 
     #[test]
@@ -622,6 +682,7 @@ mod tests {
     fn a_source_name_needing_quotes_stays_valid_sql() {
         let mut result = table_result();
         result.surface = Some(SearchSurfaceRef {
+            catalog_name: String::new(),
             schema_name: "my-source".to_string(),
             name: "jobs".to_string(),
             kind: SearchSurfaceKind::Table as i32,
@@ -634,6 +695,26 @@ mod tests {
                 .get("sql_reference")
                 .and_then(Value::as_str),
             Some("\"my-source\".jobs")
+        );
+    }
+
+    #[test]
+    fn catalog_qualified_table_reference_preserves_all_three_parts() {
+        let mut result = table_result();
+        result.surface = Some(SearchSurfaceRef {
+            catalog_name: "warehouse".to_string(),
+            schema_name: "analytics".to_string(),
+            name: "events".to_string(),
+            kind: SearchSurfaceKind::Table as i32,
+        });
+
+        let value = search_response_json_value(&response(vec![result]));
+
+        assert_eq!(
+            first_result(&value)
+                .get("sql_reference")
+                .and_then(Value::as_str),
+            Some("warehouse.analytics.events")
         );
     }
 }

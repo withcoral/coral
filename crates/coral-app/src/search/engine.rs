@@ -124,7 +124,9 @@ fn assemble_response(
     let results = catalog.map_or_else(Vec::new, |catalog| {
         fused
             .iter()
-            .filter_map(|entry| resolve_entry(catalog, &entry.id, &entry.evidence))
+            .filter_map(|entry| {
+                resolve_entry(catalog, &entry.id, &entry.evidence, &entry.providers)
+            })
             .take(max_results)
             .collect::<Vec<_>>()
     });
@@ -588,6 +590,7 @@ mod tests {
         CatalogResolution {
             catalog: CatalogInfo {
                 tables: vec![TableInfo {
+                    catalog_name: None,
                     schema_name: "github".to_string(),
                     table_name: "survivor".to_string(),
                     description: "Surviving provider result".to_string(),
@@ -620,6 +623,7 @@ mod tests {
             retriever: RetrieverId::ObservedValues,
             matches: vec![SurfaceMatch {
                 id: SearchSurfaceId {
+                    catalog_name: None,
                     schema_name: "github".to_string(),
                     name: name.to_string(),
                     kind: SearchSurfaceKind::Table,

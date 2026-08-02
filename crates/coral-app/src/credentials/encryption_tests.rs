@@ -211,7 +211,7 @@ fn credential_document_rejects_aad_version_mismatch() {
         &provider,
     )
     .expect("encrypt");
-    encrypted.aad_version = CREDENTIAL_DOCUMENT_AAD_VERSION + 1;
+    encrypted.binding_version = CREDENTIAL_DOCUMENT_AAD_VERSION + 1;
 
     let error = decrypt_credential_values(&workspace, &source, &encrypted, &provider)
         .expect_err("unsupported AAD version should fail");

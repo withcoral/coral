@@ -25,3 +25,34 @@ pub(in crate::state::db) enum Tasks {
     CreatedAtUnixNanos,
     CompletedAtUnixNanos,
 }
+
+#[derive(Iden)]
+pub(in crate::state::db) enum IdentitySpecs {
+    Table,
+    Id,
+    WorkspaceId,
+    Name,
+    Version,
+    Description,
+    Issuer,
+    IdentityType,
+    ManifestYaml,
+    CreatedAtUnixNanos,
+    UpdatedAtUnixNanos,
+}
+
+#[derive(Iden)]
+pub(in crate::state::db) enum IdentitySpecDocuments {
+    Table,
+    IdentitySpecId,
+    DocumentVersion,
+    Ciphertext,
+    Nonce,
+    WrappedDek,
+    WrappedDekNonce,
+    KeyId,
+    Algorithm,
+    BindingVersion,
+    CreatedAtUnixNanos,
+    UpdatedAtUnixNanos,
+}

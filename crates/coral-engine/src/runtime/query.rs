@@ -52,7 +52,7 @@ use crate::{
     RequestIdentityHttpAuthenticatorFactory, RequestIdentitySelectionContext,
     RequestIdentitySelectionError, RequestIdentitySelector, ResolvedQueryResources,
     SelectedRequestIdentity, SourceDecorator, SourceInputResolver, SourceObservationPublisher,
-    TableFunctionInfo, TableInfo, UdfRuntimeDefinition,
+    TableFunctionInfo, TableInfo, UdfRuntimeDefinition, normalize_catalog_name,
 };
 
 pub(crate) struct QueryRuntimeAdapter {
@@ -65,7 +65,9 @@ pub(crate) struct QueryRuntimeAdapter {
     tables: Vec<TableInfo>,
     table_functions: Vec<TableFunctionInfo>,
     failures: Vec<SourceRegistrationFailure>,
-    schema_to_source: HashMap<String, String>,
+    /// Source name keyed by top-level SQL name (schema for two-part sources,
+    /// catalog for database sources).
+    name_to_source: HashMap<String, String>,
     query_result_observers: Vec<Arc<dyn QueryResultObserver>>,
 }
 
@@ -215,7 +217,7 @@ async fn build_runtime_inner(
         tables: primary.tables,
         table_functions: primary.table_functions,
         failures: primary.failures,
-        schema_to_source: schema_to_source_names(sources),
+        name_to_source: name_to_source_names(sources),
         query_result_observers: extensions.query_result_observers,
     })
 }
@@ -499,6 +501,25 @@ async fn register_runtime_sources(
     register_sources(ctx, source_candidates, source_decorators).await
 }
 
+fn table_qualifier_matches(
+    table: &TableInfo,
+    catalog_filter: Option<&str>,
+    schema_filter: Option<&str>,
+) -> bool {
+    catalog_filter
+        .is_none_or(|value| table.catalog_name.as_deref() == normalize_catalog_name(Some(value)))
+        && schema_filter.is_none_or(|value| table.schema_name == value)
+}
+
+fn table_reference_matches(
+    table: &TableInfo,
+    catalog_name: Option<&str>,
+    schema_name: &str,
+) -> bool {
+    table.catalog_name.as_deref() == normalize_catalog_name(catalog_name)
+        && table.schema_name == schema_name
+}
+
 impl QueryRuntimeAdapter {
     pub(crate) async fn install_udfs(
         &mut self,
@@ -549,12 +570,13 @@ impl QueryRuntimeAdapter {
 
     pub(crate) fn list_tables(
         &self,
-        source_filter: Option<&str>,
+        catalog_filter: Option<&str>,
+        schema_filter: Option<&str>,
         table_filter: Option<&str>,
     ) -> Vec<TableInfo> {
         self.tables
             .iter()
-            .filter(|table| source_filter.is_none_or(|value| table.schema_name == value))
+            .filter(|table| table_qualifier_matches(table, catalog_filter, schema_filter))
             .filter(|table| table_filter.is_none_or(|value| table.table_name == value))
             .cloned()
             .collect()
@@ -573,43 +595,63 @@ impl QueryRuntimeAdapter {
             .collect()
     }
 
-    pub(crate) fn catalog_info(&self, source_filter: Option<&str>) -> CatalogInfo {
+    pub(crate) fn catalog_info(
+        &self,
+        catalog_filter: Option<&str>,
+        schema_filter: Option<&str>,
+    ) -> CatalogInfo {
+        let includes_schema_sources =
+            catalog_filter.is_none_or(|value| normalize_catalog_name(Some(value)).is_none());
         CatalogInfo {
-            tables: self.list_tables(source_filter, None),
-            table_functions: self.list_table_functions(source_filter, None),
+            tables: self.list_tables(catalog_filter, schema_filter, None),
+            table_functions: if includes_schema_sources {
+                self.list_table_functions(schema_filter, None)
+            } else {
+                Vec::new()
+            },
         }
     }
 
-    pub(crate) fn catalog_info_for_schemas(&self, schema_filters: &[&str]) -> CatalogInfo {
+    /// Catalog metadata restricted to the sources publishing the given
+    /// schema and catalog names. Schema names never match database-internal
+    /// schemas, which are addressed through their catalog.
+    pub(crate) fn catalog_info_for_sources(
+        &self,
+        schema_names: &[&str],
+        catalog_names: &[&str],
+    ) -> CatalogInfo {
         CatalogInfo {
             tables: self
                 .tables
                 .iter()
-                .filter(|table| {
-                    schema_filters
-                        .iter()
-                        .any(|schema| table.schema_name == *schema)
+                .filter(|table| match table.catalog_name.as_deref() {
+                    None => schema_names.contains(&table.schema_name.as_str()),
+                    Some(catalog_name) => catalog_names.contains(&catalog_name),
                 })
                 .cloned()
                 .collect(),
             table_functions: self
                 .table_functions
                 .iter()
-                .filter(|function| {
-                    schema_filters
-                        .iter()
-                        .any(|schema| function.schema_name == *schema)
-                })
+                .filter(|function| schema_names.contains(&function.schema_name.as_str()))
                 .cloned()
                 .collect(),
         }
     }
 
-    pub(crate) fn describe_table(&self, schema_name: &str, table_name: &str) -> DescribeTableInfo {
+    pub(crate) fn describe_table(
+        &self,
+        catalog_name: Option<&str>,
+        schema_name: &str,
+        table_name: &str,
+    ) -> DescribeTableInfo {
         if let Some(table) = self
             .tables
             .iter()
-            .find(|table| table.schema_name == schema_name && table.table_name == table_name)
+            .find(|table| {
+                table_reference_matches(table, catalog_name, schema_name)
+                    && table.table_name == table_name
+            })
             .cloned()
         {
             return DescribeTableInfo {
@@ -747,7 +789,7 @@ impl QueryRuntimeAdapter {
             .sources()
             .iter()
             .filter(|source_name| {
-                self.schema_to_source
+                self.name_to_source
                     .values()
                     .any(|installed_name| installed_name == *source_name)
             })
@@ -866,7 +908,7 @@ impl QueryRuntimeAdapter {
         sources.extend(
             table_functions
                 .iter()
-                .filter(|usage| self.schema_to_source.contains_key(usage.schema_name()))
+                .filter(|usage| self.name_to_source.contains_key(usage.schema_name()))
                 .map(|usage| usage.source_name().to_string()),
         );
 
@@ -921,13 +963,15 @@ impl QueryRuntimeAdapter {
         let Some((schema_name, table_name)) = relation_parts(table_reference) else {
             return;
         };
-        if self
-            .tables
-            .iter()
-            .any(|table| table.schema_name == schema_name && table.table_name == table_name)
-        {
+        let catalog_name = normalize_catalog_name(table_reference.catalog());
+        if self.tables.iter().any(|table| {
+            table.catalog_name.as_deref() == catalog_name
+                && table.schema_name == schema_name
+                && table.table_name == table_name
+        }) {
             tables.insert(QueryTableUsage::new(
-                self.source_name_for_schema(schema_name),
+                self.source_name_for(catalog_name.unwrap_or(schema_name)),
+                catalog_name,
                 schema_name,
                 table_name,
             ));
@@ -959,18 +1003,19 @@ impl QueryRuntimeAdapter {
             return false;
         };
         table_functions.insert(QueryTableFunctionUsage::new(
-            self.source_name_for_schema(schema_name),
+            self.source_name_for(schema_name),
             schema_name,
             function_name,
         ));
         true
     }
 
-    fn source_name_for_schema(&self, schema_name: &str) -> String {
-        self.schema_to_source
-            .get(schema_name)
+    /// Resolves the source owning a top-level SQL name (schema or catalog).
+    fn source_name_for(&self, name: &str) -> String {
+        self.name_to_source
+            .get(name)
             .cloned()
-            .unwrap_or_else(|| schema_name.to_string())
+            .unwrap_or_else(|| name.to_string())
     }
 
     pub(crate) async fn explain_sql(
@@ -1339,7 +1384,7 @@ pub(crate) fn read_only_sql_options() -> SQLOptions {
         .with_allow_statements(false)
 }
 
-fn schema_to_source_names(sources: &[QuerySource]) -> HashMap<String, String> {
+fn name_to_source_names(sources: &[QuerySource]) -> HashMap<String, String> {
     sources
         .iter()
         .flat_map(|source| {
@@ -1347,7 +1392,8 @@ fn schema_to_source_names(sources: &[QuerySource]) -> HashMap<String, String> {
             source
                 .schema_names()
                 .into_iter()
-                .map(move |schema_name| (schema_name.to_string(), source_name.clone()))
+                .chain(source.catalog_names())
+                .map(move |name| (name.to_string(), source_name.clone()))
         })
         .collect()
 }
@@ -1359,6 +1405,7 @@ fn relation_parts(table_reference: &TableReference) -> Option<(&str, &str)> {
 
 fn table_metadata_without_columns(table: &TableInfo) -> TableInfo {
     TableInfo {
+        catalog_name: table.catalog_name.clone(),
         schema_name: table.schema_name.clone(),
         table_name: table.table_name.clone(),
         description: table.description.clone(),
@@ -1405,6 +1452,7 @@ mod tests {
             source_function_names: HashSet::new(),
             udfs_installed: false,
             tables: vec![TableInfo {
+                catalog_name: None,
                 schema_name: "demo".to_string(),
                 table_name: "events".to_string(),
                 description: "Event rows".to_string(),
@@ -1421,16 +1469,26 @@ mod tests {
                 }],
                 required_filters: vec!["owner".to_string()],
             }],
-            table_functions: Vec::new(),
+            table_functions: vec![TableFunctionInfo {
+                schema_name: "demo".to_string(),
+                function_name: "search_events".to_string(),
+                description: "Search events.".to_string(),
+                guide: String::new(),
+                require_guide_read: false,
+                arguments: Vec::new(),
+                result_columns: Vec::new(),
+                kind: coral_spec::SourceTableFunctionKind::Table,
+                search_limits: None,
+            }],
             failures: Vec::new(),
-            schema_to_source: HashMap::from([("demo".to_string(), "demo".to_string())]),
+            name_to_source: HashMap::from([("demo".to_string(), "demo".to_string())]),
             query_result_observers: Vec::new(),
         }
     }
 
     #[test]
     fn describe_table_hit_returns_full_table_without_missing_context() {
-        let result = adapter_with_table().describe_table("demo", "events");
+        let result = adapter_with_table().describe_table(None, "demo", "events");
 
         let table = result.table.expect("exact table");
         assert_eq!(table.columns.len(), 1);
@@ -1439,7 +1497,7 @@ mod tests {
 
     #[test]
     fn describe_table_miss_returns_columnless_context_tables() {
-        let result = adapter_with_table().describe_table("demo", "missing");
+        let result = adapter_with_table().describe_table(None, "demo", "missing");
 
         assert!(result.table.is_none());
         assert_eq!(result.missing_context_tables.len(), 1);
@@ -1449,6 +1507,25 @@ mod tests {
             .expect("missing context table");
         assert!(context_table.columns.is_empty());
         assert_eq!(context_table.required_filters, ["owner".to_string()]);
+    }
+
+    #[test]
+    fn explicit_datafusion_catalog_filters_schema_metadata() {
+        let adapter = adapter_with_table();
+
+        let tables = adapter.list_tables(
+            Some(crate::runtime::DATAFUSION_DEFAULT_CATALOG),
+            Some("demo"),
+            None,
+        );
+        assert_eq!(tables.len(), 1);
+
+        let catalog = adapter.catalog_info(
+            Some(crate::runtime::DATAFUSION_DEFAULT_CATALOG),
+            Some("demo"),
+        );
+        assert_eq!(catalog.tables.len(), 1);
+        assert_eq!(catalog.table_functions.len(), 1);
     }
 
     #[test]

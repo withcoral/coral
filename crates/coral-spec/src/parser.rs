@@ -358,6 +358,41 @@ tables:
     }
 
     #[test]
+    fn reserved_datafusion_source_name_is_rejected_in_any_case() {
+        // The engine refuses to register `datafusion` (it is `DataFusion`'s
+        // default catalog) and folds that name case-insensitively. Validation
+        // has to reject the same spellings, or a legacy manifest passes lint and
+        // then fails at runtime with "cannot be used by manifests".
+        for name in ["datafusion", "DataFusion"] {
+            let error = parse_source_manifest_yaml(&format!(
+                r"
+name: {name}
+version: 1.0.0
+dsl_version: 3
+backend: file
+tables:
+  - name: messages
+    description: Demo messages
+    format: jsonl
+    source:
+      location: file:///tmp/demo/
+    columns:
+      - name: kind
+        type: Utf8
+"
+            ))
+            .expect_err("reserved source name should fail");
+
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("source name '{name}' is reserved")),
+                "unexpected error: {error}"
+            );
+        }
+    }
+
+    #[test]
     fn lookup_key_on_file_jsonl_rejects_at_spec_layer() {
         let error = parse_source_manifest_yaml(
             r"

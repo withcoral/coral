@@ -72,6 +72,48 @@ fn refresh_and_search_catalog_metadata() {
 }
 
 #[test]
+fn search_hit_preserves_catalog_identity_from_the_projection() {
+    let temp = tempdir().expect("tempdir");
+    let store = catalog_store(&temp);
+    let mut document = document(DocumentInput {
+        doc_id: "catalog:table:warehouse.analytics.events",
+        doc_kind: CatalogIndexDocumentKind::CatalogTable,
+        source_name: "analytics",
+        surface_kind: "table",
+        surface_name: "events",
+        field_name: "",
+        field_role: "",
+        qualified_name: "warehouse.analytics.events",
+        title: "events",
+        description: "Warehouse events",
+        searchable_text: "warehouse analytics events",
+    });
+    document.payload_json =
+        serde_json::to_string(&Some("warehouse".to_string())).expect("catalog payload");
+    store
+        .refresh_catalog_projection(&CatalogIndexSnapshot {
+            documents: vec![document],
+            fingerprint: "catalog-identity-v1".to_string(),
+        })
+        .expect("refresh catalog");
+
+    let hits = store
+        .search_catalog(
+            &["warehouse".to_string()],
+            10,
+            CatalogDocumentClass::Entries,
+        )
+        .expect("search catalog");
+
+    assert_eq!(
+        hits.hits
+            .first()
+            .and_then(|hit| hit.catalog_name.as_deref()),
+        Some("warehouse")
+    );
+}
+
+#[test]
 fn refresh_to_empty_snapshot_clears_projection_and_persists_fingerprint() {
     let temp = tempdir().expect("tempdir");
     let store = catalog_store(&temp);

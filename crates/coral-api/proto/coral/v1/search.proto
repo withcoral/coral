@@ -324,6 +324,8 @@ message SearchResult {
   repeated SearchFieldValues matching_values = 7;
   // Query-matching fields that were omitted from this result.
   uint32 omitted_matching_field_count = 8;
+  // Providers whose retrieval lanes contributed evidence to this result.
+  repeated SearchProvider providers = 9;
 }
 
 // Identity of one queryable catalog surface.
@@ -334,6 +336,8 @@ message SearchSurfaceRef {
   string name = 2;
   // Whether the surface is a table or a table function.
   SearchSurfaceKind kind = 3;
+  // SQL catalog containing the schema. Empty for two-part surfaces.
+  string catalog_name = 4;
 }
 
 // Kind of queryable catalog surface.

@@ -34,6 +34,7 @@ interface Draft {
   description: string
   surfaceType: SurfaceType
   url: string
+  baseUrl: string
   auth: AuthChoice
   headerName: string
   oauthClientId: string
@@ -48,6 +49,7 @@ const EMPTY_DRAFT: Draft = {
   description: '',
   surfaceType: 'openapi',
   url: '',
+  baseUrl: '',
   auth: 'bearer',
   headerName: '',
   oauthClientId: '',
@@ -167,6 +169,7 @@ function SourceCreateDialogContent({
     setDraft((current) => ({
       ...current,
       ...(detectedAuth ? { auth: detectedAuth } : {}),
+      baseUrl: result.serverUrl || current.baseUrl,
       description: result.description || current.description,
       headerName: result.auth.headerName || current.headerName,
       name: result.name,
@@ -202,6 +205,7 @@ function SourceCreateDialogContent({
     if (step === 0) return draft.url.trim().startsWith('https://')
     if (step === 1) {
       if (!sourceNameIsValid(draft.name.trim())) return false
+      if (draft.surfaceType === 'openapi' && baseUrlValidationError(draft.baseUrl)) return false
       return true
     }
     if (draft.auth === 'header' && draft.headerName.trim().length === 0) return false
@@ -463,16 +467,18 @@ function DetailsStep({
 }) {
   const idName = useId()
   const idDescription = useId()
+  const idBaseUrl = useId()
   const [nameTouched, setNameTouched] = useState(false)
+  const [baseUrlTouched, setBaseUrlTouched] = useState(false)
   const name = draft.name.trim()
   const nameError = nameTouched ? sourceNameValidationError(name) : null
+  const mcp = draft.surfaceType === 'mcp'
+  const baseUrlError = !mcp && baseUrlTouched ? baseUrlValidationError(draft.baseUrl) : null
 
   return (
     <div className={styles.fieldGroup}>
       {discovery ? (
-        <Typography.BodySmall variant="tertiary">
-          {discoverySummary(discovery)} Review the source details.
-        </Typography.BodySmall>
+        <Typography.BodySmall variant="primary">{discoverySummary(discovery)}</Typography.BodySmall>
       ) : null}
       <SourceField
         className={styles.fieldItem}
@@ -504,6 +510,27 @@ function DetailsStep({
           placeholder="What this source connects to"
         />
       </SourceField>
+      <SourceField
+        className={styles.fieldItem}
+        hint={
+          <Typography.BodySmall variant={baseUrlError ? 'error' : 'tertiary'}>
+            {mcp
+              ? 'MCP servers are reached at the source URL, so they have no separate base URL.'
+              : (baseUrlError ?? 'Requests are sent to this URL.')}
+          </Typography.BodySmall>
+        }
+        htmlFor={idBaseUrl}
+        label="Base URL"
+      >
+        <TextInput
+          disabled={mcp}
+          id={idBaseUrl}
+          value={draft.baseUrl}
+          onBlur={() => setBaseUrlTouched(true)}
+          onChange={(value) => update({ baseUrl: value })}
+          placeholder="https://api.example.com/v1"
+        />
+      </SourceField>
       <SourceField className={styles.fieldItem} label="Type">
         <Radio.Group
           aria-label="Source type"
@@ -525,16 +552,33 @@ function DetailsStep({
 }
 
 function discoverySummary(discovery: {
+  description: string
   format: SourceDocumentFormat
   inspectionError?: string
+  serverUrl: string
+  title: string
 }): string {
-  if (discovery.format === 'mcp') return 'Detected an MCP endpoint from its URL.'
-  if (discovery.format === 'openapi-json') return 'Detected an OpenAPI JSON document.'
-  if (discovery.format === 'openapi-yaml') return 'Detected an OpenAPI YAML document.'
-  if (discovery.inspectionError) {
-    return `The source document could not be inspected. ${asSentence(discovery.inspectionError)}`
+  if (discovery.format === 'mcp') {
+    return 'Detected an MCP endpoint from its URL. Review the details below.'
   }
-  return 'No OpenAPI document was detected.'
+  if (discovery.format === 'unknown') {
+    const reason = discovery.inspectionError
+      ? `The source document could not be inspected. ${asSentence(discovery.inspectionError)}`
+      : 'No OpenAPI document was detected.'
+    return `${reason} Fill in the details below.`
+  }
+  const fields = [
+    ...(discovery.title ? ['name'] : []),
+    ...(discovery.description ? ['description'] : []),
+    ...(discovery.serverUrl ? ['base URL'] : []),
+    'type',
+  ]
+  return `Detected the ${sentenceList(fields)} from the URL provided. Review the details below.`
+}
+
+function sentenceList(items: string[]): string {
+  if (items.length < 3) return items.join(' and ')
+  return `${items.slice(0, -1).join(', ')}, and ${items.at(-1)}`
 }
 
 function asSentence(value: string): string {
@@ -575,9 +619,7 @@ function CredentialsStep({
   return (
     <div className={styles.fieldGroup}>
       {discovery && discovery.auth.kind !== 'unknown' ? (
-        <Typography.BodySmall variant="tertiary">
-          Detected authentication: {discovery.auth.label}.
-        </Typography.BodySmall>
+        <Typography.BodySmall variant="primary">{authSummary(discovery.auth)}</Typography.BodySmall>
       ) : null}
       <SourceField className={styles.fieldItem} label="Authentication">
         <Radio.Group
@@ -712,6 +754,13 @@ function CredentialsStep({
   )
 }
 
+function authSummary(auth: SourceDetectedAuth): string {
+  if (auth.kind === 'unsupported') {
+    return `Detected ${auth.label}, which isn’t supported. Choose another method below.`
+  }
+  return `Detected ${auth.label}.`
+}
+
 function authChoiceFromDiscovery(auth: SourceDetectedAuth): AuthChoice | null {
   if (auth.kind === 'bearer' || auth.kind === 'header' || auth.kind === 'none') return auth.kind
   return null
@@ -734,6 +783,20 @@ function isHttpsUrl(value: string): boolean {
   } catch {
     return false
   }
+}
+
+/** Base URLs also allow http:// so sources can point at a local API. */
+function baseUrlValidationError(value: string): string | null {
+  const baseUrl = value.trim()
+  if (!baseUrl) return 'Enter the base URL requests are sent to.'
+  let protocol: string
+  try {
+    protocol = new URL(baseUrl).protocol
+  } catch {
+    return 'Enter a valid URL, including the scheme.'
+  }
+  if (protocol !== 'https:' && protocol !== 'http:') return 'Use an http:// or https:// URL.'
+  return null
 }
 
 function sourceNameValidationError(name: string): string | null {
@@ -801,6 +864,8 @@ function buildManifestYaml(draft: Draft): string {
 
   if (draft.surfaceType === 'openapi') {
     lines.push('  type: openapi', `  url: ${s(url)}`)
+    // Omitted base_url leaves coral-app to derive it from the document's servers block.
+    if (draft.baseUrl.trim()) lines.push(`  base_url: ${s(draft.baseUrl.trim())}`)
     if (draft.auth !== 'none') {
       const bearerAuth = draft.auth === 'bearer' || draft.auth === 'oauthDevice'
       const headerName = bearerAuth ? 'Authorization' : draft.headerName.trim()

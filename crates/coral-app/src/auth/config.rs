@@ -16,10 +16,11 @@ use serde_json::Value;
 use url::Url;
 use zeroize::Zeroizing;
 
+use super::OIDC_CALLBACK_PATH;
 use super::error::AuthServerError;
 use super::session::SessionTokenIssuer;
 use crate::bootstrap::is_loopback_ip;
-use crate::outbound_url_policy::ConfiguredEndpointUrl;
+use crate::outbound_url_policy::{Configured, EndpointUrl};
 
 const DEFAULT_BIND_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
 const DEFAULT_SIGNING_KEY_ENV: &str = "CORAL_SESSION_SIGNING_KEY";
@@ -140,10 +141,6 @@ impl ResolvedAuthSettings {
         &self.authorization_server
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "used by the OIDC federation descendant")
-    )]
     pub(super) fn provider(&self) -> &ResolvedOidcProvider {
         &self.provider
     }
@@ -372,6 +369,21 @@ impl OidcProviderSettings {
                 served_origin.ascii_serialization()
             )));
         }
+        // The origin alone does not make the URI reachable: the router serves
+        // one callback path, so any other path is accepted here and then 404s
+        // once the provider redirects the browser to it. The served path is
+        // always exactly this constant — the issuer is validated `root_only`,
+        // so there is no issuer path prefix to join onto it. A query is
+        // rejected for the same reason — the provider appends its own `state`,
+        // and a configured one collides with it and fails the callback.
+        if redirect_uri.as_url().path() != OIDC_CALLBACK_PATH {
+            return Err(invalid_provider(format!(
+                "redirect_uri must use the path this server serves ({OIDC_CALLBACK_PATH})"
+            )));
+        }
+        if redirect_uri.as_url().query().is_some() {
+            return Err(invalid_provider("redirect_uri must not include a query"));
+        }
 
         if let Some(secret) = &mut self.client_secret {
             *secret = ProviderSecret::from_trimmed("client_secret", secret.as_str())?;
@@ -485,10 +497,6 @@ impl OidcProviderSettings {
 /// The derived `Debug` is safe to print: the only secret-bearing field is a
 /// [`ProviderSecret`], which redacts itself.
 #[derive(Clone, Debug)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "read by the OIDC federation descendant")
-)]
 pub(super) struct ResolvedOidcProvider {
     pub(super) issuer: String,
     pub(super) client_id: String,
@@ -502,10 +510,6 @@ pub(super) struct ResolvedOidcProvider {
 }
 
 impl ResolvedOidcProvider {
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "used by the OIDC federation descendant")
-    )]
     pub(super) fn client_secret(&self) -> &str {
         self.client_secret.as_str()
     }
@@ -597,7 +601,7 @@ fn provider_required(field: &str, value: &str) -> Result<String, AuthServerError
 fn provider_literal_endpoint(
     field: &str,
     value: &str,
-) -> Result<ConfiguredEndpointUrl, AuthServerError> {
+) -> Result<EndpointUrl<Configured>, AuthServerError> {
     let syntax_violation = Cell::new(None);
     let record_violation = |violation| syntax_violation.set(Some(violation));
     let url = Url::options()
@@ -607,7 +611,7 @@ fn provider_literal_endpoint(
     if let Some(violation) = syntax_violation.get() {
         return Err(invalid_provider(format!("{field} is invalid: {violation}")));
     }
-    ConfiguredEndpointUrl::from_parsed(url)
+    EndpointUrl::<Configured>::from_parsed(url)
         .map_err(|error| invalid_provider(format!("{field} is invalid: {error}")))
 }
 
@@ -624,7 +628,7 @@ fn provider_literal_endpoint(
 /// both are accepted — the parser appends one only to a root-path URL.
 fn validate_canonical_issuer(
     configured: &str,
-    parsed: &ConfiguredEndpointUrl,
+    parsed: &EndpointUrl<Configured>,
 ) -> Result<(), AuthServerError> {
     let canonical = parsed.as_url().as_str();
     if configured == canonical || format!("{configured}/") == canonical {
@@ -714,8 +718,8 @@ fn validate_issuer(label: &str, raw: &str, root_only: bool) -> Result<String, Au
     Ok(url.as_url().as_str().trim_end_matches('/').to_string())
 }
 
-fn validate_endpoint(label: &str, raw: &str) -> Result<ConfiguredEndpointUrl, AuthServerError> {
-    ConfiguredEndpointUrl::parse(raw.trim())
+fn validate_endpoint(label: &str, raw: &str) -> Result<EndpointUrl<Configured>, AuthServerError> {
+    EndpointUrl::<Configured>::parse(raw.trim())
         .map_err(|error| config_error(format!("{label} is invalid: {error}")))
 }
 
@@ -848,14 +852,17 @@ mod tests {
             )
             .replace(
                 "redirect_uri = 'http://localhost:9080/auth/oidc/callback'",
-                "redirect_uri = ' http://localhost:9080/callback '\nprincipal_claim = ' '\ndisplay_name_claim = ' email '",
+                "redirect_uri = ' http://localhost:9080/auth/oidc/callback '\nprincipal_claim = ' '\ndisplay_name_claim = ' email '",
             );
         let settings = resolved(&raw);
         let provider = settings.provider();
         assert_eq!(provider.issuer, "https://accounts.example.test/tenant/");
         assert_eq!(provider.client_id, "client-id");
         assert_eq!(provider.client_secret(), "inline-secret");
-        assert_eq!(provider.redirect_uri, "http://localhost:9080/callback");
+        assert_eq!(
+            provider.redirect_uri,
+            "http://localhost:9080/auth/oidc/callback"
+        );
         assert_eq!(provider.scopes, ["openid", "email", "profile"]);
         assert_eq!(provider.principal_claim, "sub");
         assert_eq!(provider.display_name_claim, "email");
@@ -1207,6 +1214,27 @@ mod tests {
                     "redirect_uri = 'http://localhost:9081/auth/oidc/callback'",
                 ),
                 "must share the origin",
+            ),
+            (
+                valid("").replace(
+                    "redirect_uri = 'http://localhost:9080/auth/oidc/callback'",
+                    "redirect_uri = 'http://localhost:9080/callback'",
+                ),
+                "must use the path this server serves",
+            ),
+            (
+                valid("").replace(
+                    "redirect_uri = 'http://localhost:9080/auth/oidc/callback'",
+                    "redirect_uri = 'http://localhost:9080/'",
+                ),
+                "must use the path this server serves",
+            ),
+            (
+                valid("").replace(
+                    "redirect_uri = 'http://localhost:9080/auth/oidc/callback'",
+                    "redirect_uri = 'http://localhost:9080/auth/oidc/callback?tenant=one'",
+                ),
+                "must not include a query",
             ),
         ];
         for (raw, expected) in cases {

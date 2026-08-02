@@ -44,7 +44,11 @@ Use the reference on the first line with `coral sql` to fetch rows. See
 [Query your data](/getting-started/quickstart#3-query-your-data) for a complete
 example.
 
-Here, `github` is the query-visible SQL schema; JSON and MCP results return it as `schema_name`. For a source with multiple runtime components, it can differ from the installed source name because each component can publish its own SQL schema.
+Here, `github` is the query-visible SQL schema. JSON and MCP results include it
+in `sql_reference`. A catalog-backed table uses a three-part
+`catalog.schema.table` reference. For a source with multiple runtime components,
+the query-visible schema can differ from the installed source name because each
+component can publish its own SQL schema.
 
 When more fields matched than were shown, the result reports how many were left
 out so you can widen the query rather than assume the column does not exist.

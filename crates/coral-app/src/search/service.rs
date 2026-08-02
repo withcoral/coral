@@ -399,11 +399,18 @@ fn search_result_to_proto(result: DomainSearchResult) -> ProtoSearchResult {
             .map(field_values_to_proto)
             .collect(),
         omitted_matching_field_count: result.omitted_matching_field_count,
+        providers: result
+            .providers
+            .into_iter()
+            .map(provider_kind_to_proto)
+            .map(|provider| provider as i32)
+            .collect(),
     }
 }
 
 fn surface_ref_to_proto(id: &SearchSurfaceId) -> SearchSurfaceRef {
     SearchSurfaceRef {
+        catalog_name: id.catalog_name.clone().unwrap_or_default(),
         schema_name: id.schema_name.clone(),
         name: id.name.clone(),
         kind: entry_kind_to_proto(id.kind) as i32,

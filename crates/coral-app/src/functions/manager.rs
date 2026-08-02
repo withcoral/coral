@@ -8,7 +8,7 @@ use coral_engine::{PreparedQueryRuntime, QueryRuntimeConfig, QuerySource, UdfRun
 use coral_spec::{FunctionSpec, parse_function_sql};
 
 use crate::bootstrap::AppError;
-use crate::functions::model::{FunctionName, InstalledFunction};
+use crate::functions::model::{FunctionName, FunctionWriteSurface, InstalledFunction};
 use crate::functions::runtime::{
     infer_runtime_function, infer_runtime_functions, infer_runtime_functions_in_prepared_runtime,
     runtime_function_without_signature,
@@ -30,6 +30,7 @@ pub(crate) struct FunctionManager {
 
 struct FunctionArtifact {
     name: FunctionName,
+    write_surface: FunctionWriteSurface,
     content: FunctionArtifactContent,
 }
 
@@ -42,6 +43,8 @@ enum FunctionArtifactContent {
 pub(crate) struct FunctionListing {
     /// Stable installed inventory name.
     pub(crate) name: FunctionName,
+    /// Coral surface that wrote the current function definition.
+    pub(crate) write_surface: FunctionWriteSurface,
     /// Current runtime state for this installed function.
     pub(crate) runtime: FunctionRuntimeStatus,
 }
@@ -51,8 +54,14 @@ pub(crate) enum FunctionRuntimeStatus {
     Invalid(String),
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum FunctionInstallMode {
+    CreateOnly,
+    ReplaceExisting,
+}
+
 pub(crate) enum ValidatedFunctionInstall {
-    Installed,
+    Installed { replaced: bool },
     WorkspaceChanged,
 }
 
@@ -60,6 +69,7 @@ enum FunctionCandidate {
     Listing(FunctionListing),
     Pending {
         name: FunctionName,
+        write_surface: FunctionWriteSurface,
         definition: Box<UdfRuntimeDefinition>,
     },
 }
@@ -90,7 +100,17 @@ impl FunctionManager {
         runtime_function: &UdfRuntimeDefinition,
     ) -> Result<InstalledFunction, AppError> {
         let function_name = validated_function_name(raw_sql, runtime_function)?;
-        self.install_user_function_artifact(workspace_name, &function_name, raw_sql)
+        self.install_user_function_artifact(
+            workspace_name,
+            &function_name,
+            raw_sql,
+            FunctionInstallMode::ReplaceExisting,
+            FunctionWriteSurface::Unknown,
+        )?;
+        Ok(InstalledFunction {
+            name: function_name,
+            write_surface: FunctionWriteSurface::Unknown,
+        })
     }
 
     pub(crate) async fn install_validated_user_function_if_unchanged(
@@ -99,25 +119,29 @@ impl FunctionManager {
         raw_sql: &str,
         runtime_function: &UdfRuntimeDefinition,
         revision: WorkspaceLifecycleRevision,
+        mode: FunctionInstallMode,
+        write_surface: FunctionWriteSurface,
     ) -> Result<ValidatedFunctionInstall, AppError> {
         let function_name = validated_function_name(raw_sql, runtime_function)?;
         let manager = self.clone();
         let operation_workspace_name = workspace_name.clone();
         let raw_sql = raw_sql.to_string();
-        let Some(_) = self
+        let Some(replaced) = self
             .lifecycle_lock
             .run_blocking_workspace_write_if_unchanged(revision, workspace_name, move || {
                 manager.install_user_function_artifact_with_lifecycle_lock(
                     &operation_workspace_name,
                     &function_name,
                     &raw_sql,
+                    mode,
+                    write_surface,
                 )
             })
             .await?
         else {
             return Ok(ValidatedFunctionInstall::WorkspaceChanged);
         };
-        Ok(ValidatedFunctionInstall::Installed)
+        Ok(ValidatedFunctionInstall::Installed { replaced })
     }
 
     #[cfg(test)]
@@ -126,12 +150,16 @@ impl FunctionManager {
         workspace_name: &WorkspaceName,
         function_name: &FunctionName,
         raw_sql: &str,
-    ) -> Result<InstalledFunction, AppError> {
+        mode: FunctionInstallMode,
+        write_surface: FunctionWriteSurface,
+    ) -> Result<bool, AppError> {
         let _lifecycle_guard = self.lifecycle_lock.lock();
         self.install_user_function_artifact_with_lifecycle_lock(
             workspace_name,
             function_name,
             raw_sql,
+            mode,
+            write_surface,
         )
     }
 
@@ -140,32 +168,50 @@ impl FunctionManager {
         workspace_name: &WorkspaceName,
         function_name: &FunctionName,
         raw_sql: &str,
-    ) -> Result<InstalledFunction, AppError> {
+        mode: FunctionInstallMode,
+        write_surface: FunctionWriteSurface,
+    ) -> Result<bool, AppError> {
         let _state_lock = self.config_store.state_lock_exclusive()?;
+        if matches!(mode, FunctionInstallMode::CreateOnly) {
+            match self
+                .config_store
+                .get_function_unlocked(workspace_name, function_name)
+            {
+                Ok(_existing) => {
+                    return Err(AppError::FunctionAlreadyExists(function_name.to_string()));
+                }
+                Err(AppError::FunctionNotFound(_)) => {}
+                Err(error) => return Err(error),
+            }
+        }
         let installed = InstalledFunction {
             name: function_name.clone(),
+            write_surface,
         };
 
         let previous_artifact =
             self.artifacts
                 .write_user_function_artifact(workspace_name, function_name, raw_sql)?;
-        if let Err(error) = self
+        let replaced = match self
             .config_store
-            .upsert_function_unlocked(workspace_name, installed.clone())
+            .upsert_function_unlocked(workspace_name, installed)
         {
-            if let Err(restore_error) = self.artifacts.restore_user_function_artifact(
-                workspace_name,
-                function_name,
-                &previous_artifact,
-            ) {
-                return Err(AppError::FailedPrecondition(format!(
-                    "failed to install function '{function_name}': {error}; failed to restore function artifact: {restore_error}"
-                )));
+            Ok(replaced) => replaced,
+            Err(error) => {
+                if let Err(restore_error) = self.artifacts.restore_user_function_artifact(
+                    workspace_name,
+                    function_name,
+                    &previous_artifact,
+                ) {
+                    return Err(AppError::FailedPrecondition(format!(
+                        "failed to install function '{function_name}': {error}; failed to restore function artifact: {restore_error}"
+                    )));
+                }
+                return Err(error);
             }
-            return Err(error);
-        }
+        };
 
-        Ok(installed)
+        Ok(replaced)
     }
 
     pub(crate) async fn validate_user_function_sql(
@@ -252,6 +298,7 @@ impl FunctionManager {
                 Err(error) => {
                     candidates.push(FunctionCandidate::Listing(invalid_listing(
                         artifact.name,
+                        artifact.write_surface,
                         error,
                     )));
                     continue;
@@ -269,6 +316,7 @@ impl FunctionManager {
             }
             candidates.push(FunctionCandidate::Pending {
                 name: artifact.name,
+                write_surface: artifact.write_surface,
                 definition: Box::new(runtime_function),
             });
         }
@@ -291,14 +339,20 @@ impl FunctionManager {
             .into_iter()
             .map(|candidate| match candidate {
                 FunctionCandidate::Listing(listing) => Ok(listing),
-                FunctionCandidate::Pending { name, .. } => match inferred.next() {
+                FunctionCandidate::Pending {
+                    name,
+                    write_surface,
+                    ..
+                } => match inferred.next() {
                     Some(Ok(definition)) => {
                         match record_sql_publish_target(&definition, &mut sql_publish_targets) {
-                            Ok(()) => Ok(ready_listing(name, definition)),
-                            Err(error) => Ok(invalid_listing(name, error.to_string())),
+                            Ok(()) => Ok(ready_listing(name, write_surface, definition)),
+                            Err(error) => {
+                                Ok(invalid_listing(name, write_surface, error.to_string()))
+                            }
                         }
                     }
-                    Some(Err(error)) => Ok(invalid_listing(name, error.to_string())),
+                    Some(Err(error)) => Ok(invalid_listing(name, write_surface, error.to_string())),
                     None => Err(AppError::FailedPrecondition(
                         "function runtime validation returned too few results".to_string(),
                     )),
@@ -376,6 +430,7 @@ impl FunctionManager {
             let function_name = installed.name;
             artifacts.push(FunctionArtifact {
                 name: function_name,
+                write_surface: installed.write_surface,
                 content,
             });
         }
@@ -445,16 +500,26 @@ fn parse_function_artifact(artifact: &FunctionArtifact) -> Result<FunctionSpec, 
     Ok(spec)
 }
 
-fn ready_listing(name: FunctionName, definition: UdfRuntimeDefinition) -> FunctionListing {
+fn ready_listing(
+    name: FunctionName,
+    write_surface: FunctionWriteSurface,
+    definition: UdfRuntimeDefinition,
+) -> FunctionListing {
     FunctionListing {
         name,
+        write_surface,
         runtime: FunctionRuntimeStatus::Ready(Box::new(definition)),
     }
 }
 
-fn invalid_listing(name: FunctionName, error: String) -> FunctionListing {
+fn invalid_listing(
+    name: FunctionName,
+    write_surface: FunctionWriteSurface,
+    error: String,
+) -> FunctionListing {
     FunctionListing {
         name,
+        write_surface,
         runtime: FunctionRuntimeStatus::Invalid(error),
     }
 }

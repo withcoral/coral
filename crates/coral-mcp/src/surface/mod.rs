@@ -6,6 +6,7 @@ mod context;
 mod discovery;
 mod errors;
 mod feedback;
+mod function;
 mod resources;
 mod schema;
 mod search;
@@ -24,6 +25,9 @@ pub(crate) use catalog::{
 pub(crate) use context::ToolDescriptionContext;
 pub(crate) use errors::{status_to_error_data, tool_error_from_status, tool_error_result};
 pub(crate) use feedback::{FeedbackStoredValue, feedback_arguments};
+pub(crate) use function::{
+    AddFunctionArguments, add_function_arguments, function_added_value, render_function_artifact,
+};
 pub(crate) use resources::{
     guide_resource, guide_resource_content, initial_instructions, tables_resource,
     tables_resource_content,

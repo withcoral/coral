@@ -30,6 +30,7 @@ async fn search_catalog_matches_metadata_and_paginates_after_filtering() {
         .catalog_client()
         .search_catalog(Request::new(SearchCatalogRequest {
             workspace: Some(default_workspace()),
+            catalog_name: String::new(),
             pattern: "Issue".to_string(),
             ignore_case: true,
             schema_name: "searchy".to_string(),
@@ -90,6 +91,7 @@ async fn list_catalog_returns_tables_and_table_functions_with_filters_and_pagina
         .catalog_client()
         .list_catalog(Request::new(ListCatalogRequest {
             workspace: Some(default_workspace()),
+            catalog_name: String::new(),
             schema_name: "searchy".to_string(),
             kind: 0,
             pagination: Some(PaginationRequest {
@@ -130,6 +132,7 @@ async fn list_catalog_returns_tables_and_table_functions_with_filters_and_pagina
         .catalog_client()
         .list_catalog(Request::new(ListCatalogRequest {
             workspace: Some(default_workspace()),
+            catalog_name: String::new(),
             schema_name: "searchy".to_string(),
             kind: 2,
             pagination: Some(PaginationRequest {
@@ -176,6 +179,7 @@ async fn search_catalog_matches_table_function_guide() {
             workspace: Some(default_workspace()),
             pattern: "exact issue lookup".to_string(),
             ignore_case: true,
+            catalog_name: String::new(),
             schema_name: "searchy".to_string(),
             kind: 2,
             pagination: None,
@@ -208,6 +212,7 @@ async fn list_columns_filters_required_columns_and_patterns() {
         .catalog_client()
         .list_columns(Request::new(ListColumnsRequest {
             workspace: Some(default_workspace()),
+            catalog_name: String::new(),
             schema_name: "filtered_messages".to_string(),
             table_name: "messages".to_string(),
             pattern: None,
@@ -228,6 +233,7 @@ async fn list_columns_filters_required_columns_and_patterns() {
         .catalog_client()
         .list_columns(Request::new(ListColumnsRequest {
             workspace: Some(default_workspace()),
+            catalog_name: String::new(),
             schema_name: "filtered_messages".to_string(),
             table_name: "messages".to_string(),
             pattern: Some("TEXT".to_string()),
@@ -276,6 +282,7 @@ async fn describe_missing_table_returns_catalog_suggestions() {
         .catalog_client()
         .describe_table(Request::new(DescribeTableRequest {
             workspace: Some(default_workspace()),
+            catalog_name: String::new(),
             schema_name: "local_messages".to_string(),
             table_name: "messeges".to_string(),
         }))
@@ -305,6 +312,7 @@ async fn describe_missing_table_name_does_not_apply_regex_limits() {
         .catalog_client()
         .describe_table(Request::new(DescribeTableRequest {
             workspace: Some(default_workspace()),
+            catalog_name: String::new(),
             schema_name: "local_messages".to_string(),
             table_name: "missing_table_".repeat(40),
         }))
@@ -332,6 +340,7 @@ async fn list_columns_missing_table_takes_precedence_over_invalid_pattern() {
         .catalog_client()
         .list_columns(Request::new(ListColumnsRequest {
             workspace: Some(default_workspace()),
+            catalog_name: String::new(),
             schema_name: "local_messages".to_string(),
             table_name: "missing".to_string(),
             pattern: Some("[".to_string()),
@@ -353,6 +362,7 @@ async fn invalid_regex_returns_invalid_argument() {
         .catalog_client()
         .search_catalog(Request::new(SearchCatalogRequest {
             workspace: Some(default_workspace()),
+            catalog_name: String::new(),
             pattern: "[".to_string(),
             ignore_case: true,
             schema_name: String::new(),
@@ -375,6 +385,7 @@ async fn invalid_regex_returns_invalid_argument() {
         .catalog_client()
         .list_columns(Request::new(ListColumnsRequest {
             workspace: Some(default_workspace()),
+            catalog_name: String::new(),
             schema_name: "filtered_messages".to_string(),
             table_name: "messages".to_string(),
             pattern: Some("[".to_string()),

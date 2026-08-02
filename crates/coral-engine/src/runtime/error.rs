@@ -10,13 +10,12 @@ use crate::TableFunctionInfo;
 use crate::backends::http::ProviderQueryError;
 use crate::backends::mcp::McpProviderQueryError;
 use crate::contracts::{ColumnParts, StructuredQueryError, TableRefParts};
+use crate::runtime::DATAFUSION_DEFAULT_CATALOG;
 use crate::runtime::dependent_join::error::DependentJoinError;
 use crate::{
     CoreError, QueryResultObserverError, RequestIdentityHttpAuthenticatorError,
     RequestIdentitySelectionError, SourceDecoratorError, SourceInputResolverError, TableInfo,
 };
-
-const DATAFUSION_DEFAULT_CATALOG: &str = "datafusion";
 
 pub(crate) fn datafusion_to_core(error: &DataFusionError, tables: &[TableInfo]) -> CoreError {
     datafusion_to_core_with_sql(error, tables, None)

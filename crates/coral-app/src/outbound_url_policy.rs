@@ -1,10 +1,30 @@
-//! Outbound URL policies for configured endpoints, discovery, and untrusted metadata.
+//! Outbound URL policies for configured endpoints, discovery, untrusted
+//! metadata, and URLs Coral never fetches.
 //!
-//! These policies are intentionally separate. Operator-configured endpoints may
-//! use HTTPS anywhere or plain HTTP on an explicit loopback host. Provider
-//! discovery may use loopback HTTP only when the configured issuer does. URLs
-//! supplied by an untrusted client must instead identify a public HTTPS resource
-//! and use a DNS resolver that rejects non-public answers.
+//! Every URL here is an [`EndpointUrl<P>`], where `P` names the policy it was
+//! checked under. The policies are intentionally separate, and the type
+//! parameter is what keeps them from being interchanged:
+//!
+//! - [`Configured`] — operator-authored. HTTPS anywhere, or plain HTTP on an
+//!   explicit loopback host.
+//! - [`Discovered`] — from a provider's discovery document. Loopback HTTP only
+//!   when the configured issuer already uses it.
+//! - [`PublicMetadata`] — supplied by an untrusted client and fetched. Public
+//!   HTTPS only, with a DNS resolver that rejects non-public answers.
+//! - [`ResourceIdentifier`] — an RFC 8707 `resource`, compared and recorded.
+//! - [`BrowserRedirect`] — an OAuth redirect target, handed to a browser.
+//!
+//! The last two describe URLs Coral never connects to. [`FetchablePolicy`] marks
+//! the distinction: the fetch helpers [`EndpointUrl::get`] and
+//! [`EndpointUrl::post`] exist only for the policies whose URLs Coral is meant to
+//! request. That is an intent signal, not a barrier — an [`EndpointUrl<P>`]
+//! certifies its URL passed `P`'s checks; it does not stop a caller from building
+//! a request out of the underlying [`Url`]. What keeps a compared-or-redirected
+//! URL from becoming an outbound request is that no call site fetches one. A
+//! remote party's value may still be checked under one of the non-fetchable
+//! policies but must not be checked under [`Configured`], whose permissiveness
+//! about private and loopback hosts is sound only because an operator chose the
+//! value.
 
 #![cfg_attr(
     not(test),
@@ -15,6 +35,7 @@
 )]
 
 use std::fmt;
+use std::marker::PhantomData;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
 
@@ -27,6 +48,139 @@ use crate::bootstrap::is_loopback_ip;
 /// Timeout applied to public metadata connections and complete requests.
 pub(crate) const PUBLIC_METADATA_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// A URL validated under the outbound-URL policy `P`.
+///
+/// The policy is a type parameter rather than a separate wrapper per profile so
+/// that the affordances a policy grants can be gated on the policy itself: only
+/// a [`FetchablePolicy`] can build a request, and only a [`ParsedUrlPolicy`] can
+/// be applied to a URL that has already been through [`Url::parse`]. A caller
+/// that reaches for the wrong one does not compile.
+///
+/// The marker is held as `PhantomData<fn() -> P>` rather than `PhantomData<P>`:
+/// these values are carried across `await` points in spawned request handlers,
+/// and the function-pointer form keeps `EndpointUrl<P>` `Send` and `Sync`
+/// whatever the marker is.
+pub(crate) struct EndpointUrl<P>(Url, PhantomData<fn() -> P>);
+
+/// A named outbound-URL policy.
+pub(crate) trait UrlPolicy {
+    /// The name this policy renders under in [`fmt::Debug`].
+    const NAME: &'static str;
+
+    /// The error a URL of an unacceptable transport is rejected with.
+    ///
+    /// Each policy keeps its own variant so the message names the thing the
+    /// operator or client actually supplied.
+    fn transport_error() -> OutboundUrlPolicyError;
+}
+
+/// A policy that needs no context beyond the URL to decide.
+///
+/// [`Discovered`] is deliberately not one: it can only be applied relative to a
+/// configured issuer, so `EndpointUrl<Discovered>` carries its own `parse`
+/// taking one.
+pub(crate) trait SelfContainedPolicy: UrlPolicy {
+    /// Checks applied to the raw string, before [`Url::parse`] normalizes it.
+    ///
+    /// Accepting everything is the right default: only [`PublicMetadata`] has a
+    /// check the parser would erase before it could run.
+    fn check_raw(_value: &str) -> Result<(), OutboundUrlPolicyError> {
+        Ok(())
+    }
+
+    /// Checks applied to the parsed URL.
+    fn check(url: &Url) -> Result<(), OutboundUrlPolicyError>;
+}
+
+/// A policy whose checks are complete against an already-parsed [`Url`].
+///
+/// [`PublicMetadata`] is deliberately not one. Its traversal checks read the raw
+/// string, because [`Url::parse`] resolves `..` away and leaves nothing to find;
+/// a `from_parsed` entry point for it would silently skip them. Keeping that
+/// entry point on this trait turns the mistake into a compile error rather than
+/// a policy that quietly stops applying.
+pub(crate) trait ParsedUrlPolicy: SelfContainedPolicy {}
+
+/// A policy whose URLs Coral may itself issue a request to.
+///
+/// A profile that both fetches and permits a private or loopback host is sound
+/// only because of where the URL came from. A policy that omits this marker
+/// describes a URL Coral only ever compares, stores, or hands to a browser, and
+/// [`EndpointUrl::get`] and [`EndpointUrl::post`] do not exist for it.
+pub(crate) trait FetchablePolicy: UrlPolicy {}
+
+impl<P: UrlPolicy> EndpointUrl<P> {
+    /// Returns the validated URL.
+    pub(crate) fn as_url(&self) -> &Url {
+        &self.0
+    }
+
+    /// Consumes this wrapper and returns the validated URL.
+    pub(crate) fn into_url(self) -> Url {
+        self.0
+    }
+}
+
+impl<P: SelfContainedPolicy> EndpointUrl<P> {
+    /// Applies the policy to a URL supplied as a string.
+    pub(crate) fn parse(value: &str) -> Result<Self, OutboundUrlPolicyError> {
+        P::check_raw(value)?;
+        let url = Url::parse(value).map_err(OutboundUrlPolicyError::InvalidUrl)?;
+        P::check(&url)?;
+        Ok(Self(url, PhantomData))
+    }
+}
+
+impl<P: ParsedUrlPolicy> EndpointUrl<P> {
+    /// Applies the policy to an already-parsed URL.
+    ///
+    /// The checks are the same ones [`parse`](Self::parse) runs; this entry
+    /// point exists for a caller that already needed the [`Url`] — parsing with
+    /// a syntax-violation callback, say — and would otherwise parse it twice.
+    pub(crate) fn from_parsed(url: Url) -> Result<Self, OutboundUrlPolicyError> {
+        P::check(&url)?;
+        Ok(Self(url, PhantomData))
+    }
+}
+
+impl<P: FetchablePolicy> EndpointUrl<P> {
+    /// Starts a `GET` to this endpoint.
+    pub(crate) fn get(&self, http: &reqwest::Client) -> reqwest::RequestBuilder {
+        http.get(self.0.clone())
+    }
+
+    /// Starts a `POST` to this endpoint.
+    pub(crate) fn post(&self, http: &reqwest::Client) -> reqwest::RequestBuilder {
+        http.post(self.0.clone())
+    }
+}
+
+// `Clone`, `PartialEq`, and `Eq` are written out rather than derived: a derive
+// bounds each impl on `P`, and the markers implement none of these, so no
+// `EndpointUrl` would either.
+impl<P> Clone for EndpointUrl<P> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone(), PhantomData)
+    }
+}
+
+impl<P> PartialEq for EndpointUrl<P> {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl<P> Eq for EndpointUrl<P> {}
+
+impl<P: UrlPolicy> fmt::Debug for EndpointUrl<P> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple(P::NAME)
+            .field(&RedactedUrl(&self.0))
+            .finish()
+    }
+}
+
 /// A configured endpoint that is safe for credential-bearing requests.
 ///
 /// # Trust
@@ -35,104 +189,74 @@ pub(crate) const PUBLIC_METADATA_TIMEOUT: Duration = Duration::from_secs(5);
 /// private one, with no check on what the host resolves to. Both are sound only
 /// for a value an operator authored — a config file or environment variable.
 ///
-/// Do not build one from a value a remote party controls. Use
-/// [`DiscoveredEndpointUrl`] for endpoints supplied by an `OpenID` Connect
-/// discovery document.
-#[derive(Clone, PartialEq, Eq)]
-pub(crate) struct ConfiguredEndpointUrl(Url);
+/// Do not build one from a value a remote party controls. Use [`Discovered`] for
+/// endpoints supplied by an `OpenID` Connect discovery document,
+/// [`PublicMetadata`] for a client-supplied URL Coral fetches, and
+/// [`ResourceIdentifier`] or [`BrowserRedirect`] for one it never requests.
+pub(crate) struct Configured;
 
-impl ConfiguredEndpointUrl {
-    /// Parses an HTTPS endpoint or an explicit loopback HTTP endpoint.
-    pub(crate) fn parse(value: &str) -> Result<Self, OutboundUrlPolicyError> {
-        Self::from_parsed(Url::parse(value).map_err(OutboundUrlPolicyError::InvalidUrl)?)
-    }
+impl UrlPolicy for Configured {
+    const NAME: &'static str = "EndpointUrl<Configured>";
 
-    /// Applies the profile to an already-parsed URL.
-    ///
-    /// The checks are the same ones [`parse`](Self::parse) runs; this entry
-    /// point exists for a caller that already needed the [`Url`] — parsing with
-    /// a syntax-violation callback, say — and would otherwise parse it twice.
-    pub(crate) fn from_parsed(url: Url) -> Result<Self, OutboundUrlPolicyError> {
-        check_endpoint_url(&url)?;
-        match url.scheme() {
-            "https" => Ok(Self(url)),
-            "http" if is_explicit_loopback(&url) => Ok(Self(url)),
-            _ => Err(OutboundUrlPolicyError::ConfiguredEndpointTransport),
-        }
-    }
-
-    /// Returns the validated URL.
-    pub(crate) fn as_url(&self) -> &Url {
-        &self.0
-    }
-
-    /// Consumes this wrapper and returns the validated URL.
-    pub(crate) fn into_url(self) -> Url {
-        self.0
+    fn transport_error() -> OutboundUrlPolicyError {
+        OutboundUrlPolicyError::ConfiguredEndpointTransport
     }
 }
 
-impl fmt::Debug for ConfiguredEndpointUrl {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_tuple("ConfiguredEndpointUrl")
-            .field(&RedactedUrl(&self.0))
-            .finish()
+impl SelfContainedPolicy for Configured {
+    fn check(url: &Url) -> Result<(), OutboundUrlPolicyError> {
+        check_https_or_explicit_loopback::<Self>(url)
     }
 }
+
+impl ParsedUrlPolicy for Configured {}
+
+impl FetchablePolicy for Configured {}
 
 /// A remotely discovered provider endpoint safe for credential-bearing requests.
 ///
 /// HTTPS may target any host, including a private one. Plain HTTP is restricted
 /// to an explicit loopback endpoint and is accepted only when the
 /// operator-configured issuer also uses loopback HTTP.
-#[derive(Clone, PartialEq, Eq)]
-pub(crate) struct DiscoveredEndpointUrl(Url);
+pub(crate) struct Discovered;
 
-impl DiscoveredEndpointUrl {
+impl UrlPolicy for Discovered {
+    const NAME: &'static str = "EndpointUrl<Discovered>";
+
+    fn transport_error() -> OutboundUrlPolicyError {
+        OutboundUrlPolicyError::DiscoveredEndpointTransport
+    }
+}
+
+impl FetchablePolicy for Discovered {}
+
+impl EndpointUrl<Discovered> {
     /// Parses an endpoint under the trust policy established by `issuer`.
+    ///
+    /// This is an inherent constructor rather than a [`SelfContainedPolicy`]
+    /// impl because the decision needs the issuer. Taking it as an
+    /// [`EndpointUrl<Configured>`] makes "a discovered endpoint is only
+    /// meaningful relative to an operator-configured issuer" a fact the type
+    /// system carries, and adding the trait impl later would collide with this
+    /// method rather than quietly offering a context-free parse.
     pub(crate) fn parse(
         value: &str,
-        issuer: &ConfiguredEndpointUrl,
+        issuer: &EndpointUrl<Configured>,
     ) -> Result<Self, OutboundUrlPolicyError> {
-        let url = parse_endpoint(value)?;
+        let url = Url::parse(value).map_err(OutboundUrlPolicyError::InvalidUrl)?;
+        check_shape(&url)?;
         match url.scheme() {
-            "https" => Ok(Self(url)),
+            "https" => Ok(Self(url, PhantomData)),
             "http" if issuer.as_url().scheme() == "http" && is_explicit_loopback(&url) => {
-                Ok(Self(url))
+                Ok(Self(url, PhantomData))
             }
-            _ => Err(OutboundUrlPolicyError::DiscoveredEndpointTransport),
+            _ => Err(Discovered::transport_error()),
         }
     }
-
-    /// Returns the validated URL.
-    pub(crate) fn as_url(&self) -> &Url {
-        &self.0
-    }
-
-    /// Consumes this wrapper and returns the validated URL.
-    pub(crate) fn into_url(self) -> Url {
-        self.0
-    }
-}
-
-impl fmt::Debug for DiscoveredEndpointUrl {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_tuple("DiscoveredEndpointUrl")
-            .field(&RedactedUrl(&self.0))
-            .finish()
-    }
-}
-
-fn parse_endpoint(value: &str) -> Result<Url, OutboundUrlPolicyError> {
-    let url = Url::parse(value).map_err(OutboundUrlPolicyError::InvalidUrl)?;
-    check_endpoint_url(&url)?;
-    Ok(url)
 }
 
 /// Rejects an endpoint URL that no profile accepts, whatever its scheme.
-fn check_endpoint_url(url: &Url) -> Result<(), OutboundUrlPolicyError> {
+fn check_shape(url: &Url) -> Result<(), OutboundUrlPolicyError> {
     if url.host().is_none() {
         return Err(OutboundUrlPolicyError::MissingHost);
     }
@@ -145,57 +269,125 @@ fn check_endpoint_url(url: &Url) -> Result<(), OutboundUrlPolicyError> {
     Ok(())
 }
 
-/// An attacker-controlled metadata URL validated for public HTTPS fetching.
-#[derive(Clone, PartialEq, Eq)]
-pub(crate) struct PublicMetadataUrl(Url);
+/// The transport rule [`Configured`], [`ResourceIdentifier`], and
+/// [`BrowserRedirect`] share.
+///
+/// HTTPS reaches any host, including a private one; plain HTTP is confined to an
+/// explicit loopback address. The three policies that share it differ in whether
+/// Coral connects to the result, not in which URLs they accept, so the rule is
+/// written once and the rejection is reported under the caller's own policy.
+fn check_https_or_explicit_loopback<P: UrlPolicy>(url: &Url) -> Result<(), OutboundUrlPolicyError> {
+    check_shape(url)?;
+    match url.scheme() {
+        "https" => Ok(()),
+        "http" if is_explicit_loopback(url) => Ok(()),
+        _ => Err(P::transport_error()),
+    }
+}
 
-impl PublicMetadataUrl {
-    /// Parses a public HTTPS metadata URL with a non-root, traversal-free path.
-    pub(crate) fn parse(value: &str) -> Result<Self, OutboundUrlPolicyError> {
+/// An attacker-controlled metadata URL validated for public HTTPS fetching.
+pub(crate) struct PublicMetadata;
+
+impl UrlPolicy for PublicMetadata {
+    const NAME: &'static str = "EndpointUrl<PublicMetadata>";
+
+    fn transport_error() -> OutboundUrlPolicyError {
+        OutboundUrlPolicyError::PublicMetadataTransport
+    }
+}
+
+impl SelfContainedPolicy for PublicMetadata {
+    fn check_raw(value: &str) -> Result<(), OutboundUrlPolicyError> {
         if has_dot_path_segment(value) {
             return Err(OutboundUrlPolicyError::DotPathSegment);
         }
         if has_encoded_path_separator(value) {
             return Err(OutboundUrlPolicyError::EncodedPathSeparator);
         }
-        let url = Url::parse(value).map_err(OutboundUrlPolicyError::InvalidUrl)?;
+        Ok(())
+    }
+
+    fn check(url: &Url) -> Result<(), OutboundUrlPolicyError> {
         if url.scheme() != "https" {
-            return Err(OutboundUrlPolicyError::PublicMetadataTransport);
+            return Err(Self::transport_error());
         }
         if url.path().is_empty() || url.path() == "/" {
             return Err(OutboundUrlPolicyError::MetadataPathRequired);
         }
-        if !url.username().is_empty() || url.password().is_some() {
-            return Err(OutboundUrlPolicyError::CredentialsNotAllowed);
-        }
-        if url.fragment().is_some() {
-            return Err(OutboundUrlPolicyError::FragmentNotAllowed);
-        }
-        if public_metadata_host_is_blocked(&url) {
+        check_shape(url)?;
+        if public_metadata_host_is_blocked(url) {
             return Err(OutboundUrlPolicyError::NonPublicHost);
         }
-        Ok(Self(url))
-    }
-
-    /// Returns the validated URL.
-    pub(crate) fn as_url(&self) -> &Url {
-        &self.0
-    }
-
-    /// Consumes this wrapper and returns the validated URL.
-    pub(crate) fn into_url(self) -> Url {
-        self.0
+        Ok(())
     }
 }
 
-impl fmt::Debug for PublicMetadataUrl {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_tuple("PublicMetadataUrl")
-            .field(&RedactedUrl(&self.0))
-            .finish()
+impl FetchablePolicy for PublicMetadata {}
+
+/// A resource identifier Coral compares and records but never requests.
+///
+/// # Trust
+///
+/// This is the profile for an RFC 8707 `resource` parameter and for the
+/// operator-configured resources it is matched against. Its transport rule is
+/// [`Configured`]'s, but its trust claim is not, and that is the whole point of
+/// separating them: a value under this policy may come from a remote party.
+///
+/// What makes that sound is not the permissiveness of the rule but where the
+/// value goes. A canonicalized resource is compared against an allowlist an
+/// operator authored, and only a value proven equal to one of those is stored or
+/// used. Loopback HTTP and private HTTPS are therefore never fetched — not
+/// because the type forbids it (a [`Url`] can always be requested) but because no
+/// caller fetches a resource identifier. Withholding [`FetchablePolicy`] records
+/// that intent by leaving the fetch helpers absent; it does not enforce it.
+pub(crate) struct ResourceIdentifier;
+
+impl UrlPolicy for ResourceIdentifier {
+    const NAME: &'static str = "EndpointUrl<ResourceIdentifier>";
+
+    fn transport_error() -> OutboundUrlPolicyError {
+        OutboundUrlPolicyError::ResourceIdentifierTransport
     }
 }
+
+impl SelfContainedPolicy for ResourceIdentifier {
+    fn check(url: &Url) -> Result<(), OutboundUrlPolicyError> {
+        check_https_or_explicit_loopback::<Self>(url)
+    }
+}
+
+impl ParsedUrlPolicy for ResourceIdentifier {}
+
+/// A redirect target Coral hands to a browser but never requests itself.
+///
+/// # Trust
+///
+/// A registered OAuth redirect URI arrives from a client's metadata document, so
+/// it is remote input, and it ends up in a `Location` header — the browser
+/// connects to it, Coral does not. HTTPS reaches any host, and plain HTTP is
+/// confined to an explicit loopback address, which is how a native client
+/// receives its callback.
+///
+/// Withholding [`FetchablePolicy`] is what distinguishes this from
+/// [`Configured`]: the two accept the same URLs, but only one of them describes
+/// something Coral will connect to with credentials.
+pub(crate) struct BrowserRedirect;
+
+impl UrlPolicy for BrowserRedirect {
+    const NAME: &'static str = "EndpointUrl<BrowserRedirect>";
+
+    fn transport_error() -> OutboundUrlPolicyError {
+        OutboundUrlPolicyError::BrowserRedirectTransport
+    }
+}
+
+impl SelfContainedPolicy for BrowserRedirect {
+    fn check(url: &Url) -> Result<(), OutboundUrlPolicyError> {
+        check_https_or_explicit_loopback::<Self>(url)
+    }
+}
+
+impl ParsedUrlPolicy for BrowserRedirect {}
 
 struct RedactedUrl<'a>(&'a Url);
 
@@ -233,6 +425,12 @@ pub(crate) enum OutboundUrlPolicyError {
     /// Public metadata did not use HTTPS.
     #[error("public metadata URL must use HTTPS")]
     PublicMetadataTransport,
+    /// A resource identifier did not use HTTPS or explicit loopback HTTP.
+    #[error("resource identifier must use HTTPS or explicit loopback HTTP")]
+    ResourceIdentifierTransport,
+    /// A redirect target used a transport a browser must not be sent to.
+    #[error("redirect URI must use HTTPS or explicit loopback HTTP")]
+    BrowserRedirectTransport,
     /// Public metadata did not identify a document path.
     #[error("public metadata URL must include a non-root path")]
     MetadataPathRequired,
@@ -270,9 +468,10 @@ pub(crate) enum OutboundUrlPolicyError {
 
 /// Builds an HTTP client for attacker-controlled public metadata URLs.
 ///
-/// The caller must still construct requests from [`PublicMetadataUrl`]. The
-/// resolver rejects a hostname if any returned address is non-public, which
-/// prevents mixed-answer DNS rebinding from selecting a private destination.
+/// The caller must still construct requests from an
+/// [`EndpointUrl<PublicMetadata>`]. The resolver rejects a hostname if any
+/// returned address is non-public, which prevents mixed-answer DNS rebinding
+/// from selecting a private destination.
 pub(crate) fn public_metadata_http_client() -> Result<reqwest::Client, OutboundUrlPolicyError> {
     reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -536,9 +735,9 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::{
-        ConfiguredEndpointUrl, DiscoveredEndpointUrl, OutboundUrlPolicyError, PublicMetadataUrl,
-        append_bounded_chunk, public_metadata_http_client, public_metadata_ip_is_blocked,
-        read_bounded_body, validate_public_resolution,
+        BrowserRedirect, Configured, Discovered, EndpointUrl, OutboundUrlPolicyError,
+        PublicMetadata, ResourceIdentifier, append_bounded_chunk, public_metadata_http_client,
+        public_metadata_ip_is_blocked, read_bounded_body, validate_public_resolution,
     };
 
     #[test]
@@ -554,7 +753,7 @@ mod tests {
             // auth URL validator accepts.
             "http://[::ffff:127.0.0.1]:14554/callback",
         ] {
-            ConfiguredEndpointUrl::parse(endpoint).expect(endpoint);
+            EndpointUrl::<Configured>::parse(endpoint).expect(endpoint);
         }
     }
 
@@ -565,14 +764,14 @@ mod tests {
     #[test]
     fn loopback_name_rules_differ_between_profiles() {
         assert!(matches!(
-            ConfiguredEndpointUrl::parse("http://keycloak.localhost:8080/realms/coral"),
+            EndpointUrl::<Configured>::parse("http://keycloak.localhost:8080/realms/coral"),
             Err(OutboundUrlPolicyError::ConfiguredEndpointTransport)
         ));
-        ConfiguredEndpointUrl::parse("https://keycloak.localhost:8443/realms/coral")
+        EndpointUrl::<Configured>::parse("https://keycloak.localhost:8443/realms/coral")
             .expect("https reaches any host");
 
         assert!(matches!(
-            PublicMetadataUrl::parse("https://keycloak.localhost/oauth/client.json"),
+            EndpointUrl::<PublicMetadata>::parse("https://keycloak.localhost/oauth/client.json"),
             Err(OutboundUrlPolicyError::NonPublicHost)
         ));
     }
@@ -586,23 +785,70 @@ mod tests {
             "ftp://localhost/oauth",
         ] {
             assert!(matches!(
-                ConfiguredEndpointUrl::parse(endpoint),
+                EndpointUrl::<Configured>::parse(endpoint),
                 Err(OutboundUrlPolicyError::ConfiguredEndpointTransport)
             ));
         }
 
         assert!(matches!(
-            ConfiguredEndpointUrl::parse("https://user:password@login.example.test/oauth"),
+            EndpointUrl::<Configured>::parse("https://user:password@login.example.test/oauth"),
             Err(OutboundUrlPolicyError::CredentialsNotAllowed)
         ));
+    }
+
+    /// The two policies Coral never connects to accept exactly what
+    /// [`Configured`] accepts; what separates them is the absence of
+    /// [`FetchablePolicy`], not a narrower set of URLs. Checking all three against
+    /// the same inputs pins that: a later divergence has to break this test
+    /// deliberately.
+    #[test]
+    fn policies_coral_never_fetches_share_the_configured_transport_rule() {
+        for endpoint in [
+            "https://service.example.test/oauth",
+            "https://10.0.0.8/oauth",
+            "http://localhost:14554/callback",
+            "http://[::ffff:127.0.0.1]:14554/callback",
+        ] {
+            EndpointUrl::<Configured>::parse(endpoint).expect(endpoint);
+            EndpointUrl::<ResourceIdentifier>::parse(endpoint).expect(endpoint);
+            EndpointUrl::<BrowserRedirect>::parse(endpoint).expect(endpoint);
+        }
+
+        for endpoint in [
+            "http://service.example.test/oauth",
+            "http://localhost.example.test/oauth",
+            "ftp://localhost/oauth",
+        ] {
+            assert!(matches!(
+                EndpointUrl::<Configured>::parse(endpoint),
+                Err(OutboundUrlPolicyError::ConfiguredEndpointTransport)
+            ));
+            assert!(matches!(
+                EndpointUrl::<ResourceIdentifier>::parse(endpoint),
+                Err(OutboundUrlPolicyError::ResourceIdentifierTransport)
+            ));
+            assert!(matches!(
+                EndpointUrl::<BrowserRedirect>::parse(endpoint),
+                Err(OutboundUrlPolicyError::BrowserRedirectTransport)
+            ));
+        }
+
+        for endpoint in [
+            "https://user:password@login.example.test/oauth",
+            "https://login.example.test/oauth#fragment",
+        ] {
+            EndpointUrl::<ResourceIdentifier>::parse(endpoint).expect_err(endpoint);
+            EndpointUrl::<BrowserRedirect>::parse(endpoint).expect_err(endpoint);
+        }
     }
 
     #[test]
     fn discovered_endpoints_bind_loopback_http_to_loopback_http_issuers() {
         let remote_issuer =
-            ConfiguredEndpointUrl::parse("https://accounts.example.test/tenant").expect("issuer");
+            EndpointUrl::<Configured>::parse("https://accounts.example.test/tenant")
+                .expect("issuer");
         let loopback_issuer =
-            ConfiguredEndpointUrl::parse("http://127.0.0.1:9080/tenant").expect("issuer");
+            EndpointUrl::<Configured>::parse("http://127.0.0.1:9080/tenant").expect("issuer");
 
         for endpoint in [
             "http://localhost:14554/authorize",
@@ -610,10 +856,10 @@ mod tests {
             "http://[::1]:14554/jwks",
         ] {
             assert!(matches!(
-                DiscoveredEndpointUrl::parse(endpoint, &remote_issuer),
+                EndpointUrl::<Discovered>::parse(endpoint, &remote_issuer),
                 Err(OutboundUrlPolicyError::DiscoveredEndpointTransport)
             ));
-            DiscoveredEndpointUrl::parse(endpoint, &loopback_issuer)
+            EndpointUrl::<Discovered>::parse(endpoint, &loopback_issuer)
                 .expect("loopback issuer permits loopback endpoint");
         }
 
@@ -621,38 +867,43 @@ mod tests {
             "https://accounts.example.test/authorize",
             "https://10.0.0.8/token",
         ] {
-            DiscoveredEndpointUrl::parse(endpoint, &remote_issuer)
+            EndpointUrl::<Discovered>::parse(endpoint, &remote_issuer)
                 .expect("HTTPS reaches public or private providers");
         }
 
         assert!(matches!(
-            DiscoveredEndpointUrl::parse("http://accounts.example.test/token", &loopback_issuer),
+            EndpointUrl::<Discovered>::parse(
+                "http://accounts.example.test/token",
+                &loopback_issuer
+            ),
             Err(OutboundUrlPolicyError::DiscoveredEndpointTransport)
         ));
     }
 
     #[test]
     fn validated_wrappers_expose_their_inner_urls() {
-        let configured = ConfiguredEndpointUrl::parse("https://login.example.test/oauth")
+        let configured = EndpointUrl::<Configured>::parse("https://login.example.test/oauth")
             .expect("configured endpoint");
         assert_eq!(configured.as_url().host_str(), Some("login.example.test"));
         assert_eq!(configured.into_url().path(), "/oauth");
 
-        let metadata = PublicMetadataUrl::parse("https://client.example.test/oauth/client.json")
-            .expect("metadata URL");
+        let metadata =
+            EndpointUrl::<PublicMetadata>::parse("https://client.example.test/oauth/client.json")
+                .expect("metadata URL");
         assert_eq!(metadata.as_url().host_str(), Some("client.example.test"));
         assert_eq!(metadata.into_url().path(), "/oauth/client.json");
     }
 
     #[test]
     fn validated_url_debug_output_redacts_paths_and_queries() {
-        let configured = ConfiguredEndpointUrl::parse(
+        let configured = EndpointUrl::<Configured>::parse(
             "https://login.example.test/tenant/secret?client_secret=hidden",
         )
         .expect("configured endpoint");
-        let metadata =
-            PublicMetadataUrl::parse("https://client.example.test/oauth/client.json?token=hidden")
-                .expect("metadata URL");
+        let metadata = EndpointUrl::<PublicMetadata>::parse(
+            "https://client.example.test/oauth/client.json?token=hidden",
+        )
+        .expect("metadata URL");
 
         for rendered in [format!("{configured:?}"), format!("{metadata:?}")] {
             assert!(rendered.contains("/<redacted>"));
@@ -660,12 +911,19 @@ mod tests {
             assert!(!rendered.contains("hidden"));
             assert!(!rendered.contains("client.json"));
         }
+
+        // One generic impl renders every policy, so the rendered name is the only
+        // thing distinguishing them in a log.
+        assert!(format!("{configured:?}").starts_with("EndpointUrl<Configured>"));
+        assert!(format!("{metadata:?}").starts_with("EndpointUrl<PublicMetadata>"));
     }
 
     #[test]
     fn public_metadata_requires_document_shaped_https_url() {
-        PublicMetadataUrl::parse("https://client.example.test/oauth/client.json?version=1")
-            .expect("public metadata URL");
+        EndpointUrl::<PublicMetadata>::parse(
+            "https://client.example.test/oauth/client.json?version=1",
+        )
+        .expect("public metadata URL");
 
         for metadata_url in [
             "http://client.example.test/oauth/client.json",
@@ -677,7 +935,7 @@ mod tests {
             "https://client.example.test/oauth/%2e%2e/client.json",
             "https://client.example.test/oauth\\..\\client.json",
         ] {
-            PublicMetadataUrl::parse(metadata_url).expect_err(metadata_url);
+            EndpointUrl::<PublicMetadata>::parse(metadata_url).expect_err(metadata_url);
         }
     }
 
@@ -696,14 +954,14 @@ mod tests {
         ] {
             assert!(
                 matches!(
-                    PublicMetadataUrl::parse(metadata_url),
+                    EndpointUrl::<PublicMetadata>::parse(metadata_url),
                     Err(OutboundUrlPolicyError::DotPathSegment)
                 ),
                 "{metadata_url}"
             );
         }
 
-        PublicMetadataUrl::parse("https://client.example.test/oauth/client.json")
+        EndpointUrl::<PublicMetadata>::parse("https://client.example.test/oauth/client.json")
             .expect("a traversal-free path is unaffected");
     }
 
@@ -721,7 +979,7 @@ mod tests {
         ] {
             assert!(
                 matches!(
-                    PublicMetadataUrl::parse(metadata_url),
+                    EndpointUrl::<PublicMetadata>::parse(metadata_url),
                     Err(OutboundUrlPolicyError::EncodedPathSeparator)
                 ),
                 "{metadata_url}"
@@ -729,8 +987,10 @@ mod tests {
         }
 
         // An encoded separator past the path delimiter is data, not structure.
-        PublicMetadataUrl::parse("https://client.example.test/oauth/client.json?next=%2fhome")
-            .expect("encoded separator in the query is unaffected");
+        EndpointUrl::<PublicMetadata>::parse(
+            "https://client.example.test/oauth/client.json?next=%2fhome",
+        )
+        .expect("encoded separator in the query is unaffected");
     }
 
     #[test]
@@ -754,7 +1014,7 @@ mod tests {
             "240.0.0.1",
         ] {
             let url = format!("https://{host}/oauth/client.json");
-            PublicMetadataUrl::parse(&url).expect_err(&url);
+            EndpointUrl::<PublicMetadata>::parse(&url).expect_err(&url);
         }
     }
 
@@ -786,7 +1046,7 @@ mod tests {
             "100:0:0:1::1",     // 100:0:0:1::/64 dummy prefix
         ] {
             let url = format!("https://[{host}]/oauth/client.json");
-            PublicMetadataUrl::parse(&url).expect_err(&url);
+            EndpointUrl::<PublicMetadata>::parse(&url).expect_err(&url);
         }
     }
 
@@ -802,7 +1062,7 @@ mod tests {
             "100:0:0:2::1", // just above the dummy prefix
         ] {
             let url = format!("https://[{host}]/oauth/client.json");
-            PublicMetadataUrl::parse(&url).expect(&url);
+            EndpointUrl::<PublicMetadata>::parse(&url).expect(&url);
         }
     }
 
@@ -812,7 +1072,7 @@ mod tests {
             "https://93.184.216.34/oauth/client.json",
             "https://[2606:4700:4700::1111]/oauth/client.json",
         ] {
-            PublicMetadataUrl::parse(url).expect(url);
+            EndpointUrl::<PublicMetadata>::parse(url).expect(url);
         }
     }
 

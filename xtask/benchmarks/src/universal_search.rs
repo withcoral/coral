@@ -56,7 +56,7 @@ pub(crate) struct Args {
 enum SearchBenchCommand {
     /// Snapshot the live catalog and create seeded hierarchical samples.
     Prepare(PrepareArgs),
-    /// Generate three questions per sample with fresh Codex processes.
+    /// Generate two paired questions per sample with fresh Codex processes.
     Generate(GenerateArgs),
     /// Capture one fresh Codex-to-Coral search call per question.
     Collect(CollectArgs),

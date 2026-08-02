@@ -34,9 +34,10 @@ use clap_complete::{Shell, generate};
 use coral_api::v1::{
     AddFunctionRequest, ClearSearchDataRequest, CreateWorkspaceRequest, DeleteFunctionRequest,
     DeleteWorkspaceRequest, DrainSearchQueueRequest, ExecuteSqlRequest, Function,
-    FunctionRuntimeReady, ListFunctionsRequest, ListWorkspacesRequest, RebuildSearchIndexRequest,
-    SearchClearTarget, SearchDataScope, SearchIndexProvider, SearchProvider, SearchRequest,
-    Workspace, function, search_clear_target, search_maintenance_result,
+    FunctionRuntimeReady, FunctionWriteSurface, ListFunctionsRequest, ListWorkspacesRequest,
+    RebuildSearchIndexRequest, SearchClearTarget, SearchDataScope, SearchIndexProvider,
+    SearchProvider, SearchRequest, Workspace, function, search_clear_target,
+    search_maintenance_result,
 };
 #[cfg(feature = "embedded-ui")]
 use coral_app::StaticAssetsProvider;
@@ -1171,6 +1172,8 @@ async fn run_function(
                 .add_function(Request::new(AddFunctionRequest {
                     workspace: Some(workspace.clone()),
                     sql,
+                    fail_if_exists: false,
+                    write_surface: FunctionWriteSurface::Cli as i32,
                 }))
                 .await
                 .map_err(anyhow::Error::from)?

@@ -3,6 +3,7 @@ use std::{fmt, str::FromStr};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ToolName {
     Sql,
+    AddFunction,
     Search,
     ListCatalog,
     DescribeTable,
@@ -16,6 +17,7 @@ impl ToolName {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Sql => "sql",
+            Self::AddFunction => "add_function",
             Self::Search => "search",
             Self::ListCatalog => "list_catalog",
             Self::DescribeTable => "describe_table",
@@ -36,6 +38,7 @@ impl FromStr for ToolName {
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
             "sql" => Ok(Self::Sql),
+            "add_function" => Ok(Self::AddFunction),
             "search" => Ok(Self::Search),
             "list_catalog" => Ok(Self::ListCatalog),
             "describe_table" => Ok(Self::DescribeTable),

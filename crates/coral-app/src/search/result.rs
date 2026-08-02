@@ -52,9 +52,9 @@ impl SearchRequest {
             .into());
         }
         let limit = normalized_search_limit(limit)?;
-        let terms = query_terms(query);
-        if !terms
-            .iter()
+        if !query
+            .split(|ch: char| !is_query_token_char(ch))
+            .map(normalize_query_part)
             .any(|term| term.chars().count() >= MIN_SEARCHABLE_TERM_CHARS)
         {
             return Err(AppError::InvalidInput(format!(
@@ -62,6 +62,7 @@ impl SearchRequest {
             ))
             .into());
         }
+        let terms = query_terms(query);
         Ok(Self {
             workspace_name,
             query: query.to_string(),
@@ -96,7 +97,7 @@ pub(crate) struct ProviderStatus {
     pub(crate) coverage: Option<ProviderCoverage>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum SearchProviderKind {
     CatalogMetadata,
     ObservedValues,
@@ -138,6 +139,7 @@ pub(crate) struct ProviderCoverage {
 /// `(schema_name, name)` alone does not resolve to an entry.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct SearchSurfaceId {
+    pub(crate) catalog_name: Option<String>,
     pub(crate) schema_name: String,
     pub(crate) name: String,
     pub(crate) kind: SearchSurfaceKind,
@@ -268,6 +270,13 @@ impl RetrieverId {
             Self::ObservedValues => "observed.values",
         }
     }
+
+    pub(crate) fn provider(self) -> SearchProviderKind {
+        match self {
+            Self::CatalogEntries | Self::CatalogFields => SearchProviderKind::CatalogMetadata,
+            Self::ObservedValues => SearchProviderKind::ObservedValues,
+        }
+    }
 }
 
 /// One retriever's ranked output. Vector position is the rank fusion uses; no
@@ -282,6 +291,7 @@ pub(crate) struct Ranking {
 #[derive(Debug, Clone)]
 pub(crate) struct SearchResult {
     pub(crate) surface: CatalogSurface,
+    pub(crate) providers: Vec<SearchProviderKind>,
     pub(crate) matching_values: Vec<FieldValues>,
     pub(crate) omitted_matching_field_count: u32,
 }
@@ -369,10 +379,8 @@ mod tests {
         SearchRequest::new(WorkspaceName::default(), "ts", 10)
             .expect_err("a two-character query cannot be served");
 
-        // The whole query is itself a term, so a short pair is still searchable
-        // as a phrase. Only text the index has no representation for is refused.
         SearchRequest::new(WorkspaceName::default(), "ts of", 10)
-            .expect("a phrase long enough to reach the index");
+            .expect_err("every token is too short for the index");
     }
 
     #[test]

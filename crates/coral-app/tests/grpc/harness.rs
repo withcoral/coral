@@ -185,6 +185,7 @@ impl GrpcHarness {
         self.catalog_client()
             .list_catalog(Request::new(ListCatalogRequest {
                 workspace: Some(default_workspace()),
+                catalog_name: String::new(),
                 schema_name: String::new(),
                 kind: 1,
                 pagination: Some(PaginationRequest {

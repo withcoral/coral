@@ -14,7 +14,7 @@ use crate::search::catalog::sqlite_index::{
 };
 use crate::search::result::{FieldRole, SearchSurfaceKind};
 
-const CATALOG_SEARCH_SNAPSHOT_VERSION: &str = "catalog-search-snapshot-v3";
+const CATALOG_SEARCH_SNAPSHOT_VERSION: &str = "catalog-search-snapshot-v4";
 
 #[derive(Debug, Clone)]
 pub(crate) struct CatalogSearchSnapshot {
@@ -77,6 +77,7 @@ pub(crate) struct CatalogDocument {
     pub(crate) doc_kind: CatalogDocumentKind,
     pub(crate) owner_source_name: String,
     pub(crate) source_name: String,
+    pub(crate) catalog_name: Option<String>,
     pub(crate) surface_kind: Option<SearchSurfaceKind>,
     pub(crate) surface_name: String,
     pub(crate) field_name: String,
@@ -109,7 +110,8 @@ impl CatalogDocument {
             title: self.title.clone(),
             description: self.description.clone(),
             searchable_text: self.searchable_text.clone(),
-            payload_json: "{}".to_string(),
+            payload_json: serde_json::to_string(&self.catalog_name)
+                .expect("optional catalog name serializes"),
         }
     }
 }
@@ -193,12 +195,17 @@ fn normalized_runtime_schema_owners(
 }
 
 fn table_documents(table: &TableInfo, documents: &mut Vec<CatalogDocument>) {
-    let qualified_name = qualified_name(&table.schema_name, &table.table_name);
+    let qualified_name = qualified_name(
+        table.catalog_name.as_deref(),
+        &table.schema_name,
+        &table.table_name,
+    );
     documents.push(CatalogDocument {
         doc_id: format!("catalog:table:{qualified_name}"),
         doc_kind: CatalogDocumentKind::CatalogTable,
         owner_source_name: table.schema_name.clone(),
         source_name: table.schema_name.clone(),
+        catalog_name: table.catalog_name.clone(),
         surface_kind: Some(SearchSurfaceKind::Table),
         surface_name: table.table_name.clone(),
         field_name: String::new(),
@@ -229,12 +236,17 @@ fn table_column_document(
     column: &ColumnInfo,
     documents: &mut Vec<CatalogDocument>,
 ) {
-    let surface_qualified_name = qualified_name(&table.schema_name, &table.table_name);
+    let surface_qualified_name = qualified_name(
+        table.catalog_name.as_deref(),
+        &table.schema_name,
+        &table.table_name,
+    );
     documents.push(CatalogDocument {
         doc_id: format!("column:table:{surface_qualified_name}:{}", column.name),
         doc_kind: CatalogDocumentKind::ColumnHint,
         owner_source_name: table.schema_name.clone(),
         source_name: table.schema_name.clone(),
+        catalog_name: table.catalog_name.clone(),
         surface_kind: Some(SearchSurfaceKind::Table),
         surface_name: table.table_name.clone(),
         field_name: column.name.clone(),
@@ -257,12 +269,17 @@ fn table_required_filter_document(
     filter: &str,
     documents: &mut Vec<CatalogDocument>,
 ) {
-    let surface_qualified_name = qualified_name(&table.schema_name, &table.table_name);
+    let surface_qualified_name = qualified_name(
+        table.catalog_name.as_deref(),
+        &table.schema_name,
+        &table.table_name,
+    );
     documents.push(CatalogDocument {
         doc_id: format!("filter:table:{surface_qualified_name}:{filter}"),
         doc_kind: CatalogDocumentKind::ColumnHint,
         owner_source_name: table.schema_name.clone(),
         source_name: table.schema_name.clone(),
+        catalog_name: table.catalog_name.clone(),
         surface_kind: Some(SearchSurfaceKind::Table),
         surface_name: table.table_name.clone(),
         field_name: filter.to_string(),
@@ -280,7 +297,7 @@ fn table_required_filter_document(
 }
 
 fn table_function_documents(function: &TableFunctionInfo, documents: &mut Vec<CatalogDocument>) {
-    let qualified_name = qualified_name(&function.schema_name, &function.function_name);
+    let qualified_name = qualified_name(None, &function.schema_name, &function.function_name);
     let source_native_search_keywords = if function.kind == SourceTableFunctionKind::Search {
         "source native search provider route fanout"
     } else {
@@ -303,6 +320,7 @@ fn table_function_documents(function: &TableFunctionInfo, documents: &mut Vec<Ca
         doc_kind: CatalogDocumentKind::CatalogTableFunction,
         owner_source_name: function.schema_name.clone(),
         source_name: function.schema_name.clone(),
+        catalog_name: None,
         surface_kind: Some(SearchSurfaceKind::TableFunction),
         surface_name: function.function_name.clone(),
         field_name: String::new(),
@@ -336,7 +354,8 @@ fn table_function_argument_document(
     argument: &TableFunctionArgumentInfo,
     documents: &mut Vec<CatalogDocument>,
 ) {
-    let surface_qualified_name = qualified_name(&function.schema_name, &function.function_name);
+    let surface_qualified_name =
+        qualified_name(None, &function.schema_name, &function.function_name);
     let values = argument.values.join(" ");
     documents.push(CatalogDocument {
         doc_id: format!(
@@ -346,6 +365,7 @@ fn table_function_argument_document(
         doc_kind: CatalogDocumentKind::ColumnHint,
         owner_source_name: function.schema_name.clone(),
         source_name: function.schema_name.clone(),
+        catalog_name: None,
         surface_kind: Some(SearchSurfaceKind::TableFunction),
         surface_name: function.function_name.clone(),
         field_name: argument.name.clone(),
@@ -368,7 +388,8 @@ fn table_function_result_column_document(
     column: &TableFunctionResultColumnInfo,
     documents: &mut Vec<CatalogDocument>,
 ) {
-    let surface_qualified_name = qualified_name(&function.schema_name, &function.function_name);
+    let surface_qualified_name =
+        qualified_name(None, &function.schema_name, &function.function_name);
     documents.push(CatalogDocument {
         doc_id: format!(
             "result_column:function:{surface_qualified_name}:{}",
@@ -377,6 +398,7 @@ fn table_function_result_column_document(
         doc_kind: CatalogDocumentKind::ColumnHint,
         owner_source_name: function.schema_name.clone(),
         source_name: function.schema_name.clone(),
+        catalog_name: None,
         surface_kind: Some(SearchSurfaceKind::TableFunction),
         surface_name: function.function_name.clone(),
         field_name: column.name.clone(),
@@ -395,8 +417,14 @@ fn table_function_result_column_document(
     });
 }
 
-fn qualified_name(schema_name: &str, surface_name: &str) -> String {
-    format!("{schema_name}.{surface_name}")
+/// Renders the addressable name a document is keyed and searched by. Two-part
+/// surfaces keep `schema.surface`; catalog-backed tables carry the catalog so
+/// two catalogs exposing the same `schema.table` stay distinct documents.
+fn qualified_name(catalog_name: Option<&str>, schema_name: &str, surface_name: &str) -> String {
+    match catalog_name {
+        Some(catalog_name) => format!("{catalog_name}.{schema_name}.{surface_name}"),
+        None => format!("{schema_name}.{surface_name}"),
+    }
 }
 
 fn join_search_text<const N: usize>(parts: [&str; N]) -> String {
@@ -422,11 +450,23 @@ fn catalog_snapshot_fingerprint(
 
     let mut tables = catalog.tables.iter().collect::<Vec<_>>();
     tables.sort_by(|left, right| {
-        (left.schema_name.as_str(), left.table_name.as_str())
-            .cmp(&(right.schema_name.as_str(), right.table_name.as_str()))
+        (
+            left.catalog_name.as_deref(),
+            left.schema_name.as_str(),
+            left.table_name.as_str(),
+        )
+            .cmp(&(
+                right.catalog_name.as_deref(),
+                right.schema_name.as_str(),
+                right.table_name.as_str(),
+            ))
     });
     for table in tables {
         update_hash(&mut hasher, "table");
+        update_hash(
+            &mut hasher,
+            table.catalog_name.as_deref().unwrap_or_default(),
+        );
         update_hash(&mut hasher, &table.schema_name);
         update_hash(&mut hasher, &table.table_name);
         update_hash(&mut hasher, &table.description);
@@ -528,6 +568,25 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_fingerprint_and_documents_include_catalog_identity() {
+        let mut first_catalog = catalog_with_table("messages");
+        first_catalog.tables[0].catalog_name = Some("primary".to_string());
+        let mut second_catalog = first_catalog.clone();
+        second_catalog.tables[0].catalog_name = Some("archive".to_string());
+
+        let first = CatalogSearchSnapshot::from_catalog(&first_catalog);
+        let second = CatalogSearchSnapshot::from_catalog(&second_catalog);
+
+        assert_ne!(first.fingerprint, second.fingerprint);
+        assert!(
+            first
+                .documents
+                .iter()
+                .all(|document| document.catalog_name.as_deref() == Some("primary"))
+        );
+    }
+
+    #[test]
     fn snapshot_fingerprint_and_documents_include_installed_source_ownership() {
         let catalog = catalog_with_table("messages");
         let first = CatalogSearchSnapshot::from_catalog_with_runtime_schema_owners(
@@ -574,6 +633,7 @@ mod tests {
     fn catalog_with_table(table_name: &str) -> CatalogInfo {
         CatalogInfo {
             tables: vec![TableInfo {
+                catalog_name: None,
                 schema_name: "fixture".to_string(),
                 table_name: table_name.to_string(),
                 description: format!("Fixture {table_name}"),

@@ -5,11 +5,11 @@
 //! The discovery document is fetched from the operator-configured issuer, but
 //! it is not treated as operator-authored: a provider that is compromised, or
 //! merely misconfigured, can put anything in it. Two checks bound what it can
-//! do. Every endpoint is re-parsed as a [`DiscoveredEndpointUrl`], which refuses
-//! a plain-HTTP downgrade the configured issuer did not already permit; and no
-//! endpoint may pre-set a query parameter this module reserves, so the document
-//! cannot pin `state`, swap `client_id`, or choose a `response_mode` that
-//! strands the authorization code short of the callback route.
+//! do. Every endpoint is re-parsed under the [`Discovered`] policy, which
+//! refuses a plain-HTTP downgrade the configured issuer did not already permit;
+//! and no endpoint may pre-set a query parameter this module reserves, so the
+//! document cannot pin `state`, swap `client_id`, or choose a `response_mode`
+//! that strands the authorization code short of the callback route.
 //!
 //! # Errors
 //!
@@ -33,7 +33,7 @@ use zeroize::Zeroizing;
 
 use super::config::{RESERVED_PROVIDER_AUTH_PARAMS, ResolvedOidcProvider};
 use super::id_token::{ValidatedOidcIdentity, validate_id_token};
-use crate::outbound_url_policy::{ConfiguredEndpointUrl, DiscoveredEndpointUrl, read_bounded_body};
+use crate::outbound_url_policy::{Configured, Discovered, EndpointUrl, read_bounded_body};
 
 /// Timeout applied to establishing a connection to the provider.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
@@ -88,7 +88,7 @@ pub(super) struct OidcAuthorizationRequest {
 /// named the token endpoint.
 pub(super) struct OidcCodeExchange {
     id_token: Zeroizing<String>,
-    jwks_uri: DiscoveredEndpointUrl,
+    jwks_uri: EndpointUrl<Discovered>,
     signing_algorithms: Vec<String>,
 }
 
@@ -100,7 +100,7 @@ impl OidcCodeExchange {
 
     /// Returns the JWKS endpoint that publishes the ID token's verification
     /// keys.
-    pub(super) fn jwks_uri(&self) -> &DiscoveredEndpointUrl {
+    pub(super) fn jwks_uri(&self) -> &EndpointUrl<Discovered> {
         &self.jwks_uri
     }
 
@@ -208,9 +208,9 @@ impl OidcProviderClient {
         code_verifier: &str,
     ) -> Result<OidcCodeExchange, OidcProviderClientError> {
         let discovery = self.discover(provider).await?;
-        let response = self
-            .http
-            .post(discovery.token_endpoint.as_url().clone())
+        let response = discovery
+            .token_endpoint
+            .post(&self.http)
             .header(ACCEPT, "application/json")
             .form(&[
                 ("grant_type", "authorization_code"),
@@ -254,9 +254,8 @@ impl OidcProviderClient {
             jwks_uri,
             signing_algorithms,
         } = exchange;
-        let response = self
-            .http
-            .get(jwks_uri.into_url())
+        let response = jwks_uri
+            .get(&self.http)
             .header(ACCEPT, "application/json")
             .send()
             .await
@@ -285,12 +284,11 @@ impl OidcProviderClient {
         &self,
         provider: &ResolvedOidcProvider,
     ) -> Result<ValidatedDiscovery, OidcProviderClientError> {
-        let issuer = ConfiguredEndpointUrl::parse(&provider.issuer)
+        let issuer = EndpointUrl::<Configured>::parse(&provider.issuer)
             .map_err(|_error| OidcProviderClientError::Discovery)?;
         let url = discovery_url(&provider.issuer)?;
-        let response = self
-            .http
-            .get(url.into_url())
+        let response = url
+            .get(&self.http)
             .header(ACCEPT, "application/json")
             .send()
             .await
@@ -345,9 +343,9 @@ impl OidcProviderClient {
 
 /// A discovery document that passed every check in [`OidcProviderClient::discover`].
 struct ValidatedDiscovery {
-    authorization_endpoint: DiscoveredEndpointUrl,
-    token_endpoint: DiscoveredEndpointUrl,
-    jwks_uri: DiscoveredEndpointUrl,
+    authorization_endpoint: EndpointUrl<Discovered>,
+    token_endpoint: EndpointUrl<Discovered>,
+    jwks_uri: EndpointUrl<Discovered>,
     signing_algorithms: Vec<String>,
 }
 
@@ -424,8 +422,8 @@ impl DiscoveredEndpoint {
 }
 
 /// Builds the well-known discovery URL for a configured issuer.
-fn discovery_url(issuer: &str) -> Result<ConfiguredEndpointUrl, OidcProviderClientError> {
-    ConfiguredEndpointUrl::parse(&format!(
+fn discovery_url(issuer: &str) -> Result<EndpointUrl<Configured>, OidcProviderClientError> {
+    EndpointUrl::<Configured>::parse(&format!(
         "{}/.well-known/openid-configuration",
         issuer.trim_end_matches('/')
     ))
@@ -434,19 +432,19 @@ fn discovery_url(issuer: &str) -> Result<ConfiguredEndpointUrl, OidcProviderClie
 
 /// Validates one endpoint out of a discovery document.
 ///
-/// Beyond the transport policy [`DiscoveredEndpointUrl`] applies, the endpoint
-/// may not arrive with surrounding whitespace, nor carry a query parameter this
-/// module reserves for the request to it.
+/// Beyond the transport policy [`Discovered`] applies, the endpoint may not
+/// arrive with surrounding whitespace, nor carry a query parameter this module
+/// reserves for the request to it.
 fn discovered_endpoint(
     endpoint: DiscoveredEndpoint,
     value: &str,
-    issuer: &ConfiguredEndpointUrl,
-) -> Result<DiscoveredEndpointUrl, OidcProviderClientError> {
+    issuer: &EndpointUrl<Configured>,
+) -> Result<EndpointUrl<Discovered>, OidcProviderClientError> {
     let label = endpoint.label();
     if value.trim() != value {
         return Err(OidcProviderClientError::InvalidEndpoint(label));
     }
-    let url = DiscoveredEndpointUrl::parse(value, issuer)
+    let url = EndpointUrl::<Discovered>::parse(value, issuer)
         .map_err(|_error| OidcProviderClientError::InvalidEndpoint(label))?;
     let reserved = url.as_url().query_pairs().any(|(key, _value)| {
         endpoint
@@ -487,7 +485,7 @@ mod tests {
              issuer = '{issuer}'
              client_id = 'provider-client'
              client_secret = '{CLIENT_SECRET}'
-             redirect_uri = 'http://localhost/callback'
+             redirect_uri = 'http://localhost/auth/oidc/callback'
              scopes = ['openid', 'email']
              [auth.provider.auth_params]
              prompt = 'login'"
@@ -538,8 +536,8 @@ mod tests {
 
     #[test]
     fn remote_issuer_cannot_discover_loopback_http_endpoints() {
-        let issuer =
-            ConfiguredEndpointUrl::parse("https://accounts.example.test/tenant").expect("issuer");
+        let issuer = EndpointUrl::<Configured>::parse("https://accounts.example.test/tenant")
+            .expect("issuer");
         for (endpoint, value) in [
             (
                 DiscoveredEndpoint::Authorization,
@@ -556,10 +554,10 @@ mod tests {
     }
 
     fn validation_exchange(server: &MockServer) -> OidcCodeExchange {
-        let issuer = ConfiguredEndpointUrl::parse(&server.uri()).expect("issuer URL");
+        let issuer = EndpointUrl::<Configured>::parse(&server.uri()).expect("issuer URL");
         OidcCodeExchange {
             id_token: Zeroizing::new(id_token(&id_token_claims())),
-            jwks_uri: DiscoveredEndpointUrl::parse(
+            jwks_uri: EndpointUrl::<Discovered>::parse(
                 &format!("{}/jwks?source=url-secret", server.uri()),
                 &issuer,
             )
@@ -606,7 +604,7 @@ mod tests {
             ("tenant", "one"),
             ("response_type", "code"),
             ("client_id", "provider-client"),
-            ("redirect_uri", "http://localhost/callback"),
+            ("redirect_uri", "http://localhost/auth/oidc/callback"),
             ("scope", "openid email"),
             ("code_challenge_method", "S256"),
             ("prompt", "login"),
@@ -804,7 +802,10 @@ mod tests {
             vec![
                 ("grant_type".into(), "authorization_code".into()),
                 ("code".into(), "provider-code".into()),
-                ("redirect_uri".into(), "http://localhost/callback".into()),
+                (
+                    "redirect_uri".into(),
+                    "http://localhost/auth/oidc/callback".into(),
+                ),
                 ("client_id".into(), "provider-client".into()),
                 ("client_secret".into(), CLIENT_SECRET.into()),
                 ("code_verifier".into(), "pkce-verifier".into()),

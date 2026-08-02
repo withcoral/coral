@@ -21,7 +21,10 @@ use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 use crate::bootstrap::AppError;
 use crate::catalog::model::CatalogResolution;
 use crate::credentials::{CredentialManager, CredentialSetId};
-use crate::functions::manager::{FunctionListing, FunctionManager, ValidatedFunctionInstall};
+use crate::functions::manager::{
+    FunctionInstallMode, FunctionListing, FunctionManager, ValidatedFunctionInstall,
+};
+use crate::functions::model::FunctionWriteSurface;
 use crate::hash::sha256_hex;
 use crate::query::QueryAttribution;
 use crate::query::extensions::{EngineExtensionsProvider, engine_extensions_for_providers};
@@ -65,6 +68,13 @@ pub(crate) enum ExecuteSqlOutcome {
 pub(crate) struct ValidatedSource {
     pub(crate) source: InstalledSource,
     pub(crate) report: SourceValidationReport,
+}
+
+#[derive(Debug)]
+pub(crate) struct AddedUserFunction {
+    pub(crate) definition: UdfRuntimeDefinition,
+    pub(crate) replaced: bool,
+    pub(crate) write_surface: FunctionWriteSurface,
 }
 
 #[derive(Clone, Copy)]
@@ -130,6 +140,10 @@ impl CatalogFailureRecorder {
 impl SourceDecorator for CatalogFailureRecorder {
     fn name(&self) -> &'static str {
         "catalog_failure_recorder"
+    }
+
+    fn supports_catalog_sources(&self) -> bool {
+        true
     }
 
     fn decorate_source(
@@ -251,11 +265,12 @@ impl QueryManager {
     pub(crate) async fn list_tables(
         &self,
         workspace_name: &WorkspaceName,
+        catalog_filter: Option<&str>,
         schema_filter: Option<&str>,
         table_filter: Option<&str>,
         attribution: &QueryAttribution,
     ) -> Result<Vec<TableInfo>, QueryManagerError> {
-        let trace_sql = list_tables_trace_sql(schema_filter, table_filter);
+        let trace_sql = list_tables_trace_sql(catalog_filter, schema_filter, table_filter);
         run_query_operation(
             QueryOperation::ListTables,
             workspace_name,
@@ -275,7 +290,7 @@ impl QueryManager {
                         SourceObservationMode::Disabled,
                     )
                     .await?;
-                Ok(runtime.list_tables(schema_filter, table_filter))
+                Ok(runtime.list_tables(catalog_filter, schema_filter, table_filter))
             },
             |tables| Some(u64::try_from(tables.len()).unwrap_or(u64::MAX)),
             |_, _| {},
@@ -286,11 +301,12 @@ impl QueryManager {
     pub(crate) async fn list_catalog(
         &self,
         workspace_name: &WorkspaceName,
+        catalog_filter: Option<&str>,
         schema_filter: Option<&str>,
         attribution: &QueryAttribution,
     ) -> Result<CatalogInfo, QueryManagerError> {
         Ok(self
-            .resolve_catalog(workspace_name, schema_filter, attribution)
+            .resolve_catalog(workspace_name, catalog_filter, schema_filter, attribution)
             .await?
             .catalog)
     }
@@ -298,10 +314,11 @@ impl QueryManager {
     pub(crate) async fn resolve_catalog(
         &self,
         workspace_name: &WorkspaceName,
+        catalog_filter: Option<&str>,
         schema_filter: Option<&str>,
         attribution: &QueryAttribution,
     ) -> Result<CatalogResolution, QueryManagerError> {
-        let trace_sql = list_catalog_trace_sql(schema_filter);
+        let trace_sql = list_catalog_trace_sql(catalog_filter, schema_filter);
         run_query_operation(
             QueryOperation::ListCatalog,
             workspace_name,
@@ -326,7 +343,7 @@ impl QueryManager {
                 let runtime_schema_owners =
                     runtime_schema_owners(&source_load.loaded).map_err(QueryManagerError::App)?;
                 Ok(CatalogResolution {
-                    catalog: runtime.list_catalog(schema_filter),
+                    catalog: runtime.list_catalog(catalog_filter, schema_filter),
                     failed_source_names,
                     runtime_schema_owners,
                 })
@@ -351,11 +368,12 @@ impl QueryManager {
     pub(crate) async fn describe_table(
         &self,
         workspace_name: &WorkspaceName,
+        catalog_name: Option<&str>,
         schema_name: &str,
         table_name: &str,
         attribution: &QueryAttribution,
     ) -> Result<DescribeTableInfo, QueryManagerError> {
-        let trace_sql = describe_table_trace_sql(schema_name, table_name);
+        let trace_sql = describe_table_trace_sql(catalog_name, schema_name, table_name);
         run_query_operation(
             QueryOperation::DescribeTable,
             workspace_name,
@@ -375,7 +393,7 @@ impl QueryManager {
                         SourceObservationMode::Disabled,
                     )
                     .await?;
-                Ok(runtime.describe_table(schema_name, table_name))
+                Ok(runtime.describe_table(catalog_name, schema_name, table_name))
             },
             |_| None,
             |_, _| {},
@@ -414,8 +432,13 @@ impl QueryManager {
                     .await
                     .map_err(QueryManagerError::Core)?;
                 if let Some(shown_guide_ids) = shown_guide_ids {
-                    let required_guides =
-                        required_query_guides(&runtime.list_catalog(None), prepared.resources());
+                    // Unfiltered on both qualifiers: a required guide has to be
+                    // found wherever the query's tables live, including
+                    // catalog-backed sources.
+                    let required_guides = required_query_guides(
+                        &runtime.list_catalog(None, None),
+                        prepared.resources(),
+                    );
                     let unseen_guides = required_guides
                         .into_iter()
                         .filter(|guide| !shown_guide_ids.contains(&guide.guide_id))
@@ -793,7 +816,9 @@ impl QueryManager {
         &self,
         workspace_name: &WorkspaceName,
         raw_sql: &str,
-    ) -> Result<UdfRuntimeDefinition, QueryManagerError> {
+        mode: FunctionInstallMode,
+        write_surface: FunctionWriteSurface,
+    ) -> Result<AddedUserFunction, QueryManagerError> {
         for _ in 0..2 {
             let revision = self.lifecycle_lock.snapshot_async().await.revision();
             self.require_workspace(workspace_name)
@@ -820,11 +845,19 @@ impl QueryManager {
                     raw_sql,
                     &runtime_function,
                     revision,
+                    mode,
+                    write_surface,
                 )
                 .await
                 .map_err(QueryManagerError::App)?
             {
-                ValidatedFunctionInstall::Installed => return Ok(runtime_function),
+                ValidatedFunctionInstall::Installed { replaced } => {
+                    return Ok(AddedUserFunction {
+                        definition: runtime_function,
+                        replaced,
+                        write_surface,
+                    });
+                }
                 ValidatedFunctionInstall::WorkspaceChanged => {}
             }
         }
@@ -1033,24 +1066,43 @@ impl QueryOperation {
     }
 }
 
-fn list_tables_trace_sql(schema_filter: Option<&str>, table_filter: Option<&str>) -> String {
-    match (schema_filter, table_filter) {
-        (Some(schema), Some(table)) => format!("LIST TABLES {schema}.{table}"),
-        (Some(schema), None) => format!("LIST TABLES {schema}.*"),
-        (None, Some(table)) => format!("LIST TABLES *.{table}"),
-        (None, None) => "LIST TABLES *.*".to_string(),
+fn list_tables_trace_sql(
+    catalog_filter: Option<&str>,
+    schema_filter: Option<&str>,
+    table_filter: Option<&str>,
+) -> String {
+    match (catalog_filter, schema_filter, table_filter) {
+        (Some(catalog), Some(schema), Some(table)) => {
+            format!("LIST TABLES {catalog}.{schema}.{table}")
+        }
+        (Some(catalog), Some(schema), None) => format!("LIST TABLES {catalog}.{schema}.*"),
+        (None, Some(schema), Some(table)) => format!("LIST TABLES {schema}.{table}"),
+        (None, Some(schema), None) => format!("LIST TABLES {schema}.*"),
+        (Some(catalog), None, Some(table)) => format!("LIST TABLES {catalog}.*.{table}"),
+        (Some(catalog), None, None) => format!("LIST TABLES {catalog}.*.*"),
+        (None, None, Some(table)) => format!("LIST TABLES *.{table}"),
+        (None, None, None) => "LIST TABLES *.*".to_string(),
     }
 }
 
-fn list_catalog_trace_sql(schema_filter: Option<&str>) -> String {
-    match schema_filter {
-        Some(schema) => format!("LIST CATALOG {schema}"),
-        None => "LIST CATALOG".to_string(),
+fn list_catalog_trace_sql(catalog_filter: Option<&str>, schema_filter: Option<&str>) -> String {
+    match (catalog_filter, schema_filter) {
+        (Some(catalog), Some(schema)) => format!("LIST CATALOG {catalog}.{schema}"),
+        (Some(catalog), None) => format!("LIST CATALOG {catalog}.*"),
+        (None, Some(schema)) => format!("LIST CATALOG {schema}"),
+        (None, None) => "LIST CATALOG".to_string(),
     }
 }
 
-fn describe_table_trace_sql(schema_name: &str, table_name: &str) -> String {
-    format!("DESCRIBE TABLE {schema_name}.{table_name}")
+fn describe_table_trace_sql(
+    catalog_name: Option<&str>,
+    schema_name: &str,
+    table_name: &str,
+) -> String {
+    catalog_name.map_or_else(
+        || format!("DESCRIBE TABLE {schema_name}.{table_name}"),
+        |catalog| format!("DESCRIBE TABLE {catalog}.{schema_name}.{table_name}"),
+    )
 }
 
 async fn run_query_operation<T, Fut, RowCount>(
@@ -1146,6 +1198,7 @@ fn record_query_provenance(span: &tracing::Span, provenance: &QueryExecutionProv
             .map(|table| {
                 json!({
                     "source_name": table.source_name(),
+                    "catalog_name": table.catalog_name(),
                     "schema_name": table.schema_name(),
                     "table_name": table.table_name(),
                 })
@@ -1206,6 +1259,7 @@ fn app_error_type(error: &AppError) -> &'static str {
         AppError::Unauthenticated(_) => "UNAUTHENTICATED",
         AppError::SourceNotFound(_) => "SOURCE_NOT_FOUND",
         AppError::FunctionNotFound(_) => "FUNCTION_NOT_FOUND",
+        AppError::FunctionAlreadyExists(_) => "FUNCTION_ALREADY_EXISTS",
         AppError::WorkspaceNotFound(_) => "WORKSPACE_NOT_FOUND",
         AppError::WorkspaceAlreadyExists(_) => "WORKSPACE_ALREADY_EXISTS",
         AppError::InvalidInput(_) => "INVALID_INPUT",
@@ -1580,7 +1634,10 @@ mod tests {
         );
         let resources = ResolvedQueryResources::new(
             vec!["github".to_string()],
-            vec![QueryTableUsage::new("github", "github", "issues")],
+            vec![
+                QueryTableUsage::new("github", None, "github", "issues"),
+                QueryTableUsage::new("warehouse", Some("warehouse"), "public", "users"),
+            ],
             vec![QueryTableFunctionUsage::new(
                 "github",
                 "github",
@@ -1603,10 +1660,12 @@ mod tests {
             span_attr(query_span, crate::telemetry::QUERY_TRACE_SOURCES_ATTR),
             Some(r#"["github"]"#.to_string())
         );
+        // A catalog-backed table records its catalog: `(schema, table)` alone
+        // would merge two databases that both expose `public.users`.
         assert_eq!(
             span_attr(query_span, crate::telemetry::QUERY_TRACE_TABLES_ATTR),
             Some(
-                r#"[{"source_name":"github","schema_name":"github","table_name":"issues"}]"#
+                r#"[{"source_name":"github","catalog_name":null,"schema_name":"github","table_name":"issues"},{"source_name":"warehouse","catalog_name":"warehouse","schema_name":"public","table_name":"users"}]"#
                     .to_string()
             )
         );
@@ -1637,6 +1696,7 @@ mod tests {
                 request_context,
                 ListCatalogRequest {
                     workspace: Some(default_workspace_proto()),
+                    catalog_name: String::new(),
                     schema_name: String::new(),
                     kind: 0,
                     pagination: Some(PaginationRequest {
@@ -1651,6 +1711,7 @@ mod tests {
                 request_context,
                 SearchCatalogRequest {
                     workspace: Some(default_workspace_proto()),
+                    catalog_name: String::new(),
                     pattern: "tables".to_string(),
                     ignore_case: true,
                     schema_name: String::new(),
@@ -1667,6 +1728,7 @@ mod tests {
                 request_context,
                 DescribeTableRequest {
                     workspace: Some(default_workspace_proto()),
+                    catalog_name: String::new(),
                     schema_name: "coral".to_string(),
                     table_name: "tables".to_string(),
                 },
@@ -1677,6 +1739,7 @@ mod tests {
                 request_context,
                 ListColumnsRequest {
                     workspace: Some(default_workspace_proto()),
+                    catalog_name: String::new(),
                     schema_name: "coral".to_string(),
                     table_name: "tables".to_string(),
                     pattern: None,
@@ -2572,7 +2635,12 @@ select text from function_demo.messages
 
         let error = fixture
             .manager
-            .add_user_function(&workspace_name, function_sql)
+            .add_user_function(
+                &workspace_name,
+                function_sql,
+                FunctionInstallMode::ReplaceExisting,
+                FunctionWriteSurface::Unknown,
+            )
             .await
             .expect_err("source change should invalidate the original validation snapshot");
 
@@ -2638,6 +2706,7 @@ where type = $kind
             .manager
             .list_catalog(
                 &workspace_name,
+                None,
                 Some("functions"),
                 &QueryAttribution::default(),
             )
@@ -2879,7 +2948,7 @@ tables:
 
         let resolution = fixture
             .manager
-            .resolve_catalog(&workspace_name, None, &QueryAttribution::default())
+            .resolve_catalog(&workspace_name, None, None, &QueryAttribution::default())
             .await
             .expect("healthy catalog should survive one source load failure");
 
@@ -2910,7 +2979,7 @@ tables:
 
         let resolution = fixture
             .manager
-            .resolve_catalog(&workspace_name, None, &QueryAttribution::default())
+            .resolve_catalog(&workspace_name, None, None, &QueryAttribution::default())
             .await
             .expect("healthy catalog should survive one registration failure");
 

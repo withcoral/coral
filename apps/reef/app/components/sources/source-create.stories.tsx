@@ -15,6 +15,7 @@ const DISCOVERY = {
   description: 'Weather observations and forecasts',
   format: 'openapi-yaml' as const,
   name: 'weather_api',
+  serverUrl: 'https://weather.example/v1',
   status: 'success' as const,
   url: 'https://weather.example/openapi.yaml',
 }

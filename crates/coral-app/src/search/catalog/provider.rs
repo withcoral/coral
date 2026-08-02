@@ -562,6 +562,7 @@ fn record_retrieval_limit(limited: &Arc<AtomicBool>, retrieval_limited: bool) {
 
 fn surface_id(hit: &CatalogSearchHit) -> Option<SearchSurfaceId> {
     surface_kind_from_str(&hit.surface_kind).map(|kind| SearchSurfaceId {
+        catalog_name: hit.catalog_name.clone(),
         schema_name: hit.source_name.clone(),
         name: hit.surface_name.clone(),
         kind,
@@ -586,14 +587,21 @@ pub(crate) fn resolve_entry(
     catalog: &CatalogInfo,
     id: &SearchSurfaceId,
     evidence: &MatchEvidence,
+    providers: &BTreeSet<SearchProviderKind>,
 ) -> Option<SearchResult> {
+    let id = resolve_surface_id(catalog, id)?;
     let (surface, omitted) = match id.kind {
         SearchSurfaceKind::Table => {
-            let table = find_table(catalog, &id.schema_name, &id.name)?;
+            let table = find_table(
+                catalog,
+                id.catalog_name.as_deref(),
+                &id.schema_name,
+                &id.name,
+            )?;
             let (fields, omitted) = table_fields(table, evidence);
             (
                 CatalogSurface {
-                    id: id.clone(),
+                    id,
                     description: table.description.clone(),
                     guide: table.guide.clone(),
                     shape: SurfaceShape::Table { fields },
@@ -606,7 +614,7 @@ pub(crate) fn resolve_entry(
             let (arguments, returns, omitted) = function_fields(function, evidence);
             (
                 CatalogSurface {
-                    id: id.clone(),
+                    id,
                     description: function.description.clone(),
                     guide: function.guide.clone(),
                     shape: SurfaceShape::Function { arguments, returns },
@@ -617,9 +625,65 @@ pub(crate) fn resolve_entry(
     };
     Some(SearchResult {
         surface,
+        providers: providers.iter().copied().collect(),
         matching_values: evidence.matching_values.clone(),
         omitted_matching_field_count: u32::try_from(omitted).unwrap_or(u32::MAX),
     })
+}
+
+/// Resolves a retriever identity to the catalog's canonical SQL identity.
+///
+/// Observed-value records created before catalog-qualified discovery do not
+/// carry a catalog name. They can still map safely when the schema/table pair
+/// is unique; ambiguous pairs stay unresolved and are not returned.
+pub(crate) fn resolve_surface_id(
+    catalog: &CatalogInfo,
+    id: &SearchSurfaceId,
+) -> Option<SearchSurfaceId> {
+    match id.kind {
+        SearchSurfaceKind::Table => {
+            let table = find_table(
+                catalog,
+                id.catalog_name.as_deref(),
+                &id.schema_name,
+                &id.name,
+            )
+            .or_else(|| {
+                id.catalog_name
+                    .is_none()
+                    .then(|| unique_catalog_table(catalog, &id.schema_name, &id.name))
+                    .flatten()
+            })?;
+            Some(SearchSurfaceId {
+                catalog_name: table.catalog_name.clone(),
+                schema_name: table.schema_name.clone(),
+                name: table.table_name.clone(),
+                kind: SearchSurfaceKind::Table,
+            })
+        }
+        SearchSurfaceKind::TableFunction => {
+            let function = find_function(catalog, &id.schema_name, &id.name)?;
+            Some(SearchSurfaceId {
+                catalog_name: None,
+                schema_name: function.schema_name.clone(),
+                name: function.function_name.clone(),
+                kind: SearchSurfaceKind::TableFunction,
+            })
+        }
+    }
+}
+
+fn unique_catalog_table<'a>(
+    catalog: &'a CatalogInfo,
+    schema_name: &str,
+    table_name: &str,
+) -> Option<&'a TableInfo> {
+    let mut matches = catalog
+        .tables
+        .iter()
+        .filter(|table| table.schema_name == schema_name && table.table_name == table_name);
+    let first = matches.next()?;
+    matches.next().is_none().then_some(first)
 }
 
 /// Required filters always appear; they do not consume a matching-field slot,
@@ -719,13 +783,15 @@ fn function_fields(
 
 fn find_table<'a>(
     catalog: &'a CatalogInfo,
+    catalog_name: Option<&str>,
     schema_name: &str,
     table_name: &str,
 ) -> Option<&'a TableInfo> {
-    catalog
-        .tables
-        .iter()
-        .find(|table| table.schema_name == schema_name && table.table_name == table_name)
+    catalog.tables.iter().find(|table| {
+        table.catalog_name.as_deref() == catalog_name
+            && table.schema_name == schema_name
+            && table.table_name == table_name
+    })
 }
 
 fn find_function<'a>(
@@ -751,5 +817,57 @@ fn catalog_index_failure(error: &SqliteSearchError) -> ProviderFailure {
         state: SearchProviderState::Error,
         note: format!("catalog metadata search index is unavailable: {error}"),
         coverage: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use coral_engine::{CatalogInfo, TableInfo};
+
+    use super::resolve_surface_id;
+    use crate::search::result::{SearchSurfaceId, SearchSurfaceKind};
+
+    #[test]
+    fn unqualified_identity_resolves_one_catalog_backed_table() {
+        let catalog = CatalogInfo {
+            tables: vec![table(Some("warehouse"))],
+            table_functions: Vec::new(),
+        };
+
+        let resolved = resolve_surface_id(&catalog, &unqualified_id()).expect("unique table");
+
+        assert_eq!(resolved.catalog_name.as_deref(), Some("warehouse"));
+    }
+
+    #[test]
+    fn unqualified_identity_rejects_ambiguous_catalog_backed_tables() {
+        let catalog = CatalogInfo {
+            tables: vec![table(Some("primary")), table(Some("archive"))],
+            table_functions: Vec::new(),
+        };
+
+        assert!(resolve_surface_id(&catalog, &unqualified_id()).is_none());
+    }
+
+    fn table(catalog_name: Option<&str>) -> TableInfo {
+        TableInfo {
+            catalog_name: catalog_name.map(str::to_string),
+            schema_name: "analytics".to_string(),
+            table_name: "events".to_string(),
+            description: String::new(),
+            guide: String::new(),
+            require_guide_read: false,
+            columns: Vec::new(),
+            required_filters: Vec::new(),
+        }
+    }
+
+    fn unqualified_id() -> SearchSurfaceId {
+        SearchSurfaceId {
+            catalog_name: None,
+            schema_name: "analytics".to_string(),
+            name: "events".to_string(),
+            kind: SearchSurfaceKind::Table,
+        }
     }
 }

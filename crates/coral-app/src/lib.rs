@@ -46,6 +46,7 @@ mod auth;
 pub mod bootstrap;
 mod catalog;
 mod credentials;
+mod encrypted_document;
 pub mod features;
 mod feedback;
 mod functions;

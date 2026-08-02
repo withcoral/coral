@@ -270,6 +270,7 @@ pub(crate) struct CatalogSearchHit {
     #[cfg_attr(not(test), expect(dead_code, reason = "read by index tests only"))]
     pub(crate) doc_id: String,
     pub(crate) source_name: String,
+    pub(crate) catalog_name: Option<String>,
     pub(crate) surface_kind: String,
     pub(crate) surface_name: String,
     pub(crate) field_name: String,
@@ -630,6 +631,7 @@ fn fts_search(
             f.qualified_name,
             f.description,
             f.searchable_text
+            , d.payload_json
         FROM catalog_documents_fts f
         JOIN catalog_documents d
             ON d.workspace = f.workspace AND d.doc_id = f.doc_id
@@ -670,10 +672,23 @@ fn hit_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CatalogSearchHit> {
     let surface_kind = surface_kind_from_storage(&surface_kind_raw)?;
     let field_role_raw: String = row.get(6)?;
     let field_role = field_role_from_storage(&field_role_raw)?;
+    let payload_json: String = row.get(14)?;
+    let catalog_name = if payload_json == "{}" {
+        None
+    } else {
+        serde_json::from_str::<Option<String>>(&payload_json).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                14,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })?
+    };
 
     Ok(CatalogSearchHit {
         doc_id: row.get(0)?,
         source_name: row.get(2)?,
+        catalog_name,
         surface_kind,
         surface_name: row.get(4)?,
         field_name: row.get(5)?,

@@ -11,7 +11,7 @@ use crate::v4::ir::{
 };
 use crate::v4::lookup_keys::infer_rest_lookup_keys;
 use crate::v4::naming::normalize_identifier;
-use crate::v4::response_cursors::find_response_cursor_path;
+use crate::v4::response_cursors::{StringTypeRequirement, find_response_cursor_path};
 use crate::v4::surfaces::json_schema::{
     json_schema_default_to_string, json_schema_scalar_type_or_string, json_schema_type_contains,
     json_schema_type_display,
@@ -53,7 +53,7 @@ impl OpenApiImporter<'_> {
         let contract = detect_pagination_contract(self.document, &parameters, &pagination_context);
         let row_path = self.infer_row_path(
             raw_operation_id.unwrap_or(&operation_id),
-            contract.as_ref().is_some_and(binds_pagination_input),
+            contract.as_ref().is_some_and(signals_page_envelope),
             &pagination_context,
             &output,
         );
@@ -361,23 +361,46 @@ fn detect_pagination_contract(
     context: &OpenApiResponsePaginationContext,
 ) -> Option<PaginationSpec> {
     detect_link_header_pagination(inputs, context)
+        .or_else(|| detect_next_url_body_pagination(document, inputs, context))
         .or_else(|| detect_cursor_query_pagination(document, inputs, context))
         .or_else(|| detect_offset_pagination(inputs))
         .or_else(|| detect_page_pagination(inputs))
 }
 
-/// Whether a detected contract binds any request input.
+/// Whether a detected contract is evidence that the response is a page
+/// envelope.
 ///
-/// Only this narrower question is envelope evidence. `Link` header detection
-/// reads no input at all, and providers declare that header on singleton
-/// resources too — GitHub does, on `GET /orgs/{org}/actions/hosted-runners/{id}`
-/// among others. Treating a bare header as evidence would promote a resource's
-/// incidental array, such as that runner's `public_ips`, to the whole relation.
-fn binds_pagination_input(contract: &PaginationSpec) -> bool {
+/// Two signals qualify. Binding a request input — a cursor, offset, page, or
+/// page-size parameter — says the caller can ask for another page. A next-page
+/// URL *at the response root* says the response hands one back unprompted; that
+/// path comes out of this operation's own response schema, so it is evidence
+/// about this response rather than about the API at large. Graph needs the
+/// second signal: `{"@odata.nextLink": ..., "value": [...]}` on an operation
+/// that declares no `$top` binds nothing at all.
+///
+/// Root-only is the whole point of the length test. `find_response_cursor_path`
+/// descends into nested objects up to depth 8, but what this unlocks —
+/// `accept_fallback` in `infer_wrapped_list_row_path` — applies at the root, so
+/// deep evidence would answer a question it was not asked. A singleton
+/// `GET /tracks/{id}` returning `{id, tags: [...], links: {next_href}}` matches
+/// `nexthref` two levels down; counting that would fire the sole-array fallback
+/// and promote `tags` to the whole relation, discarding the declared resource.
+/// Both shapes this exists for — `@odata.nextLink` and Stripe's
+/// `next_page_url` — sit at the root as single segments, and a legitimate
+/// `{data, meta: {next_url}}` still qualifies through `meta` in the
+/// metadata-object lexicon.
+///
+/// A bare `Link` header is neither. It reads no input, and providers declare
+/// that header on singleton resources too — GitHub does, on
+/// `GET /orgs/{org}/actions/hosted-runners/{id}` among others. Treating it as
+/// evidence would promote a resource's incidental array, such as that runner's
+/// `public_ips`, to the whole relation.
+fn signals_page_envelope(contract: &PaginationSpec) -> bool {
     contract.cursor_param.is_some()
         || contract.offset_param.is_some()
         || contract.page_param.is_some()
         || contract.page_size.is_some()
+        || contract.next_url_path.len() == 1
 }
 
 fn detect_link_header_pagination(
@@ -396,6 +419,63 @@ fn detect_link_header_pagination(
         page_param: page_input.map(|input| input.name.clone()),
         page_start: page_input.and_then(numeric_input_default).unwrap_or(1),
         next_url_header,
+        ..PaginationSpec::default()
+    })
+}
+
+/// Detects a response body that hands back the complete URL of the next page,
+/// as `OData` does with `@odata.nextLink`.
+///
+/// Ranked above cursor-query and offset detection because a whole URL is
+/// unambiguous: there is no guessing which request parameter a token belongs
+/// in, and no risk of driving the endpoint with a parameter it rejects. Graph
+/// declares `$skip` on collections that reject it at runtime, so that ordering
+/// is load-bearing, not a preference. It stays below `Link` header detection,
+/// which is a declared, cheaper signal.
+///
+/// Outranking the input-corroborated modes is what makes
+/// [`StringTypeRequirement::Declared`] necessary. Every other detector has a
+/// second signal — a matching cursor, offset or page parameter — so a name-only
+/// false positive costs them nothing. This one commits on the name alone, and
+/// if the property does not hold a string `Value::as_str` reads `None` at
+/// runtime, pagination stops, and the query returns page one with no error and
+/// no diagnostic, where offset pagination would have fetched everything.
+/// Requiring the descriptor to declare `string` is the second signal.
+fn detect_next_url_body_pagination(
+    document: &Value,
+    inputs: &[IrOperationInput],
+    context: &OpenApiResponsePaginationContext,
+) -> Option<PaginationSpec> {
+    /// Response property names that carry a whole URL rather than a token.
+    ///
+    /// Deliberately narrower than `RESPONSE_NEXT_URL_HEADER_TOKENS`, which
+    /// accepts bare `next`/`nextpage`. A *header* called `Next` is nearly
+    /// always a URL; a *body field* called `next` is very often a continuation
+    /// token, and those must keep falling through to cursor-query detection so
+    /// they end up in the request parameter that expects them. Resist
+    /// harmonising the two lists.
+    const RESPONSE_NEXT_URL_BODY_TOKENS: &[&str] = &[
+        "odatanextlink",
+        "nextlink",
+        "nexturl",
+        "nexturi",
+        "nextpageurl",
+        "nextpageuri",
+        "nextpagelink",
+        "nextpagehref",
+        "nexthref",
+    ];
+
+    let next_url_path = find_response_cursor_path(
+        document,
+        &context.schema,
+        RESPONSE_NEXT_URL_BODY_TOKENS,
+        StringTypeRequirement::Declared,
+    )?;
+    Some(PaginationSpec {
+        mode: PaginationMode::NextUrlBody,
+        page_size: detect_page_size(inputs),
+        next_url_path,
         ..PaginationSpec::default()
     })
 }
@@ -448,9 +528,16 @@ fn detect_cursor_query_pagination(
     // The pagination context holds the response schema with only its own `$ref`
     // resolved, so the document is still needed to see inside a referenced
     // metadata sibling.
-    let response_cursor_path =
-        find_response_cursor_path(document, &context.schema, RESPONSE_CURSOR_TOKENS)
-            .unwrap_or_default();
+    // Permissive about the declared type, unlike body next-URL detection: this
+    // detector has already found a cursor query parameter to corroborate the
+    // name, and descriptors routinely leave envelope metadata untyped.
+    let response_cursor_path = find_response_cursor_path(
+        document,
+        &context.schema,
+        RESPONSE_CURSOR_TOKENS,
+        StringTypeRequirement::Untyped,
+    )
+    .unwrap_or_default();
     let response_cursor_header = response_cursor_header(context);
     if response_cursor_path.is_empty() && response_cursor_header.is_none() {
         return None;

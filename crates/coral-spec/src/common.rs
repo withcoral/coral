@@ -19,7 +19,11 @@ use serde_json::Value;
 
 use crate::{ManifestError, ParsedTemplate, Result};
 
-const RESERVED_SOURCE_SCHEMA_NAMES: &[&str] = &["coral", "coral_admin", "public"];
+/// Source SQL names the runtime owns. Kept in step with `RESERVED_SCHEMA_NAMES`
+/// in `coral-engine`'s registry: a name the engine refuses at registration has
+/// to fail manifest validation too, or the manifest validator accepts a source
+/// that can never register.
+const RESERVED_SOURCE_SCHEMA_NAMES: &[&str] = &["coral", "coral_admin", "datafusion", "public"];
 
 /// Arrow field metadata key marking a source-authored column as excluded from
 /// observed-value indexing.
@@ -58,7 +62,13 @@ pub(crate) fn validate_source_name(name: &str) -> Result<()> {
 }
 
 pub(crate) fn validate_reserved_source_schema_name(name: &str, label: &str) -> Result<()> {
-    if RESERVED_SOURCE_SCHEMA_NAMES.contains(&name) {
+    // Case-insensitive: legacy (pre-v4) manifests are not held to v4's
+    // `[a-z][a-z0-9_]*` rule, so `DataFusion` would otherwise pass validation
+    // while the runtime still treats that spelling as its default catalog.
+    if RESERVED_SOURCE_SCHEMA_NAMES
+        .iter()
+        .any(|reserved| reserved.eq_ignore_ascii_case(name))
+    {
         return Err(ManifestError::validation(format!(
             "{label} '{name}' is reserved and cannot be used by manifests"
         )));
@@ -718,6 +728,14 @@ pub struct PaginationSpec {
     pub link_header_require_results: bool,
     #[serde(default)]
     pub next_url_header: Option<String>,
+    /// Path to a response-body property holding the complete URL of the next
+    /// page, as `OData`'s `@odata.nextLink` does.
+    ///
+    /// Distinct from [`Self::response_cursor_path`]: that path yields a token
+    /// to place into a request parameter, this one yields a URL to request as
+    /// it stands.
+    #[serde(default)]
+    pub next_url_path: Vec<String>,
     #[serde(default)]
     pub max_pages: Option<usize>,
 }
@@ -739,6 +757,7 @@ impl Default for PaginationSpec {
             offset_step: None,
             link_header_require_results: false,
             next_url_header: None,
+            next_url_path: Vec::new(),
             max_pages: None,
         }
     }
@@ -771,6 +790,40 @@ pub enum ValidatedPaginationMode {
     Page,
     Offset(OffsetPagination),
     LinkHeader,
+    NextUrlBody(NextUrlBodyPagination),
+}
+
+impl ValidatedPaginationMode {
+    /// Whether this mode advances by requesting a complete URL the response
+    /// supplied, rather than by mutating the request Coral built.
+    ///
+    /// The fetch loop asks this instead of testing variants, so that a mode
+    /// added later either follows its next URL or is a deliberate omission at
+    /// this one site — a `matches!` per call site would silently answer "no"
+    /// and quietly stop after page one.
+    #[must_use]
+    pub fn follows_response_next_url(&self) -> bool {
+        match self {
+            Self::LinkHeader | Self::Auto | Self::NextUrlBody(_) => true,
+            Self::None | Self::CursorQuery | Self::CursorBody | Self::Page | Self::Offset(_) => {
+                false
+            }
+        }
+    }
+}
+
+/// Validated settings for following a next-page URL out of a response body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NextUrlBodyPagination {
+    path: Vec<String>,
+}
+
+impl NextUrlBodyPagination {
+    /// Path from the response root to the property holding the next-page URL.
+    #[must_use]
+    pub fn path(&self) -> &[String] {
+        &self.path
+    }
 }
 
 /// Validated typed offset-pagination settings.
@@ -911,7 +964,34 @@ impl PaginationSpec {
                 }))
             }
             PaginationMode::LinkHeader => Ok(ValidatedPaginationMode::LinkHeader),
+            PaginationMode::NextUrlBody => self.validated_next_url_body_mode(schema, table),
         }
+    }
+
+    fn validated_next_url_body_mode(
+        &self,
+        schema: &str,
+        table: &str,
+    ) -> Result<ValidatedPaginationMode> {
+        if self.next_url_path.is_empty() {
+            return Err(ManifestError::validation(format!(
+                "{schema}.{table} pagination.mode=next_url_body requires next_url_path"
+            )));
+        }
+        if self
+            .next_url_path
+            .iter()
+            .any(|segment| segment.trim().is_empty() || segment.trim() != segment)
+        {
+            return Err(ManifestError::validation(format!(
+                "{schema}.{table} pagination.next_url_path segments must not be blank or padded"
+            )));
+        }
+        Ok(ValidatedPaginationMode::NextUrlBody(
+            NextUrlBodyPagination {
+                path: self.next_url_path.clone(),
+            },
+        ))
     }
 
     fn validated_page_size(&self, schema: &str, table: &str) -> Result<Option<PageSizeSpec>> {
@@ -973,6 +1053,7 @@ pub enum PaginationMode {
     Page,
     Offset,
     LinkHeader,
+    NextUrlBody,
 }
 
 /// Page-size settings shared by several pagination modes.
@@ -1532,6 +1613,55 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("demo.items pagination.next_url_header must not be empty")
+        );
+    }
+
+    #[test]
+    fn next_url_body_pagination_requires_a_usable_path() {
+        for (next_url_path, expected) in [
+            (
+                Vec::new(),
+                "demo.items pagination.mode=next_url_body requires next_url_path",
+            ),
+            (
+                vec!["  ".to_string()],
+                "demo.items pagination.next_url_path segments must not be blank or padded",
+            ),
+            (
+                vec![" @odata.nextLink".to_string()],
+                "demo.items pagination.next_url_path segments must not be blank or padded",
+            ),
+        ] {
+            let pagination = PaginationSpec {
+                mode: PaginationMode::NextUrlBody,
+                next_url_path,
+                ..PaginationSpec::default()
+            };
+
+            let err = pagination.validated("demo", "items").unwrap_err();
+            assert!(
+                err.to_string().contains(expected),
+                "expected {expected:?}, got {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn next_url_body_pagination_carries_its_path_into_the_validated_mode() {
+        let pagination = PaginationSpec {
+            mode: PaginationMode::NextUrlBody,
+            next_url_path: vec!["@odata.nextLink".to_string()],
+            ..PaginationSpec::default()
+        };
+
+        let validated = pagination.validated("demo", "items").expect("validated");
+        let ValidatedPaginationMode::NextUrlBody(next_url_body) = &validated.mode else {
+            panic!("expected next_url_body mode, got {:?}", validated.mode);
+        };
+        assert_eq!(next_url_body.path(), ["@odata.nextLink"]);
+        assert!(
+            validated.mode.follows_response_next_url(),
+            "the fetch loop must be told to request the URL rather than rebuild the request"
         );
     }
 

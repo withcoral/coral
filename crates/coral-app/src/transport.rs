@@ -378,6 +378,7 @@ pub(crate) fn table_to_proto(
 
     Table {
         workspace: Some(workspace_to_proto(workspace_name)),
+        catalog_name: table.catalog_name.unwrap_or_default(),
         schema_name: table.schema_name,
         name: table.table_name,
         description: table.description,
@@ -393,6 +394,7 @@ pub(crate) fn table_summary_to_proto(
 ) -> TableSummary {
     TableSummary {
         workspace: Some(workspace_to_proto(workspace_name)),
+        catalog_name: table.catalog_name.unwrap_or_default(),
         schema_name: table.schema_name,
         name: table.table_name,
         description: table.description,
@@ -454,6 +456,7 @@ pub(crate) fn table_function_to_proto(
                 name: argument.name,
                 required: argument.required,
                 values: argument.values,
+                data_type: argument.data_type,
             })
             .collect(),
         result_columns: function
@@ -905,6 +908,7 @@ mod tests {
     fn table_to_proto_preserves_table_metadata() {
         let workspace_name = WorkspaceName::parse("default").expect("workspace");
         let table = TableInfo {
+            catalog_name: None,
             schema_name: "demo".to_string(),
             table_name: "users".to_string(),
             description: "User records".to_string(),
@@ -944,6 +948,7 @@ mod tests {
     fn table_summary_to_proto_preserves_table_metadata_without_columns() {
         let workspace_name = WorkspaceName::parse("default").expect("workspace");
         let table = TableInfo {
+            catalog_name: None,
             schema_name: "demo".to_string(),
             table_name: "users".to_string(),
             description: "User records".to_string(),
@@ -1000,6 +1005,7 @@ mod tests {
         assert_eq!(proto.guide, "Prefer search for record lookup.");
         assert_eq!(proto.arguments.len(), 1);
         assert_eq!(proto.arguments[0].name, "payload");
+        assert_eq!(proto.arguments[0].data_type, "Utf8");
         assert!(proto.arguments[0].required);
         assert!(proto.arguments[0].values.is_empty());
     }

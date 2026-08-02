@@ -50,6 +50,10 @@ impl SourceDecorator for PausingCatalogDecorator {
         "pausing_catalog_resolution"
     }
 
+    fn supports_catalog_sources(&self) -> bool {
+        true
+    }
+
     fn prepare(&mut self, _selected_sources: &[QuerySource]) -> Result<(), SourceDecoratorError> {
         let Some(pause) = self.pause.take() else {
             return Ok(());
@@ -141,6 +145,7 @@ async fn list_catalog_item(
         .catalog_client()
         .list_catalog(Request::new(ListCatalogRequest {
             workspace: Some(workspace.clone()),
+            catalog_name: String::new(),
             schema_name: schema_name.to_string(),
             kind: kind as i32,
             pagination: Some(PaginationRequest {
@@ -273,6 +278,8 @@ async fn search_and_list_catalog_share_installed_udf_metadata() {
         .add_function(Request::new(AddFunctionRequest {
             workspace: Some(workspace.clone()),
             sql: review_queue_function_sql(),
+            fail_if_exists: false,
+            write_surface: 0,
         }))
         .await
         .expect("add review queue function");
@@ -328,6 +335,8 @@ async fn natural_language_review_queue_query_ranks_installed_udf_in_top_three() 
         .add_function(Request::new(AddFunctionRequest {
             workspace: Some(default_workspace()),
             sql: review_queue_function_sql(),
+            fail_if_exists: false,
+            write_surface: 0,
         }))
         .await
         .expect("add review queue function");

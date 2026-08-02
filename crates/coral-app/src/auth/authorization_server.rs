@@ -1,5 +1,6 @@
 //! HTTP lifecycle for Coral's authorization server.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,12 +13,20 @@ use axum::routing::get;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
+use url::Position;
 
+use super::OIDC_CALLBACK_PATH;
 use super::config::{AuthSettings, ResolvedAuthSettings, signing_key_env_error};
 use super::error::AuthServerError;
 use super::provider_client::OidcProviderClient;
 use super::session::SessionTokenIssuer;
 use super::state_store::{InMemoryStateStore, StateStore};
+use crate::outbound_url_policy::{EndpointUrl, ResourceIdentifier};
+
+mod authorize;
+mod callback;
+mod query;
+mod response;
 
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -26,6 +35,8 @@ pub struct CoralAuthorizationServer {
     settings: Arc<ResolvedAuthSettings>,
     session_tokens: SessionTokenIssuer,
     state_store: Arc<dyn StateStore>,
+    registered_clients: Arc<BTreeMap<String, Vec<String>>>,
+    authorization_resources: BTreeSet<String>,
 }
 
 impl CoralAuthorizationServer {
@@ -74,13 +85,37 @@ impl CoralAuthorizationServer {
             settings: Arc::new(settings),
             session_tokens,
             state_store: Arc::new(InMemoryStateStore::new()),
+            registered_clients: Arc::new(BTreeMap::new()),
+            authorization_resources: BTreeSet::new(),
         }
+    }
+
+    /// Registers a resource identifier that authorization requests may target.
+    ///
+    /// Call this once for each public resource server that shares this
+    /// authorization server.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `resource` is not an HTTPS URL or an explicit
+    /// loopback HTTP URL, or when it contains credentials, a query, or a
+    /// fragment.
+    pub fn with_authorization_resource(
+        mut self,
+        resource: impl AsRef<str>,
+    ) -> Result<Self, String> {
+        self.authorization_resources
+            .insert(canonical_authorization_resource(resource.as_ref())?);
+        Ok(self)
     }
 
     /// Starts the HTTP listener.
     ///
     /// The server is intended to run on loopback or behind a TLS-terminating
-    /// reverse proxy.
+    /// reverse proxy that forwards at the origin root. Every endpoint is served
+    /// and advertised relative to `auth.authorization_server.issuer`, which must
+    /// mount at the root, so a proxy that adds a path prefix strands discovery,
+    /// the authorize route, and the OIDC callback.
     /// # Errors
     /// Returns an error when the listener cannot start.
     pub async fn start(self) -> Result<RunningCoralAuthorizationServer, AuthServerError> {
@@ -91,12 +126,16 @@ impl CoralAuthorizationServer {
             state_store: self.state_store,
             provider_client: OidcProviderClient::new()
                 .map_err(|error| AuthServerError::ProviderClient(error.to_string()))?,
+            registered_clients: self.registered_clients,
+            authorization_resources: Arc::new(self.authorization_resources),
         };
         let router = Router::new()
             .route(
                 "/.well-known/oauth-authorization-server",
                 get(authorization_server_metadata),
             )
+            .route("/oauth/authorize", get(authorize::oauth_authorize))
+            .route(OIDC_CALLBACK_PATH, get(callback::oidc_callback))
             .with_state(state);
         let listener =
             TcpListener::bind(bind_addr)
@@ -180,18 +219,31 @@ impl Drop for RunningCoralAuthorizationServer {
 #[derive(Clone)]
 struct AuthorizationServerHttpState {
     settings: Arc<ResolvedAuthSettings>,
-    #[expect(
-        dead_code,
-        reason = "used by the OAuth token endpoint in a descendant PR"
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "used by the OAuth token endpoint in a descendant PR"
+        )
     )]
     session_tokens: SessionTokenIssuer,
-    #[expect(
-        dead_code,
-        reason = "used by the OAuth authorization endpoint in a descendant PR"
-    )]
     state_store: Arc<dyn StateStore>,
-    #[expect(dead_code, reason = "used by OIDC authorization descendants")]
     provider_client: OidcProviderClient,
+    registered_clients: Arc<BTreeMap<String, Vec<String>>>,
+    authorization_resources: Arc<BTreeSet<String>>,
+}
+
+fn canonical_authorization_resource(value: &str) -> Result<String, String> {
+    let resource = EndpointUrl::<ResourceIdentifier>::parse(value)
+        .map_err(|error| format!("authorization resource is invalid: {error}"))?
+        .into_url();
+    if resource.query().is_some() {
+        return Err("authorization resource must not include a query".to_string());
+    }
+    Ok(match resource.path() {
+        "/" => resource[..Position::BeforePath].to_string(),
+        _ => resource.to_string(),
+    })
 }
 
 async fn authorization_server_metadata(
@@ -321,6 +373,31 @@ mod tests {
                 .to_string()
                 .contains("does not match authorization-server settings")
         );
+    }
+
+    #[test]
+    fn validates_and_canonicalizes_authorization_resources() {
+        let dir = authorization_server("");
+        let prepared = server(&dir)
+            .with_authorization_resource("https://mcp.example.test/")
+            .expect("resource");
+        assert_eq!(
+            prepared.authorization_resources,
+            ["https://mcp.example.test".to_string()].into()
+        );
+
+        for resource in [
+            "http://mcp.example.test",
+            "https://user@mcp.example.test",
+            "https://mcp.example.test?tenant=one",
+            "https://mcp.example.test/#fragment",
+        ] {
+            let error = server(&dir)
+                .with_authorization_resource(resource)
+                .err()
+                .expect("invalid resource");
+            assert!(error.contains("authorization resource"));
+        }
     }
 
     #[tokio::test]

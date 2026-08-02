@@ -191,19 +191,27 @@ impl QuerySource {
     }
 
     #[must_use]
-    /// Returns the SQL schemas published by this selected source.
+    /// Returns the SQL schema names published by this selected source.
     pub fn schema_names(&self) -> Vec<&str> {
-        let mut schemas = Vec::new();
+        let mut names = Vec::new();
         for component in &self.components {
-            let schema = component.source_name();
-            if !schemas.contains(&schema) {
-                schemas.push(schema);
+            let name = component.source_name();
+            if !names.contains(&name) {
+                names.push(name);
             }
         }
-        if schemas.is_empty() {
-            schemas.push(self.source_name());
+        if names.is_empty() {
+            names.push(self.source_name());
         }
-        schemas
+        names
+    }
+
+    #[must_use]
+    /// Returns the SQL catalog names published by this selected source.
+    /// Catalog-backed runtime components are introduced separately from the
+    /// generic qualified-table identity model.
+    pub fn catalog_names(&self) -> Vec<&str> {
+        Vec::new()
     }
 
     #[must_use]
@@ -1079,9 +1087,14 @@ impl QueryExecutionProvenance {
 }
 
 /// One source table referenced by a query.
+///
+/// `(schema, table)` alone does not identify a table once catalog-backed sources
+/// are registered: two databases can each expose `public.users`. The catalog is
+/// part of the identity, so consumers keying on this entry must include it.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct QueryTableUsage {
     source: String,
+    catalog: Option<String>,
     schema: String,
     table: String,
 }
@@ -1089,13 +1102,18 @@ pub struct QueryTableUsage {
 impl QueryTableUsage {
     #[must_use]
     /// Builds one source table usage entry.
+    ///
+    /// `catalog_name` is `None` for a table addressed as `schema.table`, and the
+    /// SQL catalog for one addressed as `catalog.schema.table`.
     pub fn new(
         source_name: impl Into<String>,
+        catalog_name: Option<&str>,
         schema_name: impl Into<String>,
         table_name: impl Into<String>,
     ) -> Self {
         Self {
             source: source_name.into(),
+            catalog: catalog_name.map(ToString::to_string),
             schema: schema_name.into(),
             table: table_name.into(),
         }
@@ -1105,6 +1123,13 @@ impl QueryTableUsage {
     /// Returns the installed source name that owns this table.
     pub fn source_name(&self) -> &str {
         &self.source
+    }
+
+    #[must_use]
+    /// Returns the SQL catalog for this table, or `None` when it is addressed as
+    /// `schema.table`.
+    pub fn catalog_name(&self) -> Option<&str> {
+        self.catalog.as_deref()
     }
 
     #[must_use]

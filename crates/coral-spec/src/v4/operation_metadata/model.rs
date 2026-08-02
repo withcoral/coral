@@ -104,6 +104,7 @@ pub(super) fn rest_pagination_is_canonical_none(pagination: &PaginationSpec) -> 
         && pagination.offset_step.is_none()
         && !pagination.link_header_require_results
         && pagination.next_url_header.is_none()
+        && pagination.next_url_path.is_empty()
         && pagination.max_pages.is_none()
 }
 

@@ -1264,7 +1264,8 @@
             "cursor_body",
             "page",
             "offset",
-            "link_header"
+            "link_header",
+            "next_url_body"
           ]
         },
         "page_size": { "$ref": "#/$defs/page_size" },
@@ -1286,6 +1287,10 @@
         "offset_step": { "type": "integer", "minimum": 1 },
         "link_header_require_results": { "type": "boolean" },
         "next_url_header": { "type": "string", "minLength": 1 },
+        "next_url_path": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
         "max_pages": { "type": "integer", "minimum": 1 }
       }
     },

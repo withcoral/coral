@@ -15,9 +15,9 @@ use crate::backends::shared::source_observation::{
 use crate::backends::{
     BackendCompileRequest, BackendRegistration, BackendRegistrationContext,
     BackendSchemaRegistration, CompiledBackendSource, RegisteredSource, RegisteredTable,
-    SourceFunctionProviderFactory, build_registered_inputs, build_registered_table,
-    build_registered_table_function, registered_columns_from_specs, required_filter_names,
-    validate_lookup_key_filter_backend_support,
+    SourceFunctionProviderFactory, SourceQualifiedName, build_registered_inputs,
+    build_registered_table, build_registered_table_function, registered_columns_from_specs,
+    required_filter_names, validate_lookup_key_filter_backend_support,
 };
 use crate::{
     BoundRequestIdentityHttpAuthenticator, RequestAuthenticator, SourceInputResolutionContext,
@@ -81,8 +81,8 @@ pub(crate) fn compile_manifest(
 
 #[async_trait]
 impl CompiledBackendSource for HttpCompiledSource {
-    fn schema_name(&self) -> &str {
-        &self.manifest.common.name
+    fn qualified_name(&self) -> SourceQualifiedName {
+        SourceQualifiedName::Schema(self.manifest.common.name.clone())
     }
 
     fn source_name(&self) -> &str {
@@ -167,17 +167,17 @@ impl CompiledBackendSource for HttpCompiledSource {
             &secret_keys,
         );
 
-        let schema_name = self.manifest.common.name.clone();
         Ok(BackendRegistration {
             schemas: vec![BackendSchemaRegistration {
                 tables,
                 source: RegisteredSource {
-                    schema_name,
+                    qualified_name: SourceQualifiedName::Schema(self.manifest.common.name.clone()),
                     tables: table_infos,
                     table_functions: table_function_infos,
                     inputs,
                 },
             }],
+            catalogs: Vec::new(),
         })
     }
 }

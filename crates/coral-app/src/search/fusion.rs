@@ -3,7 +3,7 @@
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::search::result::{MatchEvidence, Ranking, SearchSurfaceId};
+use crate::search::result::{MatchEvidence, Ranking, SearchProviderKind, SearchSurfaceId};
 
 // Standard RRF smoothing offset; changing it requires an explicit ranking
 // decision.
@@ -15,6 +15,7 @@ const RECIPROCAL_RANK_SCORE_SCALE: u64 = 1_000_000_000;
 pub(crate) struct FusedEntry {
     pub(crate) id: SearchSurfaceId,
     pub(crate) evidence: MatchEvidence,
+    pub(crate) providers: BTreeSet<SearchProviderKind>,
     pub(crate) score: u64,
 }
 
@@ -28,6 +29,7 @@ pub(crate) struct FusedEntry {
 pub(crate) fn fuse(rankings: Vec<Ranking>) -> Vec<FusedEntry> {
     let mut fused = BTreeMap::<SearchSurfaceId, FusedEntry>::new();
     for ranking in rankings {
+        let provider = ranking.retriever.provider();
         // A retriever that emits the same entry twice must not be paid twice,
         // and the duplicate must not consume a rank position either.
         let mut counted = BTreeSet::new();
@@ -41,12 +43,14 @@ pub(crate) fn fuse(rankings: Vec<Ranking>) -> Vec<FusedEntry> {
             if let Some(existing) = fused.get_mut(&entry_match.id) {
                 existing.score = existing.score.saturating_add(contribution);
                 existing.evidence.merge(entry_match.evidence);
+                existing.providers.insert(provider);
             } else {
                 fused.insert(
                     entry_match.id.clone(),
                     FusedEntry {
                         id: entry_match.id,
                         evidence: entry_match.evidence,
+                        providers: BTreeSet::from([provider]),
                         score: contribution,
                     },
                 );
@@ -71,10 +75,12 @@ fn reciprocal_rank_score(rank: usize) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::{FusedEntry, fuse, reciprocal_rank_score};
     use crate::search::result::{
-        FieldRef, FieldRole, FieldValues, MatchEvidence, Ranking, RetrieverId, SearchSurfaceId,
-        SearchSurfaceKind, SurfaceMatch,
+        FieldRef, FieldRole, FieldValues, MatchEvidence, Ranking, RetrieverId, SearchProviderKind,
+        SearchSurfaceId, SearchSurfaceKind, SurfaceMatch,
     };
 
     #[test]
@@ -125,6 +131,13 @@ mod tests {
         let entry = fused.first().expect("entry");
         assert_eq!(entry.evidence.matched_fields.len(), 1);
         assert_eq!(entry.evidence.matching_values.len(), 1);
+        assert_eq!(
+            entry.providers,
+            BTreeSet::from([
+                SearchProviderKind::CatalogMetadata,
+                SearchProviderKind::ObservedValues,
+            ])
+        );
     }
 
     #[test]
@@ -198,6 +211,7 @@ mod tests {
 
     fn surface_id(name: &str, kind: SearchSurfaceKind) -> SearchSurfaceId {
         SearchSurfaceId {
+            catalog_name: None,
             schema_name: "github".to_string(),
             name: name.to_string(),
             kind,

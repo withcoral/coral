@@ -12,11 +12,13 @@ type SuccessfulDiscovery = Extract<SourceDiscoveryData, { status: 'success' }>
 type DiscoveryLoader = (request: Request) => SourceDiscoveryData | Promise<SourceDiscoveryData>
 
 const DISCOVERY: SuccessfulDiscovery = {
-  auth: { kind: 'bearer', label: 'Bearer token' },
+  auth: { kind: 'bearer', label: 'a bearer token' },
   description: 'Weather observations and forecasts',
   format: 'openapi-yaml' as const,
   name: 'weather_api',
+  serverUrl: 'https://weather.example/v1',
   status: 'success' as const,
+  title: 'Weather API',
   url: 'https://weather.example/openapi.yaml',
 }
 
@@ -134,7 +136,13 @@ describe('SourceCreateDialog', () => {
     await expect
       .element(screen.getByLabelText('Description (optional)'))
       .toHaveValue('Weather observations and forecasts')
-    await expect.element(screen.getByText('Detected an OpenAPI YAML document.')).toBeVisible()
+    await expect
+      .element(
+        screen.getByText(
+          'Detected the name, description, base URL, and type from the URL provided. Review the details below.',
+        ),
+      )
+      .toBeVisible()
 
     await screen.getByRole('button', { name: 'Next' }).click()
 
@@ -150,7 +158,11 @@ describe('SourceCreateDialog', () => {
   it('resets source-specific draft state when the URL changes', async () => {
     const discovery: SuccessfulDiscovery = {
       ...DISCOVERY,
-      auth: { headerName: 'X-Weather-Key', kind: 'header', label: 'Header X-Weather-Key' },
+      auth: {
+        headerName: 'X-Weather-Key',
+        kind: 'header',
+        label: 'an API key in the X-Weather-Key header',
+      },
     }
     const { screen } = await renderSourceCreate(discovery)
 
@@ -174,6 +186,7 @@ describe('SourceCreateDialog', () => {
       auth: { kind: 'unknown', label: '' },
       description: '',
       name: 'status_api',
+      serverUrl: 'https://status.example/v2',
       url: replacementUrl,
     })
     await screen.getByLabelText('Source URL').fill(replacementUrl)
@@ -181,6 +194,7 @@ describe('SourceCreateDialog', () => {
 
     await expect.element(screen.getByLabelText('Name')).toHaveValue('status_api')
     await expect.element(screen.getByLabelText('Description (optional)')).toHaveValue('')
+    await expect.element(screen.getByLabelText('Base URL')).toHaveValue('https://status.example/v2')
 
     await screen.getByRole('button', { name: 'Next' }).click()
     await expect.element(screen.getByRole('radio', { name: 'Bearer token' })).toBeChecked()
@@ -195,7 +209,9 @@ describe('SourceCreateDialog', () => {
       description: '',
       format: 'unknown',
       name: 'status_api',
+      serverUrl: '',
       status: 'success',
+      title: '',
       url: 'https://status.example/openapi.yaml',
     }
     let resolveFirst: ((result: SourceDiscoveryData) => void) | undefined
@@ -287,14 +303,18 @@ describe('SourceCreateDialog', () => {
       description: '',
       format: 'unknown',
       name: 'tools',
+      serverUrl: '',
       status: 'success',
+      title: '',
       url,
     })
 
     await screen.getByLabelText('Source URL').fill(url)
     await screen.getByRole('button', { name: 'Next' }).click()
 
-    await expect.element(screen.getByText('No OpenAPI document was detected.')).toBeVisible()
+    await expect
+      .element(screen.getByText('No OpenAPI document was detected. Fill in the details below.'))
+      .toBeVisible()
     await screen.getByRole('radio', { name: 'MCP server' }).click()
     await expect.element(screen.getByRole('radio', { name: 'MCP server' })).toBeChecked()
   })
@@ -306,21 +326,29 @@ describe('SourceCreateDialog', () => {
       description: '',
       format: 'mcp',
       name: 'mcp',
+      serverUrl: '',
       status: 'success',
+      title: '',
       url,
     })
 
     await screen.getByLabelText('Source URL').fill(url)
     await screen.getByRole('button', { name: 'Next' }).click()
 
-    await expect.element(screen.getByText('Detected an MCP endpoint from its URL.')).toBeVisible()
+    await expect
+      .element(screen.getByText('Detected an MCP endpoint from its URL. Review the details below.'))
+      .toBeVisible()
     await expect.element(screen.getByRole('radio', { name: 'MCP server' })).toBeChecked()
   })
 
   it('prefills detected header authentication on the credentials step', async () => {
     const { screen } = await renderSourceCreate({
       ...DISCOVERY,
-      auth: { headerName: 'X-Api-Key', kind: 'header', label: 'Header X-Api-Key' },
+      auth: {
+        headerName: 'X-Api-Key',
+        kind: 'header',
+        label: 'an API key in the X-Api-Key header',
+      },
     })
 
     await screen.getByLabelText('Source URL').fill(DISCOVERY.url)
@@ -329,7 +357,7 @@ describe('SourceCreateDialog', () => {
     await screen.getByRole('button', { name: 'Next' }).click()
 
     await expect
-      .element(screen.getByText('Detected authentication: Header X-Api-Key.'))
+      .element(screen.getByText('Detected an API key in the X-Api-Key header.'))
       .toBeVisible()
     await expect.element(screen.getByRole('radio', { name: 'Custom header' })).toBeChecked()
     await expect.element(screen.getByLabelText('Header name')).toHaveValue('X-Api-Key')
@@ -345,7 +373,48 @@ describe('SourceCreateDialog', () => {
     const manifest = submittedManifest()
     expect(manifest).toContain('\ninputs:\n  API_TOKEN:\n    kind: secret\n')
     expect(manifest).toContain('\nsurface:\n  type: openapi\n')
+    expect(manifest).toContain('\n  base_url: "https://weather.example/v1"\n')
     expect(manifest).not.toContain('\nsurfaces:\n')
+  })
+
+  it('blocks an OpenAPI source until the base URL is a valid URL', async () => {
+    const { screen } = await renderSourceCreate({ ...DISCOVERY, serverUrl: '' })
+
+    await screen.getByLabelText('Source URL').fill(DISCOVERY.url)
+    await screen.getByRole('button', { name: 'Next' }).click()
+    await expect.element(screen.getByLabelText('Base URL')).toHaveValue('')
+    await expect.element(screen.getByRole('button', { name: 'Next' })).toBeDisabled()
+
+    const baseUrlInput = screen.getByLabelText('Base URL')
+    await baseUrlInput.fill('weather.example')
+    await userEvent.tab()
+    await expect.element(screen.getByText('Enter a valid URL, including the scheme.')).toBeVisible()
+    await expect.element(screen.getByRole('button', { name: 'Next' })).toBeDisabled()
+
+    await baseUrlInput.fill('https://weather.example/v1')
+    await expect.element(screen.getByRole('button', { name: 'Next' })).toBeEnabled()
+  })
+
+  it('disables the base URL for MCP sources and omits it from the manifest', async () => {
+    const { screen } = await renderSourceCreate()
+
+    await screen.getByLabelText('Source URL').fill(DISCOVERY.url)
+    await screen.getByRole('button', { name: 'Next' }).click()
+    await expect.element(screen.getByLabelText('Base URL')).toBeEnabled()
+
+    await screen.getByRole('radio', { name: 'MCP server' }).click()
+    await expect.element(screen.getByLabelText('Base URL')).toBeDisabled()
+    await expect
+      .element(
+        screen.getByText(
+          'MCP servers are reached at the source URL, so they have no separate base URL.',
+        ),
+      )
+      .toBeVisible()
+    expect(submittedManifest()).not.toContain('base_url')
+
+    await screen.getByRole('radio', { name: 'REST API (OpenAPI)' }).click()
+    await expect.element(screen.getByLabelText('Base URL')).toBeEnabled()
   })
 
   it('keeps the credentials dialog height stable across authentication choices', async () => {

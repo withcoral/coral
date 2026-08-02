@@ -94,6 +94,7 @@ fn mock_table(schema_name: &str, name: &str) -> Table {
     Table {
         workspace: Some(workspace()),
         schema_name: schema_name.to_string(),
+        catalog_name: String::new(),
         name: name.to_string(),
         description: String::new(),
         guide: String::new(),
@@ -106,6 +107,7 @@ fn mock_visible_table() -> Table {
     Table {
         workspace: Some(workspace()),
         schema_name: "local_messages".to_string(),
+        catalog_name: String::new(),
         name: "messages".to_string(),
         description: "Fixture messages".to_string(),
         guide: "Query fixture messages.".to_string(),
@@ -159,6 +161,7 @@ fn table_summary(table: &Table) -> TableSummary {
     TableSummary {
         workspace: table.workspace.clone(),
         schema_name: table.schema_name.clone(),
+        catalog_name: table.catalog_name.clone(),
         name: table.name.clone(),
         description: table.description.clone(),
         required_filters: table.required_filters.clone(),
@@ -381,6 +384,7 @@ fn mock_search_response() -> SearchResponse {
     SearchResponse {
         results: vec![SearchResult {
             surface: Some(SearchSurfaceRef {
+                catalog_name: table.catalog_name.clone(),
                 schema_name: table.schema_name.clone(),
                 name: table.name.clone(),
                 kind: SearchSurfaceKind::Table as i32,
@@ -403,6 +407,7 @@ fn mock_search_response() -> SearchResponse {
             })),
             matching_values: Vec::new(),
             omitted_matching_field_count: 1,
+            providers: vec![SearchProvider::CatalogMetadata as i32],
         }],
         provider_statuses: vec![
             mock_provider_status(
@@ -718,7 +723,10 @@ impl Default for MockServerConfig {
             }),
             validate_source: MockResult::ok(mock_validate_response()),
             delete_source: MockResult::ok(()),
-            add_function: MockResult::ok(AddFunctionResponse { function: None }),
+            add_function: MockResult::ok(AddFunctionResponse {
+                function: None,
+                replaced: false,
+            }),
             list_functions: MockResult::ok(ListFunctionsResponse {
                 functions: Vec::new(),
             }),
