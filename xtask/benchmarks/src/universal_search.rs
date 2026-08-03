@@ -1733,6 +1733,9 @@ fn exact_result_matches(target: &Target, result: &Value) -> bool {
 }
 
 fn column_hint_matches(target: &Target, result: &Value) -> bool {
+    if !target.catalog_name.is_empty() {
+        return false;
+    }
     let field = |pointer: &str| result.pointer(pointer).and_then(Value::as_str);
     field("/column_hint/schema_name") == Some(target.schema_name.as_str())
         && field("/column_hint/surface_kind") == Some(target.surface_kind.as_str())
@@ -3219,6 +3222,32 @@ mod tests {
         let evaluation = evaluate_response(&target, &response);
 
         assert_eq!(evaluation.target_rank, Some(1));
+    }
+
+    #[test]
+    fn catalog_qualified_target_rejects_legacy_column_hint_without_catalog() {
+        let target = Target {
+            catalog_name: "warehouse".to_string(),
+            schema_name: "analytics".to_string(),
+            surface_kind: "table".to_string(),
+            surface_name: "events".to_string(),
+            field_role: Some("table_column".to_string()),
+            field_name: Some("event_id".to_string()),
+        };
+        let response = json!({"results": [{
+            "kind": "column_hint",
+            "column_hint": {
+                "schema_name": "analytics",
+                "surface_kind": "table",
+                "surface_name": "events",
+                "field_role": "table_column",
+                "column_name": "event_id"
+            }
+        }]});
+
+        let evaluation = evaluate_response(&target, &response);
+
+        assert_eq!(evaluation.target_rank, None);
     }
 
     #[test]
