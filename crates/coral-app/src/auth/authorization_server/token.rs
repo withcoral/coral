@@ -75,7 +75,7 @@ pub(super) async fn oauth_token(
     }
     let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
     let authorization = match state
-        .state_store
+        .code_store
         .take_authorization_code_for_request(code, client_id, redirect_uri, &challenge, &resource)
         .await
     {
@@ -318,7 +318,7 @@ mod tests {
     use crate::auth::config::AuthSettings;
     use crate::auth::provider_client::OidcProviderClient;
     use crate::auth::session::SessionTokenIssuer;
-    use crate::auth::state_store::{InMemoryStateStore, OAuthAuthorizationCodeRecord, StateStore};
+    use crate::auth::state_store::{CodeStore, InMemoryStateStore, OAuthAuthorizationCodeRecord};
 
     const CLIENT: &str = "https://client.example.test/oauth/client.json";
     const REDIRECT: &str = "http://127.0.0.1:14554/oauth/callback";
@@ -369,7 +369,8 @@ redirect_uri = "{AUTH_ISSUER}/auth/oidc/callback"
         let state = AuthorizationServerHttpState {
             settings: Arc::new(settings),
             session_tokens: session_tokens.clone(),
-            state_store: store.clone(),
+            session_store: store.clone(),
+            code_store: store.clone(),
             provider_client: OidcProviderClient::new().expect("client"),
             registered_clients: Arc::new(BTreeMap::new()),
             authorization_resources: Arc::new(BTreeSet::from([RESOURCE.into()])),
@@ -377,7 +378,7 @@ redirect_uri = "{AUTH_ISSUER}/auth/oidc/callback"
         (state, store, session_tokens)
     }
 
-    async fn seed(store: &dyn StateStore, code: &str, verifier: &str) {
+    async fn seed(store: &dyn CodeStore, code: &str, verifier: &str) {
         store
             .store_authorization_code(
                 code,

@@ -11,7 +11,7 @@ use super::config::{AuthSettings, ResolvedAuthSettings, signing_key_env_error};
 use super::error::AuthServerError;
 use super::provider_client::OidcProviderClient;
 use super::session::SessionTokenIssuer;
-use super::state_store::{InMemoryStateStore, StateStore};
+use super::state_store::{CodeStore, InMemoryStateStore, SessionStore};
 use crate::oauth_resource::{CanonicalOauthUrl, OauthUrlError};
 use axum::Router;
 use axum::extract::State;
@@ -35,7 +35,7 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 pub struct CoralAuthorizationServer {
     settings: Arc<ResolvedAuthSettings>,
     session_tokens: SessionTokenIssuer,
-    state_store: Arc<dyn StateStore>,
+    state_store: Arc<InMemoryStateStore>,
     registered_clients: Arc<BTreeMap<String, Vec<String>>>,
     authorization_resources: BTreeSet<String>,
 }
@@ -126,7 +126,8 @@ impl CoralAuthorizationServer {
         let state = AuthorizationServerHttpState {
             settings: self.settings,
             session_tokens: self.session_tokens,
-            state_store: self.state_store,
+            session_store: self.state_store.clone(),
+            code_store: self.state_store,
             provider_client: OidcProviderClient::new()
                 .map_err(|error| AuthServerError::ProviderClient(error.to_string()))?,
             registered_clients: self.registered_clients,
@@ -230,7 +231,8 @@ impl Drop for RunningCoralAuthorizationServer {
 struct AuthorizationServerHttpState {
     settings: Arc<ResolvedAuthSettings>,
     session_tokens: SessionTokenIssuer,
-    state_store: Arc<dyn StateStore>,
+    session_store: Arc<dyn SessionStore>,
+    code_store: Arc<dyn CodeStore>,
     provider_client: OidcProviderClient,
     registered_clients: Arc<BTreeMap<String, Vec<String>>>,
     authorization_resources: Arc<BTreeSet<String>>,

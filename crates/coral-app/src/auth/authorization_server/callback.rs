@@ -22,7 +22,7 @@ pub(super) async fn oidc_callback(
         return direct_error("invalid_request", "OIDC callback state is required");
     };
     let Ok(Some(session)) = state
-        .state_store
+        .session_store
         .take_authorization_session(oidc_state)
         .await
     else {
@@ -81,7 +81,7 @@ pub(super) async fn oidc_callback(
         resource: session.resource,
     };
     if let Err(error) = state
-        .state_store
+        .code_store
         .store_authorization_code(&authorization_code, authorization)
         .await
     {
@@ -179,10 +179,7 @@ mod tests {
     };
     use crate::auth::provider_client::OidcProviderClient;
     use crate::auth::session::SessionTokenIssuer;
-    use crate::auth::state_store::{
-        InMemoryStateStore, OAuthAuthorizationApprovalRecord, OAuthAuthorizationApprovalTicket,
-        StateStore, StateStoreError,
-    };
+    use crate::auth::state_store::{CodeStore, InMemoryStateStore, SessionStore, StateStoreError};
 
     const OIDC_STATE: &str = "oidc-state";
     const CLIENT_STATE: &str = "client&error=injected";
@@ -220,7 +217,7 @@ mod tests {
         settings
     }
 
-    fn state(issuer: &str, state_store: Arc<dyn StateStore>) -> AuthorizationServerHttpState {
+    fn state(issuer: &str, store: Arc<InMemoryStateStore>) -> AuthorizationServerHttpState {
         let signing_key =
             EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
                 .expect("P-256 signing key");
@@ -233,7 +230,8 @@ mod tests {
         AuthorizationServerHttpState {
             settings: Arc::new(settings(issuer)),
             session_tokens,
-            state_store,
+            session_store: store.clone(),
+            code_store: store,
             provider_client: OidcProviderClient::new().expect("client"),
             registered_clients: Arc::new(BTreeMap::new()),
             authorization_resources: Arc::new(BTreeSet::from([RESOURCE.into()])),
@@ -268,14 +266,14 @@ mod tests {
         callback_raw(state, query(pairs)).await
     }
 
-    async fn seed(store: &dyn StateStore, key: &str) {
+    async fn seed(store: &dyn SessionStore, key: &str) {
         store
             .store_authorization_session(key, session())
             .await
             .expect("store");
     }
 
-    async fn take(store: &dyn StateStore, key: &str) -> Option<OAuthAuthorizationSessionRecord> {
+    async fn take(store: &dyn SessionStore, key: &str) -> Option<OAuthAuthorizationSessionRecord> {
         store.take_authorization_session(key).await.expect("store")
     }
 
@@ -506,38 +504,11 @@ mod tests {
         assert_provider_failure(200, 200, "wrong-nonce").await;
     }
 
-    struct FailCodeStore(InMemoryStateStore);
+    /// Code store whose writes always fail, standing in for a full store.
+    struct FailCodeStore;
 
     #[async_trait::async_trait]
-    impl StateStore for FailCodeStore {
-        async fn store_authorization_approval(
-            &self,
-            ticket: &OAuthAuthorizationApprovalTicket,
-            approval: OAuthAuthorizationApprovalRecord,
-        ) -> Result<(), StateStoreError> {
-            self.0.store_authorization_approval(ticket, approval).await
-        }
-
-        async fn take_authorization_approval(
-            &self,
-            ticket: &OAuthAuthorizationApprovalTicket,
-        ) -> Result<Option<OAuthAuthorizationApprovalRecord>, StateStoreError> {
-            self.0.take_authorization_approval(ticket).await
-        }
-
-        async fn store_authorization_session(
-            &self,
-            state: &str,
-            session: OAuthAuthorizationSessionRecord,
-        ) -> Result<(), StateStoreError> {
-            self.0.store_authorization_session(state, session).await
-        }
-        async fn take_authorization_session(
-            &self,
-            state: &str,
-        ) -> Result<Option<OAuthAuthorizationSessionRecord>, StateStoreError> {
-            self.0.take_authorization_session(state).await
-        }
+    impl CodeStore for FailCodeStore {
         async fn store_authorization_code(
             &self,
             _code: &str,
@@ -545,23 +516,16 @@ mod tests {
         ) -> Result<(), StateStoreError> {
             Err(StateStoreError::CapacityExceeded { max_entries: 0 })
         }
+
         async fn take_authorization_code_for_request(
             &self,
-            code: &str,
-            client_id: &str,
-            redirect_uri: &str,
-            challenge: &str,
-            resource: &str,
+            _code: &str,
+            _client_id: &str,
+            _redirect_uri: &str,
+            _challenge: &str,
+            _resource: &str,
         ) -> Result<Option<OAuthAuthorizationCodeRecord>, StateStoreError> {
-            self.0
-                .take_authorization_code_for_request(
-                    code,
-                    client_id,
-                    redirect_uri,
-                    challenge,
-                    resource,
-                )
-                .await
+            unreachable!("the OIDC callback issues authorization codes, it never redeems them")
         }
     }
 
@@ -569,13 +533,11 @@ mod tests {
     async fn code_store_capacity_failure_exposes_no_client_code() {
         let server = MockServer::start().await;
         mount_provider(&server, 200, 200, NONCE).await;
-        let store = Arc::new(FailCodeStore(InMemoryStateStore::new()));
+        let store = Arc::new(InMemoryStateStore::new());
         seed(store.as_ref(), OIDC_STATE).await;
-        let response = callback(
-            state(&server.uri(), store),
-            &[("state", OIDC_STATE), ("code", PROVIDER_CODE)],
-        )
-        .await;
+        let mut state = state(&server.uri(), store);
+        state.code_store = Arc::new(FailCodeStore);
+        let response = callback(state, &[("state", OIDC_STATE), ("code", PROVIDER_CODE)]).await;
         let values = redirect_query(&response);
         assert!(values.contains(&("error".into(), "server_error".into())));
         assert!(!values.iter().any(|(key, _value)| key == "code"));

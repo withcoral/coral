@@ -85,7 +85,7 @@ pub(super) async fn oauth_authorize(
         oidc_nonce,
     };
     if state
-        .state_store
+        .session_store
         .store_authorization_session(&oidc_state, session)
         .await
         .is_err()
@@ -177,7 +177,7 @@ mod tests {
     use crate::auth::config::ResolvedAuthSettings;
     use crate::auth::provider_client::OidcProviderClient;
     use crate::auth::session::SessionTokenIssuer;
-    use crate::auth::state_store::{InMemoryStateStore, StateStore};
+    use crate::auth::state_store::{InMemoryStateStore, SessionStore};
 
     const AUTH_ISSUER: &str = "https://auth.example.test";
     const RESOURCE: &str = "https://api.example.test/mcp";
@@ -213,7 +213,7 @@ mod tests {
         settings
     }
 
-    fn state(issuer: &str, store: Arc<dyn StateStore>) -> AuthorizationServerHttpState {
+    fn state(issuer: &str, store: Arc<InMemoryStateStore>) -> AuthorizationServerHttpState {
         let signing_key =
             EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
                 .expect("P-256 signing key");
@@ -226,7 +226,8 @@ mod tests {
         AuthorizationServerHttpState {
             settings: Arc::new(settings(issuer)),
             session_tokens,
-            state_store: store,
+            session_store: store.clone(),
+            code_store: store,
             provider_client: OidcProviderClient::new().expect("provider client"),
             registered_clients: Arc::new(BTreeMap::from([(
                 CLIENT_ID.into(),
@@ -489,11 +490,12 @@ mod tests {
     async fn listener_exposes_authorize_route() {
         let provider = MockServer::start().await;
         mount_discovery(&provider, 200).await;
-        let state = state(&provider.uri(), Arc::new(InMemoryStateStore::new()));
+        let store = Arc::new(InMemoryStateStore::new());
+        let state = state(&provider.uri(), Arc::clone(&store));
         let server = CoralAuthorizationServer {
             settings: state.settings,
             session_tokens: state.session_tokens,
-            state_store: state.state_store,
+            state_store: store,
             registered_clients: state.registered_clients,
             authorization_resources: state.authorization_resources.as_ref().clone(),
         }
