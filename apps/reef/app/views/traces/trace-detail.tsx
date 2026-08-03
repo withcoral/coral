@@ -20,8 +20,12 @@ import {
   formatDuration,
   formatDurationFromNanos,
   formatRows,
+  hasTypedOperation,
   isHttpSpan,
   nanosToMs,
+  operationCodeLanguage,
+  operationDetailLabel,
+  operationDetailText,
   spanDisplayLabel,
   spanDisplayMeta,
   sourceNames,
@@ -170,7 +174,7 @@ function WaterfallTickRow({ durationMs }: { durationMs: number }) {
 function spanTone(span: TraceSpanData): WaterfallTone {
   if (span.status === TraceStatus.ERROR) return 'error'
   if (isHttpSpan(span)) return 'http'
-  if (span.name === 'coral.query') return 'query'
+  if (span.name === 'coral.query' || span.name === 'coral.search') return 'query'
   return 'span'
 }
 
@@ -761,7 +765,12 @@ function TraceDetailContent({
     () => handleSpanArrowShortcut(1),
     [handleSpanArrowShortcut],
   )
-  const summary = detail?.summary ?? initialSummary
+  const summary =
+    detail?.summary && hasTypedOperation(detail.summary)
+      ? detail.summary
+      : initialSummary && hasTypedOperation(initialSummary)
+        ? initialSummary
+        : (detail?.summary ?? initialSummary)
   const httpSpans = useMemo(() => detail?.spans.filter(isHttpSpan) ?? [], [detail?.spans])
   const sources = useMemo(() => sourceNames(detail?.spans ?? []), [detail?.spans])
   const resolvedExtraTabs = useMemo(
@@ -785,7 +794,7 @@ function TraceDetailContent({
         <KeyboardShortcut handler={handleEscapeShortcut} shortcut="Escape" />
         <EmptyPage
           title="No spans for this trace"
-          description="This trace did not include a query summary or spans to display."
+          description="This trace did not include an operation summary or spans to display."
           iconName="Activity"
         />
         <Button.TextButton onClick={onClose} variant="secondary">
@@ -799,16 +808,17 @@ function TraceDetailContent({
 
   return (
     <QueryDetailSummary
+      codeLanguage={operationCodeLanguage(summary)}
       actions={
         <>
           <KeyboardShortcut
             handler={handleNewerTraceShortcut}
             shortcut="$mod+ArrowUp"
-            tooltipContent="Newer query"
+            tooltipContent="Newer operation"
             tooltipSide="bottom"
           >
             <Button.IconButton
-              ariaLabel="Newer query"
+              ariaLabel="Newer operation"
               disabled={!newerTraceId}
               name="ArrowUp"
               onClick={() => newerTraceId && onSelectTrace?.(newerTraceId)}
@@ -819,11 +829,11 @@ function TraceDetailContent({
           <KeyboardShortcut
             handler={handleOlderTraceShortcut}
             shortcut="$mod+ArrowDown"
-            tooltipContent="Older query"
+            tooltipContent="Older operation"
             tooltipSide="bottom"
           >
             <Button.IconButton
-              ariaLabel="Older query"
+              ariaLabel="Older operation"
               disabled={!olderTraceId}
               name="ArrowDown"
               onClick={() => olderTraceId && onSelectTrace?.(olderTraceId)}
@@ -834,11 +844,11 @@ function TraceDetailContent({
           <KeyboardShortcut
             handler={handleEscapeShortcut}
             shortcut="Escape"
-            tooltipContent={expandedHttpSpanId ? 'Close span inspector' : 'Close query details'}
+            tooltipContent={expandedHttpSpanId ? 'Close span inspector' : 'Close operation details'}
             tooltipSide="bottom"
           >
             <Button.IconButton
-              ariaLabel="Close query details"
+              ariaLabel="Close operation details"
               name="X"
               onClick={onClose}
               size="32"
@@ -853,7 +863,7 @@ function TraceDetailContent({
           <KeyboardShortcut handler={handleNextSpanShortcut} shortcut="ArrowDown" />
         </>
       }
-      sql={summary.query || 'No SQL recorded for this trace.'}
+      sql={operationDetailText(summary)}
       stats={[
         { label: 'Duration', value: formatDurationFromNanos(summary.durationNanos) },
         { label: 'Rows', value: formatRows(summary) },
@@ -873,7 +883,7 @@ function TraceDetailContent({
             /
           </Typography.BodyStrong>
           <Typography.BodyStrong as="span" variant="secondary">
-            Query details
+            {operationDetailLabel(summary)}
           </Typography.BodyStrong>
         </>
       }

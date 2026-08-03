@@ -5,6 +5,7 @@ import {
   TraceInvocationKind,
   TraceOperationKind,
   TraceStatus,
+  TraceView,
 } from '@/generated/coral/v1/traces_pb'
 import type { TraceDetailData } from '@/views/traces/trace-utils'
 import { describe, expect, it, vi } from 'vitest'
@@ -18,9 +19,9 @@ function detail(traceId: string): TraceDetailData {
       durationNanos: '1000000',
       endTimeUnixNanos: '2000000',
       name: 'coral.query',
-      invocationKind: TraceInvocationKind.UNSPECIFIED,
-      operationKind: TraceOperationKind.UNSPECIFIED,
-      operationName: '',
+      invocationKind: TraceInvocationKind.DIRECT,
+      operationKind: TraceOperationKind.QUERY,
+      operationName: 'sql',
       query: 'select 1',
       rootSpanId: 'root',
       rowCount: '1',
@@ -43,7 +44,12 @@ describe('trace detail loader', () => {
     await expect(
       loadTraceDetailRouteData(request, 'trace/with?reserved', workspace, getTrace),
     ).resolves.toEqual({ detail: detail('trace/with?reserved'), loadError: null })
-    expect(getTrace).toHaveBeenCalledWith(request, 'trace/with?reserved', workspace)
+    expect(getTrace).toHaveBeenCalledWith(
+      request,
+      'trace/with?reserved',
+      workspace,
+      TraceView.QUERY_STREAM,
+    )
   })
 
   it('returns an inline error for a missing trace ID', async () => {
@@ -68,7 +74,7 @@ describe('trace detail loader', () => {
     ).resolves.toMatchObject({
       detail: null,
       loadError:
-        'Trace storage is not enabled for this Coral server. Enable [local_traces].enabled = true, restart the Coral server, then run a query.',
+        'Trace storage is not enabled for this Coral server. Enable [local_traces].enabled = true, restart the Coral server, then run an operation.',
     })
 
     await expect(

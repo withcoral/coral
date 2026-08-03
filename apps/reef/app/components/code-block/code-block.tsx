@@ -6,6 +6,7 @@ import 'prismjs/components/prism-sql'
 import * as styles from './code-block.css'
 
 const grammars = {
+  plain: {},
   sql: Prism.languages.sql,
 }
 

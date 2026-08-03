@@ -34,9 +34,9 @@ function summary(traceId: string): TraceSummaryData {
     durationNanos: '1000000',
     endTimeUnixNanos: '2000000',
     name: 'coral.query',
-    invocationKind: TraceInvocationKind.UNSPECIFIED,
-    operationKind: TraceOperationKind.UNSPECIFIED,
-    operationName: '',
+    invocationKind: TraceInvocationKind.DIRECT,
+    operationKind: TraceOperationKind.QUERY,
+    operationName: 'sql',
     query: `select '${traceId}'`,
     rootSpanId: `root-${traceId}`,
     rowCount: '1',
@@ -154,7 +154,7 @@ describe('TracesIndex route behavior', () => {
 
     data = { endpointLabel: 'reef.test', referenceTimeMs: 120_000, loadError: null, traces: [] }
     await router.revalidate()
-    await expect.element(rendered.getByText('No queries yet')).toBeVisible()
+    await expect.element(rendered.getByText('No operations yet')).toBeVisible()
     await expect.element(rendered.getByText('Connected')).toBeVisible()
     expect(rendered.getByText("select 'kept'", { exact: false }).query()).toBeNull()
   })
@@ -172,13 +172,13 @@ describe('TracesIndex route behavior', () => {
     const rendered = await screen
 
     dispatchModKey('f', 'KeyF')
-    const search = rendered.getByPlaceholder('Search queries...')
+    const search = rendered.getByPlaceholder('Search operations...')
     await expect.element(search).toHaveFocus()
     await search.fill('playwright')
-    await expect.element(rendered.getByText('1 of 2 queries')).toBeVisible()
+    await expect.element(rendered.getByText('1 of 2 operations')).toBeVisible()
     expect(rendered.getByText("select 'alpha'", { exact: false }).query()).toBeNull()
     await userEvent.keyboard('{Escape}')
-    await expect.element(rendered.getByText('2 queries')).toBeVisible()
+    await expect.element(rendered.getByText('2 operations')).toBeVisible()
 
     await userEvent.keyboard('{ArrowDown}')
     await expect
@@ -198,8 +198,8 @@ describe('TracesIndex route behavior', () => {
       loadError: null,
       traces: [],
     }))
-    await expect.element((await empty.screen).getByText('No queries yet')).toBeVisible()
-    await expect.element((await empty.screen).getByText('0 queries')).toBeVisible()
+    await expect.element((await empty.screen).getByText('No operations yet')).toBeVisible()
+    await expect.element((await empty.screen).getByText('0 operations')).toBeVisible()
 
     const unavailable = renderIndex(() => ({
       endpointLabel: 'reef.test',
@@ -210,5 +210,84 @@ describe('TracesIndex route behavior', () => {
     }))
     await expect.element((await unavailable.screen).getByText('Tracing unavailable')).toBeVisible()
     await expect.element((await unavailable.screen).getByText('Disconnected')).toBeVisible()
+  })
+
+  it('searches generic operation names', async () => {
+    const first = {
+      ...summary('first'),
+      invocationKind: TraceInvocationKind.MCP,
+      operationKind: TraceOperationKind.TOOL,
+      operationName: 'first_lookup',
+      query: '',
+    }
+    const future = {
+      ...summary('future'),
+      invocationKind: TraceInvocationKind.MCP,
+      operationKind: TraceOperationKind.TOOL,
+      operationName: 'future_lookup',
+      query: '',
+    }
+    const { screen } = renderIndex(() => ({
+      endpointLabel: 'reef.test',
+      referenceTimeMs: 120_000,
+      loadError: null,
+      traces: [first, future],
+    }))
+    const rendered = await screen
+
+    dispatchModKey('f', 'KeyF')
+    const search = rendered.getByPlaceholder('Search operations...')
+    await search.fill('future lookup')
+
+    await expect.element(rendered.getByText('Future lookup')).toBeVisible()
+    await expect.element(rendered.getByText('1 of 2 operations')).toBeVisible()
+    expect(rendered.getByText('First lookup').query()).toBeNull()
+  })
+
+  it('searches direct and MCP Search text while preserving Query classification', async () => {
+    const mcpSearch = {
+      ...summary('search'),
+      name: 'coral.mcp.call_tool',
+      invocationKind: TraceInvocationKind.MCP,
+      operationKind: TraceOperationKind.SEARCH,
+      operationName: 'search',
+      query: 'MCP SEARCH TEXT',
+    }
+    const directSearch = {
+      ...summary('direct-search'),
+      name: 'coral.search',
+      operationKind: TraceOperationKind.SEARCH,
+      operationName: 'search',
+      query: 'DIRECT SEARCH TEXT',
+    }
+    const queryNamedSearch = {
+      ...summary('query'),
+      operationKind: TraceOperationKind.QUERY,
+      operationName: 'search',
+      query: 'SELECT * FROM searchable_items',
+    }
+    const { screen } = renderIndex(() => ({
+      endpointLabel: 'reef.test',
+      referenceTimeMs: 120_000,
+      loadError: null,
+      traces: [mcpSearch, directSearch, queryNamedSearch],
+    }))
+    const rendered = await screen
+
+    dispatchModKey('f', 'KeyF')
+    const search = rendered.getByPlaceholder('Search operations...')
+    await search.fill('MCP SEARCH TEXT')
+    await expect.element(rendered.getByText('1 of 3 operations')).toBeVisible()
+    await expect.element(rendered.getByRole('link', { name: /MCP SEARCH TEXT/i })).toBeVisible()
+
+    await search.fill('DIRECT SEARCH TEXT')
+    await expect.element(rendered.getByText('1 of 3 operations')).toBeVisible()
+    await expect.element(rendered.getByRole('link', { name: /DIRECT SEARCH TEXT/i })).toBeVisible()
+
+    await search.fill('searchable_items')
+    await expect.element(rendered.getByText('1 of 3 operations')).toBeVisible()
+    await expect
+      .element(rendered.getByRole('link', { name: /SELECT \* FROM searchable_items/i }))
+      .toBeVisible()
   })
 })

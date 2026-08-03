@@ -12,7 +12,13 @@ import * as s from './traces.css'
 import { PageHeader } from './page-header'
 import { StatusBar } from './status-bar'
 import { TraceList } from './trace-list'
-import type { TraceSummaryData } from './trace-utils'
+import { traceLocation } from './trace-location'
+import {
+  hasTypedOperation,
+  operationLabel,
+  operationPreview,
+  type TraceSummaryData,
+} from './trace-utils'
 
 const TRACE_LIST_REFRESH_MS = 30_000
 
@@ -72,7 +78,7 @@ function HeaderActions({
                 inputRef.current?.blur()
               }
             }}
-            placeholder="Search queries..."
+            placeholder="Search operations..."
             ref={inputRef}
             value={searchText}
           />
@@ -130,7 +136,10 @@ export function TracesIndex({
   const filtered = traces.filter((trace) => {
     const needle = searchText.trim().toLowerCase()
     if (!needle) return true
-    return `${trace.query} ${trace.name} ${trace.traceId}`.toLowerCase().includes(needle)
+    const legacyName = hasTypedOperation(trace) ? '' : trace.name
+    return `${operationPreview(trace)} ${operationLabel(trace)} ${trace.operationName} ${legacyName} ${trace.traceId}`
+      .toLowerCase()
+      .includes(needle)
   })
 
   useEffect(() => setActiveIndex(null), [searchText])
@@ -160,13 +169,8 @@ export function TracesIndex({
         )
           return
         event.preventDefault()
-        navigate({
-          pathname: routePath('workspaceTrace', {
-            traceId: filtered[activeIndex].traceId,
-            workspaceId,
-          }),
-          search: location.search,
-        })
+        const trace = filtered[activeIndex]
+        navigate(traceLocation(workspaceId, trace.traceId, location.search))
       }
     }
     window.addEventListener('keydown', handler)
@@ -223,10 +227,10 @@ export function TracesIndex({
             description={
               loadError && traces.length === 0
                 ? loadError
-                : 'Make sure tracing is enabled, then run a SQL query to see it here in real-time.'
+                : 'Make sure tracing is enabled, then run an operation to see it here in real-time.'
             }
             iconName={loadError && traces.length === 0 ? 'CircleAlert' : 'Activity'}
-            title={loadError && traces.length === 0 ? 'Tracing unavailable' : 'No queries yet'}
+            title={loadError && traces.length === 0 ? 'Tracing unavailable' : 'No operations yet'}
           />
         )
       ) : (
