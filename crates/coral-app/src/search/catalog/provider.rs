@@ -34,6 +34,7 @@ use crate::state::AppStateLayout;
 
 const CATALOG_PROVIDER_RETRIEVAL_MULTIPLIER: usize = 5;
 const CATALOG_PROVIDER_MIN_RETRIEVAL_LIMIT: usize = 25;
+const MAX_FAILED_SOURCE_NAMES_IN_NOTE: usize = 3;
 
 impl SearchProvider for CatalogMetadataProvider {
     fn kind(&self) -> SearchProviderKind {
@@ -125,13 +126,13 @@ impl CatalogMetadataProvider {
                     limit,
                 }),
             ],
-            coverage: Some(ProviderCoverage {
+            coverage: ProviderCoverage {
                 eligible_units: documents,
                 searched_units: documents,
                 failed_units: u32::try_from(failed_sources.len()).unwrap_or(u32::MAX),
                 stale_index: stale,
                 ..ProviderCoverage::default()
-            }),
+            },
             degraded,
         })
     }
@@ -425,17 +426,30 @@ fn degraded_note(projection: &CatalogProjection, failed_source_names: &BTreeSet<
         notes.push("serving catalog results from a stale index".to_string());
     }
     if !failed_source_names.is_empty() {
-        notes.push(format!(
-            "{} source(s) failed to load: {}",
-            failed_source_names.len(),
-            failed_source_names
-                .iter()
-                .cloned()
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
+        notes.push(failed_sources_note(failed_source_names));
     }
     notes.join("; ")
+}
+
+fn failed_sources_note(failed_source_names: &BTreeSet<String>) -> String {
+    let displayed_names = failed_source_names
+        .iter()
+        .take(MAX_FAILED_SOURCE_NAMES_IN_NOTE)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    let omitted_count = failed_source_names
+        .len()
+        .saturating_sub(MAX_FAILED_SOURCE_NAMES_IN_NOTE);
+    let omitted_note = if omitted_count > 0 {
+        format!(", and {omitted_count} more")
+    } else {
+        String::new()
+    };
+    format!(
+        "{} source(s) failed to load: {displayed_names}{omitted_note}",
+        failed_source_names.len(),
+    )
 }
 
 /// Ranks entries by how well their own name, description, and guide text match.
@@ -796,10 +810,12 @@ fn catalog_index_failure(error: &SqliteSearchError) -> ProviderFailure {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use coral_engine::{TableFunctionArgumentInfo, TableFunctionInfo};
     use coral_spec::SourceTableFunctionKind;
 
-    use super::function_fields;
+    use super::{failed_sources_note, function_fields};
     use crate::search::result::{FieldRef, FieldRole, MatchEvidence};
 
     #[test]
@@ -837,6 +853,19 @@ mod tests {
 
         assert_eq!(arguments.len(), 6);
         assert_eq!(omitted, 0);
+    }
+
+    #[test]
+    fn failed_source_note_bounds_source_names() {
+        let failed = ["alpha", "bravo", "charlie", "delta", "echo"]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(
+            failed_sources_note(&failed),
+            "5 source(s) failed to load: alpha, bravo, charlie, and 2 more"
+        );
     }
 
     fn argument(name: &str, required: bool) -> TableFunctionArgumentInfo {

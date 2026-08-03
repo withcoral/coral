@@ -618,19 +618,11 @@ fn fts_search(
         "
         SELECT
             d.doc_id,
-            d.doc_kind,
             d.source_name,
             d.surface_kind,
             d.surface_name,
             d.field_name,
             d.field_role,
-            d.qualified_name,
-            d.title,
-            d.description,
-            f.title,
-            f.qualified_name,
-            f.description,
-            f.searchable_text,
             d.catalog_name
         FROM catalog_documents_fts f
         JOIN catalog_documents d
@@ -668,17 +660,17 @@ fn truncate_probe_hits(hits: &mut Vec<CatalogSearchHit>, limit: usize) -> bool {
 }
 
 fn hit_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CatalogSearchHit> {
-    let surface_kind_raw: String = row.get(3)?;
+    let surface_kind_raw: String = row.get(2)?;
     let surface_kind = surface_kind_from_storage(&surface_kind_raw)?;
-    let field_role_raw: String = row.get(6)?;
+    let field_role_raw: String = row.get(5)?;
     let field_role = field_role_from_storage(&field_role_raw)?;
     Ok(CatalogSearchHit {
         doc_id: row.get(0)?,
-        source_name: row.get(2)?,
-        catalog_name: row.get(14)?,
+        source_name: row.get(1)?,
+        catalog_name: row.get(6)?,
         surface_kind,
-        surface_name: row.get(4)?,
-        field_name: row.get(5)?,
+        surface_name: row.get(3)?,
+        field_name: row.get(4)?,
         field_role,
     })
 }
@@ -686,7 +678,7 @@ fn hit_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CatalogSearchHit> {
 fn surface_kind_from_storage(value: &str) -> rusqlite::Result<String> {
     match value {
         "" | "table" | "table_function" => Ok(value.to_string()),
-        _ => invalid_catalog_storage_value(3, "surface_kind", value),
+        _ => invalid_catalog_storage_value(2, "surface_kind", value),
     }
 }
 
@@ -697,7 +689,7 @@ fn field_role_from_storage(value: &str) -> rusqlite::Result<String> {
         | "table_filter"
         | "table_function_argument"
         | "table_function_result_column" => Ok(value.to_string()),
-        _ => invalid_catalog_storage_value(6, "field_role", value),
+        _ => invalid_catalog_storage_value(5, "field_role", value),
     }
 }
 

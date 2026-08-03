@@ -1,6 +1,6 @@
 //! Provider-facing Universal Search contracts and ordered registration.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, Weak};
@@ -181,16 +181,16 @@ pub(crate) trait SearchProvider: Send + Sync {
             }
         }
 
-        let coverage = prepared.coverage.map(|coverage| ProviderCoverage {
-            has_more: coverage.has_more || retrieval_limited,
-            ..coverage
-        });
+        let coverage = ProviderCoverage {
+            has_more: prepared.coverage.has_more || retrieval_limited,
+            ..prepared.coverage
+        };
         ProviderSearchOutcome {
             status: provider_status(
                 self.kind(),
                 &rankings,
                 &failed,
-                coverage,
+                &coverage,
                 prepared.degraded.as_deref(),
             ),
             rankings,
@@ -204,7 +204,7 @@ pub(crate) struct PreparedRetrievers {
     pub(crate) retrievers: Vec<Box<dyn Retriever>>,
     /// Provider-specific coverage. `returned_count` is filled in centrally once
     /// the retrievers have run.
-    pub(crate) coverage: Option<ProviderCoverage>,
+    pub(crate) coverage: ProviderCoverage,
     /// Degradation detected during preparation — a stale index, a drained
     /// queue, sources that failed to load. Independent of retriever failure,
     /// but reported the same way.
@@ -217,14 +217,15 @@ fn provider_status(
     provider: SearchProviderKind,
     rankings: &[Ranking],
     failed: &[(RetrieverId, RetrieverError)],
-    coverage: Option<ProviderCoverage>,
+    coverage: &ProviderCoverage,
     degraded: Option<&str>,
 ) -> ProviderStatus {
     let returned = rankings
         .iter()
-        .map(|ranking| ranking.matches.len())
-        .sum::<usize>();
-    let has_more = coverage.as_ref().is_some_and(|coverage| coverage.has_more);
+        .flat_map(|ranking| ranking.matches.iter().map(|entry_match| &entry_match.id))
+        .collect::<BTreeSet<_>>()
+        .len();
+    let has_more = coverage.has_more;
     let state = if !failed.is_empty() && rankings.is_empty() {
         SearchProviderState::Error
     } else if !failed.is_empty() || degraded.is_some() || has_more {
@@ -236,22 +237,29 @@ fn provider_status(
     } else {
         SearchProviderState::ResultsFound
     };
-    let coverage = coverage.map(|coverage| ProviderCoverage {
+    let coverage = ProviderCoverage {
         returned_count: u32::try_from(returned).unwrap_or(u32::MAX),
-        ..coverage
-    });
+        ..coverage.clone()
+    };
     ProviderStatus {
         provider,
         state,
-        note: status_note(failed, degraded),
-        coverage,
+        note: status_note(failed, degraded, has_more),
+        coverage: Some(coverage),
     }
 }
 
-fn status_note(failed: &[(RetrieverId, RetrieverError)], degraded: Option<&str>) -> String {
+fn status_note(
+    failed: &[(RetrieverId, RetrieverError)],
+    degraded: Option<&str>,
+    has_more: bool,
+) -> String {
     let mut notes = Vec::new();
     if let Some(degraded) = degraded {
         notes.push(degraded.to_string());
+    }
+    if has_more {
+        notes.push("local retrieval cap was reached".to_string());
     }
     if !failed.is_empty() {
         notes.push(retriever_failure_note(failed));
@@ -393,10 +401,14 @@ mod tests {
     use std::thread;
 
     use super::{
-        LocalSearchWriteCoordinator, PreparedRetrievers, ProviderFailure, SearchExecutionContext,
-        SearchProvider, SearchProviderRegistration, local_registrations,
+        LocalSearchWriteCoordinator, PreparedRetrievers, ProviderFailure, RetrieverError,
+        SearchExecutionContext, SearchProvider, SearchProviderRegistration, local_registrations,
+        provider_status,
     };
-    use crate::search::result::{SearchProviderKind, SearchProviderState};
+    use crate::search::result::{
+        MatchEvidence, ProviderCoverage, Ranking, RetrieverId, SearchProviderKind,
+        SearchProviderState, SearchSurfaceId, SearchSurfaceKind, SurfaceMatch,
+    };
     use crate::workspaces::WorkspaceName;
 
     #[test]
@@ -415,6 +427,53 @@ mod tests {
         assert_eq!(status.state, SearchProviderState::NotEnabled);
         assert!(status.coverage.is_none());
         assert!(status.note.contains("`observed_values_search`"));
+    }
+
+    #[test]
+    fn provider_coverage_counts_distinct_surfaces_across_retrievers() {
+        let id = SearchSurfaceId {
+            catalog_name: None,
+            schema_name: "github".to_string(),
+            name: "issues".to_string(),
+            kind: SearchSurfaceKind::Table,
+        };
+        let rankings = [RetrieverId::CatalogEntries, RetrieverId::CatalogFields]
+            .into_iter()
+            .map(|retriever| Ranking {
+                retriever,
+                matches: vec![SurfaceMatch {
+                    id: id.clone(),
+                    evidence: MatchEvidence::default(),
+                }],
+            })
+            .collect::<Vec<_>>();
+
+        let status = provider_status(
+            SearchProviderKind::CatalogMetadata,
+            &rankings,
+            &[],
+            &ProviderCoverage::default(),
+            None,
+        );
+
+        assert_eq!(status.coverage.expect("coverage").returned_count, 1);
+    }
+
+    #[test]
+    fn retrieval_cap_reports_why_provider_is_partial() {
+        let status = provider_status(
+            SearchProviderKind::CatalogMetadata,
+            &[],
+            &[] as &[(RetrieverId, RetrieverError)],
+            &ProviderCoverage {
+                has_more: true,
+                ..ProviderCoverage::default()
+            },
+            None,
+        );
+
+        assert_eq!(status.state, SearchProviderState::Partial);
+        assert_eq!(status.note, "local retrieval cap was reached");
     }
 
     #[test]

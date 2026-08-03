@@ -23,8 +23,8 @@ use coral_api::v1::{
     SearchProviderCoverage, SearchProviderState, SearchProviderStatus,
     SearchRequest as ProtoSearchRequest, SearchResponse as ProtoSearchResponse,
     SearchResult as ProtoSearchResult, SearchResultTruncation,
-    SearchStorageCleanupResult as ProtoSearchStorageCleanupResult,
-    SearchSurfaceKind as ProtoSearchSurfaceKind, SearchSurfaceRef, SearchTableShape,
+    SearchStorageCleanupResult as ProtoSearchStorageCleanupResult, SearchSurfaceRef,
+    SearchTableShape,
 };
 use tonic::{Request, Response, Status};
 
@@ -46,7 +46,7 @@ use crate::search::manager::SearchManager;
 use crate::search::result::{
     Field, FieldValues, ProviderCoverage, ProviderStatus, SearchManagerError, SearchProviderKind,
     SearchProviderState as DomainProviderState, SearchRequest, SearchResponse,
-    SearchResult as DomainSearchResult, SearchSurfaceId, SearchSurfaceKind, SurfaceShape,
+    SearchResult as DomainSearchResult, SearchSurfaceId, SurfaceShape,
 };
 use crate::sources::SourceName;
 use crate::task::manager::TaskManager;
@@ -413,14 +413,6 @@ fn surface_ref_to_proto(id: &SearchSurfaceId) -> SearchSurfaceRef {
         catalog_name: id.catalog_name.clone().unwrap_or_default(),
         schema_name: id.schema_name.clone(),
         name: id.name.clone(),
-        kind: entry_kind_to_proto(id.kind) as i32,
-    }
-}
-
-fn entry_kind_to_proto(kind: SearchSurfaceKind) -> ProtoSearchSurfaceKind {
-    match kind {
-        SearchSurfaceKind::Table => ProtoSearchSurfaceKind::Table,
-        SearchSurfaceKind::TableFunction => ProtoSearchSurfaceKind::TableFunction,
     }
 }
 

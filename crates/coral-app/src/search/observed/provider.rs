@@ -397,7 +397,10 @@ impl SearchProvider for ObservedValuesProvider {
         }
         Ok(PreparedRetrievers {
             retrievers: vec![Box::new(RetrievedValues { matches })],
-            coverage: outcome.status.coverage,
+            coverage: outcome
+                .status
+                .coverage
+                .expect("observed search outcomes always include coverage"),
             degraded,
         })
     }

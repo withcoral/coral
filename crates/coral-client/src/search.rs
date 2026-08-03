@@ -6,8 +6,8 @@ use std::collections::BTreeMap;
 
 use coral_api::v1::{
     SearchField, SearchFunctionShape, SearchProvider, SearchProviderCoverage, SearchProviderState,
-    SearchResponse, SearchResult, SearchResultTruncation, SearchSurfaceKind, SearchSurfaceRef,
-    SearchTableShape, TableFunction, search_result,
+    SearchResponse, SearchResult, SearchResultTruncation, SearchSurfaceRef, SearchTableShape,
+    TableFunction, search_result,
 };
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -335,7 +335,11 @@ fn result_text_lines(index: usize, result: &SearchResult) -> Vec<String> {
         return vec![format!("{index}. unknown result")];
     };
     let reference = entry_sql_reference(entry);
-    let kind = entry_kind_name(entry.kind);
+    let kind = match result.shape.as_ref() {
+        Some(search_result::Shape::Table(_)) => "table",
+        Some(search_result::Shape::Function(_)) => "function",
+        None => "unknown",
+    };
     let mut lines = vec![format!("{index}. [{kind}] {reference}")];
     if !result.description.is_empty() {
         lines.push(format!("   {}", result.description));
@@ -517,14 +521,6 @@ fn provider_state_name(state: i32) -> &'static str {
     }
 }
 
-fn entry_kind_name(kind: i32) -> &'static str {
-    match SearchSurfaceKind::try_from(kind) {
-        Ok(SearchSurfaceKind::Table) => "table",
-        Ok(SearchSurfaceKind::TableFunction) => "function",
-        Ok(SearchSurfaceKind::Unspecified) | Err(_) => "unknown",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -536,7 +532,6 @@ mod tests {
                 catalog_name: String::new(),
                 schema_name: "github".to_string(),
                 name: "repo_action_jobs".to_string(),
-                kind: SearchSurfaceKind::Table as i32,
             }),
             description: "Action jobs for a repository".to_string(),
             guide: "Filter by owner, repo and job_id.".to_string(),
@@ -559,6 +554,40 @@ mod tests {
                 values: vec!["acme".to_string()],
             }],
             omitted_matching_field_count: 2,
+            providers: vec![SearchProvider::CatalogMetadata as i32],
+        }
+    }
+
+    fn function_result() -> SearchResult {
+        SearchResult {
+            surface: Some(SearchSurfaceRef {
+                catalog_name: String::new(),
+                schema_name: "github".to_string(),
+                name: "search_issues".to_string(),
+            }),
+            description: "Search issues".to_string(),
+            guide: "Supply a query.".to_string(),
+            shape: Some(search_result::Shape::Function(SearchFunctionShape {
+                arguments: vec![
+                    SearchField {
+                        name: "query".to_string(),
+                        data_type: "Utf8".to_string(),
+                        required: true,
+                    },
+                    SearchField {
+                        name: "limit".to_string(),
+                        data_type: "Int64".to_string(),
+                        required: false,
+                    },
+                ],
+                returns: vec![SearchField {
+                    name: "title".to_string(),
+                    data_type: "Utf8".to_string(),
+                    required: false,
+                }],
+            })),
+            matching_values: Vec::new(),
+            omitted_matching_field_count: 0,
             providers: vec![SearchProvider::CatalogMetadata as i32],
         }
     }
@@ -679,13 +708,42 @@ mod tests {
     }
 
     #[test]
+    fn json_renders_function_arguments_and_returns() {
+        let value = search_response_json_value(&response(vec![function_result()]));
+
+        let result = first_result(&value);
+        assert_eq!(result.get("kind").and_then(Value::as_str), Some("function"));
+        assert_eq!(
+            result.pointer("/arguments/query").and_then(Value::as_str),
+            Some("Utf8")
+        );
+        assert_eq!(
+            result.pointer("/required/0").and_then(Value::as_str),
+            Some("query")
+        );
+        assert_eq!(
+            result.pointer("/returns/title").and_then(Value::as_str),
+            Some("Utf8")
+        );
+    }
+
+    #[test]
+    fn text_renders_function_arguments_and_returns() {
+        let text = format_search_response_text(&response(vec![function_result()]));
+
+        assert!(text.contains("[function] github.search_issues"));
+        assert!(text.contains("required: query"));
+        assert!(text.contains("arguments: limit"));
+        assert!(text.contains("returns: title"));
+    }
+
+    #[test]
     fn a_source_name_needing_quotes_stays_valid_sql() {
         let mut result = table_result();
         result.surface = Some(SearchSurfaceRef {
             catalog_name: String::new(),
             schema_name: "my-source".to_string(),
             name: "jobs".to_string(),
-            kind: SearchSurfaceKind::Table as i32,
         });
 
         let value = search_response_json_value(&response(vec![result]));
@@ -705,7 +763,6 @@ mod tests {
             catalog_name: "warehouse".to_string(),
             schema_name: "analytics".to_string(),
             name: "events".to_string(),
-            kind: SearchSurfaceKind::Table as i32,
         });
 
         let value = search_response_json_value(&response(vec![result]));

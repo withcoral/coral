@@ -212,8 +212,9 @@ pub(crate) struct SurfaceMatch {
     pub(crate) evidence: MatchEvidence,
 }
 
-/// Accumulates across retrievers. Merging is a fold, so union must not depend
-/// on the order retrievers ran in.
+/// Accumulates across retrievers. Matched fields keep their first-seen relevance
+/// order; matching values are canonicalized because their order has no rank
+/// meaning.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct MatchEvidence {
     pub(crate) matched_fields: Vec<FieldRef>,

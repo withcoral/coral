@@ -330,20 +330,8 @@ message SearchSurfaceRef {
   string schema_name = 1;
   // Table or table-function name.
   string name = 2;
-  // Whether the surface is a table or a table function.
-  SearchSurfaceKind kind = 3;
   // SQL catalog containing the schema. Empty for two-part surfaces.
   string catalog_name = 4;
-}
-
-// Kind of queryable catalog surface.
-enum SearchSurfaceKind {
-  // Unknown surface kind.
-  SEARCH_SURFACE_KIND_UNSPECIFIED = 0;
-  // Ordinary table.
-  SEARCH_SURFACE_KIND_TABLE = 1;
-  // Table function.
-  SEARCH_SURFACE_KIND_TABLE_FUNCTION = 2;
 }
 
 // Field layout for an ordinary table.

@@ -120,9 +120,7 @@ fn assemble_response(
         "fusing Universal Search rankings"
     );
     let fused = fusion::fuse(rankings);
-    let total_count = fused.len();
     let max_results = usize::try_from(context.request.limit).unwrap_or(usize::MAX);
-    let truncated = total_count > max_results || provider_has_more;
 
     let catalog = context
         .catalog_resolution
@@ -134,15 +132,17 @@ fn assemble_response(
     }
     // An entry the catalog can no longer resolve is dropped rather than
     // returned half-formed; that is what keeps every result queryable.
-    let results = catalog.map_or_else(Vec::new, |catalog| {
+    let resolved = catalog.map_or_else(Vec::new, |catalog| {
         fused
             .iter()
             .filter_map(|entry| {
                 resolve_entry(catalog, &entry.id, &entry.evidence, &entry.providers)
             })
-            .take(max_results)
             .collect::<Vec<_>>()
     });
+    let total_count = resolved.len();
+    let truncated = total_count > max_results || provider_has_more;
+    let results = resolved.into_iter().take(max_results).collect::<Vec<_>>();
     let returned_count = u32::try_from(results.len()).unwrap_or(u32::MAX);
 
     SearchResponse {

@@ -14,6 +14,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
+use coral_client::{format_schema_table_equivalent, format_table_name, optional_catalog_name};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
@@ -42,8 +43,8 @@ const TASK_LIFECYCLE_TOOLS: [&str; 2] = ["start_task", "end_task"];
 const COLLECTION_PROMPT_PREFIX: &str = "Find the Coral catalog surface that would help answer the question below.\nCall coral.search exactly once with limit 10. Choose the search query yourself.\nIf Coral requires start_task before other tools, call it first and call end_task afterwards.\nDo not call any other tool and do not execute SQL. Reply DONE after the search.\n\nQuestion: ";
 const COLLECTION_PROMPT_SUFFIX: &str = "\n";
 
-const TABLES_QUERY: &str = "SELECT schema_name, table_name, description, guide, required_filters FROM coral.tables WHERE schema_name <> 'coral' ORDER BY schema_name, table_name";
-const COLUMNS_QUERY: &str = "SELECT schema_name, table_name, ordinal_position, column_name, data_type, is_nullable, is_virtual, is_required_filter, description FROM coral.columns WHERE schema_name <> 'coral' ORDER BY schema_name, table_name, ordinal_position, column_name";
+const TABLES_QUERY: &str = "SELECT catalog_name, schema_name, table_name, description, guide, required_filters FROM coral.tables WHERE schema_name <> 'coral' ORDER BY catalog_name, schema_name, table_name";
+const COLUMNS_QUERY: &str = "SELECT catalog_name, schema_name, table_name, ordinal_position, column_name, data_type, is_nullable, is_virtual, is_required_filter, description FROM coral.columns WHERE schema_name <> 'coral' ORDER BY catalog_name, schema_name, table_name, ordinal_position, column_name";
 const FUNCTIONS_QUERY: &str = "SELECT schema_name, function_name, description, arguments_json, result_columns_json, kind, search_limits_json FROM coral.table_functions WHERE schema_name <> 'coral' ORDER BY schema_name, function_name";
 
 #[derive(Debug, clap::Args)]
@@ -201,6 +202,8 @@ struct Inventory {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct TableRow {
+    #[serde(default)]
+    catalog_name: String,
     schema_name: String,
     table_name: String,
     description: String,
@@ -210,6 +213,8 @@ struct TableRow {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ColumnRow {
+    #[serde(default)]
+    catalog_name: String,
     schema_name: String,
     table_name: String,
     ordinal_position: i64,
@@ -250,6 +255,8 @@ struct FunctionResultColumn {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 struct Target {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    catalog_name: String,
     schema_name: String,
     surface_kind: String,
     surface_name: String,
@@ -449,24 +456,28 @@ fn validate_inventory(inventory: &Inventory) -> Result<()> {
 }
 
 fn sample_inventory(inventory: &Inventory, count: usize, seed: u64) -> Result<Vec<Sample>> {
-    let mut tables_by_schema = BTreeMap::<String, Vec<&TableRow>>::new();
-    let mut functions_by_schema = BTreeMap::<String, Vec<&FunctionRow>>::new();
-    let mut columns_by_table = BTreeMap::<(String, String), Vec<&ColumnRow>>::new();
+    let mut tables_by_schema = BTreeMap::<(String, String), Vec<&TableRow>>::new();
+    let mut functions_by_schema = BTreeMap::<(String, String), Vec<&FunctionRow>>::new();
+    let mut columns_by_table = BTreeMap::<(String, String, String), Vec<&ColumnRow>>::new();
     for table in &inventory.tables {
         tables_by_schema
-            .entry(table.schema_name.clone())
+            .entry((table.catalog_name.clone(), table.schema_name.clone()))
             .or_default()
             .push(table);
     }
     for function in &inventory.functions {
         functions_by_schema
-            .entry(function.schema_name.clone())
+            .entry((String::new(), function.schema_name.clone()))
             .or_default()
             .push(function);
     }
     for column in &inventory.columns {
         columns_by_table
-            .entry((column.schema_name.clone(), column.table_name.clone()))
+            .entry((
+                column.catalog_name.clone(),
+                column.schema_name.clone(),
+                column.table_name.clone(),
+            ))
             .or_default()
             .push(column);
     }
@@ -500,7 +511,7 @@ fn sample_inventory(inventory: &Inventory, count: usize, seed: u64) -> Result<Ve
             (false, false) => rng.index(2) == 1,
             (true, false) => true,
             (false, true) => false,
-            (true, true) => bail!("schema {schema} has no sampleable surfaces"),
+            (true, true) => bail!("catalog/schema {schema:?} has no sampleable surfaces"),
         };
         let (target, metadata) = if choose_function {
             let function = choose(functions, &mut rng).context("choosing table function")?;
@@ -521,10 +532,11 @@ fn sample_inventory(inventory: &Inventory, count: usize, seed: u64) -> Result<Ve
 
 fn sample_table(
     table: &TableRow,
-    columns_by_table: &BTreeMap<(String, String), Vec<&ColumnRow>>,
+    columns_by_table: &BTreeMap<(String, String, String), Vec<&ColumnRow>>,
     rng: &mut SplitMix64,
 ) -> Result<(Target, SampleMetadata)> {
     let parent_target = Target {
+        catalog_name: table.catalog_name.clone(),
         schema_name: table.schema_name.clone(),
         surface_kind: "table".to_string(),
         surface_name: table.table_name.clone(),
@@ -542,7 +554,11 @@ fn sample_table(
     }
 
     let columns: &[&ColumnRow] = columns_by_table
-        .get(&(table.schema_name.clone(), table.table_name.clone()))
+        .get(&(
+            table.catalog_name.clone(),
+            table.schema_name.clone(),
+            table.table_name.clone(),
+        ))
         .map_or(&[], Vec::as_slice);
     let filters = table
         .required_filters
@@ -592,6 +608,7 @@ fn sample_function(
     rng: &mut SplitMix64,
 ) -> Result<(Target, SampleMetadata)> {
     let parent_target = Target {
+        catalog_name: String::new(),
         schema_name: function.schema_name.clone(),
         surface_kind: "table_function".to_string(),
         surface_name: function.function_name.clone(),
@@ -810,7 +827,7 @@ fn generator_prompt(samples: &[Sample]) -> Result<String> {
             json!({
                 "sample_id": sample.id,
                 "target": sample.target,
-                "provider": sample.target.schema_name,
+                "provider": target_provider(&sample.target),
                 "never_use_all_of_these_words_together": leak_prone_words(&sample.target),
             })
         })
@@ -833,16 +850,38 @@ fn generator_prompt(samples: &[Sample]) -> Result<String> {
 /// leaks is still usable as long as the leak is visible in the report, and a
 /// hard reject would bias the corpus toward whatever phrasings survive it.
 fn question_leakage(case: &CorpusCase) -> (Option<bool>, bool) {
-    let question = case.question.to_lowercase();
-    let words = question
-        .split(|character: char| !character.is_alphanumeric())
-        .filter(|word| !word.is_empty())
-        .collect::<BTreeSet<_>>();
+    let words = normalized_words(&case.question);
     let leaked = {
         let prone = leak_prone_words(&case.target);
-        (!prone.is_empty()).then(|| prone.iter().all(|word| words.contains(word.as_str())))
+        (!prone.is_empty()).then(|| prone.iter().all(|word| words.contains(word)))
     };
-    (leaked, words.contains(case.target.schema_name.as_str()))
+    (
+        leaked,
+        question_names_provider(&case.question, &case.target),
+    )
+}
+
+fn target_provider(target: &Target) -> &str {
+    if target.catalog_name.is_empty() {
+        &target.schema_name
+    } else {
+        &target.catalog_name
+    }
+}
+
+fn normalized_words(value: &str) -> BTreeSet<String> {
+    value
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_lowercase)
+        .collect()
+}
+
+fn question_names_provider(question: &str, target: &Target) -> bool {
+    let question_words = normalized_words(question);
+    normalized_words(target_provider(target))
+        .iter()
+        .all(|word| question_words.contains(word))
 }
 
 fn generator_output_schema() -> Value {
@@ -873,10 +912,11 @@ fn generator_output_schema() -> Value {
 }
 
 fn validate_generated_batch(samples: &[Sample], questions: &[GeneratedQuestion]) -> Result<()> {
-    let expected = samples
+    let sample_by_id = samples
         .iter()
-        .map(|sample| sample.id.as_str())
-        .collect::<BTreeSet<_>>();
+        .map(|sample| (sample.id.as_str(), sample))
+        .collect::<BTreeMap<_, _>>();
+    let expected = sample_by_id.keys().copied().collect::<BTreeSet<_>>();
     let expected_styles = BTreeSet::from(QUESTION_STYLES);
     let mut counts = BTreeMap::<&str, usize>::new();
     let mut styles = BTreeMap::<&str, BTreeSet<&str>>::new();
@@ -886,6 +926,23 @@ fn validate_generated_batch(samples: &[Sample], questions: &[GeneratedQuestion])
                 "generator returned unknown sample_id {}",
                 question.sample_id
             );
+        }
+        let sample = sample_by_id
+            .get(question.sample_id.as_str())
+            .expect("known sample ID");
+        let provider_named = question_names_provider(&question.question, &sample.target);
+        match question.style.as_str() {
+            "source_named" if !provider_named => bail!(
+                "source_named question for {} must name provider {}",
+                question.sample_id,
+                target_provider(&sample.target)
+            ),
+            "source_omitted" if provider_named => bail!(
+                "source_omitted question for {} must omit provider {}",
+                question.sample_id,
+                target_provider(&sample.target)
+            ),
+            _ => {}
         }
         *counts.entry(question.sample_id.as_str()).or_default() += 1;
         styles
@@ -1685,7 +1742,6 @@ fn column_hint_matches(target: &Target, result: &Value) -> bool {
 }
 
 fn owner_result_matches(target: &Target, result: &Value) -> bool {
-    let qualified_name = format!("{}.{}", target.schema_name, target.surface_name);
     match result_shape(result) {
         ResultShape::Entry => {
             let expected_kind = match target.surface_kind.as_str() {
@@ -1693,11 +1749,21 @@ fn owner_result_matches(target: &Target, result: &Value) -> bool {
                 "table_function" => "function",
                 _ => return false,
             };
+            let qualified_name = format_schema_table_equivalent(
+                optional_catalog_name(&target.catalog_name),
+                &target.schema_name,
+                &target.surface_name,
+            );
             result.get("kind").and_then(Value::as_str) == Some(expected_kind)
                 && result.get("sql_reference").and_then(Value::as_str)
                     == Some(qualified_name.as_str())
         }
         ResultShape::CatalogMetadata => {
+            let qualified_name = format_table_name(
+                optional_catalog_name(&target.catalog_name),
+                &target.schema_name,
+                &target.surface_name,
+            );
             let Some(item) = result.pointer("/catalog_metadata/item") else {
                 return false;
             };
@@ -2893,15 +2959,19 @@ mod tests {
             serde_json::to_string(&first).expect("serialize first"),
             serde_json::to_string(&second).expect("serialize second")
         );
-        let mut counts = BTreeMap::<&str, usize>::new();
+        let mut counts = BTreeMap::<(&str, &str), usize>::new();
         for sample in &first {
-            *counts.entry(&sample.target.schema_name).or_default() += 1;
+            *counts
+                .entry((&sample.target.catalog_name, &sample.target.schema_name))
+                .or_default() += 1;
             assert!(
                 inventory.tables.iter().any(|table| {
-                    table.schema_name == sample.target.schema_name
+                    table.catalog_name == sample.target.catalog_name
+                        && table.schema_name == sample.target.schema_name
                         && table.table_name == sample.target.surface_name
                 }) || inventory.functions.iter().any(|function| {
-                    function.schema_name == sample.target.schema_name
+                    sample.target.catalog_name.is_empty()
+                        && function.schema_name == sample.target.schema_name
                         && function.function_name == sample.target.surface_name
                 })
             );
@@ -2913,6 +2983,7 @@ mod tests {
     fn inventory_rejects_coral_system_surfaces() {
         let mut inventory = fixture_inventory();
         inventory.tables.push(TableRow {
+            catalog_name: String::new(),
             schema_name: "coral".to_string(),
             table_name: "tables".to_string(),
             description: String::new(),
@@ -2944,8 +3015,27 @@ mod tests {
     }
 
     #[test]
+    fn generated_batch_enforces_provider_presence_for_each_style() {
+        let sample = fixture_sample();
+        let mut questions = QUESTION_STYLES
+            .into_iter()
+            .map(|style| fixture_generated_question(&sample.id, style))
+            .collect::<Vec<_>>();
+        questions
+            .first_mut()
+            .expect("source_named question")
+            .question = "Which issues are blocked?".to_string();
+
+        let error = validate_generated_batch(&[sample], &questions)
+            .expect_err("source_named question must name its provider");
+
+        assert!(error.to_string().contains("must name provider linear"));
+    }
+
+    #[test]
     fn leakage_only_counts_a_compound_name_reproduced_in_full() {
         let compound = Target {
+            catalog_name: String::new(),
             schema_name: "notion".to_string(),
             surface_kind: "table_function".to_string(),
             surface_name: "search_data_source_templates".to_string(),
@@ -2979,6 +3069,23 @@ mod tests {
         );
     }
 
+    #[test]
+    fn provider_detection_treats_identifier_separators_as_word_boundaries() {
+        let target = Target {
+            catalog_name: "google_ads".to_string(),
+            schema_name: "campaigns".to_string(),
+            surface_kind: "table".to_string(),
+            surface_name: "reports".to_string(),
+            field_role: None,
+            field_name: None,
+        };
+
+        assert!(super::question_names_provider(
+            "Show Google Ads campaign reports",
+            &target
+        ));
+    }
+
     fn fixture_case(target: &Target, question: &str) -> CorpusCase {
         CorpusCase {
             format_version: FORMAT_VERSION,
@@ -2995,6 +3102,7 @@ mod tests {
     #[test]
     fn rank_evaluation_reports_target_parent_and_child_separately() {
         let target = Target {
+            catalog_name: String::new(),
             schema_name: "github".to_string(),
             surface_kind: "table_function".to_string(),
             surface_name: "search_issues".to_string(),
@@ -3025,6 +3133,7 @@ mod tests {
     #[test]
     fn child_selection_requires_the_matching_field_role() {
         let target = Target {
+            catalog_name: String::new(),
             schema_name: "notion".to_string(),
             surface_kind: "table_function".to_string(),
             surface_name: "search_data_source_templates".to_string(),
@@ -3048,6 +3157,7 @@ mod tests {
     #[test]
     fn child_selection_accepts_argument_name_arrays() {
         let target = Target {
+            catalog_name: String::new(),
             schema_name: "notion".to_string(),
             surface_kind: "table_function".to_string(),
             surface_name: "search_data_source_templates".to_string(),
@@ -3071,6 +3181,7 @@ mod tests {
     #[test]
     fn parent_target_uses_the_same_rank_for_target_and_parent() {
         let target = Target {
+            catalog_name: String::new(),
             schema_name: "github".to_string(),
             surface_kind: "table".to_string(),
             surface_name: "issues".to_string(),
@@ -3091,8 +3202,29 @@ mod tests {
     }
 
     #[test]
+    fn catalog_qualified_target_matches_quoted_sql_reference() {
+        let target = Target {
+            catalog_name: "warehouse-prod".to_string(),
+            schema_name: "sales-data".to_string(),
+            surface_kind: "table".to_string(),
+            surface_name: "order items".to_string(),
+            field_role: None,
+            field_name: None,
+        };
+        let response = json!({"results": [{
+            "kind": "table",
+            "sql_reference": "\"warehouse-prod\".\"sales-data\".\"order items\""
+        }]});
+
+        let evaluation = evaluate_response(&target, &response);
+
+        assert_eq!(evaluation.target_rank, Some(1));
+    }
+
+    #[test]
     fn static_parent_schema_does_not_count_as_child_selection() {
         let target = Target {
+            catalog_name: String::new(),
             schema_name: "datadog".to_string(),
             surface_kind: "table".to_string(),
             surface_name: "users".to_string(),
@@ -3382,6 +3514,7 @@ mod tests {
             question: "Which issues are blocked?".to_string(),
             rationale: "Find issue relations".to_string(),
             target: Target {
+                catalog_name: String::new(),
                 schema_name: "linear".to_string(),
                 surface_kind: "table".to_string(),
                 surface_name: "issue_relations".to_string(),
@@ -3397,6 +3530,7 @@ mod tests {
             format_version: 1,
             id: "sample".to_string(),
             target: Target {
+                catalog_name: String::new(),
                 schema_name: "linear".to_string(),
                 surface_kind: "table".to_string(),
                 surface_name: "issues".to_string(),
@@ -3416,7 +3550,11 @@ mod tests {
         GeneratedQuestion {
             sample_id: sample_id.to_string(),
             style: style.to_string(),
-            question: "Which issues are blocked?".to_string(),
+            question: if style == "source_named" {
+                "Which Linear issues are blocked?".to_string()
+            } else {
+                "Which issues are blocked?".to_string()
+            },
             rationale: "Find issue relations".to_string(),
         }
     }
@@ -3445,6 +3583,7 @@ mod tests {
             question: "Which issues are blocked?".to_string(),
             query: "blocked issues".to_string(),
             target: Target {
+                catalog_name: String::new(),
                 schema_name: "linear".to_string(),
                 surface_kind: "table".to_string(),
                 surface_name: "issue_relations".to_string(),
@@ -3460,6 +3599,7 @@ mod tests {
         Inventory {
             tables: vec![
                 TableRow {
+                    catalog_name: String::new(),
                     schema_name: "tables_only".to_string(),
                     table_name: "events".to_string(),
                     description: "Events".to_string(),
@@ -3467,6 +3607,7 @@ mod tests {
                     required_filters: "id".to_string(),
                 },
                 TableRow {
+                    catalog_name: String::new(),
                     schema_name: "mixed".to_string(),
                     table_name: "issues".to_string(),
                     description: "Issues".to_string(),
@@ -3476,6 +3617,7 @@ mod tests {
             ],
             columns: vec![
                 ColumnRow {
+                    catalog_name: String::new(),
                     schema_name: "tables_only".to_string(),
                     table_name: "events".to_string(),
                     ordinal_position: 0,
@@ -3487,6 +3629,7 @@ mod tests {
                     description: "Event ID".to_string(),
                 },
                 ColumnRow {
+                    catalog_name: String::new(),
                     schema_name: "mixed".to_string(),
                     table_name: "issues".to_string(),
                     ordinal_position: 0,

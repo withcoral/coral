@@ -94,16 +94,11 @@ Enable them persistently using Coral [runtime features](/reference/configuration
 ### JSON response
 
 With `--json`, the response separates `results`, `provider_statuses`, and
-`truncation`. Each result identifies its provider and typed result kind.
-Catalog table results include `sql_reference`; table-function results include
-`sql_reference` and `sql_call_example`. Catalog field-level results include
-`surface_sql_reference`, identifying the table or table function that owns the
-matching column, filter, argument, or result column.
-
-Observed-value results include the value, its `schema_name`, surface, column,
-field path, observation count, and when it was last observed. `schema_name` is
-the runtime, query-visible SQL schema to use in a query; it can differ from the
-installed source name when one source exposes multiple runtime components.
+`truncation`. Each result is one table or table function. It includes its
+`kind`, SQL reference, contributing providers, and available description or
+guide. Table results can include `fields` and `required`. Function results can
+include `arguments`, `required`, and `returns`. Matching observed values are
+grouped by field in `matching_values` on the same result.
 
 The `catalog_metadata` and `observed_values` provider statuses report whether
 each local search found matches, completed with no matches, returned partial
