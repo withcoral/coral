@@ -82,7 +82,7 @@ bind_addr = "127.0.0.1:14555"
 ```
 
 <Warning>
-  The native gRPC server does not authenticate clients. A non-loopback bind exposes Coral and its configured sources to any client that can reach the port. Protect access with a trusted network boundary or authenticating proxy.
+  Without `[auth]`, the native gRPC server does not authenticate clients. A non-loopback bind exposes Coral and its configured sources to any client that can reach the port. Protect access with a trusted network boundary or authenticating proxy.
 </Warning>
 
 MCP Streamable HTTP is disabled by default. Enable its companion listener under
@@ -95,6 +95,108 @@ bind = "127.0.0.1:14556"
 ```
 
 The unauthenticated MCP listener is restricted to loopback addresses.
+
+To require Coral access tokens, configure the authorization-server issuer, a
+session signing key, and the upstream identity provider.
+
+Each public surface has a `public_url` that identifies it as an OAuth protected
+resource, and that URL is the audience of the tokens minted for it. MCP HTTP is
+the public surface today. The native gRPC API is private — it is reached through
+the surfaces in front of it — so it has no `public_url` of its own and instead
+accepts a token minted for any configured public surface. An authenticated
+instance therefore needs at least one public surface; without one, nothing can
+issue a token and every login fails.
+
+```toml
+[auth]
+http_bind_addr = "127.0.0.1:14557"
+
+[auth.authorization_server]
+issuer = "https://auth.example"
+
+[auth.session]
+signing_key_file = "session.key"
+access_token_ttl_seconds = 3600
+
+[auth.provider]
+issuer = "https://accounts.example"
+client_id = "coral"
+client_secret_env = "CORAL_OIDC_CLIENT_SECRET"
+redirect_uri = "https://auth.example/auth/oidc/callback"
+
+[server.mcp_http]
+enabled = true
+bind = "0.0.0.0:14556"
+public_url = "https://coral.example/mcp"
+```
+
+The gRPC listener needs no identifier of its own; it is gated as soon as `[auth]`
+is configured:
+
+```toml
+[server]
+bind_addr = "0.0.0.0:14555"
+```
+
+<Warning>
+  Any valid session token grants full access to the instance and every source
+  configured in it. Coral does not scope access per user, per workspace, or per
+  source today, so issuing a token is equivalent to granting complete access.
+</Warning>
+
+The signing key file must contain a PKCS#8 DER-encoded P-256 private key and is
+resolved relative to Coral's config directory. `access_token_ttl_seconds`
+defaults to 30 days (`2592000`), which is a long life for a bearer token that
+grants everything — set it explicitly. A public surface accepts only tokens whose
+audience is its own canonical `public_url`, so a token minted for one surface
+cannot be replayed at another.
+
+The TTL also bounds how long an MCP session lasts, so the shortest value is not
+automatically the right one. An MCP session is bound to the token that opened it.
+Once that token expires, the surface answers `401` with a `WWW-Authenticate`
+challenge, and a request that carries a freshly issued token under the same
+`Mcp-Session-Id` is answered with `403` — not the `404` that tells an MCP client
+its session is gone and a new one should be initialized. Sessions are therefore
+not carried across a token rotation: the client has to open a new session after
+re-authenticating, and not every client does that on its own. Coral issues no
+refresh tokens either, so every rotation is a full authorization round trip
+through the identity provider. Choose a TTL short enough to bound how long a
+leaked token grants everything, and long enough that clients are not reconnecting
+constantly.
+
+`auth.http_bind_addr` is where Coral serves the OAuth endpoints — discovery,
+authorize, and token — that `auth.authorization_server.issuer` advertises. It
+defaults to `127.0.0.1:0`, an ephemeral port, which is fine only if nothing needs
+to reach it at a predictable address. Because clients resolve the issuer URL and
+must arrive at this listener, set a fixed port whenever the issuer is a public URL
+and point the TLS terminator for that hostname at it.
+
+The `grpc.health.v1.Health` service stays unauthenticated so probes work without a
+credential. It answers two different questions, and probes should ask for the one
+they mean:
+
+- The empty service name reports **process liveness** from a constant. Point
+  liveness probes here — it stays `SERVING` while the engine is degraded, so a
+  struggling instance is not restarted out from under you.
+- The `coral.readiness` service reports **engine readiness**, answering from the
+  catalog. Point readiness probes here so a wedged engine is taken out of
+  rotation. The answer is cached briefly, so polling it frequently is cheap.
+
+<Warning>
+  **Coral terminates no TLS.** Every listener it opens speaks cleartext, so any
+  bind outside loopback exposes that traffic to the network: without `[auth]`,
+  full access to the instance; with it, the bearer tokens clients send, which can
+  be read off the wire and replayed.
+
+  Coral does not stop you binding remotely — that is a deployment decision. But a
+  non-loopback bind is only safe behind TLS termination that fronts the listener,
+  with untrusted clients kept off it. `coral server` prints a warning on startup
+  for any non-loopback bind it serves, gRPC or MCP HTTP.
+</Warning>
+
+While MCP HTTP and gRPC run in one process started by `coral server`, the gRPC
+bind must be loopback or wildcard so MCP can forward the bearer over a loopback
+connection.
 
 ## Runtime features
 
