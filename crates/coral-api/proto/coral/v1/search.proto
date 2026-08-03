@@ -2,7 +2,6 @@ syntax = "proto3";
 
 package coral.v1;
 
-import "coral/v1/catalog.proto";
 import "coral/v1/resources.proto";
 
 // Universal Search request for clue routing over Coral metadata and local memory.

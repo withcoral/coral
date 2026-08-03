@@ -89,9 +89,19 @@ fn assemble_response(
     outcomes: Vec<ProviderSearchOutcome>,
 ) -> SearchResponse {
     let provider_has_more = providers_have_more(&outcomes);
-    let provider_statuses = outcomes
+    let mut provider_statuses = outcomes
         .iter()
         .map(|outcome| outcome.status.clone())
+        .collect::<Vec<_>>();
+    let matched_providers = outcomes
+        .iter()
+        .filter(|outcome| {
+            outcome
+                .rankings
+                .iter()
+                .any(|ranking| !ranking.matches.is_empty())
+        })
+        .map(|outcome| outcome.status.provider)
         .collect::<Vec<_>>();
 
     // Every retriever from every provider fuses into one ordering. An entry
@@ -119,6 +129,9 @@ fn assemble_response(
         .as_ref()
         .ok()
         .map(|resolution| &resolution.catalog);
+    if catalog.is_none() {
+        mark_catalog_unresolved(&mut provider_statuses, &matched_providers);
+    }
     // An entry the catalog can no longer resolve is dropped rather than
     // returned half-formed; that is what keeps every result queryable.
     let results = catalog.map_or_else(Vec::new, |catalog| {
@@ -141,6 +154,27 @@ fn assemble_response(
             max_results: context.request.limit,
             note: truncation_note(truncated, provider_has_more, total_count, max_results),
         },
+    }
+}
+
+fn mark_catalog_unresolved(
+    statuses: &mut [ProviderStatus],
+    unresolved_providers: &[SearchProviderKind],
+) {
+    for status in statuses {
+        if !unresolved_providers.contains(&status.provider) {
+            continue;
+        }
+        status.state = crate::search::result::SearchProviderState::Error;
+        if !status.note.is_empty() {
+            status.note.push(' ');
+        }
+        status
+            .note
+            .push_str("matches could not be resolved because catalog metadata is unavailable");
+        if let Some(coverage) = &mut status.coverage {
+            coverage.returned_count = 0;
+        }
     }
 }
 
@@ -184,7 +218,9 @@ mod tests {
 
     use coral_engine::{CatalogInfo, TableInfo};
 
-    use super::{UniversalSearchEngine, providers_have_more, truncation_note};
+    use super::{
+        UniversalSearchEngine, mark_catalog_unresolved, providers_have_more, truncation_note,
+    };
     use crate::catalog::model::CatalogResolution;
     use crate::search::provider::{
         PreparedRetrievers, ProviderFailure, ProviderSearchOutcome, SearchExecutionContext,
@@ -211,6 +247,32 @@ mod tests {
         let note = truncation_note(true, false, 12, 10);
 
         assert_eq!(note, "returned 10 of 12 search hints");
+    }
+
+    #[test]
+    fn unresolved_matches_do_not_report_returned_provider_results() {
+        let mut statuses = vec![ProviderStatus {
+            provider: SearchProviderKind::ObservedValues,
+            state: SearchProviderState::ResultsFound,
+            note: "found one match".to_string(),
+            coverage: Some(ProviderCoverage {
+                returned_count: 1,
+                ..ProviderCoverage::default()
+            }),
+        }];
+
+        mark_catalog_unresolved(&mut statuses, &[SearchProviderKind::ObservedValues]);
+
+        let status = statuses.first().expect("observed status");
+        assert_eq!(status.state, SearchProviderState::Error);
+        assert_eq!(
+            status
+                .coverage
+                .as_ref()
+                .map(|coverage| coverage.returned_count),
+            Some(0)
+        );
+        assert!(status.note.contains("catalog metadata is unavailable"));
     }
 
     #[test]

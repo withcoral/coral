@@ -380,6 +380,9 @@ impl SearchProvider for ObservedValuesProvider {
                 coverage: None,
             })?;
         let outcome = self.search(&context.request, Ok(policy));
+        if let Some(failure) = observed_outcome_failure(&outcome.status) {
+            return Err(failure);
+        }
         let degraded = (outcome.status.state == SearchProviderState::Partial)
             .then(|| outcome.status.note.clone());
         let mut matches = outcome
@@ -402,6 +405,14 @@ impl SearchProvider for ObservedValuesProvider {
             retrieval_limited: Arc::new(AtomicBool::new(false)),
         })
     }
+}
+
+fn observed_outcome_failure(status: &ProviderStatus) -> Option<ProviderFailure> {
+    (status.state == SearchProviderState::Error).then(|| ProviderFailure {
+        state: status.state,
+        note: status.note.clone(),
+        coverage: status.coverage.clone(),
+    })
 }
 
 /// Carries values already retrieved during preparation.
@@ -804,10 +815,11 @@ fn observed_sqlite_app_error(error: &SqliteSearchError) -> AppError {
 
 #[cfg(test)]
 mod entry_match_tests {
-    use super::{observed_entry_matches, query_names_value};
+    use super::{observed_entry_matches, observed_outcome_failure, query_names_value};
     use crate::hash::sha256_hex;
     use crate::search::observed::sqlite_projection::ObservedValuesSearchHit;
     use crate::search::observed::sqlite_queue::ObservedValuesSurfaceKind;
+    use crate::search::result::{ProviderStatus, SearchProviderKind, SearchProviderState};
 
     #[test]
     fn a_value_the_query_names_becomes_evidence_on_its_entry() {
@@ -844,6 +856,20 @@ mod entry_match_tests {
         ));
         assert!(!query_names_value(&["ui".to_string()], "UI-520"));
         assert!(!query_names_value(&[sha256_hex(b"UI-520")], "UI-520"));
+    }
+
+    #[test]
+    fn observed_storage_error_remains_a_provider_failure() {
+        let failure = observed_outcome_failure(&ProviderStatus {
+            provider: SearchProviderKind::ObservedValues,
+            state: SearchProviderState::Error,
+            note: "observed value storage is unavailable".to_string(),
+            coverage: None,
+        })
+        .expect("error status must stop provider preparation");
+
+        assert_eq!(failure.state, SearchProviderState::Error);
+        assert_eq!(failure.note, "observed value storage is unavailable");
     }
 
     fn hit(

@@ -570,9 +570,17 @@ mod tests {
     #[test]
     fn snapshot_fingerprint_and_documents_include_catalog_identity() {
         let mut first_catalog = catalog_with_table("messages");
-        first_catalog.tables[0].catalog_name = Some("primary".to_string());
+        first_catalog
+            .tables
+            .first_mut()
+            .expect("fixture table")
+            .catalog_name = Some("primary".to_string());
         let mut second_catalog = first_catalog.clone();
-        second_catalog.tables[0].catalog_name = Some("archive".to_string());
+        second_catalog
+            .tables
+            .first_mut()
+            .expect("fixture table")
+            .catalog_name = Some("archive".to_string());
 
         let first = CatalogSearchSnapshot::from_catalog(&first_catalog);
         let second = CatalogSearchSnapshot::from_catalog(&second_catalog);

@@ -743,37 +743,44 @@ fn function_fields(
     let mut returns = Vec::new();
     let mut omitted = 0_usize;
     for matched in &evidence.matched_fields {
-        let selected = arguments.len().saturating_sub(required_count) + returns.len();
-        if selected >= MATCHING_FIELD_LIMIT {
-            omitted = omitted.saturating_add(1);
-            continue;
-        }
         match matched.role {
             FieldRole::Argument => {
-                if let Some(argument) = function
+                let Some(argument) = function
                     .arguments
                     .iter()
                     .find(|argument| argument.name == matched.name && !argument.required)
-                {
-                    arguments.push(Field {
-                        name: argument.name.clone(),
-                        data_type: argument.data_type.clone(),
-                        required: false,
-                    });
+                else {
+                    continue;
+                };
+                let selected = arguments.len().saturating_sub(required_count) + returns.len();
+                if selected >= MATCHING_FIELD_LIMIT {
+                    omitted = omitted.saturating_add(1);
+                    continue;
                 }
+                arguments.push(Field {
+                    name: argument.name.clone(),
+                    data_type: argument.data_type.clone(),
+                    required: false,
+                });
             }
             FieldRole::ResultColumn => {
-                if let Some(column) = function
+                let Some(column) = function
                     .result_columns
                     .iter()
                     .find(|column| column.name == matched.name)
-                {
-                    returns.push(Field {
-                        name: column.name.clone(),
-                        data_type: column.data_type.clone(),
-                        required: false,
-                    });
+                else {
+                    continue;
+                };
+                let selected = arguments.len().saturating_sub(required_count) + returns.len();
+                if selected >= MATCHING_FIELD_LIMIT {
+                    omitted = omitted.saturating_add(1);
+                    continue;
                 }
+                returns.push(Field {
+                    name: column.name.clone(),
+                    data_type: column.data_type.clone(),
+                    required: false,
+                });
             }
             FieldRole::Column | FieldRole::Filter => {}
         }
@@ -822,10 +829,13 @@ fn catalog_index_failure(error: &SqliteSearchError) -> ProviderFailure {
 
 #[cfg(test)]
 mod tests {
-    use coral_engine::{CatalogInfo, TableInfo};
+    use coral_engine::{CatalogInfo, TableFunctionArgumentInfo, TableFunctionInfo, TableInfo};
+    use coral_spec::SourceTableFunctionKind;
 
-    use super::resolve_surface_id;
-    use crate::search::result::{SearchSurfaceId, SearchSurfaceKind};
+    use super::{function_fields, resolve_surface_id};
+    use crate::search::result::{
+        FieldRef, FieldRole, MatchEvidence, SearchSurfaceId, SearchSurfaceKind,
+    };
 
     #[test]
     fn unqualified_identity_resolves_one_catalog_backed_table() {
@@ -868,6 +878,52 @@ mod tests {
             schema_name: "analytics".to_string(),
             name: "events".to_string(),
             kind: SearchSurfaceKind::Table,
+        }
+    }
+
+    #[test]
+    fn required_function_argument_does_not_count_as_omitted_evidence() {
+        let mut function = TableFunctionInfo {
+            schema_name: "fixture".to_string(),
+            function_name: "search".to_string(),
+            description: String::new(),
+            guide: String::new(),
+            require_guide_read: false,
+            arguments: vec![argument("required", true)],
+            result_columns: Vec::new(),
+            kind: SourceTableFunctionKind::Search,
+            search_limits: None,
+        };
+        function
+            .arguments
+            .extend((0..5).map(|index| argument(&format!("optional_{index}"), false)));
+        let mut matched_fields = (0..5)
+            .map(|index| FieldRef {
+                name: format!("optional_{index}"),
+                role: FieldRole::Argument,
+            })
+            .collect::<Vec<_>>();
+        matched_fields.push(FieldRef {
+            name: "required".to_string(),
+            role: FieldRole::Argument,
+        });
+        let evidence = MatchEvidence {
+            matched_fields,
+            matching_values: Vec::new(),
+        };
+
+        let (arguments, _, omitted) = function_fields(&function, &evidence);
+
+        assert_eq!(arguments.len(), 6);
+        assert_eq!(omitted, 0);
+    }
+
+    fn argument(name: &str, required: bool) -> TableFunctionArgumentInfo {
+        TableFunctionArgumentInfo {
+            name: name.to_string(),
+            data_type: "Utf8".to_string(),
+            required,
+            values: Vec::new(),
         }
     }
 }
