@@ -1,17 +1,26 @@
 ---
 title: "Installation"
-description: "Install the Coral CLI"
+description: "Install the Coral desktop app or CLI"
 ---
 
-Coral ships as a single local CLI. Once installed, the same binary is used for source management, SQL queries, and the MCP stdio server.
-
-<Note>
-  Coral publishes macOS, Linux, and x86_64 Windows artifacts. Windows support
-  currently targets native Windows 10/11 on `x86_64-pc-windows-msvc`; ARM64
-  Windows is not released.
-</Note>
+Coral ships as a desktop app on macOS. For Linux, Windows, servers, or for automation, it is also available as a CLI.
 
 ## Install Coral
+
+<Tabs>
+<Tab title="Desktop app">
+
+The Coral desktop app is a universal macOS build that runs on both Apple silicon and Intel Macs.
+
+1. [Download the Coral desktop app](https://withcoral.com/download). You can also take a look at the [latest release's assets](https://github.com/withcoral/coral/releases/latest).
+2. Open the DMG and drag **Coral** into your Applications folder.
+3. Launch Coral and add your first [sources](/reference/bundled-sources) from the app.
+
+The desktop app bundles the `coral` binary it runs queries with, so you don't need a separate CLI install.
+
+</Tab>
+
+<Tab title="CLI">
 
 <Tabs>
   <Tab title="Homebrew">
@@ -52,6 +61,7 @@ Coral ships as a single local CLI. Once installed, the same binary is used for s
     coral source discover
     coral onboard
     ```
+
   </Tab>
 
   <Tab title="Build from source">
@@ -65,6 +75,7 @@ Coral ships as a single local CLI. Once installed, the same binary is used for s
     This installs Coral's source-management, SQL, and MCP surfaces. It does
     not include `coral ui`, which is compiled only when the `embedded-ui`
     feature is enabled.
+
   </Tab>
 
   <Tab title="Build for Windows">
@@ -124,14 +135,28 @@ Coral ships as a single local CLI. Once installed, the same binary is used for s
     npm run build --prefix apps/ui
     cargo build --release --locked -p coral-cli --features embedded-ui
     ```
+
   </Tab>
 </Tabs>
 
 <Tip>
-  Once installed, run `coral onboard` to start the interactive wizard to complete the setup.
+  Once installed, run `coral onboard` to start the interactive wizard to
+  complete the setup.
 </Tip>
 
+</Tab>
+</Tabs>
+
 ## Upgrade
+
+<Tabs>
+<Tab title="Desktop app">
+
+When a new version is available, Coral will show a notification in the UI. You can use the menu bar to check for an update manually.
+
+</Tab>
+
+<Tab title="CLI">
 
 <Tabs>
   <Tab title="Homebrew">
@@ -146,6 +171,7 @@ Coral ships as a single local CLI. Once installed, the same binary is used for s
     ```shellscript
     curl -fsSL https://withcoral.com/install.sh | sh
     ```
+
   </Tab>
 
   <Tab title="Windows ZIP">
@@ -159,10 +185,26 @@ Coral ships as a single local CLI. Once installed, the same binary is used for s
     Expand-Archive -Path "coral-x86_64-pc-windows-msvc.zip" -DestinationPath "coral" -Force
     Copy-Item "coral\coral.exe" "$env:USERPROFILE\.local\bin\coral.exe"
     ```
+
   </Tab>
 </Tabs>
 
+</Tab>
+</Tabs>
+
 ## Uninstall
+
+<Tabs>
+<Tab title="Desktop app">
+
+Quit Coral and move it to the trash.
+
+Coral's [local state](#local-state) lives in the config directory and is left in place, so a reinstall keeps your sources.
+You can delete that manually if needed.
+
+</Tab>
+
+<Tab title="CLI">
 
 <Tabs>
   <Tab title="Homebrew">
@@ -184,6 +226,9 @@ Coral ships as a single local CLI. Once installed, the same binary is used for s
     Remove-Item "$env:APPDATA\withcoral\coral\config" -Recurse -Force -ErrorAction SilentlyContinue
     ```
   </Tab>
+</Tabs>
+
+</Tab>
 </Tabs>
 
 ## Skills
@@ -227,5 +272,8 @@ Important files include:
 - source secrets stored separately within the same local trust boundary
 
 <Note>
-  [Bundled source](/reference/bundled-sources) specs are not copied into the config directory. Coral resolves them from the current binary when you validate or query a bundled source, so upgrades pick up newer bundled manifests without re-adding the source.
+  [Bundled source](/reference/bundled-sources) specs are not copied into the
+  config directory. Coral resolves them from the current binary when you
+  validate or query a bundled source, so upgrades pick up newer bundled
+  manifests without re-adding the source.
 </Note>
