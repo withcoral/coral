@@ -1,9 +1,9 @@
 ---
 title: "Installation"
-description: "Install the Coral CLI"
+description: "Install Coral Desktop or the Coral CLI"
 ---
 
-Coral ships as a single local CLI. Once installed, the same binary is used for source management, SQL queries, and the MCP stdio server.
+Install Coral Desktop on macOS. Use the CLI on Linux, Windows, servers, or for automation.
 
 <Note>
   Coral publishes macOS, Linux, and x86_64 Windows artifacts. Windows support
@@ -14,6 +14,12 @@ Coral ships as a single local CLI. Once installed, the same binary is used for s
 ## Install Coral
 
 <Tabs>
+  <Tab title="macOS Desktop">
+    [Download Coral Desktop for macOS](https://github.com/withcoral/coral/releases/latest/download/coral-desktop-mac-universal.dmg),
+    open the DMG, and move Coral to your Applications folder. Coral Desktop
+    includes the Coral runtime.
+  </Tab>
+
   <Tab title="Homebrew">
     ```shellscript
     brew install withcoral/tap/coral
@@ -128,7 +134,8 @@ Coral ships as a single local CLI. Once installed, the same binary is used for s
 </Tabs>
 
 <Tip>
-  Once installed, run `coral onboard` to start the interactive wizard to complete the setup.
+  Continue with the [quickstart](/getting-started/quickstart) to connect a
+  source and your agent.
 </Tip>
 
 ## Upgrade

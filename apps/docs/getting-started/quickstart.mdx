@@ -1,60 +1,96 @@
 ---
 title: "Quickstart"
-description: "Set up Coral in minutes: run the onboarding flow, connect your first sources, and start querying your data."
+description: "Install Coral, connect a source and an AI agent, then try your first search."
 ---
 
-This tutorial gets you from a fresh [install](/getting-started/installation) of Coral, to your first SQL query.
+export const CopyMcpGuide = () => {
+  const [copyStatus, setCopyStatus] = useState("ready")
 
-<Tip>
-  Prefer the CLI experience? Run `coral onboard` for an interactive wizard that
-  walks you through the whole setup described in this page.
-</Tip>
+  const copyGuide = async (event) => {
+    event.preventDefault()
 
-## 1. Discover bundled sources
+    try {
+      const response = await fetch("/guides/use-coral-over-mcp")
+      const guide = new DOMParser().parseFromString(await response.text(), "text/html")
+      const content = guide.querySelector("#content")?.textContent
+      if (!content) throw new Error("MCP guide content not found")
+      await navigator.clipboard.writeText(content.trim())
+      setCopyStatus("copied")
+    } catch {
+      setCopyStatus("failed")
+    }
+  }
 
-```shellscript
-coral source discover
-```
+  const copyLabel =
+    copyStatus === "copied"
+      ? "Copied MCP setup guide"
+      : copyStatus === "failed"
+        ? "Copy failed; click to retry"
+        : "Copy the content of our setup guide for your agent"
 
-This lists the bundled sources available in your build. Coral comes with [bundled sources](/reference/bundled-sources) for GitHub, Slack, Datadog, Linear, Sentry, and more.
+  return <a href="/guides/use-coral-over-mcp" onClick={copyGuide} aria-live="polite">{copyLabel}</a>
+}
 
-## 2. Add a source
+Choose Coral Desktop or the CLI, then connect one source before you set up MCP.
 
-For example, add GitHub. Pass `--interactive` and Coral will prompt you for each required input:
+<Tabs>
+  <Tab title="Coral Desktop (macOS only)">
+    ## 1. Install Coral Desktop
 
-```shellscript
-coral source add --interactive github
-```
+    [Install for macOS](https://github.com/withcoral/coral/releases/latest/download/coral-desktop-mac-universal.dmg),
+    open the DMG, and move Coral to your Applications folder. Open Coral and
+    complete the onboarding flow.
 
-Once connected, the source's data is available as SQL tables. To update a source's credentials later, run the same command again.
+    ## 2. Add a source
 
-<Tip>
-  For scripted setups, omit `--interactive` and Coral reads each input from an
-  environment variable of the same name — e.g. `GITHUB_TOKEN=ghp_... coral
-  source add github`.
-</Tip>
+    Open **Sources** in Coral Desktop and connect GitHub, Slack, Datadog, or
+    another [bundled source](/reference/bundled-sources).
+  </Tab>
 
-## 3. Query your data
+  <Tab title="Coral CLI">
+    ## 1. Install the Coral CLI
 
-You can now query any connected source using SQL.
+    [See CLI installation options](/getting-started/installation), then list
+    the bundled sources in your build:
 
-Use `coral.tables` to see all available tables:
+    ```shellscript
+    coral source discover
+    ```
 
-```shellscript
-coral sql "SELECT schema_name, table_name FROM coral.tables ORDER BY 1, 2"
-```
+    ## 2. Add a source
 
-Assuming you've connected GitHub, try listing open issues for a repo:
+    For example, add GitHub. Pass `--interactive` and Coral will prompt you for
+    each required input:
 
-```shellscript
-coral sql "
-  SELECT number, title, state, created_at
-  FROM github.issues
-  WHERE owner = 'withcoral' AND repo = 'coral' AND state = 'open'
-  ORDER BY created_at DESC
-  LIMIT 10
-"
-```
+    ```shellscript
+    coral source add --interactive github
+    ```
+
+    <Tip>
+      For scripted setups, omit `--interactive` and Coral reads each input from
+      an environment variable of the same name — e.g. `GITHUB_TOKEN=ghp_...
+      coral source add github`.
+    </Tip>
+  </Tab>
+</Tabs>
+
+## 3. Connect your agent over MCP
+
+[Read our setup guide](/guides/use-coral-over-mcp)
+
+Or
+
+<CopyMcpGuide />
+
+## 4. Try it out
+
+Ask your agent of choice:
+
+> "Use Coral to search ..."
+
+We would suggest asking it to search a source you have connected.
+
+If you use Coral Desktop, you can view **Traces** there.
 
 ## Next steps
 

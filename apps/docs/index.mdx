@@ -11,40 +11,75 @@ Coral supports a number of [popular data sources](/reference/bundled-sources) bu
 
 ## Get started
 
-<Steps titleSize="h3">
-  <Step title="Install Coral">
-    Install the Coral CLI to get started.
+<Tabs>
+  <Tab title="Coral Desktop (macOS only)">
+    <Steps titleSize="h3">
+      <Step title="Install Coral">
+        Coral Desktop includes the Coral runtime.
 
-    ```shellscript
-    brew install withcoral/tap/coral
-    ```
+        [Install for macOS](https://github.com/withcoral/coral/releases/latest/download/coral-desktop-mac-universal.dmg)
 
-    [See all installation options](/getting-started/installation)
+      </Step>
 
-  </Step>
+      <Step title="Add your sources">
+        Open Coral Desktop and connect GitHub, Slack, Datadog, or another [bundled source](/reference/bundled-sources) to your workspace.
 
-  <Step title="Add your sources">
-   Connect GitHub, Slack, Datadog, and other [bundled sources](/reference/bundled-sources) to your workspace. For example:
+      </Step>
 
-    ```shellscript
-    coral source add --interactive github
-    ```
+      <Step title="Connect your agent over MCP">
+        [Read our setup guide](/guides/use-coral-over-mcp)
 
-    [Go to the quickstart](/getting-started/quickstart)
+      </Step>
 
-  </Step>
+      <Step title="Try it out">
+        Ask your agent of choice:
 
-  <Step title="Start querying">
-    Write SQL directly or let your AI agent query on your behalf.
+        > "Use Coral to search ..."
 
-    ```shellscript
-    coral sql "SELECT name, stargazers_count FROM github.org_repos WHERE org = 'withcoral' ORDER BY stargazers_count DESC"
-    ```
+        We would suggest asking it to search a source you have connected.
 
-    [Or use Coral over MCP](/guides/use-coral-over-mcp)
+        You can view **Traces** in Coral Desktop.
 
-  </Step>
-</Steps>
+      </Step>
+    </Steps>
+  </Tab>
+
+  <Tab title="Coral CLI">
+    <Steps titleSize="h3">
+      <Step title="Install Coral">
+        Use the CLI on macOS, Linux, Windows, servers, or for automation.
+
+        [See CLI installation options](/getting-started/installation)
+
+      </Step>
+
+      <Step title="Add your sources">
+        For example, add GitHub:
+
+        ```shellscript
+        coral source add --interactive github
+        ```
+
+        See all [bundled sources](/reference/bundled-sources).
+
+      </Step>
+
+      <Step title="Connect your agent over MCP">
+        [Read our setup guide](/guides/use-coral-over-mcp)
+
+      </Step>
+
+      <Step title="Try it out">
+        Ask your agent of choice:
+
+        > "Use Coral to search ..."
+
+        We would suggest asking it to search a source you have connected.
+
+      </Step>
+    </Steps>
+  </Tab>
+</Tabs>
 
 ## Why Coral
 
