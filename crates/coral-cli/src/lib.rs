@@ -812,9 +812,11 @@ fn server_endpoint_address(endpoint: &str) -> Option<SocketAddr> {
 ///
 /// Loopback is judged by coral-app's [`is_loopback_ip`] rather than by a rule
 /// restated here, IPv4-mapped IPv6 included. That is the same helper the
-/// `server.mcp_http.bind` guard rejects a remote bind with, so a bind bootstrap
-/// accepts as local is never reported as exposed and the notice cannot drift
-/// out of step with the rejection.
+/// auth-disabled `server.mcp_http.bind` guard rejects a remote bind with — an
+/// authenticated listener may bind remotely, which is precisely the case this
+/// warning exists to report — so a bind bootstrap accepts as local is never
+/// reported as exposed, and the notice cannot drift out of step with the
+/// rejection.
 fn server_requires_security_warning(address: SocketAddr) -> bool {
     !is_loopback_ip(address.ip())
 }
