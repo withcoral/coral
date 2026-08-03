@@ -100,10 +100,7 @@ pub(super) fn direct_error(error: &'static str, description: &'static str) -> Re
     (
         StatusCode::BAD_REQUEST,
         security_headers(),
-        [
-            (header::CONTENT_TYPE, "application/json"),
-            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
-        ],
+        [(header::CONTENT_TYPE, "application/json")],
         body,
     )
         .into_response()
@@ -120,19 +117,23 @@ pub(super) fn redirect(location: &str) -> Response {
         .into_response()
 }
 
-/// Headers every authorization-server response carries.
+/// Headers every authorization-server response except the discovery document
+/// carries.
 ///
 /// Authorization codes travel in URLs, so `no-store`/`no-cache` keep one out of
 /// a shared cache and `no-referrer` keeps one out of the `Referer` a client's
-/// page sends onward. The token endpoint composes these with its own
-/// `content-type` rather than listing them again, so a header added here
-/// reaches every response that carries a code, a token, or an error. The
-/// discovery metadata document is deliberately not among them: it is public and
-/// meant to be cached.
-pub(super) fn security_headers() -> [(header::HeaderName, &'static str); 3] {
+/// page sends onward. Every response carrying these headers also carries a
+/// `content-type`, so `nosniff` belongs to the shared set rather than to
+/// whichever handler happened to need it first. Handlers compose these with
+/// that `content-type` rather than listing them again, so a header added here
+/// reaches every response that carries a code, a token, an error, or the
+/// approval page. The discovery metadata document is deliberately not among
+/// them: it is public and meant to be cached.
+pub(super) fn security_headers() -> [(header::HeaderName, &'static str); 4] {
     [
         (header::CACHE_CONTROL, "no-store"),
         (header::PRAGMA, "no-cache"),
         (header::REFERRER_POLICY, "no-referrer"),
+        (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
     ]
 }

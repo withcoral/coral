@@ -13,6 +13,7 @@ use zeroize::Zeroizing;
 use super::super::super::state_store::{
     OAuthAuthorizationApprovalBrowserBinding, OAuthAuthorizationApprovalTicket,
 };
+use super::super::response::security_headers;
 
 const MAX_FORM_BYTES: usize = 256;
 const TICKET_LENGTH: usize = 43;
@@ -108,6 +109,14 @@ pub(super) async fn parse_submission(
     Ok((ticket, browser_binding, decision.ok_or(())?))
 }
 
+/// Renders the approval page for one pending authorization.
+///
+/// `Cancel` comes before `Continue` in the form because the first submit button
+/// is the one a browser presses for a bare Enter key, and the safe decision is
+/// the better default for a keystroke nobody aimed at either button. Source
+/// order is display order here: the page has no stylesheet, and the policy in
+/// [`CONTENT_SECURITY_POLICY`] has no `style-src`, so it inherits
+/// `default-src 'none'` and no styling could reverse the two.
 pub(super) fn response(
     ticket: &OAuthAuthorizationApprovalTicket,
     client_name: &str,
@@ -131,7 +140,7 @@ pub(super) fn response(
     });
     let encoded_ticket = Zeroizing::new(URL_SAFE_NO_PAD.encode(ticket.as_bytes()));
     let body = format!(
-        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Approve Coral access</title></head><body><main><h1>Approve access?</h1><p><bdi>{}</bdi> is requesting access to Coral.</p><dl><dt>Client ID hostname</dt><dd><code>{}</code></dd><dt>Redirect host and port</dt><dd><code>{}</code></dd></dl>{}<form method=\"post\" action=\"/oauth/authorize\" autocomplete=\"off\"><input type=\"hidden\" name=\"ticket\" value=\"{}\"><button type=\"submit\" name=\"decision\" value=\"continue\">Continue</button><button type=\"submit\" name=\"decision\" value=\"cancel\">Cancel</button></form></main></body></html>",
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Approve Coral access</title></head><body><main><h1>Approve access?</h1><p><bdi>{}</bdi> is requesting access to Coral.</p><dl><dt>Client ID hostname</dt><dd><code>{}</code></dd><dt>Redirect host and port</dt><dd><code>{}</code></dd></dl>{}<form method=\"post\" action=\"/oauth/authorize\" autocomplete=\"off\"><input type=\"hidden\" name=\"ticket\" value=\"{}\"><button type=\"submit\" name=\"decision\" value=\"cancel\">Cancel</button><button type=\"submit\" name=\"decision\" value=\"continue\">Continue</button></form></main></body></html>",
         escape_html(client_name),
         escape_html(&client_host),
         escape_html(&redirect_destination),
@@ -140,13 +149,10 @@ pub(super) fn response(
     );
     let mut response = (
         StatusCode::OK,
+        security_headers(),
         [
             (header::CONTENT_TYPE, "text/html; charset=utf-8"),
-            (header::CACHE_CONTROL, "no-store"),
-            (header::PRAGMA, "no-cache"),
             (header::CONTENT_SECURITY_POLICY, CONTENT_SECURITY_POLICY),
-            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
-            (header::REFERRER_POLICY, "no-referrer"),
             (header::X_FRAME_OPTIONS, "DENY"),
         ],
         body,
@@ -174,33 +180,51 @@ fn approval_cookie_header(
     .ok()
 }
 
+/// Recovers the binding this browser was given, from the request's cookies.
+///
+/// The scan works in bytes rather than through `HeaderValue::to_str` because
+/// that rejects every octet outside visible ASCII, and a browser sends a cookie
+/// value however a script set it. Reading the header as text would therefore
+/// let one unrelated cookie on this host decide the answer, and it would fail
+/// in the worst direction: the page handler treats `None` as "no binding yet"
+/// and mints a fresh one, while the submission handler treats it as a rejected
+/// request, so the user loops through the page with no decision ever taking.
+/// Only the value stored under the expected name has to be ASCII, and base64
+/// decoding is already what establishes that.
+///
+/// Returning `None` for a repeated name is what keeps a shadowing cookie from
+/// choosing which binding is read, so every occurrence must be seen, not just
+/// the first.
 fn browser_binding_from_headers(
     headers: &HeaderMap,
     secure: bool,
 ) -> Option<OAuthAuthorizationApprovalBrowserBinding> {
-    let expected_name = approval_cookie_name(secure);
+    let expected_name = approval_cookie_name(secure).as_bytes();
     let mut encoded = None;
     for header_value in headers.get_all(header::COOKIE) {
-        let header_value = header_value.to_str().ok()?;
-        for pair in header_value
-            .split(';')
-            .filter_map(|pair| pair.trim().split_once('='))
-        {
-            if pair.0 != expected_name {
+        for pair in header_value.as_bytes().split(|byte| *byte == b';') {
+            let Some((name, value)) = split_at_byte(pair.trim_ascii(), b'=') else {
+                continue;
+            };
+            if name != expected_name {
                 continue;
             }
             if encoded.is_some() {
                 return None;
             }
-            encoded = Some(Zeroizing::new(pair.1.to_string()));
+            encoded = Some(Zeroizing::new(value.to_vec()));
         }
     }
     let encoded = encoded.filter(|value| value.len() == BROWSER_BINDING_LENGTH)?;
     let mut bytes = Zeroizing::new([0_u8; 32]);
-    let decoded = URL_SAFE_NO_PAD
-        .decode_slice(encoded.as_bytes(), &mut *bytes)
-        .ok()?;
+    let decoded = URL_SAFE_NO_PAD.decode_slice(&**encoded, &mut *bytes).ok()?;
     (decoded == bytes.len()).then(|| OAuthAuthorizationApprovalBrowserBinding::from_bytes(*bytes))
+}
+
+/// Splits `value` at the first occurrence of `byte`, dropping the separator.
+fn split_at_byte(value: &[u8], byte: u8) -> Option<(&[u8], &[u8])> {
+    let mut parts = value.splitn(2, |candidate| *candidate == byte);
+    Some((parts.next()?, parts.next()?))
 }
 
 fn has_exact_origin(headers: &HeaderMap, expected_origin: &str) -> bool {

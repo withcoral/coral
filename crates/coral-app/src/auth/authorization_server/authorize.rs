@@ -251,7 +251,7 @@ mod tests {
     use std::time::Duration;
 
     use axum::body::{Body, to_bytes};
-    use axum::http::{StatusCode, header};
+    use axum::http::{HeaderValue, StatusCode, header};
     use base64::Engine as _;
     use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
     use ring::rand::SystemRandom;
@@ -531,6 +531,11 @@ mod tests {
         assert!(page.contains("Client ID hostname</dt><dd><code>client.example.test"));
         assert!(page.contains("Redirect host and port</dt><dd><code>client.example.test:443"));
         assert!(page.contains("method=\"post\" action=\"/oauth/authorize\""));
+        assert!(
+            page.find("value=\"cancel\"") < page.find("value=\"continue\""),
+            "Cancel must be the form's first submit button, so a bare Enter key \
+             does not approve access"
+        );
         assert!(!page.contains(CLIENT_STATE));
         assert!(!page.contains(CHALLENGE));
         assert!(!page.contains("<script"));
@@ -561,7 +566,10 @@ mod tests {
         assert_eq!(approval.client_state.as_deref(), Some(CLIENT_STATE));
         assert_eq!(approval.code_challenge, CHALLENGE);
         assert_eq!(approval.resource, RESOURCE);
+    }
 
+    #[tokio::test]
+    async fn confirmation_page_warns_on_loopback_and_escapes_client_text() {
         let loopback = confirmation::response(
             &OAuthAuthorizationApprovalTicket::from_bytes([6; 32]),
             "Local Test Client",
@@ -602,9 +610,29 @@ mod tests {
         assert!(escaped.contains("&lt;/bdi&gt;&lt;script&gt;alert(&quot;x&quot;)"));
     }
 
+    /// Every request here carries the `Origin` and `Cookie` a browser sends,
+    /// because `parse_submission` checks those before it looks at the body: a
+    /// case that omits them is rejected at the origin gate and proves nothing
+    /// about the parser it names. The two accepting cases at the end exist for
+    /// the same reason — they fail if a future guard rejects everything, which
+    /// is how a set of rejection cases goes quietly vacuous.
     #[tokio::test]
     async fn submission_form_is_strict_bounded_and_ignores_no_query_bypass() {
+        const FORM: &str = "application/x-www-form-urlencoded";
+
         let ticket = URL_SAFE_NO_PAD.encode([7; 32]);
+        let submission = |body: String, cookie: HeaderValue, content_type: &'static str| {
+            Request::builder()
+                .uri(format!(
+                    "/oauth/authorize?ticket={ticket}&decision=continue"
+                ))
+                .header(header::CONTENT_TYPE, content_type)
+                .header(header::ORIGIN, AUTH_ISSUER)
+                .header(header::COOKIE, cookie)
+                .body(Body::from(body))
+                .expect("request")
+        };
+        let cookie = || HeaderValue::from_str(&browser_cookie()).expect("cookie");
         let malformed = [
             format!("ticket={ticket}"),
             format!("ticket={ticket}&decision=continue&extra=x"),
@@ -614,24 +642,39 @@ mod tests {
             "x".repeat(257),
         ];
         for body in malformed {
-            let request = Request::builder()
-                .uri(format!(
-                    "/oauth/authorize?ticket={ticket}&decision=continue"
-                ))
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .body(Body::from(body))
-                .expect("request");
+            let request = submission(body, cookie(), FORM);
             let Err(()) = confirmation::parse_submission(request, AUTH_ISSUER, true).await else {
                 panic!("accepted malformed approval submission");
             };
         }
-        let request = Request::builder()
-            .header(header::CONTENT_TYPE, "text/plain")
-            .body(Body::from(format!("ticket={ticket}&decision=continue")))
-            .expect("request");
+        let request = submission(
+            format!("ticket={ticket}&decision=continue"),
+            cookie(),
+            "text/plain",
+        );
         let Err(()) = confirmation::parse_submission(request, AUTH_ISSUER, true).await else {
             panic!("accepted approval submission with the wrong content type");
         };
+
+        // Every request `submission` builds says `decision=continue` in its
+        // query, so a body that parses as `Cancel` is what shows the query
+        // never reaches the decision. The second header is what a non-ASCII
+        // cookie set by anything else on this host would produce; that stray
+        // pair must not hide the binding beside it.
+        let stray = format!("stray=caf\u{e9}; {}", browser_cookie());
+        for cookie in [
+            cookie(),
+            HeaderValue::from_bytes(stray.as_bytes()).expect("cookie"),
+        ] {
+            let request = submission(format!("ticket={ticket}&decision=cancel"), cookie, FORM);
+            let (ticket, browser_binding, decision) =
+                confirmation::parse_submission(request, AUTH_ISSUER, true)
+                    .await
+                    .expect("rejected a well-formed approval submission");
+            assert_eq!(ticket.as_bytes(), &[7; 32]);
+            assert_eq!(browser_binding.as_bytes(), &BROWSER_BINDING);
+            assert!(decision == ApprovalDecision::Cancel);
+        }
     }
 
     #[tokio::test]
