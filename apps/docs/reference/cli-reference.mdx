@@ -503,7 +503,7 @@ Coral uses an ephemeral port on `127.0.0.1`. See
 [Configuration](/reference/configuration#server).
 
 <Warning>
-  Without `[auth]`, the native gRPC server does not authenticate clients. A non-loopback bind exposes Coral and its configured sources to any client that can reach the port. Protect access with a trusted network boundary or authenticating proxy.
+  The native gRPC server does not authenticate clients. A non-loopback bind exposes Coral and its configured sources to any client that can reach the port. Protect access with a trusted network boundary or authenticating proxy.
 </Warning>
 
 ## `coral mcp-stdio`
