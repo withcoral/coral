@@ -28,6 +28,7 @@ use tracing_subscriber::{EnvFilter, Registry};
 
 pub mod config;
 mod local_store;
+mod manager;
 pub mod metrics;
 pub(crate) mod service;
 
@@ -38,6 +39,7 @@ use config::{DEFAULT_LOCAL_TRACE_FILTER, DEFAULT_LOG_FILTER, DEFAULT_TRACE_FILTE
 pub(crate) use local_store::{
     TraceQueryHistoryEntry, TraceQueryTableFunctionUsage, TraceQueryTableUsage, TraceStoreError,
 };
+pub(crate) use manager::TraceManager;
 
 static INIT: OnceLock<Result<TracingInitState, String>> = OnceLock::new();
 static PROVIDER: Mutex<Option<SdkTracerProvider>> = Mutex::new(None);

@@ -68,8 +68,8 @@ use crate::state::{AppStateLayout, ConfigStore};
 use crate::task::manager::TaskManager;
 use crate::task::service::TaskService;
 use crate::task::store::TaskStore;
-use crate::telemetry::TelemetryConfig;
 use crate::telemetry::service::TraceService;
+use crate::telemetry::{TelemetryConfig, TraceManager};
 use crate::transport::GrpcRequestContextLayer;
 use crate::workspaces::{WorkspaceLifecycleLock, WorkspaceManager, WorkspaceService};
 
@@ -474,7 +474,10 @@ fn trace_components_for_store(
     active_trace_store.map_or_else(TraceServerComponents::default, |store| {
         TraceServerComponents {
             local_trace_store_dir: Some(store.dir.clone()),
-            service: Some(TraceService::new(store.dir, store.retention)),
+            service: Some(TraceService::new(TraceManager::new(
+                store.dir,
+                store.retention,
+            ))),
         }
     })
 }
@@ -995,7 +998,7 @@ mod tests {
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::task::manager::TaskManager;
     use crate::task::store::TaskStore;
-    use crate::telemetry::service::TraceService;
+    use crate::telemetry::{TraceManager, service::TraceService};
     use crate::transport::workspace_to_proto;
     use crate::workspaces::{WorkspaceManager, WorkspaceName};
     use crate::{
@@ -1688,8 +1691,10 @@ backend = "unsupported"
             CatalogDiscovery::new(query_manager.clone()),
             lifecycle_lock,
         );
-        let trace_service =
-            TraceService::new(temp.path().join("trace-store"), Duration::from_mins(1));
+        let trace_service = TraceService::new(TraceManager::new(
+            temp.path().join("trace-store"),
+            Duration::from_mins(1),
+        ));
         let server = start_server(
             ServerDependencies {
                 source: source_manager,
