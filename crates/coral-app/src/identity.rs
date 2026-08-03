@@ -121,18 +121,21 @@ impl Principal {
     /// provider ids), so anyone holding this value and a candidate list can confirm a
     /// match offline. Nothing deployment-specific enters the preimage either, so
     /// the same subject yields the same id everywhere — two databases join on it
-    /// directly. Keying the derivation is the fix, and doing it before any
-    /// deployment stores `federated-*` rows is free rather than a rekey. No
-    /// running instance can store one at this commit: nothing calls
-    /// `into_authorization_server`, so no token endpoint is served and no session
-    /// token exists to resolve here. That makes this the work of whichever change
-    /// first serves that endpoint.
+    /// directly. That is accepted rather than fixed. The value reaches exactly one
+    /// place, `created_by_principal_id` on `tasks`: it is in no proto, no log and
+    /// no query attribution, so reading it takes database access, and it authorizes
+    /// nothing, since any valid session token already grants full access to the
+    /// instance and every source in it.
     ///
-    /// One trap for whoever does it. The session signing key is the obvious
-    /// keying material and the wrong one: `SessionTokenVerifier` models a
-    /// multi-key `JwkSet` precisely so that key can be rotated, and keying
-    /// principal ids off it would turn a routine JWT rotation into a rekey of
-    /// every user. It needs a salt derived once and never rotated.
+    /// It is also a placeholder. Managing authorization needs a users table — a
+    /// role cannot be granted to someone the instance can neither enumerate nor
+    /// show an admin — and a one-way digest is structurally opposed to that. When
+    /// that table lands the identity becomes a random surrogate key with the
+    /// provider's `sub` in its own column: opaque by construction rather than by
+    /// keeping a key secret, updatable when an upstream subject changes, and
+    /// enumerable, so users can be listed and deleted at all. Getting there is the
+    /// same lazy rekey described above. Do not key this digest in the meantime —
+    /// that swaps one derivation for another and pays that rekey twice.
     pub(crate) fn for_federated(subject: &str) -> Self {
         let mut identity = Vec::with_capacity(subject.len() + 32);
         identity.extend_from_slice(b"coral-federated-user-v1\0");
