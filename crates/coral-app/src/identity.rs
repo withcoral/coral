@@ -107,19 +107,32 @@ impl Principal {
     ///
     /// The preimage is versioned because of that assumption: admitting a second
     /// provider would make the provider part of the identity, which needs a `-v2`
-    /// preimage. Note what that costs, because it is not a migration — the
-    /// derivation is one-way and the upstream subject is persisted nowhere (only
-    /// the short-lived in-memory authorization-code store holds it), so stored ids
-    /// can never be recomputed. Changing the derivation means either accepting both
-    /// prefixes for the same user or orphaning every existing attribution row.
+    /// preimage. Note what that costs — and the limit of the cost. The derivation
+    /// is one-way and the upstream subject is persisted nowhere (only the
+    /// short-lived in-memory authorization-code store holds it), but the subject
+    /// is re-presented at every login, so a stored id is recomputable then. A
+    /// version bump is therefore a lazy rekey — `UPDATE ... WHERE
+    /// created_by_principal_id = <old id>` as each user next signs in — rather
+    /// than dual-prefix acceptance or orphaned attribution rows. What it does
+    /// cost is time: a user's rows carry the old id until they come back.
     ///
     /// The digest is stable and collision-free, but it is not opaque against a
     /// guesser: it is unkeyed, and subjects are low-entropy (emails, numeric
     /// provider ids), so anyone holding this value and a candidate list can confirm a
     /// match offline. Nothing deployment-specific enters the preimage either, so
     /// the same subject yields the same id everywhere — two databases join on it
-    /// directly. Keying the derivation is the fix, and it has to happen before real
-    /// deployments store `federated-*` rows, since afterwards there is no backfill.
+    /// directly. Keying the derivation is the fix, and doing it before any
+    /// deployment stores `federated-*` rows is free rather than a rekey. No
+    /// running instance can store one at this commit: nothing calls
+    /// `into_authorization_server`, so no token endpoint is served and no session
+    /// token exists to resolve here. That makes this the work of whichever change
+    /// first serves that endpoint.
+    ///
+    /// One trap for whoever does it. The session signing key is the obvious
+    /// keying material and the wrong one: `SessionTokenVerifier` models a
+    /// multi-key `JwkSet` precisely so that key can be rotated, and keying
+    /// principal ids off it would turn a routine JWT rotation into a rekey of
+    /// every user. It needs a salt derived once and never rotated.
     pub(crate) fn for_federated(subject: &str) -> Self {
         let mut identity = Vec::with_capacity(subject.len() + 32);
         identity.extend_from_slice(b"coral-federated-user-v1\0");
