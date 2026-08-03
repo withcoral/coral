@@ -72,16 +72,6 @@ impl LoadedServerConfig {
         reject_removed_auth(settings.removed_auth.as_ref())
     }
 
-    /// Reports whether this snapshot asks for an authenticated instance.
-    ///
-    /// Parsing `[auth]` validates the section but resolves nothing it points
-    /// at — no signing key is read and no environment variable is looked up —
-    /// so a surface that only needs to know whether it is supposed to
-    /// authenticate can ask before any secret is reachable.
-    pub(crate) fn auth_is_configured(&self) -> Result<bool, AppError> {
-        Ok(self.auth_settings()?.is_some())
-    }
-
     /// Resolves the settings `coral serve`'s companions are built from.
     ///
     /// This returns validated configuration and resolved key material only. The
@@ -570,12 +560,11 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
         assert_eq!(session_auth.public_audiences, ["https://mcp.example.test"]);
     }
 
-    /// Callers ask whether the instance is authenticated to decide what to
-    /// compose, so the answer must not depend on the secrets `[auth]` only
-    /// points at: here the signing key file is absent, and reading it is what
-    /// full resolution would fail on.
+    /// Parsing `[auth]` validates the section without touching what it points
+    /// at, so an instance whose signing key is missing loads and only fails when
+    /// the settings behind it are actually resolved.
     #[test]
-    fn configured_auth_is_reported_without_resolving_its_secrets() {
+    fn resolving_companion_settings_fails_on_a_missing_signing_key() {
         let temp = TempDir::new().expect("temp dir");
         let layout = AppStateLayout::discover(Some(temp.path().join("config"))).expect("layout");
         write_authenticated_config(&layout, "");
@@ -583,7 +572,6 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
 
         let config = LoadedServerConfig::load(&layout).expect("load");
 
-        assert!(config.auth_is_configured().expect("auth is configured"));
         // `ServeSettings` carries key material and so implements no `Debug`,
         // which rules out `expect_err` here.
         assert!(
