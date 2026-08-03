@@ -1,73 +1,58 @@
 //! LIST storage scanning, pagination, and projector lifecycle tests.
 
-use std::fs;
 use std::time::{Duration, SystemTime};
 
 use serde_json::json;
-use tempfile::TempDir;
 
-use super::super::tests::{
-    set_modified_time, timestamped_jsonl_path, trace_record, write_record_file,
-    write_record_file_lines,
-};
-use super::super::{StoredTraceStatus, TraceListSpanRecord, TraceStore, unix_nanos};
+use super::super::{StoredTraceStatus, TraceListSpanRecord, unix_nanos};
 use super::QueryStreamProjector;
+use super::test_support::{TraceFiles, span};
 
 #[test]
 fn query_stream_resolves_equal_mtime_files_as_one_bucket() {
-    let temp = TempDir::new().expect("temp dir");
-    let dir = temp.path().join("telemetry").join("traces");
-    fs::create_dir_all(&dir).expect("trace dir");
+    let files = TraceFiles::new();
     let base_time = SystemTime::now() - Duration::from_secs(10);
     let common_modified = base_time + Duration::from_secs(1);
 
-    let mut parent = trace_record("equal-mtime-trace", "local-parent");
-    parent.name = "http.request".to_string();
-    parent.start_time_unix_nanos = unix_nanos(base_time);
-    parent.end_time_unix_nanos = unix_nanos(base_time + Duration::from_millis(900));
-
-    let mut root = trace_record("equal-mtime-trace", "selected-tool");
-    root.parent_span_id = Some(parent.span_id.clone());
-    root.name = "coral.mcp.call_tool".to_string();
-    root.attributes_json = json!({
-        "coral.stream.entry": true,
-        "coral.stream.kind": "tool",
-        "coral.stream.name": "sql",
-        "mcp.method": "tools/call",
-        "mcp.tool.name": "sql",
-        "workspace": "alpha",
-    })
-    .to_string();
-    root.start_time_unix_nanos = unix_nanos(base_time + Duration::from_millis(100));
-    root.end_time_unix_nanos = unix_nanos(base_time + Duration::from_millis(800));
-
-    let mut child = trace_record("equal-mtime-trace", "nested-query");
-    child.parent_span_id = Some(root.span_id.clone());
-    child.attributes_json = json!({
-        "coral.stream.entry": true,
-        "coral.stream.kind": "query",
-        "coral.stream.name": "sql",
-        "workspace": "alpha",
-        "sql": "SELECT 42",
-        "row_count": 1,
-    })
-    .to_string();
-    child.start_time_unix_nanos = unix_nanos(base_time + Duration::from_millis(200));
-    child.end_time_unix_nanos = unix_nanos(base_time + Duration::from_millis(700));
+    let parent = span("equal-mtime-trace", "local-parent")
+        .named("http.request")
+        .times(
+            unix_nanos(base_time),
+            unix_nanos(base_time + Duration::from_millis(900)),
+        )
+        .build();
+    let root = span("equal-mtime-trace", "selected-tool")
+        .named("coral.mcp.call_tool")
+        .child_of(&parent)
+        .entry("tool", "sql", "alpha")
+        .attrs(json!({
+            "mcp.method": "tools/call",
+            "mcp.tool.name": "sql",
+        }))
+        .times(
+            unix_nanos(base_time + Duration::from_millis(100)),
+            unix_nanos(base_time + Duration::from_millis(800)),
+        )
+        .build();
+    let child = span("equal-mtime-trace", "nested-query")
+        .child_of(&root)
+        .entry("query", "sql", "alpha")
+        .attrs(json!({"sql": "SELECT 42", "row_count": 1}))
+        .times(
+            unix_nanos(base_time + Duration::from_millis(200)),
+            unix_nanos(base_time + Duration::from_millis(700)),
+        )
+        .build();
 
     for (name, span) in [
         ("spans-a-parent.jsonl", &parent),
         ("spans-b-root.jsonl", &root),
         ("spans-c-child.jsonl", &child),
     ] {
-        let path = dir.join(name);
-        write_record_file(&path, span);
-        set_modified_time(&path, common_modified);
+        files.write_named_at(name, span, common_modified);
     }
 
-    let summaries = TraceStore::new(dir)
-        .list_query_stream_sync(10, 0, Some("alpha"))
-        .expect("list equal-mtime operation");
+    let summaries = files.list(10, 0, Some("alpha"));
     assert_eq!(summaries.len(), 1);
     let summary = summaries.first().expect("equal-mtime summary");
     assert_eq!(summary.root_span_id, "selected-tool");
@@ -79,40 +64,26 @@ fn query_stream_resolves_equal_mtime_files_as_one_bucket() {
 
 #[test]
 fn query_stream_filters_workspace_before_pagination() {
-    let temp = TempDir::new().expect("temp dir");
-    let dir = temp.path().join("telemetry").join("traces");
-    fs::create_dir_all(&dir).expect("trace dir");
-
+    let files = TraceFiles::new();
     let mut records = Vec::new();
     for (span_id, workspace, end_time) in [
         ("alpha-new", "alpha", 30),
         ("beta", "beta", 20),
         ("alpha-old", "alpha", 10),
     ] {
-        let mut record = trace_record("pagination-trace", span_id);
-        record.parent_span_id = Some("remote-parent".to_string());
-        record.parent_span_is_remote = true;
-        record.attributes_json = json!({
-            "coral.stream.entry": true,
-            "coral.stream.kind": "query",
-            "coral.stream.name": "sql",
-            "workspace": workspace,
-            "sql": format!("SELECT '{span_id}'"),
-        })
-        .to_string();
-        record.start_time_unix_nanos = end_time - 1;
-        record.end_time_unix_nanos = end_time;
-        records.push(record);
+        records.push(
+            span("pagination-trace", span_id)
+                .remote_root()
+                .entry("query", "sql", workspace)
+                .attrs(json!({"sql": format!("SELECT '{span_id}'")}))
+                .times(end_time - 1, end_time)
+                .build(),
+        );
     }
-    write_record_file_lines(&dir.join("spans-pagination.jsonl"), &records);
+    files.write("spans-pagination.jsonl", &records);
 
-    let store = TraceStore::new(dir);
-    let first = store
-        .list_query_stream_sync(1, 0, Some("alpha"))
-        .expect("first page");
-    let second = store
-        .list_query_stream_sync(1, 1, Some("alpha"))
-        .expect("second page");
+    let first = files.list(1, 0, Some("alpha"));
+    let second = files.list(1, 1, Some("alpha"));
     assert_eq!(
         first.first().expect("first entry").root_span_id,
         "alpha-new"
@@ -125,35 +96,23 @@ fn query_stream_filters_workspace_before_pagination() {
 
 #[test]
 fn query_stream_stops_after_a_complete_recent_page() {
-    let temp = TempDir::new().expect("temp dir");
-    let dir = temp.path().join("telemetry").join("traces");
-    fs::create_dir_all(&dir).expect("trace dir");
+    let files = TraceFiles::new();
     let now = SystemTime::now();
     let recent_time = now - Duration::from_secs(1);
     let old_time = now - Duration::from_hours(2);
 
-    let mut recent = trace_record("recent-trace", "recent-entry");
-    recent.attributes_json = json!({
-        "coral.stream.entry": true,
-        "coral.stream.kind": "query",
-        "coral.stream.name": "sql",
-        "workspace": "alpha",
-        "sql": "SELECT 'recent'",
-    })
-    .to_string();
-    recent.start_time_unix_nanos = unix_nanos(recent_time);
-    recent.end_time_unix_nanos = unix_nanos(recent_time + Duration::from_millis(1));
-    let recent_path = dir.join(timestamped_jsonl_path(recent_time));
-    write_record_file(&recent_path, &recent);
-    set_modified_time(&recent_path, recent_time);
+    let recent = span("recent-trace", "recent-entry")
+        .entry("query", "sql", "alpha")
+        .attrs(json!({"sql": "SELECT 'recent'"}))
+        .times(
+            unix_nanos(recent_time),
+            unix_nanos(recent_time + Duration::from_millis(1)),
+        )
+        .build();
+    files.write_at(&recent, recent_time);
+    files.write_invalid_at(old_time);
 
-    let old_path = dir.join(timestamped_jsonl_path(old_time));
-    fs::write(&old_path, [0xff]).expect("write unreadable old JSONL text");
-    set_modified_time(&old_path, old_time);
-
-    let summaries = TraceStore::new(dir)
-        .list_query_stream_sync(1, 0, Some("alpha"))
-        .expect("recent page does not read old file");
+    let summaries = files.list(1, 0, Some("alpha"));
     assert_eq!(summaries.len(), 1);
     assert_eq!(
         summaries.first().expect("recent summary").root_span_id,
@@ -163,52 +122,34 @@ fn query_stream_stops_after_a_complete_recent_page() {
 
 #[test]
 fn query_stream_offset_page_reads_enough_recent_files_then_stops() {
-    let temp = TempDir::new().expect("temp dir");
-    let dir = temp.path().join("telemetry").join("traces");
-    fs::create_dir_all(&dir).expect("trace dir");
+    let files = TraceFiles::new();
     let now = SystemTime::now();
     let newest_time = now - Duration::from_secs(1);
     let second_time = now - Duration::from_secs(5);
     let unreadable_time = now - Duration::from_hours(2);
 
-    let mut newest = trace_record("newest-trace", "newest-entry");
-    newest.attributes_json = json!({
-        "coral.stream.entry": true,
-        "coral.stream.kind": "query",
-        "coral.stream.name": "sql",
-        "workspace": "alpha",
-        "sql": "SELECT 'newest'",
-    })
-    .to_string();
-    newest.start_time_unix_nanos = unix_nanos(newest_time);
-    newest.end_time_unix_nanos = unix_nanos(newest_time + Duration::from_millis(1));
-    let newest_path = dir.join(timestamped_jsonl_path(newest_time));
-    write_record_file(&newest_path, &newest);
-    set_modified_time(&newest_path, newest_time);
+    let newest = span("newest-trace", "newest-entry")
+        .entry("query", "sql", "alpha")
+        .attrs(json!({"sql": "SELECT 'newest'"}))
+        .times(
+            unix_nanos(newest_time),
+            unix_nanos(newest_time + Duration::from_millis(1)),
+        )
+        .build();
+    files.write_at(&newest, newest_time);
 
-    let mut second = trace_record("second-trace", "second-entry");
-    second.attributes_json = json!({
-        "coral.stream.entry": true,
-        "coral.stream.kind": "query",
-        "coral.stream.name": "sql",
-        "workspace": "alpha",
-        "sql": "SELECT 'second'",
-    })
-    .to_string();
-    second.start_time_unix_nanos = unix_nanos(second_time);
-    second.end_time_unix_nanos = unix_nanos(second_time + Duration::from_millis(1));
-    let second_path = dir.join(timestamped_jsonl_path(second_time));
-    write_record_file(&second_path, &second);
-    set_modified_time(&second_path, second_time);
+    let second = span("second-trace", "second-entry")
+        .entry("query", "sql", "alpha")
+        .attrs(json!({"sql": "SELECT 'second'"}))
+        .times(
+            unix_nanos(second_time),
+            unix_nanos(second_time + Duration::from_millis(1)),
+        )
+        .build();
+    files.write_at(&second, second_time);
+    files.write_invalid_at(unreadable_time);
 
-    let unreadable_path = dir.join(timestamped_jsonl_path(unreadable_time));
-    fs::write(&unreadable_path, [0xff]).expect("write unreadable old JSONL text");
-    set_modified_time(&unreadable_path, unreadable_time);
-
-    let store = TraceStore::new(dir);
-    let summaries = store
-        .list_query_stream_sync(1, 1, Some("alpha"))
-        .expect("list query stream");
+    let summaries = files.list(1, 1, Some("alpha"));
     assert_eq!(summaries.len(), 1);
     assert_eq!(
         summaries.first().expect("offset summary").root_span_id,
@@ -218,53 +159,35 @@ fn query_stream_offset_page_reads_enough_recent_files_then_stops() {
 
 #[test]
 fn query_stream_completes_returned_operations_from_older_files() {
-    let temp = TempDir::new().expect("temp dir");
-    let dir = temp.path().join("telemetry").join("traces");
-    fs::create_dir_all(&dir).expect("trace dir");
+    let files = TraceFiles::new();
     let operation_start = SystemTime::now() - Duration::from_secs(20);
     let child_end = operation_start + Duration::from_secs(2);
     let operation_end = operation_start + Duration::from_secs(10);
 
-    let mut child = trace_record("split-trace", "query-child");
-    child.parent_span_id = Some("tool-root".to_string());
-    child.attributes_json = json!({
-        "coral.stream.entry": true,
-        "coral.stream.kind": "query",
-        "coral.stream.name": "sql",
-        "workspace": "alpha",
-        "sql": "SELECT 42",
-        "row_count": 1,
-    })
-    .to_string();
-    child.start_time_unix_nanos = unix_nanos(operation_start + Duration::from_secs(1));
-    child.end_time_unix_nanos = unix_nanos(child_end);
-    let child_path = dir.join(timestamped_jsonl_path(child_end));
-    write_record_file(&child_path, &child);
-    set_modified_time(&child_path, child_end);
+    let root = span("split-trace", "tool-root")
+        .named("coral.mcp.call_tool")
+        .remote_root()
+        .entry("tool", "sql", "alpha")
+        .attrs(json!({
+            "mcp.method": "tools/call",
+            "mcp.tool.name": "sql",
+        }))
+        .times(unix_nanos(operation_start), unix_nanos(operation_end))
+        .build();
 
-    let mut root = trace_record("split-trace", "tool-root");
-    root.parent_span_id = Some("remote-parent".to_string());
-    root.parent_span_is_remote = true;
-    root.name = "coral.mcp.call_tool".to_string();
-    root.attributes_json = json!({
-        "coral.stream.entry": true,
-        "coral.stream.kind": "tool",
-        "coral.stream.name": "sql",
-        "mcp.method": "tools/call",
-        "mcp.tool.name": "sql",
-        "workspace": "alpha",
-    })
-    .to_string();
-    root.start_time_unix_nanos = unix_nanos(operation_start);
-    root.end_time_unix_nanos = unix_nanos(operation_end);
-    let root_path = dir.join(timestamped_jsonl_path(operation_end));
-    write_record_file(&root_path, &root);
-    set_modified_time(&root_path, operation_end);
+    let child = span("split-trace", "query-child")
+        .child_of(&root)
+        .entry("query", "sql", "alpha")
+        .attrs(json!({"sql": "SELECT 42", "row_count": 1}))
+        .times(
+            unix_nanos(operation_start + Duration::from_secs(1)),
+            unix_nanos(child_end),
+        )
+        .build();
+    files.write_at(&child, child_end);
+    files.write_at(&root, operation_end);
 
-    let store = TraceStore::new(dir);
-    let summaries = store
-        .list_query_stream_sync(1, 0, Some("alpha"))
-        .expect("list query stream");
+    let summaries = files.list(1, 0, Some("alpha"));
     assert_eq!(summaries.len(), 1);
     let summary = summaries.first().expect("completed operation summary");
     assert_eq!(summary.root_span_id, "tool-root");
@@ -321,45 +244,31 @@ fn query_stream_projector_releases_completed_discovery_trees() {
 
 #[test]
 fn query_stream_keeps_newer_duplicate_span_across_files() {
-    let temp = TempDir::new().expect("temp dir");
-    let dir = temp.path().join("telemetry").join("traces");
-    fs::create_dir_all(&dir).expect("trace dir");
+    let files = TraceFiles::new();
     let base_time = SystemTime::now() - Duration::from_secs(10);
 
-    let mut older = trace_record("duplicate-query-stream", "duplicate-entry");
-    older.attributes_json = json!({
-        "coral.stream.entry": true,
-        "coral.stream.kind": "query",
-        "coral.stream.name": "sql",
-        "workspace": "alpha",
-        "sql": "SELECT 'old'",
-    })
-    .to_string();
-    older.start_time_unix_nanos = unix_nanos(base_time + Duration::from_millis(500));
-    older.end_time_unix_nanos = unix_nanos(base_time + Duration::from_millis(600));
-    let older_path = dir.join(timestamped_jsonl_path(base_time));
-    write_record_file(&older_path, &older);
-    set_modified_time(&older_path, base_time);
+    let older = span("duplicate-query-stream", "duplicate-entry")
+        .entry("query", "sql", "alpha")
+        .attrs(json!({"sql": "SELECT 'old'"}))
+        .times(
+            unix_nanos(base_time + Duration::from_millis(500)),
+            unix_nanos(base_time + Duration::from_millis(600)),
+        )
+        .build();
+    files.write_at(&older, base_time);
 
-    let mut newer = older;
-    newer.attributes_json = json!({
-        "coral.stream.entry": true,
-        "coral.stream.kind": "query",
-        "coral.stream.name": "sql",
-        "workspace": "alpha",
-        "sql": "SELECT 'new'",
-    })
-    .to_string();
-    newer.end_time_unix_nanos = unix_nanos(base_time + Duration::from_millis(700));
     let newer_modified = base_time + Duration::from_millis(10);
-    let newer_path = dir.join(timestamped_jsonl_path(newer_modified));
-    write_record_file(&newer_path, &newer);
-    set_modified_time(&newer_path, newer_modified);
+    let newer = span("duplicate-query-stream", "duplicate-entry")
+        .entry("query", "sql", "alpha")
+        .attrs(json!({"sql": "SELECT 'new'"}))
+        .times(
+            unix_nanos(base_time + Duration::from_millis(500)),
+            unix_nanos(base_time + Duration::from_millis(700)),
+        )
+        .build();
+    files.write_at(&newer, newer_modified);
 
-    let store = TraceStore::new(dir);
-    let summaries = store
-        .list_query_stream_sync(1, 0, Some("alpha"))
-        .expect("list query stream");
+    let summaries = files.list(1, 0, Some("alpha"));
     assert_eq!(summaries.len(), 1);
     assert_eq!(
         summaries.first().expect("newer duplicate summary").query,
@@ -369,46 +278,32 @@ fn query_stream_keeps_newer_duplicate_span_across_files() {
 
 #[test]
 fn query_stream_keeps_scanning_when_file_mtime_is_coarse() {
-    let temp = TempDir::new().expect("temp dir");
-    let dir = temp.path().join("telemetry").join("traces");
-    fs::create_dir_all(&dir).expect("trace dir");
+    let files = TraceFiles::new();
     let base_time = SystemTime::now() - Duration::from_secs(10);
     let hidden_modified = base_time;
     let visible_modified = base_time + Duration::from_millis(10);
 
-    let mut hidden_newer = trace_record("hidden-newer", "hidden-newer-entry");
-    hidden_newer.attributes_json = json!({
-        "coral.stream.entry": true,
-        "coral.stream.kind": "query",
-        "coral.stream.name": "sql",
-        "workspace": "alpha",
-        "sql": "SELECT 'newer'",
-    })
-    .to_string();
-    hidden_newer.start_time_unix_nanos = unix_nanos(base_time);
-    hidden_newer.end_time_unix_nanos = unix_nanos(base_time + Duration::from_millis(900));
-    let hidden_path = dir.join(timestamped_jsonl_path(hidden_modified));
-    write_record_file(&hidden_path, &hidden_newer);
-    set_modified_time(&hidden_path, hidden_modified);
+    let hidden_newer = span("hidden-newer", "hidden-newer-entry")
+        .entry("query", "sql", "alpha")
+        .attrs(json!({"sql": "SELECT 'newer'"}))
+        .times(
+            unix_nanos(base_time),
+            unix_nanos(base_time + Duration::from_millis(900)),
+        )
+        .build();
+    files.write_at(&hidden_newer, hidden_modified);
 
-    let mut visible_older = trace_record("visible-older", "visible-older-entry");
-    visible_older.attributes_json = json!({
-        "coral.stream.entry": true,
-        "coral.stream.kind": "query",
-        "coral.stream.name": "sql",
-        "workspace": "alpha",
-        "sql": "SELECT 'older'",
-    })
-    .to_string();
-    visible_older.start_time_unix_nanos = unix_nanos(base_time);
-    visible_older.end_time_unix_nanos = unix_nanos(base_time + Duration::from_millis(100));
-    let visible_path = dir.join(timestamped_jsonl_path(visible_modified));
-    write_record_file(&visible_path, &visible_older);
-    set_modified_time(&visible_path, visible_modified);
+    let visible_older = span("visible-older", "visible-older-entry")
+        .entry("query", "sql", "alpha")
+        .attrs(json!({"sql": "SELECT 'older'"}))
+        .times(
+            unix_nanos(base_time),
+            unix_nanos(base_time + Duration::from_millis(100)),
+        )
+        .build();
+    files.write_at(&visible_older, visible_modified);
 
-    let summaries = TraceStore::new(dir)
-        .list_query_stream_sync(1, 0, Some("alpha"))
-        .expect("list query stream");
+    let summaries = files.list(1, 0, Some("alpha"));
     assert_eq!(summaries.len(), 1);
     assert_eq!(
         summaries.first().expect("newest summary").trace_id,

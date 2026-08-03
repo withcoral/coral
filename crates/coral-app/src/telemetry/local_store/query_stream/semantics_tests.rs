@@ -1,63 +1,39 @@
 use std::collections::HashSet;
-use std::fs;
 
 use serde_json::json;
-use tempfile::TempDir;
 
-use super::super::tests::{trace_record, write_record_file, write_record_file_lines};
-use super::super::{StoredTraceOperationKind, StoredTraceStatus, TraceStore};
+use super::super::tests::trace_record;
+use super::super::{StoredTraceOperationKind, StoredTraceStatus};
 use super::classification::{
     MAX_LEGACY_TOOL_OPERATION_NAME_LEN, UNKNOWN_TOOL_OPERATION_NAME,
     privacy_safe_legacy_tool_operation_name,
 };
+use super::test_support::{project, project_page, span};
 
 // Shared classification and ownership behavior.
 
 #[test]
 fn query_stream_projects_outer_operations() {
-    let temp = TempDir::new().expect("temp dir");
-    let dir = temp.path().join("telemetry").join("traces");
-    fs::create_dir_all(&dir).expect("trace dir");
+    let sql_tool = span("shared-trace", "sql-tool")
+        .named("coral.mcp.call_tool")
+        .remote_root()
+        .entry("tool", "sql", "alpha")
+        .attrs(json!({
+            "mcp.method": "tools/call",
+            "mcp.tool.name": "sql",
+            "status": "error",
+        }))
+        .status(StoredTraceStatus::Error)
+        .times(10, 40)
+        .build();
+    let nested_query = span("shared-trace", "nested-query")
+        .child_of(&sql_tool)
+        .entry("query", "sql", "alpha")
+        .attrs(json!({"sql": "SELECT 42", "row_count": 7, "status": "ok"}))
+        .times(20, 30)
+        .build();
 
-    let mut sql_tool = trace_record("shared-trace", "sql-tool");
-    sql_tool.parent_span_id = Some("remote-parent".to_string());
-    sql_tool.parent_span_is_remote = true;
-    sql_tool.name = "coral.mcp.call_tool".to_string();
-    sql_tool.status = StoredTraceStatus::Error;
-    sql_tool.attributes_json = json!({
-        "coral.stream.entry": true,
-        "coral.stream.kind": "tool",
-        "coral.stream.name": "sql",
-        "mcp.method": "tools/call",
-        "mcp.tool.name": "sql",
-        "workspace": "alpha",
-        "status": "error",
-    })
-    .to_string();
-    sql_tool.start_time_unix_nanos = 10;
-    sql_tool.end_time_unix_nanos = 40;
-
-    let mut nested_query = trace_record("shared-trace", "nested-query");
-    nested_query.parent_span_id = Some(sql_tool.span_id.clone());
-    nested_query.attributes_json = json!({
-        "coral.stream.entry": true,
-        "coral.stream.kind": "query",
-        "coral.stream.name": "sql",
-        "workspace": "alpha",
-        "sql": "SELECT 42",
-        "row_count": 7,
-        "status": "ok",
-    })
-    .to_string();
-    nested_query.start_time_unix_nanos = 20;
-    nested_query.end_time_unix_nanos = 30;
-
-    write_record_file_lines(&dir.join("spans-shared.jsonl"), &[sql_tool, nested_query]);
-
-    let store = TraceStore::new(dir);
-    let summaries = store
-        .list_query_stream_sync(10, 0, None)
-        .expect("list query stream");
+    let summaries = project(&[sql_tool, nested_query], None);
     assert_eq!(summaries.len(), 1);
     let sql_summary = summaries.first().expect("SQL summary");
     assert_eq!(sql_summary.root_span_id, "sql-tool");
@@ -75,61 +51,31 @@ fn query_stream_projects_outer_operations() {
 
 #[test]
 fn query_stream_projects_search_text_for_tool_operation() {
-    let temp = TempDir::new().expect("temp dir");
-    let dir = temp.path().join("telemetry").join("traces");
-    fs::create_dir_all(&dir).expect("trace dir");
+    let tool = span("search-trace", "search-tool")
+        .named("coral.mcp.call_tool")
+        .remote_root()
+        .entry("tool", "search", "beta")
+        .attrs(json!({
+            "mcp.method": "tools/call",
+            "mcp.tool.name": "search",
+        }))
+        .times(1, 30)
+        .build();
+    let search = span("search-trace", "search-operation")
+        .named("coral.search")
+        .child_of(&tool)
+        .entry("search", "search", "beta")
+        .attrs(json!({"coral.local.search.query": "find customer churn"}))
+        .times(10, 20)
+        .build();
+    let internal_query = span("search-trace", "search-catalog-query")
+        .child_of(&search)
+        .entry("query", "list_catalog", "beta")
+        .attrs(json!({"sql": "LIST CATALOG", "row_count": 99}))
+        .times(12, 15)
+        .build();
 
-    let mut tool = trace_record("search-trace", "search-tool");
-    tool.parent_span_id = Some("remote-parent".to_string());
-    tool.parent_span_is_remote = true;
-    tool.name = "coral.mcp.call_tool".to_string();
-    tool.attributes_json = json!({
-        "coral.stream.entry": true,
-        "coral.stream.kind": "tool",
-        "coral.stream.name": "search",
-        "mcp.method": "tools/call",
-        "mcp.tool.name": "search",
-        "workspace": "beta",
-    })
-    .to_string();
-    tool.end_time_unix_nanos = 30;
-
-    let mut search = trace_record("search-trace", "search-operation");
-    search.parent_span_id = Some(tool.span_id.clone());
-    search.name = "coral.search".to_string();
-    search.attributes_json = json!({
-        "coral.stream.entry": true,
-        "coral.stream.kind": "search",
-        "coral.stream.name": "search",
-        "coral.local.search.query": "find customer churn",
-        "workspace": "beta",
-    })
-    .to_string();
-    search.start_time_unix_nanos = 10;
-    search.end_time_unix_nanos = 20;
-
-    let mut internal_query = trace_record("search-trace", "search-catalog-query");
-    internal_query.parent_span_id = Some(search.span_id.clone());
-    internal_query.attributes_json = json!({
-        "coral.stream.entry": true,
-        "coral.stream.kind": "query",
-        "coral.stream.name": "list_catalog",
-        "sql": "LIST CATALOG",
-        "row_count": 99,
-        "workspace": "beta",
-    })
-    .to_string();
-    internal_query.start_time_unix_nanos = 12;
-    internal_query.end_time_unix_nanos = 15;
-
-    write_record_file_lines(
-        &dir.join("spans-search-tool.jsonl"),
-        &[tool, search, internal_query],
-    );
-
-    let summaries = TraceStore::new(dir)
-        .list_query_stream_sync(10, 0, Some("beta"))
-        .expect("list query stream");
+    let summaries = project(&[tool, search, internal_query], Some("beta"));
     let summary = summaries.first().expect("tool search summary");
     assert_eq!(summaries.len(), 1);
     assert_eq!(summary.root_span_id, "search-tool");
@@ -141,27 +87,14 @@ fn query_stream_projects_search_text_for_tool_operation() {
 
 #[test]
 fn query_stream_projects_search_text_for_direct_operation() {
-    let temp = TempDir::new().expect("temp dir");
-    let dir = temp.path().join("telemetry").join("traces");
-    fs::create_dir_all(&dir).expect("trace dir");
+    let search = span("direct-search-trace", "direct-search")
+        .named("coral.search")
+        .remote_root()
+        .entry("search", "search", "gamma")
+        .attrs(json!({"coral.local.search.query": "direct search phrase"}))
+        .build();
 
-    let mut search = trace_record("direct-search-trace", "direct-search");
-    search.parent_span_id = Some("remote-parent".to_string());
-    search.parent_span_is_remote = true;
-    search.name = "coral.search".to_string();
-    search.attributes_json = json!({
-        "coral.stream.entry": true,
-        "coral.stream.kind": "search",
-        "coral.stream.name": "search",
-        "coral.local.search.query": "direct search phrase",
-        "workspace": "gamma",
-    })
-    .to_string();
-    write_record_file(&dir.join("spans-direct-search.jsonl"), &search);
-
-    let summaries = TraceStore::new(dir)
-        .list_query_stream_sync(10, 0, Some("gamma"))
-        .expect("list query stream");
+    let summaries = project(&[search], Some("gamma"));
     let summary = summaries.first().expect("direct search summary");
     assert_eq!(summaries.len(), 1);
     assert_eq!(summary.root_span_id, "direct-search");
@@ -171,10 +104,6 @@ fn query_stream_projects_search_text_for_direct_operation() {
 
 #[test]
 fn query_stream_entry_false_overrides_legacy_tool_shape() {
-    let temp = TempDir::new().expect("temp dir");
-    let dir = temp.path().join("telemetry").join("traces");
-    fs::create_dir_all(&dir).expect("trace dir");
-
     let mut suppressed = trace_record("suppressed-trace", "suppressed-tool");
     suppressed.parent_span_id = Some("remote-parent".to_string());
     suppressed.parent_span_is_remote = true;
@@ -186,20 +115,13 @@ fn query_stream_entry_false_overrides_legacy_tool_shape() {
         "workspace": "alpha",
     })
     .to_string();
-    write_record_file(&dir.join("spans-suppressed.jsonl"), &suppressed);
 
-    let summaries = TraceStore::new(dir)
-        .list_query_stream_sync(10, 0, Some("alpha"))
-        .expect("list query stream");
+    let summaries = project(&[suppressed], Some("alpha"));
     assert!(summaries.is_empty());
 }
 
 #[test]
 fn query_stream_entry_without_kind_is_other() {
-    let temp = TempDir::new().expect("temp dir");
-    let dir = temp.path().join("telemetry").join("traces");
-    fs::create_dir_all(&dir).expect("trace dir");
-
     let mut entry = trace_record("other-trace", "other-entry");
     entry.parent_span_id = Some("remote-parent".to_string());
     entry.parent_span_is_remote = true;
@@ -210,11 +132,8 @@ fn query_stream_entry_without_kind_is_other() {
         "workspace": "alpha",
     })
     .to_string();
-    write_record_file(&dir.join("spans-other.jsonl"), &entry);
 
-    let summaries = TraceStore::new(dir)
-        .list_query_stream_sync(10, 0, Some("alpha"))
-        .expect("list query stream");
+    let summaries = project(&[entry], Some("alpha"));
     assert_eq!(summaries.len(), 1);
     let summary = summaries.first().expect("other summary");
     assert_eq!(summary.operation_kind, StoredTraceOperationKind::Other);
@@ -224,10 +143,6 @@ fn query_stream_entry_without_kind_is_other() {
 
 #[test]
 fn query_stream_hides_entries_with_unfinished_local_parents() {
-    let temp = TempDir::new().expect("temp dir");
-    let dir = temp.path().join("telemetry").join("traces");
-    fs::create_dir_all(&dir).expect("trace dir");
-
     let mut unfinished_child = trace_record("unfinished-trace", "unfinished-query");
     unfinished_child.parent_span_id = Some("unfinished-protocol-parent".to_string());
     unfinished_child.parent_span_is_remote = false;
@@ -252,15 +167,7 @@ fn query_stream_hides_entries_with_unfinished_local_parents() {
     })
     .to_string();
 
-    write_record_file_lines(
-        &dir.join("spans-unfinished-parent.jsonl"),
-        &[unfinished_child, remote_root],
-    );
-
-    let store = TraceStore::new(dir);
-    let summaries = store
-        .list_query_stream_sync(10, 0, Some("alpha"))
-        .expect("list query stream");
+    let summaries = project(&[unfinished_child, remote_root], Some("alpha"));
     assert_eq!(summaries.len(), 1);
     assert_eq!(
         summaries.first().expect("remote summary").root_span_id,
@@ -270,49 +177,30 @@ fn query_stream_hides_entries_with_unfinished_local_parents() {
 
 #[test]
 fn query_stream_projects_many_operations_from_one_distributed_trace() {
-    let temp = TempDir::new().expect("temp dir");
-    let dir = temp.path().join("telemetry").join("traces");
-    fs::create_dir_all(&dir).expect("trace dir");
     let mut records = Vec::new();
 
     for index in 0..128 {
         let tool_span_id = format!("tool-{index:03}");
-        let mut tool = trace_record("shared-trace", &tool_span_id);
-        tool.parent_span_id = Some("remote-parent".to_string());
-        tool.parent_span_is_remote = true;
-        tool.name = "coral.mcp.call_tool".to_string();
-        tool.attributes_json = json!({
-            "coral.stream.entry": true,
-            "coral.stream.kind": "tool",
-            "coral.stream.name": "sql",
-            "mcp.method": "tools/call",
-            "mcp.tool.name": "sql",
-            "workspace": "alpha",
-        })
-        .to_string();
-        tool.start_time_unix_nanos = index * 10;
-        tool.end_time_unix_nanos = index * 10 + 9;
-
-        let mut query = trace_record("shared-trace", &format!("query-{index:03}"));
-        query.parent_span_id = Some(tool_span_id);
-        query.attributes_json = json!({
-            "coral.stream.entry": true,
-            "coral.stream.kind": "query",
-            "coral.stream.name": "sql",
-            "workspace": "alpha",
-            "sql": format!("SELECT {index}"),
-            "row_count": index,
-        })
-        .to_string();
-        query.start_time_unix_nanos = index * 10 + 1;
-        query.end_time_unix_nanos = index * 10 + 8;
+        let tool = span("shared-trace", &tool_span_id)
+            .named("coral.mcp.call_tool")
+            .remote_root()
+            .entry("tool", "sql", "alpha")
+            .attrs(json!({
+                "mcp.method": "tools/call",
+                "mcp.tool.name": "sql",
+            }))
+            .times(index * 10, index * 10 + 9)
+            .build();
+        let query = span("shared-trace", &format!("query-{index:03}"))
+            .child_of(&tool)
+            .entry("query", "sql", "alpha")
+            .attrs(json!({"sql": format!("SELECT {index}"), "row_count": index}))
+            .times(index * 10 + 1, index * 10 + 8)
+            .build();
         records.extend([tool, query]);
     }
-    write_record_file_lines(&dir.join("spans-many-entries.jsonl"), &records);
 
-    let summaries = TraceStore::new(dir)
-        .list_query_stream_sync(200, 0, Some("alpha"))
-        .expect("project many entries");
+    let summaries = project_page(&records, 200, 0, Some("alpha"));
     assert_eq!(summaries.len(), 128);
     assert!(summaries.iter().all(|summary| {
         summary.operation_kind == StoredTraceOperationKind::Tool
@@ -331,10 +219,6 @@ fn query_stream_projects_many_operations_from_one_distributed_trace() {
 
 #[test]
 fn query_stream_suppresses_protocol_descendants_without_method_enumeration() {
-    let temp = TempDir::new().expect("temp dir");
-    let dir = temp.path().join("telemetry").join("traces");
-    fs::create_dir_all(&dir).expect("trace dir");
-
     let mut protocol = trace_record("future-trace", "protocol");
     protocol.name = "coral.mcp.future_protocol".to_string();
     protocol.attributes_json = r#"{"mcp.method":"future/negotiate"}"#.to_string();
@@ -364,15 +248,7 @@ fn query_stream_suppresses_protocol_descendants_without_method_enumeration() {
     direct_future.start_time_unix_nanos = 10;
     direct_future.end_time_unix_nanos = 11;
 
-    write_record_file_lines(
-        &dir.join("spans-future.jsonl"),
-        &[protocol, protocol_child, direct_future],
-    );
-
-    let store = TraceStore::new(dir);
-    let summaries = store
-        .list_query_stream_sync(10, 0, Some("alpha"))
-        .expect("list query stream");
+    let summaries = project(&[protocol, protocol_child, direct_future], Some("alpha"));
     assert_eq!(summaries.len(), 1);
     let summary = summaries.first().expect("future summary");
     assert_eq!(summary.root_span_id, "direct-future");
@@ -382,10 +258,6 @@ fn query_stream_suppresses_protocol_descendants_without_method_enumeration() {
 
 #[test]
 fn query_stream_supports_legacy_operations_and_protocol_suppression() {
-    let temp = TempDir::new().expect("temp dir");
-    let dir = temp.path().join("telemetry").join("traces");
-    fs::create_dir_all(&dir).expect("trace dir");
-
     let mut protocol = trace_record("legacy-trace", "protocol");
     protocol.name = "coral.mcp.protocol".to_string();
     protocol.attributes_json = r#"{"mcp.method":"some/future_method"}"#.to_string();
@@ -429,8 +301,7 @@ fn query_stream_supports_legacy_operations_and_protocol_suppression() {
     search_catalog_query.start_time_unix_nanos = 22;
     search_catalog_query.end_time_unix_nanos = 23;
 
-    write_record_file_lines(
-        &dir.join("spans-legacy.jsonl"),
+    let summaries = project(
         &[
             protocol,
             hidden_query,
@@ -440,12 +311,8 @@ fn query_stream_supports_legacy_operations_and_protocol_suppression() {
             search,
             search_catalog_query,
         ],
+        Some("alpha"),
     );
-
-    let store = TraceStore::new(dir);
-    let summaries = store
-        .list_query_stream_sync(10, 0, Some("alpha"))
-        .expect("list query stream");
     assert_eq!(summaries.len(), 2);
     let search_summary = summaries.first().expect("legacy search summary");
     assert_eq!(search_summary.root_span_id, "legacy-search-tool");
@@ -464,10 +331,6 @@ fn query_stream_supports_legacy_operations_and_protocol_suppression() {
 
 #[test]
 fn query_stream_legacy_tool_requires_consistent_descendant_workspace() {
-    let temp = TempDir::new().expect("temp dir");
-    let dir = temp.path().join("telemetry").join("traces");
-    fs::create_dir_all(&dir).expect("trace dir");
-
     let mut tool = trace_record("legacy-conflict", "legacy-tool");
     tool.name = "coral.mcp.call_tool".to_string();
     tool.attributes_json =
@@ -489,17 +352,9 @@ fn query_stream_legacy_tool_requires_consistent_descendant_workspace() {
     beta.start_time_unix_nanos = 20;
     beta.end_time_unix_nanos = 21;
 
-    write_record_file_lines(&dir.join("spans-conflict.jsonl"), &[tool, alpha, beta]);
-    let store = TraceStore::new(dir);
-    assert!(
-        store
-            .list_query_stream_sync(10, 0, Some("alpha"))
-            .expect("list alpha entries")
-            .is_empty()
-    );
-    let global = store
-        .list_query_stream_sync(10, 0, None)
-        .expect("list query stream");
+    let records = [tool, alpha, beta];
+    assert!(project(&records, Some("alpha")).is_empty());
+    let global = project(&records, None);
     assert_eq!(global.len(), 1);
     assert_eq!(
         global.first().expect("legacy tool").operation_name,
@@ -509,9 +364,6 @@ fn query_stream_legacy_tool_requires_consistent_descendant_workspace() {
 
 #[test]
 fn query_stream_redacts_prose_shaped_legacy_tool_name() {
-    let temp = TempDir::new().expect("temp dir");
-    let dir = temp.path().join("telemetry").join("traces");
-    fs::create_dir_all(&dir).expect("trace dir");
     let sentinel = "SENSITIVE prose-shaped legacy tool";
 
     let mut tool = trace_record("legacy-private-trace", "legacy-private-tool");
@@ -521,11 +373,8 @@ fn query_stream_redacts_prose_shaped_legacy_tool_name() {
         "mcp.tool.name": sentinel,
     })
     .to_string();
-    write_record_file(&dir.join("spans-legacy-private.jsonl"), &tool);
 
-    let summaries = TraceStore::new(dir)
-        .list_query_stream_sync(10, 0, None)
-        .expect("list query stream");
+    let summaries = project(&[tool], None);
     assert_eq!(summaries.len(), 1);
     let summary = summaries.first().expect("legacy tool summary");
     assert_eq!(summary.operation_kind, StoredTraceOperationKind::Tool);

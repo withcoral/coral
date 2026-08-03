@@ -533,3 +533,5 @@ fn take_indexed_values_after<T>(index: &mut BTreeMap<i64, Vec<T>>, watermark: i6
 mod semantics_tests;
 #[cfg(test)]
 mod storage_tests;
+#[cfg(test)]
+mod test_support;
