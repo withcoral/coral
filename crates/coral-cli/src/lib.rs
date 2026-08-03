@@ -21,7 +21,7 @@ mod source_ops;
 use std::borrow::Cow;
 use std::fmt::Write as _;
 use std::future::Future;
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::path::PathBuf;
 #[cfg(feature = "embedded-ui")]
 use std::sync::Arc;
@@ -41,6 +41,7 @@ use coral_api::v1::{
 };
 #[cfg(feature = "embedded-ui")]
 use coral_app::StaticAssetsProvider;
+use coral_app::bootstrap::is_loopback_ip;
 use coral_client::{
     AppClient, DEFAULT_WORKSPACE_ID, decode_execute_sql_response, format_batches_json,
     format_batches_table, format_search_response_json, format_search_response_text,
@@ -809,15 +810,13 @@ fn server_endpoint_address(endpoint: &str) -> Option<SocketAddr> {
 /// tokens; [`grpc_exposure_warning`] and [`mcp_http_exposure_warning`] word each
 /// listener's case.
 ///
-/// Loopback is judged the way coral-app's `bootstrap::is_loopback_ip` judges it,
-/// IPv4-mapped IPv6 included, so a bind that bootstrap accepts as local is never
-/// reported as exposed. That helper is private to coral-app, so the rule is
-/// restated here — the two are meant to stay in step.
+/// Loopback is judged by coral-app's [`is_loopback_ip`] rather than by a rule
+/// restated here, IPv4-mapped IPv6 included. That is the same helper the
+/// `server.mcp_http.bind` guard rejects a remote bind with, so a bind bootstrap
+/// accepts as local is never reported as exposed and the notice cannot drift
+/// out of step with the rejection.
 fn server_requires_security_warning(address: SocketAddr) -> bool {
-    let ip = address.ip();
-    let loopback = ip.is_loopback()
-        || matches!(ip, IpAddr::V6(ip) if ip.to_ipv4_mapped().is_some_and(|ip| ip.is_loopback()));
-    !loopback
+    !is_loopback_ip(address.ip())
 }
 
 /// The exposure warning for a non-loopback gRPC listener.

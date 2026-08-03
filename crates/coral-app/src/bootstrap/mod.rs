@@ -36,13 +36,17 @@ pub(crate) fn env_var(name: &str) -> Result<Option<String>, std::env::VarError> 
 
 /// Reports whether `ip` addresses the local machine.
 ///
-/// Shared by the auth-disabled `server.mcp_http.bind` guard and the auth URL
-/// validator's loopback-http allowance, so that tightening the rule (for
-/// instance, to stop treating `::ffff:127.0.0.1` as loopback) cannot leave one
-/// call site more permissive than the other. `postgres_host_is_loopback`
-/// deliberately does not route through it: it works on host strings rather
-/// than addresses.
-pub(crate) fn is_loopback_ip(ip: std::net::IpAddr) -> bool {
+/// Shared by the auth-disabled `server.mcp_http.bind` guard, the auth URL
+/// validator's loopback-http allowance, and coral-cli's listener exposure
+/// warning, so that tightening the rule (for instance, to stop treating
+/// `::ffff:127.0.0.1` as loopback) cannot leave one call site more permissive
+/// than the other. That last one is why this is `pub` rather than crate-local:
+/// the warning is the only notice an operator gets about a remote bind, and a
+/// restated copy of the rule could drift into disagreeing with the guard that
+/// rejects the same bind. `postgres_host_is_loopback` deliberately does not
+/// route through it: it works on host strings rather than addresses.
+#[must_use]
+pub fn is_loopback_ip(ip: std::net::IpAddr) -> bool {
     ip.is_loopback()
         || matches!(ip, std::net::IpAddr::V6(ip) if ip.to_ipv4_mapped().is_some_and(|ip| ip.is_loopback()))
 }
