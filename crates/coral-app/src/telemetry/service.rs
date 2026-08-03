@@ -1,8 +1,5 @@
 //! Implements the gRPC `TraceService` for local trace inspection.
 
-use std::path::PathBuf;
-use std::time::Duration;
-
 use coral_api::v1::trace_service_server::TraceService as TraceServiceApi;
 use coral_api::v1::{
     GetTraceRequest, GetTraceResponse, ListTracesRequest, ListTracesResponse, TraceSpan,
@@ -12,9 +9,9 @@ use tonic::{Code, Request, Response, Status};
 
 use crate::bootstrap::app_status;
 use crate::telemetry::local_store::{
-    StoredTraceStatus, TraceDetailRecord, TraceSpanRecord, TraceStore, TraceStoreError,
-    TraceSummaryRecord,
+    StoredTraceStatus, TraceDetailRecord, TraceSpanRecord, TraceSummaryRecord,
 };
+use crate::telemetry::manager::{GetTraceQuery, ListTracesQuery, TraceManager, TraceManagerError};
 use crate::transport::{grpc_span, instrument_grpc};
 use crate::workspaces::WorkspaceName;
 
@@ -23,13 +20,13 @@ const MAX_TRACE_PAGE_SIZE: usize = 200;
 
 #[derive(Clone)]
 pub(crate) struct TraceService {
-    traces: TraceStore,
+    traces: TraceManager,
 }
 
 impl TraceService {
-    pub(crate) fn new(trace_store_file: PathBuf, retention: Duration) -> Self {
+    pub(crate) fn new(trace_manager: TraceManager) -> Self {
         Self {
-            traces: TraceStore::with_retention(trace_store_file, retention),
+            traces: trace_manager,
         }
     }
 }
@@ -46,33 +43,24 @@ impl TraceServiceApi for TraceService {
             let request = request.into_inner();
             let page_size = normalize_page_size(request.page_size);
             let offset = parse_page_token(&request.page_token)?;
-            let workspace_name = workspace_filter_from_proto(request.workspace.as_ref())?;
-            let mut summaries = match workspace_name {
-                Some(workspace_name) => {
-                    traces
-                        .list_traces_for_workspace(
-                            page_size.saturating_add(1),
-                            offset,
-                            workspace_name,
-                        )
-                        .await
-                }
-                None => {
-                    traces
-                        .list_traces(page_size.saturating_add(1), offset)
-                        .await
-                }
-            }
-            .map_err(trace_store_status)?;
-            let next_page_token = if summaries.len() > page_size {
-                summaries.truncate(page_size);
-                offset.saturating_add(page_size).to_string()
-            } else {
-                String::new()
-            };
+            let workspace = workspace_filter_from_proto(request.workspace.as_ref())?;
+            let page = traces
+                .list_traces(ListTracesQuery {
+                    workspace,
+                    page_size,
+                    offset,
+                })
+                .await
+                .map_err(trace_manager_status)?;
             Ok(Response::new(ListTracesResponse {
-                traces: summaries.into_iter().map(trace_summary_to_proto).collect(),
-                next_page_token,
+                traces: page
+                    .traces
+                    .into_iter()
+                    .map(trace_summary_to_proto)
+                    .collect(),
+                next_page_token: page
+                    .next_offset
+                    .map_or_else(String::new, |offset| offset.to_string()),
             }))
         })
         .await
@@ -92,16 +80,14 @@ impl TraceServiceApi for TraceService {
                     "invalid input: missing trace_id",
                 ));
             }
-            let workspace_name = workspace_filter_from_proto(request.workspace.as_ref())?;
-            let trace = match workspace_name {
-                Some(workspace_name) => {
-                    traces
-                        .get_trace_for_workspace(request.trace_id, workspace_name)
-                        .await
-                }
-                None => traces.get_trace(request.trace_id).await,
-            }
-            .map_err(trace_store_status)?;
+            let workspace = workspace_filter_from_proto(request.workspace.as_ref())?;
+            let trace = traces
+                .get_trace(GetTraceQuery {
+                    trace_id: request.trace_id,
+                    workspace,
+                })
+                .await
+                .map_err(trace_manager_status)?;
             Ok(Response::new(trace_detail_to_proto(trace)))
         })
         .await
@@ -130,33 +116,20 @@ fn parse_page_token(page_token: &str) -> Result<usize, Status> {
     })
 }
 
-fn workspace_filter_from_proto(workspace: Option<&Workspace>) -> Result<Option<String>, Status> {
+fn workspace_filter_from_proto(
+    workspace: Option<&Workspace>,
+) -> Result<Option<WorkspaceName>, Status> {
     workspace
-        .map(|workspace| {
-            WorkspaceName::parse(&workspace.name)
-                .map(|workspace_name| workspace_name.as_str().to_string())
-                .map_err(app_status)
-        })
+        .map(|workspace| WorkspaceName::parse(&workspace.name).map_err(app_status))
         .transpose()
 }
 
-fn trace_store_status(error: TraceStoreError) -> Status {
+fn trace_manager_status(error: TraceManagerError) -> Status {
     match error {
-        TraceStoreError::NotFound(trace_id) => {
+        TraceManagerError::NotFound { trace_id } => {
             Status::new(Code::NotFound, format!("trace '{trace_id}' not found"))
         }
-        TraceStoreError::ReadDir { .. }
-        | TraceStoreError::OpenFile { .. }
-        | TraceStoreError::FileMetadata { .. }
-        | TraceStoreError::WriteFile { .. }
-        | TraceStoreError::RemoveFile { .. }
-        | TraceStoreError::RestoreFile { .. }
-        | TraceStoreError::WriterRegistryPoisoned
-        | TraceStoreError::WriterPoisoned
-        | TraceStoreError::CloseActiveWriter { .. }
-        | TraceStoreError::ReadFile { .. }
-        | TraceStoreError::PruneExpired { .. }
-        | TraceStoreError::Worker { .. } => Status::new(Code::Internal, error.to_string()),
+        TraceManagerError::Store(error) => Status::new(Code::Internal, error.to_string()),
     }
 }
 
@@ -229,6 +202,7 @@ mod tests {
     use tonic::{Code, Request};
 
     use super::{TraceService, normalize_page_size, parse_page_token};
+    use crate::telemetry::TraceManager;
 
     #[test]
     fn page_size_defaults_and_caps() {
@@ -257,7 +231,7 @@ mod tests {
                 trace_record_json("beta-trace", "beta-span", "beta", 30, 40),
             ],
         );
-        let service = TraceService::new(trace_store, Duration::from_mins(1));
+        let service = TraceService::new(TraceManager::new(trace_store, Duration::from_mins(1)));
 
         let response = TraceServiceApi::list_traces(
             &service,
