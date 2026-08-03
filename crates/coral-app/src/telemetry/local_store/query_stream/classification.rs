@@ -3,6 +3,7 @@
 use coral_telemetry::{
     QUERY_STREAM_ENTRY_ATTRIBUTE, QUERY_STREAM_KIND_ATTRIBUTE, QUERY_STREAM_KIND_QUERY,
     QUERY_STREAM_KIND_SEARCH, QUERY_STREAM_KIND_TOOL, QUERY_STREAM_NAME_ATTRIBUTE,
+    QUERY_STREAM_SEARCH_QUERY_ATTRIBUTE,
 };
 use serde_json::Value as JsonValue;
 
@@ -147,14 +148,28 @@ pub(super) fn is_unmarked_mcp_protocol_attributes(attributes: &JsonValue) -> boo
         && attributes.get(MCP_TOOL_NAME_ATTRIBUTE).is_none()
 }
 
-pub(super) fn query_enrichment_is_semantic(
+pub(super) fn operation_text_from_attributes(
+    kind: StoredTraceOperationKind,
+    attributes: &JsonValue,
+) -> Option<String> {
+    let attribute = match kind {
+        StoredTraceOperationKind::Query => "sql",
+        StoredTraceOperationKind::Search => QUERY_STREAM_SEARCH_QUERY_ATTRIBUTE,
+        StoredTraceOperationKind::Tool
+        | StoredTraceOperationKind::Other
+        | StoredTraceOperationKind::Unspecified => return None,
+    };
+    attr_string(attributes, attribute).filter(|text| !text.trim().is_empty())
+}
+
+pub(super) fn operation_text_is_semantic(
     entry_kind: StoredTraceOperationKind,
+    text_kind: StoredTraceOperationKind,
     primary_descendant: Option<&QueryStreamPrimaryOperation>,
 ) -> bool {
-    entry_kind == StoredTraceOperationKind::Query
+    entry_kind == text_kind
         || (entry_kind == StoredTraceOperationKind::Tool
-            && primary_descendant
-                .is_some_and(|operation| operation.kind == StoredTraceOperationKind::Query))
+            && primary_descendant.is_some_and(|operation| operation.kind == text_kind))
 }
 
 #[derive(Debug)]

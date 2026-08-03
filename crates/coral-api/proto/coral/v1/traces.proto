@@ -48,7 +48,8 @@ message TraceSummary {
   // Display name of the trace primary span, or the operation span in Query
   // Stream.
   string name = 3;
-  // SQL text when the trace or selected operation includes a Coral query span.
+  // SQL text for a trace or Query operation, or locally retained Search text
+  // for a Query Stream Search operation.
   string query = 4;
   // Derived trace status, or selected operation status in Query Stream.
   TraceStatus status = 5;

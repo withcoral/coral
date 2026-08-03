@@ -52,39 +52,14 @@ fn query_stream_projects_outer_operations() {
     nested_query.start_time_unix_nanos = 20;
     nested_query.end_time_unix_nanos = 30;
 
-    let mut search_tool = trace_record("shared-trace", "search-tool");
-    search_tool.parent_span_id = Some("remote-parent".to_string());
-    search_tool.parent_span_is_remote = true;
-    search_tool.name = "coral.mcp.call_tool".to_string();
-    search_tool.attributes_json = json!({
-        "coral.stream.entry": true,
-        "coral.stream.kind": "tool",
-        "coral.stream.name": "search",
-        "mcp.method": "tools/call",
-        "mcp.tool.name": "search",
-        "workspace": "beta",
-        "status": "ok",
-    })
-    .to_string();
-    search_tool.start_time_unix_nanos = 50;
-    search_tool.end_time_unix_nanos = 60;
-
-    write_record_file_lines(
-        &dir.join("spans-shared.jsonl"),
-        &[sql_tool, nested_query, search_tool],
-    );
+    write_record_file_lines(&dir.join("spans-shared.jsonl"), &[sql_tool, nested_query]);
 
     let store = TraceStore::new(dir);
     let summaries = store
         .list_query_stream_sync(10, 0, None)
         .expect("list query stream");
-    assert_eq!(summaries.len(), 2);
-    assert_eq!(
-        summaries.first().expect("search summary").root_span_id,
-        "search-tool"
-    );
-
-    let sql_summary = summaries.get(1).expect("SQL summary");
+    assert_eq!(summaries.len(), 1);
+    let sql_summary = summaries.first().expect("SQL summary");
     assert_eq!(sql_summary.root_span_id, "sql-tool");
     assert_eq!(sql_summary.operation_kind, StoredTraceOperationKind::Tool);
     assert_eq!(sql_summary.operation_name, "sql");
@@ -96,6 +71,102 @@ fn query_stream_projects_outer_operations() {
     assert_eq!(sql_summary.end_time_unix_nanos, 40);
     assert_eq!(sql_summary.duration_nanos, 30);
     assert_eq!(sql_summary.span_count, 2);
+}
+
+#[test]
+fn query_stream_projects_search_text_for_tool_operation() {
+    let temp = TempDir::new().expect("temp dir");
+    let dir = temp.path().join("telemetry").join("traces");
+    fs::create_dir_all(&dir).expect("trace dir");
+
+    let mut tool = trace_record("search-trace", "search-tool");
+    tool.parent_span_id = Some("remote-parent".to_string());
+    tool.parent_span_is_remote = true;
+    tool.name = "coral.mcp.call_tool".to_string();
+    tool.attributes_json = json!({
+        "coral.stream.entry": true,
+        "coral.stream.kind": "tool",
+        "coral.stream.name": "search",
+        "mcp.method": "tools/call",
+        "mcp.tool.name": "search",
+        "workspace": "beta",
+    })
+    .to_string();
+    tool.end_time_unix_nanos = 30;
+
+    let mut search = trace_record("search-trace", "search-operation");
+    search.parent_span_id = Some(tool.span_id.clone());
+    search.name = "coral.search".to_string();
+    search.attributes_json = json!({
+        "coral.stream.entry": true,
+        "coral.stream.kind": "search",
+        "coral.stream.name": "search",
+        "coral.local.search.query": "find customer churn",
+        "workspace": "beta",
+    })
+    .to_string();
+    search.start_time_unix_nanos = 10;
+    search.end_time_unix_nanos = 20;
+
+    let mut internal_query = trace_record("search-trace", "search-catalog-query");
+    internal_query.parent_span_id = Some(search.span_id.clone());
+    internal_query.attributes_json = json!({
+        "coral.stream.entry": true,
+        "coral.stream.kind": "query",
+        "coral.stream.name": "list_catalog",
+        "sql": "LIST CATALOG",
+        "row_count": 99,
+        "workspace": "beta",
+    })
+    .to_string();
+    internal_query.start_time_unix_nanos = 12;
+    internal_query.end_time_unix_nanos = 15;
+
+    write_record_file_lines(
+        &dir.join("spans-search-tool.jsonl"),
+        &[tool, search, internal_query],
+    );
+
+    let summaries = TraceStore::new(dir)
+        .list_query_stream_sync(10, 0, Some("beta"))
+        .expect("list query stream");
+    let summary = summaries.first().expect("tool search summary");
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(summary.root_span_id, "search-tool");
+    assert_eq!(summary.operation_kind, StoredTraceOperationKind::Tool);
+    assert_eq!(summary.operation_name, "search");
+    assert_eq!(summary.query, "find customer churn");
+    assert!(!summary.row_count_recorded);
+}
+
+#[test]
+fn query_stream_projects_search_text_for_direct_operation() {
+    let temp = TempDir::new().expect("temp dir");
+    let dir = temp.path().join("telemetry").join("traces");
+    fs::create_dir_all(&dir).expect("trace dir");
+
+    let mut search = trace_record("direct-search-trace", "direct-search");
+    search.parent_span_id = Some("remote-parent".to_string());
+    search.parent_span_is_remote = true;
+    search.name = "coral.search".to_string();
+    search.attributes_json = json!({
+        "coral.stream.entry": true,
+        "coral.stream.kind": "search",
+        "coral.stream.name": "search",
+        "coral.local.search.query": "direct search phrase",
+        "workspace": "gamma",
+    })
+    .to_string();
+    write_record_file(&dir.join("spans-direct-search.jsonl"), &search);
+
+    let summaries = TraceStore::new(dir)
+        .list_query_stream_sync(10, 0, Some("gamma"))
+        .expect("list query stream");
+    let summary = summaries.first().expect("direct search summary");
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(summary.root_span_id, "direct-search");
+    assert_eq!(summary.operation_kind, StoredTraceOperationKind::Search);
+    assert_eq!(summary.query, "direct search phrase");
 }
 
 #[test]

@@ -6,7 +6,8 @@ mod classification;
 
 use classification::{
     QueryStreamMetadata, QueryStreamPrimaryOperation, QueryStreamWorkspaceEvidence,
-    is_unmarked_mcp_protocol_attributes, query_enrichment_is_semantic, query_stream_metadata,
+    is_unmarked_mcp_protocol_attributes, operation_text_from_attributes,
+    operation_text_is_semantic, query_stream_metadata,
 };
 
 use super::{
@@ -108,7 +109,7 @@ struct ProjectedQueryStreamSpan {
     metadata: Option<QueryStreamMetadata>,
     protocol: bool,
     workspace: Option<String>,
-    sql: Option<String>,
+    operation_text: Option<String>,
     row_count: Option<u64>,
 }
 
@@ -123,9 +124,11 @@ impl ProjectedQueryStreamSpan {
         let workspace = attributes
             .as_ref()
             .and_then(|attributes| attr_string(attributes, WORKSPACE_SPAN_ATTRIBUTE));
-        let sql = attributes
-            .as_ref()
-            .and_then(|attributes| attr_string(attributes, "sql"));
+        let operation_text = metadata.as_ref().and_then(|metadata| {
+            attributes
+                .as_ref()
+                .and_then(|attributes| operation_text_from_attributes(metadata.kind, attributes))
+        });
         let row_count = attributes
             .as_ref()
             .and_then(|attributes| attr_u64(attributes, "row_count"));
@@ -141,7 +144,7 @@ impl ProjectedQueryStreamSpan {
             metadata,
             protocol,
             workspace,
-            sql,
+            operation_text,
             row_count,
         }
     }
@@ -175,7 +178,7 @@ struct QueryStreamEntrySnapshot {
     end_time_unix_nanos: i64,
     metadata: QueryStreamMetadata,
     workspace: Option<String>,
-    sql: Option<String>,
+    operation_text: Option<String>,
     row_count: Option<u64>,
 }
 
@@ -190,22 +193,23 @@ impl QueryStreamEntrySnapshot {
             end_time_unix_nanos: span.end_time_unix_nanos,
             metadata,
             workspace: span.workspace.clone(),
-            sql: span.sql.clone(),
+            operation_text: span.operation_text.clone(),
             row_count: span.row_count,
         }
     }
 }
 
 #[derive(Debug)]
-struct QueryStreamQueryEnrichment {
+struct QueryStreamTextEnrichment {
+    kind: StoredTraceOperationKind,
     depth: usize,
     start_time_unix_nanos: i64,
     span_id: String,
-    sql: String,
+    text: String,
     row_count: Option<u64>,
 }
 
-impl QueryStreamQueryEnrichment {
+impl QueryStreamTextEnrichment {
     fn sort_key(&self) -> (usize, i64, &str) {
         (self.depth, self.start_time_unix_nanos, &self.span_id)
     }
@@ -216,7 +220,7 @@ struct StreamingQueryStreamAggregate {
     entry: QueryStreamEntrySnapshot,
     span_count: usize,
     primary_descendant_operation: Option<QueryStreamPrimaryOperation>,
-    query_enrichment: Option<QueryStreamQueryEnrichment>,
+    text_enrichment: Option<QueryStreamTextEnrichment>,
     workspace_evidence: QueryStreamWorkspaceEvidence,
 }
 
@@ -226,7 +230,7 @@ impl StreamingQueryStreamAggregate {
             entry,
             span_count: 0,
             primary_descendant_operation: None,
-            query_enrichment: None,
+            text_enrichment: None,
             workspace_evidence: QueryStreamWorkspaceEvidence::default(),
         }
     }
@@ -252,25 +256,25 @@ impl StreamingQueryStreamAggregate {
                 self.primary_descendant_operation = Some(operation);
             }
         }
-        if metadata.kind != StoredTraceOperationKind::Query {
-            return;
-        }
-        let Some(sql) = span.sql.as_deref().filter(|sql| !sql.trim().is_empty()) else {
+        let Some(text) = span.operation_text.as_deref() else {
             return;
         };
-        let enrichment = QueryStreamQueryEnrichment {
+        let enrichment = QueryStreamTextEnrichment {
+            kind: metadata.kind,
             depth,
             start_time_unix_nanos: span.start_time_unix_nanos,
             span_id: span.span_id.clone(),
-            sql: sql.to_string(),
-            row_count: span.row_count,
+            text: text.to_string(),
+            row_count: (metadata.kind == StoredTraceOperationKind::Query)
+                .then_some(span.row_count)
+                .flatten(),
         };
         if self
-            .query_enrichment
+            .text_enrichment
             .as_ref()
             .is_none_or(|current| enrichment.sort_key() < current.sort_key())
         {
-            self.query_enrichment = Some(enrichment);
+            self.text_enrichment = Some(enrichment);
         }
     }
 
@@ -282,20 +286,21 @@ impl StreamingQueryStreamAggregate {
     }
 
     fn into_summary(self) -> TraceSummaryRecord {
-        let query_enrichment = query_enrichment_is_semantic(
-            self.entry.metadata.kind,
-            self.primary_descendant_operation.as_ref(),
-        )
-        .then_some(self.query_enrichment.as_ref())
-        .flatten();
+        let text_enrichment = self.text_enrichment.as_ref().filter(|enrichment| {
+            operation_text_is_semantic(
+                self.entry.metadata.kind,
+                enrichment.kind,
+                self.primary_descendant_operation.as_ref(),
+            )
+        });
         let query = self
             .entry
-            .sql
-            .or_else(|| query_enrichment.map(|enrichment| enrichment.sql.clone()));
+            .operation_text
+            .or_else(|| text_enrichment.map(|enrichment| enrichment.text.clone()));
         let row_count = self
             .entry
             .row_count
-            .or_else(|| query_enrichment.and_then(|enrichment| enrichment.row_count));
+            .or_else(|| text_enrichment.and_then(|enrichment| enrichment.row_count));
         TraceSummaryRecord {
             trace_id: self.entry.trace_id,
             root_span_id: self.entry.span_id,
