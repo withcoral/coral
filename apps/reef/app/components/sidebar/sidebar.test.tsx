@@ -372,6 +372,14 @@ describe('Sidebar', () => {
     await expect.element(screen.getByRole('menuitem', { name: 'No workspaces' })).toBeVisible()
   })
 
+  it('links to the onboarding flow', async () => {
+    const screen = await renderSidebar(false, routePath('home'), WORKSPACES)
+
+    await expect
+      .element(screen.getByRole('link', { name: 'Onboarding' }))
+      .toHaveAttribute('href', routePath('onboarding'))
+  })
+
   it('keeps collapsed navigation labels available through tooltips', async () => {
     const screen = await renderSidebar(true, '/workspaces/analytics/sources', WORKSPACES)
 
