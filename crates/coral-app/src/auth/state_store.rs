@@ -12,6 +12,24 @@ use zeroize::{Zeroize as _, Zeroizing};
 const OAUTH_STATE_TTL: Duration = Duration::from_mins(5);
 const MAX_OAUTH_STATE_ENTRIES_PER_KIND: usize = 4_096;
 
+/// The most approvals one client may hold awaiting confirmation.
+///
+/// [`MAX_OAUTH_STATE_ENTRIES_PER_KIND`] on its own lets a single client take
+/// the whole approval budget. An approval is written when the confirmation
+/// page is rendered — before the user has done anything and before the
+/// provider is contacted — so anyone holding a resolvable `client_id` and one
+/// of its redirect URIs, both public by construction, mints an entry per
+/// request. Bounding each client separately keeps that inside the client it
+/// came from, and leaves exhausting the shared budget to require a distinct
+/// client metadata document for every block of this many entries — each
+/// document live, or Coral will not resolve it at all.
+///
+/// The bound is per client rather than per browser binding because a caller
+/// that sends no cookie is handed a fresh binding on every request, so a
+/// per-binding limit would bound only the browsers that were never the
+/// problem.
+const MAX_OAUTH_APPROVALS_PER_CLIENT: usize = 64;
+
 type SecretHash = [u8; 32];
 
 /// Single-use secret naming a stored authorization approval.
@@ -107,6 +125,8 @@ pub(crate) enum StateStoreError {
     EmptySecret,
     #[error("OAuth state store has reached its {max_entries}-entry limit")]
     CapacityExceeded { max_entries: usize },
+    #[error("OAuth client has reached its {max_entries}-approval limit")]
+    ClientApprovalsExceeded { max_entries: usize },
     #[error("OAuth state expiry exceeds the process clock range")]
     ExpiryOverflow,
     #[error("OAuth approval ticket generation failed")]
@@ -116,6 +136,16 @@ pub(crate) enum StateStoreError {
 /// Storage for approvals awaiting the user's confirmation.
 #[async_trait::async_trait]
 pub(crate) trait ApprovalStore: Send + Sync {
+    /// Holds `approval` until the browser bound to it confirms or cancels.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StateStoreError::ClientApprovalsExceeded`] once the client
+    /// named by the approval holds too many outstanding entries, and
+    /// [`StateStoreError::CapacityExceeded`] once approvals as a whole do. An
+    /// implementation is expected to bound both: the entry is written before
+    /// the user has acted, so an approval that is never confirmed still costs
+    /// storage until it expires.
     async fn store_authorization_approval(
         &self,
         ticket: &OAuthAuthorizationApprovalTicket,
@@ -168,6 +198,7 @@ pub(crate) struct InMemoryStateStore {
     inner: Mutex<StateMaps>,
     ttl: Duration,
     max_entries_per_kind: usize,
+    max_approvals_per_client: usize,
 }
 
 impl Default for InMemoryStateStore {
@@ -178,14 +209,23 @@ impl Default for InMemoryStateStore {
 
 impl InMemoryStateStore {
     pub(crate) fn new() -> Self {
-        Self::with_options(OAUTH_STATE_TTL, MAX_OAUTH_STATE_ENTRIES_PER_KIND)
+        Self::with_options(
+            OAUTH_STATE_TTL,
+            MAX_OAUTH_STATE_ENTRIES_PER_KIND,
+            MAX_OAUTH_APPROVALS_PER_CLIENT,
+        )
     }
 
-    fn with_options(ttl: Duration, max_entries_per_kind: usize) -> Self {
+    fn with_options(
+        ttl: Duration,
+        max_entries_per_kind: usize,
+        max_approvals_per_client: usize,
+    ) -> Self {
         Self {
             inner: Mutex::new(StateMaps::default()),
             ttl,
             max_entries_per_kind,
+            max_approvals_per_client,
         }
     }
 
@@ -208,11 +248,19 @@ impl ApprovalStore for InMemoryStateStore {
         let now = Instant::now();
         let expires_at = self.expires_at(now)?;
         inner.purge_expired(now);
+        let replaces_existing = inner.approvals.contains_key(&key);
         ensure_capacity(
             inner.approvals.len(),
             self.max_entries_per_kind,
-            inner.approvals.contains_key(&key),
+            replaces_existing,
         )?;
+        if !replaces_existing
+            && inner.approvals_for_client(&approval.client_id) >= self.max_approvals_per_client
+        {
+            return Err(StateStoreError::ClientApprovalsExceeded {
+                max_entries: self.max_approvals_per_client,
+            });
+        }
         inner.approvals.insert(
             key,
             Expiring {
@@ -344,6 +392,18 @@ struct StateMaps {
 }
 
 impl StateMaps {
+    /// Counts the approvals `client_id` is holding.
+    ///
+    /// Walking the map costs no more than the [`Self::purge_expired`] that
+    /// precedes every store, and a count taken from the entries themselves
+    /// cannot drift out of step with them the way a maintained tally can.
+    fn approvals_for_client(&self, client_id: &str) -> usize {
+        self.approvals
+            .values()
+            .filter(|entry| entry.value.client_id == client_id)
+            .count()
+    }
+
     fn purge_expired(&mut self, now: Instant) {
         self.approvals.retain(|_, entry| entry.expires_at > now);
         self.sessions.retain(|_, entry| entry.expires_at > now);
@@ -410,6 +470,13 @@ mod tests {
             client_state: Some(id.to_string()),
             code_challenge: "challenge".to_string(),
             resource: "https://mcp.example.test/mcp".to_string(),
+        }
+    }
+
+    fn client_approval(client_id: &str, id: &str) -> OAuthAuthorizationApprovalRecord {
+        OAuthAuthorizationApprovalRecord {
+            client_id: client_id.to_string(),
+            ..approval(id)
         }
     }
 
@@ -566,7 +633,8 @@ mod tests {
 
     #[tokio::test]
     async fn authorization_approval_capacity_allows_only_same_ticket_replacement() {
-        let store = InMemoryStateStore::with_options(OAUTH_STATE_TTL, 1);
+        let store =
+            InMemoryStateStore::with_options(OAUTH_STATE_TTL, 1, MAX_OAUTH_APPROVALS_PER_CLIENT);
         let ticket = OAuthAuthorizationApprovalTicket::from_bytes([1; 32]);
         let other_ticket = OAuthAuthorizationApprovalTicket::from_bytes([2; 32]);
         store
@@ -591,9 +659,76 @@ mod tests {
         assert!(stored == approval("replacement"));
     }
 
+    /// The shared budget here is eight times the per-client one, so every
+    /// rejection below is the per-client bound and not the budget standing in
+    /// for it.
+    #[tokio::test]
+    async fn approvals_are_bounded_per_client_beneath_the_shared_budget() {
+        const CLIENT: &str = "https://a.example.test/client.json";
+
+        let store = InMemoryStateStore::with_options(OAUTH_STATE_TTL, 16, 2);
+        let ticket = |byte: u8| OAuthAuthorizationApprovalTicket::from_bytes([byte; 32]);
+        for byte in [1, 2] {
+            store
+                .store_authorization_approval(
+                    &ticket(byte),
+                    &browser_binding(),
+                    client_approval(CLIENT, "held"),
+                )
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            store
+                .store_authorization_approval(
+                    &ticket(3),
+                    &browser_binding(),
+                    client_approval(CLIENT, "over"),
+                )
+                .await,
+            Err(StateStoreError::ClientApprovalsExceeded { max_entries: 2 })
+        );
+
+        // The cost stays inside the client that caused it.
+        store
+            .store_authorization_approval(
+                &ticket(4),
+                &browser_binding(),
+                client_approval("https://b.example.test/client.json", "other"),
+            )
+            .await
+            .unwrap();
+
+        // A ticket the client already holds is a replacement, not a new entry.
+        store
+            .store_authorization_approval(
+                &ticket(1),
+                &browser_binding(),
+                client_approval(CLIENT, "replacement"),
+            )
+            .await
+            .unwrap();
+
+        // Confirming or cancelling gives the client its slot back.
+        store
+            .take_authorization_approval(&ticket(2), &browser_binding())
+            .await
+            .unwrap()
+            .expect("held approval");
+        store
+            .store_authorization_approval(
+                &ticket(3),
+                &browser_binding(),
+                client_approval(CLIENT, "after release"),
+            )
+            .await
+            .unwrap();
+    }
+
     #[tokio::test(start_paused = true)]
     async fn authorization_approvals_expire_and_release_capacity() {
-        let store = InMemoryStateStore::with_options(OAUTH_STATE_TTL, 1);
+        let store =
+            InMemoryStateStore::with_options(OAUTH_STATE_TTL, 1, MAX_OAUTH_APPROVALS_PER_CLIENT);
         let expired_ticket = OAuthAuthorizationApprovalTicket::from_bytes([1; 32]);
         let other_ticket = OAuthAuthorizationApprovalTicket::from_bytes([2; 32]);
         store
@@ -783,7 +918,8 @@ mod tests {
 
     #[tokio::test]
     async fn expiration_is_lazy_and_capacity_is_bounded_per_record_type() {
-        let expired = InMemoryStateStore::with_options(Duration::ZERO, 1);
+        let expired =
+            InMemoryStateStore::with_options(Duration::ZERO, 1, MAX_OAUTH_APPROVALS_PER_CLIENT);
         expired
             .store_authorization_session("old", session("old"))
             .await
@@ -800,7 +936,8 @@ mod tests {
             .await
             .unwrap();
 
-        let bounded = InMemoryStateStore::with_options(OAUTH_STATE_TTL, 1);
+        let bounded =
+            InMemoryStateStore::with_options(OAUTH_STATE_TTL, 1, MAX_OAUTH_APPROVALS_PER_CLIENT);
         bounded
             .store_authorization_session("one", session("one"))
             .await

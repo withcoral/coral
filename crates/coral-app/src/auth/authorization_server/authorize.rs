@@ -1135,6 +1135,10 @@ mod tests {
         assert!(error_location.contains("error=server_error"));
         assert!(!error_location.contains(PROVIDER_SECRET));
 
+        // Every filler entry names its own client, because the per-client
+        // bound is what stops one client from reaching the shared budget on
+        // its own. Reaching it at all is the setup for the assertion below,
+        // not the behavior under test.
         let filler = OAuthAuthorizationApprovalRecord {
             client_id: CLIENT_ID.into(),
             client_name: "Test Client".into(),
@@ -1148,7 +1152,14 @@ mod tests {
             ticket[..8].copy_from_slice(&index.to_le_bytes());
             let ticket = OAuthAuthorizationApprovalTicket::from_bytes(ticket);
             store
-                .store_authorization_approval(&ticket, &browser_binding(), filler.clone())
+                .store_authorization_approval(
+                    &ticket,
+                    &browser_binding(),
+                    OAuthAuthorizationApprovalRecord {
+                        client_id: format!("https://filler-{index}.example.test/client.json"),
+                        ..filler.clone()
+                    },
+                )
                 .await
                 .expect("fill approval store");
         }
