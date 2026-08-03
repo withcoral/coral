@@ -102,6 +102,7 @@ impl CatalogDocument {
             doc_kind: catalog_document_kind_to_index(self.doc_kind),
             owner_source_name: self.owner_source_name.clone(),
             source_name: self.source_name.clone(),
+            catalog_name: self.catalog_name.clone(),
             surface_kind: surface_kind_as_str(self.surface_kind).to_string(),
             surface_name: self.surface_name.clone(),
             field_name: self.field_name.clone(),
@@ -110,8 +111,6 @@ impl CatalogDocument {
             title: self.title.clone(),
             description: self.description.clone(),
             searchable_text: self.searchable_text.clone(),
-            payload_json: serde_json::to_string(&self.catalog_name)
-                .expect("optional catalog name serializes"),
         }
     }
 }

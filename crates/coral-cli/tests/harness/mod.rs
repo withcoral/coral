@@ -440,7 +440,7 @@ fn mock_search_response() -> SearchResponse {
         ],
         truncation: Some(SearchResultTruncation {
             truncated: false,
-            returned_count: 2,
+            returned_count: 1,
             max_results: 10,
             note: String::new(),
         }),

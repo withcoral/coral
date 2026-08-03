@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS catalog_documents (
         doc_kind IN ('catalog_table', 'catalog_table_function', 'column_hint')
     ),
     source_name TEXT NOT NULL DEFAULT '',
+    catalog_name TEXT,
     surface_kind TEXT NOT NULL DEFAULT '' CHECK (
         surface_kind IN ('', 'table', 'table_function')
     ),
@@ -28,7 +29,6 @@ CREATE TABLE IF NOT EXISTS catalog_documents (
     qualified_name TEXT NOT NULL DEFAULT '',
     title TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
-    payload_json TEXT NOT NULL,
     snapshot_fingerprint TEXT NOT NULL,
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     PRIMARY KEY (workspace, doc_id)

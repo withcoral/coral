@@ -1,7 +1,5 @@
 //! Observed-values Universal Search provider.
 
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use crate::bootstrap::AppError;
@@ -22,7 +20,7 @@ use crate::search::observed::sqlite_queue::ObservedValuesSurfaceKind;
 use crate::search::observed::sqlite_store::{ObservedValuesClearResult, SqliteObservedValuesStore};
 use crate::search::provider::{
     LocalSearchWriteCoordinator, PreparedRetrievers, ProviderFailure, ProviderSearchOutcome,
-    Retriever, RetrieverError, SearchExecutionContext, SearchProvider,
+    Retriever, RetrieverError, RetrieverOutcome, SearchExecutionContext, SearchProvider,
 };
 use crate::search::result::{
     FieldValues, MatchEvidence, ProviderCoverage, ProviderStatus, Ranking, RetrieverId,
@@ -401,8 +399,6 @@ impl SearchProvider for ObservedValuesProvider {
             retrievers: vec![Box::new(RetrievedValues { matches })],
             coverage: outcome.status.coverage,
             degraded,
-            // Observed retrieval already reported its own limit through coverage.
-            retrieval_limited: Arc::new(AtomicBool::new(false)),
         })
     }
 }
@@ -425,8 +421,12 @@ impl Retriever for RetrievedValues {
         RetrieverId::ObservedValues
     }
 
-    fn retrieve(&self, _request: &SearchRequest) -> Result<Vec<SurfaceMatch>, RetrieverError> {
-        Ok(self.matches.clone())
+    fn retrieve(&self, _request: &SearchRequest) -> Result<RetrieverOutcome, RetrieverError> {
+        Ok(RetrieverOutcome {
+            matches: self.matches.clone(),
+            // Observed retrieval already reported its own limit through coverage.
+            retrieval_limited: false,
+        })
     }
 }
 

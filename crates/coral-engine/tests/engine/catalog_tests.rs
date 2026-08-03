@@ -396,8 +396,8 @@ fn http_manifest_with_function() -> Value {
                     "bind": { "arg": "search_type" }
                 },
                 // OpenAPI v4 generation does not produce Json HTTP function args.
-                // This fixture verifies typed args still register and list even
-                // though public catalog metadata does not expose arg types yet.
+                // This fixture verifies that typed arguments register and stay
+                // visible in public catalog metadata.
                 {
                     "name": "metadata",
                     "type": "Json",

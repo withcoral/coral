@@ -1702,6 +1702,8 @@ async fn list_catalog_surfaces_table_functions() {
         .iter()
         .find(|result| result["sql_reference"] == "searchy.lookup_issue")
         .expect("table function guide match");
+    assert_eq!(function["kind"], "function");
+    assert_eq!(function["arguments"]["number"], "Utf8");
     assert_eq!(
         function["guide"],
         "Use this function for exact issue lookup."

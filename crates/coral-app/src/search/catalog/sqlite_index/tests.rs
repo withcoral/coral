@@ -88,8 +88,7 @@ fn search_hit_preserves_catalog_identity_from_the_projection() {
         description: "Warehouse events",
         searchable_text: "warehouse analytics events",
     });
-    document.payload_json =
-        serde_json::to_string(&Some("warehouse".to_string())).expect("catalog payload");
+    document.catalog_name = Some("warehouse".to_string());
     store
         .refresh_catalog_projection(&CatalogIndexSnapshot {
             documents: vec![document],
@@ -958,6 +957,6 @@ fn owned_document(owner_source_name: &str, input: DocumentInput<'_>) -> CatalogI
         title: input.title.to_string(),
         description: input.description.to_string(),
         searchable_text: input.searchable_text.to_string(),
-        payload_json: "{}".to_string(),
+        catalog_name: None,
     }
 }

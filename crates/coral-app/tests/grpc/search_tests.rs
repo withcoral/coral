@@ -23,6 +23,8 @@ use coral_engine::{
 };
 use serde_json::json;
 use tonic::{Code, Request};
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::harness::{GrpcHarness, manifest_yaml, source_dir};
 
@@ -1400,15 +1402,89 @@ async fn search_table_preview_columns_do_not_inherit_table_matched_fields() {
     // The table matched on its description, not on any column, so no column is
     // reported as matching evidence.
     assert!(
-        field_names(result)
-            .iter()
-            .all(|name| *name != "body" && *name != "channel"),
+        field_names(result).is_empty(),
         "a description match must not present columns as matched evidence: {result:?}"
     );
     assert_eq!(
         result.omitted_matching_field_count, 0,
         "no matching fields were omitted because none matched"
     );
+}
+
+#[tokio::test]
+async fn search_groups_observed_values_under_their_table() {
+    let harness = GrpcHarness::new_with_observed_values_search().await;
+    let source = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [{ "text": "world" }]
+        })))
+        .mount(&source)
+        .await;
+    harness
+        .import_source(
+            observed_values_manifest_yaml(&source.uri()),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await;
+    harness
+        .execute_sql_rows("SELECT text FROM observed_fixture.messages")
+        .await;
+
+    let sqlite_path = harness
+        .config_dir()
+        .join("workspaces/default/search/search.sqlite3");
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let queued = rusqlite::Connection::open(&sqlite_path)
+                .ok()
+                .and_then(|connection| {
+                    connection
+                        .query_row("SELECT COUNT(*) FROM observed_queue_jobs", [], |row| {
+                            row.get::<_, i64>(0)
+                        })
+                        .ok()
+                })
+                .unwrap_or_default();
+            if queued > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("observed-value job should reach the durable queue");
+
+    let response = harness
+        .search_client()
+        .search(Request::new(SearchRequest {
+            workspace: Some(default_workspace()),
+            query: "world".to_string(),
+            limit: 10,
+        }))
+        .await
+        .expect("search observed values")
+        .into_inner();
+    let result = response
+        .results
+        .iter()
+        .find(|result| {
+            result.surface.as_ref().is_some_and(|surface| {
+                surface.schema_name == "observed_fixture" && surface.name == "messages"
+            })
+        })
+        .expect("observed value should elect its table");
+
+    assert!(
+        result
+            .providers
+            .contains(&(SearchProvider::ObservedValues as i32))
+    );
+    assert!(result.matching_values.iter().any(|values| {
+        values.field == "text" && values.values.iter().any(|value| value == "world")
+    }));
 }
 
 #[tokio::test]
@@ -1711,6 +1787,29 @@ fn table_preview_manifest_yaml() -> String {
                     "expr": { "kind": "path", "path": ["author"] }
                 }
             ]
+        }]
+    }))
+}
+
+fn observed_values_manifest_yaml(base_url: &str) -> String {
+    manifest_yaml(&json!({
+        "name": "observed_fixture",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": base_url,
+        "tables": [{
+            "name": "messages",
+            "description": "Observed-value fixture",
+            "request": { "method": "GET", "path": "/messages" },
+            "response": { "rows_path": ["items"] },
+            "pagination": { "mode": "none" },
+            "columns": [{
+                "name": "text",
+                "type": "Utf8",
+                "nullable": false,
+                "expr": { "kind": "path", "path": ["text"] }
+            }]
         }]
     }))
 }

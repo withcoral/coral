@@ -1,8 +1,6 @@
 //! Catalog metadata Universal Search provider.
 
 use std::collections::BTreeSet;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use coral_engine::{CatalogInfo, TableFunctionInfo, TableInfo};
 
@@ -22,7 +20,7 @@ use crate::search::maintenance::{
 };
 use crate::search::provider::{
     LocalSearchWriteCoordinator, PreparedRetrievers, ProviderFailure, Retriever, RetrieverError,
-    SearchExecutionContext, SearchProvider,
+    RetrieverOutcome, SearchExecutionContext, SearchProvider,
 };
 use crate::search::result::{
     CatalogSurface, Field, FieldRef, FieldRole, MatchEvidence, ProviderCoverage, RetrieverId,
@@ -116,18 +114,15 @@ impl CatalogMetadataProvider {
         let stale = projection.stale_index || !failed_sources.is_empty();
         let degraded = stale.then(|| degraded_note(&projection, failed_sources));
 
-        let retrieval_limited = Arc::new(AtomicBool::new(false));
         Ok(PreparedRetrievers {
             retrievers: vec![
                 Box::new(EntryRetriever {
                     store: projection.store.clone(),
                     limit,
-                    limited: Arc::clone(&retrieval_limited),
                 }),
                 Box::new(FieldRetriever {
                     store: projection.store,
                     limit,
-                    limited: Arc::clone(&retrieval_limited),
                 }),
             ],
             coverage: Some(ProviderCoverage {
@@ -138,7 +133,6 @@ impl CatalogMetadataProvider {
                 ..ProviderCoverage::default()
             }),
             degraded,
-            retrieval_limited,
         })
     }
 
@@ -445,7 +439,6 @@ fn degraded_note(projection: &CatalogProjection, failed_source_names: &BTreeSet<
 }
 
 /// Ranks entries by how well their own name, description, and guide text match.
-/// Ranks entries by how well their own name, description, and guide text match.
 ///
 /// Entries get their own candidate window. Sharing one window with field
 /// documents starves them: measured, a 50-document shared window holds 45 field
@@ -453,7 +446,6 @@ fn degraded_note(projection: &CatalogProjection, failed_source_names: &BTreeSet<
 struct EntryRetriever {
     store: SqliteSearchStore,
     limit: usize,
-    limited: Arc<AtomicBool>,
 }
 
 impl Retriever for EntryRetriever {
@@ -461,13 +453,12 @@ impl Retriever for EntryRetriever {
         RetrieverId::CatalogEntries
     }
 
-    fn retrieve(&self, request: &SearchRequest) -> Result<Vec<SurfaceMatch>, RetrieverError> {
+    fn retrieve(&self, request: &SearchRequest) -> Result<RetrieverOutcome, RetrieverError> {
         let hits = self
             .store
             .search_catalog(&request.terms, self.limit, CatalogDocumentClass::Entries)
             .map_err(|error| retriever_error(&error))?;
-        record_retrieval_limit(&self.limited, hits.retrieval_limited);
-        Ok(hits
+        let matches = hits
             .hits
             .iter()
             .filter_map(surface_id)
@@ -475,7 +466,11 @@ impl Retriever for EntryRetriever {
                 id,
                 evidence: MatchEvidence::default(),
             })
-            .collect())
+            .collect();
+        Ok(RetrieverOutcome {
+            matches,
+            retrieval_limited: hits.retrieval_limited,
+        })
     }
 }
 
@@ -484,7 +479,6 @@ impl Retriever for EntryRetriever {
 struct FieldRetriever {
     store: SqliteSearchStore,
     limit: usize,
-    limited: Arc<AtomicBool>,
 }
 
 impl Retriever for FieldRetriever {
@@ -492,12 +486,11 @@ impl Retriever for FieldRetriever {
         RetrieverId::CatalogFields
     }
 
-    fn retrieve(&self, request: &SearchRequest) -> Result<Vec<SurfaceMatch>, RetrieverError> {
+    fn retrieve(&self, request: &SearchRequest) -> Result<RetrieverOutcome, RetrieverError> {
         let hits = self
             .store
             .search_catalog(&request.terms, self.limit, CatalogDocumentClass::Fields)
             .map_err(|error| retriever_error(&error))?;
-        record_retrieval_limit(&self.limited, hits.retrieval_limited);
         // Scoring reorders the lane, so an entry takes the position of its
         // best-scoring field rather than its first-retrieved one.
         let mut matches = Vec::<SurfaceMatch>::new();
@@ -538,7 +531,10 @@ impl Retriever for FieldRetriever {
                 .matched_fields
                 .sort_by_key(|field| !query_names_field(&request.terms, &field.name));
         }
-        Ok(matches)
+        Ok(RetrieverOutcome {
+            matches,
+            retrieval_limited: hits.retrieval_limited,
+        })
     }
 }
 
@@ -552,12 +548,6 @@ fn query_names_field(terms: &[String], field_name: &str) -> bool {
                 .split(|ch: char| !ch.is_alphanumeric())
                 .any(|part| !part.is_empty() && part == term)
     })
-}
-
-fn record_retrieval_limit(limited: &Arc<AtomicBool>, retrieval_limited: bool) {
-    if retrieval_limited {
-        limited.store(true, Ordering::Relaxed);
-    }
 }
 
 fn surface_id(hit: &CatalogSearchHit) -> Option<SearchSurfaceId> {
@@ -632,10 +622,6 @@ pub(crate) fn resolve_entry(
 }
 
 /// Resolves a retriever identity to the catalog's canonical SQL identity.
-///
-/// Observed-value records created before catalog-qualified discovery do not
-/// carry a catalog name. They can still map safely when the schema/table pair
-/// is unique; ambiguous pairs stay unresolved and are not returned.
 pub(crate) fn resolve_surface_id(
     catalog: &CatalogInfo,
     id: &SearchSurfaceId,
@@ -647,13 +633,7 @@ pub(crate) fn resolve_surface_id(
                 id.catalog_name.as_deref(),
                 &id.schema_name,
                 &id.name,
-            )
-            .or_else(|| {
-                id.catalog_name
-                    .is_none()
-                    .then(|| unique_catalog_table(catalog, &id.schema_name, &id.name))
-                    .flatten()
-            })?;
+            )?;
             Some(SearchSurfaceId {
                 catalog_name: table.catalog_name.clone(),
                 schema_name: table.schema_name.clone(),
@@ -671,19 +651,6 @@ pub(crate) fn resolve_surface_id(
             })
         }
     }
-}
-
-fn unique_catalog_table<'a>(
-    catalog: &'a CatalogInfo,
-    schema_name: &str,
-    table_name: &str,
-) -> Option<&'a TableInfo> {
-    let mut matches = catalog
-        .tables
-        .iter()
-        .filter(|table| table.schema_name == schema_name && table.table_name == table_name);
-    let first = matches.next()?;
-    matches.next().is_none().then_some(first)
 }
 
 /// Required filters always appear; they do not consume a matching-field slot,
@@ -829,57 +796,11 @@ fn catalog_index_failure(error: &SqliteSearchError) -> ProviderFailure {
 
 #[cfg(test)]
 mod tests {
-    use coral_engine::{CatalogInfo, TableFunctionArgumentInfo, TableFunctionInfo, TableInfo};
+    use coral_engine::{TableFunctionArgumentInfo, TableFunctionInfo};
     use coral_spec::SourceTableFunctionKind;
 
-    use super::{function_fields, resolve_surface_id};
-    use crate::search::result::{
-        FieldRef, FieldRole, MatchEvidence, SearchSurfaceId, SearchSurfaceKind,
-    };
-
-    #[test]
-    fn unqualified_identity_resolves_one_catalog_backed_table() {
-        let catalog = CatalogInfo {
-            tables: vec![table(Some("warehouse"))],
-            table_functions: Vec::new(),
-        };
-
-        let resolved = resolve_surface_id(&catalog, &unqualified_id()).expect("unique table");
-
-        assert_eq!(resolved.catalog_name.as_deref(), Some("warehouse"));
-    }
-
-    #[test]
-    fn unqualified_identity_rejects_ambiguous_catalog_backed_tables() {
-        let catalog = CatalogInfo {
-            tables: vec![table(Some("primary")), table(Some("archive"))],
-            table_functions: Vec::new(),
-        };
-
-        assert!(resolve_surface_id(&catalog, &unqualified_id()).is_none());
-    }
-
-    fn table(catalog_name: Option<&str>) -> TableInfo {
-        TableInfo {
-            catalog_name: catalog_name.map(str::to_string),
-            schema_name: "analytics".to_string(),
-            table_name: "events".to_string(),
-            description: String::new(),
-            guide: String::new(),
-            require_guide_read: false,
-            columns: Vec::new(),
-            required_filters: Vec::new(),
-        }
-    }
-
-    fn unqualified_id() -> SearchSurfaceId {
-        SearchSurfaceId {
-            catalog_name: None,
-            schema_name: "analytics".to_string(),
-            name: "events".to_string(),
-            kind: SearchSurfaceKind::Table,
-        }
-    }
+    use super::function_fields;
+    use crate::search::result::{FieldRef, FieldRole, MatchEvidence};
 
     #[test]
     fn required_function_argument_does_not_count_as_omitted_evidence() {

@@ -686,6 +686,7 @@ fn catalog_schema_is_current(connection: &Connection) -> Result<bool, SqliteSear
             doc_id,
             doc_kind,
             source_name,
+            catalog_name,
             surface_kind,
             surface_name,
             field_name,
@@ -693,7 +694,6 @@ fn catalog_schema_is_current(connection: &Connection) -> Result<bool, SqliteSear
             qualified_name,
             title,
             description,
-            payload_json,
             snapshot_fingerprint,
             updated_at
         FROM catalog_documents
@@ -1282,7 +1282,7 @@ mod tests {
         let connection = store.connect_for_test().expect("connect");
         connection
             .execute(
-                "INSERT INTO catalog_documents (workspace, doc_id, doc_kind, source_name, title, payload_json, snapshot_fingerprint) VALUES ('default', 'doc', 'catalog_table', 'github', 'Issues', '{}', 'fingerprint')",
+                "INSERT INTO catalog_documents (workspace, doc_id, doc_kind, source_name, title, snapshot_fingerprint) VALUES ('default', 'doc', 'catalog_table', 'github', 'Issues', 'fingerprint')",
                 [],
             )
             .expect("seed catalog document");
@@ -1653,9 +1653,8 @@ mod tests {
                     doc_id,
                     doc_kind,
                     title,
-                    payload_json,
                     snapshot_fingerprint
-                ) VALUES ('default', 'fixture', 'catalog_table', 'Fixture', '{}', 'fixture')
+                ) VALUES ('default', 'fixture', 'catalog_table', 'Fixture', 'fixture')
                 ",
                 [],
             )
@@ -1681,7 +1680,7 @@ mod tests {
             title: surface_name.to_string(),
             description: String::new(),
             searchable_text: surface_name.to_string(),
-            payload_json: "{}".to_string(),
+            catalog_name: None,
         }
     }
 
@@ -1701,8 +1700,8 @@ mod tests {
         connection
             .execute_batch(
                 "
-                INSERT INTO catalog_documents (workspace, doc_id, doc_kind, source_name, title, payload_json, snapshot_fingerprint)
-                VALUES ('default', 'doc', 'catalog_table', 'github', 'Issues', '{}', 'fingerprint');
+                INSERT INTO catalog_documents (workspace, doc_id, doc_kind, source_name, title, snapshot_fingerprint)
+                VALUES ('default', 'doc', 'catalog_table', 'github', 'Issues', 'fingerprint');
                 INSERT INTO catalog_documents_fts (workspace, doc_id, title, qualified_name, description, searchable_text)
                 VALUES ('default', 'doc', 'Issues', 'github.issues', 'GitHub issues', 'github issues');
                 INSERT INTO catalog_source_owners (workspace, source_name, owner_source_name, snapshot_fingerprint)

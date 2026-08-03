@@ -3,7 +3,6 @@
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Instant;
 
@@ -59,6 +58,11 @@ impl ProviderFailure {
 #[derive(Debug, Clone)]
 pub(crate) struct RetrieverError {
     pub(crate) note: String,
+}
+
+pub(crate) struct RetrieverOutcome {
+    pub(crate) matches: Vec<SurfaceMatch>,
+    pub(crate) retrieval_limited: bool,
 }
 
 pub(crate) type ObservedValuesPolicyInput = Result<ObservedValuesRetrievalPolicy, AppError>;
@@ -135,7 +139,7 @@ pub(crate) trait Retriever: Send {
     fn id(&self) -> RetrieverId;
 
     /// Best-first. Vector position is the rank fusion uses; no score escapes.
-    fn retrieve(&self, request: &SearchRequest) -> Result<Vec<SurfaceMatch>, RetrieverError>;
+    fn retrieve(&self, request: &SearchRequest) -> Result<RetrieverOutcome, RetrieverError>;
 }
 
 /// A configured search provider.
@@ -163,18 +167,22 @@ pub(crate) trait SearchProvider: Send + Sync {
 
         let mut rankings = Vec::new();
         let mut failed = Vec::new();
+        let mut retrieval_limited = false;
         for retriever in prepared.retrievers {
             match retriever.retrieve(&context.request) {
-                Ok(matches) => rankings.push(Ranking {
-                    retriever: retriever.id(),
-                    matches,
-                }),
+                Ok(outcome) => {
+                    retrieval_limited |= outcome.retrieval_limited;
+                    rankings.push(Ranking {
+                        retriever: retriever.id(),
+                        matches: outcome.matches,
+                    });
+                }
                 Err(error) => failed.push((retriever.id(), error)),
             }
         }
 
         let coverage = prepared.coverage.map(|coverage| ProviderCoverage {
-            has_more: coverage.has_more || prepared.retrieval_limited.load(Ordering::Relaxed),
+            has_more: coverage.has_more || retrieval_limited,
             ..coverage
         });
         ProviderSearchOutcome {
@@ -201,9 +209,6 @@ pub(crate) struct PreparedRetrievers {
     /// queue, sources that failed to load. Independent of retriever failure,
     /// but reported the same way.
     pub(crate) degraded: Option<String>,
-    /// Set by a retriever when its candidate window filled, so the response can
-    /// say more matched rather than implying the index held nothing else.
-    pub(crate) retrieval_limited: Arc<AtomicBool>,
 }
 
 /// Every provider degrades the same way: surviving siblings keep their

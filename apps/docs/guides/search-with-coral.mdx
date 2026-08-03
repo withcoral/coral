@@ -21,9 +21,6 @@ Among the ranked results, you might see:
 Results
 1. [table] github.issues
    Issues opened against a repository
-   required: owner, repo
-   fields: labels, state
-   matched labels = urgent
 2. [function] github.search_issues
    Full-text search across issues
    required: q
@@ -40,7 +37,9 @@ for a table, arguments for a function. `matched` lines give you values Coral has
 previously observed on that field, ready to use in a `WHERE` clause or as an
 argument.
 
-Use the reference on the first line with `coral sql` to fetch rows. See
+Use a table reference in a `FROM` clause. Call a function with its required
+named arguments, such as `FROM github.search_issues(q => '<value>')`. Run the
+query with `coral sql`. See
 [Query your data](/getting-started/quickstart#3-query-your-data) for a complete
 example.
 

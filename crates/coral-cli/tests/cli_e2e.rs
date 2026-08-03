@@ -1021,7 +1021,7 @@ async fn search_json_output_preserves_typed_payloads_and_statuses() {
     assert!(response["provider_statuses"][1]["coverage"].is_null());
     assert_eq!(response["provider_statuses"][2]["state"], "skipped");
     assert!(response["provider_statuses"][2]["coverage"].is_null());
-    assert_eq!(response["truncation"]["returned_count"], 2);
+    assert_eq!(response["truncation"]["returned_count"], 1);
 
     let requests = server.search_requests();
     assert_eq!(requests.len(), 1, "expected one search call");

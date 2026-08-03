@@ -303,9 +303,6 @@ enum SearchProviderState {
 // observed values are evidence nested under the surface that owns them, never
 // results in their own right.
 message SearchResult {
-  reserved 1, 10, 11, 12;
-  reserved "provider", "catalog_metadata", "column_hint", "observed_value";
-
   // Identity of the matched entry.
   SearchSurfaceRef surface = 2;
   // Human-readable summary of the surface.

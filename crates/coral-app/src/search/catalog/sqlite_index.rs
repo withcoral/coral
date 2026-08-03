@@ -208,6 +208,7 @@ pub(crate) struct CatalogIndexDocument {
     pub(crate) doc_kind: CatalogIndexDocumentKind,
     pub(crate) owner_source_name: String,
     pub(crate) source_name: String,
+    pub(crate) catalog_name: Option<String>,
     pub(crate) surface_kind: String,
     pub(crate) surface_name: String,
     pub(crate) field_name: String,
@@ -216,7 +217,6 @@ pub(crate) struct CatalogIndexDocument {
     pub(crate) title: String,
     pub(crate) description: String,
     pub(crate) searchable_text: String,
-    pub(crate) payload_json: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -355,8 +355,8 @@ fn insert_catalog_snapshot_documents(
     let mut document_insert = transaction.prepare(
         "
         INSERT INTO catalog_documents (
-            workspace, doc_id, doc_kind, source_name, surface_kind, surface_name,
-            field_name, field_role, qualified_name, title, description, payload_json,
+            workspace, doc_id, doc_kind, source_name, catalog_name, surface_kind, surface_name,
+            field_name, field_role, qualified_name, title, description,
             snapshot_fingerprint, updated_at
         )
         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
@@ -379,6 +379,7 @@ fn insert_catalog_snapshot_documents(
             &document.doc_id,
             document.doc_kind.as_str(),
             &document.source_name,
+            document.catalog_name.as_deref(),
             &document.surface_kind,
             &document.surface_name,
             &document.field_name,
@@ -386,7 +387,6 @@ fn insert_catalog_snapshot_documents(
             &document.qualified_name,
             &document.title,
             &document.description,
-            &document.payload_json,
             &snapshot.fingerprint,
         ])?;
         fts_insert.execute(params![
@@ -630,8 +630,8 @@ fn fts_search(
             f.title,
             f.qualified_name,
             f.description,
-            f.searchable_text
-            , d.payload_json
+            f.searchable_text,
+            d.catalog_name
         FROM catalog_documents_fts f
         JOIN catalog_documents d
             ON d.workspace = f.workspace AND d.doc_id = f.doc_id
@@ -672,23 +672,10 @@ fn hit_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CatalogSearchHit> {
     let surface_kind = surface_kind_from_storage(&surface_kind_raw)?;
     let field_role_raw: String = row.get(6)?;
     let field_role = field_role_from_storage(&field_role_raw)?;
-    let payload_json: String = row.get(14)?;
-    let catalog_name = if payload_json == "{}" {
-        None
-    } else {
-        serde_json::from_str::<Option<String>>(&payload_json).map_err(|error| {
-            rusqlite::Error::FromSqlConversionFailure(
-                14,
-                rusqlite::types::Type::Text,
-                Box::new(error),
-            )
-        })?
-    };
-
     Ok(CatalogSearchHit {
         doc_id: row.get(0)?,
         source_name: row.get(2)?,
-        catalog_name,
+        catalog_name: row.get(14)?,
         surface_kind,
         surface_name: row.get(4)?,
         field_name: row.get(5)?,
