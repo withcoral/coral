@@ -156,6 +156,14 @@ impl EngineReadiness {
     /// The probe is spawned rather than awaited in place so that neither this
     /// caller's deadline nor its disconnection can cancel a resolution already
     /// under way: whoever asks next still gets the answer it paid for.
+    ///
+    /// Whether to probe is decided under the slot, cache included, because a
+    /// caller reads the cache before it reaches this lock. A probe finishing in
+    /// between records its answer and vacates the slot, so that caller arrives
+    /// to an empty slot holding a fresh answer; without re-reading the cache
+    /// here it would resolve the catalog again anyway. Deciding under the lock
+    /// is what keeps the TTL a bound on how often unauthenticated health
+    /// traffic can drive a resolution, rather than only on the steady state.
     fn in_flight_probe(&self) -> watch::Receiver<Option<bool>> {
         let Ok(mut slot) = self.in_flight.lock() else {
             // A poisoned slot costs single-flight, not correctness.
@@ -165,12 +173,19 @@ impl EngineReadiness {
         if let Some(running) = slot.as_ref() {
             return running.clone();
         }
+        // Ordering note: this is the only place the two locks nest, and it
+        // takes them slot-then-cache. The probe below records its answer and
+        // clears the slot in separate critical sections, never holding both.
+        if let Some(ready) = self.fresh_answer() {
+            let (_, receiver) = watch::channel(Some(ready));
+            return receiver;
+        }
         let (sender, receiver) = watch::channel(None);
         let probing = self.clone();
         tokio::spawn(async move {
             let ready = (probing.probe)().await;
-            // Recorded before the slot is released, so a caller that misses this
-            // probe reads its answer instead of starting another.
+            // Recorded before the slot is released, so the re-read above never
+            // sees a vacated slot without the answer that vacated it.
             if let Ok(mut cached) = probing.cached.lock() {
                 *cached = Some((Instant::now(), ready));
             }
@@ -359,6 +374,34 @@ mod tests {
             calls.load(Ordering::SeqCst),
             1,
             "the unauthenticated readiness check must not resolve the catalog per request"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_caller_racing_probe_completion_reuses_the_answer_it_missed() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&calls);
+        let readiness = EngineReadiness::new(Arc::new(move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+            Box::pin(std::future::ready(true))
+        }));
+
+        // Leaves the cache fresh and the slot empty — the state a caller sees
+        // when it reads the cache just before a probe records its answer and
+        // then reaches the slot just after that probe vacates it. Calling
+        // `in_flight_probe` directly is that interleaving without the timing.
+        assert!(readiness.is_ready().await);
+        let mut answer = readiness.in_flight_probe();
+
+        assert_eq!(
+            *answer.borrow_and_update(),
+            Some(true),
+            "the racing caller must be handed the answer already in the cache"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "losing the race to a finished probe must not buy a second catalog resolution"
         );
     }
 
