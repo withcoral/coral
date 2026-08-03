@@ -114,13 +114,17 @@ function OnboardingNextStepsStep({
 
   return (
     <>
-      <OnboardingNextStepsPage
-        mcpClients={mcpClients}
-        onContinue={onContinue}
-        runtime={runtime}
-        step={step}
-        workspaces={workspaces}
-      />
+      {runtime === 'desktop' ? (
+        <OnboardingNextStepsPage
+          mcpClients={mcpClients}
+          onContinue={onContinue}
+          runtime="desktop"
+          step={step}
+          workspaces={workspaces}
+        />
+      ) : (
+        <OnboardingNextStepsPage onContinue={onContinue} runtime="web" step={step} />
+      )}
       {/*
         Onboarding renders outside the app shell, which is where the rest of the app
         mounts its toast host. Without one here, connecting a client would silently

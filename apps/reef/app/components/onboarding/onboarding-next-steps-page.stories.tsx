@@ -7,11 +7,9 @@ import { getOnboardingStepState } from './onboarding-steps'
 
 const meta = {
   args: {
-    mcpClients: { clients: [], onWorkspaceChange: fn() },
     onContinue: fn(),
     runtime: 'web',
     step: getOnboardingStepState('next-steps'),
-    workspaces: [{ name: 'default' }, { name: 'analytics' }],
   },
   component: OnboardingNextStepsPage,
   parameters: {
@@ -26,20 +24,18 @@ type Story = StoryObj<typeof meta>
 
 export const Web: Story = {}
 
-// Enough clients that the list scrolls under its sticky header.
+// Desktop connects clients in place of the manual instructions. The list's own
+// scrolling and pending states are covered by Components/McpClientsList.
 export const Desktop: Story = {
   args: {
     mcpClients: {
-      clients: ['Claude Code', 'Claude Desktop', 'Codex', 'Cursor', 'VS Code', 'Zed'].map(
-        (name, index) => ({
-          configuredWorkspace: index === 0 ? 'default' : undefined,
-          id: name.toLowerCase().replaceAll(' ', '-'),
-          name,
-        }),
-      ),
+      clients: [
+        { configuredWorkspace: 'default', id: 'claude-code', name: 'Claude Code' },
+        { id: 'codex', name: 'Codex' },
+      ],
       onWorkspaceChange: fn(),
-      pendingClientIds: ['codex'],
     },
     runtime: 'desktop',
+    workspaces: [{ name: 'default' }, { name: 'analytics' }],
   },
 }

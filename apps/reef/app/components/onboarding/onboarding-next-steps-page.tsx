@@ -52,13 +52,19 @@ export function coralAgentSetupPrompt(runtime: 'desktop' | 'web'): string {
   ].join('\n')
 }
 
-export interface OnboardingNextStepsPageProps {
+interface ConnectClientsProps {
   mcpClients: DesktopMcpClientsState
-  onContinue?: () => void
-  runtime: 'desktop' | 'web'
-  step: OnboardingStepState
   workspaces: ReadonlyArray<{ name: string }>
 }
+
+/** Only Desktop can write a client's config, so only Desktop carries the clients. */
+export type OnboardingNextStepsPageProps = {
+  onContinue?: () => void
+  step: OnboardingStepState
+} & (
+  | ({ runtime: 'desktop' } & ConnectClientsProps)
+  | ({ runtime: 'web' } & Partial<Record<keyof ConnectClientsProps, never>>)
+)
 
 export function OnboardingNextStepsPage({
   mcpClients,
@@ -175,10 +181,7 @@ export function OnboardingNextStepsPage({
   )
 }
 
-function ConnectClients({
-  mcpClients,
-  workspaces,
-}: Pick<OnboardingNextStepsPageProps, 'mcpClients' | 'workspaces'>) {
+function ConnectClients({ mcpClients, workspaces }: ConnectClientsProps) {
   return (
     <>
       <Typography.Body variant="tertiary">

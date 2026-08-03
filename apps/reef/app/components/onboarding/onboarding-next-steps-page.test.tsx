@@ -96,17 +96,47 @@ describe('OnboardingNextStepsPage', () => {
       .toHaveAttribute('href', 'https://withcoral.com/docs/guides/use-coral-over-mcp')
   })
 
-  it('does not offer to connect a client on the web', async () => {
+  it('connects and disconnects a client from the workspace menu', async () => {
+    const onWorkspaceChange = vi.fn()
     const Stub = createRoutesStub([
       {
         Component: () => (
           <OnboardingNextStepsPage
-            mcpClients={{ clients: [], onWorkspaceChange: vi.fn() }}
-            runtime="web"
+            mcpClients={{
+              clients: [
+                { configuredWorkspace: 'default', id: 'claude-code', name: 'Claude Code' },
+                { id: 'codex', name: 'Codex' },
+              ],
+              onWorkspaceChange,
+            }}
+            runtime="desktop"
             step={nextStepsStep}
             workspaces={WORKSPACES}
           />
         ),
+        path: '/',
+      },
+    ])
+    const screen = await render(<Stub />)
+
+    await screen.getByRole('tab', { name: 'Manual' }).click()
+
+    await screen.getByRole('button', { name: 'Not configured' }).click()
+    await screen.getByRole('menuitemradio', { name: 'analytics' }).click()
+    expect(onWorkspaceChange).toHaveBeenCalledWith('codex', 'analytics')
+
+    await screen.getByRole('button', { name: 'default' }).click()
+    await expect
+      .element(screen.getByRole('menuitemradio', { name: 'default' }))
+      .toHaveAttribute('aria-checked', 'true')
+    await screen.getByRole('menuitemradio', { name: 'Not configured' }).click()
+    expect(onWorkspaceChange).toHaveBeenLastCalledWith('claude-code', undefined)
+  })
+
+  it('does not offer to connect a client on the web', async () => {
+    const Stub = createRoutesStub([
+      {
+        Component: () => <OnboardingNextStepsPage runtime="web" step={nextStepsStep} />,
         path: '/',
       },
     ])
