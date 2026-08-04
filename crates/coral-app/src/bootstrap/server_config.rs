@@ -84,6 +84,7 @@ impl LoadedServerConfig {
                 session_auth: None,
             });
         };
+        let allowed_audiences = auth_settings.allowed_audiences().to_vec();
         let (auth_settings, session) = auth_settings
             .resolve_runtime_dependencies(&self.config_path, &|name| {
                 AppEnvironment::env_var(name).map_err(|error| match error {
@@ -103,7 +104,7 @@ impl LoadedServerConfig {
             Some(auth_settings.authorization_server().issuer()),
         )?;
         let mcp_http = self.resolve_mcp_http(Some(&authorization_server))?;
-        let public_audiences = public_surface_audiences(mcp_http.as_ref())?;
+        let public_audiences = public_surface_audiences(mcp_http.as_ref(), &allowed_audiences)?;
         Ok(ServeSettings {
             mcp_http,
             session_auth: Some(SessionAuthSettings {
@@ -345,28 +346,37 @@ impl SessionAuthSettings {
     }
 }
 
-/// Collects the resource identifiers of the instance's public surfaces.
+/// Collects the resource identifiers that front the instance's private API.
 ///
-/// Only a public surface has a resource identity: it is the audience of the tokens
-/// minted for it and the authorization resource clients name when requesting one.
-/// The gRPC API is private — reached through the surfaces that front it, MCP HTTP
-/// today and the UI BFF later — so it has no identifier of its own and instead
-/// accepts every identifier returned here.
+/// Each identifier is both the audience of tokens minted for a public surface
+/// and the authorization resource clients name when requesting one. Some are
+/// derived from a surface Coral serves, while others are explicitly registered
+/// for external fronting surfaces such as a hosted UI BFF.
 ///
-/// At least one public surface is therefore required: with none, no token can be
-/// minted for anything and every login would fail at the authorization endpoint.
-/// The requirement is deliberately surface-agnostic, so adding the BFF satisfies
-/// it without revisiting this code.
+/// The gRPC API has no resource identity of its own and instead accepts every
+/// identifier returned here. At least one is therefore required: with none, no
+/// token can be minted for anything and every login would fail at authorization.
 fn public_surface_audiences(
     mcp_http: Option<&McpHttpServeConfig>,
+    allowed_audiences: &[String],
 ) -> Result<Vec<String>, AppError> {
-    let audiences = match mcp_http {
+    let mut audiences = match mcp_http {
         Some(McpHttpServeConfig::Authenticated { public_url, .. }) => vec![public_url.clone()],
         _ => Vec::new(),
     };
+    for (index, configured) in allowed_audiences.iter().enumerate() {
+        let label = format!("auth.allowed_audiences[{index}]");
+        let audience = required_oauth_url(&label, Some(configured))?;
+        if audiences.iter().any(|existing| existing == &audience) {
+            return Err(AppError::FailedPrecondition(format!(
+                "{label} duplicates another configured public surface audience"
+            )));
+        }
+        audiences.push(audience);
+    }
     if audiences.is_empty() {
         return Err(AppError::FailedPrecondition(
-            "configured [auth] requires at least one public surface with a public_url, such as an enabled server.mcp_http"
+            "configured [auth] requires at least one public surface: an enabled server.mcp_http with a public_url, or a non-empty auth.allowed_audiences"
                 .to_string(),
         ));
     }
@@ -405,6 +415,14 @@ mod tests {
     use crate::state::AppStateLayout;
 
     fn write_authenticated_config(layout: &AppStateLayout, mcp_http: &str) {
+        write_authenticated_config_with_auth(layout, mcp_http, "");
+    }
+
+    fn write_authenticated_config_with_auth(
+        layout: &AppStateLayout,
+        mcp_http: &str,
+        auth_fields: &str,
+    ) {
         layout.ensure().expect("config dir");
         fs::write(layout.config_dir().join("session.key"), test_signing_key())
             .expect("session key");
@@ -412,6 +430,9 @@ mod tests {
             layout.config_file(),
             format!(
                 "{mcp_http}
+[auth]
+{auth_fields}
+
 [auth.authorization_server]
 issuer = 'https://AUTH.example.test/'
 
@@ -533,12 +554,13 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
     }
 
     #[test]
-    fn authenticated_companions_share_one_canonical_mcp_audience() {
+    fn authenticated_companions_canonicalize_public_audiences_in_surface_order() {
         let temp = TempDir::new().expect("temp dir");
         let layout = AppStateLayout::discover(Some(temp.path().join("config"))).expect("layout");
-        write_authenticated_config(
+        write_authenticated_config_with_auth(
             &layout,
             "[server.mcp_http]\nenabled = true\nbind = '127.0.0.1:0'\npublic_url = 'https://MCP.example.test/'\n",
+            "allowed_audiences = ['https://REEF.example.test/']",
         );
 
         let companions = LoadedServerConfig::load(&layout)
@@ -557,7 +579,69 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
         // providers and the authorization server from it is the composition
         // root's job, covered in `bootstrap::server`.
         let session_auth = companions.session_auth.expect("session auth");
-        assert_eq!(session_auth.public_audiences, ["https://mcp.example.test"]);
+        assert_eq!(
+            session_auth.public_audiences,
+            ["https://mcp.example.test", "https://reef.example.test"]
+        );
+    }
+
+    #[test]
+    fn authenticated_reef_only_config_uses_its_allowed_audience() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("config"))).expect("layout");
+        write_authenticated_config_with_auth(
+            &layout,
+            "",
+            "allowed_audiences = ['https://REEF.example.test/']",
+        );
+
+        let companions = LoadedServerConfig::load(&layout)
+            .expect("load")
+            .companion_settings()
+            .expect("Reef-only companions");
+        assert!(companions.mcp_http.is_none());
+        assert_eq!(
+            companions
+                .session_auth
+                .expect("session auth")
+                .public_audiences,
+            ["https://reef.example.test"]
+        );
+    }
+
+    #[test]
+    fn allowed_audiences_reject_invalid_and_duplicate_entries() {
+        let cases = [
+            (
+                "",
+                "allowed_audiences = ['https://reef.example.test/?tenant=one']",
+                "auth.allowed_audiences[0] must not include a query",
+            ),
+            (
+                "[server.mcp_http]\nenabled = true\npublic_url = 'https://MCP.example.test/'\n",
+                "allowed_audiences = ['https://mcp.example.test']",
+                "auth.allowed_audiences[0] duplicates another configured public surface audience",
+            ),
+            (
+                "",
+                "allowed_audiences = ['https://REEF.example.test/', 'https://reef.example.test']",
+                "auth.allowed_audiences[1] duplicates another configured public surface audience",
+            ),
+        ];
+
+        for (mcp_http, auth_fields, expected) in cases {
+            let temp = TempDir::new().expect("temp dir");
+            let layout =
+                AppStateLayout::discover(Some(temp.path().join("config"))).expect("layout");
+            write_authenticated_config_with_auth(&layout, mcp_http, auth_fields);
+
+            let error = LoadedServerConfig::load(&layout)
+                .expect("load")
+                .companion_settings()
+                .err()
+                .expect("invalid audience must fail");
+            assert!(error.to_string().contains(expected), "error: {error}");
+        }
     }
 
     /// Parsing `[auth]` validates the section without touching what it points
@@ -581,14 +665,13 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
     }
 
     /// The private gRPC API has no resource identity of its own, so an
-    /// authenticated instance needs a public surface for anything to be minted
-    /// for. The message names no specific surface, so adding the UI BFF satisfies
-    /// it without touching this check.
+    /// authenticated instance needs at least one public surface for anything to
+    /// be minted for. An empty allowlist behaves exactly like an absent one.
     #[test]
     fn configured_auth_requires_a_public_surface() {
         let temp = TempDir::new().expect("temp dir");
         let layout = AppStateLayout::discover(Some(temp.path().join("config"))).expect("layout");
-        write_authenticated_config(&layout, "");
+        write_authenticated_config_with_auth(&layout, "", "allowed_audiences = []");
         let error = LoadedServerConfig::load(&layout)
             .expect("load")
             .companion_settings()
@@ -597,7 +680,7 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
         assert!(
             error
                 .to_string()
-                .contains("requires at least one public surface with a public_url"),
+                .contains("requires at least one public surface"),
             "error: {error}"
         );
     }

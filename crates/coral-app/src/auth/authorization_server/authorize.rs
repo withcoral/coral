@@ -217,7 +217,9 @@ async fn resolve_client(
         .client_metadata_resolver
         .resolve(client_id)
         .await
-        .map_err(|_error| ())
+        .map_err(|error| {
+            tracing::warn!(%error, "OAuth client metadata resolution failed");
+        })
 }
 
 /// Resolves the redirect URI a request names, under [`BrowserRedirect`].

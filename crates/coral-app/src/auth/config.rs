@@ -61,6 +61,10 @@ struct RawAuthSettings {
         deserialize_with = "deserialize_bind_addr"
     )]
     http_bind_addr: SocketAddr,
+    /// Additional public-surface resource identifiers accepted by the private
+    /// gRPC API and registered with the authorization server.
+    #[serde(default)]
+    allowed_audiences: Vec<String>,
     session: SessionTokenSettings,
     authorization_server: AuthorizationServerSettings,
     provider: OidcProviderSettings,
@@ -81,6 +85,14 @@ impl AuthSettings {
         };
         settings.validate()?;
         Ok(Some(Self(settings)))
+    }
+
+    /// Returns the additional public-surface audiences exactly as configured.
+    ///
+    /// Server bootstrap owns their URL canonicalization alongside the other
+    /// public-surface identifiers it composes.
+    pub(crate) fn allowed_audiences(&self) -> &[String] {
+        &self.0.allowed_audiences
     }
 
     /// Fetches the secrets the config only points at — the provider client
