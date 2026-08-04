@@ -5,13 +5,10 @@ export interface DisabledAuthConfig {
 }
 
 export interface RequiredAuthConfig {
-  clientId: string | null
   cookieName: string
-  cookieSecure: boolean
   issuer: string
   mode: 'required'
-  redirectUri: string | null
-  scope: string | null
+  publicUrl: string
   sessionMaxAgeSeconds: number
   sessionSecret: string
 }

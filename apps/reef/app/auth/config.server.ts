@@ -1,3 +1,5 @@
+import { isIP } from 'node:net'
+
 import type { AuthConfig, RequiredAuthConfig } from './types'
 
 const DEFAULT_COOKIE_NAME = 'reef_session'
@@ -42,33 +44,28 @@ function requiredAuthConfig(env: NodeJS.ProcessEnv): RequiredAuthConfig {
 
   const issuer = requiredString(env.REEF_AUTH_ISSUER, 'REEF_AUTH_ISSUER')
   const issuerUrl = httpUrl(issuer, 'REEF_AUTH_ISSUER')
+  if (issuerUrl.username || issuerUrl.password) {
+    throw new Error('REEF_AUTH_ISSUER must not include credentials')
+  }
   if (issuerUrl.search || issuerUrl.hash) {
     throw new Error('REEF_AUTH_ISSUER must not include a query string or fragment')
   }
+  if (issuerUrl.protocol === 'http:' && !isExplicitLoopback(issuerUrl)) {
+    throw new Error('REEF_AUTH_ISSUER must use HTTPS or explicit-loopback HTTP')
+  }
 
-  const redirectUri = optionalString(env.REEF_AUTH_REDIRECT_URI)
-  const redirectUrl = redirectUri ? httpUrl(redirectUri, 'REEF_AUTH_REDIRECT_URI') : null
-  if (redirectUrl?.hash) throw new Error('REEF_AUTH_REDIRECT_URI must not include a fragment')
-
-  const cookieSecure = booleanEnv(env.REEF_COOKIE_SECURE) ?? redirectUrl?.protocol === 'https:'
-  if (env.NODE_ENV === 'production') {
-    if (issuerUrl.protocol !== 'https:')
-      throw new Error('REEF_AUTH_ISSUER must use HTTPS in production')
-    if (!redirectUrl) throw new Error('REEF_AUTH_REDIRECT_URI must be set in production')
-    if (redirectUrl.protocol !== 'https:') {
-      throw new Error('REEF_AUTH_REDIRECT_URI must use HTTPS in production')
-    }
-    if (!cookieSecure) throw new Error('REEF_COOKIE_SECURE cannot be false in production')
+  const publicUrl = publicOrigin(requiredString(env.REEF_PUBLIC_URL, 'REEF_PUBLIC_URL'))
+  if (new URL(publicUrl).protocol === 'http:' && issuerUrl.protocol !== 'http:') {
+    throw new Error(
+      'REEF_PUBLIC_URL may use HTTP only when REEF_AUTH_ISSUER also uses explicit-loopback HTTP',
+    )
   }
 
   return {
-    clientId: optionalString(env.REEF_AUTH_CLIENT_ID),
     cookieName: optionalString(env.REEF_SESSION_COOKIE_NAME) ?? DEFAULT_COOKIE_NAME,
-    cookieSecure,
     issuer,
     mode: 'required',
-    redirectUri,
-    scope: optionalString(env.REEF_AUTH_SCOPE),
+    publicUrl,
     sessionMaxAgeSeconds: positiveIntegerEnv(
       env.REEF_SESSION_MAX_AGE_SECONDS,
       'REEF_SESSION_MAX_AGE_SECONDS',
@@ -76,6 +73,22 @@ function requiredAuthConfig(env: NodeJS.ProcessEnv): RequiredAuthConfig {
     ),
     sessionSecret,
   }
+}
+
+export function authResource(config: RequiredAuthConfig): string {
+  return config.publicUrl
+}
+
+export function authClientId(config: RequiredAuthConfig): string {
+  return new URL('/.well-known/oauth-client', config.publicUrl).toString()
+}
+
+export function authRedirectUri(config: RequiredAuthConfig): string {
+  return new URL('/auth/callback', config.publicUrl).toString()
+}
+
+export function authCookieSecure(config: RequiredAuthConfig): boolean {
+  return new URL(config.publicUrl).protocol === 'https:'
 }
 
 function requiredString(value: string | undefined, name: string): string {
@@ -98,12 +111,55 @@ function httpUrl(value: string, name: string): URL {
   return url
 }
 
-function booleanEnv(value: string | undefined): boolean | null {
-  const configured = optionalString(value)?.toLowerCase()
-  if (!configured) return null
-  if (['1', 'true', 'yes'].includes(configured)) return true
-  if (['0', 'false', 'no'].includes(configured)) return false
-  throw new Error('REEF_COOKIE_SECURE must be true or false')
+function publicOrigin(value: string): string {
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch {
+    throw invalidPublicUrl()
+  }
+  if (
+    (url.protocol !== 'https:' && url.protocol !== 'http:') ||
+    url.username ||
+    url.password ||
+    url.pathname !== '/' ||
+    url.search ||
+    url.hash ||
+    isLocalhostSubdomain(url.hostname) ||
+    (url.protocol === 'http:' && !isExplicitLoopback(url))
+  ) {
+    throw invalidPublicUrl()
+  }
+
+  return url.origin
+}
+
+function invalidPublicUrl(): Error {
+  return new Error(
+    'REEF_PUBLIC_URL must be an HTTPS or explicit-loopback HTTP origin without credentials, path, query, or fragment',
+  )
+}
+
+function isExplicitLoopback(url: URL): boolean {
+  const hostname = unbracketedHostname(url.hostname).toLowerCase().replace(/\.$/, '')
+  if (hostname === 'localhost') return true
+
+  const family = isIP(hostname)
+  if (family === 4) return hostname.split('.')[0] === '127'
+  if (family !== 6) return false
+  if (hostname === '::1') return true
+
+  // WHATWG URL serialization renders IPv4-mapped loopback addresses in this
+  // canonical hexadecimal form, e.g. ::ffff:127.0.0.1 -> ::ffff:7f00:1.
+  return /^::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}$/i.test(hostname)
+}
+
+function unbracketedHostname(hostname: string): string {
+  return hostname.startsWith('[') && hostname.endsWith(']') ? hostname.slice(1, -1) : hostname
+}
+
+function isLocalhostSubdomain(hostname: string): boolean {
+  return unbracketedHostname(hostname).toLowerCase().replace(/\.$/, '').endsWith('.localhost')
 }
 
 function positiveIntegerEnv(value: string | undefined, name: string, fallback: number): number {
