@@ -19,8 +19,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue, json};
 use tokio::task;
 
+use coral_telemetry::WORKSPACE_SPAN_ATTRIBUTE;
+
 use crate::storage::fs as storage_fs;
-use crate::telemetry::WORKSPACE_SPAN_ATTRIBUTE;
 
 const JSONL_MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
 const JSONL_MAX_FILE_ROWS: usize = 50_000;
@@ -1976,7 +1977,7 @@ mod tests {
         JSONL_MAX_FILE_AGE, JsonlSpanExporter, RollingJsonlWriter, StoredTraceStatus,
         TraceSpanRecord, TraceStore, unix_nanos,
     };
-    use crate::telemetry::WORKSPACE_SPAN_ATTRIBUTE;
+    use coral_telemetry::WORKSPACE_SPAN_ATTRIBUTE;
 
     const TRACE_RETENTION: Duration = Duration::from_hours(7 * 24);
 

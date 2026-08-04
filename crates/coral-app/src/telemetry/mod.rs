@@ -52,7 +52,45 @@ const LOCAL_TRACE_EXCLUDED_RPC_SERVICES: &[&str] = &["coral.v1.TraceService"];
 pub(crate) const QUERY_TRACE_SOURCES_ATTR: &str = "coral.query.sources";
 pub(crate) const QUERY_TRACE_TABLES_ATTR: &str = "coral.query.tables";
 pub(crate) const QUERY_TRACE_TABLE_FUNCTIONS_ATTR: &str = "coral.query.table_functions";
-pub(crate) const WORKSPACE_SPAN_ATTRIBUTE: &str = "workspace";
+
+pub(crate) fn app_error_type(error: &AppError) -> &'static str {
+    match error {
+        AppError::Unauthenticated(_) => "UNAUTHENTICATED",
+        AppError::SourceNotFound(_) => "SOURCE_NOT_FOUND",
+        AppError::FunctionNotFound(_) => "FUNCTION_NOT_FOUND",
+        AppError::FunctionAlreadyExists(_) => "FUNCTION_ALREADY_EXISTS",
+        AppError::WorkspaceNotFound(_) => "WORKSPACE_NOT_FOUND",
+        AppError::WorkspaceAlreadyExists(_) => "WORKSPACE_ALREADY_EXISTS",
+        AppError::InvalidInput(_) => "INVALID_INPUT",
+        AppError::FailedPrecondition(_) => "FAILED_PRECONDITION",
+        AppError::MissingSourceInputs { .. } => "MISSING_SOURCE_INPUTS",
+        AppError::UnsupportedV4IdentityRequirements { .. } => {
+            "UNSUPPORTED_V4_IDENTITY_REQUIREMENTS"
+        }
+        AppError::MissingOrIncompatibleV4Materialization { .. } => {
+            "MISSING_OR_INCOMPATIBLE_V4_MATERIALIZATION"
+        }
+        AppError::IncompatibleInstalledV4Manifest { .. } => "INCOMPATIBLE_INSTALLED_V4_MANIFEST",
+        AppError::InvalidV4ProjectionOverride { .. } => "INVALID_V4_PROJECTION_OVERRIDE",
+        AppError::InvalidV4OperationMetadataOverride { .. } => {
+            "INVALID_V4_OPERATION_METADATA_OVERRIDE"
+        }
+        AppError::CredentialRefresh(_) => "CREDENTIAL_REFRESH",
+        AppError::Unavailable(_) => "UNAVAILABLE",
+        AppError::ResourceExhausted(_) => "RESOURCE_EXHAUSTED",
+        AppError::Internal(_) => "INTERNAL",
+        AppError::Io(_) => "IO",
+        AppError::Yaml(_) => "YAML",
+        AppError::TomlDecode(_) | AppError::TomlEditDecode(_) => "TOML_DECODE",
+        AppError::TomlEncode(_) => "TOML_ENCODE",
+        AppError::Json(_) => "JSON",
+        AppError::Transport(_) => "TRANSPORT",
+        AppError::TaskJoin(_) => "TASK_JOIN",
+        AppError::Credentials(_) => "CREDENTIALS",
+        AppError::Database(_) => "DATABASE",
+        AppError::MissingConfigDir => "MISSING_CONFIG_DIR",
+    }
+}
 
 /// Records a span attribute only when Coral owns an installed local trace store.
 ///

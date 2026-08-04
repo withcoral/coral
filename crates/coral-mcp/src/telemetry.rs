@@ -70,8 +70,9 @@ pub(crate) fn call_tool_span(
         otel.name = "coral.mcp.call_tool",
         task.id = field::Empty,
         status = field::Empty,
-        workspace = workspace,
+        workspace = field::Empty,
     );
+    span.record(coral_telemetry::WORKSPACE_SPAN_ATTRIBUTE, workspace);
     apply_trace_parent(&span, trace_parent);
     span
 }
@@ -207,7 +208,7 @@ mod tests {
             Some("list_catalog".to_string())
         );
         assert_eq!(
-            string_attribute(tool_call, "workspace"),
+            string_attribute(tool_call, coral_telemetry::WORKSPACE_SPAN_ATTRIBUTE),
             Some("alpha".to_string())
         );
         assert_eq!(

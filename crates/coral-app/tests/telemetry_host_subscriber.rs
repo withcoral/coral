@@ -1,4 +1,4 @@
-//! Pins the host-owned subscriber policy.
+//! Pins the host-owned subscriber startup and local-only attribute policies.
 //!
 //! `init_tracing` installs coral-app's own tracing subscriber as a side effect
 //! of `ServerBuilder::start`. When the host process has already installed a
@@ -6,6 +6,10 @@
 //! fail startup — telemetry init becomes a no-op (an explanatory warning is
 //! logged through the host's subscriber) and the gRPC server bootstraps
 //! normally.
+//!
+//! A host-owned subscriber still receives Coral's public spans, but Coral must
+//! not write local-only attributes into it because the host owns that
+//! subscriber's storage, retention, and deletion behavior.
 //!
 //! This test must live in its own integration test binary: `init_tracing`
 //! caches its outcome in a process-global `OnceLock`, so co-locating this
@@ -31,7 +35,7 @@ use tracing_subscriber::util::SubscriberInitExt as _;
 const SEARCH_SENTINEL: &str = "HOST_SUBSCRIBER_LOCAL_SEARCH_SENTINEL";
 
 #[tokio::test]
-async fn host_subscriber_does_not_block_server_startup() {
+async fn host_subscriber_keeps_server_available_without_local_only_attributes() {
     let exporter = InMemorySpanExporter::default();
     let provider = SdkTracerProvider::builder()
         .with_simple_exporter(exporter.clone())

@@ -12,7 +12,7 @@ use crate::bootstrap::AppError;
 use crate::catalog::discovery::CatalogDiscovery;
 use crate::catalog::model::CatalogResolution;
 use crate::query::QueryAttribution;
-use crate::query::manager::{QueryManagerError, app_error_type};
+use crate::query::manager::QueryManagerError;
 use crate::search::catalog::provider::{CatalogMetadataProvider, catalog_clear_provider_result};
 use crate::search::engine::UniversalSearchEngine;
 use crate::search::maintenance::{
@@ -39,7 +39,7 @@ use crate::search::sqlite_store::{
 use crate::sources::materialization::SourceDiagnosticReporter;
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::task::id::TaskId;
-use crate::telemetry::{WORKSPACE_SPAN_ATTRIBUTE, record_local_only_span_attribute};
+use crate::telemetry::{app_error_type, record_local_only_span_attribute};
 use crate::workspaces::{
     WorkspaceLifecycleLock, WorkspaceLifecycleRevision, WorkspaceManager, WorkspaceName,
 };
@@ -593,10 +593,11 @@ where
             span.set_status(OtelStatus::Ok);
         }
         Err(SearchManagerError::App(error)) => {
-            span.record("error.type", app_error_type(error));
-            span.record("exception.message", SEARCH_TELEMETRY_ERROR_MESSAGE);
-            span.record("status", "error");
-            span.set_status(OtelStatus::error(SEARCH_TELEMETRY_ERROR_MESSAGE));
+            coral_telemetry::record_failure(
+                &span,
+                app_error_type(error),
+                SEARCH_TELEMETRY_ERROR_MESSAGE,
+            );
         }
     }
     result
@@ -625,7 +626,10 @@ fn create_search_span(request: &SearchRequest, task_id: Option<&TaskId>) -> trac
         coral_telemetry::QUERY_STREAM_SEARCH_QUERY_ATTRIBUTE,
         request.query.as_str(),
     );
-    span.record(WORKSPACE_SPAN_ATTRIBUTE, request.workspace_name.as_str());
+    span.record(
+        coral_telemetry::WORKSPACE_SPAN_ATTRIBUTE,
+        request.workspace_name.as_str(),
+    );
     if let Some(task_id) = task_id {
         span.record("task.id", field::display(task_id));
     }

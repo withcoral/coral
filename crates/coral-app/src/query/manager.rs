@@ -41,7 +41,7 @@ use crate::sources::runtime_package::{
 };
 use crate::state::{AppConfig, AppStateLayout, ConfigStore};
 use crate::task::id::TaskId;
-use crate::telemetry::WORKSPACE_SPAN_ATTRIBUTE;
+use crate::telemetry::app_error_type;
 use crate::workspaces::{
     WorkspaceLifecycleLock, WorkspaceLifecycleRevision, WorkspaceManager, WorkspaceName,
 };
@@ -577,7 +577,10 @@ impl QueryManager {
             workspace = tracing::field::Empty,
             source.count = tracing::field::Empty,
         );
-        span.record(WORKSPACE_SPAN_ATTRIBUTE, workspace_name.as_str());
+        span.record(
+            coral_telemetry::WORKSPACE_SPAN_ATTRIBUTE,
+            workspace_name.as_str(),
+        );
         let _guard = span.enter();
         let mut loaded_sources = Vec::new();
         let mut failed_source_names = BTreeSet::new();
@@ -1182,7 +1185,10 @@ fn create_query_span(
     if let Some(task_id) = task_id {
         span.record("task.id", tracing::field::display(task_id));
     }
-    span.record(WORKSPACE_SPAN_ATTRIBUTE, workspace_name.as_str());
+    span.record(
+        coral_telemetry::WORKSPACE_SPAN_ATTRIBUTE,
+        workspace_name.as_str(),
+    );
     span
 }
 
@@ -1254,45 +1260,6 @@ fn query_error_message(error: &QueryManagerError) -> String {
         QueryManagerError::App(error) => error.to_string(),
         QueryManagerError::Core(CoreError::QueryFailure(error)) => error.summary().to_string(),
         QueryManagerError::Core(error) => error.to_string(),
-    }
-}
-
-pub(crate) fn app_error_type(error: &AppError) -> &'static str {
-    match error {
-        AppError::Unauthenticated(_) => "UNAUTHENTICATED",
-        AppError::SourceNotFound(_) => "SOURCE_NOT_FOUND",
-        AppError::FunctionNotFound(_) => "FUNCTION_NOT_FOUND",
-        AppError::FunctionAlreadyExists(_) => "FUNCTION_ALREADY_EXISTS",
-        AppError::WorkspaceNotFound(_) => "WORKSPACE_NOT_FOUND",
-        AppError::WorkspaceAlreadyExists(_) => "WORKSPACE_ALREADY_EXISTS",
-        AppError::InvalidInput(_) => "INVALID_INPUT",
-        AppError::FailedPrecondition(_) => "FAILED_PRECONDITION",
-        AppError::MissingSourceInputs { .. } => "MISSING_SOURCE_INPUTS",
-        AppError::UnsupportedV4IdentityRequirements { .. } => {
-            "UNSUPPORTED_V4_IDENTITY_REQUIREMENTS"
-        }
-        AppError::MissingOrIncompatibleV4Materialization { .. } => {
-            "MISSING_OR_INCOMPATIBLE_V4_MATERIALIZATION"
-        }
-        AppError::IncompatibleInstalledV4Manifest { .. } => "INCOMPATIBLE_INSTALLED_V4_MANIFEST",
-        AppError::InvalidV4ProjectionOverride { .. } => "INVALID_V4_PROJECTION_OVERRIDE",
-        AppError::InvalidV4OperationMetadataOverride { .. } => {
-            "INVALID_V4_OPERATION_METADATA_OVERRIDE"
-        }
-        AppError::CredentialRefresh(_) => "CREDENTIAL_REFRESH",
-        AppError::Unavailable(_) => "UNAVAILABLE",
-        AppError::ResourceExhausted(_) => "RESOURCE_EXHAUSTED",
-        AppError::Internal(_) => "INTERNAL",
-        AppError::Io(_) => "IO",
-        AppError::Yaml(_) => "YAML",
-        AppError::TomlDecode(_) | AppError::TomlEditDecode(_) => "TOML_DECODE",
-        AppError::TomlEncode(_) => "TOML_ENCODE",
-        AppError::Json(_) => "JSON",
-        AppError::Transport(_) => "TRANSPORT",
-        AppError::TaskJoin(_) => "TASK_JOIN",
-        AppError::Credentials(_) => "CREDENTIALS",
-        AppError::Database(_) => "DATABASE",
-        AppError::MissingConfigDir => "MISSING_CONFIG_DIR",
     }
 }
 
