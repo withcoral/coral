@@ -3,6 +3,8 @@ import { type RouteConfig, index, layout, route } from '@react-router/dev/routes
 import { routePattern } from './routing/routemap'
 
 export default [
+  // Public CIMD resource: Coral fetches this before it can authorize Reef.
+  route('.well-known/oauth-client', 'routes/oauth-client-metadata.ts'),
   // Action-only resource route: OAuth/device-code install streams progress over
   // same-origin fetch. It intentionally sits outside the app shell and does not
   // render a page.
