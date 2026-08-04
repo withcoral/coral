@@ -26,6 +26,14 @@ pub enum AuthServerError {
     /// internal.
     #[error("failed to initialize the OIDC provider client: {0}")]
     ProviderClient(String),
+    /// The OAuth client metadata resolver could not be constructed.
+    ///
+    /// Distinct from [`Self::ProviderClient`] so a failure fetching client
+    /// metadata documents does not point an operator at the upstream provider
+    /// configuration. Carries the resolver's own message rather than its type,
+    /// which is crate internal.
+    #[error("failed to initialize the OAuth client metadata resolver: {0}")]
+    ClientMetadataResolver(String),
     /// The TCP listener could not bind.
     #[error("failed to bind authorization server to {address}")]
     Bind {

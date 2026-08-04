@@ -266,7 +266,7 @@ impl AuthorizationServerHttpState {
             authorization_resources,
             client_metadata_resolver: Arc::new(
                 HttpClientMetadataResolver::new()
-                    .map_err(|error| AuthServerError::ProviderClient(error.to_string()))?,
+                    .map_err(|error| AuthServerError::ClientMetadataResolver(error.to_string()))?,
             ),
         })
     }
