@@ -64,6 +64,8 @@ const SHUTDOWN_DRAIN_SOFT_BUDGET: Duration = Duration::from_secs(1);
 const WORKSPACE_SNAPSHOT_ATTEMPTS: usize = 2;
 const OBSERVED_STALE_AFTER_LAST_OBSERVED_DAYS: u32 = 365;
 const SEARCH_TELEMETRY_ERROR_MESSAGE: &str = "Search operation failed";
+const SEARCH_MAINTENANCE_TELEMETRY_ERROR_MESSAGE: &str = "Search maintenance operation failed";
+const REBUILD_SEARCH_INDEX_OPERATION: &str = "rebuild_search_index";
 const OBSERVED_VALUES_SEARCH_DISABLED_MAINTENANCE_NOTE: &str = "observed value search maintenance is disabled; enable `observed_values_search` to rebuild or drain observed values";
 
 enum CatalogPreload {
@@ -191,6 +193,18 @@ impl SearchManager {
     }
 
     pub(crate) async fn rebuild_index(
+        &self,
+        request: &RebuildSearchIndexRequest,
+    ) -> Result<RebuildSearchIndexResponse, SearchManagerError> {
+        Box::pin(run_search_maintenance_operation(
+            &request.workspace_name,
+            REBUILD_SEARCH_INDEX_OPERATION,
+            self.rebuild_index_inner(request),
+        ))
+        .await
+    }
+
+    async fn rebuild_index_inner(
         &self,
         request: &RebuildSearchIndexRequest,
     ) -> Result<RebuildSearchIndexResponse, SearchManagerError> {
@@ -573,6 +587,47 @@ fn workspace_changed_error(operation: &str) -> SearchManagerError {
     .into()
 }
 
+async fn run_search_maintenance_operation<T, F>(
+    workspace_name: &WorkspaceName,
+    operation_name: &'static str,
+    operation: F,
+) -> Result<T, SearchManagerError>
+where
+    F: Future<Output = Result<T, SearchManagerError>>,
+{
+    let span = tracing::info_span!(
+        "coral.search.maintenance",
+        coral.stream.entry = true,
+        coral.stream.kind = coral_telemetry::QUERY_STREAM_KIND_OTHER,
+        coral.stream.name = operation_name,
+        otel.name = "coral.search.maintenance",
+        operation = operation_name,
+        workspace = field::Empty,
+        status = field::Empty,
+        error.type = field::Empty,
+        exception.message = field::Empty,
+    );
+    span.record(
+        coral_telemetry::WORKSPACE_SPAN_ATTRIBUTE,
+        workspace_name.as_str(),
+    );
+    let result = operation.instrument(span.clone()).await;
+    match &result {
+        Ok(_) => {
+            span.record("status", "ok");
+            span.set_status(OtelStatus::Ok);
+        }
+        Err(SearchManagerError::App(error)) => {
+            coral_telemetry::record_failure(
+                &span,
+                app_error_type(error),
+                SEARCH_MAINTENANCE_TELEMETRY_ERROR_MESSAGE,
+            );
+        }
+    }
+    result
+}
+
 async fn run_search_operation<F>(
     request: &SearchRequest,
     task_id: Option<&TaskId>,
@@ -753,10 +808,12 @@ fn search_storage_cleanup_result(
 mod tests {
     use opentelemetry::trace::{Status as OtelStatus, TracerProvider as _};
     use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+    use tracing::Instrument as _;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     use super::{
-        SEARCH_TELEMETRY_ERROR_MESSAGE, run_search_operation, search_manager_error_message,
+        REBUILD_SEARCH_INDEX_OPERATION, SEARCH_TELEMETRY_ERROR_MESSAGE,
+        run_search_maintenance_operation, run_search_operation, search_manager_error_message,
     };
     use crate::bootstrap::AppError;
     use crate::search::result::{
@@ -764,6 +821,81 @@ mod tests {
     };
     use crate::task::id::TaskId;
     use crate::workspaces::WorkspaceName;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn search_maintenance_operation_marks_the_outer_query_stream_entry() {
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let tracer = provider.tracer("search-maintenance-summary-test");
+        let subscriber = tracing_subscriber::Registry::default()
+            .with(tracing_opentelemetry::layer().with_tracer(tracer));
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        run_search_maintenance_operation(
+            &WorkspaceName::default(),
+            REBUILD_SEARCH_INDEX_OPERATION,
+            async {
+                async {}
+                    .instrument(tracing::info_span!(
+                        "coral.query",
+                        coral.stream.entry = true,
+                        coral.stream.kind = coral_telemetry::QUERY_STREAM_KIND_QUERY,
+                        coral.stream.name = "LIST CATALOG",
+                    ))
+                    .await;
+                Ok::<_, SearchManagerError>(())
+            },
+        )
+        .await
+        .expect("search maintenance operation");
+
+        provider.force_flush().expect("flush spans");
+        let spans = exporter.get_finished_spans().expect("finished spans");
+        let maintenance_span = spans
+            .iter()
+            .find(|span| span.name == "coral.search.maintenance")
+            .expect("search maintenance span recorded");
+        let query_span = spans
+            .iter()
+            .find(|span| span.name == "coral.query")
+            .expect("nested query span recorded");
+        assert!(query_span.attributes.iter().any(|attribute| {
+            attribute.key.as_str() == coral_telemetry::QUERY_STREAM_ENTRY_ATTRIBUTE
+                && attribute.value == opentelemetry::Value::Bool(true)
+        }));
+        let attribute = |name: &str| {
+            maintenance_span
+                .attributes
+                .iter()
+                .find(|attribute| attribute.key.as_str() == name)
+                .unwrap_or_else(|| panic!("missing {name} attribute"))
+        };
+
+        assert_eq!(
+            attribute(coral_telemetry::QUERY_STREAM_ENTRY_ATTRIBUTE).value,
+            opentelemetry::Value::Bool(true)
+        );
+        assert_eq!(
+            attribute(coral_telemetry::QUERY_STREAM_KIND_ATTRIBUTE)
+                .value
+                .as_str(),
+            coral_telemetry::QUERY_STREAM_KIND_OTHER
+        );
+        assert_eq!(
+            attribute(coral_telemetry::QUERY_STREAM_NAME_ATTRIBUTE)
+                .value
+                .as_str(),
+            REBUILD_SEARCH_INDEX_OPERATION
+        );
+        assert_eq!(attribute("workspace").value.as_str(), "default");
+        assert_eq!(attribute("status").value.as_str(), "ok");
+        assert_eq!(
+            query_span.parent_span_id,
+            maintenance_span.span_context.span_id()
+        );
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn search_operation_records_safe_summary_metadata() {

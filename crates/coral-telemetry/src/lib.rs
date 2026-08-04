@@ -49,6 +49,8 @@ pub const QUERY_STREAM_KIND_QUERY: &str = "query";
 pub const QUERY_STREAM_KIND_SEARCH: &str = "search";
 /// Semantic Query Stream kind for MCP tool invocations.
 pub const QUERY_STREAM_KIND_TOOL: &str = "tool";
+/// Semantic Query Stream kind for another explicitly marked user-visible operation.
+pub const QUERY_STREAM_KIND_OTHER: &str = "other";
 
 struct TraceHeaders<'a> {
     traceparent: &'a str,

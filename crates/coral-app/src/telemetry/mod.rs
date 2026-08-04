@@ -730,11 +730,17 @@ mod tests {
 
     impl std::io::Write for CapturedWriter {
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().expect("capture lock").write(bytes)
+            self.0
+                .lock()
+                .map_err(|_error| std::io::Error::other("capture lock poisoned"))?
+                .write(bytes)
         }
 
         fn flush(&mut self) -> std::io::Result<()> {
-            self.0.lock().expect("capture lock").flush()
+            self.0
+                .lock()
+                .map_err(|_error| std::io::Error::other("capture lock poisoned"))?
+                .flush()
         }
     }
 
@@ -917,7 +923,7 @@ mod tests {
     }
 
     #[test]
-    fn target_filtering_exporter_strips_local_only_span_attributes() {
+    fn target_filtering_exporter_strips_local_only_trace_attributes() {
         let local_memory = InMemorySpanExporter::default();
         let memory = InMemorySpanExporter::default();
         let (targets, error) = build_trace_targets("coral_app=trace", DEFAULT_TRACE_FILTER);
