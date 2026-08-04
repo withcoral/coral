@@ -22,9 +22,11 @@ Authentication is disabled by default for local development and for Coral
 Desktop. No auth environment variables are needed for those modes.
 
 Hosted Reef must choose its auth behavior explicitly. Set
-`REEF_AUTH_MODE=required` together with the server-only issuer, callback, and
-session values documented in `.env.example`. A non-desktop production server
-without an explicit mode fails closed rather than accidentally publishing an
+`REEF_AUTH_MODE=required` together with the server-only Coral authorization
+issuer, Reef public URL, and session values documented in `.env.example`. Reef
+derives its OAuth resource, client metadata URL, callback URL, and cookie
+security from `REEF_PUBLIC_URL`. A non-desktop production server without an
+explicit mode fails closed rather than accidentally publishing an
 unauthenticated app.
 
 Run checks:
