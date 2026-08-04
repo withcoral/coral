@@ -14,6 +14,7 @@ pub(crate) enum TraceListView {
 
 #[derive(Debug)]
 pub(crate) struct ListTracesQuery {
+    pub(crate) view: TraceListView,
     pub(crate) workspace: Option<WorkspaceName>,
     pub(crate) page_size: usize,
     pub(crate) offset: usize,
@@ -66,18 +67,27 @@ impl TraceManager {
         query: ListTracesQuery,
     ) -> Result<TraceListPage, TraceManagerError> {
         let ListTracesQuery {
+            view,
             workspace,
             page_size,
             offset,
         } = query;
+        let workspace = workspace.map(|workspace| workspace.as_str().to_string());
         let fetch_limit = page_size.saturating_add(1);
-        let mut traces = match workspace {
-            Some(workspace) => {
+        let mut traces = match view {
+            TraceListView::All => match workspace {
+                Some(workspace) => {
+                    self.traces
+                        .list_traces_for_workspace(fetch_limit, offset, workspace)
+                        .await
+                }
+                None => self.traces.list_traces(fetch_limit, offset).await,
+            },
+            TraceListView::QueryStream => {
                 self.traces
-                    .list_traces_for_workspace(fetch_limit, offset, workspace.as_str().to_string())
+                    .list_query_stream(fetch_limit, offset, workspace)
                     .await
             }
-            None => self.traces.list_traces(fetch_limit, offset).await,
         }?;
         let next_offset = (traces.len() > page_size).then(|| offset.saturating_add(page_size));
         if next_offset.is_some() {
@@ -129,12 +139,22 @@ mod tests {
     use crate::workspaces::WorkspaceName;
 
     #[tokio::test]
-    async fn manager_scopes_and_paginates_trace_lists() {
+    async fn manager_scopes_and_paginates_all_trace_lists() {
+        assert_manager_scopes_and_paginates_trace_lists(TraceListView::All).await;
+    }
+
+    #[tokio::test]
+    async fn manager_scopes_and_paginates_query_stream_trace_lists() {
+        assert_manager_scopes_and_paginates_trace_lists(TraceListView::QueryStream).await;
+    }
+
+    async fn assert_manager_scopes_and_paginates_trace_lists(view: TraceListView) {
         let (_temp, manager) = trace_manager_fixture();
         let alpha = WorkspaceName::parse("alpha").expect("alpha workspace");
 
         let first_page = manager
             .list_traces(ListTracesQuery {
+                view,
                 workspace: Some(alpha.clone()),
                 page_size: 1,
                 offset: 0,
@@ -150,6 +170,7 @@ mod tests {
 
         let second_page = manager
             .list_traces(ListTracesQuery {
+                view,
                 workspace: Some(alpha),
                 page_size: 1,
                 offset: 1,
@@ -230,6 +251,9 @@ mod tests {
             "end_time_unix_nanos": end_time_unix_nanos,
             "duration_nanos": end_time_unix_nanos - start_time_unix_nanos,
             "attributes_json": json!({
+                "coral.stream.entry": true,
+                "coral.stream.kind": "query",
+                "coral.stream.name": trace_id,
                 "workspace": workspace,
                 "sql": format!("SELECT '{trace_id}'"),
                 "status": "ok",

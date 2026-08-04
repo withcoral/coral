@@ -1,7 +1,14 @@
-use serde_json::{Map, Value, json};
+use std::fs;
+use std::time::SystemTime;
 
-use super::super::tests::trace_record;
-use super::super::{StoredTraceStatus, TraceSpanRecord, TraceSummaryRecord};
+use serde_json::{Map, Value, json};
+use tempfile::TempDir;
+
+use super::super::tests::{
+    set_modified_time, timestamped_jsonl_path, trace_record, write_record_file,
+    write_record_file_lines,
+};
+use super::super::{StoredTraceStatus, TraceSpanRecord, TraceStore, TraceSummaryRecord};
 
 pub(super) fn span(trace_id: &str, span_id: &str) -> TestSpan {
     TestSpan {
@@ -77,4 +84,52 @@ pub(super) fn project(
     workspace_name: Option<&str>,
 ) -> Vec<TraceSummaryRecord> {
     super::summaries(records, workspace_name)
+}
+
+pub(super) struct TraceFiles {
+    temp: TempDir,
+}
+
+impl TraceFiles {
+    pub(super) fn new() -> Self {
+        Self {
+            temp: TempDir::new().expect("temp dir"),
+        }
+    }
+
+    pub(super) fn write(&self, name: &str, records: &[TraceSpanRecord]) {
+        write_record_file_lines(&self.temp.path().join(name), records);
+    }
+
+    pub(super) fn write_at(&self, record: &TraceSpanRecord, modified: SystemTime) {
+        self.write_named_at(&timestamped_jsonl_path(modified), record, modified);
+    }
+
+    pub(super) fn write_named_at(
+        &self,
+        name: &str,
+        record: &TraceSpanRecord,
+        modified: SystemTime,
+    ) {
+        let path = self.temp.path().join(name);
+        write_record_file(&path, record);
+        set_modified_time(&path, modified);
+    }
+
+    pub(super) fn write_invalid_at(&self, modified: SystemTime) {
+        let path = self.temp.path().join(timestamped_jsonl_path(modified));
+        fs::write(&path, [0xff]).expect("write unreadable JSONL text");
+        set_modified_time(&path, modified);
+    }
+
+    pub(super) fn list(
+        &self,
+        limit: usize,
+        offset: usize,
+        workspace_name: Option<&str>,
+    ) -> Vec<TraceSummaryRecord> {
+        TraceStore::new(self.temp.path().to_path_buf())
+            .list_query_stream_sync(limit, offset, workspace_name)
+            .expect("list query stream")
+    }
 }

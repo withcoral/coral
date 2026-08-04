@@ -1017,7 +1017,7 @@ mod tests {
     use coral_api::v1::trace_service_client::TraceServiceClient;
     use coral_api::v1::{
         EndTaskRequest, ExecuteSqlRequest, ImportSourceRequest, ImportSourceResponse,
-        ListSourcesRequest, ListTracesRequest, StartTaskRequest, TaskStatus, Workspace,
+        ListSourcesRequest, ListTracesRequest, StartTaskRequest, TaskStatus, TraceView, Workspace,
         import_source_response,
     };
     use coral_api::{HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE};
@@ -1538,6 +1538,7 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
                 page_size: 10,
                 page_token: String::new(),
                 workspace: None,
+                view: TraceView::Unspecified as i32,
             }))
             .await
             .expect_err("trace service should be disabled");
@@ -1797,6 +1798,7 @@ backend = "unsupported"
                 page_size: 10,
                 page_token: String::new(),
                 workspace: None,
+                view: TraceView::Unspecified as i32,
             }))
             .await
             .expect("list traces")

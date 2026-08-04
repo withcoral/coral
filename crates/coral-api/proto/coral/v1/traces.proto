@@ -100,6 +100,8 @@ message ListTracesRequest {
   // Optional workspace that scopes returned traces. Omit to list all local
   // traces visible to the local server.
   Workspace workspace = 3;
+  // Projection to return. The default preserves one-summary-per-trace behavior.
+  TraceView view = 4;
 }
 
 // Page of locally captured traces.

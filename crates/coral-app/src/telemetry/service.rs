@@ -47,8 +47,10 @@ impl TraceServiceApi for TraceService {
             let page_size = normalize_page_size(request.page_size);
             let offset = parse_page_token(&request.page_token)?;
             let workspace = workspace_filter_from_proto(request.workspace.as_ref())?;
+            let view = trace_list_view_from_proto(request.view)?;
             let page = traces
                 .list_traces(ListTracesQuery {
+                    view,
                     workspace,
                     page_size,
                     offset,
@@ -297,6 +299,7 @@ mod tests {
                 page_size: 10,
                 page_token: String::new(),
                 workspace: Some(workspace("alpha")),
+                view: TraceView::Unspecified as i32,
             }),
         )
         .await
@@ -363,6 +366,28 @@ mod tests {
         write_query_stream_trace_fixture(&trace_store);
         let service = TraceService::new(TraceManager::new(trace_store, Duration::from_mins(1)));
 
+        let response = TraceServiceApi::list_traces(
+            &service,
+            Request::new(ListTracesRequest {
+                page_size: 10,
+                page_token: String::new(),
+                workspace: Some(workspace("alpha")),
+                view: TraceView::QueryStream as i32,
+            }),
+        )
+        .await
+        .expect("list query stream")
+        .into_inner();
+        assert_eq!(response.traces.len(), 1);
+        let summary = response.traces.first().expect("tool summary");
+        assert_eq!(summary.root_span_id, "tool-span");
+        assert_eq!(summary.operation_kind, TraceOperationKind::Query as i32);
+        assert_eq!(summary.operation_name, "sql");
+        assert_eq!(summary.invocation_kind, TraceInvocationKind::Mcp as i32);
+        assert_eq!(summary.query, "SELECT 42");
+        assert_eq!(summary.start_time_unix_nanos, 10);
+        assert_eq!(summary.end_time_unix_nanos, 40);
+
         let detail = TraceServiceApi::get_trace(
             &service,
             Request::new(GetTraceRequest {
@@ -374,20 +399,15 @@ mod tests {
         .await
         .expect("get query stream trace")
         .into_inner();
-        let summary = detail.summary.expect("query stream detail summary");
-        assert_eq!(summary.root_span_id, "tool-span");
-        assert_eq!(summary.operation_kind, TraceOperationKind::Query as i32);
-        assert_eq!(summary.operation_name, "sql");
-        assert_eq!(summary.invocation_kind, TraceInvocationKind::Mcp as i32);
-        assert_eq!(summary.query, "SELECT 42");
-        assert_eq!(summary.start_time_unix_nanos, 10);
-        assert_eq!(summary.end_time_unix_nanos, 40);
+        let detail_summary = detail.summary.expect("query stream detail summary");
+        assert_eq!(detail_summary, *summary);
         assert_eq!(detail.spans.len(), 2);
 
-        let unknown_view = TraceServiceApi::get_trace(
+        let unknown_view = TraceServiceApi::list_traces(
             &service,
-            Request::new(GetTraceRequest {
-                trace_id: "shared-trace".to_string(),
+            Request::new(ListTracesRequest {
+                page_size: 10,
+                page_token: String::new(),
                 workspace: None,
                 view: 999,
             }),

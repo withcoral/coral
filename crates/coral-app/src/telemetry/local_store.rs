@@ -642,6 +642,20 @@ impl TraceStore {
         .map_err(|source| TraceStoreError::Worker { source })?
     }
 
+    pub(crate) async fn list_query_stream(
+        &self,
+        limit: usize,
+        offset: usize,
+        workspace_name: Option<String>,
+    ) -> Result<Vec<TraceSummaryRecord>, TraceStoreError> {
+        let traces = self.clone();
+        task::spawn_blocking(move || {
+            traces.list_query_stream_sync(limit, offset, workspace_name.as_deref())
+        })
+        .await
+        .map_err(|source| TraceStoreError::Worker { source })?
+    }
+
     pub(crate) async fn get_trace(
         &self,
         trace_id: String,
@@ -760,6 +774,15 @@ impl TraceStore {
         sort_summaries(&mut summaries);
 
         Ok(summaries.into_iter().take(limit).collect())
+    }
+
+    fn list_query_stream_sync(
+        &self,
+        limit: usize,
+        offset: usize,
+        workspace_name: Option<&str>,
+    ) -> Result<Vec<TraceSummaryRecord>, TraceStoreError> {
+        query_stream::list(self, limit, offset, workspace_name)
     }
 
     fn get_trace_sync(&self, trace_id: &str) -> Result<TraceDetailRecord, TraceStoreError> {
@@ -2922,20 +2945,20 @@ mod tests {
             .count()
     }
 
-    fn timestamped_jsonl_path(timestamp: SystemTime) -> String {
+    pub(super) fn timestamped_jsonl_path(timestamp: SystemTime) -> String {
         format!(
             "spans-{:020}-test-0000000000000000.jsonl",
             unix_nanos(timestamp)
         )
     }
 
-    fn write_record_file(path: &Path, record: &TraceSpanRecord) {
+    pub(super) fn write_record_file(path: &Path, record: &TraceSpanRecord) {
         let mut line = serde_json::to_string(record).expect("serialize record");
         line.push('\n');
         fs::write(path, line).expect("write trace record");
     }
 
-    fn write_record_file_lines(path: &Path, records: &[TraceSpanRecord]) {
+    pub(super) fn write_record_file_lines(path: &Path, records: &[TraceSpanRecord]) {
         let mut lines = String::new();
         for record in records {
             lines.push_str(&serde_json::to_string(record).expect("serialize record"));
@@ -2944,7 +2967,7 @@ mod tests {
         fs::write(path, lines).expect("write trace records");
     }
 
-    fn set_modified_time(path: &Path, modified: SystemTime) {
+    pub(super) fn set_modified_time(path: &Path, modified: SystemTime) {
         let file = fs::OpenOptions::new()
             .write(true)
             .open(path)
