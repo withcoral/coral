@@ -65,6 +65,7 @@ const WORKSPACE_SNAPSHOT_ATTEMPTS: usize = 2;
 const OBSERVED_STALE_AFTER_LAST_OBSERVED_DAYS: u32 = 365;
 const SEARCH_TELEMETRY_ERROR_MESSAGE: &str = "Search operation failed";
 const SEARCH_MAINTENANCE_TELEMETRY_ERROR_MESSAGE: &str = "Search maintenance operation failed";
+const SEARCH_MAINTENANCE_PROVIDER_FAILURE_ERROR_TYPE: &str = "PROVIDER_FAILURE";
 const REBUILD_SEARCH_INDEX_OPERATION: &str = "rebuild_search_index";
 const OBSERVED_VALUES_SEARCH_DISABLED_MAINTENANCE_NOTE: &str = "observed value search maintenance is disabled; enable `observed_values_search` to rebuild or drain observed values";
 
@@ -587,13 +588,13 @@ fn workspace_changed_error(operation: &str) -> SearchManagerError {
     .into()
 }
 
-async fn run_search_maintenance_operation<T, F>(
+async fn run_search_maintenance_operation<F>(
     workspace_name: &WorkspaceName,
     operation_name: &'static str,
     operation: F,
-) -> Result<T, SearchManagerError>
+) -> Result<RebuildSearchIndexResponse, SearchManagerError>
 where
-    F: Future<Output = Result<T, SearchManagerError>>,
+    F: Future<Output = Result<RebuildSearchIndexResponse, SearchManagerError>>,
 {
     let span = tracing::info_span!(
         "coral.search.maintenance",
@@ -613,9 +614,21 @@ where
     );
     let result = operation.instrument(span.clone()).await;
     match &result {
-        Ok(_) => {
-            span.record("status", "ok");
-            span.set_status(OtelStatus::Ok);
+        Ok(response) => {
+            if response
+                .results
+                .iter()
+                .any(|result| result.state == SearchMaintenanceState::Failed)
+            {
+                coral_telemetry::record_failure(
+                    &span,
+                    SEARCH_MAINTENANCE_PROVIDER_FAILURE_ERROR_TYPE,
+                    SEARCH_MAINTENANCE_TELEMETRY_ERROR_MESSAGE,
+                );
+            } else {
+                span.record("status", "ok");
+                span.set_status(OtelStatus::Ok);
+            }
         }
         Err(SearchManagerError::App(error)) => {
             coral_telemetry::record_failure(
@@ -625,6 +638,7 @@ where
             );
         }
     }
+    drop(span);
     result
 }
 
@@ -812,12 +826,16 @@ mod tests {
     use tracing_subscriber::layer::SubscriberExt as _;
 
     use super::{
-        REBUILD_SEARCH_INDEX_OPERATION, SEARCH_TELEMETRY_ERROR_MESSAGE,
+        REBUILD_SEARCH_INDEX_OPERATION, SEARCH_MAINTENANCE_PROVIDER_FAILURE_ERROR_TYPE,
+        SEARCH_MAINTENANCE_TELEMETRY_ERROR_MESSAGE, SEARCH_TELEMETRY_ERROR_MESSAGE,
         run_search_maintenance_operation, run_search_operation, search_manager_error_message,
     };
     use crate::bootstrap::AppError;
+    use crate::search::maintenance::{
+        RebuildSearchIndexResponse, SearchMaintenanceResult, SearchMaintenanceState,
+    };
     use crate::search::result::{
-        SearchManagerError, SearchRequest, SearchResponse, SearchTruncation,
+        SearchManagerError, SearchProviderKind, SearchRequest, SearchResponse, SearchTruncation,
     };
     use crate::task::id::TaskId;
     use crate::workspaces::WorkspaceName;
@@ -845,7 +863,14 @@ mod tests {
                         coral.stream.name = "LIST CATALOG",
                     ))
                     .await;
-                Ok::<_, SearchManagerError>(())
+                Ok::<_, SearchManagerError>(RebuildSearchIndexResponse {
+                    results: vec![SearchMaintenanceResult {
+                        provider: SearchProviderKind::ObservedValues,
+                        state: SearchMaintenanceState::Partial,
+                        note: "maintenance partially completed".to_string(),
+                        detail: None,
+                    }],
+                })
             },
         )
         .await
@@ -895,6 +920,72 @@ mod tests {
             query_span.parent_span_id,
             maintenance_span.span_context.span_id()
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn search_maintenance_operation_records_failed_provider_as_an_error() {
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let tracer = provider.tracer("search-maintenance-provider-failure-test");
+        let subscriber = tracing_subscriber::Registry::default()
+            .with(tracing_opentelemetry::layer().with_tracer(tracer));
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let failure_detail = "SENSITIVE_SEARCH_MAINTENANCE_FAILURE";
+
+        let response = run_search_maintenance_operation(
+            &WorkspaceName::default(),
+            REBUILD_SEARCH_INDEX_OPERATION,
+            async {
+                Ok::<_, SearchManagerError>(RebuildSearchIndexResponse {
+                    results: vec![SearchMaintenanceResult {
+                        provider: SearchProviderKind::ObservedValues,
+                        state: SearchMaintenanceState::Failed,
+                        note: failure_detail.to_string(),
+                        detail: None,
+                    }],
+                })
+            },
+        )
+        .await
+        .expect("maintenance response should preserve provider results");
+
+        let provider_result = response
+            .results
+            .first()
+            .expect("failed provider result preserved");
+        assert_eq!(provider_result.state, SearchMaintenanceState::Failed);
+        assert_eq!(provider_result.note, failure_detail);
+
+        provider.force_flush().expect("flush spans");
+        let spans = exporter.get_finished_spans().expect("finished spans");
+        let maintenance_span = spans
+            .iter()
+            .find(|span| span.name == "coral.search.maintenance")
+            .expect("search maintenance span recorded");
+        let attribute = |name: &str| {
+            maintenance_span
+                .attributes
+                .iter()
+                .find(|attribute| attribute.key.as_str() == name)
+                .unwrap_or_else(|| panic!("missing {name} attribute"))
+        };
+
+        assert_eq!(attribute("status").value.as_str(), "error");
+        assert_eq!(
+            attribute("error.type").value.as_str(),
+            SEARCH_MAINTENANCE_PROVIDER_FAILURE_ERROR_TYPE
+        );
+        assert_eq!(
+            attribute("exception.message").value.as_str(),
+            SEARCH_MAINTENANCE_TELEMETRY_ERROR_MESSAGE
+        );
+        assert_eq!(
+            maintenance_span.status,
+            OtelStatus::error(SEARCH_MAINTENANCE_TELEMETRY_ERROR_MESSAGE)
+        );
+        assert!(!format!("{maintenance_span:?}").contains(failure_detail));
     }
 
     #[tokio::test(flavor = "current_thread")]
