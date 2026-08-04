@@ -1,6 +1,5 @@
-import { isIP } from 'node:net'
-
 import { isCoralDesktopBuild } from '@/lib/coral-desktop'
+import { isExplicitLoopbackUrl, isLocalhostSubdomain } from '@/lib/loopback.server'
 import type { AuthConfig, RequiredAuthConfig } from './types'
 
 const DEFAULT_COOKIE_NAME = 'reef_session'
@@ -57,7 +56,7 @@ function requiredAuthConfig(env: NodeJS.ProcessEnv): RequiredAuthConfig {
   if (issuerUrl.search || issuerUrl.hash) {
     throw new Error('REEF_AUTH_ISSUER must not include a query string or fragment')
   }
-  if (issuerUrl.protocol === 'http:' && !isExplicitLoopback(issuerUrl)) {
+  if (issuerUrl.protocol === 'http:' && !isExplicitLoopbackUrl(issuerUrl)) {
     throw new Error('REEF_AUTH_ISSUER must use HTTPS or explicit-loopback HTTP')
   }
 
@@ -137,7 +136,7 @@ function publicOrigin(value: string): string {
     url.search ||
     url.hash ||
     isLocalhostSubdomain(url.hostname) ||
-    (url.protocol === 'http:' && !isExplicitLoopback(url))
+    (url.protocol === 'http:' && !isExplicitLoopbackUrl(url))
   ) {
     throw invalidPublicUrl()
   }
@@ -149,28 +148,6 @@ function invalidPublicUrl(): Error {
   return new Error(
     'REEF_PUBLIC_URL must be an HTTPS or explicit-loopback HTTP origin without credentials, path, query, or fragment',
   )
-}
-
-function isExplicitLoopback(url: URL): boolean {
-  const hostname = unbracketedHostname(url.hostname).toLowerCase().replace(/\.$/, '')
-  if (hostname === 'localhost') return true
-
-  const family = isIP(hostname)
-  if (family === 4) return hostname.split('.')[0] === '127'
-  if (family !== 6) return false
-  if (hostname === '::1') return true
-
-  // WHATWG URL serialization renders IPv4-mapped loopback addresses in this
-  // canonical hexadecimal form, e.g. ::ffff:127.0.0.1 -> ::ffff:7f00:1.
-  return /^::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}$/i.test(hostname)
-}
-
-function unbracketedHostname(hostname: string): string {
-  return hostname.startsWith('[') && hostname.endsWith(']') ? hostname.slice(1, -1) : hostname
-}
-
-function isLocalhostSubdomain(hostname: string): boolean {
-  return unbracketedHostname(hostname).toLowerCase().replace(/\.$/, '').endsWith('.localhost')
 }
 
 // Validated here rather than left to `Set-Cookie`, because every way this value
