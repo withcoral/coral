@@ -594,3 +594,18 @@ jobs:
                 footer: { text: "Fresh from the reef" }
               }]
             }' | curl -sf -H "Content-Type: application/json" -d @- "$DISCORD_WEBHOOK"
+
+  # Additive by design: a failure here leaves the image missing until a manual
+  # `docker-publish` dispatch, and never blocks or rewinds a published release.
+  publish-docker:
+    needs:
+      - validate-release-ref
+      - publish-version
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    uses: ./.github/workflows/docker-publish.yml
+    with:
+      tag: ${{ needs.validate-release-ref.outputs.tag-name }}
+    secrets: inherit
