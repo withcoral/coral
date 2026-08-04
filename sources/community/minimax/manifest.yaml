@@ -1,0 +1,301 @@
+name: minimax
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: Query MiniMax OpenAI-compatible model metadata and run bounded chat-completion checks through SQL.
+base_url: "{{input.MINIMAX_BASE_URL}}"
+inputs:
+  MINIMAX_API_KEY:
+    kind: secret
+    hint: |
+      MiniMax API key.
+
+      Create or copy an API key from the MiniMax platform:
+      https://platform.minimax.io/docs
+      (China: https://platform.minimaxi.com/docs)
+
+      The key is sent as a Bearer token to MiniMax's API.
+  MINIMAX_BASE_URL:
+    kind: variable
+    default: https://api.minimax.io/v1
+    hint: |
+      MiniMax OpenAI-compatible API base URL.
+
+      Global endpoint: https://api.minimax.io/v1
+      China endpoint:  https://api.minimaxi.com/v1
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Bearer {{input.MINIMAX_API_KEY}}"
+test_queries:
+  - SELECT id, object, owned_by FROM minimax.models LIMIT 5
+  - "SELECT content FROM minimax.chat_completions WHERE model = 'MiniMax-M3' AND prompt = 'Coral MiniMax works' AND max_tokens = 20 LIMIT 1"
+tables:
+  - name: models
+    description: MiniMax models available to the API key from GET /models.
+    request:
+      method: GET
+      path: /models
+    response:
+      rows_path:
+        - data
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Model ID used in MiniMax requests.
+      - name: object
+        type: Utf8
+        nullable: true
+        description: API object type.
+      - name: created
+        type: Int64
+        nullable: true
+        description: Model creation timestamp when returned by the API.
+      - name: owned_by
+        type: Utf8
+        nullable: true
+        description: Owner metadata when returned by the API.
+      - name: context_window
+        type: Int64
+        nullable: true
+        description: Context window size when returned by the API.
+      - name: max_completion_tokens
+        type: Int64
+        nullable: true
+        description: Maximum completion tokens when returned by the API.
+      - name: raw
+        type: Json
+        nullable: false
+        description: Full raw model object.
+        expr:
+          kind: current_row
+
+  - name: chat_completions
+    description: Run one non-streaming, single-turn MiniMax chat completion with a required max_tokens bound.
+    filters:
+      - name: model
+        required: true
+      - name: prompt
+        required: true
+      - name: max_tokens
+        required: true
+    request:
+      method: POST
+      path: /chat/completions
+      headers:
+        - name: Content-Type
+          from: literal
+          value: application/json
+      body:
+        - path:
+            - model
+          from: filter
+          key: model
+        - path:
+            - messages
+            - "0"
+            - role
+          from: literal
+          value: user
+        - path:
+            - messages
+            - "0"
+            - content
+          from: filter
+          key: prompt
+        - path:
+            - max_tokens
+          from: filter_int
+          key: max_tokens
+        - path:
+            - stream
+          from: literal
+          value: false
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: model
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Model supplied in SQL filter.
+        expr:
+          kind: from_filter
+          key: model
+      - name: prompt
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Prompt supplied in SQL filter.
+        expr:
+          kind: from_filter
+          key: prompt
+      - name: max_tokens
+        type: Int64
+        nullable: false
+        virtual: true
+        description: Positive max_tokens value supplied in SQL filter.
+        expr:
+          kind: from_filter
+          key: max_tokens
+      - name: id
+        type: Utf8
+        nullable: true
+        description: Chat completion response ID.
+      - name: object
+        type: Utf8
+        nullable: true
+        description: API object type.
+      - name: created
+        type: Int64
+        nullable: true
+        description: Response creation timestamp.
+      - name: returned_model
+        type: Utf8
+        nullable: true
+        description: Actual model returned by MiniMax.
+        expr:
+          kind: path
+          path:
+            - model
+      - name: usage
+        type: Json
+        nullable: true
+        description: Token usage metadata returned by MiniMax.
+      - name: prompt_tokens
+        type: Int64
+        nullable: true
+        description: Prompt token count.
+        expr:
+          kind: path
+          path:
+            - usage
+            - prompt_tokens
+      - name: completion_tokens
+        type: Int64
+        nullable: true
+        description: Completion token count.
+        expr:
+          kind: path
+          path:
+            - usage
+            - completion_tokens
+      - name: total_tokens
+        type: Int64
+        nullable: true
+        description: Total token count.
+        expr:
+          kind: path
+          path:
+            - usage
+            - total_tokens
+      - name: choices
+        type: Json
+        nullable: true
+        description: Raw choices array returned by MiniMax.
+      - name: index
+        type: Int64
+        nullable: true
+        description: First choice index.
+        expr:
+          kind: path
+          path:
+            - choices
+            - "0"
+            - index
+      - name: finish_reason
+        type: Utf8
+        nullable: true
+        description: Why the model stopped.
+        expr:
+          kind: path
+          path:
+            - choices
+            - "0"
+            - finish_reason
+      - name: content
+        type: Utf8
+        nullable: true
+        description: Assistant response text.
+        expr:
+          kind: path
+          path:
+            - choices
+            - "0"
+            - message
+            - content
+      - name: reasoning_content
+        type: Utf8
+        nullable: true
+        description: Reasoning text when returned by the model.
+        expr:
+          kind: path
+          path:
+            - choices
+            - "0"
+            - message
+            - reasoning_content
+      - name: message_role
+        type: Utf8
+        nullable: true
+        description: Assistant message role.
+        expr:
+          kind: path
+          path:
+            - choices
+            - "0"
+            - message
+            - role
+
+  - name: model
+    description: Metadata for a specific MiniMax model ID.
+    filters:
+      - name: model_id
+        required: true
+    request:
+      method: GET
+      path: /models/{{filter.model_id}}
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: model_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: Model ID supplied in SQL filter.
+        expr:
+          kind: from_filter
+          key: model_id
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Model ID.
+      - name: object
+        type: Utf8
+        nullable: true
+        description: API object type.
+      - name: created
+        type: Int64
+        nullable: true
+        description: Model creation timestamp when returned by the API.
+      - name: owned_by
+        type: Utf8
+        nullable: true
+        description: Owner metadata when returned by the API.
+      - name: context_window
+        type: Int64
+        nullable: true
+        description: Context window size when returned by the API.
+      - name: max_completion_tokens
+        type: Int64
+        nullable: true
+        description: Maximum completion tokens when returned by the API.
