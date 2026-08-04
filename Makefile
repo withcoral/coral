@@ -1,4 +1,4 @@
-.PHONY: install ui-build rust-checks perf-check
+.PHONY: install ui-build docker-build rust-checks perf-check
 .PHONY: postgres-start postgres-url postgres-stop postgres-clean postgres-tests
 .PHONY: license-check lint-proto lint-sources fix-sources
 .PHONY: docs-generate docs-check schema-generate schema-check
@@ -6,6 +6,9 @@
 LOCAL_POSTGRES_IMAGE ?= postgres:17
 LOCAL_POSTGRES_CONTAINER ?= coral-test-postgres
 LOCAL_POSTGRES_PORT ?=
+DOCKER_IMAGE ?= coral:local
+DOCKER_RELEASE_TAG ?=
+DOCKER_NO_CACHE ?= 0
 
 install: ui-build
 	cargo install --path crates/coral-cli --locked
@@ -14,6 +17,82 @@ ui-build:
 	npm ci --prefix apps/ui
 	npm run build --prefix apps/ui
 	test -s apps/ui/dist/index.html
+
+# ----------------------------------------------------------------------------
+# Local Coral image build
+# ----------------------------------------------------------------------------
+# Repackages the published linux/amd64 release binary exactly as the Docker
+# publishing workflow does, but loads the result into the local Docker daemon.
+# The latest published release is the default; pin a tag for reproducibility.
+#
+#   make docker-build
+#   DOCKER_RELEASE_TAG=v1.2.3 DOCKER_IMAGE=coral:test make docker-build
+#   DOCKER_NO_CACHE=1 make docker-build
+
+docker-build:
+	@set -eu; \
+	for command in docker gh tar awk grep; do \
+	  if ! command -v "$$command" >/dev/null 2>&1; then \
+	    echo "$$command is required to build the Coral image" >&2; \
+	    exit 1; \
+	  fi; \
+	done; \
+	if ! docker buildx version >/dev/null 2>&1; then \
+	  echo "docker buildx is required to build the Coral image" >&2; \
+	  exit 1; \
+	fi; \
+	release_tag="$(DOCKER_RELEASE_TAG)"; \
+	if [ -z "$$release_tag" ]; then \
+	  release_tag=$$(gh release view --repo withcoral/coral --json tagName --jq .tagName); \
+	fi; \
+	if ! printf '%s\n' "$$release_tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$$'; then \
+	  echo "DOCKER_RELEASE_TAG must look like vX.Y.Z, got '$$release_tag'" >&2; \
+	  exit 1; \
+	fi; \
+	case "$(DOCKER_NO_CACHE)" in \
+	  0|false|'') no_cache=0 ;; \
+	  1|true) no_cache=1 ;; \
+	  *) echo "DOCKER_NO_CACHE must be 0, 1, false, or true" >&2; exit 1 ;; \
+	esac; \
+	tmpdir=$$(mktemp -d); \
+	trap 'rm -rf "$$tmpdir"' EXIT HUP INT TERM; \
+	context="$$tmpdir/context"; \
+	release_dir="$$tmpdir/release"; \
+	tarball=coral-x86_64-unknown-linux-gnu.tar.gz; \
+	mkdir -p "$$context/dist/amd64" "$$context/docker" "$$release_dir"; \
+	cp docker/Dockerfile docker/entrypoint.sh "$$context/docker/"; \
+	echo "Downloading Coral $$release_tag release assets..."; \
+	gh release download "$$release_tag" \
+	  --repo withcoral/coral \
+	  --dir "$$release_dir" \
+	  --pattern "$$tarball" \
+	  --pattern checksums.sha256; \
+	checksum_line=$$(awk -v f="$$tarball" '$$2 == f { print $$1 "  " f }' "$$release_dir/checksums.sha256"); \
+	if [ -z "$$checksum_line" ]; then \
+	  echo "checksum entry for $$tarball not found" >&2; \
+	  exit 1; \
+	fi; \
+	if command -v sha256sum >/dev/null 2>&1; then \
+	  (cd "$$release_dir" && printf '%s\n' "$$checksum_line" | sha256sum -c -); \
+	elif command -v shasum >/dev/null 2>&1; then \
+	  (cd "$$release_dir" && printf '%s\n' "$$checksum_line" | shasum -a 256 -c -); \
+	else \
+	  echo "sha256sum or shasum is required to verify the release asset" >&2; \
+	  exit 1; \
+	fi; \
+	tar -xzf "$$release_dir/$$tarball" -C "$$context/dist/amd64" coral; \
+	test -x "$$context/dist/amd64/coral"; \
+	set -- docker buildx build \
+	  --platform linux/amd64 \
+	  --provenance=true \
+	  --file "$$context/docker/Dockerfile" \
+	  --load \
+	  --tag "$(DOCKER_IMAGE)"; \
+	if [ "$$no_cache" -eq 1 ]; then set -- "$$@" --no-cache; fi; \
+	set -- "$$@" "$$context"; \
+	echo "Building $(DOCKER_IMAGE) from Coral $$release_tag..."; \
+	"$$@"; \
+	echo "Built $(DOCKER_IMAGE)"
 
 rust-checks:
 	cargo fmt --all -- --check
