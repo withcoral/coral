@@ -1222,8 +1222,10 @@ async fn mcp_catalog_helpers_expose_coral_system_tables_from_sql_catalog() {
         .expect("list system columns")
         .structured_content
         .expect("structured columns");
-    assert_eq!(columns["total"], 7);
+    assert_eq!(columns["total"], 8);
     assert_eq!(columns["rows"][0][0], "schema_name");
+    assert_eq!(columns["rows"][4][0], "require_guide_read");
+    assert_eq!(columns["rows"][4][1], "Boolean");
 
     session.shutdown().await;
 }
