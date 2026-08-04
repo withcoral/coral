@@ -608,4 +608,3 @@ jobs:
     uses: ./.github/workflows/docker-publish.yml
     with:
       tag: ${{ needs.validate-release-ref.outputs.tag-name }}
-    secrets: inherit
