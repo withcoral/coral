@@ -147,6 +147,19 @@ jobs:
           prerelease="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isPrerelease --jq '.isPrerelease')"
           echo "prerelease=${prerelease}" >> "$GITHUB_OUTPUT"
 
+      - name: Read the newest stable release
+        id: newest
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          newest="$(gh release list --repo "$GITHUB_REPOSITORY" \
+            --exclude-pre-releases --exclude-drafts --limit 1 \
+            --json tagName --jq '.[0].tagName // ""')"
+          echo "newest stable release is '${newest}'; this run packages '${TAG}'"
+          echo "tag=${newest}" >> "$GITHUB_OUTPUT"
+
       - name: Tag the pushed manifest
         id: manifest
         shell: bash
@@ -155,12 +168,16 @@ jobs:
           VERSION: ${{ steps.tag.outputs.version }}
           MAJOR_MINOR: ${{ steps.tag.outputs.major-minor }}
           PRERELEASE: ${{ steps.release.outputs.prerelease }}
+          NEWEST_TAG: ${{ steps.newest.outputs.tag }}
         run: |
           set -euo pipefail
           tags=(--tag "${IMAGE}:${VERSION}" --tag "${IMAGE}:${MAJOR_MINOR}")
-          # `latest` never points at a prerelease; publish-version has already
-          # promoted the release by the time the release path reaches this job.
-          if [ "$PRERELEASE" = "false" ]; then
+          # `latest` never points at a prerelease, and never moves backwards: a
+          # CVE rebuild of a superseded release re-publishes its own version and
+          # line tags, but must not demote `latest` users to an older release.
+          # publish-version has already promoted the release by the time the
+          # release path reaches this job, so the newest stable tag is this one.
+          if [ "$PRERELEASE" = "false" ] && [ "$NEWEST_TAG" = "$TAG" ]; then
             tags+=(--tag "${IMAGE}:latest")
           fi
           docker buildx imagetools create "${tags[@]}" "${IMAGE}@${BUILD_DIGEST}"
