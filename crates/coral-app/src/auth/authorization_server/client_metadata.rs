@@ -1,5 +1,6 @@
 //! Client ID Metadata Document fetching and validation.
 
+use std::collections::BTreeSet;
 use std::fmt;
 use std::sync::Arc;
 
@@ -7,9 +8,10 @@ use serde::Deserialize;
 use thiserror::Error;
 use zeroize::Zeroizing;
 
+use crate::oauth_resource::CanonicalOauthUrl;
 use crate::outbound_url_policy::{
-    BrowserRedirect, EndpointUrl, OutboundUrlPolicyError, PublicMetadata,
-    public_metadata_http_client, read_bounded_body,
+    BrowserRedirect, ClientMetadata, Configured, EndpointUrl, OutboundUrlPolicyError,
+    client_metadata_http_client, read_bounded_body,
 };
 
 const CLIENT_METADATA_MAX_BYTES: usize = 5 * 1024;
@@ -40,25 +42,65 @@ pub(super) trait ClientMetadataResolver: Send + Sync {
     ) -> Result<OAuthClientRegistration, ClientMetadataError>;
 }
 
-/// Production resolver backed by the hardened public-metadata HTTP client.
+/// Production resolver backed by the hardened client-metadata HTTP client.
 #[derive(Clone)]
 pub(super) struct HttpClientMetadataResolver {
+    issuer: EndpointUrl<Configured>,
+    allowed_loopback_client_ids: BTreeSet<String>,
     fetcher: Arc<dyn MetadataFetcher>,
 }
 
 impl HttpClientMetadataResolver {
-    pub(super) fn new() -> Result<Self, ClientMetadataError> {
+    pub(super) fn new(
+        issuer: &str,
+        authorization_resources: &BTreeSet<String>,
+    ) -> Result<Self, ClientMetadataError> {
         let http =
-            public_metadata_http_client().map_err(|_error| ClientMetadataError::ClientBuild)?;
-        Ok(Self {
-            fetcher: Arc::new(ReqwestMetadataFetcher { http }),
-        })
+            client_metadata_http_client().map_err(|_error| ClientMetadataError::ClientBuild)?;
+        Self::with_fetcher(
+            issuer,
+            authorization_resources,
+            Arc::new(ReqwestMetadataFetcher { http }),
+        )
     }
 
-    #[cfg(test)]
-    fn with_fetcher(fetcher: Arc<dyn MetadataFetcher>) -> Self {
-        Self { fetcher }
+    fn with_fetcher(
+        issuer: &str,
+        authorization_resources: &BTreeSet<String>,
+        fetcher: Arc<dyn MetadataFetcher>,
+    ) -> Result<Self, ClientMetadataError> {
+        let issuer = EndpointUrl::<Configured>::parse(issuer)
+            .map_err(|_error| ClientMetadataError::InvalidConfiguration)?;
+        let allowed_loopback_client_ids =
+            derive_allowed_loopback_client_ids(authorization_resources)?;
+        Ok(Self {
+            issuer,
+            allowed_loopback_client_ids,
+            fetcher,
+        })
     }
+}
+
+fn derive_allowed_loopback_client_ids(
+    authorization_resources: &BTreeSet<String>,
+) -> Result<BTreeSet<String>, ClientMetadataError> {
+    authorization_resources
+        .iter()
+        .try_fold(BTreeSet::new(), |mut client_ids, value| {
+            let resource = CanonicalOauthUrl::parse(value)
+                .map_err(|_error| ClientMetadataError::InvalidConfiguration)?;
+            if resource.identifier() != value {
+                return Err(ClientMetadataError::InvalidConfiguration);
+            }
+            let url = resource.url();
+            if url.scheme() == "http" && url.path() == "/" {
+                let client_id = url
+                    .join("/.well-known/oauth-client")
+                    .map_err(|_error| ClientMetadataError::InvalidConfiguration)?;
+                client_ids.insert(client_id.to_string());
+            }
+            Ok(client_ids)
+        })
 }
 
 #[async_trait::async_trait]
@@ -67,8 +109,12 @@ impl ClientMetadataResolver for HttpClientMetadataResolver {
         &self,
         client_id: &str,
     ) -> Result<OAuthClientRegistration, ClientMetadataError> {
-        let metadata_url = EndpointUrl::<PublicMetadata>::parse(client_id)
-            .map_err(|_error| ClientMetadataError::InvalidClientId)?;
+        let metadata_url = EndpointUrl::<ClientMetadata>::parse(
+            client_id,
+            &self.issuer,
+            &self.allowed_loopback_client_ids,
+        )
+        .map_err(|_error| ClientMetadataError::InvalidClientId)?;
         // A client ID must already be the URL Coral fetches, character for
         // character. Parsing normalizes — it strips tab, CR, and LF from
         // anywhere in the input, trims surrounding spaces, lowercases the host,
@@ -89,7 +135,7 @@ impl ClientMetadataResolver for HttpClientMetadataResolver {
 trait MetadataFetcher: Send + Sync {
     async fn fetch(
         &self,
-        metadata_url: &EndpointUrl<PublicMetadata>,
+        metadata_url: &EndpointUrl<ClientMetadata>,
     ) -> Result<reqwest::Response, ClientMetadataError>;
 }
 
@@ -101,7 +147,7 @@ struct ReqwestMetadataFetcher {
 impl MetadataFetcher for ReqwestMetadataFetcher {
     async fn fetch(
         &self,
-        metadata_url: &EndpointUrl<PublicMetadata>,
+        metadata_url: &EndpointUrl<ClientMetadata>,
     ) -> Result<reqwest::Response, ClientMetadataError> {
         metadata_url
             .get(&self.http)
@@ -220,8 +266,10 @@ fn map_body_error(error: &OutboundUrlPolicyError) -> ClientMetadataError {
 /// Sanitized client metadata resolution failures.
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
 pub(super) enum ClientMetadataError {
-    #[error("OAuth client_id is not a valid public metadata URL")]
+    #[error("OAuth client_id is not a valid metadata document URL")]
     InvalidClientId,
+    #[error("OAuth client metadata resolver configuration is invalid")]
+    InvalidConfiguration,
     #[error("failed to build the OAuth client metadata HTTP client")]
     ClientBuild,
     #[error("OAuth client metadata fetch failed")]
@@ -256,6 +304,8 @@ mod tests {
 
     const CLIENT_ID: &str =
         "https://client.example.test/oauth/client.json?token=client-query-secret";
+    const PUBLIC_ISSUER: &str = "https://auth.example.test";
+    const LOOPBACK_ISSUER: &str = "http://localhost:9080";
 
     struct LocalFetcher {
         endpoint: String,
@@ -266,7 +316,7 @@ mod tests {
     impl MetadataFetcher for LocalFetcher {
         async fn fetch(
             &self,
-            _metadata_url: &EndpointUrl<PublicMetadata>,
+            _metadata_url: &EndpointUrl<ClientMetadata>,
         ) -> Result<reqwest::Response, ClientMetadataError> {
             self.http
                 .get(&self.endpoint)
@@ -282,7 +332,7 @@ mod tests {
     impl MetadataFetcher for PanicFetcher {
         async fn fetch(
             &self,
-            _metadata_url: &EndpointUrl<PublicMetadata>,
+            _metadata_url: &EndpointUrl<ClientMetadata>,
         ) -> Result<reqwest::Response, ClientMetadataError> {
             panic!("invalid client IDs must be rejected before fetching")
         }
@@ -293,7 +343,12 @@ mod tests {
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("test client");
-        HttpClientMetadataResolver::with_fetcher(Arc::new(LocalFetcher { endpoint, http }))
+        HttpClientMetadataResolver::with_fetcher(
+            PUBLIC_ISSUER,
+            &BTreeSet::new(),
+            Arc::new(LocalFetcher { endpoint, http }),
+        )
+        .expect("test resolver")
     }
 
     fn document() -> Value {
@@ -328,7 +383,12 @@ mod tests {
 
     #[tokio::test]
     async fn delegates_client_id_url_shape_to_public_metadata_policy() {
-        let resolver = HttpClientMetadataResolver::with_fetcher(Arc::new(PanicFetcher));
+        let resolver = HttpClientMetadataResolver::with_fetcher(
+            PUBLIC_ISSUER,
+            &BTreeSet::new(),
+            Arc::new(PanicFetcher),
+        )
+        .expect("resolver");
         for client_id in [
             "http://client.example.test/client.json",
             "https://localhost/client.json",
@@ -346,7 +406,12 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_client_ids_that_are_not_their_own_fetched_url() {
-        let resolver = HttpClientMetadataResolver::with_fetcher(Arc::new(PanicFetcher));
+        let resolver = HttpClientMetadataResolver::with_fetcher(
+            PUBLIC_ISSUER,
+            &BTreeSet::new(),
+            Arc::new(PanicFetcher),
+        )
+        .expect("resolver");
         for client_id in [
             // Each of these parses, and parsing rewrites it into a URL that
             // names a different — or differently spelled — document than the ID
@@ -366,6 +431,80 @@ mod tests {
                 ClientMetadataError::InvalidClientId
             );
         }
+    }
+
+    #[test]
+    fn derives_local_client_ids_from_every_root_loopback_resource() {
+        let resources = BTreeSet::from([
+            "http://localhost:3000".to_string(),
+            "http://127.42.0.1:4000".to_string(),
+            "http://localhost:5000/mcp".to_string(),
+            "https://reef.example.test".to_string(),
+        ]);
+
+        assert_eq!(
+            derive_allowed_loopback_client_ids(&resources).expect("validated resources"),
+            BTreeSet::from([
+                "http://localhost:3000/.well-known/oauth-client".to_string(),
+                "http://127.42.0.1:4000/.well-known/oauth-client".to_string(),
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn resolves_exact_client_id_derived_from_a_local_resource() {
+        let server = MockServer::start().await;
+        let resource = server.uri();
+        let client_id = format!("{resource}/.well-known/oauth-client");
+        let mut metadata = document();
+        metadata["client_id"] = json!(client_id.clone());
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(metadata))
+            .mount(&server)
+            .await;
+
+        let resolver =
+            HttpClientMetadataResolver::new(LOOPBACK_ISSUER, &BTreeSet::from([resource]))
+                .expect("local resolver");
+        let registration = resolver.resolve(&client_id).await.expect("local CIMD");
+        assert_eq!(registration.redirect_uris.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn rejects_unlisted_local_ids_and_mixed_topology_before_fetching() {
+        let resource = "http://localhost:3000".to_string();
+        let resources = BTreeSet::from([resource]);
+        let resolver = HttpClientMetadataResolver::with_fetcher(
+            LOOPBACK_ISSUER,
+            &resources,
+            Arc::new(PanicFetcher),
+        )
+        .expect("local resolver");
+
+        for client_id in [
+            "http://localhost:3001/.well-known/oauth-client",
+            "http://localhost:3000/other-client",
+            "http://127.0.0.1:3000/.well-known/oauth-client",
+        ] {
+            assert_eq!(
+                resolver.resolve(client_id).await.expect_err(client_id),
+                ClientMetadataError::InvalidClientId
+            );
+        }
+
+        let mixed = HttpClientMetadataResolver::with_fetcher(
+            PUBLIC_ISSUER,
+            &resources,
+            Arc::new(PanicFetcher),
+        )
+        .expect("mixed resolver");
+        assert_eq!(
+            mixed
+                .resolve("http://localhost:3000/.well-known/oauth-client")
+                .await
+                .expect_err("public issuer must reject local client ID"),
+            ClientMetadataError::InvalidClientId
+        );
     }
 
     #[tokio::test]
@@ -553,6 +692,7 @@ mod tests {
         let rendered = format!("{registration:?}");
         assert!(!rendered.contains("callback"));
         assert!(!rendered.contains("body-secret"));
-        HttpClientMetadataResolver::new().expect("hardened production client");
+        HttpClientMetadataResolver::new(PUBLIC_ISSUER, &BTreeSet::new())
+            .expect("hardened production client");
     }
 }

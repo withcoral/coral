@@ -367,6 +367,11 @@ redirect_uri = "{AUTH_ISSUER}/auth/oidc/callback"
             })
             .expect("resolved auth settings");
         let store = Arc::new(InMemoryStateStore::new());
+        let authorization_resources = Arc::new(BTreeSet::from([RESOURCE.into()]));
+        let client_metadata_resolver = Arc::new(
+            HttpClientMetadataResolver::new(AUTH_ISSUER, &authorization_resources)
+                .expect("client metadata resolver"),
+        );
         let state = AuthorizationServerHttpState {
             settings: Arc::new(settings),
             session_tokens: session_tokens.clone(),
@@ -374,10 +379,8 @@ redirect_uri = "{AUTH_ISSUER}/auth/oidc/callback"
             session_store: store.clone(),
             code_store: store.clone(),
             provider_client: OidcProviderClient::new().expect("client"),
-            authorization_resources: Arc::new(BTreeSet::from([RESOURCE.into()])),
-            client_metadata_resolver: Arc::new(
-                HttpClientMetadataResolver::new().expect("client metadata resolver"),
-            ),
+            authorization_resources,
+            client_metadata_resolver,
         };
         (state, store, session_tokens)
     }

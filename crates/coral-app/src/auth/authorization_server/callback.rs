@@ -223,6 +223,11 @@ mod tests {
             Duration::from_mins(5),
         )
         .expect("session");
+        let authorization_resources = Arc::new(BTreeSet::from([RESOURCE.into()]));
+        let client_metadata_resolver = Arc::new(
+            HttpClientMetadataResolver::new(AUTH_ISSUER, &authorization_resources)
+                .expect("client metadata resolver"),
+        );
         AuthorizationServerHttpState {
             settings: Arc::new(settings(issuer)),
             session_tokens,
@@ -230,10 +235,8 @@ mod tests {
             session_store: store.clone(),
             code_store: store,
             provider_client: OidcProviderClient::new().expect("client"),
-            authorization_resources: Arc::new(BTreeSet::from([RESOURCE.into()])),
-            client_metadata_resolver: Arc::new(
-                HttpClientMetadataResolver::new().expect("client metadata resolver"),
-            ),
+            authorization_resources,
+            client_metadata_resolver,
         }
     }
 

@@ -269,6 +269,13 @@ impl AuthorizationServerHttpState {
         state_store: Arc<InMemoryStateStore>,
         authorization_resources: Arc<BTreeSet<String>>,
     ) -> Result<Self, AuthServerError> {
+        let client_metadata_resolver = Arc::new(
+            HttpClientMetadataResolver::new(
+                settings.authorization_server().issuer(),
+                &authorization_resources,
+            )
+            .map_err(|error| AuthServerError::ClientMetadataResolver(error.to_string()))?,
+        );
         Ok(Self {
             settings,
             session_tokens,
@@ -278,10 +285,7 @@ impl AuthorizationServerHttpState {
             provider_client: OidcProviderClient::new()
                 .map_err(|error| AuthServerError::ProviderClient(error.to_string()))?,
             authorization_resources,
-            client_metadata_resolver: Arc::new(
-                HttpClientMetadataResolver::new()
-                    .map_err(|error| AuthServerError::ClientMetadataResolver(error.to_string()))?,
-            ),
+            client_metadata_resolver,
         })
     }
 
