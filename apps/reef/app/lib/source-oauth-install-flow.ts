@@ -1,5 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 
+import {
+  AUTH_STREAM_REQUEST_HEADER,
+  AUTH_STREAM_RETURN_TO_HEADER,
+  EXPIRED_SESSION_LOGIN_HEADER,
+} from '@/auth/response'
+
 import { readOAuthInstallStream } from './source-oauth-install-stream'
 
 export type OAuthInstallProgress =
@@ -19,12 +25,16 @@ export type OAuthInstallProgress =
 
 export function useOAuthInstallFlow({
   fetchOAuthInstall,
+  navigateToLogin = (location) => window.location.assign(location),
   onComplete,
   openAuthorization,
+  returnTo,
 }: {
   fetchOAuthInstall: typeof fetch
+  navigateToLogin?: (location: string) => void
   onComplete: (name: string, signal: AbortSignal) => Promise<void> | void
   openAuthorization: (url: string) => unknown
+  returnTo?: string
 }) {
   const abortRef = useRef<AbortController | null>(null)
   const [progress, setProgress] = useState<OAuthInstallProgress>({ kind: 'idle' })
@@ -48,11 +58,23 @@ export function useOAuthInstallFlow({
     const abortController = new AbortController()
     abortRef.current = abortController
     try {
+      const visibleLocation =
+        returnTo ?? `${window.location.pathname}${window.location.search}${window.location.hash}`
       const response = await fetchOAuthInstall(endpoint, {
         body: formData,
+        headers: {
+          [AUTH_STREAM_REQUEST_HEADER]: '1',
+          [AUTH_STREAM_RETURN_TO_HEADER]: visibleLocation,
+        },
         method: 'POST',
         signal: abortController.signal,
       })
+      const loginLocation = response.headers.get(EXPIRED_SESSION_LOGIN_HEADER)
+      if (loginLocation) {
+        setProgress({ kind: 'idle' })
+        navigateToLogin(loginLocation)
+        return
+      }
       const source = await readOAuthInstallStream(response, {
         onAuthorization: (event) => {
           setProgress({

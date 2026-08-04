@@ -29,6 +29,7 @@ export async function loader({ context, request }: Route.LoaderArgs) {
       ),
     }
   } catch (error) {
+    if (error instanceof Response) throw error
     console.error('Failed to load sidebar workspaces:', error)
     return { auth, workspaces: [] }
   }

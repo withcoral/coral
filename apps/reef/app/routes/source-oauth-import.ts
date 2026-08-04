@@ -48,7 +48,7 @@ export async function action({ context, params, request }: Route.ActionArgs): Pr
       }),
       { signal: request.signal },
     )
-    return oauthSourceStreamResponse(stream, request.signal)
+    return await oauthSourceStreamResponse(stream, request.signal)
   } catch (error) {
     return oauthStreamErrorResponse(errorMessage(error), 500)
   }

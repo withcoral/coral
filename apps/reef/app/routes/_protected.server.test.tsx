@@ -2,6 +2,13 @@ import { createRequestHandler, RouterContextProvider, type ServerBuild } from 'r
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { RequiredAuthConfig } from '@/auth/types'
+import { EXPIRED_SESSION_RESPONSE_HEADER } from '@/auth/response.server'
+import { expiredSessionRedirect } from '@/auth/response.server'
+import {
+  AUTH_STREAM_REQUEST_HEADER,
+  AUTH_STREAM_RETURN_TO_HEADER,
+  EXPIRED_SESSION_LOGIN_HEADER,
+} from '@/auth/response'
 
 const authMocks = vi.hoisted(() => ({
   clearReefSession: vi.fn(async () => 'reef_session=; Max-Age=0; Path=/; HttpOnly'),
@@ -34,8 +41,8 @@ const session = {
   expiresAt: 4_102_444_800,
   tokenType: 'Bearer',
 }
-const descendantLoader = vi.fn(() => ({ ok: true }))
-const descendantAction = vi.fn(() => ({ ok: true }))
+const descendantLoader = vi.fn((_args: { request: Request }) => ({ ok: true }))
+const descendantAction = vi.fn((_args: { request: Request }) => ({ ok: true }))
 const routeComponent = () => null
 
 const handlerBuild = {
@@ -140,6 +147,53 @@ describe('optional auth boundary', () => {
       expect(next).not.toHaveBeenCalled()
     },
   )
+
+  it('clears a Coral-rejected session through the real React Router middleware pipeline', async () => {
+    authMocks.reefAuthConfig.mockReturnValue(requiredConfig)
+    authMocks.readReefSession.mockResolvedValue(session)
+    descendantLoader.mockImplementationOnce(({ request }: { request: Request }) => {
+      throw expiredSessionRedirect(request)
+    })
+    const handleRequest = createRequestHandler(handlerBuild, 'test')
+
+    const response = await handleRequest(
+      new Request('https://reef.example.test/protected?tab=data'),
+    )
+
+    expect(response.status).toBe(302)
+    expect(response.headers.get('location')).toBe('/login?returnTo=%2Fprotected%3Ftab%3Ddata')
+    expect(response.headers.has(EXPIRED_SESSION_RESPONSE_HEADER)).toBe(false)
+    expect(response.headers.get('Set-Cookie')).toContain('Max-Age=0')
+    expect(authMocks.clearReefSession).toHaveBeenCalledOnce()
+    expectPrivate(response)
+  })
+
+  it('converts a Coral-rejected stream action in the real middleware pipeline', async () => {
+    authMocks.reefAuthConfig.mockReturnValue(requiredConfig)
+    authMocks.readReefSession.mockResolvedValue(session)
+    descendantAction.mockImplementationOnce(({ request }: { request: Request }) => {
+      throw expiredSessionRedirect(request)
+    })
+    const handleRequest = createRequestHandler(handlerBuild, 'test')
+
+    const response = await handleRequest(
+      new Request('https://reef.example.test/protected', {
+        headers: {
+          [AUTH_STREAM_REQUEST_HEADER]: '1',
+          [AUTH_STREAM_RETURN_TO_HEADER]: '/workspaces/analytics/sources/new',
+        },
+        method: 'POST',
+      }),
+    )
+
+    expect(response.status).toBe(401)
+    expect(response.headers.get(EXPIRED_SESSION_LOGIN_HEADER)).toBe(
+      '/login?returnTo=%2Fworkspaces%2Fanalytics%2Fsources%2Fnew',
+    )
+    expect(response.headers.get('Set-Cookie')).toContain('Max-Age=0')
+    expect(authMocks.clearReefSession).toHaveBeenCalledOnce()
+    expectPrivate(response)
+  })
 
   it.each([
     ['document', 'GET', '/protected'],
@@ -270,6 +324,86 @@ describe('optional auth boundary', () => {
       throw childRedirect
     }).catch((error: unknown) => error)
     expect(thrown).toBe(childRedirect)
+    expectPrivate(thrown as Response)
+  })
+
+  it('clears the session once when Coral rejects it mid-request', async () => {
+    authMocks.reefAuthConfig.mockReturnValue(requiredConfig)
+    authMocks.readReefSession.mockResolvedValue(session)
+    const childRedirect = new Response(null, {
+      headers: {
+        [EXPIRED_SESSION_RESPONSE_HEADER]: '1',
+        location: '/login?returnTo=%2Fworkspaces%2Fanalytics%2Fsources',
+      },
+      status: 302,
+    })
+
+    const thrown = await runMiddleware(
+      new Request('https://reef.example.test/workspaces/analytics/sources'),
+      async () => {
+        throw childRedirect
+      },
+    ).catch((error: unknown) => error)
+
+    expect(thrown).toBe(childRedirect)
+    expect(childRedirect.headers.has(EXPIRED_SESSION_RESPONSE_HEADER)).toBe(false)
+    expect(childRedirect.headers.get('Set-Cookie')).toContain('Max-Age=0')
+    expect(authMocks.clearReefSession).toHaveBeenCalledOnce()
+    expectPrivate(childRedirect)
+  })
+
+  it('returns a client-visible login signal instead of a fetch-followed redirect', async () => {
+    authMocks.reefAuthConfig.mockReturnValue(requiredConfig)
+    authMocks.readReefSession.mockResolvedValue(session)
+    const streamRequest = new Request(
+      'https://reef.example.test/workspaces/analytics/sources/oauth-import',
+      {
+        headers: {
+          [AUTH_STREAM_REQUEST_HEADER]: '1',
+          [AUTH_STREAM_RETURN_TO_HEADER]: '/workspaces/analytics/sources/new?step=oauth',
+        },
+        method: 'POST',
+      },
+    )
+    const childRedirect = expiredSessionRedirect(streamRequest)
+
+    const thrown = await runMiddleware(streamRequest, async () => {
+      throw childRedirect
+    }).catch((error: unknown) => error)
+
+    expect(thrown).toBeInstanceOf(Response)
+    expect((thrown as Response).status).toBe(401)
+    expect((thrown as Response).headers.has('location')).toBe(false)
+    expect((thrown as Response).headers.get(EXPIRED_SESSION_LOGIN_HEADER)).toBe(
+      '/login?returnTo=%2Fworkspaces%2Fanalytics%2Fsources%2Fnew%3Fstep%3Doauth',
+    )
+    expect((thrown as Response).headers.get('Set-Cookie')).toContain('Max-Age=0')
+    expectPrivate(thrown as Response)
+  })
+
+  it('uses the same client-visible signal when the encrypted session is already expired', async () => {
+    authMocks.reefAuthConfig.mockReturnValue(requiredConfig)
+    authMocks.readReefSession.mockResolvedValue(null)
+    const next = vi.fn()
+
+    const thrown = await runMiddleware(
+      new Request('https://reef.example.test/workspaces/analytics/sources/oauth-import', {
+        headers: {
+          cookie: 'reef_session=expired',
+          [AUTH_STREAM_REQUEST_HEADER]: '1',
+          [AUTH_STREAM_RETURN_TO_HEADER]: '/workspaces/analytics/sources/new',
+        },
+        method: 'POST',
+      }),
+      next,
+    ).catch((error: unknown) => error)
+
+    expect((thrown as Response).status).toBe(401)
+    expect((thrown as Response).headers.get(EXPIRED_SESSION_LOGIN_HEADER)).toBe(
+      '/login?returnTo=%2Fworkspaces%2Fanalytics%2Fsources%2Fnew',
+    )
+    expect((thrown as Response).headers.get('Set-Cookie')).toContain('Max-Age=0')
+    expect(next).not.toHaveBeenCalled()
     expectPrivate(thrown as Response)
   })
 })

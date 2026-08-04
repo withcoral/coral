@@ -27,6 +27,7 @@ import {
 } from '@/generated/coral/v1/sources_pb'
 import type { OAuthInstallStreamEvent } from '@/lib/source-oauth-install-stream'
 import { relayOAuthSourceStreamEvents } from '@/lib/source-oauth-response.server'
+import { oauthSourceStreamResponse } from '@/lib/source-oauth-response.server'
 
 import { action } from './source-oauth-install'
 
@@ -105,6 +106,30 @@ describe('action', () => {
       expect.objectContaining({ signal: request.signal }),
     )
   })
+
+  it('keeps an early ordinary stream failure in the NDJSON response contract', async () => {
+    getSourceInfo.mockResolvedValue({ sourceInfo: oauthSourceInfo })
+    createBundledSourceWithOAuth.mockReturnValue(
+      rejectedResponses(new Error('provider unavailable')),
+    )
+    const request = new Request(
+      'http://localhost/workspaces/analytics/sources/github/oauth-install',
+      {
+        body: new URLSearchParams({
+          'method:GITHUB_TOKEN': '0',
+          name: 'github',
+        }),
+        method: 'POST',
+      },
+    )
+
+    const response = await action(
+      authRouteTestArgs(request, { sourceName: 'github', workspaceId: 'analytics' }),
+    )
+
+    expect(response.status).toBe(500)
+    expect(await response.text()).toContain('provider unavailable')
+  })
 })
 
 describe('relayOAuthSourceStreamEvents', () => {
@@ -134,4 +159,16 @@ describe('relayOAuthSourceStreamEvents', () => {
       { type: 'source', name: 'github', version: '1.0.0' },
     ])
   })
+
+  it('surfaces a rejection before returning the HTTP stream response', async () => {
+    const redirect = new Response(null, { headers: { location: '/login' }, status: 302 })
+
+    await expect(oauthSourceStreamResponse(rejectedResponses(redirect))).rejects.toBe(redirect)
+  })
 })
+
+function rejectedResponses(error: unknown): AsyncIterable<CreateBundledSourceWithOAuthResponse> {
+  return {
+    [Symbol.asyncIterator]: () => ({ next: () => Promise.reject(error) }),
+  }
+}

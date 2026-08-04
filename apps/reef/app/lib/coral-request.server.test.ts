@@ -1,4 +1,4 @@
-import type { Interceptor } from '@connectrpc/connect'
+import { Code, ConnectError, type Interceptor } from '@connectrpc/connect'
 import type { GrpcTransportOptions } from '@connectrpc/connect-node'
 import type { GrpcWebTransportOptions } from '@connectrpc/connect-web'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -195,7 +195,39 @@ describe('request-scoped Coral transport authentication', () => {
       expect(transportMocks.createGrpcWebTransport).not.toHaveBeenCalled()
     },
   )
+
+  it('leaves Coral authentication rejection for the outer transport boundary', async () => {
+    const interceptor = authenticatedInterceptor()
+    const failure = new ConnectError('expired token', Code.Unauthenticated)
+    const next = vi.fn().mockRejectedValue(failure)
+
+    await expect(interceptor(next as never)({ header: new Headers() } as never)).rejects.toBe(
+      failure,
+    )
+    expect(next).toHaveBeenCalledOnce()
+  })
+
+  it('does not redirect or retry non-authentication Coral failures', async () => {
+    const interceptor = authenticatedInterceptor()
+    const failure = new ConnectError('unavailable', Code.Unavailable)
+    const next = vi.fn().mockRejectedValue(failure)
+
+    await expect(interceptor(next as never)({ header: new Headers() } as never)).rejects.toBe(
+      failure,
+    )
+    expect(next).toHaveBeenCalledOnce()
+  })
 })
+
+function authenticatedInterceptor(): Interceptor {
+  const transport = sourceClientForRequest(
+    request,
+    'coral-access-token',
+  ) as unknown as GrpcTransportOptions
+  const [interceptor] = transport.interceptors ?? []
+  if (!interceptor) throw new Error('authenticated transport did not install an interceptor')
+  return interceptor
+}
 
 async function authorizationHeader(interceptor: Interceptor): Promise<string | null> {
   const next = vi.fn(async (rpcRequest) => rpcRequest)

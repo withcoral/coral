@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import { authPrivateHeaders, markAuthResponsePrivate } from './response.server'
+import { AUTH_STREAM_REQUEST_HEADER, AUTH_STREAM_RETURN_TO_HEADER } from './response'
+import {
+  authPrivateHeaders,
+  expiredSessionRedirect,
+  markAuthResponsePrivate,
+} from './response.server'
 
 // The two are one policy with two shapes: routes that build their own response
 // declare the headers, routes handed one mark it. They were separate literals,
@@ -63,5 +68,40 @@ describe('markAuthResponsePrivate', () => {
 
     expect(response.headers.get('Vary')).toBe(vary.trim())
     expect(response.headers.get('Cache-Control')).toBe('private, no-store')
+  })
+})
+
+describe('expiredSessionRedirect', () => {
+  it('uses a validated visible-page return location for auth stream fetches', () => {
+    const response = expiredSessionRedirect(
+      new Request('https://reef.example.test/workspaces/analytics/sources/oauth-import', {
+        headers: {
+          [AUTH_STREAM_REQUEST_HEADER]: '1',
+          [AUTH_STREAM_RETURN_TO_HEADER]: '/workspaces/analytics/sources/new?step=oauth#method',
+        },
+      }),
+    )
+
+    expect(response.headers.get('location')).toBe(
+      '/login?returnTo=%2Fworkspaces%2Fanalytics%2Fsources%2Fnew%3Fstep%3Doauth%23method',
+    )
+  })
+
+  it.each([
+    'https://attacker.example/return',
+    '//attacker.example/return',
+    '',
+    `/${'a'.repeat(2048)}`,
+  ])('rejects an unsafe auth stream return location: %s', (returnTo) => {
+    const response = expiredSessionRedirect(
+      new Request('https://reef.example.test/workspaces/analytics/sources/oauth-import', {
+        headers: {
+          [AUTH_STREAM_REQUEST_HEADER]: '1',
+          [AUTH_STREAM_RETURN_TO_HEADER]: returnTo,
+        },
+      }),
+    )
+
+    expect(response.headers.get('location')).toBe('/login?returnTo=%2F')
   })
 })

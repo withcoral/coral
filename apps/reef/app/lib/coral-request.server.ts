@@ -1,4 +1,10 @@
-import { createClient, type Interceptor } from '@connectrpc/connect'
+import {
+  Code,
+  ConnectError,
+  createClient,
+  type Interceptor,
+  type Transport,
+} from '@connectrpc/connect'
 import { createGrpcTransport, Http2SessionManager } from '@connectrpc/connect-node'
 import { createGrpcWebTransport } from '@connectrpc/connect-web'
 
@@ -9,6 +15,7 @@ import { QueryService } from '@/generated/coral/v1/query_pb'
 import { SourceService } from '@/generated/coral/v1/sources_pb'
 import { TraceService } from '@/generated/coral/v1/traces_pb'
 import { WorkspaceService } from '@/generated/coral/v1/workspaces_pb'
+import { expiredSessionRedirect } from '@/auth/response.server'
 
 import { DEFAULT_DEV_CORAL_ENDPOINT } from './constants'
 import { isExplicitLoopbackUrl } from './loopback.server'
@@ -81,11 +88,14 @@ function coralTransportForRequest(request: Request, accessToken: string | null) 
     )
   }
 
-  return createGrpcTransport({
-    baseUrl,
-    interceptors: [bearerAuthInterceptor(accessToken)],
-    sessionManager: coralSessionManager(endpoint),
-  })
+  return redirectUnauthenticatedTransport(
+    request,
+    createGrpcTransport({
+      baseUrl,
+      interceptors: [bearerAuthInterceptor(accessToken)],
+      sessionManager: coralSessionManager(endpoint),
+    }),
+  )
 }
 
 // One HTTP/2 connection per Coral origin, for the lifetime of the process.
@@ -121,4 +131,48 @@ function bearerAuthInterceptor(accessToken: string): Interceptor {
     rpcRequest.header.set('Authorization', `Bearer ${accessToken}`)
     return next(rpcRequest)
   }
+}
+
+function redirectUnauthenticatedTransport(request: Request, transport: Transport): Transport {
+  return {
+    ...transport,
+    async unary(method, signal, timeoutMs, header, input, contextValues) {
+      try {
+        return await transport.unary(method, signal, timeoutMs, header, input, contextValues)
+      } catch (error) {
+        throwCoralError(request, error)
+      }
+    },
+    async stream(method, signal, timeoutMs, header, input, contextValues) {
+      let response
+      try {
+        response = await transport.stream(method, signal, timeoutMs, header, input, contextValues)
+      } catch (error) {
+        throwCoralError(request, error)
+      }
+
+      return {
+        ...response,
+        message: redirectUnauthenticatedMessages(request, response.message),
+      }
+    },
+  }
+}
+
+async function* redirectUnauthenticatedMessages<T>(
+  request: Request,
+  messages: AsyncIterable<T>,
+): AsyncIterable<T> {
+  try {
+    yield* messages
+  } catch (error) {
+    throwCoralError(request, error)
+  }
+}
+
+function throwCoralError(request: Request, error: unknown): never {
+  if (error instanceof ConnectError && error.code === Code.Unauthenticated) {
+    throw expiredSessionRedirect(request)
+  }
+  throw error
 }
