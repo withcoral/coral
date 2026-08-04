@@ -76,12 +76,12 @@
   or the `UI build` workflow job), not by `crates/coral-cli/build.rs`. Local
   Rust builds may compile without `apps/ui/dist`, because UI development normally
   serves assets from Vite while the CLI provides the loopback API server.
-- Use `make docker-build` to build the release image locally from the latest
-  published `linux/amd64` binary. Set `DOCKER_RELEASE_TAG=vX.Y.Z` to pin the
-  release, `DOCKER_IMAGE=coral:test` to change the local tag, or
-  `DOCKER_NO_CACHE=1` for a clean build. Keep its asset staging, checksum
-  verification, platform, and provenance settings aligned with the
-  `docker-publish` workflow.
+- Use `make docker-build` to compile the current checkout in a native Linux
+  BuildKit stage and package that binary as `coral:local`. Set
+  `DOCKER_IMAGE=coral:test` to change the local tag or `DOCKER_NO_CACHE=1` to
+  bypass Docker layer caching. Keep the exported-binary layout, runtime
+  platform, and provenance settings aligned with the `docker-publish`
+  workflow; local builds must not download a published Coral binary.
 - Keep adapters thin. If CLI or MCP behavior gets complex, move it inward.
 - Keep server topology orchestration private to `coral-cli` while CLI commands
   are its only consumers. Do not extract the orchestration into a shared

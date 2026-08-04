@@ -1,0 +1,15 @@
+.git
+.cargo
+.context
+.agents
+.claude
+.codex
+.playwright-cli
+.verify
+.envrc
+tasks
+target
+**/node_modules
+**/.env
+**/.env.*
+benchmarks/universal-search/runs

@@ -7,7 +7,6 @@ LOCAL_POSTGRES_IMAGE ?= postgres:17
 LOCAL_POSTGRES_CONTAINER ?= coral-test-postgres
 LOCAL_POSTGRES_PORT ?=
 DOCKER_IMAGE ?= coral:local
-DOCKER_RELEASE_TAG ?=
 DOCKER_NO_CACHE ?= 0
 
 install: ui-build
@@ -21,34 +20,31 @@ ui-build:
 # ----------------------------------------------------------------------------
 # Local Coral image build
 # ----------------------------------------------------------------------------
-# Repackages the published linux/amd64 release binary exactly as the Docker
-# publishing workflow does, but loads the result into the local Docker daemon.
-# The latest published release is the default; pin a tag for reproducibility.
+# Compiles the current checkout in a native Linux BuildKit stage, then packages
+# that binary with the same runtime Dockerfile used by the publishing workflow.
+# The image platform follows the Docker daemon (arm64 or amd64), so this works
+# without cross-compilers or QEMU on both Apple Silicon and Intel machines.
 #
 #   make docker-build
-#   DOCKER_RELEASE_TAG=v1.2.3 DOCKER_IMAGE=coral:test make docker-build
+#   DOCKER_IMAGE=coral:test make docker-build
 #   DOCKER_NO_CACHE=1 make docker-build
 
 docker-build:
 	@set -eu; \
-	for command in docker gh tar awk grep; do \
-	  if ! command -v "$$command" >/dev/null 2>&1; then \
-	    echo "$$command is required to build the Coral image" >&2; \
-	    exit 1; \
-	  fi; \
-	done; \
+	if ! command -v docker >/dev/null 2>&1; then \
+	  echo "docker is required to build the Coral image" >&2; \
+	  exit 1; \
+	fi; \
 	if ! docker buildx version >/dev/null 2>&1; then \
 	  echo "docker buildx is required to build the Coral image" >&2; \
 	  exit 1; \
 	fi; \
-	release_tag="$(DOCKER_RELEASE_TAG)"; \
-	if [ -z "$$release_tag" ]; then \
-	  release_tag=$$(gh release view --repo withcoral/coral --json tagName --jq .tagName); \
-	fi; \
-	if ! printf '%s\n' "$$release_tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$$'; then \
-	  echo "DOCKER_RELEASE_TAG must look like vX.Y.Z, got '$$release_tag'" >&2; \
-	  exit 1; \
-	fi; \
+	daemon_arch=$$(docker info --format '{{.Architecture}}'); \
+	case "$$daemon_arch" in \
+	  amd64|x86_64) image_arch=amd64 ;; \
+	  arm64|aarch64) image_arch=arm64 ;; \
+	  *) echo "unsupported Docker architecture: $$daemon_arch" >&2; exit 1 ;; \
+	esac; \
 	case "$(DOCKER_NO_CACHE)" in \
 	  0|false|'') no_cache=0 ;; \
 	  1|true) no_cache=1 ;; \
@@ -57,40 +53,28 @@ docker-build:
 	tmpdir=$$(mktemp -d); \
 	trap 'rm -rf "$$tmpdir"' EXIT HUP INT TERM; \
 	context="$$tmpdir/context"; \
-	release_dir="$$tmpdir/release"; \
-	tarball=coral-x86_64-unknown-linux-gnu.tar.gz; \
-	mkdir -p "$$context/dist/amd64" "$$context/docker" "$$release_dir"; \
-	cp docker/Dockerfile docker/entrypoint.sh "$$context/docker/"; \
-	echo "Downloading Coral $$release_tag release assets..."; \
-	gh release download "$$release_tag" \
-	  --repo withcoral/coral \
-	  --dir "$$release_dir" \
-	  --pattern "$$tarball" \
-	  --pattern checksums.sha256; \
-	checksum_line=$$(awk -v f="$$tarball" '$$2 == f { print $$1 "  " f }' "$$release_dir/checksums.sha256"); \
-	if [ -z "$$checksum_line" ]; then \
-	  echo "checksum entry for $$tarball not found" >&2; \
-	  exit 1; \
-	fi; \
-	if command -v sha256sum >/dev/null 2>&1; then \
-	  (cd "$$release_dir" && printf '%s\n' "$$checksum_line" | sha256sum -c -); \
-	elif command -v shasum >/dev/null 2>&1; then \
-	  (cd "$$release_dir" && printf '%s\n' "$$checksum_line" | shasum -a 256 -c -); \
-	else \
-	  echo "sha256sum or shasum is required to verify the release asset" >&2; \
-	  exit 1; \
-	fi; \
-	tar -xzf "$$release_dir/$$tarball" -C "$$context/dist/amd64" coral; \
-	test -x "$$context/dist/amd64/coral"; \
+	mkdir -p "$$context/dist/$$image_arch" "$$context/docker"; \
 	set -- docker buildx build \
-	  --platform linux/amd64 \
+	  --platform "linux/$$image_arch" \
+	  --provenance=false \
+	  --file docker/Dockerfile.local \
+	  --target binary \
+	  --output "type=local,dest=$$context/dist/$$image_arch"; \
+	if [ "$$no_cache" -eq 1 ]; then set -- "$$@" --no-cache; fi; \
+	set -- "$$@" .; \
+	echo "Compiling the current checkout for linux/$$image_arch..."; \
+	"$$@"; \
+	test -x "$$context/dist/$$image_arch/coral"; \
+	cp docker/Dockerfile docker/entrypoint.sh "$$context/docker/"; \
+	set -- docker buildx build \
+	  --platform "linux/$$image_arch" \
 	  --provenance=true \
 	  --file "$$context/docker/Dockerfile" \
 	  --load \
 	  --tag "$(DOCKER_IMAGE)"; \
 	if [ "$$no_cache" -eq 1 ]; then set -- "$$@" --no-cache; fi; \
 	set -- "$$@" "$$context"; \
-	echo "Building $(DOCKER_IMAGE) from Coral $$release_tag..."; \
+	echo "Building $(DOCKER_IMAGE) from the local linux/$$image_arch binary..."; \
 	"$$@"; \
 	echo "Built $(DOCKER_IMAGE)"
 

@@ -1,0 +1,16 @@
+# syntax=docker/dockerfile:1.7
+# Compile the current checkout for the Docker daemon's native Linux platform.
+# The exported binary is fed into docker/Dockerfile by `make docker-build`;
+# published images continue to use checksum-verified release artifacts instead.
+FROM --platform=$TARGETPLATFORM rust:1.97-trixie AS build
+ARG TARGETARCH
+WORKDIR /src
+COPY . .
+RUN --mount=type=cache,id=coral-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=coral-cargo-git,target=/usr/local/cargo/git,sharing=locked \
+    --mount=type=cache,id=coral-cargo-target-${TARGETARCH},target=/src/target,sharing=locked \
+    cargo build --locked --release -p coral-cli \
+    && install -D -m 0755 target/release/coral /out/coral
+
+FROM scratch AS binary
+COPY --from=build /out/coral /coral
