@@ -1153,6 +1153,7 @@ where
         query_span.set_status(OtelStatus::error(error_message));
     }
 
+    drop(query_span);
     result
 }
 
@@ -1563,6 +1564,51 @@ mod tests {
             span_attr(query_span, coral_telemetry::QUERY_STREAM_NAME_ATTRIBUTE),
             Some("execute_sql".to_string())
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn query_span_finishes_before_completed_future_is_dropped() {
+        use std::future::poll_fn;
+
+        use opentelemetry::trace::TracerProvider as _;
+        use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let tracer = provider.tracer("query-span-lifecycle-test");
+        let subscriber = tracing_subscriber::Registry::default()
+            .with(tracing_opentelemetry::layer().with_tracer(tracer));
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let workspace = WorkspaceName::default();
+        let mut operation = Box::pin(run_query_operation(
+            QueryOperation::ListTables,
+            &workspace,
+            "LIST TABLES *.*",
+            None,
+            async { Ok::<(), QueryManagerError>(()) },
+            |()| None,
+            |_, ()| {},
+        ));
+        poll_fn(|context| operation.as_mut().poll(context))
+            .await
+            .expect("query operation should succeed");
+
+        provider.force_flush().expect("flush spans");
+        let spans = exporter.get_finished_spans().expect("finished spans");
+        let query_span = spans
+            .iter()
+            .find(|span| span.name == "coral.query")
+            .expect("completed operation should finish its query span");
+        assert_eq!(
+            span_attr(query_span, "operation"),
+            Some("list_tables".to_string())
+        );
+
+        drop(operation);
     }
 
     #[tokio::test(flavor = "current_thread")]
