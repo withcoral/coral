@@ -201,6 +201,25 @@ coral sql "
 - **[Write a custom source spec](https://withcoral.com/docs/guides/write-a-custom-source)** — connect any HTTP API or local dataset that isn't bundled yet
 - **[Install Coral skills](https://withcoral.com/docs/getting-started/installation#skills)** — teach your coding agent how to use Coral
 
+## Run Coral in Docker
+
+The official image runs Coral as a long-running server, for when you want a
+self-hosted deployment rather than a CLI on your own machine:
+
+```bash
+docker run -d -p 14555:14555 -v coral-data:/var/lib/coral ghcr.io/withcoral/coral
+```
+
+First start seeds a starter `config.toml` into the volume and never modifies it
+again; configuring Coral means editing that file and restarting the container.
+To upgrade, `docker pull` the image again and restart the container; the volume
+keeps your config and sources. The container listens on all of its interfaces,
+so publish the port only onto a network you trust, or scope it to the host with
+`-p 127.0.0.1:14555:14555`.
+
+[Self-host with Docker](https://withcoral.com/docs/guides/self-host-with-docker)
+has the full contract: the seed, secrets, Kubernetes, and the network boundary.
+
 ## Use Coral with an agent
 
 Coral ships with a built-in MCP server that presents Coral to your agent as a
