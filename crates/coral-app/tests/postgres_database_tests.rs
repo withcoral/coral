@@ -85,16 +85,18 @@ async fn postgres_source_inventory_reads_information_schema_domain_columns_as_ut
     .expect("read Postgres column inventory through coral.columns");
 
     assert_eq!(tables.len(), 1);
-    let columns = &tables[0].columns;
+    let columns = &tables.first().expect("inventory fixture table").columns;
     assert_eq!(columns.len(), 3);
-    assert_eq!(columns[0].name, "id");
-    assert_eq!(columns[0].data_type, "bigint");
-    assert!(!columns[0].nullable);
-    assert_eq!(columns[0].ordinal_position, 0);
-    assert_eq!(columns[1].name, "display_name");
-    assert_eq!(columns[1].data_type, "character varying");
-    assert!(columns[1].nullable);
-    assert_eq!(columns[1].ordinal_position, 1);
+    let id = columns.first().expect("id column metadata");
+    assert_eq!(id.name, "id");
+    assert_eq!(id.data_type, "bigint");
+    assert!(!id.nullable);
+    assert_eq!(id.ordinal_position, 0);
+    let display_name = columns.get(1).expect("display_name column metadata");
+    assert_eq!(display_name.name, "display_name");
+    assert_eq!(display_name.data_type, "character varying");
+    assert!(display_name.nullable);
+    assert_eq!(display_name.ordinal_position, 1);
 
     sqlx::query("DROP SCHEMA coral_inventory CASCADE")
         .execute(&pool)
