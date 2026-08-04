@@ -6,9 +6,9 @@ use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-use opentelemetry::Value as OtelValue;
 use opentelemetry::metrics::MeterProvider as _;
 use opentelemetry::trace::{Status as OtelStatus, TracerProvider as _};
+use opentelemetry::{KeyValue as OtelKeyValue, Value as OtelValue};
 use opentelemetry_otlp::{
     LogExporter, MetricExporter, SpanExporter as OtlpSpanExporter, WithExportConfig, WithHttpConfig,
 };
@@ -114,7 +114,7 @@ pub(crate) fn record_local_only_span_attribute(
         .and_then(|state| state.as_ref().ok())
         .is_some_and(|state| state.local_trace_store.is_some());
     if local_trace_store_is_installed {
-        span.record(field, value);
+        span.set_attribute(field, value.to_owned());
     }
 }
 
@@ -182,12 +182,19 @@ where
                 && !span_matches_excluded_rpc_service(span, self.excluded_rpc_services)
         });
         for span in &mut batch {
-            span.attributes.retain(|attribute| {
-                !self
-                    .stripped_attribute_prefixes
-                    .iter()
-                    .any(|prefix| attribute.key.as_str().starts_with(prefix))
-            });
+            strip_attributes_with_prefixes(&mut span.attributes, self.stripped_attribute_prefixes);
+            for event in &mut span.events.events {
+                strip_attributes_with_prefixes(
+                    &mut event.attributes,
+                    self.stripped_attribute_prefixes,
+                );
+            }
+            for link in &mut span.links.links {
+                strip_attributes_with_prefixes(
+                    &mut link.attributes,
+                    self.stripped_attribute_prefixes,
+                );
+            }
         }
         if batch.is_empty() {
             return Ok(());
@@ -209,6 +216,14 @@ where
     fn set_resource(&mut self, resource: &opentelemetry_sdk::Resource) {
         self.inner.set_resource(resource);
     }
+}
+
+fn strip_attributes_with_prefixes(attributes: &mut Vec<OtelKeyValue>, prefixes: &[&str]) {
+    attributes.retain(|attribute| {
+        !prefixes
+            .iter()
+            .any(|prefix| attribute.key.as_str().starts_with(prefix))
+    });
 }
 
 fn span_matches_targets(span: &SpanData, targets: &Targets) -> bool {
@@ -701,10 +716,27 @@ pub fn shutdown_tracing() {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
 
+    use opentelemetry::KeyValue;
     use opentelemetry::trace::TracerProvider as _;
+    use opentelemetry::trace::{SpanContext, SpanId, TraceFlags, TraceId, TraceState};
     use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+    use tracing_opentelemetry::OpenTelemetrySpanExt as _;
     use tracing_subscriber::layer::SubscriberExt as _;
+
+    #[derive(Clone)]
+    struct CapturedWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for CapturedWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("capture lock").write(bytes)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.0.lock().expect("capture lock").flush()
+        }
+    }
 
     use super::{
         DEFAULT_LOCAL_TRACE_FILTER, DEFAULT_LOG_FILTER, DEFAULT_TRACE_FILTER,
@@ -886,12 +918,14 @@ mod tests {
 
     #[test]
     fn target_filtering_exporter_strips_local_only_span_attributes() {
+        let local_memory = InMemorySpanExporter::default();
         let memory = InMemorySpanExporter::default();
         let (targets, error) = build_trace_targets("coral_app=trace", DEFAULT_TRACE_FILTER);
         assert!(error.is_none());
         let exporter = TargetFilteringSpanExporter::new(memory.clone(), targets)
             .stripping_attribute_prefixes(OTLP_STRIPPED_SPAN_ATTRIBUTE_PREFIXES);
         let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(local_memory.clone())
             .with_simple_exporter(exporter)
             .build();
         let tracer = provider.tracer("local-only-attribute-test");
@@ -905,11 +939,40 @@ mod tests {
                 target: "coral_app",
                 "search",
                 public = "kept",
-                coral.local.search.query = "LOCAL_ONLY_SENTINEL",
+            );
+            span.set_attribute(
+                coral_telemetry::QUERY_STREAM_SEARCH_QUERY_ATTRIBUTE,
+                "LOCAL_ONLY_SENTINEL",
+            );
+            span.add_event(
+                "search event",
+                vec![
+                    KeyValue::new("event.public", "kept"),
+                    KeyValue::new("coral.local.event.detail", "LOCAL_ONLY_EVENT_SENTINEL"),
+                ],
+            );
+            span.add_link_with_attributes(
+                SpanContext::new(
+                    TraceId::from(1),
+                    SpanId::from(2),
+                    TraceFlags::SAMPLED,
+                    false,
+                    TraceState::default(),
+                ),
+                vec![
+                    KeyValue::new("link.public", "kept"),
+                    KeyValue::new("coral.local.link.detail", "LOCAL_ONLY_LINK_SENTINEL"),
+                ],
             );
             let _span = span.enter();
         });
         provider.force_flush().expect("flush spans");
+
+        let local_spans = local_memory.get_finished_spans().expect("local spans");
+        let local_span = local_spans.first().expect("locally exported span");
+        assert!(format!("{local_span:?}").contains("LOCAL_ONLY_SENTINEL"));
+        assert!(format!("{local_span:?}").contains("LOCAL_ONLY_EVENT_SENTINEL"));
+        assert!(format!("{local_span:?}").contains("LOCAL_ONLY_LINK_SENTINEL"));
 
         let spans = memory.get_finished_spans().expect("finished spans");
         let span = spans.first().expect("exported span");
@@ -924,7 +987,60 @@ mod tests {
                 .as_str()
                 .starts_with(coral_telemetry::LOCAL_ONLY_SPAN_ATTRIBUTE_PREFIX)
         }));
+        assert!(
+            span.events
+                .events
+                .iter()
+                .all(|event| event.attributes.iter().all(|attribute| !attribute
+                    .key
+                    .as_str()
+                    .starts_with(coral_telemetry::LOCAL_ONLY_SPAN_ATTRIBUTE_PREFIX)))
+        );
+        assert!(
+            span.links
+                .links
+                .iter()
+                .all(|link| link.attributes.iter().all(|attribute| !attribute
+                    .key
+                    .as_str()
+                    .starts_with(coral_telemetry::LOCAL_ONLY_SPAN_ATTRIBUTE_PREFIX)))
+        );
         assert!(!format!("{span:?}").contains("LOCAL_ONLY_SENTINEL"));
+        assert!(!format!("{span:?}").contains("LOCAL_ONLY_EVENT_SENTINEL"));
+        assert!(!format!("{span:?}").contains("LOCAL_ONLY_LINK_SENTINEL"));
+        provider.shutdown().expect("provider shutdown");
+    }
+
+    #[test]
+    fn direct_otel_span_attributes_are_not_formatted_as_logs() {
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let output_writer = output.clone();
+        let memory = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(memory)
+            .build();
+        let tracer = provider.tracer("local-only-format-test");
+        let subscriber = tracing_subscriber::Registry::default()
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .compact()
+                    .with_writer(move || CapturedWriter(output_writer.clone())),
+            )
+            .with(tracing_opentelemetry::layer().with_tracer(tracer));
+
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!("search", public = "kept");
+            span.set_attribute(
+                coral_telemetry::QUERY_STREAM_SEARCH_QUERY_ATTRIBUTE,
+                "LOCAL_ONLY_STDERR_SENTINEL",
+            );
+            span.in_scope(|| tracing::warn!("provider task failed"));
+        });
+
+        let formatted = String::from_utf8(output.lock().expect("capture lock").clone())
+            .expect("formatter output is utf-8");
+        assert!(formatted.contains("provider task failed"));
+        assert!(!formatted.contains("LOCAL_ONLY_STDERR_SENTINEL"));
         provider.shutdown().expect("provider shutdown");
     }
 

@@ -609,7 +609,6 @@ fn create_search_span(request: &SearchRequest, task_id: Option<&TaskId>) -> trac
         coral.stream.entry = true,
         coral.stream.kind = coral_telemetry::QUERY_STREAM_KIND_SEARCH,
         coral.stream.name = "search",
-        coral.local.search.query = field::Empty,
         otel.name = "coral.search",
         operation = "search",
         workspace = field::Empty,
