@@ -417,6 +417,8 @@ impl QueryManager {
         shown_guide_ids: Option<&HashSet<String>>,
         attribution: &QueryAttribution,
     ) -> Result<ExecuteSqlOutcome, QueryManagerError> {
+        // Keep the database-enabled operation future off this async state machine: on Linux it
+        // exceeds Clippy's `large_futures` threshold when awaited inline.
         Box::pin(run_query_operation(
             QueryOperation::ExecuteSql,
             workspace_name,
