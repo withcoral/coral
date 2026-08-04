@@ -212,10 +212,10 @@ docker run -d -p 14555:14555 -v coral-data:/var/lib/coral ghcr.io/withcoral/cora
 
 First start seeds a starter `config.toml` into the volume and never modifies it
 again; configuring Coral means editing that file and restarting the container.
-To upgrade, `docker pull` the image again and restart the container; the volume
-keeps your config and sources. The container listens on all of its interfaces,
-so publish the port only onto a network you trust, or scope it to the host with
-`-p 127.0.0.1:14555:14555`.
+To upgrade, pull the new image and recreate the container with the same volume;
+the volume keeps your config and sources. The container listens on all of its
+interfaces, so publish the port only onto a network you trust, or scope it to
+the host with `-p 127.0.0.1:14555:14555`.
 
 [Self-host with Docker](https://withcoral.com/docs/guides/self-host-with-docker)
 has the full contract: the seed, secrets, Kubernetes, and the network boundary.

@@ -1,0 +1,198 @@
+---
+title: "Self-host Coral with Docker"
+description: "Run Coral's long-lived server with the official container image."
+---
+
+<Warning>
+  Coral's native gRPC server does not authenticate clients. Publish its port
+  only inside a trusted network boundary, or put Coral behind an authenticating
+  proxy. Do not expose the default container directly to the public internet.
+</Warning>
+
+The official image packages the same Coral binary as the corresponding GitHub
+release. It currently supports `linux/amd64` and stores all persistent state in
+one writable volume.
+
+## Run the server
+
+You need Docker and a network where every client that can reach Coral is
+trusted. Start the server with one port and one named volume:
+
+```shellscript
+docker run -d -p 14555:14555 -v coral-data:/var/lib/coral ghcr.io/withcoral/coral
+```
+
+The container listens on port `14555` and includes a gRPC health check. The
+`coral-data` volume contains configuration, installed sources, credentials,
+query state, and other durable state. Reuse that volume when you replace the
+container with a newer image.
+
+To limit access to clients on the Docker host, bind the published port to
+loopback instead:
+
+```shellscript
+docker run -d -p 127.0.0.1:14555:14555 -v coral-data:/var/lib/coral ghcr.io/withcoral/coral
+```
+
+## Upgrade Coral
+
+Pull the new image, remove the old container, and repeat the original
+`docker run` command with the same `coral-data` volume. Restarting an existing
+container is not enough because it continues using the image it was created
+from.
+
+For a Compose deployment, recreate the service after pulling:
+
+```shellscript
+docker compose pull
+docker compose up -d
+```
+
+Use `ghcr.io/withcoral/coral:X.Y.Z` when you need an exact release. The `X.Y`
+tag follows the newest stable release in that minor line, while `latest`
+follows the newest stable release overall.
+
+## Configure first start
+
+On first start, the entrypoint creates
+`/var/lib/coral/config/config.toml` with this starter configuration:
+
+```toml
+[server]
+bind_addr = "0.0.0.0:14555"
+```
+
+The entrypoint seeds the file only when nothing exists at that path. It never
+replaces, merges, or rewrites an existing `config.toml`. To change the server,
+edit that file in the volume and restart the container. Coral commands may
+still update the file when you explicitly change managed state, such as an
+installed source or runtime feature.
+
+This once-only rule also applies after an image upgrade. Defaults written into
+an existing volume do not change when you pull a newer image.
+
+### Supply the whole seed declaratively
+
+Set `CORAL_SEED_CONFIG` to supply the complete initial `config.toml` verbatim.
+It is used only when the file does not exist. If a config already exists, the
+entrypoint keeps it and logs that `CORAL_SEED_CONFIG` was ignored.
+
+This Compose example supplies the starter file as a multiline value:
+
+```yaml
+services:
+  coral:
+    image: ghcr.io/withcoral/coral
+    ports:
+      - "14555:14555"
+    volumes:
+      - coral-data:/var/lib/coral
+    environment:
+      CORAL_SEED_CONFIG: |
+        [server]
+        bind_addr = "0.0.0.0:14555"
+
+volumes:
+  coral-data:
+```
+
+Keep `CORAL_SEED_CONFIG` free of secrets. Container environment values are
+visible through tools such as `docker inspect`. Put secrets in separate
+environment variables and reference their names from `config.toml`, for
+example with `[database].url_env` or `[auth.provider].client_secret_env`.
+
+## Change the server port
+
+The configured bind port, published Docker port, and health check must agree.
+The image health check is fixed at `127.0.0.1:14555`; it does not parse
+`config.toml`.
+
+For example, after changing `bind_addr` to `0.0.0.0:15555`, update both the
+Compose port mapping and health check:
+
+```yaml
+services:
+  coral:
+    image: ghcr.io/withcoral/coral
+    ports:
+      - "15555:15555"
+    volumes:
+      - coral-data:/var/lib/coral
+    healthcheck:
+      test:
+        - CMD
+        - /usr/local/bin/grpc_health_probe
+        - -addr=127.0.0.1:15555
+
+volumes:
+  coral-data:
+```
+
+## Administer the running container
+
+The image sets `CORAL_CONFIG_DIR` for every process, including commands started
+with `docker exec`. Replace `<container>` with the container name or ID:
+
+```shellscript
+docker exec -it <container> coral source add --interactive github
+docker exec <container> coral sql "SELECT schema_name, table_name FROM coral.tables"
+docker exec <container> coral features list
+```
+
+These commands operate on the same volume as the long-running server.
+
+## Protect and back up the volume
+
+The volume must remain writable. Coral creates directories, locks its state
+root, and writes its database during normal operation, so a read-only mount is
+not supported. The entrypoint fails early with an actionable error when it
+cannot write the config directory.
+
+Treat the volume as sensitive. Source credentials can be stored in plaintext
+`secrets.env` files inside the volume, alongside source definitions and query
+state. Back up and restore the deployment by snapshotting the complete volume,
+not only `config.toml`.
+
+Use one runtime UID for a volume's lifetime. Coral creates private files with
+mode `0600`, so a later container running as a different UID cannot read them
+even if it shares a group.
+
+### Run as a non-root user
+
+The image runs as UID `65532` with GID `0` by default. A Docker-created named
+volume works with that identity. To use another UID, keep GID `0` or pre-chown
+the volume for the chosen user:
+
+```shellscript
+docker run -d --user 12345:0 -p 14555:14555 -v coral-data:/var/lib/coral ghcr.io/withcoral/coral
+```
+
+For Kubernetes, give the pod a compatible security context and mount one
+writable persistent volume at `/var/lib/coral`:
+
+```yaml
+securityContext:
+  runAsUser: 65532
+  runAsGroup: 0
+  fsGroup: 0
+```
+
+Do not run multiple Coral replicas against the same volume. The persistent
+state and in-memory authorization state are designed for one server process per
+volume.
+
+## Expose MCP over HTTP
+
+MCP Streamable HTTP is disabled by default. A non-loopback MCP HTTP listener is
+rejected unless you configure the complete `[auth]` stack; do not use an
+unauthenticated public listener. See [Server configuration](/reference/configuration#server)
+for the listener and authentication boundary.
+
+## Known limitations
+
+- The image is `linux/amd64` only at launch.
+- Steady-state server logs are quiet; most runtime errors are returned to the
+  requesting gRPC client. Expanded server-side logging is planned separately.
+- One volume supports one running Coral server. Multi-replica and
+  high-availability deployments are not supported.
+- The container does not serve the Coral desktop web UI.

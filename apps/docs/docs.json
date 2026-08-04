@@ -80,7 +80,8 @@
           "guides/use-coral-over-mcp",
           "guides/search-with-coral",
           "guides/write-a-custom-source",
-          "guides/observe-with-opentelemetry"
+          "guides/observe-with-opentelemetry",
+          "guides/self-host-with-docker"
         ]
       },
       {
