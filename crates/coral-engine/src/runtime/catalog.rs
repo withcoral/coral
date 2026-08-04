@@ -305,6 +305,12 @@ const TABLES_COLUMNS: &[SystemColumnDefinition] = &[
         description: "Query guidance for the table.",
     },
     SystemColumnDefinition {
+        name: "require_guide_read",
+        data_type: "Boolean",
+        nullable: false,
+        description: "Whether the table guide must be read before querying the table.",
+    },
+    SystemColumnDefinition {
         name: "required_filters",
         data_type: "Utf8",
         nullable: false,
@@ -709,7 +715,7 @@ fn catalog_tables_query(
     table_filter: Option<&str>,
 ) -> String {
     let mut sql = "SELECT catalog_name, schema_name, table_name, description, guide, \
-                   required_filters FROM coral.tables"
+                   require_guide_read, required_filters FROM coral.tables"
         .to_string();
     append_catalog_filter(&mut sql, catalog_filter, schema_filter, table_filter);
     sql
@@ -759,6 +765,7 @@ fn collect_table_infos_from_batches(batches: &[RecordBatch]) -> Result<Vec<Table
         let table_names = string_array(batch, "table_name")?;
         let descriptions = string_array(batch, "description")?;
         let guides = string_array(batch, "guide")?;
+        let require_guide_reads = bool_array(batch, "require_guide_read")?;
         let required_filters = string_array(batch, "required_filters")?;
         for row in 0..batch.num_rows() {
             tables.push(TableInfo {
@@ -767,11 +774,7 @@ fn collect_table_infos_from_batches(batches: &[RecordBatch]) -> Result<Vec<Table
                 table_name: table_names.value(row).to_string(),
                 description: descriptions.value(row).to_string(),
                 guide: guides.value(row).to_string(),
-                // `coral.tables` publishes `guide` but not `require_guide_read`,
-                // so this SQL-backed path cannot recover the flag. Tables
-                // collected here are therefore never guide-gated; closing that
-                // gap means publishing the column on `coral.tables`.
-                require_guide_read: false,
+                require_guide_read: require_guide_reads.value(row),
                 columns: Vec::new(),
                 required_filters: split_required_filters(required_filters.value(row)),
             });
@@ -977,6 +980,7 @@ struct CatalogTable {
     table_name: String,
     description: String,
     guide: String,
+    require_guide_read: bool,
     required_filters: String,
     search_limits: Option<SearchLimitsSpec>,
 }
@@ -987,6 +991,7 @@ fn build_tables_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
         Field::new("table_name", DataType::Utf8, false),
         Field::new("description", DataType::Utf8, false),
         Field::new("guide", DataType::Utf8, false),
+        Field::new("require_guide_read", DataType::Boolean, false),
         Field::new("required_filters", DataType::Utf8, false),
         Field::new("search_limits_json", DataType::Utf8, true),
         Field::new("catalog_name", DataType::Utf8, false),
@@ -1000,6 +1005,7 @@ fn build_tables_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
             table_name: table.table_name.to_string(),
             description: table.description.to_string(),
             guide: table.guide.to_string(),
+            require_guide_read: false,
             required_filters: String::new(),
             search_limits: None,
         })
@@ -1014,6 +1020,7 @@ fn build_tables_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
                 table_name: table.table_name.clone(),
                 description: table.description.clone(),
                 guide: table.guide.clone(),
+                require_guide_read: table.require_guide_read,
                 required_filters: table.required_filters.join(","),
                 search_limits: table.search_limits.clone(),
             })
@@ -1040,6 +1047,11 @@ fn build_tables_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
             utf8_column(rows.iter().map(|row| Some(row.table_name.as_str()))),
             utf8_column(rows.iter().map(|row| Some(row.description.as_str()))),
             utf8_column(rows.iter().map(|row| Some(row.guide.as_str()))),
+            Arc::new(
+                rows.iter()
+                    .map(|row| Some(row.require_guide_read))
+                    .collect::<BooleanArray>(),
+            ),
             utf8_column(rows.iter().map(|row| Some(row.required_filters.as_str()))),
             utf8_column(search_limits_json.iter().map(|value| value.as_deref())),
             utf8_column(rows.iter().map(|row| Some(row.catalog_name.as_str()))),
