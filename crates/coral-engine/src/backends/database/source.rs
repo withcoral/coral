@@ -250,11 +250,12 @@ impl DatabaseCatalogStrategy for MySqlConnectionSpec {
                 "database catalog '{catalog_name}' resolved to a non-MySQL pool"
             )));
         };
+        let inventory_sql = mysql_relations_sql();
         build_database_catalog(
             catalog_name,
             pool,
             Some(MYSQL_INVENTORY_SESSION_SQL),
-            MYSQL_RELATIONS_SQL,
+            &inventory_sql,
             MYSQL_COLUMNS_SQL,
             Arc::new(MySqlDialect {}),
         )
@@ -306,39 +307,76 @@ impl DatabaseCatalogStrategy for SqliteConnectionSpec {
 }
 
 const POSTGRES_RELATIONS_SQL: &str = "
-SELECT table_schema AS schema_name,
-       table_name,
-       table_type AS relation_type,
-       CAST(NULL AS TEXT) AS skip_reason
+SELECT CAST(table_schema AS TEXT) AS schema_name,
+       CAST(table_name AS TEXT) AS table_name,
+       CAST(table_type AS TEXT) AS relation_type,
+       CAST(NULL AS TEXT) AS unrecognized_columns
 FROM information_schema.tables
 WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
   AND table_type IN ('BASE TABLE', 'VIEW')";
 
-// Keep unsupported-column diagnostics intact for the widest valid MySQL tables.
+// Keep unrecognized-column diagnostics intact for the widest valid MySQL tables.
 const MYSQL_INVENTORY_SESSION_SQL: &str = "SET SESSION group_concat_max_len = 1048576";
 
-const MYSQL_RELATIONS_SQL: &str = "
+// `datafusion-table-providers-mysql` 0.13.0 keeps its MySQL type mapper private. This list is an
+// advisory approximation used only to diagnose unfamiliar information_schema DATA_TYPE values;
+// lazy provider schema discovery remains authoritative for queryability. Re-audit this list on
+// upgrades, but never use it to exclude a relation from the catalog.
+const MYSQL_INVENTORY_RECOGNIZED_DATA_TYPES: &[&str] = &[
+    "decimal",
+    "numeric",
+    "newdecimal",
+    "tinyint",
+    "smallint",
+    "int",
+    "integer",
+    "bigint",
+    "mediumint",
+    "float",
+    "double",
+    "null",
+    "timestamp",
+    "time",
+    "datetime",
+    "date",
+    "year",
+    "bit",
+    "json",
+    "enum",
+    "set",
+    "tinyblob",
+    "tinytext",
+    "mediumblob",
+    "mediumtext",
+    "longblob",
+    "longtext",
+    "blob",
+    "text",
+    "varchar",
+    "varbinary",
+    "char",
+    "binary",
+];
+
+fn mysql_relations_sql() -> String {
+    let recognized_types = MYSQL_INVENTORY_RECOGNIZED_DATA_TYPES
+        .iter()
+        .map(|data_type| format!("'{data_type}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "
 SELECT tables.TABLE_SCHEMA AS schema_name,
        tables.TABLE_NAME AS table_name,
        tables.TABLE_TYPE AS relation_type,
        GROUP_CONCAT(
            CASE
-               WHEN LOWER(columns.DATA_TYPE) NOT IN (
-                   'decimal', 'numeric',
-                   'tinyint', 'smallint', 'int', 'integer', 'bigint', 'mediumint',
-                   'float', 'double', 'real',
-                   'timestamp', 'time', 'datetime', 'date', 'year',
-                   'bit', 'json',
-                   'enum', 'set',
-                   'tinyblob', 'tinytext', 'mediumblob', 'mediumtext',
-                   'longblob', 'longtext', 'blob', 'text',
-                   'varchar', 'varbinary', 'char', 'binary'
-               )
+               WHEN LOWER(columns.DATA_TYPE) NOT IN ({recognized_types})
                THEN CONCAT(columns.COLUMN_NAME, ' (', columns.DATA_TYPE, ')')
            END
            ORDER BY columns.ORDINAL_POSITION
            SEPARATOR ', '
-       ) AS skip_reason
+       ) AS unrecognized_columns
 FROM INFORMATION_SCHEMA.TABLES AS tables
 LEFT JOIN INFORMATION_SCHEMA.COLUMNS AS columns
   ON columns.TABLE_SCHEMA = tables.TABLE_SCHEMA
@@ -346,13 +384,15 @@ LEFT JOIN INFORMATION_SCHEMA.COLUMNS AS columns
 WHERE tables.TABLE_SCHEMA NOT IN (
     'information_schema', 'mysql', 'performance_schema', 'sys'
 )
-GROUP BY tables.TABLE_SCHEMA, tables.TABLE_NAME, tables.TABLE_TYPE";
+GROUP BY tables.TABLE_SCHEMA, tables.TABLE_NAME, tables.TABLE_TYPE"
+    )
+}
 
 const SQLITE_RELATIONS_SQL: &str = "
 SELECT 'main' AS schema_name,
        name AS table_name,
        CASE type WHEN 'view' THEN 'VIEW' ELSE 'BASE TABLE' END AS relation_type,
-       CAST(NULL AS TEXT) AS skip_reason
+       CAST(NULL AS TEXT) AS unrecognized_columns
 FROM sqlite_master
 WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%'";
 
@@ -402,7 +442,10 @@ mod tests {
         SourceManifestCommon, SqliteConnectionSpec,
     };
 
-    use super::DatabaseCatalogStrategy;
+    use super::{
+        DatabaseCatalogStrategy, MYSQL_INVENTORY_RECOGNIZED_DATA_TYPES,
+        MYSQL_INVENTORY_SESSION_SQL, mysql_relations_sql,
+    };
     use crate::backends::shared::template::RenderContext;
     use crate::{
         CoralQuery, QueryRuntimeConfig, QuerySource, RuntimeSourceComponent, RuntimeSourcePackage,
@@ -445,6 +488,34 @@ mod tests {
             user: template("root"),
             password: template("password"),
         }
+    }
+
+    #[test]
+    fn mysql_inventory_query_preserves_advisory_type_diagnostics() {
+        let recognized_types = MYSQL_INVENTORY_RECOGNIZED_DATA_TYPES
+            .iter()
+            .map(|data_type| format!("'{data_type}'"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = mysql_relations_sql();
+
+        assert!(sql.contains(&format!("NOT IN ({recognized_types})")));
+        assert!(sql.contains("GROUP_CONCAT("));
+        assert!(sql.contains("LEFT JOIN INFORMATION_SCHEMA.COLUMNS"));
+        assert!(sql.contains("AS unrecognized_columns"));
+        assert!(sql.contains("GROUP BY tables.TABLE_SCHEMA, tables.TABLE_NAME, tables.TABLE_TYPE"));
+        assert!(
+            !MYSQL_INVENTORY_RECOGNIZED_DATA_TYPES.contains(&"geometry"),
+            "geometry is recognized by the provider parser but lacks Arrow conversion"
+        );
+    }
+
+    #[test]
+    fn mysql_inventory_session_preserves_complete_type_diagnostics() {
+        assert_eq!(
+            MYSQL_INVENTORY_SESSION_SQL,
+            "SET SESSION group_concat_max_len = 1048576"
+        );
     }
 
     fn sqlite_source(path: String) -> QuerySource {

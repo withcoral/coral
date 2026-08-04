@@ -23,12 +23,12 @@ use crate::backends::{ColumnInventoryFilter, DatabaseColumnFetcher, DatabaseColu
 /// `column_name`, `data_type` (provider-native name), `is_nullable`
 /// ('true'/'false').
 pub(super) const POSTGRES_COLUMNS_SQL: &str = "
-SELECT table_schema AS schema_name,
-       table_name,
+SELECT CAST(table_schema AS TEXT) AS schema_name,
+       CAST(table_name AS TEXT) AS table_name,
        CAST(ordinal_position - 1 AS TEXT) AS ordinal_position,
-       column_name,
-       data_type,
-       CASE WHEN is_nullable = 'YES' THEN 'true' ELSE 'false' END AS is_nullable
+       CAST(column_name AS TEXT) AS column_name,
+       CAST(data_type AS TEXT) AS data_type,
+       CAST(CASE WHEN is_nullable = 'YES' THEN 'true' ELSE 'false' END AS TEXT) AS is_nullable
 FROM information_schema.columns
 WHERE table_schema NOT IN ('pg_catalog', 'information_schema')";
 
@@ -96,6 +96,15 @@ impl<T: 'static, P: 'static> DatabaseColumnFetcher for DatabaseColumnInventoryFe
         if filter_matches_nothing(filter) {
             return Ok(Vec::new());
         }
+        self.fetch_columns_uncached(filter).await
+    }
+}
+
+impl<T: 'static, P: 'static> DatabaseColumnInventoryFetcher<T, P> {
+    async fn fetch_columns_uncached(
+        &self,
+        filter: &ColumnInventoryFilter,
+    ) -> DataFusionResult<Vec<DatabaseColumnRow>> {
         let sql = compose_columns_sql(self.base_sql, filter);
         let schema = Arc::new(Schema::new(vec![
             Field::new("schema_name", DataType::Utf8, false),
@@ -106,14 +115,15 @@ impl<T: 'static, P: 'static> DatabaseColumnFetcher for DatabaseColumnInventoryFe
             Field::new("is_nullable", DataType::Utf8, false),
         ]));
         let connection = self.pool.connect().await.map_err(provider_error)?;
-        let batches = query_arrow(connection, sql, Some(schema))
+        let mut batches = query_arrow(connection, sql, Some(schema))
             .await
-            .map_err(provider_error)?
-            .try_collect::<Vec<_>>()
-            .await?;
+            .map_err(provider_error)?;
 
+        // Consume provider batches incrementally so the complete Arrow response and normalized
+        // row inventory are not both retained in memory. The rows remain owned because callers
+        // need deterministic ordering and ultimately materialize the DataFusion result.
         let mut rows = Vec::new();
-        for batch in batches {
+        while let Some(batch) = batches.try_next().await? {
             let schema_names = inventory_column(&batch, "schema_name")?;
             let table_names = inventory_column(&batch, "table_name")?;
             let ordinals = inventory_column(&batch, "ordinal_position")?;

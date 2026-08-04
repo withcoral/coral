@@ -67,6 +67,7 @@ pub(crate) struct QueryRuntimeAdapter {
     tables: Vec<TableInfo>,
     table_functions: Vec<TableFunctionInfo>,
     failures: Vec<SourceRegistrationFailure>,
+    column_fetch_failures: catalog::CatalogColumnFetchFailures,
     /// Source name keyed by top-level SQL name (schema for two-part sources,
     /// catalog for database sources).
     name_to_source: HashMap<String, String>,
@@ -128,6 +129,7 @@ struct RegisteredRuntime {
     tables: Vec<TableInfo>,
     table_functions: Vec<TableFunctionInfo>,
     failures: Vec<SourceRegistrationFailure>,
+    column_fetch_failures: catalog::CatalogColumnFetchFailures,
 }
 
 struct RuntimeBuildInputs<'a> {
@@ -226,6 +228,7 @@ async fn build_runtime_inner(
         tables: primary.tables,
         table_functions: primary.table_functions,
         failures: primary.failures,
+        column_fetch_failures: primary.column_fetch_failures,
         name_to_source: name_to_source_names(sources),
         query_result_observers: extensions.query_result_observers,
     })
@@ -352,11 +355,13 @@ async fn build_registered_runtime(
     let source_function_names = source_functions.names();
     let udf_table_functions = published_table_functions(config.udfs, &source_function_names)
         .map_err(|err| datafusion_to_core(&err, &[]))?;
+    let column_fetch_failures = catalog::CatalogColumnFetchFailures::default();
     catalog::register(
         &ctx,
         &registration.active_sources,
         &registration.column_fetchers,
         &udf_table_functions,
+        column_fetch_failures.clone(),
     )
     .map_err(|err| datafusion_to_core(&err, &[]))?;
     let tables = catalog::collect_static_tables(&registration.active_sources);
@@ -386,6 +391,7 @@ async fn build_registered_runtime(
         tables,
         table_functions,
         failures: registration.failures,
+        column_fetch_failures,
     })
 }
 
@@ -557,6 +563,7 @@ impl QueryRuntimeAdapter {
             &self.active_sources,
             &self.column_fetchers,
             &udf_table_functions,
+            self.column_fetch_failures.clone(),
         )
         .map_err(|err| datafusion_to_core(&err, &self.tables))?;
         udf_calls
@@ -578,9 +585,21 @@ impl QueryRuntimeAdapter {
         schema_filter: Option<&str>,
         table_filter: Option<&str>,
     ) -> Result<Vec<TableInfo>, CoreError> {
-        catalog::collect_tables(&self.ctx, catalog_filter, schema_filter, table_filter)
-            .await
-            .map_err(|err| datafusion_to_core(&err, &self.tables))
+        let tables =
+            catalog::collect_tables(&self.ctx, catalog_filter, schema_filter, table_filter)
+                .await
+                .map_err(|err| datafusion_to_core(&err, &self.tables))?;
+        if table_filter.is_some()
+            && tables.len() == 1
+            && let Some(table) = tables.first()
+            && let Some(catalog_name) = table.catalog_name.as_deref()
+            && let Some(detail) = self.column_fetch_failures.failure(catalog_name)
+        {
+            return Err(CoreError::FailedPrecondition(format!(
+                "column metadata is unavailable for database catalog '{catalog_name}': {detail}; retry the metadata request or query the table directly"
+            )));
+        }
+        Ok(tables)
     }
 
     fn list_table_functions(
@@ -1574,9 +1593,17 @@ mod tests {
         UdfRuntimeTableFunctionPublish,
     };
 
-    async fn adapter_with_sources(active_sources: Vec<RegisteredSource>) -> QueryRuntimeAdapter {
+    fn adapter_with_sources(active_sources: Vec<RegisteredSource>) -> QueryRuntimeAdapter {
         let ctx = Arc::new(SessionContext::new());
-        catalog::register(&ctx, &active_sources, &[], &[]).expect("catalog should register");
+        let column_fetch_failures = catalog::CatalogColumnFetchFailures::default();
+        catalog::register(
+            &ctx,
+            &active_sources,
+            &[],
+            &[],
+            column_fetch_failures.clone(),
+        )
+        .expect("catalog should register");
         let tables = catalog::collect_static_tables(&active_sources);
         QueryRuntimeAdapter {
             ctx,
@@ -1589,6 +1616,7 @@ mod tests {
             tables,
             table_functions: Vec::new(),
             failures: Vec::new(),
+            column_fetch_failures,
             name_to_source: HashMap::new(),
             query_result_observers: Vec::new(),
         }
@@ -1643,7 +1671,6 @@ mod tests {
     #[tokio::test]
     async fn describe_table_hit_returns_full_table_without_missing_context() {
         let result = adapter_with_sources(vec![demo_source()])
-            .await
             .describe_table(None, "demo", "events")
             .await
             .expect("describe table");
@@ -1654,9 +1681,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn targeted_table_metadata_reports_database_column_fetch_failure() {
+        let adapter = adapter_with_sources(vec![catalog_source("warehouse", "public")]);
+        adapter.column_fetch_failures.record_failure(
+            "warehouse",
+            "Execution error: column inventory failed".to_string(),
+        );
+
+        let error = adapter
+            .describe_table(Some("warehouse"), "public", "events")
+            .await
+            .expect_err("failed inventory must not look like an empty table");
+        let CoreError::FailedPrecondition(detail) = error else {
+            panic!("unexpected error: {error}");
+        };
+        assert!(detail.contains("database catalog 'warehouse'"));
+        assert!(detail.contains("column inventory failed"));
+        assert!(detail.contains("retry"));
+
+        let tables = adapter
+            .list_tables(Some("warehouse"), Some("public"), None)
+            .await
+            .expect("broad metadata discovery should remain queryable");
+        assert_eq!(tables.len(), 1);
+        assert!(tables.first().expect("catalog table").columns.is_empty());
+    }
+
+    #[tokio::test]
     async fn describe_table_miss_returns_columnless_context_tables() {
         let result = adapter_with_sources(vec![demo_source()])
-            .await
             .describe_table(None, "demo", "missing")
             .await
             .expect("describe table miss");
@@ -1673,7 +1726,7 @@ mod tests {
 
     #[tokio::test]
     async fn explicit_datafusion_catalog_filters_schema_metadata() {
-        let mut adapter = adapter_with_sources(vec![demo_source()]).await;
+        let mut adapter = adapter_with_sources(vec![demo_source()]);
         adapter.table_functions.push(TableFunctionInfo {
             schema_name: "demo".to_string(),
             function_name: "search_events".to_string(),
@@ -1713,7 +1766,6 @@ mod tests {
             catalog_source("analytics", "public"),
             catalog_source("warehouse", "public"),
         ])
-        .await
         .describe_table(None, "public", "events")
         .await
         .expect_err("wildcard reference spanning catalogs must be ambiguous");
@@ -1744,14 +1796,14 @@ mod tests {
         };
         let catalog =
             adapter_with_sources(vec![schema_source, catalog_source("warehouse", "public")])
-                .await
                 .catalog_info_for_sources(&["public"], &[])
                 .await
                 .expect("source-scoped catalog info");
 
         assert_eq!(catalog.tables.len(), 1);
-        assert!(catalog.tables[0].catalog_name.is_none());
-        assert_eq!(catalog.tables[0].schema_name, "public");
+        let table = catalog.tables.first().expect("source-scoped table");
+        assert!(table.catalog_name.is_none());
+        assert_eq!(table.schema_name, "public");
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! Registers the `coral` system schema for discoverable source metadata.
 
 use std::collections::{BTreeSet, HashMap};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -35,7 +35,42 @@ pub(crate) const SYSTEM_SCHEMA: &str = "coral";
 /// Per-source budget for query-time database column inventory. Fetches run
 /// concurrently, so total scan latency is bounded by this duration rather than
 /// multiplying by the number of database sources.
-const DATABASE_COLUMN_FETCH_TIMEOUT: Duration = Duration::from_secs(10);
+const DATABASE_COLUMN_FETCH_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Latest lazy column-inventory failure for each database catalog.
+///
+/// `coral.columns` remains partially queryable when one catalog fails. The
+/// prepared runtime shares this state with the table provider so targeted
+/// metadata APIs can distinguish an unavailable inventory from a table that
+/// genuinely exposes no columns.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct CatalogColumnFetchFailures {
+    failures: Arc<Mutex<HashMap<String, String>>>,
+}
+
+impl CatalogColumnFetchFailures {
+    pub(crate) fn failure(&self, catalog_name: &str) -> Option<String> {
+        self.failures
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(catalog_name)
+            .cloned()
+    }
+
+    pub(crate) fn record_failure(&self, catalog_name: &str, detail: String) {
+        self.failures
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(catalog_name.to_string(), detail);
+    }
+
+    fn record_success(&self, catalog_name: &str) {
+        self.failures
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(catalog_name);
+    }
+}
 
 /// Catalog-only metadata for one SQL table-function surface.
 #[derive(Debug, Clone)]
@@ -77,9 +112,11 @@ pub(crate) fn register(
     active_sources: &[RegisteredSource],
     column_fetchers: &[CatalogColumnFetcher],
     catalog_only_table_functions: &[CatalogTableFunction],
+    column_fetch_failures: CatalogColumnFetchFailures,
 ) -> Result<()> {
     let tables_table = build_tables_table(active_sources)?;
-    let columns_table = build_columns_table(active_sources, column_fetchers)?;
+    let columns_table =
+        build_columns_table_with_failures(active_sources, column_fetchers, column_fetch_failures)?;
     let filters_table = build_filters_table(active_sources)?;
     let inputs_table = build_inputs_table(active_sources)?;
     let table_functions_table =
@@ -524,7 +561,7 @@ const SYSTEM_TABLE_DEFINITIONS: &[SystemTableDefinition] = &[
     SystemTableDefinition {
         table_name: "columns",
         description: "Column metadata for queryable Coral tables.",
-        guide: "Filter by schema_name and table_name, then order by ordinal_position to inspect a table's shape.",
+        guide: "Filter by schema_name and table_name, then order by ordinal_position to inspect a table's shape. Database catalog rows report provider-native data types and nullability metadata, which may differ from DataFusion's normalized execution schema; do not assume data_type is a valid DataFusion cast target.",
         columns: COLUMNS_COLUMNS,
     },
     SystemTableDefinition {
@@ -1252,9 +1289,22 @@ struct CatalogColumn {
     ordinal_position: usize,
 }
 
+#[cfg(test)]
 fn build_columns_table(
     active_sources: &[RegisteredSource],
     column_fetchers: &[CatalogColumnFetcher],
+) -> Result<CoralColumnsTable> {
+    build_columns_table_with_failures(
+        active_sources,
+        column_fetchers,
+        CatalogColumnFetchFailures::default(),
+    )
+}
+
+fn build_columns_table_with_failures(
+    active_sources: &[RegisteredSource],
+    column_fetchers: &[CatalogColumnFetcher],
+    fetch_failures: CatalogColumnFetchFailures,
 ) -> Result<CoralColumnsTable> {
     let schema = Arc::new(Schema::new(vec![
         Field::new("schema_name", DataType::Utf8, false),
@@ -1278,6 +1328,7 @@ fn build_columns_table(
         static_batch,
         fetchers: column_fetchers.to_vec(),
         fetch_timeout: DATABASE_COLUMN_FETCH_TIMEOUT,
+        fetch_failures,
     })
 }
 
@@ -1287,6 +1338,7 @@ struct CoralColumnsTable {
     static_batch: RecordBatch,
     fetchers: Vec<CatalogColumnFetcher>,
     fetch_timeout: Duration,
+    fetch_failures: CatalogColumnFetchFailures,
 }
 
 #[async_trait]
@@ -1322,6 +1374,9 @@ impl TableProvider for CoralColumnsTable {
         filters: &[Expr],
         limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
+        // `DataFusion` invokes `scan` while constructing physical plans, including for
+        // EXPLAIN. Database fetchers therefore use a short workspace-scoped TTL cache so
+        // repeated and speculative plans do not repeat identical remote inventory queries.
         let pins = ColumnPins::from_filters(filters);
         let inventory_filter = pins.inventory_filter();
         let relevant = self
@@ -1351,6 +1406,7 @@ impl TableProvider for CoralColumnsTable {
         for (fetcher, outcome) in relevant.iter().zip(outcomes) {
             match outcome {
                 Ok(rows) => {
+                    self.fetch_failures.record_success(&fetcher.catalog_name);
                     let rows = database_catalog_columns(
                         &fetcher.catalog_name,
                         &fetcher.relation_names,
@@ -1359,6 +1415,8 @@ impl TableProvider for CoralColumnsTable {
                     batches.push(catalog_columns_batch(Arc::clone(&self.schema), &rows)?);
                 }
                 Err(error) => {
+                    self.fetch_failures
+                        .record_failure(&fetcher.catalog_name, error.to_string());
                     tracing::warn!(
                         catalog = fetcher.catalog_name.as_str(),
                         detail = %error,
@@ -1673,8 +1731,10 @@ mod tests {
     };
 
     use super::{
-        ColumnPins, PinColumn, build_columns_table, catalog_filter_rows, catalog_input_rows,
+        CatalogColumnFetchFailures, ColumnPins, PinColumn, build_columns_table,
+        build_columns_table_with_failures, catalog_filter_rows, catalog_input_rows,
         collect_static_tables, collect_table_functions, column_pin, source_catalog_column_rows,
+        string_array,
     };
 
     #[derive(Clone, Debug)]
@@ -1737,6 +1797,21 @@ mod tests {
                 })
                 .collect(),
             fetcher,
+        }
+    }
+
+    fn database_column(
+        schema_name: &str,
+        table_name: &str,
+        column_name: &str,
+    ) -> DatabaseColumnRow {
+        DatabaseColumnRow {
+            schema_name: schema_name.to_string(),
+            table_name: table_name.to_string(),
+            ordinal_position: 1,
+            column_name: column_name.to_string(),
+            data_type: "Utf8".to_string(),
+            is_nullable: false,
         }
     }
 
@@ -1838,14 +1913,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn columns_scan_keeps_only_registered_relation_pairs() {
+        let fetcher = RecordingFetcher::new(FetchOutcome::Rows(vec![
+            database_column("public", "orders", "order_id"),
+            database_column("archive", "users", "user_id"),
+            database_column("public", "users", "cross_paired"),
+            database_column("private", "secrets", "unregistered"),
+        ]));
+        let table = build_columns_table(
+            &[],
+            &[column_fetcher(
+                "warehouse",
+                &[("public", "orders"), ("archive", "users")],
+                Arc::clone(&fetcher),
+            )],
+        )
+        .expect("columns table");
+        let context = SessionContext::new();
+        context
+            .register_table("catalog_columns", Arc::new(table))
+            .expect("register columns table");
+        let batches = context
+            .sql(
+                "SELECT catalog_name, schema_name, table_name, column_name FROM catalog_columns \
+                 WHERE catalog_name = 'warehouse'",
+            )
+            .await
+            .expect("plan columns query")
+            .collect()
+            .await
+            .expect("collect columns query");
+
+        let mut rows = Vec::new();
+        for batch in &batches {
+            let catalogs = string_array(batch, "catalog_name").expect("catalog names");
+            let schemas = string_array(batch, "schema_name").expect("schema names");
+            let tables = string_array(batch, "table_name").expect("table names");
+            let columns = string_array(batch, "column_name").expect("column names");
+            for row in 0..batch.num_rows() {
+                rows.push((
+                    catalogs.value(row).to_string(),
+                    schemas.value(row).to_string(),
+                    tables.value(row).to_string(),
+                    columns.value(row).to_string(),
+                ));
+            }
+        }
+        rows.sort();
+        assert_eq!(
+            rows,
+            vec![
+                (
+                    "warehouse".to_string(),
+                    "archive".to_string(),
+                    "users".to_string(),
+                    "user_id".to_string(),
+                ),
+                (
+                    "warehouse".to_string(),
+                    "public".to_string(),
+                    "orders".to_string(),
+                    "order_id".to_string(),
+                ),
+            ]
+        );
+    }
+
+    #[tokio::test]
     async fn columns_scan_omits_failed_and_timed_out_fetchers() {
         let failed = RecordingFetcher::new(FetchOutcome::Error);
         let stalled = RecordingFetcher::new(FetchOutcome::Pending);
+        let fetch_failures = CatalogColumnFetchFailures::default();
         let fetchers = [
             column_fetcher("failed", &[("public", "orders")], Arc::clone(&failed)),
             column_fetcher("stalled", &[("public", "users")], Arc::clone(&stalled)),
         ];
-        let mut table = build_columns_table(&[], &fetchers).expect("columns table");
+        let mut table = build_columns_table_with_failures(&[], &fetchers, fetch_failures.clone())
+            .expect("columns table");
         table.fetch_timeout = Duration::from_millis(20);
         let state = SessionContext::new().state();
         table
@@ -1855,6 +1999,35 @@ mod tests {
 
         assert_eq!(failed.calls().len(), 1);
         assert_eq!(stalled.calls().len(), 1);
+        assert!(
+            fetch_failures
+                .failure("failed")
+                .is_some_and(|detail| detail.contains("column inventory failed"))
+        );
+        assert!(
+            fetch_failures
+                .failure("stalled")
+                .is_some_and(|detail| detail.contains("timed out"))
+        );
+
+        let recovered = RecordingFetcher::new(FetchOutcome::Rows(Vec::new()));
+        let recovered_table = build_columns_table_with_failures(
+            &[],
+            &[column_fetcher(
+                "failed",
+                &[("public", "orders")],
+                Arc::clone(&recovered),
+            )],
+            fetch_failures.clone(),
+        )
+        .expect("recovered columns table");
+        recovered_table
+            .scan(&state, None, &[col("catalog_name").eq(lit("failed"))], None)
+            .await
+            .expect("successful retry");
+
+        assert!(fetch_failures.failure("failed").is_none());
+        assert!(fetch_failures.failure("stalled").is_some());
     }
 
     fn catalog_source() -> RegisteredSource {

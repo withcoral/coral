@@ -5,9 +5,17 @@
     reason = "Integration tests inherit the library crate's dependency set and intentionally exercise only a subset of it."
 )]
 
+use std::collections::BTreeMap;
 use std::fs;
 
 use coral_client::local::ServerBuilder;
+use coral_engine::{
+    CoralQuery, QueryRuntimeConfig, QuerySource, RuntimeSourceComponent, RuntimeSourcePackage,
+};
+use coral_spec::{
+    DatabaseConnectionSpec, DatabaseSourceManifest, ParsedTemplate, PostgresConnectionSpec,
+    SourceManifestCommon,
+};
 use sqlx::postgres::PgPoolOptions;
 use tempfile::TempDir;
 
@@ -34,6 +42,114 @@ async fn server_lifecycle_can_start_with_postgres_database_config() {
     assert_postgres_db_is_migrated(&database_url).await;
 
     server.shutdown().await.expect("shutdown server");
+}
+
+#[tokio::test]
+#[ignore = "set CORAL_TEST_POSTGRES_URL to run Postgres source inventory coverage"]
+async fn postgres_source_inventory_reads_information_schema_domain_columns_as_utf8() {
+    let Some(database_url) = postgres_test_url() else {
+        return;
+    };
+    let pool = PgPoolOptions::new()
+        .connect(&database_url)
+        .await
+        .expect("open Postgres database");
+    sqlx::query("CREATE SCHEMA IF NOT EXISTS coral_inventory")
+        .execute(&pool)
+        .await
+        .expect("create inventory fixture schema");
+    sqlx::query("DROP TABLE IF EXISTS coral_inventory.column_types")
+        .execute(&pool)
+        .await
+        .expect("reset inventory fixture table");
+    sqlx::query(
+        "CREATE TABLE coral_inventory.column_types (
+            id BIGINT NOT NULL,
+            display_name CHARACTER VARYING(64),
+            note TEXT
+        )",
+    )
+    .execute(&pool)
+    .await
+    .expect("create inventory fixture table");
+
+    let source = postgres_source(&database_url);
+    let tables = CoralQuery::list_tables(
+        &[source],
+        QueryRuntimeConfig::default(),
+        Some("postgres_inventory"),
+        Some("coral_inventory"),
+        Some("column_types"),
+    )
+    .await
+    .expect("read Postgres column inventory through coral.columns");
+
+    assert_eq!(tables.len(), 1);
+    let columns = &tables[0].columns;
+    assert_eq!(columns.len(), 3);
+    assert_eq!(columns[0].name, "id");
+    assert_eq!(columns[0].data_type, "bigint");
+    assert!(!columns[0].nullable);
+    assert_eq!(columns[0].ordinal_position, 0);
+    assert_eq!(columns[1].name, "display_name");
+    assert_eq!(columns[1].data_type, "character varying");
+    assert!(columns[1].nullable);
+    assert_eq!(columns[1].ordinal_position, 1);
+
+    sqlx::query("DROP SCHEMA coral_inventory CASCADE")
+        .execute(&pool)
+        .await
+        .expect("remove inventory fixture schema");
+}
+
+fn postgres_source(database_url: &str) -> QuerySource {
+    let url = url::Url::parse(database_url).expect("parse Postgres test URL");
+    let host = url.host_str().expect("Postgres test URL host");
+    let port = url.port_or_known_default().expect("Postgres test URL port");
+    let database = url.path().trim_start_matches('/');
+    let sslmode = url
+        .query_pairs()
+        .find_map(|(key, value)| (key == "sslmode").then(|| value.into_owned()))
+        .unwrap_or_else(|| {
+            if matches!(host, "127.0.0.1" | "localhost" | "::1") {
+                "disable".to_string()
+            } else {
+                "verify-full".to_string()
+            }
+        });
+    let template = |value: &str| ParsedTemplate::parse(value).expect("literal template");
+    let manifest = DatabaseSourceManifest {
+        common: SourceManifestCommon {
+            dsl_version: 4,
+            name: "postgres_inventory".to_string(),
+            version: String::new(),
+            description: "Postgres inventory integration fixture".to_string(),
+            test_queries: Vec::new(),
+        },
+        connection: DatabaseConnectionSpec::Postgres(PostgresConnectionSpec {
+            host: template(host),
+            port: template(&port.to_string()),
+            database: template(database),
+            user: template(url.username()),
+            password: template(url.password().unwrap_or_default()),
+            sslmode: Some(template(&sslmode)),
+        }),
+        declared_inputs: Vec::new(),
+    };
+    QuerySource::from_runtime_components(
+        RuntimeSourcePackage {
+            source_name: "postgres_inventory".to_string(),
+            authored_version: None,
+            description: String::new(),
+            declared_inputs: Vec::new(),
+            test_queries: Vec::new(),
+            identity_requirements: None,
+            components: vec![RuntimeSourceComponent::Database(manifest)],
+        },
+        BTreeMap::new(),
+        BTreeMap::new(),
+    )
+    .expect("build Postgres inventory source")
 }
 
 async fn assert_postgres_db_is_migrated(database_url: &str) {

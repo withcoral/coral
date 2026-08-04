@@ -14,7 +14,9 @@ use datafusion::logical_expr::TableType;
 use datafusion::sql::TableReference;
 use datafusion::sql::unparser::dialect::Dialect;
 use datafusion_table_providers::sql::db_connection_pool::DbConnectionPool;
-use datafusion_table_providers::sql::db_connection_pool::dbconnection::query_arrow;
+use datafusion_table_providers::sql::db_connection_pool::dbconnection::{
+    DbConnection, query_arrow,
+};
 use datafusion_table_providers::sql::sql_provider_datafusion::SqlTable;
 use futures::TryStreamExt as _;
 
@@ -92,46 +94,39 @@ async fn load_database_inventory<T: 'static, P: 'static>(
         Field::new("schema_name", DataType::Utf8, false),
         Field::new("table_name", DataType::Utf8, false),
         Field::new("relation_type", DataType::Utf8, false),
-        Field::new("skip_reason", DataType::Utf8, true),
+        Field::new("unrecognized_columns", DataType::Utf8, true),
     ]));
-    let connection = pool.connect().await.map_err(provider_error)?;
+    let mut connection = pool.connect().await.map_err(provider_error)?;
     if let Some(session_sql) = session_sql {
-        if let Some(connection) = connection.as_sync() {
-            connection
-                .execute(session_sql, &[])
-                .map_err(provider_error)?;
-        } else if let Some(connection) = connection.as_async() {
-            connection
-                .execute(session_sql, &[])
-                .await
-                .map_err(provider_error)?;
-        } else {
-            return Err(DataFusionError::Execution(
-                "database connection does not support session configuration".to_string(),
-            ));
-        }
+        connection = execute_inventory_session(connection, session_sql).await?;
     }
     let batches = query_arrow(connection, inventory_sql.to_string(), Some(schema))
         .await
         .map_err(provider_error)?
         .try_collect::<Vec<_>>()
         .await?;
+    database_relations_from_inventory(catalog_name, batches)
+}
+
+fn database_relations_from_inventory(
+    catalog_name: &str,
+    batches: Vec<datafusion::arrow::record_batch::RecordBatch>,
+) -> DataFusionResult<Vec<DatabaseRelation>> {
     let mut relations = Vec::new();
     for batch in batches {
         let schema_names = inventory_column(&batch, "schema_name")?;
         let table_names = inventory_column(&batch, "table_name")?;
         let relation_types = inventory_column(&batch, "relation_type")?;
-        let skip_reasons = inventory_column(&batch, "skip_reason")?;
+        let unrecognized_columns = inventory_column(&batch, "unrecognized_columns")?;
         for row in 0..batch.num_rows() {
-            if !skip_reasons.is_null(row) {
+            if !unrecognized_columns.is_null(row) {
                 tracing::warn!(
                     catalog_name = ?catalog_name,
                     schema_name = ?schema_names.value(row),
                     table_name = ?table_names.value(row),
-                    unsupported_columns = ?skip_reasons.value(row),
-                    "skipping database table with unsupported column types"
+                    unrecognized_columns = ?unrecognized_columns.value(row),
+                    "registering database table with column types outside the local inventory allowlist"
                 );
-                continue;
             }
             relations.push(DatabaseRelation {
                 schema_name: schema_names.value(row).to_string(),
@@ -147,6 +142,27 @@ async fn load_database_inventory<T: 'static, P: 'static>(
         left.schema_name == right.schema_name && left.table_name == right.table_name
     });
     Ok(relations)
+}
+
+async fn execute_inventory_session<T: 'static, P: 'static>(
+    connection: Box<dyn DbConnection<T, P>>,
+    session_sql: &str,
+) -> DataFusionResult<Box<dyn DbConnection<T, P>>> {
+    if let Some(connection) = connection.as_sync() {
+        connection
+            .execute(session_sql, &[])
+            .map_err(provider_error)?;
+    } else if let Some(connection) = connection.as_async() {
+        connection
+            .execute(session_sql, &[])
+            .await
+            .map_err(provider_error)?;
+    } else {
+        return Err(DataFusionError::Execution(
+            "database connection does not support session configuration".to_string(),
+        ));
+    }
+    Ok(connection)
 }
 
 pub(super) fn inventory_column<'a>(
@@ -222,4 +238,218 @@ pub(super) fn provider_error(
     error: impl Into<Box<dyn std::error::Error + Send + Sync>>,
 ) -> DataFusionError {
     DataFusionError::External(error.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::any::Any;
+    use std::sync::Mutex;
+
+    use datafusion::arrow::array::StringArray;
+    use datafusion::arrow::datatypes::SchemaRef;
+    use datafusion::arrow::record_batch::RecordBatch;
+    use datafusion::execution::SendableRecordBatchStream;
+    use datafusion::sql::TableReference;
+    use datafusion_table_providers::sql::db_connection_pool::dbconnection::{
+        AsyncDbConnection, Error as DbConnectionError, Result as DbConnectionResult,
+        SyncDbConnection,
+    };
+
+    use super::*;
+
+    #[test]
+    fn inventory_keeps_relations_with_advisory_unrecognized_column_diagnostics() {
+        let batch = RecordBatch::try_from_iter(vec![
+            (
+                "schema_name",
+                Arc::new(StringArray::from(vec!["shop"])) as _,
+            ),
+            (
+                "table_name",
+                Arc::new(StringArray::from(vec!["places"])) as _,
+            ),
+            (
+                "relation_type",
+                Arc::new(StringArray::from(vec!["BASE TABLE"])) as _,
+            ),
+            (
+                "unrecognized_columns",
+                Arc::new(StringArray::from(vec![Some("amount (newdecimal)")])) as _,
+            ),
+        ])
+        .expect("inventory batch");
+
+        let relations = database_relations_from_inventory("mysql", vec![batch])
+            .expect("normalize database inventory");
+
+        assert_eq!(relations.len(), 1);
+        let relation = relations.first().expect("registered relation");
+        assert_eq!(relation.schema_name, "shop");
+        assert_eq!(relation.table_name, "places");
+    }
+
+    #[derive(Clone, Copy)]
+    enum ConnectionMode {
+        Sync,
+        Async,
+        Neither,
+    }
+
+    struct RecordingConnection {
+        mode: ConnectionMode,
+        statements: Mutex<Vec<String>>,
+    }
+
+    impl RecordingConnection {
+        fn new(mode: ConnectionMode) -> Self {
+            Self {
+                mode,
+                statements: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn statements(&self) -> Vec<String> {
+            self.statements.lock().expect("statements lock").clone()
+        }
+
+        fn record(&self, sql: &str) {
+            self.statements
+                .lock()
+                .expect("statements lock")
+                .push(sql.to_string());
+        }
+    }
+
+    impl DbConnection<(), ()> for RecordingConnection {
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+
+        fn as_any_mut(&mut self) -> &mut dyn Any {
+            self
+        }
+
+        fn as_sync(&self) -> Option<&dyn SyncDbConnection<(), ()>> {
+            matches!(self.mode, ConnectionMode::Sync).then_some(self)
+        }
+
+        fn as_async(&self) -> Option<&dyn AsyncDbConnection<(), ()>> {
+            matches!(self.mode, ConnectionMode::Async).then_some(self)
+        }
+    }
+
+    impl SyncDbConnection<(), ()> for RecordingConnection {
+        fn new(_connection: ()) -> Self {
+            Self::new(ConnectionMode::Sync)
+        }
+
+        fn tables(&self, _schema: &str) -> DbConnectionResult<Vec<String>, DbConnectionError> {
+            unreachable!("inventory session tests do not query tables")
+        }
+
+        fn schemas(&self) -> DbConnectionResult<Vec<String>, DbConnectionError> {
+            unreachable!("inventory session tests do not query schemas")
+        }
+
+        fn get_schema(
+            &self,
+            _table_reference: &TableReference,
+        ) -> DbConnectionResult<SchemaRef, DbConnectionError> {
+            unreachable!("inventory session tests do not query schemas")
+        }
+
+        fn query_arrow(
+            &self,
+            _sql: &str,
+            _params: &[()],
+            _projected_schema: Option<SchemaRef>,
+        ) -> DbConnectionResult<SendableRecordBatchStream> {
+            unreachable!("inventory session tests do not query rows")
+        }
+
+        fn execute(&self, sql: &str, _params: &[()]) -> DbConnectionResult<u64> {
+            self.record(sql);
+            Ok(0)
+        }
+    }
+
+    #[async_trait]
+    impl AsyncDbConnection<(), ()> for RecordingConnection {
+        fn new(_connection: ()) -> Self {
+            Self::new(ConnectionMode::Async)
+        }
+
+        async fn tables(
+            &self,
+            _schema: &str,
+        ) -> DbConnectionResult<Vec<String>, DbConnectionError> {
+            unreachable!("inventory session tests do not query tables")
+        }
+
+        async fn schemas(&self) -> DbConnectionResult<Vec<String>, DbConnectionError> {
+            unreachable!("inventory session tests do not query schemas")
+        }
+
+        async fn get_schema(
+            &self,
+            _table_reference: &TableReference,
+        ) -> DbConnectionResult<SchemaRef, DbConnectionError> {
+            unreachable!("inventory session tests do not query schemas")
+        }
+
+        async fn query_arrow(
+            &self,
+            _sql: &str,
+            _params: &[()],
+            _projected_schema: Option<SchemaRef>,
+        ) -> DbConnectionResult<SendableRecordBatchStream> {
+            unreachable!("inventory session tests do not query rows")
+        }
+
+        async fn execute(&self, sql: &str, _params: &[()]) -> DbConnectionResult<u64> {
+            self.record(sql);
+            Ok(0)
+        }
+    }
+
+    #[tokio::test]
+    async fn inventory_session_executes_on_sync_connection() {
+        let connection = RecordingConnection::new(ConnectionMode::Sync);
+        let connection = execute_inventory_session(Box::new(connection), "SET SESSION example = 1")
+            .await
+            .expect("sync session configuration");
+        let connection = connection
+            .as_any()
+            .downcast_ref::<RecordingConnection>()
+            .expect("recording connection");
+        assert_eq!(connection.statements(), ["SET SESSION example = 1"]);
+    }
+
+    #[tokio::test]
+    async fn inventory_session_executes_on_async_connection() {
+        let connection = RecordingConnection::new(ConnectionMode::Async);
+        let connection = execute_inventory_session(Box::new(connection), "SET SESSION example = 1")
+            .await
+            .expect("async session configuration");
+        let connection = connection
+            .as_any()
+            .downcast_ref::<RecordingConnection>()
+            .expect("recording connection");
+        assert_eq!(connection.statements(), ["SET SESSION example = 1"]);
+    }
+
+    #[tokio::test]
+    async fn inventory_session_rejects_connection_without_execution_mode() {
+        let connection = RecordingConnection::new(ConnectionMode::Neither);
+        let result =
+            execute_inventory_session(Box::new(connection), "SET SESSION example = 1").await;
+        let Err(error) = result else {
+            panic!("unsupported session configuration must fail");
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("does not support session configuration")
+        );
+    }
 }

@@ -572,16 +572,14 @@ fn register_test_sources(ctx: &SessionContext, sources: Vec<CompiledQuerySource>
         .expect("source function planner should register");
 }
 
-async fn register_test_sources_with_catalog(
-    ctx: &SessionContext,
-    sources: Vec<CompiledQuerySource>,
-) {
+fn register_test_sources_with_catalog(ctx: &SessionContext, sources: Vec<CompiledQuerySource>) {
     let registration = register_sources_blocking(ctx, sources).expect("mcp source should register");
     catalog::register(
         ctx,
         &registration.active_sources,
         &registration.column_fetchers,
         &[],
+        catalog::CatalogColumnFetchFailures::default(),
     )
     .expect("catalog should register");
     let source_functions = SourceFunctionRegistry::new(
@@ -1744,7 +1742,7 @@ async fn mcp_table_appears_in_catalog_metadata() {
     let caller = Arc::new(FakeMcpTableCaller {
         calls: Mutex::new(Vec::new()),
     });
-    register_test_sources_with_catalog(&ctx, compile_sources(mcp_table_manifest(), caller)).await;
+    register_test_sources_with_catalog(&ctx, compile_sources(mcp_table_manifest(), caller));
 
     let batches = ctx
         .sql(
