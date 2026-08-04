@@ -397,21 +397,8 @@ impl ServerBuilder {
         let config_store = ConfigStore::new(layout.clone());
         run_state_migrations(&coral_db, &config_store, &layout).await?;
         let coral_db = Arc::new(coral_db);
-        let telemetry_config = TelemetryConfig::load(&layout)?;
-        let internal_trace_store_dir = telemetry_config
-            .trace_history
-            .enabled
-            .then(|| layout.local_trace_store_dir());
-        let installed_trace_store = crate::telemetry::init_tracing(
-            &telemetry_config,
-            self.config.enable_stderr_logs,
-            internal_trace_store_dir.clone(),
-        )?;
-        let active_trace_store = telemetry_config
-            .trace_history
-            .enabled
-            .then_some(installed_trace_store)
-            .flatten();
+        let (telemetry_config, active_trace_store) =
+            init_server_telemetry(&layout, self.config.enable_stderr_logs)?;
         let active_trace_store_dir = active_trace_store.as_ref().map(|store| store.dir.clone());
         let credential_config = CredentialStorageConfig::load(&layout)?;
         let credential_store =
@@ -489,6 +476,31 @@ impl ServerBuilder {
         )
         .await
     }
+}
+
+fn init_server_telemetry(
+    layout: &AppStateLayout,
+    enable_stderr_logs: bool,
+) -> Result<
+    (
+        TelemetryConfig,
+        Option<crate::telemetry::InstalledLocalTraceStore>,
+    ),
+    AppError,
+> {
+    let config = TelemetryConfig::load(layout)?;
+    let local_trace_store_dir = config
+        .trace_history
+        .enabled
+        .then(|| layout.local_trace_store_dir());
+    let installed_trace_store =
+        crate::telemetry::init_tracing(&config, enable_stderr_logs, local_trace_store_dir)?;
+    let active_trace_store = config
+        .trace_history
+        .enabled
+        .then_some(installed_trace_store)
+        .flatten();
+    Ok((config, active_trace_store))
 }
 
 fn trace_components_for_store(
