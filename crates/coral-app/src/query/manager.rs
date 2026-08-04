@@ -417,7 +417,7 @@ impl QueryManager {
         shown_guide_ids: Option<&HashSet<String>>,
         attribution: &QueryAttribution,
     ) -> Result<ExecuteSqlOutcome, QueryManagerError> {
-        run_query_operation(
+        Box::pin(run_query_operation(
             QueryOperation::ExecuteSql,
             workspace_name,
             sql,
@@ -474,7 +474,7 @@ impl QueryManager {
                     record_query_provenance(span, execution.provenance());
                 }
             },
-        )
+        ))
         .await
     }
 

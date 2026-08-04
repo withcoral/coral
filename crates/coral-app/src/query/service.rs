@@ -56,15 +56,14 @@ impl QueryServiceApi for QueryService {
                     .await
                     .map_err(task_manager_status)?,
             );
-            let outcome = queries
-                .execute_sql(
-                    &workspace_name,
-                    &inner.sql,
-                    shown_guide_ids.as_ref(),
-                    &attribution,
-                )
-                .await
-                .map_err(query_status)?;
+            let outcome = Box::pin(queries.execute_sql(
+                &workspace_name,
+                &inner.sql,
+                shown_guide_ids.as_ref(),
+                &attribution,
+            ))
+            .await
+            .map_err(query_status)?;
             let response = match outcome {
                 ExecuteSqlOutcome::Executed(execution) => ExecuteSqlResponse {
                     arrow_ipc_stream: encode_arrow_ipc_stream(
