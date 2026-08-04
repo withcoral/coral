@@ -14,27 +14,27 @@ import { DEFAULT_DEV_CORAL_ENDPOINT } from './constants'
 import { isExplicitLoopbackUrl } from './loopback.server'
 import { isLocalDevOrigin, trimTrailingSlash } from './utils'
 
-export function sourceClientForRequest(request: Request, accessToken: string | null = null) {
+export function sourceClientForRequest(request: Request, accessToken: string | null) {
   return createClient(SourceService, coralTransportForRequest(request, accessToken))
 }
 
-export function workspaceClientForRequest(request: Request, accessToken: string | null = null) {
+export function workspaceClientForRequest(request: Request, accessToken: string | null) {
   return createClient(WorkspaceService, coralTransportForRequest(request, accessToken))
 }
 
-export function catalogClientForRequest(request: Request, accessToken: string | null = null) {
+export function catalogClientForRequest(request: Request, accessToken: string | null) {
   return createClient(CatalogService, coralTransportForRequest(request, accessToken))
 }
 
-export function functionClientForRequest(request: Request, accessToken: string | null = null) {
+export function functionClientForRequest(request: Request, accessToken: string | null) {
   return createClient(FunctionService, coralTransportForRequest(request, accessToken))
 }
 
-export function queryClientForRequest(request: Request, accessToken: string | null = null) {
+export function queryClientForRequest(request: Request, accessToken: string | null) {
   return createClient(QueryService, coralTransportForRequest(request, accessToken))
 }
 
-export function traceClientForRequest(request: Request, accessToken: string | null = null) {
+export function traceClientForRequest(request: Request, accessToken: string | null) {
   return createClient(TraceService, coralTransportForRequest(request, accessToken))
 }
 

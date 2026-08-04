@@ -1,6 +1,8 @@
 import { create } from '@bufbuild/protobuf'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { authRouteTestArgs } from '@/auth/server-context.test-helper'
+
 const { createBundledSourceWithOAuth, getSourceInfo } = vi.hoisted(() => ({
   createBundledSourceWithOAuth: vi.fn(),
   getSourceInfo: vi.fn(),
@@ -84,10 +86,9 @@ describe('action', () => {
       },
     )
 
-    const response = await action({
-      params: { sourceName: 'github', workspaceId: 'analytics' },
-      request,
-    } as Parameters<typeof action>[0])
+    const response = await action(
+      authRouteTestArgs(request, { sourceName: 'github', workspaceId: 'analytics' }),
+    )
     await response.text()
 
     expect(getSourceInfo).toHaveBeenCalledWith(

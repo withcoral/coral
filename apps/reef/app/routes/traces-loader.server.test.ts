@@ -65,13 +65,22 @@ describe('traces list loader', () => {
       traces: [summary('query'), search, futureTool],
     })
 
-    await expect(loadTracesRouteData(request, workspace, listPage)).resolves.toEqual({
+    await expect(
+      loadTracesRouteData(request, workspace, 'coral-access-token', listPage),
+    ).resolves.toEqual({
       endpointLabel: 'reef.test',
       loadError: null,
       referenceTimeMs: 123_456,
       traces: [summary('query'), search, futureTool],
     })
-    expect(listPage).toHaveBeenCalledWith(request, workspace, 100, '', TraceView.QUERY_STREAM)
+    expect(listPage).toHaveBeenCalledWith(
+      request,
+      workspace,
+      100,
+      '',
+      TraceView.QUERY_STREAM,
+      'coral-access-token',
+    )
   })
 
   it('uses one bounded Query Stream page', async () => {
@@ -81,9 +90,9 @@ describe('traces list loader', () => {
       traces,
     })
 
-    await expect(listQueryTraces(request, workspace, listPage)).resolves.toEqual(
-      traces.slice(0, 80),
-    )
+    await expect(
+      listQueryTraces(request, workspace, 'coral-access-token', listPage),
+    ).resolves.toEqual(traces.slice(0, 80))
     expect(listPage).toHaveBeenCalledOnce()
   })
 })
