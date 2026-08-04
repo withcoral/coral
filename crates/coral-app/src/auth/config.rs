@@ -327,8 +327,9 @@ struct OidcProviderSettings {
     required_claims: BTreeMap<String, Value>,
     /// How long a validated discovery document stays reusable.
     ///
-    /// Unset means [`DEFAULT_DISCOVERY_CACHE_TTL`]. Zero disables caching, at
-    /// the cost of one outbound discovery request per authorization request.
+    /// Unset means [`DEFAULT_DISCOVERY_CACHE_TTL`]. Zero keeps no document, at
+    /// the cost of an outbound discovery request per authorization request that
+    /// cannot join one already in flight.
     discovery_cache_ttl_seconds: Option<u64>,
 }
 
@@ -532,8 +533,9 @@ impl ResolvedOidcProvider {
 
     /// How long a validated discovery document may be reused.
     ///
-    /// A zero duration disables caching: every authorization request then makes
-    /// its own discovery call to the provider.
+    /// A zero duration keeps no document between requests, so an authorization
+    /// request then makes its own discovery call unless it can join one already
+    /// in flight.
     pub(super) fn discovery_cache_ttl(&self) -> Duration {
         self.discovery_cache_ttl
     }
