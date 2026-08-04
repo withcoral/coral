@@ -14,3 +14,9 @@ export interface RequiredAuthConfig {
 }
 
 export type AuthConfig = DisabledAuthConfig | RequiredAuthConfig
+
+export interface AuthSession {
+  accessToken: string
+  expiresAt: number
+  tokenType: string
+}
