@@ -96,13 +96,6 @@ pub(crate) fn runtime_contract_fingerprint(
                 "DSL v4 runtime fingerprint received a file component".to_string(),
             ));
         }
-        // The engine models database components here, but no app path installs
-        // one until DSL v4 database sources are connected.
-        Some(RuntimeSourceComponent::Database(_)) => {
-            return Err(AppError::Internal(
-                "DSL v4 runtime fingerprint received a database component".to_string(),
-            ));
-        }
         None => None,
     };
     let input = RuntimeContractFingerprintInput {
