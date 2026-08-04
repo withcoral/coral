@@ -390,6 +390,8 @@ impl SearchProvider for ObservedValuesProvider {
             .collect::<Vec<_>>();
         if let Ok(resolution) = context.catalog_resolution.as_ref() {
             for entry_match in &mut matches {
+                // Observed storage has no catalog qualifier, so it cannot
+                // canonicalize three-part table identities yet.
                 if let Some(id) = resolve_surface_id(&resolution.catalog, &entry_match.id) {
                     entry_match.id = id;
                 }

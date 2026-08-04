@@ -681,6 +681,7 @@ fn table_fields(table: &TableInfo, evidence: &MatchEvidence) -> (Vec<Field>, usi
             required: true,
         })
         .collect::<Vec<_>>();
+    let required_count = fields.len();
     let mut omitted = 0_usize;
     for matched in &evidence.matched_fields {
         if required.contains(&matched.name) {
@@ -693,7 +694,7 @@ fn table_fields(table: &TableInfo, evidence: &MatchEvidence) -> (Vec<Field>, usi
         else {
             continue;
         };
-        if fields.len().saturating_sub(required.len()) >= MATCHING_FIELD_LIMIT {
+        if fields.len().saturating_sub(required_count) >= MATCHING_FIELD_LIMIT {
             omitted = omitted.saturating_add(1);
             continue;
         }
@@ -812,10 +813,10 @@ fn catalog_index_failure(error: &SqliteSearchError) -> ProviderFailure {
 mod tests {
     use std::collections::BTreeSet;
 
-    use coral_engine::{TableFunctionArgumentInfo, TableFunctionInfo};
+    use coral_engine::{ColumnInfo, TableFunctionArgumentInfo, TableFunctionInfo, TableInfo};
     use coral_spec::SourceTableFunctionKind;
 
-    use super::{failed_sources_note, function_fields};
+    use super::{failed_sources_note, function_fields, table_fields};
     use crate::search::result::{FieldRef, FieldRole, MatchEvidence};
 
     #[test]
@@ -853,6 +854,44 @@ mod tests {
 
         assert_eq!(arguments.len(), 6);
         assert_eq!(omitted, 0);
+    }
+
+    #[test]
+    fn filter_only_required_input_does_not_expand_matching_field_limit() {
+        let table = TableInfo {
+            catalog_name: None,
+            schema_name: "fixture".to_string(),
+            table_name: "events".to_string(),
+            description: String::new(),
+            guide: String::new(),
+            require_guide_read: false,
+            columns: (0..6)
+                .map(|index| ColumnInfo {
+                    name: format!("optional_{index}"),
+                    data_type: "Utf8".to_string(),
+                    nullable: false,
+                    is_virtual: false,
+                    is_required_filter: false,
+                    description: String::new(),
+                    ordinal_position: index,
+                })
+                .collect(),
+            required_filters: vec!["account_id".to_string()],
+        };
+        let evidence = MatchEvidence {
+            matched_fields: (0..6)
+                .map(|index| FieldRef {
+                    name: format!("optional_{index}"),
+                    role: FieldRole::Column,
+                })
+                .collect(),
+            matching_values: Vec::new(),
+        };
+
+        let (fields, omitted) = table_fields(&table, &evidence);
+
+        assert_eq!(fields.len(), 5);
+        assert_eq!(omitted, 1);
     }
 
     #[test]
