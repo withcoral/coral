@@ -1,7 +1,11 @@
 import { create } from '@bufbuild/protobuf'
 
 import { WorkspaceSchema } from '@/generated/coral/v1/resources_pb'
-import { TraceStatus } from '@/generated/coral/v1/traces_pb'
+import {
+  TraceInvocationKind,
+  TraceOperationKind,
+  TraceStatus,
+} from '@/generated/coral/v1/traces_pb'
 import type { TraceSummaryData } from '@/views/traces/trace-utils'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -12,6 +16,9 @@ function summary(traceId: string, query = `select '${traceId}'`): TraceSummaryDa
     durationNanos: '1000000',
     endTimeUnixNanos: '2000000',
     name: query ? 'coral.query' : 'http.request',
+    invocationKind: TraceInvocationKind.UNSPECIFIED,
+    operationKind: TraceOperationKind.UNSPECIFIED,
+    operationName: '',
     query,
     rootSpanId: `root-${traceId}`,
     rowCount: '1',

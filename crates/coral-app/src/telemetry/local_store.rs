@@ -1,5 +1,7 @@
 //! JSONL-backed span export for local trace capture.
 
+mod query_stream;
+
 use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, BufWriter, Write};
@@ -427,6 +429,24 @@ pub(crate) enum StoredTraceStatus {
     Error,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum StoredTraceOperationKind {
+    #[default]
+    Unspecified,
+    Query,
+    Search,
+    Tool,
+    Other,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum StoredTraceInvocationKind {
+    #[default]
+    Unspecified,
+    Direct,
+    Mcp,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TraceSummaryRecord {
     pub(crate) trace_id: String,
@@ -440,6 +460,9 @@ pub(crate) struct TraceSummaryRecord {
     pub(crate) span_count: u32,
     pub(crate) row_count: u64,
     pub(crate) row_count_recorded: bool,
+    pub(crate) operation_kind: StoredTraceOperationKind,
+    pub(crate) operation_name: String,
+    pub(crate) invocation_kind: StoredTraceInvocationKind,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -525,6 +548,8 @@ struct TraceListSpanRecord {
     trace_id: String,
     span_id: String,
     parent_span_id: Option<String>,
+    #[serde(default)]
+    parent_span_is_remote: bool,
     name: String,
     #[serde(default)]
     status: StoredTraceStatus,
@@ -635,6 +660,19 @@ impl TraceStore {
         let traces = self.clone();
         task::spawn_blocking(move || {
             traces.get_trace_for_workspace_sync(&trace_id, &workspace_name)
+        })
+        .await
+        .map_err(|source| TraceStoreError::Worker { source })?
+    }
+
+    pub(crate) async fn get_query_stream_trace(
+        &self,
+        trace_id: String,
+        workspace_name: Option<String>,
+    ) -> Result<TraceDetailRecord, TraceStoreError> {
+        let traces = self.clone();
+        task::spawn_blocking(move || {
+            traces.get_query_stream_trace_sync(&trace_id, workspace_name.as_deref())
         })
         .await
         .map_err(|source| TraceStoreError::Worker { source })?
@@ -779,6 +817,19 @@ impl TraceStore {
         } else {
             Err(TraceStoreError::NotFound(trace_id.to_string()))
         }
+    }
+
+    fn get_query_stream_trace_sync(
+        &self,
+        trace_id: &str,
+        workspace_name: Option<&str>,
+    ) -> Result<TraceDetailRecord, TraceStoreError> {
+        let mut detail = self.get_trace_sync(trace_id)?;
+        let Some(summary) = query_stream::summary(&detail.spans, workspace_name) else {
+            return Err(TraceStoreError::NotFound(trace_id.to_string()));
+        };
+        detail.summary = summary;
+        Ok(detail)
     }
 
     pub(crate) fn list_query_history_sync(
@@ -1605,6 +1656,9 @@ fn summary_from_list_aggregate(
             span_count: aggregate.span_count,
             row_count: 0,
             row_count_recorded: false,
+            operation_kind: StoredTraceOperationKind::Unspecified,
+            operation_name: String::new(),
+            invocation_kind: StoredTraceInvocationKind::Unspecified,
         },
         |primary| {
             let attributes = parse_attributes(&primary.attributes_json);
@@ -1628,6 +1682,9 @@ fn summary_from_list_aggregate(
                 span_count: aggregate.span_count,
                 row_count: row_count.unwrap_or_default(),
                 row_count_recorded: row_count.is_some(),
+                operation_kind: StoredTraceOperationKind::Unspecified,
+                operation_name: String::new(),
+                invocation_kind: StoredTraceInvocationKind::Unspecified,
             }
         },
     )
@@ -1659,6 +1716,9 @@ fn summary_from_aggregate(
             span_count: aggregate.span_count,
             row_count: 0,
             row_count_recorded: false,
+            operation_kind: StoredTraceOperationKind::Unspecified,
+            operation_name: String::new(),
+            invocation_kind: StoredTraceInvocationKind::Unspecified,
         },
         |primary| {
             let attributes = parse_attributes(&primary.attributes_json);
@@ -1682,6 +1742,9 @@ fn summary_from_aggregate(
                 span_count: aggregate.span_count,
                 row_count: row_count.unwrap_or_default(),
                 row_count_recorded: row_count.is_some(),
+                operation_kind: StoredTraceOperationKind::Unspecified,
+                operation_name: String::new(),
+                invocation_kind: StoredTraceInvocationKind::Unspecified,
             }
         },
     )
@@ -1764,6 +1827,15 @@ fn attr_string(attributes: &JsonValue, key: &str) -> Option<String> {
         JsonValue::String(value) => Some(value.clone()),
         JsonValue::Number(value) => Some(value.to_string()),
         JsonValue::Bool(value) => Some(value.to_string()),
+        _ => None,
+    }
+}
+
+fn attr_bool(attributes: &JsonValue, key: &str) -> Option<bool> {
+    match attributes.get(key)? {
+        JsonValue::Bool(value) => Some(*value),
+        JsonValue::String(value) => value.parse().ok(),
+        JsonValue::Number(value) => value.as_i64().map(|value| value != 0),
         _ => None,
     }
 }
@@ -2881,7 +2953,7 @@ mod tests {
             .expect("set trace file modified time");
     }
 
-    fn trace_record(trace_id: &str, span_id: &str) -> TraceSpanRecord {
+    pub(super) fn trace_record(trace_id: &str, span_id: &str) -> TraceSpanRecord {
         TraceSpanRecord {
             trace_id: trace_id.to_string(),
             span_id: span_id.to_string(),

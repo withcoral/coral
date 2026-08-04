@@ -6,6 +6,12 @@ use std::time::Duration;
 use super::local_store::{TraceDetailRecord, TraceStore, TraceStoreError, TraceSummaryRecord};
 use crate::workspaces::WorkspaceName;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TraceListView {
+    All,
+    QueryStream,
+}
+
 #[derive(Debug)]
 pub(crate) struct ListTracesQuery {
     pub(crate) workspace: Option<WorkspaceName>,
@@ -23,6 +29,7 @@ pub(crate) struct TraceListPage {
 pub(crate) struct GetTraceQuery {
     pub(crate) trace_id: String,
     pub(crate) workspace: Option<WorkspaceName>,
+    pub(crate) view: TraceListView,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -89,14 +96,23 @@ impl TraceManager {
         let GetTraceQuery {
             trace_id,
             workspace,
+            view,
         } = query;
-        match workspace {
-            Some(workspace) => {
+        let workspace = workspace.map(|workspace| workspace.as_str().to_string());
+        match view {
+            TraceListView::All => match workspace {
+                Some(workspace) => {
+                    self.traces
+                        .get_trace_for_workspace(trace_id, workspace)
+                        .await
+                }
+                None => self.traces.get_trace(trace_id).await,
+            },
+            TraceListView::QueryStream => {
                 self.traces
-                    .get_trace_for_workspace(trace_id, workspace.as_str().to_string())
+                    .get_query_stream_trace(trace_id, workspace)
                     .await
             }
-            None => self.traces.get_trace(trace_id).await,
         }
         .map_err(TraceManagerError::from)
     }
@@ -109,7 +125,7 @@ mod tests {
     use serde_json::json;
     use tempfile::TempDir;
 
-    use super::{GetTraceQuery, ListTracesQuery, TraceManager, TraceManagerError};
+    use super::{GetTraceQuery, ListTracesQuery, TraceListView, TraceManager, TraceManagerError};
     use crate::workspaces::WorkspaceName;
 
     #[tokio::test]
@@ -156,6 +172,7 @@ mod tests {
             .get_trace(GetTraceQuery {
                 trace_id: "beta".to_string(),
                 workspace: None,
+                view: TraceListView::All,
             })
             .await
             .expect("unscoped beta trace");
@@ -165,6 +182,7 @@ mod tests {
             .get_trace(GetTraceQuery {
                 trace_id: "beta".to_string(),
                 workspace: Some(WorkspaceName::parse("alpha").expect("alpha workspace")),
+                view: TraceListView::All,
             })
             .await
             .expect_err("beta trace must not match alpha workspace");
