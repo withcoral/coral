@@ -1,15 +1,9 @@
 //! Transactional login provisioning and pre-v1 task-attribution rekeying.
 
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "login provisioning is wired to production consumers in M2"
-    )
-)]
+#![cfg_attr(not(test), expect(dead_code, reason = "wired in M2"))]
 
 use super::repositories::users::UpsertLoginOutcome;
-use super::workspace_state::try_create_workspace_with_owner;
+use super::workspace_state::{hold_user_for_workspace_creation, try_create_workspace_with_owner};
 use super::{CoralDb, DbError, DbRepos};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,7 +43,7 @@ impl CoralDb {
         now_unix_nanos: i64,
     ) -> Result<EnsureUserDefaultWorkspaceOutcome, DbError> {
         let mut tx = self.begin().await?;
-        if tx.users().get_by_user_id(user_id).await?.is_none() {
+        if !hold_user_for_workspace_creation(&mut tx, user_id).await? {
             tx.rollback().await?;
             return Ok(EnsureUserDefaultWorkspaceOutcome::UserNotFound);
         }
@@ -144,6 +138,22 @@ mod tests {
             None,
             "an existing workspace must never be granted"
         );
+
+        let concurrent_user = create_user(&db, "concurrent").await;
+        let (first, second) = tokio::join!(
+            db.ensure_user_default_workspace(&concurrent_user, 30),
+            db.ensure_user_default_workspace(&concurrent_user, 31),
+        );
+        assert!(matches!(
+            (first.expect("first ensure"), second.expect("second ensure")),
+            (
+                EnsureUserDefaultWorkspaceOutcome::Created(_),
+                EnsureUserDefaultWorkspaceOutcome::AlreadyExists(_)
+            ) | (
+                EnsureUserDefaultWorkspaceOutcome::AlreadyExists(_),
+                EnsureUserDefaultWorkspaceOutcome::Created(_)
+            )
+        ));
     }
 
     #[tokio::test]

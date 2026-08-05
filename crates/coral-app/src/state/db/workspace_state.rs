@@ -1,16 +1,10 @@
 //! Transactional persistence for workspace creation and deletion.
 
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "workspace ownership APIs are wired to production consumers in later milestones"
-    )
-)]
+#![cfg_attr(not(test), expect(dead_code, reason = "wired in M3"))]
 
-use sea_query::{Expr, OnConflict, Query};
+use sea_query::{Expr, ExprTrait, OnConflict, Query};
 
-use super::schema::Workspaces;
+use super::schema::{Users, Workspaces};
 use super::{CoralDb, CoralTx, DbError, DbRepos, DbSession};
 use crate::workspaces::MemberRole;
 
@@ -33,7 +27,7 @@ impl CoralDb {
         created_at_unix_nanos: i64,
     ) -> Result<WorkspaceCreationOutcome, DbError> {
         let mut tx = self.begin().await?;
-        if tx.users().get_by_user_id(creator_user_id).await?.is_none() {
+        if !hold_user_for_workspace_creation(&mut tx, creator_user_id).await? {
             tx.rollback().await?;
             return Ok(WorkspaceCreationOutcome::UserNotFound);
         }
@@ -64,6 +58,21 @@ impl CoralDb {
             Ok(None)
         }
     }
+}
+
+pub(super) async fn hold_user_for_workspace_creation(
+    tx: &mut CoralTx<'_>,
+    user_id: &str,
+) -> Result<bool, DbError> {
+    let statement = Query::update()
+        .table(Users::Table)
+        .value(
+            Users::LastLoginAtUnixNanos,
+            Expr::col(Users::LastLoginAtUnixNanos),
+        )
+        .and_where(Expr::col(Users::UserId).eq(user_id))
+        .to_owned();
+    Ok(DbSession::execute_rows_affected(tx, statement).await? == 1)
 }
 
 pub(super) async fn try_create_workspace_with_owner(
