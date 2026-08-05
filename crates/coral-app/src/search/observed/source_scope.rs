@@ -177,3 +177,47 @@ struct ScopeFingerprint<'a> {
     surface_kind: &'static str,
     surface_name: &'a str,
 }
+
+#[cfg(test)]
+mod tests {
+    use uuid::Uuid;
+
+    use super::{SOURCE_SCOPE_FORMAT_VERSION, ScopeFingerprint};
+    use crate::hash::sha256_hex;
+
+    /// Pins the exact bytes hashed into `source_scope_id`.
+    ///
+    /// Every stored observed row is keyed by that id and retrieval is
+    /// fail-closed, so a change to this serialization silently hides the entire
+    /// observed corpus rather than failing anything. The struct is private and
+    /// its field names are part of the on-disk format, not an implementation
+    /// detail -- if a refactor needs to rename one, it owes a `#[serde(rename)]`
+    /// and this test must keep passing untouched.
+    #[test]
+    fn scope_fingerprint_hash_is_stable() {
+        let scope_bytes = serde_json::to_vec(&ScopeFingerprint {
+            format_version: SOURCE_SCOPE_FORMAT_VERSION,
+            runtime_contract_fingerprint: "v1:test-runtime-contract",
+            credential_revision: Uuid::nil(),
+            component_source_name: "github_v4",
+            surface_kind: "table",
+            surface_name: "issues",
+        })
+        .expect("scope fingerprint serializes");
+
+        assert_eq!(
+            String::from_utf8(scope_bytes.clone()).expect("scope fingerprint is utf-8"),
+            concat!(
+                r#"{"format_version":1,"#,
+                r#""runtime_contract_fingerprint":"v1:test-runtime-contract","#,
+                r#""credential_revision":"00000000-0000-0000-0000-000000000000","#,
+                r#""component_source_name":"github_v4","#,
+                r#""surface_kind":"table","surface_name":"issues"}"#,
+            )
+        );
+        assert_eq!(
+            sha256_hex(&scope_bytes),
+            "82fca0aa8c55fc4b8a22cf7a8f57a63d5acab8d7d2d84853d3f12b3b7a24886b"
+        );
+    }
+}
