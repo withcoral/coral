@@ -105,8 +105,10 @@ mod tests {
     use std::{fs, sync::Arc};
 
     use coral_api::v1::{SubmitFeedbackRequest, Workspace};
+    use coral_api::{CORAL_ERROR_DOMAIN, CORAL_ERROR_REASON_WORKSPACE_NOT_FOUND};
     use tempfile::TempDir;
     use tonic::{Code, Request};
+    use tonic_types::{ErrorDetail, StatusExt as _};
 
     use super::{FeedbackService, FeedbackServiceApi, authorize_read};
     use crate::feedback::manager::FeedbackManager;
@@ -167,7 +169,16 @@ mod tests {
             .expect_err("nonmember must not submit feedback");
 
         assert_eq!(denied.code(), Code::NotFound);
-        assert!(denied.message().contains(&fixture.workspace));
+        let info = denied
+            .get_error_details_vec()
+            .into_iter()
+            .find_map(|detail| match detail {
+                ErrorDetail::ErrorInfo(info) => Some(info),
+                _ => None,
+            })
+            .expect("structured workspace-not-found detail");
+        assert_eq!(info.reason, CORAL_ERROR_REASON_WORKSPACE_NOT_FOUND);
+        assert_eq!(info.domain, CORAL_ERROR_DOMAIN);
         assert!(
             !fixture
                 .layout
