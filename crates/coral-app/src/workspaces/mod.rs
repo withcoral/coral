@@ -1,4 +1,5 @@
 pub(crate) mod manager;
+mod member;
 pub(crate) mod model;
 pub(crate) mod name;
 pub(crate) mod paths;
@@ -6,6 +7,7 @@ pub(crate) mod pool_registry;
 pub(crate) mod service;
 
 pub(crate) use manager::WorkspaceManager;
+pub(crate) use member::MemberRole;
 pub(crate) use model::{
     DeletedWorkspace, WorkspaceLifecycleLock, WorkspaceLifecycleReadLease,
     WorkspaceLifecycleRevision, WorkspaceRecord,
