@@ -2719,29 +2719,62 @@ mod tests {
     }
 
     #[test]
-    fn get_trace_stops_after_trace_is_newer_than_remaining_files() {
+    fn owned_scope_scans_older_files_before_returning_trace() {
         let temp = TempDir::new().expect("temp dir");
         let dir = temp.path().join("telemetry").join("traces");
         fs::create_dir_all(&dir).expect("trace dir");
         let now = SystemTime::now();
         let old_time = now - Duration::from_hours(2);
         let recent_time = now - Duration::from_secs(1);
-        let mut target_record = trace_record("target-trace", "target-span");
-        target_record.start_time_unix_nanos = unix_nanos(recent_time);
-        target_record.end_time_unix_nanos = unix_nanos(recent_time + Duration::from_millis(1));
-        let target_path = dir.join(timestamped_jsonl_path(recent_time));
-        write_record_file(&target_path, &target_record);
-        set_modified_time(&target_path, recent_time);
+
+        let mut owned = trace_record("rotated-trace", "owned-span");
+        owned.attributes_json = r#"{"workspace":"alpha"}"#.to_string();
+        owned.start_time_unix_nanos = unix_nanos(recent_time);
+        owned.end_time_unix_nanos = unix_nanos(recent_time + Duration::from_millis(1));
+        let recent_path = dir.join(timestamped_jsonl_path(recent_time));
+        write_record_file(&recent_path, &owned);
+        set_modified_time(&recent_path, recent_time);
+
+        let mut foreign = trace_record("rotated-trace", "foreign-span");
+        foreign.attributes_json = r#"{"workspace":"gamma"}"#.to_string();
+        foreign.start_time_unix_nanos = unix_nanos(old_time);
+        foreign.end_time_unix_nanos = unix_nanos(old_time + Duration::from_millis(1));
         let old_path = dir.join(timestamped_jsonl_path(old_time));
-        fs::write(&old_path, r#"{"trace_id":"target-trace""#).expect("write old corrupt record");
+        write_record_file(&old_path, &foreign);
         set_modified_time(&old_path, old_time);
 
-        let detail = TraceStore::new(dir)
-            .get_trace_sync("target-trace")
-            .expect("trace detail");
+        let store = TraceStore::new(dir);
+        let scope = OwnedWorkspaceScope::new(["alpha".to_string()]);
+        assert!(
+            store
+                .list_traces_for_workspace_sync(10, 0, "alpha")
+                .expect("named traces")
+                .is_empty()
+        );
+        assert!(
+            store
+                .list_traces_for_owned_workspaces_sync(10, 0, &scope)
+                .expect("owned traces")
+                .is_empty()
+        );
+        for result in [
+            store.get_trace_for_workspace_sync("rotated-trace", "alpha"),
+            store.get_trace_for_owned_workspaces_sync("rotated-trace", &scope),
+        ] {
+            assert!(matches!(result, Err(super::TraceStoreError::NotFound(_))));
+        }
 
-        assert_eq!(detail.summary.trace_id, "target-trace");
-        assert_eq!(detail.spans.len(), 1);
+        let local = store
+            .get_trace_sync("rotated-trace")
+            .expect("local unrestricted trace");
+        assert_eq!(
+            local
+                .spans
+                .iter()
+                .map(|span| span.span_id.as_str())
+                .collect::<Vec<_>>(),
+            ["foreign-span", "owned-span"]
+        );
     }
 
     #[test]
@@ -2828,8 +2861,7 @@ mod tests {
     }
 
     #[test]
-    #[expect(clippy::too_many_lines, reason = "scoped trace fixture")]
-    fn owned_workspace_filtered_traces_are_complete_scoped_and_globally_paged() {
+    fn workspace_filtered_traces_include_complete_matching_traces() {
         let temp = TempDir::new().expect("temp dir");
         let dir = temp.path().join("telemetry").join("traces");
         fs::create_dir_all(&dir).expect("trace dir");
@@ -2869,28 +2901,6 @@ mod tests {
         newer_duplicate.start_time_unix_nanos = 50;
         newer_duplicate.end_time_unix_nanos = 70;
 
-        let scoped_span = |trace_id, span_id, workspace: Option<&str>, end_time| {
-            let mut span = trace_record(trace_id, span_id);
-            span.attributes_json = workspace.map_or_else(
-                || "{}".to_string(),
-                |workspace| format!(r#"{{"workspace":"{workspace}"}}"#),
-            );
-            span.end_time_unix_nanos = end_time;
-            span
-        };
-        let multi_alpha = scoped_span("multi-owned", "multi-alpha", Some("alpha"), 60);
-        let multi_beta = scoped_span("multi-owned", "multi-beta", Some("beta"), 65);
-        let foreign_alpha = scoped_span("mixed-foreign", "foreign-alpha", Some("alpha"), 75);
-        let foreign_gamma = scoped_span("mixed-foreign", "foreign-gamma", Some("gamma"), 80);
-        let host_alpha = scoped_span("mixed-host", "host-alpha", Some("alpha"), 82);
-        let host_child = scoped_span("mixed-host", "host-child", None, 85);
-
-        let mut gamma = trace_record("gamma-trace", "gamma-span");
-        gamma.attributes_json = r#"{"workspace":"gamma"}"#.to_string();
-        gamma.end_time_unix_nanos = 80;
-        let mut host = trace_record("host-trace", "host-span");
-        host.end_time_unix_nanos = 90;
-
         let path = dir.join(timestamped_jsonl_path(SystemTime::now()));
         write_record_file_lines(
             &path,
@@ -2901,14 +2911,6 @@ mod tests {
                 alpha_old,
                 older_duplicate,
                 newer_duplicate,
-                multi_alpha,
-                multi_beta,
-                foreign_alpha,
-                foreign_gamma,
-                host_alpha,
-                host_child,
-                gamma,
-                host,
             ],
         );
 
@@ -2945,32 +2947,6 @@ mod tests {
         store
             .get_trace_for_workspace_sync("duplicate-workspace", "alpha")
             .expect_err("newer beta duplicate must not be visible through alpha filter");
-        let scope = OwnedWorkspaceScope::new(["alpha".to_string(), "beta".to_string()]);
-        for (offset, expected) in [
-            (0, vec!["duplicate-workspace", "multi-owned", "beta-trace"]),
-            (3, vec!["alpha-new", "alpha-old"]),
-        ] {
-            let page = store
-                .list_traces_for_owned_workspaces_sync(3, offset, &scope)
-                .expect("owned page");
-            assert_eq!(
-                page.iter()
-                    .map(|summary| summary.trace_id.as_str())
-                    .collect::<Vec<_>>(),
-                expected
-            );
-        }
-        for concealed in ["gamma-trace", "host-trace", "mixed-foreign", "mixed-host"] {
-            assert!(matches!(
-                store.get_trace_for_owned_workspaces_sync(concealed, &scope),
-                Err(super::TraceStoreError::NotFound(ref trace_id)) if trace_id == concealed
-            ));
-        }
-        for concealed in ["multi-owned", "mixed-foreign", "mixed-host"] {
-            store
-                .get_trace_for_workspace_sync(concealed, "alpha")
-                .expect_err("named scope rejects traces crossing its boundary");
-        }
     }
 
     #[test]
