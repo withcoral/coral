@@ -239,7 +239,7 @@ mod tests {
         assert!(
             users
                 .windows(2)
-                .all(|pair| pair[0].user_id <= pair[1].user_id),
+                .all(|pair| matches!(pair, [first, second] if first.user_id <= second.user_id)),
             "users must be listed deterministically: {users:?}"
         );
     }

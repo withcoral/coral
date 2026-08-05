@@ -162,6 +162,10 @@ mod tests {
         db
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the shared backend harness verifies one ordered repository lifecycle"
+    )]
     async fn assert_workspace_member_repository_round_trip(db: &CoralDb, suffix: &str) {
         let workspace_a = format!("a-{suffix}");
         let workspace_b = format!("b-{suffix}");
