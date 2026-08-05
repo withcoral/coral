@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use coral_app::{
     AuthServerError, BearerAuthenticator, CoralAuthorizationServer, McpHttpServeConfig,
-    RunningCoralAuthorizationServer, SessionAuthSettings,
+    RunningCoralAuthorizationServer, SessionAuthSettings, start_for_serve,
 };
 use coral_client::{
     AppClient, BearerToken, ClientError,
@@ -177,21 +177,12 @@ pub(crate) async fn start(
     let mcp_config = settings.mcp_http().cloned();
     let session_auth = settings.take_session_auth();
     let grpc_authentication_enabled = session_auth.is_some();
-    let (builder, mcp_principal_provider) =
-        compose_session_policies(builder, session_auth.as_ref(), mcp_config.as_ref());
-    // Built after the providers, which only borrow the settings; this consumes them.
-    let oauth_server = match session_auth {
-        Some(session_auth) => Some(
-            session_auth
-                .into_authorization_server()
-                .map_err(|error| ServeError(ServeErrorKind::Config(error)))?,
-        ),
-        None => None,
-    };
-    let grpc = builder
-        .start()
+    let mcp_principal_provider =
+        mcp_session_authenticator(session_auth.as_ref(), mcp_config.as_ref());
+    let (grpc, oauth_server) = start_for_serve(builder, session_auth)
         .await
-        .map_err(|error| ServeError(ServeErrorKind::GrpcStart(error)))?;
+        .map_err(|error| ServeError(ServeErrorKind::GrpcStart(error)))?
+        .into_parts();
     let grpc_addr = grpc.local_addr();
     let oauth = match start_oauth(oauth_server).await {
         Ok(server) => server,
@@ -222,32 +213,25 @@ pub(crate) async fn start(
     })
 }
 
-/// Installs the session policy each served surface enforces.
+/// Derives the public MCP surface's session policy.
 ///
-/// The two policies differ by design. The gRPC API is private — reached through
-/// the public surfaces in front of it — so it admits a token minted for any of
-/// them. MCP HTTP is a public surface and admits only its own audience, which is
-/// what stops a token minted for a sibling surface being replayed at it.
-fn compose_session_policies(
-    builder: ServerBuilder,
+/// MCP HTTP admits only its own audience, which stops a token minted for a
+/// sibling surface being replayed at it. App bootstrap independently derives
+/// the private gRPC policy from every public audience.
+fn mcp_session_authenticator(
     session_auth: Option<&SessionAuthSettings>,
     mcp_config: Option<&McpHttpServeConfig>,
-) -> (ServerBuilder, Option<Arc<dyn BearerAuthenticator>>) {
+) -> Option<Arc<dyn BearerAuthenticator>> {
     let Some(session_auth) = session_auth else {
-        return (builder, None);
+        return None;
     };
-    let private_api = session_auth.principal_provider(session_auth.public_audiences().to_vec());
-    let mcp_authenticator = match mcp_config {
+    match mcp_config {
         Some(McpHttpServeConfig::Authenticated { public_url, .. }) => {
             Some(session_auth.principal_provider([public_url.clone()])
                 as Arc<dyn BearerAuthenticator>)
         }
         _ => None,
-    };
-    (
-        builder.with_principal_provider(private_api),
-        mcp_authenticator,
-    )
+    }
 }
 
 async fn start_oauth(
