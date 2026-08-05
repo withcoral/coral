@@ -297,7 +297,7 @@ pub(in crate::auth) mod tests {
         let now = get_current_timestamp();
         json!({
             "iss": "http://localhost/issuer", "aud": "provider-client", "sub": "subject",
-            "iat": now - 1, "exp": now + 300, "nonce": "expected-nonce", "email": " User "
+            "iat": now - 1, "exp": now + 300, "nonce": "expected-nonce", "email": "User"
         })
     }
 
