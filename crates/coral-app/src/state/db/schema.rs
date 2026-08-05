@@ -56,3 +56,23 @@ pub(in crate::state::db) enum IdentitySpecDocuments {
     CreatedAtUnixNanos,
     UpdatedAtUnixNanos,
 }
+
+#[derive(Iden)]
+pub(in crate::state::db) enum Users {
+    Table,
+    UserId,
+    Issuer,
+    Subject,
+    DisplayName,
+    CreatedAtUnixNanos,
+    LastLoginAtUnixNanos,
+}
+
+#[derive(Iden)]
+pub(in crate::state::db) enum WorkspaceMembers {
+    Table,
+    WorkspaceId,
+    UserId,
+    Role,
+    CreatedAtUnixNanos,
+}
