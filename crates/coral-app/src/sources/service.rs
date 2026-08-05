@@ -1013,18 +1013,26 @@ mod tests {
             .create_bundled_source_with_o_auth(authenticated(
                 CreateBundledSourceWithOAuthRequest {
                     workspace: Some(workspace(&fixture.workspace)),
-                    name: "invalid/name".to_string(),
+                    name: "github".to_string(),
+                    oauth_credential_retrievals: vec![OAuthCredentialRetrieval {
+                        input_key: "API_TOKEN".to_string(),
+                        method_index: None,
+                        credential_inputs: Vec::new(),
+                    }],
                     ..Default::default()
                 },
                 &fixture.owner,
             ))
             .await
         {
-            Ok(_) => panic!("invalid source name must be rejected"),
+            Ok(_) => panic!("malformed OAuth retrieval must be rejected"),
             Err(status) => status,
         };
 
         assert_eq!(status.code(), Code::InvalidArgument);
+        assert!(status.message().contains(
+            "missing OAuth credential retrieval method_index for source input 'API_TOKEN'"
+        ));
     }
 
     struct SourceServiceFixture {
