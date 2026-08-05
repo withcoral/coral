@@ -62,17 +62,49 @@ pub(crate) struct ListCatalogArguments {
     pub(crate) pagination: Pagination,
 }
 
-#[derive(JsonSchema)]
-pub(crate) struct DescribeTableArguments {
+#[derive(Debug)]
+pub(crate) enum DescribeArguments {
+    Table {
+        catalog: Option<String>,
+        schema: String,
+        table: String,
+    },
+    TableFunction {
+        schema: String,
+        function: String,
+    },
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct DescribeInput {
+    #[schemars(description = "Table target. Pass exactly one target object.")]
+    table: Option<DescribeTableInput>,
+    #[schemars(description = "Table-function target. Pass exactly one target object.")]
+    table_function: Option<DescribeTableFunctionInput>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct DescribeTableInput {
     #[schemars(description = "Optional SQL catalog name. Omit for two-part tables.")]
-    pub(crate) catalog: Option<String>,
+    catalog: Option<String>,
     #[schemars(length(min = 1), description = "Exact SQL schema name.")]
-    pub(crate) schema: String,
+    schema: String,
     #[schemars(
         length(min = 1),
         description = "Exact table name within the SQL schema."
     )]
-    pub(crate) table: String,
+    table: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct DescribeTableFunctionInput {
+    #[schemars(length(min = 1), description = "Exact SQL schema name.")]
+    schema: String,
+    #[schemars(
+        length(min = 1),
+        description = "Exact table-function name within the SQL schema."
+    )]
+    function: String,
 }
 
 #[derive(JsonSchema)]
@@ -122,15 +154,15 @@ pub(crate) fn list_catalog_tool(context: &ToolDescriptionContext) -> Tool {
     )
 }
 
-pub(crate) fn describe_table_tool() -> Tool {
+pub(crate) fn describe_tool() -> Tool {
     Tool::new(
-        ToolName::DescribeTable.as_str(),
-        "Describe one database table without returning full column definitions.",
-        tool_input_schema::<DescribeTableArguments>(),
+        ToolName::Describe.as_str(),
+        "Describe one database table or table function. Tables return compact metadata without full column definitions. Table functions return their arguments, result columns, guide, and a minimal SQL call example.",
+        tool_input_schema::<DescribeInput>(),
     )
-    .with_raw_output_schema(describe_table_output_schema())
+    .with_raw_output_schema(describe_output_schema())
     .with_annotations(
-        ToolAnnotations::with_title("Describe Table")
+        ToolAnnotations::with_title("Describe")
             .read_only(true)
             .destructive(false)
             .idempotent(true)
@@ -165,14 +197,50 @@ pub(crate) fn list_catalog_arguments(
     })
 }
 
-pub(crate) fn describe_table_arguments(
+pub(crate) fn describe_arguments(
     arguments: Option<&Map<String, Value>>,
-) -> Result<DescribeTableArguments, ErrorData> {
-    Ok(DescribeTableArguments {
-        catalog: optional_non_empty_string_argument(arguments, "catalog")?,
-        schema: required_string_argument(arguments, "schema")?,
-        table: required_string_argument(arguments, "table")?,
-    })
+) -> Result<DescribeArguments, ErrorData> {
+    let input = serde_json::from_value::<DescribeInput>(Value::Object(
+        arguments.cloned().unwrap_or_default(),
+    ))
+    .map_err(|error| ErrorData::invalid_params(format!("invalid arguments: {error}"), None))?;
+    match (input.table, input.table_function) {
+        (Some(table), None) => Ok(DescribeArguments::Table {
+            catalog: non_empty_optional_string(table.catalog, "table.catalog")?,
+            schema: non_empty_string(table.schema, "table.schema")?,
+            table: non_empty_string(table.table, "table.table")?,
+        }),
+        (None, Some(table_function)) => Ok(DescribeArguments::TableFunction {
+            schema: non_empty_string(table_function.schema, "table_function.schema")?,
+            function: non_empty_string(table_function.function, "table_function.function")?,
+        }),
+        (None, None) => Err(ErrorData::invalid_params(
+            "missing target: pass exactly one of 'table' or 'table_function'".to_string(),
+            None,
+        )),
+        (Some(_), Some(_)) => Err(ErrorData::invalid_params(
+            "conflicting targets: pass exactly one of 'table' or 'table_function'".to_string(),
+            None,
+        )),
+    }
+}
+
+fn non_empty_string(value: String, path: &str) -> Result<String, ErrorData> {
+    if value.trim().is_empty() {
+        Err(ErrorData::invalid_params(
+            format!("argument '{path}' must not be empty"),
+            None,
+        ))
+    } else {
+        Ok(value)
+    }
+}
+
+fn non_empty_optional_string(
+    value: Option<String>,
+    path: &str,
+) -> Result<Option<String>, ErrorData> {
+    value.map(|value| non_empty_string(value, path)).transpose()
 }
 
 pub(crate) fn list_columns_arguments(
@@ -220,16 +288,42 @@ pub(crate) fn describe_table_value(
         .expect("describe table output value serializes")
 }
 
+pub(crate) fn describe_table_function_value(
+    schema: &str,
+    function: &str,
+    table_function: Option<&ProtoTableFunction>,
+) -> Value {
+    serde_json::to_value(match table_function {
+        Some(table_function) => {
+            DescribeOutput::FoundTableFunction(FoundTableFunctionValue::from(table_function))
+        }
+        None => DescribeOutput::MissingTableFunction(MissingTableFunctionValue {
+            found: false,
+            requested: RequestedTableFunction { schema, function },
+            suggested_calls: vec![SuggestedCall {
+                tool: CatalogSuggestedTool::ListCatalog,
+                arguments: SuggestedCallArguments {
+                    catalog: None,
+                    schema: Some(schema),
+                    kind: Some(CatalogToolKind::TableFunction),
+                    limit: Some(10),
+                },
+            }],
+        }),
+    })
+    .expect("describe table function output value serializes")
+}
+
 fn describe_table_output<'a>(
     catalog: Option<&'a str>,
     schema: &'a str,
     table: &'a str,
     response: &'a DescribeTableResponse,
-) -> DescribeTableOutput<'a> {
+) -> DescribeOutput<'a> {
     if let Some(table) = &response.table {
-        return DescribeTableOutput::Found(FoundTableValue::from(table));
+        return DescribeOutput::FoundTable(FoundTableValue::from(table));
     }
-    DescribeTableOutput::Missing(missing_table_value(
+    DescribeOutput::MissingTable(missing_table_value(
         catalog,
         schema,
         table,
@@ -320,8 +414,8 @@ fn missing_table_value<'a>(
     }
 }
 
-pub(crate) fn describe_table_output_schema() -> Arc<Map<String, Value>> {
-    tool_output_schema::<DescribeTableOutput<'static>>()
+pub(crate) fn describe_output_schema() -> Arc<Map<String, Value>> {
+    tool_output_schema::<DescribeOutput<'static>>()
 }
 
 pub(crate) fn list_catalog_value(response: &ListCatalogResponse) -> Value {
@@ -391,9 +485,11 @@ fn column_search_result_row(result: &ColumnSearchResult) -> Option<ColumnSearchR
 #[derive(Serialize, JsonSchema)]
 #[serde(untagged)]
 #[schemars(extend("type" = "object"))]
-enum DescribeTableOutput<'a> {
-    Found(FoundTableValue<'a>),
-    Missing(MissingTableValue<'a>),
+enum DescribeOutput<'a> {
+    FoundTable(FoundTableValue<'a>),
+    FoundTableFunction(FoundTableFunctionValue<'a>),
+    MissingTable(MissingTableValue<'a>),
+    MissingTableFunction(MissingTableFunctionValue<'a>),
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -532,11 +628,26 @@ struct MissingTableValue<'a> {
 
 #[derive(Serialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
+struct MissingTableFunctionValue<'a> {
+    found: bool,
+    requested: RequestedTableFunction<'a>,
+    suggested_calls: Vec<SuggestedCall<'a>>,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 struct RequestedTable<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     catalog: Option<&'a str>,
     schema: &'a str,
     table: &'a str,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+struct RequestedTableFunction<'a> {
+    schema: &'a str,
+    function: &'a str,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -627,6 +738,23 @@ struct CatalogTableFunctionItemValue<'a> {
     sql_call_example: String,
     description: &'a str,
     table_function: CatalogTableFunctionValue<'a>,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+struct FoundTableFunctionValue<'a> {
+    found: bool,
+    #[serde(flatten)]
+    table_function: CatalogTableFunctionItemValue<'a>,
+}
+
+impl<'a> From<&'a ProtoTableFunction> for FoundTableFunctionValue<'a> {
+    fn from(function: &'a ProtoTableFunction) -> Self {
+        Self {
+            found: true,
+            table_function: function.into(),
+        }
+    }
 }
 
 impl<'a> From<&'a ProtoTableFunction> for CatalogTableFunctionItemValue<'a> {
@@ -731,8 +859,8 @@ mod tests {
     use serde_json::{Map, Value, json};
 
     use super::{
-        DEFAULT_IGNORE_CASE, DEFAULT_REQUIRED_ONLY, list_catalog_arguments, list_columns_arguments,
-        list_columns_value,
+        DEFAULT_IGNORE_CASE, DEFAULT_REQUIRED_ONLY, DescribeArguments, describe_arguments,
+        list_catalog_arguments, list_columns_arguments, list_columns_value,
     };
     use crate::surface::discovery::{DEFAULT_PAGINATION_LIMIT, DEFAULT_PAGINATION_OFFSET};
 
@@ -744,6 +872,53 @@ mod tests {
         let list = list_catalog_arguments(Some(&arguments)).expect("list arguments");
 
         assert_eq!(list.kind, None);
+    }
+
+    #[test]
+    fn describe_parses_distinct_catalog_item_inputs() {
+        let table = describe_arguments(Some(&Map::from_iter([(
+            "table".to_string(),
+            json!({
+                "catalog": "warehouse",
+                "schema": "public",
+                "table": "events"
+            }),
+        )])))
+        .expect("table arguments");
+        assert!(matches!(
+            table,
+            DescribeArguments::Table {
+                catalog: Some(catalog),
+                schema,
+                table,
+            } if catalog == "warehouse" && schema == "public" && table == "events"
+        ));
+
+        let table_function = describe_arguments(Some(&Map::from_iter([(
+            "table_function".to_string(),
+            json!({
+                "schema": "github",
+                "function": "search_issues"
+            }),
+        )])))
+        .expect("table function arguments");
+        assert!(matches!(
+            table_function,
+            DescribeArguments::TableFunction { schema, function }
+                if schema == "github" && function == "search_issues"
+        ));
+
+        describe_arguments(Some(&Map::from_iter([
+            (
+                "table".to_string(),
+                json!({"schema": "github", "table": "issues"}),
+            ),
+            (
+                "table_function".to_string(),
+                json!({"schema": "github", "function": "search_issues"}),
+            ),
+        ])))
+        .expect_err("conflicting targets must fail");
     }
 
     #[test]

@@ -36,17 +36,17 @@ use crate::{
     McpOptions, McpQueryExample,
     guide_block::GuideBlockState,
     surface::{
-        AddFunctionArguments, CatalogToolKind, EndTaskArguments, FeedbackStoredValue,
-        SqlBatchValue, SqlGuideBlockValue, SqlGuideValue, SqlQueryResultValue, StartTaskArguments,
-        TaskEndedValue, TaskId, TaskStartedValue, TaskStatus, ToolAvailability,
+        AddFunctionArguments, CatalogToolKind, DescribeArguments, EndTaskArguments,
+        FeedbackStoredValue, SqlBatchValue, SqlGuideBlockValue, SqlGuideValue, SqlQueryResultValue,
+        StartTaskArguments, TaskEndedValue, TaskId, TaskStartedValue, TaskStatus, ToolAvailability,
         ToolDescriptionContext, ToolName, add_function_arguments, available_tools,
-        build_tool_result, describe_table_arguments, describe_table_value, end_task_arguments,
-        feedback_arguments, function_added_value, guide_resource, guide_resource_content,
-        initial_instructions, list_catalog_arguments, list_catalog_value, list_columns_arguments,
-        list_columns_table_fallback_value, list_columns_value, render_function_artifact,
-        required_task_id_argument, required_tool_intent_argument, search_arguments, sql_arguments,
-        start_task_arguments, status_to_error_data, tables_resource, tables_resource_content,
-        tool_error_from_status, tool_error_result,
+        build_tool_result, describe_arguments, describe_table_function_value, describe_table_value,
+        end_task_arguments, feedback_arguments, function_added_value, guide_resource,
+        guide_resource_content, initial_instructions, list_catalog_arguments, list_catalog_value,
+        list_columns_arguments, list_columns_table_fallback_value, list_columns_value,
+        render_function_artifact, required_task_id_argument, required_tool_intent_argument,
+        search_arguments, sql_arguments, start_task_arguments, status_to_error_data,
+        tables_resource, tables_resource_content, tool_error_from_status, tool_error_result,
     },
     telemetry,
 };
@@ -221,7 +221,7 @@ fn task_context_requirement(options: &McpOptions, tool_name: ToolName) -> TaskCo
         | ToolName::AddFunction
         | ToolName::Search
         | ToolName::ListCatalog
-        | ToolName::DescribeTable
+        | ToolName::Describe
         | ToolName::ListColumns => TaskContextRequirement::TaskIdAndIntent,
         ToolName::StartTask => TaskContextRequirement::Intent,
         ToolName::EndTask => TaskContextRequirement::TaskId,
@@ -446,6 +446,34 @@ impl CoralMcpServer {
             }))
             .await?
             .into_inner())
+    }
+
+    async fn load_table_function_description(
+        &self,
+        schema_name: &str,
+        function_name: &str,
+    ) -> Result<Option<coral_api::v1::TableFunction>, tonic::Status> {
+        self.load_catalog(
+            None,
+            Some(schema_name),
+            CATALOG_KIND_TABLE_FUNCTION,
+            PaginationRequest {
+                limit: LIST_CATALOG_UNBOUNDED_LIMIT,
+                offset: 0,
+            },
+        )
+        .await
+        .map(|response| {
+            response.items.into_iter().find_map(|item| match item.item {
+                Some(catalog_item::Item::TableFunction(function))
+                    if function.name == function_name =>
+                {
+                    Some(function)
+                }
+                Some(catalog_item::Item::TableFunction(_) | catalog_item::Item::Table(_))
+                | None => None,
+            })
+        })
     }
 
     async fn load_catalog_counts(&self) -> Result<(usize, usize), tonic::Status> {
@@ -736,30 +764,31 @@ impl CoralMcpServer {
         ))
     }
 
-    async fn describe_table_tool_result(
+    async fn describe_tool_result(
         &self,
         request_arguments: Option<&Map<String, Value>>,
     ) -> Result<ToolCallOutcome, ErrorData> {
-        let arguments = describe_table_arguments(request_arguments)?;
-        match self
-            .load_table_description(
-                arguments.catalog.as_deref(),
-                &arguments.schema,
-                &arguments.table,
-            )
-            .await
-        {
-            Ok(response) => Ok(ToolCallOutcome::success(describe_table_value(
-                arguments.catalog.as_deref(),
-                &arguments.schema,
-                &arguments.table,
-                &response,
-            ))),
-            Err(status) => Ok(ToolCallOutcome::ToolError {
-                operation: "Table description",
-                status,
-            }),
-        }
+        let arguments = describe_arguments(request_arguments)?;
+        let result = match &arguments {
+            DescribeArguments::Table {
+                catalog,
+                schema,
+                table,
+            } => self
+                .load_table_description(catalog.as_deref(), schema, table)
+                .await
+                .map(|response| describe_table_value(catalog.as_deref(), schema, table, &response)),
+            DescribeArguments::TableFunction { schema, function } => self
+                .load_table_function_description(schema, function)
+                .await
+                .map(|table_function| {
+                    describe_table_function_value(schema, function, table_function.as_ref())
+                }),
+        };
+        Ok(ToolCallOutcome::from_value_result(
+            "Catalog item description",
+            result,
+        ))
     }
 
     async fn dispatch_tool(
@@ -805,10 +834,7 @@ impl CoralMcpServer {
                     .await
             }
             ToolName::Search => self.search_tool_result(request.arguments.as_ref()).await,
-            ToolName::DescribeTable => {
-                self.describe_table_tool_result(request.arguments.as_ref())
-                    .await
-            }
+            ToolName::Describe => self.describe_tool_result(request.arguments.as_ref()).await,
             ToolName::ListColumns => {
                 self.list_columns_tool_result(request.arguments.as_ref())
                     .await

@@ -743,7 +743,7 @@ async fn mcp_stdio_lists_tools_and_resources() -> Result<(), Box<dyn std::error:
             "add_function",
             "search",
             "list_catalog",
-            "describe_table",
+            "describe",
             "list_columns",
             "end_task"
         ]
@@ -821,7 +821,7 @@ async fn mcp_stdio_enable_feedback_flag_lists_feedback_tool()
             "add_function",
             "search",
             "list_catalog",
-            "describe_table",
+            "describe",
             "list_columns",
             "end_task",
             "feedback"
@@ -915,7 +915,7 @@ async fn mcp_stdio_always_lists_task_tools() -> Result<(), Box<dyn std::error::E
             "add_function",
             "search",
             "list_catalog",
-            "describe_table",
+            "describe",
             "list_columns",
             "end_task"
         ]
@@ -1285,7 +1285,7 @@ async fn mcp_stdio_sql_and_catalog_tools_return_structured_content()
         .await
         .expect_err("removed search_catalog tool should not be callable");
     assert_search_tool(&client, &server, &task_id).await?;
-    assert_describe_table_tool(&client, &server, &task_id).await?;
+    assert_describe_tool(&client, &server, &task_id).await?;
     assert_list_columns_tool(&client, &task_id).await?;
     assert_sql_tool(&client, &task_id).await?;
 
@@ -1416,7 +1416,7 @@ async fn assert_search_tool(
     Ok(())
 }
 
-async fn assert_describe_table_tool(
+async fn assert_describe_tool(
     client: &RunningService<RoleClient, ()>,
     server: &MockServer,
     task_id: &str,
@@ -1425,11 +1425,13 @@ async fn assert_describe_table_tool(
     let execute_sql_before = server.execute_sql_requests().len();
     let described = structured_tool_content(
         client,
-        CallToolRequestParams::new("describe_table").with_arguments(task_arguments(
+        CallToolRequestParams::new("describe").with_arguments(task_arguments(
             task_id,
             &json!({
-                "schema": "local_messages",
-                "table": "messages"
+                "table": {
+                    "schema": "local_messages",
+                    "table": "messages"
+                }
             }),
         )),
     )
