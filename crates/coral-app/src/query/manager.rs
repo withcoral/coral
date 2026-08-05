@@ -350,11 +350,19 @@ impl QueryManager {
                 failed_source_names.extend(failure_recorder.failed_source_names());
                 let runtime_schema_owners =
                     runtime_schema_owners(&source_load.loaded).map_err(QueryManagerError::App)?;
+                let catalog = runtime
+                    .list_catalog(catalog_filter, schema_filter)
+                    .await
+                    .map_err(QueryManagerError::Core)?;
+                let tables = runtime
+                    .list_tables(catalog_filter, schema_filter, None)
+                    .await
+                    .map_err(QueryManagerError::Core)?;
                 Ok(CatalogResolution {
-                    catalog: runtime
-                        .list_catalog(catalog_filter, schema_filter)
-                        .await
-                        .map_err(QueryManagerError::Core)?,
+                    catalog: CatalogInfo {
+                        tables,
+                        table_functions: catalog.table_functions,
+                    },
                     failed_source_names,
                     runtime_schema_owners,
                 })
