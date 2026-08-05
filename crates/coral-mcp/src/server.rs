@@ -36,17 +36,17 @@ use crate::{
     McpOptions, McpQueryExample,
     guide_block::GuideBlockState,
     surface::{
-        AddFunctionArguments, CatalogToolKind, DescribeArguments, EndTaskArguments,
-        FeedbackStoredValue, SqlBatchValue, SqlGuideBlockValue, SqlGuideValue, SqlQueryResultValue,
-        StartTaskArguments, TaskEndedValue, TaskId, TaskStartedValue, TaskStatus, ToolAvailability,
+        AddFunctionArguments, CatalogToolKind, EndTaskArguments, FeedbackStoredValue,
+        SqlBatchValue, SqlGuideBlockValue, SqlGuideValue, SqlQueryResultValue, StartTaskArguments,
+        TaskEndedValue, TaskId, TaskStartedValue, TaskStatus, ToolAvailability,
         ToolDescriptionContext, ToolName, add_function_arguments, available_tools,
-        build_tool_result, describe_arguments, describe_table_function_value, describe_table_value,
-        end_task_arguments, feedback_arguments, function_added_value, guide_resource,
-        guide_resource_content, initial_instructions, list_catalog_arguments, list_catalog_value,
-        list_columns_arguments, list_columns_table_fallback_value, list_columns_value,
-        render_function_artifact, required_task_id_argument, required_tool_intent_argument,
-        search_arguments, sql_arguments, start_task_arguments, status_to_error_data,
-        tables_resource, tables_resource_content, tool_error_from_status, tool_error_result,
+        build_tool_result, describe_arguments, describe_value, end_task_arguments,
+        feedback_arguments, function_added_value, guide_resource, guide_resource_content,
+        initial_instructions, list_catalog_arguments, list_catalog_value, list_columns_arguments,
+        list_columns_table_fallback_value, list_columns_value, render_function_artifact,
+        required_task_id_argument, required_tool_intent_argument, search_arguments, sql_arguments,
+        start_task_arguments, status_to_error_data, tables_resource, tables_resource_content,
+        tool_error_from_status, tool_error_result,
     },
     telemetry,
 };
@@ -769,21 +769,22 @@ impl CoralMcpServer {
         request_arguments: Option<&Map<String, Value>>,
     ) -> Result<ToolCallOutcome, ErrorData> {
         let arguments = describe_arguments(request_arguments)?;
-        let result = match &arguments {
-            DescribeArguments::Table {
-                catalog,
-                schema,
-                table,
-            } => self
-                .load_table_description(catalog.as_deref(), schema, table)
-                .await
-                .map(|response| describe_table_value(catalog.as_deref(), schema, table, &response)),
-            DescribeArguments::TableFunction { schema, function } => self
-                .load_table_function_description(schema, function)
-                .await
-                .map(|table_function| {
-                    describe_table_function_value(schema, function, table_function.as_ref())
-                }),
+        let result = if arguments.catalog.is_some() {
+            self.load_table_description(
+                arguments.catalog.as_deref(),
+                &arguments.schema,
+                &arguments.surface,
+            )
+            .await
+            .map(|table| describe_value(&arguments, &table, None))
+        } else {
+            tokio::try_join!(
+                self.load_table_description(None, &arguments.schema, &arguments.surface),
+                self.load_table_function_description(&arguments.schema, &arguments.surface),
+            )
+            .map(|(table, table_function)| {
+                describe_value(&arguments, &table, table_function.as_ref())
+            })
         };
         Ok(ToolCallOutcome::from_value_result(
             "Catalog item description",
@@ -834,7 +835,9 @@ impl CoralMcpServer {
                     .await
             }
             ToolName::Search => self.search_tool_result(request.arguments.as_ref()).await,
-            ToolName::Describe => self.describe_tool_result(request.arguments.as_ref()).await,
+            ToolName::Describe => {
+                Box::pin(self.describe_tool_result(request.arguments.as_ref())).await
+            }
             ToolName::ListColumns => {
                 self.list_columns_tool_result(request.arguments.as_ref())
                     .await

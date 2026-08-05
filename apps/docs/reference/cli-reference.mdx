@@ -532,8 +532,9 @@ By default, this server exposes:
 
 `add_function` accepts `schema`, `name`, `description`, and one read-only SQL query. Values such as `$owner` in the query become required named arguments. It never overwrites an existing function, and Coral validates the function before saving it.
 
-`describe` accepts exactly one target object: `table` with `schema`, `table`,
-and optional `catalog`, or `table_function` with `schema` and `function`.
+`describe` accepts `schema` and a bare `surface` name. Add `catalog` for a
+three-part table. Coral resolves whether the surface is a table or table
+function.
 
 When the `feedback` feature is enabled, the server also exposes a non-read-only `feedback` tool for blocked-agent reports. Feedback reports are stored locally and anonymous copies may be uploaded to Coral.
 
