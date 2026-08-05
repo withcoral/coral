@@ -362,6 +362,15 @@ pub(crate) struct TraceStore {
     retention: Option<Duration>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub(crate) struct OwnedWorkspaceScope(HashSet<String>);
+
+impl OwnedWorkspaceScope {
+    pub(crate) fn new(workspace_names: impl IntoIterator<Item = String>) -> Self {
+        Self(workspace_names.into_iter().collect())
+    }
+}
+
 #[derive(Debug, Clone)]
 struct TraceStoreFile {
     path: PathBuf,
@@ -617,7 +626,7 @@ impl TraceStore {
         }
     }
 
-    pub(crate) async fn list_traces(
+    pub(crate) async fn list_traces_unrestricted(
         &self,
         limit: usize,
         offset: usize,
@@ -626,6 +635,20 @@ impl TraceStore {
         task::spawn_blocking(move || traces.list_traces_sync(limit, offset))
             .await
             .map_err(|source| TraceStoreError::Worker { source })?
+    }
+
+    pub(crate) async fn list_traces_for_owned_workspaces(
+        &self,
+        limit: usize,
+        offset: usize,
+        scope: OwnedWorkspaceScope,
+    ) -> Result<Vec<TraceSummaryRecord>, TraceStoreError> {
+        let traces = self.clone();
+        task::spawn_blocking(move || {
+            traces.list_traces_for_owned_workspaces_sync(limit, offset, &scope)
+        })
+        .await
+        .map_err(|source| TraceStoreError::Worker { source })?
     }
 
     pub(crate) async fn list_traces_for_workspace(
@@ -656,12 +679,23 @@ impl TraceStore {
         .map_err(|source| TraceStoreError::Worker { source })?
     }
 
-    pub(crate) async fn get_trace(
+    pub(crate) async fn get_trace_unrestricted(
         &self,
         trace_id: String,
     ) -> Result<TraceDetailRecord, TraceStoreError> {
         let traces = self.clone();
         task::spawn_blocking(move || traces.get_trace_sync(&trace_id))
+            .await
+            .map_err(|source| TraceStoreError::Worker { source })?
+    }
+
+    pub(crate) async fn get_trace_for_owned_workspaces(
+        &self,
+        trace_id: String,
+        scope: OwnedWorkspaceScope,
+    ) -> Result<TraceDetailRecord, TraceStoreError> {
+        let traces = self.clone();
+        task::spawn_blocking(move || traces.get_trace_for_owned_workspaces_sync(&trace_id, &scope))
             .await
             .map_err(|source| TraceStoreError::Worker { source })?
     }
@@ -717,6 +751,32 @@ impl TraceStore {
         workspace_name: &str,
     ) -> Result<Vec<TraceSummaryRecord>, TraceStoreError> {
         self.list_traces_filtered_sync(limit, offset, Some(workspace_name))
+    }
+
+    fn list_traces_for_owned_workspaces_sync(
+        &self,
+        limit: usize,
+        offset: usize,
+        scope: &OwnedWorkspaceScope,
+    ) -> Result<Vec<TraceSummaryRecord>, TraceStoreError> {
+        if limit == 0 || scope.0.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let candidate_limit = offset.saturating_add(limit);
+        let mut summaries_by_trace = HashMap::new();
+        for workspace_name in &scope.0 {
+            for summary in
+                self.list_traces_for_workspace_sync(candidate_limit, 0, workspace_name)?
+            {
+                summaries_by_trace
+                    .entry(summary.trace_id.clone())
+                    .or_insert(summary);
+            }
+        }
+        let mut summaries = summaries_by_trace.into_values().collect::<Vec<_>>();
+        sort_summaries(&mut summaries);
+        Ok(summaries.into_iter().skip(offset).take(limit).collect())
     }
 
     fn list_traces_filtered_sync(
@@ -853,6 +913,25 @@ impl TraceStore {
         };
         detail.summary = summary;
         Ok(detail)
+    }
+
+    fn get_trace_for_owned_workspaces_sync(
+        &self,
+        trace_id: &str,
+        scope: &OwnedWorkspaceScope,
+    ) -> Result<TraceDetailRecord, TraceStoreError> {
+        if scope.0.is_empty() {
+            return Err(TraceStoreError::NotFound(trace_id.to_string()));
+        }
+        let detail = self.get_trace_sync(trace_id)?;
+        if detail.spans.iter().any(|span| {
+            workspace_attribute(&span.attributes_json)
+                .is_some_and(|workspace| scope.0.contains(&workspace))
+        }) {
+            Ok(detail)
+        } else {
+            Err(TraceStoreError::NotFound(trace_id.to_string()))
+        }
     }
 
     pub(crate) fn list_query_history_sync(
@@ -2069,8 +2148,8 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        JSONL_MAX_FILE_AGE, JsonlSpanExporter, RollingJsonlWriter, StoredTraceStatus,
-        TraceSpanRecord, TraceStore, unix_nanos,
+        JSONL_MAX_FILE_AGE, JsonlSpanExporter, OwnedWorkspaceScope, RollingJsonlWriter,
+        StoredTraceStatus, TraceSpanRecord, TraceStore, unix_nanos,
     };
     use coral_telemetry::WORKSPACE_SPAN_ATTRIBUTE;
 
@@ -2716,7 +2795,8 @@ mod tests {
     }
 
     #[test]
-    fn workspace_filtered_traces_include_complete_matching_traces() {
+    #[expect(clippy::too_many_lines, reason = "scoped trace fixture")]
+    fn owned_workspace_filtered_traces_are_complete_scoped_and_globally_paged() {
         let temp = TempDir::new().expect("temp dir");
         let dir = temp.path().join("telemetry").join("traces");
         fs::create_dir_all(&dir).expect("trace dir");
@@ -2755,6 +2835,12 @@ mod tests {
         newer_duplicate.start_time_unix_nanos = 50;
         newer_duplicate.end_time_unix_nanos = 70;
 
+        let mut gamma = trace_record("gamma-trace", "gamma-span");
+        gamma.attributes_json = r#"{"workspace":"gamma"}"#.to_string();
+        gamma.end_time_unix_nanos = 80;
+        let mut host = trace_record("host-trace", "host-span");
+        host.end_time_unix_nanos = 90;
+
         let path = dir.join(timestamped_jsonl_path(SystemTime::now()));
         write_record_file_lines(
             &path,
@@ -2765,6 +2851,8 @@ mod tests {
                 alpha_old,
                 older_duplicate,
                 newer_duplicate,
+                gamma,
+                host,
             ],
         );
 
@@ -2801,6 +2889,30 @@ mod tests {
         store
             .get_trace_for_workspace_sync("duplicate-workspace", "alpha")
             .expect_err("newer beta duplicate must not be visible through alpha filter");
+        let scope = OwnedWorkspaceScope::new(["alpha".to_string(), "beta".to_string()]);
+        for (offset, expected) in [
+            (0, ["duplicate-workspace", "beta-trace"]),
+            (2, ["alpha-new", "alpha-old"]),
+        ] {
+            let page = store
+                .list_traces_for_owned_workspaces_sync(2, offset, &scope)
+                .expect("owned page");
+            assert_eq!(
+                page.iter()
+                    .map(|summary| summary.trace_id.as_str())
+                    .collect::<Vec<_>>(),
+                expected
+            );
+        }
+        store
+            .get_trace_for_owned_workspaces_sync("beta-trace", &scope)
+            .expect("owned trace detail");
+        for concealed in ["gamma-trace", "host-trace"] {
+            assert!(matches!(
+                store.get_trace_for_owned_workspaces_sync(concealed, &scope),
+                Err(super::TraceStoreError::NotFound(ref trace_id)) if trace_id == concealed
+            ));
+        }
     }
 
     #[test]
