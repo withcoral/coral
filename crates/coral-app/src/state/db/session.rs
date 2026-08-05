@@ -10,6 +10,7 @@ use crate::state::db::repositories::identity_specs::{
     IdentitySpecDocumentsRepo, IdentitySpecsRepo,
 };
 use crate::state::db::repositories::state_migrations::StateMigrationsRepo;
+use crate::state::db::repositories::task_queries::TaskQueriesRepo;
 use crate::state::db::repositories::tasks::TasksRepo;
 use crate::state::db::repositories::workspaces::WorkspacesRepo;
 
@@ -46,6 +47,10 @@ pub(crate) trait DbRepos: DbSession + Sized {
 
     fn tasks(&mut self) -> TasksRepo<'_, Self> {
         TasksRepo::new(self)
+    }
+
+    fn task_queries(&mut self) -> TaskQueriesRepo<'_, Self> {
+        TaskQueriesRepo::new(self)
     }
 
     #[cfg_attr(not(test), expect(dead_code, reason = "B2 wires production consumers"))]

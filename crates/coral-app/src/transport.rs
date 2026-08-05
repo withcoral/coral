@@ -6,7 +6,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use coral_api::{
-    CORAL_ERROR_DOMAIN, CORAL_TASK_ID_METADATA_KEY, grpc_response_status_code,
+    CORAL_ERROR_DOMAIN, CORAL_TASK_ID_METADATA_KEY, CORAL_TASK_INTENT_MAX_CHARS,
+    CORAL_TOOL_INTENT_METADATA_KEY, grpc_response_status_code,
     v1::{
         CatalogItem as ProtoCatalogItem, CatalogSearchResult as ProtoCatalogSearchResult, Column,
         ColumnSearchResult as ProtoColumnSearchResult,
@@ -128,6 +129,7 @@ where
             |method| GrpcMethodMetadata::new(method.service.as_str(), method.method.as_str()),
         );
         let request_metadata = MetadataMap::from_headers(request.headers().clone());
+        let tool_intent = tool_intent_from_metadata(&request_metadata);
         let principal_provider = Arc::clone(&self.principal_provider);
         let span = grpc_span_for_metadata(&method_metadata, &request_metadata);
         request
@@ -155,9 +157,25 @@ where
                                 return Ok(status.into_http());
                             }
                         };
-                        request
-                            .extensions_mut()
-                            .insert(RequestContext::new(principal).with_task_id(task_id));
+                        let tool_intent = match tool_intent {
+                            Ok(tool_intent) => tool_intent,
+                            Err(status) => {
+                                record_grpc_status(&span, status.code(), Some(&status));
+                                return Ok(status.into_http());
+                            }
+                        };
+                        if task_id.is_none() && tool_intent.is_some() {
+                            let status = Status::invalid_argument(
+                                "coral-tool-intent-bin metadata requires coral-task-id metadata",
+                            );
+                            record_grpc_status(&span, status.code(), Some(&status));
+                            return Ok(status.into_http());
+                        }
+                        request.extensions_mut().insert(
+                            RequestContext::new(principal)
+                                .with_task_id(task_id)
+                                .with_tool_intent(tool_intent),
+                        );
                         inner.call(request).await
                     }
                     Err(error) => {
@@ -302,6 +320,29 @@ fn task_id_from_header_value(value: &http::HeaderValue) -> Result<TaskId, Status
         .to_str()
         .map_err(|_error| Status::invalid_argument("coral-task-id metadata must be ASCII"))?;
     TaskId::parse(value).map_err(app_status)
+}
+
+fn tool_intent_from_metadata(metadata: &MetadataMap) -> Result<Option<String>, Status> {
+    let mut intents = metadata.get_all_bin(CORAL_TOOL_INTENT_METADATA_KEY).iter();
+    let Some(intent) = intents.next() else {
+        return Ok(None);
+    };
+    if intents.next().is_some() {
+        return Err(Status::invalid_argument(
+            "coral-tool-intent-bin metadata must contain exactly one value",
+        ));
+    }
+    let bytes = intent.to_bytes().map_err(|_error| {
+        Status::invalid_argument("coral-tool-intent-bin metadata must be valid binary metadata")
+    })?;
+    let intent = std::str::from_utf8(&bytes)
+        .map_err(|_error| Status::invalid_argument("tool intent metadata must be UTF-8"))?;
+    if intent.trim().is_empty() || intent.chars().count() > CORAL_TASK_INTENT_MAX_CHARS {
+        return Err(Status::invalid_argument(format!(
+            "tool intent metadata must be non-empty and at most {CORAL_TASK_INTENT_MAX_CHARS} characters"
+        )));
+    }
+    Ok(Some(intent.to_string()))
 }
 
 pub(crate) fn request_context<T>(request: &Request<T>) -> Result<&RequestContext, Status> {
@@ -613,7 +654,7 @@ mod tests {
 
     use coral_api::{
         CORAL_ERROR_DOMAIN, CORAL_ERROR_METADATA_SUMMARY, CORAL_TASK_ID_METADATA_KEY,
-        grpc_response_status_code,
+        CORAL_TOOL_INTENT_METADATA_KEY, grpc_response_status_code,
         v1::{QueryTestFailure, Workspace, query_test_result},
     };
     use opentelemetry::Value;
@@ -627,7 +668,7 @@ mod tests {
         GRPC_REQUEST_ERROR_MESSAGE, GrpcMethodMetadata, GrpcServerMethod, annotate_request_context,
         grpc_method, grpc_span_for_metadata, instrument_grpc, principal_provider_status,
         query_status, query_test_result_to_proto, table_function_to_proto, table_summary_to_proto,
-        table_to_proto, workspace_name_from_proto, workspace_to_proto,
+        table_to_proto, tool_intent_from_metadata, workspace_name_from_proto, workspace_to_proto,
     };
     use crate::bootstrap::AppError;
     use crate::identity::PrincipalProviderError;
@@ -852,6 +893,26 @@ mod tests {
             .expect("valid metadata")
             .expect("task id");
         assert_eq!(task_id.to_string(), "750e8400-e29b-41d4-a716-446655440000");
+    }
+
+    #[test]
+    fn tool_intent_metadata_preserves_utf8_and_rejects_repeated_values() {
+        let mut metadata = tonic::metadata::MetadataMap::new();
+        metadata.insert_bin(
+            CORAL_TOOL_INTENT_METADATA_KEY,
+            tonic::metadata::MetadataValue::from_bytes("Sprawdź odnowienia".as_bytes()),
+        );
+        assert_eq!(
+            tool_intent_from_metadata(&metadata).expect("valid tool intent"),
+            Some("Sprawdź odnowienia".to_string())
+        );
+
+        metadata.append_bin(
+            CORAL_TOOL_INTENT_METADATA_KEY,
+            tonic::metadata::MetadataValue::from_bytes(b"Second intent"),
+        );
+        let status = tool_intent_from_metadata(&metadata).expect_err("reject repeated intent");
+        assert_eq!(status.code(), Code::InvalidArgument);
     }
 
     #[test]

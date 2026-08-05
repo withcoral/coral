@@ -46,7 +46,7 @@ pub use client::{
     default_workspace, workspace,
 };
 pub use error::{ClientError, QueryResultError};
-pub use propagation::{BearerToken, with_task_metadata};
+pub use propagation::{BearerToken, with_task_context, with_task_metadata};
 pub use search::{
     SearchResponseValue, format_schema_table_equivalent, format_search_response_json,
     format_search_response_text, format_sql_identifier, format_table_name,

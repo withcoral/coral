@@ -94,6 +94,10 @@ pub const DEFAULT_WORKSPACE_ID: &str = "default";
 /// clients and servers that opt into task attribution.
 pub const CORAL_TASK_ID_METADATA_KEY: &str = "coral-task-id";
 
+/// Binary gRPC metadata key carrying the current ordinary tool call's intent.
+/// Binary metadata preserves the UTF-8 text accepted by MCP tool arguments.
+pub const CORAL_TOOL_INTENT_METADATA_KEY: &str = "coral-tool-intent-bin";
+
 /// Maximum length of a Coral task id, in bytes. Validated identically server-
 /// and client-side so the contract stays in one place.
 pub const CORAL_TASK_ID_MAX_LEN: usize = 128;

@@ -248,6 +248,33 @@ async fn start_test_task(client: &RunningService<RoleClient, ()>) -> String {
     task_id
 }
 
+async fn assert_first_task_query_recorded(client: &RunningService<RoleClient, ()>, task_id: &str) {
+    let history = client
+        .call_tool(
+            CallToolRequestParams::new("sql").with_arguments(task_arguments(
+                task_id,
+                &json!({
+                    "intent": "Inspect task SQL history",
+                    "queries": [format!(
+                        "SELECT task_id, intent, sql, status FROM coral.task_queries WHERE task_id = '{task_id}' ORDER BY executed_at, query_id"
+                    )]
+                }),
+            )),
+        )
+        .await
+        .expect("query task SQL history")
+        .structured_content
+        .expect("structured task SQL history");
+    let recorded = &history["results"][0]["rows"][0];
+    assert_eq!(recorded["task_id"], task_id);
+    assert_eq!(recorded["intent"], "Exercise the MCP test contract");
+    assert_eq!(
+        recorded["sql"],
+        "SELECT table_name FROM coral.tables WHERE schema_name = 'coral' ORDER BY table_name"
+    );
+    assert_eq!(recorded["status"], "success");
+}
+
 async fn add_demo_source(source_client: &mut SourceClient, manifest_yaml: String) {
     let mut stream = source_client
         .import_source(Request::new(ImportSourceRequest {
@@ -1140,7 +1167,14 @@ async fn mcp_catalog_helpers_expose_coral_system_tables_from_sql_catalog() {
     let session = start_session(&temp).await;
     let client = &session.client;
     let task_id = start_test_task(client).await;
-    let expected_tables = ["columns", "filters", "inputs", "table_functions", "tables"];
+    let expected_tables = [
+        "columns",
+        "filters",
+        "inputs",
+        "table_functions",
+        "tables",
+        "task_queries",
+    ];
 
     let sql = client
         .call_tool(
@@ -1164,6 +1198,8 @@ async fn mcp_catalog_helpers_expose_coral_system_tables_from_sql_catalog() {
             .collect::<Vec<_>>(),
         expected_tables
     );
+
+    assert_first_task_query_recorded(client, &task_id).await;
 
     let catalog = client
         .call_tool(
@@ -1266,7 +1302,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
             .description
             .as_deref()
             .expect("sql description")
-            .contains("5 table(s) are currently visible")
+            .contains("6 table(s) are currently visible")
     );
     assert!(
         initial_sql_tool
@@ -1302,7 +1338,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
             .description
             .as_deref()
             .expect("guide description")
-            .contains("5 visible table")
+            .contains("6 visible table")
     );
 
     let initial_guide = client
@@ -1330,7 +1366,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
             .description
             .as_deref()
             .expect("sql description")
-            .contains("8 table(s) are currently visible")
+            .contains("9 table(s) are currently visible")
     );
     assert!(
         sql_tool
@@ -1344,7 +1380,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
             .description
             .as_deref()
             .expect("catalog description")
-            .contains("8 table(s) and 0 table function(s) are currently visible")
+            .contains("9 table(s) and 0 table function(s) are currently visible")
     );
     assert!(
         search_tool
@@ -1358,7 +1394,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
             .description
             .as_deref()
             .expect("catalog search description")
-            .contains("8 table(s) and 0 table function(s) are currently visible")
+            .contains("9 table(s) and 0 table function(s) are currently visible")
     );
     assert!(
         list_catalog_tool
@@ -1419,7 +1455,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
         .await
         .expect("list catalog");
     let catalog = catalog.structured_content.expect("structured catalog");
-    assert_eq!(catalog["total"], 8);
+    assert_eq!(catalog["total"], 9);
     assert_eq!(catalog["items"][0]["kind"], "table");
     assert_eq!(catalog["items"][0]["name"], "coral.columns");
     assert_eq!(catalog["items"][0]["sql_reference"], "coral.columns");
@@ -1804,7 +1840,7 @@ async fn list_catalog_surfaces_table_functions() {
             .description
             .as_deref()
             .expect("catalog description")
-            .contains("6 table(s) and 2 table function(s) are currently visible")
+            .contains("7 table(s) and 2 table function(s) are currently visible")
     );
     assert!(tools.iter().all(|tool| tool.name != "list_tables"));
     assert!(tools.iter().all(|tool| tool.name != "search_tables"));

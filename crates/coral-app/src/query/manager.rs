@@ -40,6 +40,7 @@ use crate::sources::runtime_package::{
 };
 use crate::sources::{SourceName, ensure_database_source_feature_enabled};
 use crate::state::{AppConfig, AppStateLayout, ConfigStore};
+use crate::task::activity::{TaskActivityRecorder, TaskQueryRecord, TaskQueryStatus};
 use crate::task::id::TaskId;
 use crate::telemetry::app_error_type;
 use crate::workspaces::{
@@ -188,6 +189,15 @@ pub(crate) struct QueryManager {
     search_observations: Option<SearchObservationHandle>,
     pool_registry: Arc<WorkspacePoolRegistry>,
     database_sources_enabled: bool,
+    task_activity: Option<TaskActivityRecorder>,
+}
+
+struct PendingTaskQuery<'a> {
+    recorder: TaskActivityRecorder,
+    id: uuid::Uuid,
+    task_id: TaskId,
+    intent: &'a str,
+    started_at_unix_nanos: i64,
 }
 
 impl QueryManager {
@@ -265,11 +275,17 @@ impl QueryManager {
             search_observations: None,
             pool_registry,
             database_sources_enabled: false,
+            task_activity: None,
         }
     }
 
     pub(crate) fn with_database_sources_enabled(mut self, enabled: bool) -> Self {
         self.database_sources_enabled = enabled;
+        self
+    }
+
+    pub(crate) fn with_task_activity_recorder(mut self, recorder: TaskActivityRecorder) -> Self {
+        self.task_activity = Some(recorder);
         self
     }
 
@@ -467,9 +483,11 @@ impl QueryManager {
         shown_guide_ids: Option<&HashSet<String>>,
         attribution: &QueryAttribution,
     ) -> Result<ExecuteSqlOutcome, QueryManagerError> {
+        let pending_activity = pending_task_query(attribution, self.task_activity.as_ref());
+
         // Keep the database-enabled operation future off this async state machine: on Linux it
         // exceeds Clippy's `large_futures` threshold when awaited inline.
-        Box::pin(run_query_operation(
+        let result = Box::pin(run_query_operation(
             QueryOperation::ExecuteSql,
             workspace_name,
             sql,
@@ -527,7 +545,10 @@ impl QueryManager {
                 }
             },
         ))
-        .await
+        .await;
+
+        record_task_query(pending_activity, sql, &result).await;
+        result
     }
 
     pub(crate) async fn explain_sql(
@@ -797,6 +818,11 @@ impl QueryManager {
                 .source_observation_publishers
                 .extend(observed_extensions.source_observation_publishers);
         }
+        if let Some(task_activity) = &self.task_activity {
+            extensions
+                .system_tables
+                .push(task_activity.system_table(workspace_name.clone()));
+        }
         let provider_input_resolver = extensions.source_input_resolver.take();
         let source_credentials = selected_sources
             .iter()
@@ -1055,6 +1081,70 @@ impl QueryManager {
             .with_udfs(functions)
             .await
             .map_err(QueryManagerError::Core)
+    }
+}
+
+fn pending_task_query<'a>(
+    attribution: &'a QueryAttribution,
+    recorder: Option<&TaskActivityRecorder>,
+) -> Option<PendingTaskQuery<'a>> {
+    let (Some(task_id), Some(intent), Some(recorder)) = (
+        attribution.task_id,
+        attribution.tool_intent.as_deref(),
+        recorder,
+    ) else {
+        return None;
+    };
+    match crate::state::db::now_unix_nanos_i64() {
+        Ok(started_at_unix_nanos) => Some(PendingTaskQuery {
+            recorder: recorder.clone(),
+            id: uuid::Uuid::new_v4(),
+            task_id,
+            intent,
+            started_at_unix_nanos,
+        }),
+        Err(error) => {
+            tracing::warn!(
+                task.id = %task_id,
+                error = %error,
+                "could not timestamp task query activity"
+            );
+            None
+        }
+    }
+}
+
+async fn record_task_query(
+    pending: Option<PendingTaskQuery<'_>>,
+    sql: &str,
+    result: &Result<ExecuteSqlOutcome, QueryManagerError>,
+) {
+    let Some(pending) = pending else {
+        return;
+    };
+    let status = match result {
+        Ok(ExecuteSqlOutcome::GuideRequired(_)) => return,
+        Ok(ExecuteSqlOutcome::Executed(_)) => TaskQueryStatus::Success,
+        Err(_) => TaskQueryStatus::Error,
+    };
+    if let Err(error) = pending
+        .recorder
+        .record_query(TaskQueryRecord {
+            id: pending.id,
+            task_id: pending.task_id,
+            intent: pending.intent,
+            sql,
+            status,
+            started_at_unix_nanos: pending.started_at_unix_nanos,
+        })
+        .await
+    {
+        tracing::warn!(
+            task.id = %pending.task_id,
+            task.query.id = %pending.id,
+            error = %error,
+            "could not record task query activity"
+        );
     }
 }
 
@@ -1398,6 +1488,7 @@ mod tests {
     use crate::sources::manager::{ImportSourceCommand, SourceBindings, SourceManager};
     use crate::sources::model::SourceOrigin;
     use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig, run_state_migrations};
+    use crate::task::activity::TaskActivityRecorder;
     use crate::task::manager::TaskManager;
     use crate::task::store::TaskStore;
 
@@ -1432,7 +1523,8 @@ mod tests {
             runtime_context,
             layout,
             providers,
-        );
+        )
+        .with_task_activity_recorder(TaskActivityRecorder::new(Arc::clone(&db)));
         QueryManagerFixture {
             _temp: temp,
             manager,
@@ -1628,6 +1720,89 @@ mod tests {
             span_attr(query_span, coral_telemetry::QUERY_STREAM_NAME_ATTRIBUTE),
             Some("execute_sql".to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn execute_sql_records_task_history_and_exposes_the_workspace_table() {
+        use arrow::array::StringArray;
+
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
+        let (tasks, request_context, task_id) = active_task_context(&fixture.db).await;
+        let workspace = WorkspaceName::default();
+        let attribution = QueryAttribution::new(
+            tasks
+                .validate_attribution(&workspace, request_context.task_id())
+                .await
+                .expect("active task"),
+        )
+        .with_tool_intent(Some("Check renewal risk"));
+
+        let success = fixture
+            .manager
+            .execute_sql(&workspace, "SELECT 1", None, &attribution)
+            .await
+            .expect("successful SQL");
+        assert!(matches!(success, ExecuteSqlOutcome::Executed(_)));
+        let invalid = fixture
+            .manager
+            .execute_sql(&workspace, "SELECT FROM", None, &attribution)
+            .await;
+        assert!(invalid.is_err(), "invalid SQL should fail");
+        fixture
+            .manager
+            .execute_sql(
+                &workspace,
+                "SELECT 2",
+                None,
+                &QueryAttribution::new(request_context.task_id()),
+            )
+            .await
+            .expect("task-ID-only SQL remains supported");
+
+        let history_sql = format!(
+            "SELECT task_id, intent, sql, status FROM coral.task_queries \
+             WHERE task_id = '{task_id}' ORDER BY executed_at, query_id"
+        );
+        let history = fixture
+            .manager
+            .execute_sql(&workspace, &history_sql, None, &QueryAttribution::default())
+            .await
+            .expect("query task history");
+        let ExecuteSqlOutcome::Executed(history) = history else {
+            panic!("history query should execute");
+        };
+        assert_eq!(history.row_count(), 2);
+        let batch = history.batches().first().expect("history batch");
+        let strings = |index| {
+            batch
+                .column(index)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .expect("UTF-8 history column")
+        };
+        assert_eq!(strings(0).value(0), task_id);
+        assert_eq!(strings(1).value(0), "Check renewal risk");
+        assert_eq!(strings(2).value(0), "SELECT 1");
+        assert_eq!(strings(3).value(0), "success");
+        assert_eq!(strings(2).value(1), "SELECT FROM");
+        assert_eq!(strings(3).value(1), "error");
+    }
+
+    #[tokio::test]
+    async fn task_activity_write_failure_does_not_change_the_sql_result() {
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
+        let workspace = WorkspaceName::default();
+        let task_id = TaskId::parse(&uuid::Uuid::new_v4().to_string()).expect("task id");
+        let attribution = QueryAttribution::new(Some(task_id))
+            .with_tool_intent(Some("Exercise non-fatal activity writes"));
+
+        let outcome = fixture
+            .manager
+            .execute_sql(&workspace, "SELECT 1", None, &attribution)
+            .await
+            .expect("activity persistence must not change SQL success");
+
+        assert!(matches!(outcome, ExecuteSqlOutcome::Executed(_)));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -2185,6 +2360,14 @@ tables:
             fixture.manager.layout.clone(),
         );
         let workspace_name = WorkspaceName::default();
+        let (tasks, request_context, _) = active_task_context(&fixture.db).await;
+        let attribution = QueryAttribution::new(
+            tasks
+                .validate_attribution(&workspace_name, request_context.task_id())
+                .await
+                .expect("active task"),
+        )
+        .with_tool_intent(Some("Read guided items"));
         source_manager
             .import_source(
                 &workspace_name,
@@ -2200,12 +2383,7 @@ tables:
         let sql = "SELECT id FROM changing_guidance.items";
         let initial = fixture
             .manager
-            .execute_sql(
-                &workspace_name,
-                sql,
-                Some(&HashSet::new()),
-                &QueryAttribution::default(),
-            )
+            .execute_sql(&workspace_name, sql, Some(&HashSet::new()), &attribution)
             .await
             .expect("require initial guide");
         let ExecuteSqlOutcome::GuideRequired(initial) = initial else {
@@ -2243,12 +2421,7 @@ tables:
 
         let current = fixture
             .manager
-            .execute_sql(
-                &workspace_name,
-                sql,
-                Some(&shown_initial),
-                &QueryAttribution::default(),
-            )
+            .execute_sql(&workspace_name, sql, Some(&shown_initial), &attribution)
             .await
             .expect("require changed guide");
         let ExecuteSqlOutcome::GuideRequired(current) = current else {
@@ -2269,12 +2442,7 @@ tables:
         let shown_current = HashSet::from([current.guide_id.clone()]);
         let executed = fixture
             .manager
-            .execute_sql(
-                &workspace_name,
-                sql,
-                Some(&shown_current),
-                &QueryAttribution::default(),
-            )
+            .execute_sql(&workspace_name, sql, Some(&shown_current), &attribution)
             .await
             .expect("execute after showing changed guide");
         assert!(matches!(executed, ExecuteSqlOutcome::Executed(_)));
@@ -2285,6 +2453,15 @@ tables:
                 .expect("request recording")
                 .len(),
             provider_requests_before + 1
+        );
+        let recorded = TaskActivityRecorder::new(Arc::clone(&fixture.db))
+            .queries_for_workspace(&workspace_name)
+            .await
+            .expect("load task query activity");
+        assert_eq!(recorded.len(), 1, "GuideRequired must not record activity");
+        assert_eq!(
+            recorded.first().expect("recorded task query").status,
+            "success"
         );
     }
 
