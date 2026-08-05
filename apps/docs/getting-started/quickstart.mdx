@@ -1,63 +1,34 @@
 ---
 title: "Quickstart"
-description: "Set up Coral in minutes: run the onboarding flow, connect your first sources, and start querying your data."
+description: "Set up Coral in minutes: connect your first sources, connect your agents to Coral, and start querying your data."
 ---
 
-This tutorial gets you from a fresh [install](/getting-started/installation) of Coral, to your first SQL query.
+This tutorial gets you from a fresh [install](/getting-started/installation) of Coral, to your agents using Coral to retrieve data.
 
 <Tip>
-  Prefer the CLI experience? Run `coral onboard` for an interactive wizard that
-  walks you through the whole setup described in this page.
+  Did you install the CLI rather than the desktop app? Run `coral onboard` for
+  an interactive wizard that walks you through your first steps with the Coral
+  CLI.
 </Tip>
 
-## 1. Discover bundled sources
+## 1. Add data sources
 
-```shellscript
-coral source discover
-```
+Coral comes with [bundled sources](/reference/bundled-sources) for GitHub, Slack, Datadog, Linear, Sentry, and more.
+Coral can only retrieve data from sources you've connected.
 
-This lists the bundled sources available in your build. Coral comes with [bundled sources](/reference/bundled-sources) for GitHub, Slack, Datadog, Linear, Sentry, and more.
+The sources page in the desktop app allows you to add, remove or create new sources.
 
-## 2. Add a source
+## 2. Connect your agents
 
-For example, add GitHub. Pass `--interactive` and Coral will prompt you for each required input:
+The desktop app exposes an MCP server over stdio that your agents can connect to. You can go to the setting in the desktop app to set up your agents, or look at the [MCP docs](/guides/use-coral-over-mcp).
 
-```shellscript
-coral source add --interactive github
-```
-
-Once connected, the source's data is available as SQL tables. To update a source's credentials later, run the same command again.
-
-<Tip>
-  For scripted setups, omit `--interactive` and Coral reads each input from an
-  environment variable of the same name — e.g. `GITHUB_TOKEN=ghp_... coral
-  source add github`.
-</Tip>
+You can also [install Coral skills](/getting-started/installation#skills) to help your agents use Coral more effectively.
 
 ## 3. Query your data
 
-You can now query any connected source using SQL.
-
-Use `coral.tables` to see all available tables:
-
-```shellscript
-coral sql "SELECT schema_name, table_name FROM coral.tables ORDER BY 1, 2"
-```
-
-Assuming you've connected GitHub, try listing open issues for a repo:
-
-```shellscript
-coral sql "
-  SELECT number, title, state, created_at
-  FROM github.issues
-  WHERE owner = 'withcoral' AND repo = 'coral' AND state = 'open'
-  ORDER BY created_at DESC
-  LIMIT 10
-"
-```
+Connected sources are now available. Try asking your agent a question about your data.
 
 ## Next steps
 
-- **[Use Coral over MCP](/guides/use-coral-over-mcp)** — expose Coral to Claude Code, Cursor, or VS Code over MCP so your agent can query sources directly
+- **[Search with Coral](/guides/search-with-coral)** — find the tables, columns, and values you need before writing SQL
 - **[Write a custom source spec](/guides/write-a-custom-source)** — connect any HTTP API or local dataset that isn't bundled yet
-- **[Install Coral skills](/getting-started/installation#skills)** — teach your coding agent how to use Coral

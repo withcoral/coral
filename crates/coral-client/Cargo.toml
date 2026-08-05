@@ -19,6 +19,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tonic.workspace = true
+tonic-health.workspace = true
 tonic-types.workspace = true
 tracing.workspace = true
 tracing-opentelemetry.workspace = true

@@ -1,8 +1,12 @@
 //! App-level Universal Search manager.
 
+use std::future::Future;
 use std::time::{Duration, Instant};
 
+use opentelemetry::trace::Status as OtelStatus;
 use tokio::task;
+use tracing::{Instrument as _, field};
+use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
 use crate::bootstrap::AppError;
 use crate::catalog::discovery::CatalogDiscovery;
@@ -34,6 +38,8 @@ use crate::search::sqlite_store::{
 };
 use crate::sources::materialization::SourceDiagnosticReporter;
 use crate::state::{AppStateLayout, ConfigStore};
+use crate::task::id::TaskId;
+use crate::telemetry::{app_error_type, record_local_only_span_attribute};
 use crate::workspaces::{
     WorkspaceLifecycleLock, WorkspaceLifecycleRevision, WorkspaceManager, WorkspaceName,
 };
@@ -57,6 +63,10 @@ const MANUAL_DRAIN_MAX_JOBS: usize = 10_000;
 const SHUTDOWN_DRAIN_SOFT_BUDGET: Duration = Duration::from_secs(1);
 const WORKSPACE_SNAPSHOT_ATTEMPTS: usize = 2;
 const OBSERVED_STALE_AFTER_LAST_OBSERVED_DAYS: u32 = 365;
+const SEARCH_TELEMETRY_ERROR_MESSAGE: &str = "Search operation failed";
+const SEARCH_MAINTENANCE_TELEMETRY_ERROR_MESSAGE: &str = "Search maintenance operation failed";
+const SEARCH_MAINTENANCE_PROVIDER_FAILURE_ERROR_TYPE: &str = "PROVIDER_FAILURE";
+const REBUILD_SEARCH_INDEX_OPERATION: &str = "rebuild_search_index";
 const OBSERVED_VALUES_SEARCH_DISABLED_MAINTENANCE_NOTE: &str = "observed value search maintenance is disabled; enable `observed_values_search` to rebuild or drain observed values";
 
 enum CatalogPreload {
@@ -130,50 +140,72 @@ impl SearchManager {
         request: &SearchRequest,
         attribution: &QueryAttribution,
     ) -> Result<SearchResponse, SearchManagerError> {
-        let request_started_at = Instant::now();
-        for _ in 0..WORKSPACE_SNAPSHOT_ATTEMPTS {
-            let CatalogPreload::Ready {
-                revision,
-                resolution,
-            } = self
-                .preload_catalog(&request.workspace_name, attribution)
-                .await?
-            else {
-                continue;
-            };
-            let Some(lifecycle_lease) = self
-                .lifecycle_lock
-                .read_lease_if_unchanged(revision, &request.workspace_name)
-                .await
-            else {
-                continue;
-            };
-            let (observed_values_policy, lifecycle_lease) = if self.observed_values_search_enabled {
-                let search = self.clone();
-                let workspace_name = request.workspace_name.clone();
-                run_blocking_search_operation(move || {
-                    Ok((
-                        Some(search.observed_retrieval_policy(&workspace_name)),
+        // The retry/preload path makes this future large enough to trigger
+        // Clippy's `large_futures` lint when it is awaited inline.
+        Box::pin(run_search_operation(
+            request,
+            attribution.task_id.as_ref(),
+            async {
+                let request_started_at = Instant::now();
+                for _ in 0..WORKSPACE_SNAPSHOT_ATTEMPTS {
+                    let CatalogPreload::Ready {
+                        revision,
+                        resolution,
+                    } = self
+                        .preload_catalog(&request.workspace_name, attribution)
+                        .await?
+                    else {
+                        continue;
+                    };
+                    let Some(lifecycle_lease) = self
+                        .lifecycle_lock
+                        .read_lease_if_unchanged(revision, &request.workspace_name)
+                        .await
+                    else {
+                        continue;
+                    };
+                    let (observed_values_policy, lifecycle_lease) =
+                        if self.observed_values_search_enabled {
+                            let search = self.clone();
+                            let workspace_name = request.workspace_name.clone();
+                            run_blocking_search_operation(move || {
+                                Ok((
+                                    Some(search.observed_retrieval_policy(&workspace_name)),
+                                    lifecycle_lease,
+                                ))
+                            })
+                            .await?
+                        } else {
+                            (None, lifecycle_lease)
+                        };
+                    let context = SearchExecutionContext::new(
+                        request_started_at,
                         lifecycle_lease,
-                    ))
-                })
-                .await?
-            } else {
-                (None, lifecycle_lease)
-            };
-            let context = SearchExecutionContext::new(
-                request_started_at,
-                lifecycle_lease,
-                request.clone(),
-                resolution,
-                observed_values_policy,
-            );
-            return Ok(self.engine.search(context).await);
-        }
-        Err(workspace_changed_error("searching"))
+                        request.clone(),
+                        resolution,
+                        observed_values_policy,
+                    );
+                    return Ok(self.engine.search(context).await);
+                }
+                Err(workspace_changed_error("searching"))
+            },
+        ))
+        .await
     }
 
     pub(crate) async fn rebuild_index(
+        &self,
+        request: &RebuildSearchIndexRequest,
+    ) -> Result<RebuildSearchIndexResponse, SearchManagerError> {
+        Box::pin(run_search_maintenance_operation(
+            &request.workspace_name,
+            REBUILD_SEARCH_INDEX_OPERATION,
+            self.rebuild_index_inner(request),
+        ))
+        .await
+    }
+
+    async fn rebuild_index_inner(
         &self,
         request: &RebuildSearchIndexRequest,
     ) -> Result<RebuildSearchIndexResponse, SearchManagerError> {
@@ -556,6 +588,122 @@ fn workspace_changed_error(operation: &str) -> SearchManagerError {
     .into()
 }
 
+async fn run_search_maintenance_operation<F>(
+    workspace_name: &WorkspaceName,
+    operation_name: &'static str,
+    operation: F,
+) -> Result<RebuildSearchIndexResponse, SearchManagerError>
+where
+    F: Future<Output = Result<RebuildSearchIndexResponse, SearchManagerError>>,
+{
+    let span = tracing::info_span!(
+        "coral.search.maintenance",
+        coral.stream.entry = true,
+        coral.stream.kind = coral_telemetry::QUERY_STREAM_KIND_OTHER,
+        coral.stream.name = operation_name,
+        otel.name = "coral.search.maintenance",
+        operation = operation_name,
+        workspace = field::Empty,
+        status = field::Empty,
+        error.type = field::Empty,
+        exception.message = field::Empty,
+    );
+    span.record(
+        coral_telemetry::WORKSPACE_SPAN_ATTRIBUTE,
+        workspace_name.as_str(),
+    );
+    let result = operation.instrument(span.clone()).await;
+    match &result {
+        Ok(response) => {
+            if response
+                .results
+                .iter()
+                .any(|result| result.state == SearchMaintenanceState::Failed)
+            {
+                coral_telemetry::record_failure(
+                    &span,
+                    SEARCH_MAINTENANCE_PROVIDER_FAILURE_ERROR_TYPE,
+                    SEARCH_MAINTENANCE_TELEMETRY_ERROR_MESSAGE,
+                );
+            } else {
+                span.record("status", "ok");
+                span.set_status(OtelStatus::Ok);
+            }
+        }
+        Err(SearchManagerError::App(error)) => {
+            coral_telemetry::record_failure(
+                &span,
+                app_error_type(error),
+                SEARCH_MAINTENANCE_TELEMETRY_ERROR_MESSAGE,
+            );
+        }
+    }
+    drop(span);
+    result
+}
+
+async fn run_search_operation<F>(
+    request: &SearchRequest,
+    task_id: Option<&TaskId>,
+    operation: F,
+) -> Result<SearchResponse, SearchManagerError>
+where
+    F: Future<Output = Result<SearchResponse, SearchManagerError>>,
+{
+    let span = create_search_span(request, task_id);
+    let result = operation.instrument(span.clone()).await;
+    match &result {
+        Ok(response) => {
+            span.record(
+                "result_count",
+                u64::try_from(response.results.len()).unwrap_or(u64::MAX),
+            );
+            span.record("status", "ok");
+            span.set_status(OtelStatus::Ok);
+        }
+        Err(SearchManagerError::App(error)) => {
+            coral_telemetry::record_failure(
+                &span,
+                app_error_type(error),
+                SEARCH_TELEMETRY_ERROR_MESSAGE,
+            );
+        }
+    }
+    result
+}
+
+fn create_search_span(request: &SearchRequest, task_id: Option<&TaskId>) -> tracing::Span {
+    let span = tracing::info_span!(
+        "coral.search",
+        coral.stream.entry = true,
+        coral.stream.kind = coral_telemetry::QUERY_STREAM_KIND_SEARCH,
+        coral.stream.name = "search",
+        otel.name = "coral.search",
+        operation = "search",
+        workspace = field::Empty,
+        query_len_bytes = request.query.len(),
+        limit = request.limit,
+        task.id = field::Empty,
+        result_count = field::Empty,
+        status = field::Empty,
+        error.type = field::Empty,
+        exception.message = field::Empty,
+    );
+    record_local_only_span_attribute(
+        &span,
+        coral_telemetry::QUERY_STREAM_SEARCH_QUERY_ATTRIBUTE,
+        request.query.as_str(),
+    );
+    span.record(
+        coral_telemetry::WORKSPACE_SPAN_ATTRIBUTE,
+        request.workspace_name.as_str(),
+    );
+    if let Some(task_id) = task_id {
+        span.record("task.id", field::display(task_id));
+    }
+    span
+}
+
 async fn run_blocking_search_operation<T, F>(operation: F) -> Result<T, SearchManagerError>
 where
     T: Send + 'static,
@@ -667,5 +815,326 @@ fn search_storage_cleanup_result(
     SearchStorageCleanupResult {
         state,
         note: note.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use opentelemetry::trace::{Status as OtelStatus, TracerProvider as _};
+    use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+    use tracing::Instrument as _;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    use super::{
+        REBUILD_SEARCH_INDEX_OPERATION, SEARCH_MAINTENANCE_PROVIDER_FAILURE_ERROR_TYPE,
+        SEARCH_MAINTENANCE_TELEMETRY_ERROR_MESSAGE, SEARCH_TELEMETRY_ERROR_MESSAGE,
+        run_search_maintenance_operation, run_search_operation, search_manager_error_message,
+    };
+    use crate::bootstrap::AppError;
+    use crate::search::maintenance::{
+        RebuildSearchIndexResponse, SearchMaintenanceResult, SearchMaintenanceState,
+    };
+    use crate::search::result::{
+        SearchManagerError, SearchProviderKind, SearchRequest, SearchResponse, SearchTruncation,
+    };
+    use crate::task::id::TaskId;
+    use crate::workspaces::WorkspaceName;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn search_maintenance_operation_marks_the_outer_query_stream_entry() {
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let tracer = provider.tracer("search-maintenance-summary-test");
+        let subscriber = tracing_subscriber::Registry::default()
+            .with(tracing_opentelemetry::layer().with_tracer(tracer));
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        run_search_maintenance_operation(
+            &WorkspaceName::default(),
+            REBUILD_SEARCH_INDEX_OPERATION,
+            async {
+                async {}
+                    .instrument(tracing::info_span!(
+                        "coral.query",
+                        coral.stream.entry = true,
+                        coral.stream.kind = coral_telemetry::QUERY_STREAM_KIND_QUERY,
+                        coral.stream.name = "LIST CATALOG",
+                    ))
+                    .await;
+                Ok::<_, SearchManagerError>(RebuildSearchIndexResponse {
+                    results: vec![SearchMaintenanceResult {
+                        provider: SearchProviderKind::ObservedValues,
+                        state: SearchMaintenanceState::Partial,
+                        note: "maintenance partially completed".to_string(),
+                        detail: None,
+                    }],
+                })
+            },
+        )
+        .await
+        .expect("search maintenance operation");
+
+        provider.force_flush().expect("flush spans");
+        let spans = exporter.get_finished_spans().expect("finished spans");
+        let maintenance_span = spans
+            .iter()
+            .find(|span| span.name == "coral.search.maintenance")
+            .expect("search maintenance span recorded");
+        let query_span = spans
+            .iter()
+            .find(|span| span.name == "coral.query")
+            .expect("nested query span recorded");
+        assert!(query_span.attributes.iter().any(|attribute| {
+            attribute.key.as_str() == coral_telemetry::QUERY_STREAM_ENTRY_ATTRIBUTE
+                && attribute.value == opentelemetry::Value::Bool(true)
+        }));
+        let attribute = |name: &str| {
+            maintenance_span
+                .attributes
+                .iter()
+                .find(|attribute| attribute.key.as_str() == name)
+                .unwrap_or_else(|| panic!("missing {name} attribute"))
+        };
+
+        assert_eq!(
+            attribute(coral_telemetry::QUERY_STREAM_ENTRY_ATTRIBUTE).value,
+            opentelemetry::Value::Bool(true)
+        );
+        assert_eq!(
+            attribute(coral_telemetry::QUERY_STREAM_KIND_ATTRIBUTE)
+                .value
+                .as_str(),
+            coral_telemetry::QUERY_STREAM_KIND_OTHER
+        );
+        assert_eq!(
+            attribute(coral_telemetry::QUERY_STREAM_NAME_ATTRIBUTE)
+                .value
+                .as_str(),
+            REBUILD_SEARCH_INDEX_OPERATION
+        );
+        assert_eq!(attribute("workspace").value.as_str(), "default");
+        assert_eq!(attribute("status").value.as_str(), "ok");
+        assert_eq!(
+            query_span.parent_span_id,
+            maintenance_span.span_context.span_id()
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn search_maintenance_operation_records_failed_provider_as_an_error() {
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let tracer = provider.tracer("search-maintenance-provider-failure-test");
+        let subscriber = tracing_subscriber::Registry::default()
+            .with(tracing_opentelemetry::layer().with_tracer(tracer));
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let failure_detail = "SENSITIVE_SEARCH_MAINTENANCE_FAILURE";
+
+        let response = run_search_maintenance_operation(
+            &WorkspaceName::default(),
+            REBUILD_SEARCH_INDEX_OPERATION,
+            async {
+                Ok::<_, SearchManagerError>(RebuildSearchIndexResponse {
+                    results: vec![SearchMaintenanceResult {
+                        provider: SearchProviderKind::ObservedValues,
+                        state: SearchMaintenanceState::Failed,
+                        note: failure_detail.to_string(),
+                        detail: None,
+                    }],
+                })
+            },
+        )
+        .await
+        .expect("maintenance response should preserve provider results");
+
+        let provider_result = response
+            .results
+            .first()
+            .expect("failed provider result preserved");
+        assert_eq!(provider_result.state, SearchMaintenanceState::Failed);
+        assert_eq!(provider_result.note, failure_detail);
+
+        provider.force_flush().expect("flush spans");
+        let spans = exporter.get_finished_spans().expect("finished spans");
+        let maintenance_span = spans
+            .iter()
+            .find(|span| span.name == "coral.search.maintenance")
+            .expect("search maintenance span recorded");
+        let attribute = |name: &str| {
+            maintenance_span
+                .attributes
+                .iter()
+                .find(|attribute| attribute.key.as_str() == name)
+                .unwrap_or_else(|| panic!("missing {name} attribute"))
+        };
+
+        assert_eq!(attribute("status").value.as_str(), "error");
+        assert_eq!(
+            attribute("error.type").value.as_str(),
+            SEARCH_MAINTENANCE_PROVIDER_FAILURE_ERROR_TYPE
+        );
+        assert_eq!(
+            attribute("exception.message").value.as_str(),
+            SEARCH_MAINTENANCE_TELEMETRY_ERROR_MESSAGE
+        );
+        assert_eq!(
+            maintenance_span.status,
+            OtelStatus::error(SEARCH_MAINTENANCE_TELEMETRY_ERROR_MESSAGE)
+        );
+        assert!(!format!("{maintenance_span:?}").contains(failure_detail));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn search_operation_records_safe_summary_metadata() {
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let tracer = provider.tracer("search-summary-test");
+        let subscriber = tracing_subscriber::Registry::default()
+            .with(tracing_opentelemetry::layer().with_tracer(tracer));
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let raw_query = "sensitive search marker";
+        let request = SearchRequest::new(WorkspaceName::default(), raw_query, 7)
+            .expect("valid search request");
+        let task_id = TaskId::parse("550e8400-e29b-41d4-a716-446655440000").expect("valid task id");
+        let response = SearchResponse {
+            workspace_name: request.workspace_name.clone(),
+            results: Vec::new(),
+            provider_statuses: Vec::new(),
+            truncation: SearchTruncation {
+                truncated: false,
+                returned_count: 0,
+                max_results: request.limit,
+                note: "all results returned".to_string(),
+            },
+        };
+
+        run_search_operation(&request, Some(&task_id), async { Ok(response) })
+            .await
+            .expect("search operation");
+
+        provider.force_flush().expect("flush spans");
+        let spans = exporter.get_finished_spans().expect("finished spans");
+        let search_span = spans
+            .iter()
+            .find(|span| span.name == "coral.search")
+            .expect("coral.search span recorded");
+        let attribute = |name: &str| {
+            search_span
+                .attributes
+                .iter()
+                .find(|attribute| attribute.key.as_str() == name)
+                .unwrap_or_else(|| panic!("missing {name} attribute"))
+        };
+
+        assert_eq!(attribute("operation").value.as_str(), "search");
+        assert_eq!(
+            attribute(coral_telemetry::QUERY_STREAM_ENTRY_ATTRIBUTE).value,
+            opentelemetry::Value::Bool(true)
+        );
+        assert_eq!(
+            attribute(coral_telemetry::QUERY_STREAM_KIND_ATTRIBUTE)
+                .value
+                .as_str(),
+            coral_telemetry::QUERY_STREAM_KIND_SEARCH
+        );
+        assert_eq!(
+            attribute(coral_telemetry::QUERY_STREAM_NAME_ATTRIBUTE)
+                .value
+                .as_str(),
+            "search"
+        );
+        assert_eq!(attribute("workspace").value.as_str(), "default");
+        assert_eq!(
+            attribute("task.id").value.as_str(),
+            "550e8400-e29b-41d4-a716-446655440000"
+        );
+        assert_eq!(attribute("status").value.as_str(), "ok");
+        assert!(
+            search_span
+                .attributes
+                .iter()
+                .any(|attribute| attribute.key.as_str() == "query_len_bytes")
+        );
+        assert!(
+            search_span
+                .attributes
+                .iter()
+                .any(|attribute| attribute.key.as_str() == "limit")
+        );
+        assert!(
+            search_span
+                .attributes
+                .iter()
+                .any(|attribute| attribute.key.as_str() == "result_count")
+        );
+        assert!(
+            search_span.attributes.iter().all(|attribute| {
+                !attribute
+                    .key
+                    .as_str()
+                    .starts_with(coral_telemetry::LOCAL_ONLY_SPAN_ATTRIBUTE_PREFIX)
+            }),
+            "a subscriber not installed by Coral must not receive local-only attributes"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn search_operation_redacts_caller_visible_error_details_from_telemetry() {
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let tracer = provider.tracer("search-error-privacy-test");
+        let subscriber = tracing_subscriber::Registry::default()
+            .with(tracing_opentelemetry::layer().with_tracer(tracer));
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let query = "local search text";
+        let error_sentinel = "SENSITIVE_SEARCH_ERROR_PATH_MARKER";
+        let request =
+            SearchRequest::new(WorkspaceName::default(), query, 7).expect("valid search request");
+        let error = run_search_operation(&request, None, async {
+            Err::<SearchResponse, SearchManagerError>(
+                AppError::Internal(format!("failed while handling {error_sentinel}")).into(),
+            )
+        })
+        .await
+        .expect_err("search operation should return its detailed error");
+
+        assert!(search_manager_error_message(&error).contains(error_sentinel));
+
+        provider.force_flush().expect("flush spans");
+        let spans = exporter.get_finished_spans().expect("finished spans");
+        let search_span = spans
+            .iter()
+            .find(|span| span.name == "coral.search")
+            .expect("coral.search span recorded");
+        let attribute = |name: &str| {
+            search_span
+                .attributes
+                .iter()
+                .find(|attribute| attribute.key.as_str() == name)
+                .unwrap_or_else(|| panic!("missing {name} attribute"))
+        };
+
+        assert_eq!(attribute("status").value.as_str(), "error");
+        assert_eq!(attribute("error.type").value.as_str(), "INTERNAL");
+        assert_eq!(
+            attribute("exception.message").value.as_str(),
+            SEARCH_TELEMETRY_ERROR_MESSAGE
+        );
+        assert_eq!(
+            search_span.status,
+            OtelStatus::error(SEARCH_TELEMETRY_ERROR_MESSAGE)
+        );
+        assert!(!format!("{search_span:?}").contains(query));
+        assert!(!format!("{search_span:?}").contains(error_sentinel));
     }
 }

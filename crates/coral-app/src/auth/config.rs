@@ -19,7 +19,6 @@ use zeroize::Zeroizing;
 use super::OIDC_CALLBACK_PATH;
 use super::error::AuthServerError;
 use super::session::SessionTokenIssuer;
-use crate::bootstrap::is_loopback_ip;
 use crate::outbound_url_policy::{Configured, EndpointUrl};
 
 const DEFAULT_BIND_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
@@ -62,8 +61,6 @@ struct RawAuthSettings {
         deserialize_with = "deserialize_bind_addr"
     )]
     http_bind_addr: SocketAddr,
-    #[serde(default)]
-    allow_insecure_remote_http_bind: bool,
     session: SessionTokenSettings,
     authorization_server: AuthorizationServerSettings,
     provider: OidcProviderSettings,
@@ -94,7 +91,7 @@ impl AuthSettings {
     ///
     /// Returns [`AuthServerError::Config`] when a secret source cannot be read
     /// or the session key material is unusable.
-    pub(super) fn resolve_runtime_dependencies(
+    pub(crate) fn resolve_runtime_dependencies(
         self,
         config_path: &Path,
         get_var: &impl Fn(&str) -> Result<Option<String>, String>,
@@ -156,11 +153,6 @@ impl RawAuthSettings {
         self.session.validate()?;
         self.authorization_server.validate()?;
         self.provider.validate(&self.authorization_server.issuer)?;
-        if !is_loopback_ip(self.http_bind_addr.ip()) && !self.allow_insecure_remote_http_bind {
-            return Err(config_error(
-                "non-loopback auth.http_bind_addr serves cleartext OAuth endpoints and requires auth.allow_insecure_remote_http_bind = true",
-            ));
-        }
         Ok(())
     }
 }
@@ -275,6 +267,10 @@ pub(crate) struct AuthorizationServerSettings {
 }
 
 impl AuthorizationServerSettings {
+    pub(crate) fn issuer(&self) -> &str {
+        &self.issuer
+    }
+
     fn validate(&mut self) -> Result<(), AuthServerError> {
         self.issuer = required("auth.authorization_server.issuer", &self.issuer)?;
         self.issuer = validate_issuer("auth.authorization_server.issuer", &self.issuer, true)?;

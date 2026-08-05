@@ -1,5 +1,7 @@
 //! Client-side bootstrap for local Coral clients.
 
+use std::net::IpAddr;
+
 use coral_api::v1::Workspace;
 use coral_api::v1::catalog_service_client::CatalogServiceClient;
 use coral_api::v1::feedback_service_client::FeedbackServiceClient;
@@ -13,9 +15,13 @@ use coral_api::{
     CATALOG_RESPONSE_MAX_MESSAGE_SIZE, HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE,
     SEARCH_RESPONSE_MAX_MESSAGE_SIZE, SOURCE_RESPONSE_MAX_MESSAGE_SIZE,
 };
+use coral_app::READINESS_SERVICE_NAME;
 use tonic::service::interceptor::InterceptedService;
 use tonic::transport::{Channel, ClientTlsConfig, Endpoint};
-use url::Url;
+use tonic_health::pb::HealthCheckRequest;
+use tonic_health::pb::health_check_response::ServingStatus;
+use tonic_health::pb::health_client::HealthClient;
+use url::{Host, Url};
 
 use crate::error::ClientError;
 use crate::grpc::{GrpcClientEndpoint, InstrumentedGrpcService};
@@ -67,6 +73,9 @@ pub type FeedbackClient = FeedbackServiceClient<GrpcService>;
 /// Public task-lifecycle gRPC client.
 pub type TaskClient = TaskServiceClient<GrpcService>;
 
+/// Public `grpc.health.v1.Health` client.
+pub type HealthCheckClient = HealthClient<GrpcService>;
+
 /// Public Coral client handle.
 ///
 /// Wraps the generated gRPC clients for a Coral endpoint.
@@ -80,6 +89,7 @@ pub struct AppClient {
     function: FunctionClient,
     feedback: FeedbackClient,
     task: TaskClient,
+    health: HealthCheckClient,
 }
 
 impl AppClient {
@@ -139,9 +149,36 @@ impl AppClient {
         .await
     }
 
+    pub(crate) async fn connect_with_loopback_bearer(
+        endpoint_uri: &str,
+        bearer: BearerToken,
+    ) -> Result<Self, ClientError> {
+        let static_metadata =
+            StaticClientMetadata::try_from_pairs([("authorization", bearer.authorization())])?;
+        Self::connect_with_static_metadata_for(
+            endpoint_uri,
+            static_metadata,
+            endpoint_allows_loopback_authorization,
+        )
+        .await
+    }
+
     async fn connect_with_static_metadata(
         endpoint_uri: &str,
         static_metadata: StaticClientMetadata,
+    ) -> Result<Self, ClientError> {
+        Self::connect_with_static_metadata_for(
+            endpoint_uri,
+            static_metadata,
+            endpoint_allows_authorization,
+        )
+        .await
+    }
+
+    async fn connect_with_static_metadata_for(
+        endpoint_uri: &str,
+        static_metadata: StaticClientMetadata,
+        endpoint_allows_authorization: impl FnOnce(&str) -> bool,
     ) -> Result<Self, ClientError> {
         let endpoint = configured_endpoint(endpoint_uri)?;
         if static_metadata.contains_authorization() && !endpoint_allows_authorization(endpoint_uri)
@@ -190,7 +227,13 @@ impl AppClient {
             &grpc_endpoint,
             static_metadata.clone(),
         ));
-        let task_client = TaskClient::new(grpc_service(channel, &grpc_endpoint, static_metadata));
+        let task_client = TaskClient::new(grpc_service(
+            channel.clone(),
+            &grpc_endpoint,
+            static_metadata.clone(),
+        ));
+        let health_client =
+            HealthCheckClient::new(grpc_service(channel, &grpc_endpoint, static_metadata));
         Ok(Self {
             source: source_client,
             workspace: workspace_client,
@@ -200,6 +243,7 @@ impl AppClient {
             function: function_client,
             feedback: feedback_client,
             task: task_client,
+            health: health_client,
         })
     }
 
@@ -250,6 +294,30 @@ impl AppClient {
     pub fn task_client(&self) -> TaskClient {
         self.task.clone()
     }
+
+    /// Reports whether the server's engine is ready to answer for its catalog.
+    ///
+    /// This asks the health service for [`READINESS_SERVICE_NAME`] rather than
+    /// the empty aggregate name, which reports process liveness only. The health
+    /// service is unauthenticated, so this reaches a server that requires bearer
+    /// tokens on every other RPC, and it reuses this client's channel, which is
+    /// what makes it usable as a repeated readiness probe.
+    ///
+    /// # Errors
+    ///
+    /// Returns the gRPC [`tonic::Status`] when the health RPC cannot complete.
+    pub async fn check_engine_ready(&self) -> Result<bool, tonic::Status> {
+        let status = self
+            .health
+            .clone()
+            .check(HealthCheckRequest {
+                service: READINESS_SERVICE_NAME.to_string(),
+            })
+            .await?
+            .into_inner()
+            .status;
+        Ok(status == ServingStatus::Serving as i32)
+    }
 }
 
 fn configured_endpoint(endpoint_uri: &str) -> Result<Endpoint, ClientError> {
@@ -276,8 +344,72 @@ fn endpoint_allows_authorization(endpoint_uri: &str) -> bool {
     endpoint.scheme() == "https" && endpoint.host().is_some()
 }
 
+/// Whether a cleartext endpoint is loopback enough to carry a bearer token.
+///
+/// The host must be a canonical IP literal *as written*, because this check and
+/// the transport do not read the endpoint the same way. `Url::parse` applies
+/// WHATWG normalization, so both its `host()` and its `host_str()` report
+/// `http://2130706433` and `http://0x7f000001` as a loopback `127.0.0.1`, while
+/// the channel is built from the original authority — which a resolver is free to
+/// treat as a name and send off-host. So the authority is re-read from the raw
+/// input and must round-trip through `IpAddr` unchanged.
+fn endpoint_allows_loopback_authorization(endpoint_uri: &str) -> bool {
+    let Ok(endpoint) = Url::parse(endpoint_uri) else {
+        return false;
+    };
+    if endpoint_has_credentials(&endpoint) || endpoint.scheme() != "http" {
+        return false;
+    }
+    if !endpoint.host().as_ref().is_some_and(host_is_loopback) {
+        return false;
+    }
+    raw_authority_host(endpoint_uri).is_some_and(is_canonical_loopback_literal)
+}
+
+/// Extracts the host from the endpoint as written, before URL normalization.
+///
+/// Only the host is read raw: the scheme is matched case-insensitively so this
+/// agrees with the parsed-`Url` checks, which see an already-lowercased scheme.
+/// IPv6 hosts are returned without their brackets.
+fn raw_authority_host(endpoint_uri: &str) -> Option<&str> {
+    let rest = endpoint_uri
+        .split_once("://")
+        .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("http"))
+        .map(|(_, rest)| rest)?;
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    let authority = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    if let Some(host) = authority.strip_prefix('[') {
+        return host.split_once(']').map(|(host, _)| host);
+    }
+    Some(
+        authority
+            .split_once(':')
+            .map_or(authority, |(host, _)| host),
+    )
+}
+
+/// Whether `host` is a loopback address written in its one canonical spelling.
+///
+/// The round-trip comparison is what rejects the alternate encodings a resolver
+/// might read differently: `0177.0.0.1`, `127.1`, and `2130706433` all either
+/// fail to parse or do not print back identically.
+fn is_canonical_loopback_literal(host: &str) -> bool {
+    host.parse::<IpAddr>()
+        .is_ok_and(|address| address.is_loopback() && address.to_string() == host)
+}
+
 fn endpoint_has_credentials(endpoint: &Url) -> bool {
     !endpoint.username().is_empty() || endpoint.password().is_some()
+}
+
+fn host_is_loopback(host: &Host<&str>) -> bool {
+    match host {
+        Host::Domain(_) => false,
+        Host::Ipv4(address) => address.is_loopback(),
+        Host::Ipv6(address) => address.is_loopback(),
+    }
 }
 
 fn grpc_service(
@@ -423,6 +555,41 @@ mod tests {
         ] {
             assert!(
                 !endpoint_allows_authorization(endpoint),
+                "accepted {endpoint}"
+            );
+        }
+    }
+
+    #[test]
+    fn local_authorization_endpoints_require_plaintext_loopback() {
+        for endpoint in [
+            "http://127.0.0.1:50051",
+            "http://127.255.255.254",
+            "http://[::1]:50051",
+            "HTTP://127.0.0.1:50051",
+        ] {
+            assert!(
+                endpoint_allows_loopback_authorization(endpoint),
+                "rejected {endpoint}"
+            );
+        }
+        for endpoint in [
+            "https://localhost:50051",
+            "http://localhost:50051",
+            "http://api.example.com:50051",
+            "http://10.0.0.1:50051",
+            "http://localhost.example.com:50051",
+            "http://localhost@api.example.com:50051",
+            "http://user:password@localhost:50051",
+            // Non-canonical spellings `Url` normalizes to loopback but the
+            // transport may resolve as a name: the bearer must not ride these.
+            "http://2130706433:50051",
+            "http://0x7f000001:50051",
+            "http://0177.0.0.1:50051",
+            "http://127.1:50051",
+        ] {
+            assert!(
+                !endpoint_allows_loopback_authorization(endpoint),
                 "accepted {endpoint}"
             );
         }

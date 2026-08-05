@@ -46,6 +46,18 @@ impl TrustedRedirect {
         Self { url, client_state }
     }
 
+    /// Rebuilds a callback from a redirect URI a store handed back.
+    ///
+    /// The `None` arm is unreachable in practice: a stored `redirect_uri` was
+    /// string-matched against a registration and parsed under
+    /// [`BrowserRedirect`](crate::outbound_url_policy::BrowserRedirect) before
+    /// it was written, so it has already parsed once. It is checked rather than
+    /// unwrapped because a store sits between the handler that wrote it and the
+    /// one reading it, and a failed authorization beats a panicking handler.
+    pub(super) fn parse(redirect_uri: &str, client_state: Option<String>) -> Option<Self> {
+        Some(Self::new(Url::parse(redirect_uri).ok()?, client_state))
+    }
+
     /// Redirects the browser back to the client with an authorization code.
     pub(super) fn success(&self, code: &str) -> Response {
         self.redirect("code", code, None)
@@ -105,15 +117,23 @@ pub(super) fn redirect(location: &str) -> Response {
         .into_response()
 }
 
-/// Headers every authorization-server response carries.
+/// Headers every authorization-server response except the discovery document
+/// carries.
 ///
 /// Authorization codes travel in URLs, so `no-store`/`no-cache` keep one out of
 /// a shared cache and `no-referrer` keeps one out of the `Referer` a client's
-/// page sends onward.
-fn security_headers() -> [(header::HeaderName, &'static str); 3] {
+/// page sends onward. Every response carrying these headers also carries a
+/// `content-type`, so `nosniff` belongs to the shared set rather than to
+/// whichever handler happened to need it first. Handlers compose these with
+/// that `content-type` rather than listing them again, so a header added here
+/// reaches every response that carries a code, a token, an error, or the
+/// approval page. The discovery metadata document is deliberately not among
+/// them: it is public and meant to be cached.
+pub(super) fn security_headers() -> [(header::HeaderName, &'static str); 4] {
     [
         (header::CACHE_CONTROL, "no-store"),
         (header::PRAGMA, "no-cache"),
         (header::REFERRER_POLICY, "no-referrer"),
+        (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
     ]
 }

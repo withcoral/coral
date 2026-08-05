@@ -52,8 +52,10 @@ mod feedback;
 mod functions;
 mod hash;
 mod identity;
+mod oauth_resource;
 mod outbound_url_policy;
 mod query;
+mod request_auth;
 mod request_context;
 mod search;
 mod sources;
@@ -61,6 +63,8 @@ mod state;
 mod storage;
 mod task;
 pub mod telemetry;
+#[cfg(feature = "test-session-tokens")]
+pub mod test_session_tokens;
 mod transport;
 mod workspaces;
 
@@ -68,16 +72,18 @@ pub use auth::{
     AuthServerError, AuthSettings, CoralAuthorizationServer, RunningCoralAuthorizationServer,
 };
 pub use bootstrap::{
-    AppError, McpHttpServeConfig, RunningServer, ServerBuilder, ServerMode, StaticAsset,
-    StaticAssetsProvider,
+    AppError, McpHttpServeConfig, READINESS_SERVICE_NAME, RunningServer, ServeSettings,
+    ServerBuilder, ServerMode, SessionAuthSettings, StaticAsset, StaticAssetsProvider,
 };
 pub use coral_engine::{EngineExtensions, QuerySource};
 pub use identity::{
-    LocalPrincipalProvider, Principal, PrincipalId, PrincipalKind, PrincipalProvider,
-    PrincipalProviderError,
+    BearerAuthenticator, LocalPrincipalProvider, Principal, PrincipalId, PrincipalKind,
+    PrincipalProvider, PrincipalProviderError,
 };
+pub use oauth_resource::{CanonicalOauthUrl, OauthUrlError};
 pub use query::extensions::{
     AwsEngineExtensionsProvider, EngineExtensionsProvider, NoopEngineExtensionsProvider,
 };
+pub use request_auth::SessionPrincipalProvider;
 pub use telemetry::{RunContext, RunErrorTelemetry, run_with_context, shutdown_tracing};
 pub use workspaces::DEFAULT_WORKSPACE_ID;

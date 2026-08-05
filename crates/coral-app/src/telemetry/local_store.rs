@@ -19,8 +19,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue, json};
 use tokio::task;
 
+use coral_telemetry::WORKSPACE_SPAN_ATTRIBUTE;
+
 use crate::storage::fs as storage_fs;
-use crate::telemetry::WORKSPACE_SPAN_ATTRIBUTE;
 
 const JSONL_MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
 const JSONL_MAX_FILE_ROWS: usize = 50_000;
@@ -1607,13 +1608,7 @@ fn summary_from_list_aggregate(
         },
         |primary| {
             let attributes = parse_attributes(&primary.attributes_json);
-            let status = status_from_attributes(attributes.as_ref()).unwrap_or_else(|| {
-                if primary.status == StoredTraceStatus::Unspecified {
-                    fallback_status
-                } else {
-                    primary.status
-                }
-            });
+            let status = summary_status(aggregate, attributes.as_ref(), primary.status);
             let row_count = attributes
                 .as_ref()
                 .and_then(|attrs| attr_u64(attrs, "row_count"));
@@ -1667,13 +1662,7 @@ fn summary_from_aggregate(
         },
         |primary| {
             let attributes = parse_attributes(&primary.attributes_json);
-            let status = status_from_attributes(attributes.as_ref()).unwrap_or_else(|| {
-                if primary.status == StoredTraceStatus::Unspecified {
-                    fallback_status
-                } else {
-                    primary.status
-                }
-            });
+            let status = summary_status(aggregate, attributes.as_ref(), primary.status);
             let row_count = attributes
                 .as_ref()
                 .and_then(|attrs| attr_u64(attrs, "row_count"));
@@ -1696,6 +1685,18 @@ fn summary_from_aggregate(
             }
         },
     )
+}
+
+fn summary_status(
+    aggregate: &TraceAggregate,
+    primary_attributes: Option<&JsonValue>,
+    primary_status: StoredTraceStatus,
+) -> StoredTraceStatus {
+    if aggregate.error_count > 0 {
+        StoredTraceStatus::Error
+    } else {
+        status_from_attributes(primary_attributes).unwrap_or(primary_status)
+    }
 }
 
 fn span_record(resource_json: &str, span: &SpanData) -> TraceSpanRecord {
@@ -1976,7 +1977,7 @@ mod tests {
         JSONL_MAX_FILE_AGE, JsonlSpanExporter, RollingJsonlWriter, StoredTraceStatus,
         TraceSpanRecord, TraceStore, unix_nanos,
     };
-    use crate::telemetry::WORKSPACE_SPAN_ATTRIBUTE;
+    use coral_telemetry::WORKSPACE_SPAN_ATTRIBUTE;
 
     const TRACE_RETENTION: Duration = Duration::from_hours(7 * 24);
 
@@ -2117,6 +2118,51 @@ mod tests {
             detail.spans.first().expect("trace span").span_id,
             summary.root_span_id
         );
+    }
+
+    #[test]
+    fn trace_summary_reports_error_when_a_later_query_in_the_trace_fails() {
+        let temp = TempDir::new().expect("temp dir");
+        let dir = temp.path().join("telemetry").join("traces");
+        fs::create_dir_all(&dir).expect("trace dir");
+
+        let mut tool = trace_record("mixed-batch", "tool");
+        tool.name = "coral.mcp.call_tool".to_string();
+        tool.status = StoredTraceStatus::Unspecified;
+        tool.start_time_unix_nanos = 1;
+        tool.end_time_unix_nanos = 6;
+
+        let mut first_query = trace_record("mixed-batch", "first-query");
+        first_query.parent_span_id = Some(tool.span_id.clone());
+        first_query.attributes_json = r#"{"sql":"SELECT 1","status":"ok"}"#.to_string();
+        first_query.start_time_unix_nanos = 2;
+        first_query.end_time_unix_nanos = 3;
+
+        let mut failed_query = trace_record("mixed-batch", "failed-query");
+        failed_query.parent_span_id = Some(tool.span_id.clone());
+        failed_query.status = StoredTraceStatus::Error;
+        failed_query.attributes_json = r#"{"sql":"SELECT missing","status":"error"}"#.to_string();
+        failed_query.start_time_unix_nanos = 4;
+        failed_query.end_time_unix_nanos = 5;
+
+        write_record_file_lines(
+            &dir.join(timestamped_jsonl_path(SystemTime::now())),
+            &[tool, first_query, failed_query],
+        );
+
+        let store = TraceStore::new(dir);
+        let summary = store
+            .list_traces_sync(10, 0)
+            .expect("list traces")
+            .into_iter()
+            .next()
+            .expect("trace summary");
+        let detail = store.get_trace_sync("mixed-batch").expect("trace detail");
+
+        assert_eq!(summary.root_span_id, "first-query");
+        assert_eq!(summary.query, "SELECT 1");
+        assert_eq!(summary.status, StoredTraceStatus::Error);
+        assert_eq!(detail.summary.status, StoredTraceStatus::Error);
     }
 
     #[test]

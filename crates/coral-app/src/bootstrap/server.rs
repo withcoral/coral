@@ -40,8 +40,8 @@ use tower::{Layer, Service};
 
 use super::env::AppEnvironment;
 use super::error::AppError;
-use super::health::AggregateHealthService;
-use super::server_config::{McpHttpServeConfig, ServerSettings};
+use super::health::{AggregateHealthService, EngineReadiness};
+use super::server_config::{LoadedServerConfig, ServeSettings};
 use crate::EngineExtensionsProvider;
 use crate::catalog::discovery::CatalogDiscovery;
 use crate::catalog::service::CatalogService;
@@ -71,7 +71,9 @@ use crate::task::store::TaskStore;
 use crate::telemetry::TelemetryConfig;
 use crate::telemetry::service::TraceService;
 use crate::transport::GrpcRequestContextLayer;
-use crate::workspaces::{WorkspaceLifecycleLock, WorkspaceManager, WorkspaceService};
+use crate::workspaces::{
+    WorkspaceLifecycleLock, WorkspaceManager, WorkspacePoolRegistry, WorkspaceService,
+};
 
 /// A static asset (e.g., a built SPA file) served on the same port as
 /// gRPC-Web.
@@ -104,10 +106,20 @@ pub(crate) struct ServerConfig {
     config_dir: Option<PathBuf>,
     mode: ServerModeSelection,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+    /// Provider every request's principal is resolved through.
+    ///
+    /// Always present, defaulting to [`LocalPrincipalProvider`], so nothing
+    /// downstream of the builder has to handle a server that might have no way
+    /// to name its caller.
     principal_provider: Arc<dyn PrincipalProvider>,
     feedback_publisher: Arc<dyn FeedbackPublisher>,
     feature_overrides: FeatureOverrides,
     enable_stderr_logs: bool,
+    // Test seam: a listener the gRPC server adopts instead of binding
+    // `mode.bind_addr()` itself. Lets startup-failure tests hold the reserved
+    // port continuously rather than selecting and releasing it, closing the
+    // race where another process claims the port before the server binds.
+    grpc_listener: Option<Arc<std::net::TcpListener>>,
 }
 
 impl Default for ServerConfig {
@@ -126,6 +138,7 @@ impl ServerConfig {
             feedback_publisher: Arc::new(HostedFeedbackPublisher::new()),
             feature_overrides: FeatureOverrides::default(),
             enable_stderr_logs: false,
+            grpc_listener: None,
         }
     }
 
@@ -147,13 +160,16 @@ impl ServerConfig {
     fn resolved_mode(&self, layout: &AppStateLayout) -> Result<ServerMode, AppError> {
         match &self.mode {
             ServerModeSelection::Explicit(mode @ ServerMode::StandaloneGrpc { .. }) => {
-                ServerSettings::reject_removed_auth(layout)?;
+                let config = LoadedServerConfig::load(layout)?;
+                config.reject_removed_auth()?;
                 Ok(mode.clone())
             }
             ServerModeSelection::Explicit(mode) => Ok(mode.clone()),
-            ServerModeSelection::ConfiguredStandaloneGrpc => Ok(ServerMode::StandaloneGrpc {
-                bind: ServerSettings::load(layout)?.bind_addr,
-            }),
+            ServerModeSelection::ConfiguredStandaloneGrpc => {
+                let config = LoadedServerConfig::load(layout)?;
+                let bind = config.grpc_settings()?.bind_addr;
+                Ok(ServerMode::StandaloneGrpc { bind })
+            }
         }
     }
 
@@ -271,19 +287,18 @@ impl ServerBuilder {
         self
     }
 
-    /// Resolves the configured MCP HTTP listener without starting a server.
+    /// Resolves the settings for companions served beside this gRPC server.
+    ///
+    /// Only settings are returned. Constructing the session providers and the
+    /// authorization server, and running the transports they belong to, is the
+    /// caller's job: this builder starts a gRPC server and nothing else.
     ///
     /// # Errors
     ///
-    /// Returns [`AppError`] if the config directory cannot be determined or
-    /// the MCP HTTP configuration cannot use the selected gRPC mode.
-    pub fn resolve_mcp_http_serve_config(&self) -> Result<Option<McpHttpServeConfig>, AppError> {
+    /// Returns [`AppError`] if the configuration cannot be loaded or validated.
+    pub fn serve_settings(&self) -> Result<ServeSettings, AppError> {
         let layout = AppEnvironment::discover().app_state_layout(self.config.config_dir.clone())?;
-        let config = McpHttpServeConfig::load(&layout)?;
-        if config.is_some() {
-            validate_mcp_http_grpc_mode(&self.config.resolved_mode(&layout)?)?;
-        }
-        Ok(config)
+        LoadedServerConfig::load(&layout)?.companion_settings()
     }
 
     #[must_use]
@@ -307,6 +322,11 @@ impl ServerBuilder {
     /// The default provider returns the local principal for every
     /// request. Product runtimes can authenticate inbound metadata and select
     /// any canonical principal by installing their own provider.
+    ///
+    /// Whoever resolves `[auth]` composes the provider it asks for and installs
+    /// it here — `coral-cli`'s `serve::compose_session_policies` does this for
+    /// `coral server`. Without this call a standalone listener serves the local
+    /// principal to every caller its address is reachable from.
     pub fn with_principal_provider(
         mut self,
         principal_provider: Arc<dyn PrincipalProvider>,
@@ -341,6 +361,19 @@ impl ServerBuilder {
         self
     }
 
+    /// Adopts an already-bound listener for the gRPC server instead of binding
+    /// the mode's address.
+    ///
+    /// Startup-failure tests use this to reserve a port and hand the live
+    /// listener straight to the server, so the port never lapses between
+    /// selection and bind and a parallel process cannot steal it.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_prebound_grpc_listener(mut self, listener: std::net::TcpListener) -> Self {
+        self.config.grpc_listener = Some(Arc::new(listener));
+        self
+    }
+
     /// Starts the Coral gRPC server on TCP.
     ///
     /// By default, Coral keeps a real local gRPC boundary here so the public
@@ -355,6 +388,8 @@ impl ServerBuilder {
         let env = AppEnvironment::discover();
         let layout = env.app_state_layout(self.config.config_dir.clone())?;
         let mode = self.config.resolved_mode(&layout)?;
+        let principal_provider = self.config.principal_provider.clone();
+        let grpc_listener = self.config.grpc_listener.clone();
         layout.ensure()?;
         let features = FeatureStore::from_layout(layout.clone())
             .load_with_overrides(&self.config.feature_overrides)?;
@@ -362,27 +397,15 @@ impl ServerBuilder {
         let config_store = ConfigStore::new(layout.clone());
         run_state_migrations(&coral_db, &config_store, &layout).await?;
         let coral_db = Arc::new(coral_db);
-        let telemetry_config = TelemetryConfig::load(&layout)?;
-        let internal_trace_store_dir = telemetry_config
-            .trace_history
-            .enabled
-            .then(|| layout.local_trace_store_dir());
-        let installed_trace_store = crate::telemetry::init_tracing(
-            &telemetry_config,
-            self.config.enable_stderr_logs,
-            internal_trace_store_dir.clone(),
-        )?;
-        let active_trace_store = telemetry_config
-            .trace_history
-            .enabled
-            .then_some(installed_trace_store)
-            .flatten();
+        let (telemetry_config, active_trace_store) =
+            init_server_telemetry(&layout, self.config.enable_stderr_logs)?;
         let active_trace_store_dir = active_trace_store.as_ref().map(|store| store.dir.clone());
         let credential_config = CredentialStorageConfig::load(&layout)?;
         let credential_store =
             CredentialStore::with_preference(layout.clone(), credential_config.storage);
         let credential_manager = CredentialManager::new(credential_store);
         let workspace_lifecycle_lock = WorkspaceLifecycleLock::default();
+        let workspace_pool_registry = Arc::new(WorkspacePoolRegistry::default());
         let diagnostic_reporter = SourceDiagnosticReporter::default();
         let source_manager = SourceManager::with_diagnostic_reporter(
             config_store.clone(),
@@ -390,7 +413,8 @@ impl ServerBuilder {
             layout.clone(),
             workspace_lifecycle_lock.clone(),
             diagnostic_reporter.clone(),
-        );
+        )
+        .with_pool_registry(Arc::clone(&workspace_pool_registry));
         let workspace_manager = WorkspaceManager::new(
             config_store.clone(),
             credential_manager.clone(),
@@ -399,7 +423,8 @@ impl ServerBuilder {
             workspace_lifecycle_lock.clone(),
             Arc::clone(&coral_db),
             diagnostic_reporter.clone(),
-        );
+        )
+        .with_pool_registry(Arc::clone(&workspace_pool_registry));
         let feedback_manager =
             FeedbackManager::with_publisher(layout.clone(), self.config.feedback_publisher);
         let task_manager = TaskManager::new(TaskStore::new(Arc::clone(&coral_db)));
@@ -419,6 +444,7 @@ impl ServerBuilder {
             workspace_lifecycle_lock.clone(),
             self.config.engine_extensions_providers,
             diagnostic_reporter.clone(),
+            workspace_pool_registry,
         );
         let observed_values_search_enabled = features.enabled(Feature::ObservedValuesSearch);
         let search_observations =
@@ -444,28 +470,37 @@ impl ServerBuilder {
                 task: task_manager,
             },
             trace_components,
-            self.config.principal_provider,
+            principal_provider,
             mode,
+            grpc_listener,
         )
         .await
     }
 }
 
-fn validate_mcp_http_grpc_mode(mode: &ServerMode) -> Result<(), AppError> {
-    match mode {
-        ServerMode::EphemeralGrpc => Ok(()),
-        ServerMode::StandaloneGrpc { bind }
-            if bind.ip().is_loopback() || bind.ip().is_unspecified() =>
-        {
-            Ok(())
-        }
-        ServerMode::StandaloneGrpc { .. } => Err(AppError::FailedPrecondition(
-            "server.mcp_http requires a loopback or wildcard gRPC bind".to_string(),
-        )),
-        ServerMode::EmbeddedUi { .. } => Err(AppError::FailedPrecondition(
-            "server.mcp_http requires a native gRPC server".to_string(),
-        )),
-    }
+fn init_server_telemetry(
+    layout: &AppStateLayout,
+    enable_stderr_logs: bool,
+) -> Result<
+    (
+        TelemetryConfig,
+        Option<crate::telemetry::InstalledLocalTraceStore>,
+    ),
+    AppError,
+> {
+    let config = TelemetryConfig::load(layout)?;
+    let local_trace_store_dir = config
+        .trace_history
+        .enabled
+        .then(|| layout.local_trace_store_dir());
+    let installed_trace_store =
+        crate::telemetry::init_tracing(&config, enable_stderr_logs, local_trace_store_dir)?;
+    let active_trace_store = config
+        .trace_history
+        .enabled
+        .then_some(installed_trace_store)
+        .flatten();
+    Ok((config, active_trace_store))
 }
 
 fn trace_components_for_store(
@@ -649,6 +684,7 @@ async fn start_server(
     trace_components: TraceServerComponents,
     principal_provider: Arc<dyn PrincipalProvider>,
     mode: ServerMode,
+    grpc_listener: Option<Arc<std::net::TcpListener>>,
 ) -> Result<RunningServer, AppError> {
     let TraceServerComponents {
         service: trace_service,
@@ -670,6 +706,7 @@ async fn start_server(
         ),
         None => (source, query),
     };
+    let health_queries = query.clone();
     let source_service = SourceService::new(source, query.clone(), workspace.clone());
     let workspace_service = WorkspaceService::new(workspace);
     let catalog_service = CatalogService::new(query.clone(), task.clone());
@@ -710,12 +747,22 @@ async fn start_server(
             .into_axum_router()
             .layer(GrpcRequestContextLayer::new(principal_provider)),
     )
-    // Process liveness must not depend on principal selection.
+    // Health must not depend on principal selection: it is the readiness signal
+    // an orchestrator reaches without a credential.
     .add_service(tonic_health::pb::health_server::HealthServer::new(
-        AggregateHealthService,
+        AggregateHealthService::new(EngineReadiness::from_query_manager(health_queries)),
     ));
 
-    let listener = TcpListener::bind(mode.bind_addr()).await?;
+    let listener = match grpc_listener {
+        // A test handed us a live listener; adopt it so the reserved port never
+        // lapses. `from_std` requires the socket be non-blocking.
+        Some(prebound) => {
+            let prebound = prebound.try_clone()?;
+            prebound.set_nonblocking(true)?;
+            TcpListener::from_std(prebound)?
+        }
+        None => TcpListener::bind(mode.bind_addr()).await?,
+    };
     let local_addr = listener.local_addr()?;
     let endpoint_uri = format!("http://{local_addr}");
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
@@ -1256,6 +1303,54 @@ enabled = false
         );
     }
 
+    /// Writes a config whose `[auth]` marks the instance authenticated.
+    ///
+    /// The signing key the section names is never created: startup only asks
+    /// whether authentication is configured, so nothing here resolves.
+    fn configure_session_auth(config_dir: &Path) {
+        std::fs::create_dir_all(config_dir).expect("create config dir");
+        std::fs::write(
+            config_dir.join("config.toml"),
+            r"
+[trace_history]
+enabled = false
+
+[auth.authorization_server]
+issuer = 'https://auth.example.test'
+
+[auth.session]
+signing_key_file = 'session.key'
+
+[auth.provider]
+issuer = 'https://accounts.example.test'
+client_id = 'upstream-client'
+client_secret = 'test-secret'
+redirect_uri = 'https://auth.example.test/auth/oidc/callback'
+",
+        )
+        .expect("write auth config");
+    }
+
+    /// Both standalone entry points bind a real address, so neither may serve
+    /// the local principal to it while the configuration asks for session
+    /// authentication.
+    /// The regression guard for the CLI: `bootstrap()` starts this server on a
+    /// host whose config may well be a `coral server` config.
+    #[tokio::test]
+    async fn ephemeral_grpc_starts_with_configured_auth() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+        configure_session_auth(&config_dir);
+
+        let server = ServerBuilder::new()
+            .with_config_dir(config_dir)
+            .start()
+            .await
+            .expect("configured auth must not block the local ephemeral server");
+
+        server.shutdown().await.expect("shutdown server");
+    }
+
     #[test]
     fn explicit_standalone_grpc_does_not_parse_the_configured_bind() {
         let temp = TempDir::new().expect("temp dir");
@@ -1291,11 +1386,11 @@ enabled = false
         )
         .expect("config file");
 
-        let config = ServerBuilder::configured_standalone_grpc()
+        let settings = ServerBuilder::configured_standalone_grpc()
             .with_config_dir(config_dir)
-            .resolve_mcp_http_serve_config()
-            .expect("resolve MCP HTTP config")
-            .expect("enabled MCP HTTP config");
+            .serve_settings()
+            .expect("resolve MCP HTTP config");
+        let config = settings.mcp_http().expect("enabled MCP HTTP config");
 
         assert_eq!(
             config.bind_addr(),
@@ -1303,44 +1398,16 @@ enabled = false
         );
     }
 
-    #[test]
-    fn mcp_http_resolution_accepts_wildcard_and_rejects_public_grpc_binds() {
-        let temp = TempDir::new().expect("temp dir");
-        let config_dir = temp.path().join("coral-config");
-        std::fs::create_dir_all(&config_dir).expect("config dir");
-        std::fs::write(
-            config_dir.join("config.toml"),
-            "[server.mcp_http]\nenabled = true\n",
-        )
-        .expect("config file");
-
-        ServerBuilder::standalone_grpc(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 14555)))
-            .with_config_dir(config_dir.clone())
-            .resolve_mcp_http_serve_config()
-            .expect("wildcard gRPC bind has a safe loopback route");
-
-        let error = ServerBuilder::standalone_grpc(SocketAddr::from(([192, 0, 2, 1], 14555)))
-            .with_config_dir(config_dir.clone())
-            .resolve_mcp_http_serve_config()
-            .expect_err("public gRPC address has no safe local route");
-
-        assert!(error.to_string().contains("loopback or wildcard gRPC bind"));
-
-        let mapped_loopback = SocketAddr::new(Ipv4Addr::LOCALHOST.to_ipv6_mapped().into(), 14555);
-        ServerBuilder::standalone_grpc(mapped_loopback)
-            .with_config_dir(config_dir)
-            .resolve_mcp_http_serve_config()
-            .expect_err("IPv4-mapped IPv6 must fail closed");
-    }
-
     #[tokio::test]
     async fn configured_standalone_grpc_starts_with_configured_bind() {
         let temp = TempDir::new().expect("temp dir");
         let config_dir = temp.path().join("coral-config");
         std::fs::create_dir_all(&config_dir).expect("create config dir");
+        // Keep this server-start test from populating process-global tracing
+        // state and making telemetry unit tests depend on execution order.
         std::fs::write(
             config_dir.join("config.toml"),
-            "[server]\nbind_addr = '127.0.0.1:0'\n",
+            "[server]\nbind_addr = '127.0.0.1:0'\n\n[trace_history]\nenabled = false\n",
         )
         .expect("write config");
 
@@ -1706,6 +1773,7 @@ backend = "unsupported"
             },
             Arc::new(LocalPrincipalProvider),
             ServerMode::EphemeralGrpc,
+            None,
         )
         .await
         .expect("start server");
@@ -2153,6 +2221,7 @@ tables:
             TraceServerComponents::default(),
             Arc::new(LocalPrincipalProvider),
             ServerMode::EphemeralGrpc,
+            None,
         )
         .await
         .expect("start server");
@@ -2280,6 +2349,7 @@ tables:
             TraceServerComponents::default(),
             Arc::new(LocalPrincipalProvider),
             ServerMode::EphemeralGrpc,
+            None,
         )
         .await
         .expect("start server");
@@ -2407,6 +2477,7 @@ tables:
             TraceServerComponents::default(),
             Arc::new(LocalPrincipalProvider),
             ServerMode::EphemeralGrpc,
+            None,
         )
         .await
         .expect("start server");

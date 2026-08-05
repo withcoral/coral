@@ -3,7 +3,6 @@ use axum::response::Response;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ring::rand::{SecureRandom as _, SystemRandom};
-use url::Url;
 use zeroize::Zeroizing;
 
 use super::super::state_store::{OAuthAuthorizationCodeRecord, OAuthAuthorizationSessionRecord};
@@ -22,7 +21,7 @@ pub(super) async fn oidc_callback(
         return direct_error("invalid_request", "OIDC callback state is required");
     };
     let Ok(Some(session)) = state
-        .state_store
+        .session_store
         .take_authorization_session(oidc_state)
         .await
     else {
@@ -81,7 +80,7 @@ pub(super) async fn oidc_callback(
         resource: session.resource,
     };
     if let Err(error) = state
-        .state_store
+        .code_store
         .store_authorization_code(&authorization_code, authorization)
         .await
     {
@@ -141,18 +140,14 @@ fn random_code() -> Result<String, ()> {
 
 /// Rebuilds the client callback this login was started for.
 ///
-/// The `None` arm is unreachable. `redirect_uri` is only ever stored after
-/// `authorize`'s `registered_redirect` matched it against a registered URI and
-/// parsed that URI under
-/// [`BrowserRedirect`](crate::outbound_url_policy::BrowserRedirect), so a value
-/// that reaches here has already parsed once. It is checked rather than
-/// unwrapped because the store sits between the two handlers, and a panic in a
-/// callback would be a worse answer than a failed login. Re-applying
-/// `BrowserRedirect` here would not add a check — it would only move where the
-/// same policy was applied.
+/// `redirect_uri` is only ever stored after `authorize`'s `registered_client`
+/// matched it against a registered URI and parsed that URI under
+/// [`BrowserRedirect`](crate::outbound_url_policy::BrowserRedirect), so
+/// re-applying `BrowserRedirect` here would not add a check — it would only
+/// move where the same policy was applied. [`TrustedRedirect::parse`] carries
+/// the reason the `None` arm is checked rather than unwrapped.
 fn trusted_redirect(session: &OAuthAuthorizationSessionRecord) -> Option<TrustedRedirect> {
-    let url = Url::parse(&session.redirect_uri).ok()?;
-    Some(TrustedRedirect::new(url, session.client_state.clone()))
+    TrustedRedirect::parse(&session.redirect_uri, session.client_state.clone())
 }
 
 #[cfg(test)]
@@ -167,11 +162,12 @@ mod tests {
     use ring::rand::SystemRandom;
     use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair};
     use serde_json::{Value, json};
-    use url::form_urlencoded;
+    use url::{Url, form_urlencoded};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::super::AuthorizationServerHttpState;
+    use super::super::client_metadata::HttpClientMetadataResolver;
     use super::*;
     use crate::auth::config::{AuthSettings, ResolvedAuthSettings};
     use crate::auth::id_token::tests::{
@@ -179,7 +175,7 @@ mod tests {
     };
     use crate::auth::provider_client::OidcProviderClient;
     use crate::auth::session::SessionTokenIssuer;
-    use crate::auth::state_store::{InMemoryStateStore, StateStore, StateStoreError};
+    use crate::auth::state_store::{CodeStore, InMemoryStateStore, SessionStore, StateStoreError};
 
     const OIDC_STATE: &str = "oidc-state";
     const CLIENT_STATE: &str = "client&error=injected";
@@ -217,7 +213,7 @@ mod tests {
         settings
     }
 
-    fn state(issuer: &str, state_store: Arc<dyn StateStore>) -> AuthorizationServerHttpState {
+    fn state(issuer: &str, store: Arc<InMemoryStateStore>) -> AuthorizationServerHttpState {
         let signing_key =
             EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
                 .expect("P-256 signing key");
@@ -230,10 +226,14 @@ mod tests {
         AuthorizationServerHttpState {
             settings: Arc::new(settings(issuer)),
             session_tokens,
-            state_store,
+            approval_store: store.clone(),
+            session_store: store.clone(),
+            code_store: store,
             provider_client: OidcProviderClient::new().expect("client"),
-            registered_clients: Arc::new(BTreeMap::new()),
             authorization_resources: Arc::new(BTreeSet::from([RESOURCE.into()])),
+            client_metadata_resolver: Arc::new(
+                HttpClientMetadataResolver::new().expect("client metadata resolver"),
+            ),
         }
     }
 
@@ -265,14 +265,14 @@ mod tests {
         callback_raw(state, query(pairs)).await
     }
 
-    async fn seed(store: &dyn StateStore, key: &str) {
+    async fn seed(store: &dyn SessionStore, key: &str) {
         store
             .store_authorization_session(key, session())
             .await
             .expect("store");
     }
 
-    async fn take(store: &dyn StateStore, key: &str) -> Option<OAuthAuthorizationSessionRecord> {
+    async fn take(store: &dyn SessionStore, key: &str) -> Option<OAuthAuthorizationSessionRecord> {
         store.take_authorization_session(key).await.expect("store")
     }
 
@@ -503,23 +503,11 @@ mod tests {
         assert_provider_failure(200, 200, "wrong-nonce").await;
     }
 
-    struct FailCodeStore(InMemoryStateStore);
+    /// Code store whose writes always fail, standing in for a full store.
+    struct FailCodeStore;
 
     #[async_trait::async_trait]
-    impl StateStore for FailCodeStore {
-        async fn store_authorization_session(
-            &self,
-            state: &str,
-            session: OAuthAuthorizationSessionRecord,
-        ) -> Result<(), StateStoreError> {
-            self.0.store_authorization_session(state, session).await
-        }
-        async fn take_authorization_session(
-            &self,
-            state: &str,
-        ) -> Result<Option<OAuthAuthorizationSessionRecord>, StateStoreError> {
-            self.0.take_authorization_session(state).await
-        }
+    impl CodeStore for FailCodeStore {
         async fn store_authorization_code(
             &self,
             _code: &str,
@@ -527,23 +515,16 @@ mod tests {
         ) -> Result<(), StateStoreError> {
             Err(StateStoreError::CapacityExceeded { max_entries: 0 })
         }
+
         async fn take_authorization_code_for_request(
             &self,
-            code: &str,
-            client_id: &str,
-            redirect_uri: &str,
-            challenge: &str,
-            resource: &str,
+            _code: &str,
+            _client_id: &str,
+            _redirect_uri: &str,
+            _challenge: &str,
+            _resource: &str,
         ) -> Result<Option<OAuthAuthorizationCodeRecord>, StateStoreError> {
-            self.0
-                .take_authorization_code_for_request(
-                    code,
-                    client_id,
-                    redirect_uri,
-                    challenge,
-                    resource,
-                )
-                .await
+            unreachable!("the OIDC callback issues authorization codes, it never redeems them")
         }
     }
 
@@ -551,13 +532,11 @@ mod tests {
     async fn code_store_capacity_failure_exposes_no_client_code() {
         let server = MockServer::start().await;
         mount_provider(&server, 200, 200, NONCE).await;
-        let store = Arc::new(FailCodeStore(InMemoryStateStore::new()));
+        let store = Arc::new(InMemoryStateStore::new());
         seed(store.as_ref(), OIDC_STATE).await;
-        let response = callback(
-            state(&server.uri(), store),
-            &[("state", OIDC_STATE), ("code", PROVIDER_CODE)],
-        )
-        .await;
+        let mut state = state(&server.uri(), store);
+        state.code_store = Arc::new(FailCodeStore);
+        let response = callback(state, &[("state", OIDC_STATE), ("code", PROVIDER_CODE)]).await;
         let values = redirect_query(&response);
         assert!(values.contains(&("error".into(), "server_error".into())));
         assert!(!values.iter().any(|(key, _value)| key == "code"));

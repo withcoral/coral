@@ -30,11 +30,11 @@ url.workspace = true
 uuid.workspace = true
 
 coral-api.workspace = true
+coral-app.workspace = true
 coral-client.workspace = true
 coral-telemetry.workspace = true
 
 [dev-dependencies]
-coral-app.workspace = true
 coral-spec.workspace = true
 jsonschema.workspace = true
 opentelemetry_sdk = { workspace = true, features = ["testing"] }

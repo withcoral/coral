@@ -1,32 +1,35 @@
 //! HTTP lifecycle for Coral's authorization server.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
+use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
-
-use axum::Router;
-use axum::extract::State;
-use axum::http::header;
-use axum::response::IntoResponse;
-use axum::routing::get;
-use tokio::net::TcpListener;
-use tokio::sync::oneshot;
-use tokio::task::JoinHandle;
-use url::Position;
 
 use super::OIDC_CALLBACK_PATH;
 use super::config::{AuthSettings, ResolvedAuthSettings, signing_key_env_error};
 use super::error::AuthServerError;
 use super::provider_client::OidcProviderClient;
 use super::session::SessionTokenIssuer;
-use super::state_store::{InMemoryStateStore, StateStore};
-use crate::outbound_url_policy::{EndpointUrl, ResourceIdentifier};
+use super::state_store::{ApprovalStore, CodeStore, InMemoryStateStore, SessionStore};
+use crate::oauth_resource::{CanonicalOauthUrl, OauthUrlError};
+use axum::Router;
+use axum::extract::State;
+use axum::http::header;
+use axum::response::IntoResponse;
+use axum::routing::{get, post};
+use tokio::net::TcpListener;
+use tokio::sync::oneshot;
+use tokio::task::JoinHandle;
 
 mod authorize;
 mod callback;
+mod client_metadata;
 mod query;
 mod response;
+mod token;
+
+use self::client_metadata::{ClientMetadataResolver, HttpClientMetadataResolver};
 
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -34,8 +37,7 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 pub struct CoralAuthorizationServer {
     settings: Arc<ResolvedAuthSettings>,
     session_tokens: SessionTokenIssuer,
-    state_store: Arc<dyn StateStore>,
-    registered_clients: Arc<BTreeMap<String, Vec<String>>>,
+    state_store: Arc<InMemoryStateStore>,
     authorization_resources: BTreeSet<String>,
 }
 
@@ -85,7 +87,6 @@ impl CoralAuthorizationServer {
             settings: Arc::new(settings),
             session_tokens,
             state_store: Arc::new(InMemoryStateStore::new()),
-            registered_clients: Arc::new(BTreeMap::new()),
             authorization_resources: BTreeSet::new(),
         }
     }
@@ -104,8 +105,10 @@ impl CoralAuthorizationServer {
         mut self,
         resource: impl AsRef<str>,
     ) -> Result<Self, String> {
-        self.authorization_resources
-            .insert(canonical_authorization_resource(resource.as_ref())?);
+        self.authorization_resources.insert(
+            canonical_authorization_resource(resource.as_ref())
+                .map_err(|error| format!("authorization resource {error}"))?,
+        );
         Ok(self)
     }
 
@@ -120,48 +123,58 @@ impl CoralAuthorizationServer {
     /// Returns an error when the listener cannot start.
     pub async fn start(self) -> Result<RunningCoralAuthorizationServer, AuthServerError> {
         let bind_addr = self.settings.bind_addr();
-        let state = AuthorizationServerHttpState {
-            settings: self.settings,
-            session_tokens: self.session_tokens,
-            state_store: self.state_store,
-            provider_client: OidcProviderClient::new()
-                .map_err(|error| AuthServerError::ProviderClient(error.to_string()))?,
-            registered_clients: self.registered_clients,
-            authorization_resources: Arc::new(self.authorization_resources),
-        };
-        let router = Router::new()
-            .route(
-                "/.well-known/oauth-authorization-server",
-                get(authorization_server_metadata),
-            )
-            .route("/oauth/authorize", get(authorize::oauth_authorize))
-            .route(OIDC_CALLBACK_PATH, get(callback::oidc_callback))
-            .with_state(state);
-        let listener =
-            TcpListener::bind(bind_addr)
-                .await
-                .map_err(|source| AuthServerError::Bind {
-                    address: bind_addr,
-                    source,
-                })?;
-        let endpoint_uri = format!(
-            "http://{}",
-            listener.local_addr().map_err(AuthServerError::LocalAddr)?
-        );
-        let (shutdown_tx, shutdown_rx) = oneshot::channel();
-        let task = tokio::spawn(async move {
-            axum::serve(listener, router)
-                .with_graceful_shutdown(async {
-                    let _result = shutdown_rx.await;
-                })
-                .await
-        });
-        Ok(RunningCoralAuthorizationServer {
-            endpoint_uri,
-            shutdown_tx: Some(shutdown_tx),
-            task: Some(task),
-        })
+        let state = AuthorizationServerHttpState::new(
+            self.settings,
+            self.session_tokens,
+            self.state_store,
+            Arc::new(self.authorization_resources),
+        )?;
+        start_listener(bind_addr, state).await
     }
+}
+
+fn auth_router(state: AuthorizationServerHttpState) -> Router {
+    Router::new()
+        .route(
+            "/.well-known/oauth-authorization-server",
+            get(authorization_server_metadata),
+        )
+        .route(
+            "/oauth/authorize",
+            get(authorize::oauth_authorize_get).post(authorize::oauth_authorize_post),
+        )
+        .route("/oauth/token", post(token::oauth_token))
+        .route(OIDC_CALLBACK_PATH, get(callback::oidc_callback))
+        .with_state(state)
+}
+
+async fn start_listener(
+    bind_addr: SocketAddr,
+    state: AuthorizationServerHttpState,
+) -> Result<RunningCoralAuthorizationServer, AuthServerError> {
+    let router = auth_router(state);
+    let listener = TcpListener::bind(bind_addr)
+        .await
+        .map_err(|source| AuthServerError::Bind {
+            address: bind_addr,
+            source,
+        })?;
+    let local_addr = listener.local_addr().map_err(AuthServerError::LocalAddr)?;
+    let endpoint_uri = format!("http://{local_addr}");
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let task = tokio::spawn(async move {
+        axum::serve(listener, router)
+            .with_graceful_shutdown(async {
+                let _result = shutdown_rx.await;
+            })
+            .await
+    });
+    Ok(RunningCoralAuthorizationServer {
+        local_addr,
+        endpoint_uri,
+        shutdown_tx: Some(shutdown_tx),
+        task: Some(task),
+    })
 }
 
 /// An active Coral authorization-server listener with deterministic graceful shutdown.
@@ -171,12 +184,19 @@ impl CoralAuthorizationServer {
 /// leaves the task detached, so a caller that drops and immediately rebinds the
 /// same fixed address can still lose the race and see `EADDRINUSE`.
 pub struct RunningCoralAuthorizationServer {
+    local_addr: SocketAddr,
     endpoint_uri: String,
     shutdown_tx: Option<oneshot::Sender<()>>,
     task: Option<JoinHandle<std::io::Result<()>>>,
 }
 
 impl RunningCoralAuthorizationServer {
+    /// Returns the listener address, including an OS-assigned port.
+    #[must_use]
+    pub fn local_addr(&self) -> SocketAddr {
+        self.local_addr
+    }
+
     /// Returns the cleartext listener endpoint, including an assigned port.
     #[must_use]
     pub fn endpoint_uri(&self) -> &str {
@@ -219,31 +239,66 @@ impl Drop for RunningCoralAuthorizationServer {
 #[derive(Clone)]
 struct AuthorizationServerHttpState {
     settings: Arc<ResolvedAuthSettings>,
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "used by the OAuth token endpoint in a descendant PR"
-        )
-    )]
     session_tokens: SessionTokenIssuer,
-    state_store: Arc<dyn StateStore>,
+    approval_store: Arc<dyn ApprovalStore>,
+    session_store: Arc<dyn SessionStore>,
+    code_store: Arc<dyn CodeStore>,
     provider_client: OidcProviderClient,
-    registered_clients: Arc<BTreeMap<String, Vec<String>>>,
     authorization_resources: Arc<BTreeSet<String>>,
+    client_metadata_resolver: Arc<dyn ClientMetadataResolver>,
 }
 
-fn canonical_authorization_resource(value: &str) -> Result<String, String> {
-    let resource = EndpointUrl::<ResourceIdentifier>::parse(value)
-        .map_err(|error| format!("authorization resource is invalid: {error}"))?
-        .into_url();
-    if resource.query().is_some() {
-        return Err("authorization resource must not include a query".to_string());
+impl AuthorizationServerHttpState {
+    fn new(
+        settings: Arc<ResolvedAuthSettings>,
+        session_tokens: SessionTokenIssuer,
+        state_store: Arc<InMemoryStateStore>,
+        authorization_resources: Arc<BTreeSet<String>>,
+    ) -> Result<Self, AuthServerError> {
+        Ok(Self {
+            settings,
+            session_tokens,
+            approval_store: state_store.clone(),
+            session_store: state_store.clone(),
+            code_store: state_store,
+            provider_client: OidcProviderClient::new()
+                .map_err(|error| AuthServerError::ProviderClient(error.to_string()))?,
+            authorization_resources,
+            client_metadata_resolver: Arc::new(
+                HttpClientMetadataResolver::new()
+                    .map_err(|error| AuthServerError::ClientMetadataResolver(error.to_string()))?,
+            ),
+        })
     }
-    Ok(match resource.path() {
-        "/" => resource[..Position::BeforePath].to_string(),
-        _ => resource.to_string(),
-    })
+
+    #[cfg(test)]
+    fn with_client_metadata_resolver(
+        settings: Arc<ResolvedAuthSettings>,
+        session_tokens: SessionTokenIssuer,
+        state_store: Arc<InMemoryStateStore>,
+        authorization_resources: Arc<BTreeSet<String>>,
+        client_metadata_resolver: Arc<dyn ClientMetadataResolver>,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            settings,
+            session_tokens,
+            approval_store: state_store.clone(),
+            session_store: state_store.clone(),
+            code_store: state_store,
+            provider_client: OidcProviderClient::new().map_err(|error| error.to_string())?,
+            authorization_resources,
+            client_metadata_resolver,
+        })
+    }
+}
+
+/// Canonicalizes an RFC 8707 `resource` for comparison and recording.
+///
+/// The identifier a client asks for must land on exactly the string the
+/// operator configured, so both sides run the one canonicalizer in
+/// [`crate::oauth_resource`].
+fn canonical_authorization_resource(value: &str) -> Result<String, OauthUrlError> {
+    CanonicalOauthUrl::parse(value).map(CanonicalOauthUrl::into_identifier)
 }
 
 async fn authorization_server_metadata(
@@ -258,7 +313,7 @@ async fn authorization_server_metadata(
         "grant_types_supported": ["authorization_code"],
         "code_challenge_methods_supported": ["S256"],
         "token_endpoint_auth_methods_supported": ["none"],
-        "client_id_metadata_document_supported": false,
+        "client_id_metadata_document_supported": true,
     }))
 }
 
@@ -325,25 +380,6 @@ mod tests {
 
         CoralAuthorizationServer::from_settings(&config_path, settings)
             .expect("prepared from snapshot");
-    }
-
-    /// `AuthSettings` has no public constructor other than `from_toml`, so the
-    /// unsafe-bind guard cannot be bypassed by building a value directly; the
-    /// parsing boundary is the only place it needs to hold.
-    #[test]
-    fn rejects_unsafe_bind_at_the_only_construction_site() {
-        let raw = format!(
-            "[auth]\nhttp_bind_addr = '0.0.0.0:0'\n{AUTHORIZATION_SERVER}{PROVIDER}{SESSION}"
-        );
-        let Err(error) = AuthSettings::from_toml(&raw) else {
-            panic!("expected unsafe bind to be rejected");
-        };
-
-        assert!(
-            error
-                .to_string()
-                .contains("allow_insecure_remote_http_bind")
-        );
     }
 
     #[test]
@@ -418,7 +454,7 @@ mod tests {
                 "grant_types_supported": ["authorization_code"],
                 "code_challenge_methods_supported": ["S256"],
                 "token_endpoint_auth_methods_supported": ["none"],
-                "client_id_metadata_document_supported": false,
+                "client_id_metadata_document_supported": true,
             })
         );
         let response = client
@@ -441,6 +477,7 @@ mod tests {
     #[tokio::test]
     async fn aborts_task_when_shutdown_times_out() {
         let server = RunningCoralAuthorizationServer {
+            local_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
             endpoint_uri: String::new(),
             shutdown_tx: None,
             task: Some(tokio::spawn(std::future::pending::<std::io::Result<()>>())),

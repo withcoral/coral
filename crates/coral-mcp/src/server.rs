@@ -30,6 +30,7 @@ use tonic::{
     Request,
     metadata::{Ascii, MetadataValue},
 };
+use tracing::Instrument as _;
 
 use crate::{
     McpOptions, McpQueryExample,
@@ -556,13 +557,16 @@ impl CoralMcpServer {
             let server = self.clone();
             let task_id_metadata = task_id_metadata.clone();
             let shown_guide_ids = shown_guide_ids.clone();
-            tasks.spawn(async move {
-                with_task_metadata(
-                    task_id_metadata,
-                    server.execute_one_sql_query(index, sql, shown_guide_ids),
-                )
-                .await
-            });
+            tasks.spawn(
+                async move {
+                    with_task_metadata(
+                        task_id_metadata,
+                        server.execute_one_sql_query(index, sql, shown_guide_ids),
+                    )
+                    .await
+                }
+                .in_current_span(),
+            );
         }
 
         let mut results = Vec::new();
@@ -763,14 +767,9 @@ impl CoralMcpServer {
         request: CallToolRequestParams,
         task_id: Option<TaskId>,
         task_id_metadata: Option<MetadataValue<Ascii>>,
+        tool_name: Option<ToolName>,
     ) -> Result<ToolCallOutcome, ErrorData> {
-        let Some(tool) = request
-            .name
-            .as_ref()
-            .parse::<ToolName>()
-            .ok()
-            .filter(|tool| self.tool_allowed(*tool))
-        else {
+        let Some(tool) = tool_name.filter(|tool| self.tool_allowed(*tool)) else {
             return Err(ErrorData::invalid_params(
                 format!("tool '{}' not found", request.name),
                 None,
@@ -971,9 +970,12 @@ impl ServerHandler for CoralMcpServer {
         request: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let span =
-            telemetry::call_tool_span(request.name.as_ref(), self.options.trace_parent.as_deref());
         let tool_name = request.name.as_ref().parse::<ToolName>().ok();
+        let span = telemetry::call_tool_span(
+            tool_name,
+            &self.workspace().name,
+            self.options.trace_parent.as_deref(),
+        );
         let inject_task_metadata =
             !matches!(tool_name, Some(ToolName::StartTask | ToolName::EndTask));
         let task_context = TaskCallContext::from_tool_request(
@@ -993,7 +995,7 @@ impl ServerHandler for CoralMcpServer {
                     span.clone(),
                     with_task_metadata(
                         task_id_metadata,
-                        self.dispatch_tool(request, task_id, dispatch_task_id_metadata),
+                        self.dispatch_tool(request, task_id, dispatch_task_id_metadata, tool_name),
                     ),
                 )
                 .await;
@@ -1295,7 +1297,7 @@ mod tool_call_telemetry_tests {
     use tracing_subscriber::layer::SubscriberExt as _;
 
     use super::finish_tool_call;
-    use crate::surface::list_catalog_arguments;
+    use crate::surface::{ToolName, list_catalog_arguments};
     use crate::telemetry::{self, MCP_PROTOCOL_ERROR_MESSAGE};
 
     #[test]
@@ -1314,7 +1316,7 @@ mod tool_call_telemetry_tests {
         let Err(error) = list_catalog_arguments(Some(&arguments)) else {
             panic!("unknown list_catalog kind should fail argument parsing");
         };
-        let span = telemetry::call_tool_span("list_catalog", None);
+        let span = telemetry::call_tool_span(Some(ToolName::ListCatalog), "default", None);
         let returned = finish_tool_call(&span, Err(error))
             .expect_err("invalid list_catalog kind should remain a caller-visible protocol error");
         assert!(returned.message.contains(sentinel));

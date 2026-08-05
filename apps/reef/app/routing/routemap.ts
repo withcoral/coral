@@ -2,6 +2,7 @@ import { generatePath } from 'react-router'
 import type { RouteObject } from 'react-router'
 
 const HOME_PATH = '/'
+const ONBOARDING_PATH = '/onboarding'
 const WORKSPACES_PATH = '/workspaces'
 const WORKSPACE_FUNCTIONS_PATH = '/workspaces/:workspaceId/functions'
 const WORKSPACE_SCHEMA_PATH = '/workspaces/:workspaceId/schema'
@@ -20,6 +21,10 @@ export const routeDefinitions = {
   home: {
     path: HOME_PATH,
     toPath: () => HOME_PATH,
+  },
+  onboarding: {
+    path: ONBOARDING_PATH,
+    toPath: () => ONBOARDING_PATH,
   },
   settings: {
     path: SETTINGS_PATH,

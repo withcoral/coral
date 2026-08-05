@@ -5,18 +5,6 @@ import { theme } from '@/wax/theme/theme.css'
 
 const MOBILE_QUERY = `screen and (max-width: ${breakpoints.mobile})`
 
-export const section = style({
-  display: 'flex',
-  flexDirection: 'column',
-  gap: '24px',
-})
-
-export const header = style({
-  display: 'flex',
-  flexDirection: 'column',
-  gap: '4px',
-})
-
 export const statusCell = style({
   paddingBlock: '24px',
   paddingInline: '12px',

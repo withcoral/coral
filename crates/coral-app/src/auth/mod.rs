@@ -3,22 +3,14 @@ mod config;
 mod error;
 mod id_token;
 mod provider_client;
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the verification half is wired later in the OAuth serving stack"
-    )
-)]
 pub(crate) mod session;
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired later in the OAuth serving stack")
-)]
 pub(crate) mod state_store;
 
 pub use authorization_server::{CoralAuthorizationServer, RunningCoralAuthorizationServer};
 pub use config::AuthSettings;
+/// Visible to the crate so the bootstrap composition root can build the services
+/// these settings configure; resolution still happens only in this module.
+pub(crate) use config::ResolvedAuthSettings;
 pub use error::AuthServerError;
 
 /// Path the authorization server answers the upstream provider's callback on.

@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use arrow::datatypes::Schema;
 use arrow::record_batch::RecordBatch;
+use coral_spec::backends::database::{DatabaseConnectionSpec, DatabaseSourceManifest};
 use coral_spec::backends::file::FileSourceManifest;
 use coral_spec::backends::http::HttpSourceManifest;
 use coral_spec::backends::mcp::McpSourceManifest;
@@ -22,7 +23,7 @@ use crate::{
 };
 
 /// One managed source selected into the current query runtime.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct QuerySource {
     source_name: String,
     authored_version: Option<String>,
@@ -55,14 +56,63 @@ pub struct RuntimeSourcePackage {
 }
 
 /// One backend-ready component inside an app-assembled query source package.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum RuntimeSourceComponent {
+    /// Relational database-backed runtime component.
+    Database(DatabaseSourceManifest),
     /// HTTP-backed runtime component.
     Http(HttpSourceManifest),
     /// File-backed runtime component.
     File(FileSourceManifest),
     /// MCP-backed runtime component.
     Mcp(McpSourceManifest),
+}
+
+impl fmt::Debug for QuerySource {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("QuerySource")
+            .field("source_name", &self.source_name)
+            .field("authored_version", &self.authored_version)
+            .field("description", &self.description)
+            .field("declared_inputs", &self.declared_inputs)
+            .field("test_queries", &self.test_queries)
+            .field("components", &self.components)
+            .field("variables", &self.variables)
+            .field("secret_count", &self.secrets.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl fmt::Debug for RuntimeSourceComponent {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Database(manifest) => {
+                let provider = match &manifest.connection {
+                    DatabaseConnectionSpec::Postgres(_) => "postgres",
+                    DatabaseConnectionSpec::MySql(_) => "mysql",
+                    DatabaseConnectionSpec::Sqlite(_) => "sqlite",
+                };
+                formatter
+                    .debug_struct("Database")
+                    .field("source_name", &manifest.common.name)
+                    .field("provider", &provider)
+                    .finish_non_exhaustive()
+            }
+            Self::Http(manifest) => formatter
+                .debug_struct("Http")
+                .field("source_name", &manifest.common.name)
+                .finish_non_exhaustive(),
+            Self::File(manifest) => formatter
+                .debug_struct("File")
+                .field("source_name", &manifest.common.name)
+                .finish_non_exhaustive(),
+            Self::Mcp(manifest) => formatter
+                .debug_struct("Mcp")
+                .field("source_name", &manifest.common.name)
+                .finish_non_exhaustive(),
+        }
+    }
 }
 
 impl QuerySource {
@@ -191,27 +241,44 @@ impl QuerySource {
     }
 
     #[must_use]
-    /// Returns the SQL schema names published by this selected source.
+    /// Returns the SQL schema names published by this source's two-part
+    /// components. Database components publish catalogs instead; see
+    /// [`Self::catalog_names`]. A source with no components claims its source
+    /// name as a schema. Schema and catalog names of all selected sources
+    /// share one flat namespace.
     pub fn schema_names(&self) -> Vec<&str> {
         let mut names = Vec::new();
         for component in &self.components {
+            if matches!(component, RuntimeSourceComponent::Database(_)) {
+                continue;
+            }
             let name = component.source_name();
             if !names.contains(&name) {
                 names.push(name);
             }
         }
-        if names.is_empty() {
+        if self.components.is_empty() {
             names.push(self.source_name());
         }
         names
     }
 
     #[must_use]
-    /// Returns the SQL catalog names published by this selected source.
-    /// Catalog-backed runtime components are introduced separately from the
-    /// generic qualified-table identity model.
+    /// Returns the SQL catalog names published by this source's database
+    /// components. Tables of these components resolve as
+    /// `catalog.schema.table`, with schemas discovered at registration time.
     pub fn catalog_names(&self) -> Vec<&str> {
-        Vec::new()
+        let mut names = Vec::new();
+        for component in &self.components {
+            let RuntimeSourceComponent::Database(manifest) = component else {
+                continue;
+            };
+            let name = manifest.common.name.as_str();
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+        names
     }
 
     #[must_use]
@@ -229,9 +296,11 @@ impl QuerySource {
 
 impl RuntimeSourceComponent {
     #[must_use]
-    /// Returns the runtime schema name declared by this component.
+    /// Returns the name this component publishes at runtime: a schema name,
+    /// or a catalog name for database components.
     pub fn source_name(&self) -> &str {
         match self {
+            Self::Database(manifest) => &manifest.common.name,
             Self::Http(manifest) => &manifest.common.name,
             Self::File(manifest) => &manifest.common.name,
             Self::Mcp(manifest) => &manifest.common.name,
@@ -579,6 +648,11 @@ impl QueryParameterValue {
 pub struct QueryRuntimeConfig {
     /// Non-secret runtime inputs owned by the application layer.
     pub context: QueryRuntimeContext,
+    /// Database connection pools reused by runtimes in the caller-defined scope.
+    ///
+    /// Applications serving multiple workspaces should provide a distinct
+    /// registry per workspace. The default creates an isolated registry.
+    pub database_pool_registry: Arc<crate::DatabasePoolRegistry>,
     /// Optional engine extensions for this runtime build.
     pub extensions: EngineExtensions,
     /// Engine-wide query memory policy.
@@ -600,6 +674,7 @@ impl QueryRuntimeConfig {
     pub fn new(context: QueryRuntimeContext, extensions: EngineExtensions) -> Self {
         Self {
             context,
+            database_pool_registry: Arc::new(crate::DatabasePoolRegistry::new()),
             extensions,
             memory: QueryMemoryConfig::default(),
             request_identity_selector: None,

@@ -3,10 +3,10 @@ import { useEffect, useRef, useState } from 'react'
 import { coralDesktopApi, desktopErrorMessage, type McpClientDescriptor } from '@/lib/coral-desktop'
 import { addToast } from '@/wax/components/toast'
 
-import type { McpClientsSettingsProps } from './mcp-clients-settings'
+import type { McpClientsListProps } from './mcp-clients-list'
 
-type DesktopMcpClientsState = Pick<
-  McpClientsSettingsProps,
+export type DesktopMcpClientsState = Pick<
+  McpClientsListProps,
   'clients' | 'error' | 'loading' | 'onWorkspaceChange' | 'pendingClientIds'
 >
 

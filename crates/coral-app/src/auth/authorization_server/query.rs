@@ -16,9 +16,18 @@ use std::collections::BTreeSet;
 use url::form_urlencoded;
 
 const MAX_QUERY_BYTES: usize = 8 * 1024;
-const MAX_PARAMETERS: usize = 32;
-const MAX_PARAMETER_NAME_BYTES: usize = 64;
-const MAX_PARAMETER_VALUE_BYTES: usize = 2 * 1024;
+
+/// How many parameters one request may carry, however it was encoded.
+///
+/// This and the two byte limits below bound a *parameter list*, not a query, so
+/// they are shared with the token endpoint's form parser: that handler decodes
+/// its own body rather than calling [`scan`], but a form parameter and a query
+/// parameter are the same thing and must not be bounded differently. The
+/// request-size limit is deliberately not shared — a request body and a URL are
+/// bounded for different reasons, so each caller sets its own.
+pub(super) const MAX_PARAMETERS: usize = 32;
+pub(super) const MAX_PARAMETER_NAME_BYTES: usize = 64;
+pub(super) const MAX_PARAMETER_VALUE_BYTES: usize = 2 * 1024;
 
 /// Visits each decoded parameter of `raw` once, within this module's limits.
 ///
@@ -54,14 +63,15 @@ pub(super) fn scan(raw: &str, mut visit: impl FnMut(&str, Cow<'_, str>)) -> Resu
     Ok(())
 }
 
-/// Queries that every handler's limit tests must reject.
+/// Parameter lists that every handler's limit tests must reject.
 ///
-/// The handlers assert against this list rather than each writing its own, so a
-/// limit added here is exercised by every handler that scans a query.
+/// Every handler that reads parameters asserts against this list rather than
+/// writing its own literals, so a parameter limit added here is exercised by
+/// each of them — including the token endpoint, which parses a form body with
+/// its own decoder but shares these limits.
 #[cfg(test)]
-pub(super) fn rejected_queries() -> Vec<String> {
+pub(super) fn rejected_parameter_lists() -> Vec<String> {
     vec![
-        "x".repeat(MAX_QUERY_BYTES + 1),
         format!("{}=x", "n".repeat(MAX_PARAMETER_NAME_BYTES + 1)),
         format!("x={}", "v".repeat(MAX_PARAMETER_VALUE_BYTES + 1)),
         (0..=MAX_PARAMETERS)
@@ -69,4 +79,15 @@ pub(super) fn rejected_queries() -> Vec<String> {
             .collect::<Vec<_>>()
             .join("&"),
     ]
+}
+
+/// Queries that every query-scanning handler's limit tests must reject.
+///
+/// This is [`rejected_parameter_lists`] plus the query-size limit, which is
+/// this module's own rather than a shared parameter limit.
+#[cfg(test)]
+pub(super) fn rejected_queries() -> Vec<String> {
+    let mut queries = vec!["x".repeat(MAX_QUERY_BYTES + 1)];
+    queries.extend(rejected_parameter_lists());
+    queries
 }

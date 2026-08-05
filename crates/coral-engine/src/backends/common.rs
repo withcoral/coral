@@ -137,17 +137,21 @@ pub(crate) struct RegisteredInput {
 pub(crate) enum SourceQualifiedName {
     /// Two-part source: tables resolve as `datafusion.<name>.<table>`.
     Schema(String),
+    /// Catalog-backed source: tables resolve as `<name>.<db_schema>.<table>`,
+    /// with the SQL schema recorded per table.
+    Catalog(String),
 }
 
 impl SourceQualifiedName {
     pub(crate) fn name(&self) -> &str {
         match self {
-            Self::Schema(name) => name,
+            Self::Schema(name) | Self::Catalog(name) => name,
         }
     }
 
     pub(crate) fn catalog_name(&self) -> Option<&str> {
         match self {
+            Self::Catalog(name) => Some(name),
             Self::Schema(_) => None,
         }
     }
@@ -179,6 +183,7 @@ pub(crate) struct BackendCatalogRegistration {
 pub(crate) struct BackendCompileRequest<'a> {
     pub(crate) source: &'a QuerySource,
     pub(crate) runtime_context: &'a QueryRuntimeContext,
+    pub(crate) database_pool_registry: Arc<crate::DatabasePoolRegistry>,
     pub(crate) source_secrets: BTreeMap<String, String>,
     pub(crate) source_variables: BTreeMap<String, String>,
     pub(crate) request_authenticators: &'a HashMap<String, Arc<dyn RequestAuthenticator>>,
