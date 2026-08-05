@@ -19,6 +19,9 @@ const MAX_DISPLAY_NAME_BYTES: usize = 255;
     expect(dead_code, reason = "consumed by OAuth callback descendants")
 )]
 pub(super) struct ValidatedOidcIdentity {
+    pub(super) issuer: String,
+    pub(super) subject: String,
+    // Retained only to rekey task attribution created before internal user IDs.
     pub(super) principal: String,
     pub(super) display_name: Option<String>,
 }
@@ -171,17 +174,17 @@ fn validate_claims(
         .to_string();
     let display_name = match claims.get(&provider.display_name_claim) {
         None | Some(Value::Null) => None,
-        Some(Value::String(value)) if value.trim().is_empty() => None,
         Some(Value::String(value)) => {
-            let value = value.trim();
             if value.len() > MAX_DISPLAY_NAME_BYTES || value.chars().any(char::is_control) {
                 return Err(());
             }
-            Some(value.to_string())
+            Some(value.clone())
         }
         Some(_) => return Err(()),
     };
     Ok(ValidatedOidcIdentity {
+        issuer: provider.issuer.clone(),
+        subject: subject.to_string(),
         principal,
         display_name,
     })
@@ -458,20 +461,28 @@ pub(in crate::auth) mod tests {
         let mut invalid = Vec::new();
         for (field, value) in [
             ("iss", json!("wrong")),
+            ("iss", json!(7)),
             ("aud", json!("other")),
             ("aud", json!(["provider-client", 7])),
             ("aud", json!(["provider-client", "other"])),
             ("azp", json!("other")),
             ("nonce", json!("wrong")),
+            ("nonce", json!(7)),
             ("iat", json!("1")),
             ("iat", json!(-0.25)),
             ("exp", json!("2")),
             ("nbf", json!("soon")),
             ("sub", json!("")),
+            ("sub", json!(7)),
             ("sub", json!("nön-ascii")),
         ] {
             let mut claims = base.clone();
             set_claim(&mut claims, field, value);
+            invalid.push(claims);
+        }
+        for field in ["iss", "aud", "sub", "iat", "exp", "nonce"] {
+            let mut claims = base.clone();
+            claims.as_object_mut().expect("claims").remove(field);
             invalid.push(claims);
         }
         for (field, value) in [
@@ -517,23 +528,39 @@ pub(in crate::auth) mod tests {
              groups = ['admin', 'dev']",
         );
         let mut claims = claims();
+        set_claim(&mut claims, "sub", json!("raw subject"));
         set_claim(&mut claims, "uid", json!("Case-Sensitive"));
         set_claim(&mut claims, "name", json!("  Coral User  "));
         set_claim(&mut claims, "tenant", json!(["one", "two"]));
         set_claim(&mut claims, "groups", json!(["dev", "other", "admin"]));
         let identity =
             validate_claims(&provider, "expected-nonce", &claims).expect("projected identity");
+        assert_eq!(identity.issuer, "http://localhost/issuer");
+        assert_eq!(identity.subject, "raw subject");
         assert_eq!(identity.principal, "Case-Sensitive");
-        assert_eq!(identity.display_name.as_deref(), Some("Coral User"));
-        for display in [Value::Null, json!("   ")] {
-            set_claim(&mut claims, "name", display);
-            assert!(
-                validate_claims(&provider, "expected-nonce", &claims)
-                    .expect("optional display")
-                    .display_name
-                    .is_none()
-            );
-        }
+        assert_eq!(identity.display_name.as_deref(), Some("  Coral User  "));
+        claims.as_object_mut().expect("claims").remove("name");
+        assert!(
+            validate_claims(&provider, "expected-nonce", &claims)
+                .expect("missing optional display claim")
+                .display_name
+                .is_none()
+        );
+        set_claim(&mut claims, "name", Value::Null);
+        assert!(
+            validate_claims(&provider, "expected-nonce", &claims)
+                .expect("null optional display")
+                .display_name
+                .is_none()
+        );
+        set_claim(&mut claims, "name", json!("   "));
+        assert_eq!(
+            validate_claims(&provider, "expected-nonce", &claims)
+                .expect("configured display name stored as-is")
+                .display_name
+                .as_deref(),
+            Some("   ")
+        );
         set_claim(&mut claims, "name", json!("Renée Coral"));
         assert_eq!(
             validate_claims(&provider, "expected-nonce", &claims)
