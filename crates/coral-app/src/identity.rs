@@ -137,12 +137,8 @@ impl Principal {
     /// same lazy rekey described above. Do not key this digest in the meantime —
     /// that swaps one derivation for another and pays that rekey twice.
     pub(crate) fn for_federated(subject: &str) -> Self {
-        let mut identity = Vec::with_capacity(subject.len() + 32);
-        identity.extend_from_slice(b"coral-federated-user-v1\0");
-        identity.extend_from_slice(&(subject.len() as u64).to_be_bytes());
-        identity.extend_from_slice(subject.as_bytes());
         Self {
-            id: PrincipalId(format!("federated-{}", crate::hash::sha256_hex(&identity))),
+            id: PrincipalId(pre_v1_task_attribution_id(subject)),
             kind: PrincipalKind::User,
         }
     }
@@ -158,6 +154,22 @@ impl Principal {
     pub const fn kind(&self) -> PrincipalKind {
         self.kind
     }
+}
+
+/// Derives the task-attribution ID written before internal user IDs existed.
+///
+/// This is only for rekeying historical task rows during login. New sessions
+/// and authorization codes use the provisioned user's internal ID.
+pub(crate) fn pre_v1_task_attribution_id_for_principal_claim(principal_claim: &str) -> String {
+    pre_v1_task_attribution_id(principal_claim)
+}
+
+fn pre_v1_task_attribution_id(value: &str) -> String {
+    let mut identity = Vec::with_capacity(value.len() + 32);
+    identity.extend_from_slice(b"coral-federated-user-v1\0");
+    identity.extend_from_slice(&(value.len() as u64).to_be_bytes());
+    identity.extend_from_slice(value.as_bytes());
+    format!("federated-{}", crate::hash::sha256_hex(&identity))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

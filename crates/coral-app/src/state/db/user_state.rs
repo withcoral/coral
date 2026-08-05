@@ -14,6 +14,33 @@ pub(crate) enum EnsureUserDefaultWorkspaceOutcome {
 }
 
 impl CoralDb {
+    pub(crate) async fn provision_login_and_reattribute_pre_v1_tasks(
+        &self,
+        issuer: &str,
+        subject: &str,
+        display_name: Option<&str>,
+        pre_v1_task_attribution_id: &str,
+        now_unix_nanos: i64,
+    ) -> Result<UpsertLoginOutcome, DbError> {
+        let mut tx = self.begin().await?;
+        let outcome = tx
+            .users()
+            .upsert_login(issuer, subject, display_name, now_unix_nanos)
+            .await?;
+        let UpsertLoginOutcome::Upserted(user) = &outcome else {
+            tx.rollback().await?;
+            return Ok(outcome);
+        };
+        let workspace_id = default_workspace_id(&user.user_id);
+        try_create_workspace_with_owner(&mut tx, &workspace_id, &user.user_id, now_unix_nanos)
+            .await?;
+        tx.tasks()
+            .reattribute_pre_v1_task_attribution(pre_v1_task_attribution_id, &user.user_id)
+            .await?;
+        tx.commit().await?;
+        Ok(outcome)
+    }
+
     pub(crate) async fn provision_login(
         &self,
         issuer: &str,
@@ -67,7 +94,7 @@ impl CoralDb {
         let mut tx = self.begin().await?;
         let updated = tx
             .tasks()
-            .reattribute_pre_v1_principal_digest(pre_v1_principal_digest, user_id)
+            .reattribute_pre_v1_task_attribution(pre_v1_principal_digest, user_id)
             .await?;
         tx.commit().await?;
         Ok(updated)

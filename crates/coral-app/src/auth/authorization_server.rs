@@ -11,8 +11,12 @@ use super::config::{AuthSettings, ResolvedAuthSettings, signing_key_env_error};
 use super::error::AuthServerError;
 use super::provider_client::OidcProviderClient;
 use super::session::SessionTokenIssuer;
-use super::state_store::{ApprovalStore, CodeStore, InMemoryStateStore, SessionStore};
+use super::state_store::{
+    ApprovalStore, CodeStore, InMemoryStateStore, OAuthAuthorizationCodeRecord, SessionStore,
+    StateStoreError,
+};
 use crate::oauth_resource::{CanonicalOauthUrl, OauthUrlError};
+use crate::state::db::{CoralDb, DbError, UpsertLoginOutcome, now_unix_nanos_i64};
 use axum::Router;
 use axum::extract::State;
 use axum::http::header;
@@ -38,6 +42,7 @@ pub struct CoralAuthorizationServer {
     settings: Arc<ResolvedAuthSettings>,
     session_tokens: SessionTokenIssuer,
     state_store: Arc<InMemoryStateStore>,
+    database: Option<Arc<CoralDb>>,
     authorization_resources: BTreeSet<String>,
 }
 
@@ -95,8 +100,17 @@ impl CoralAuthorizationServer {
             settings: Arc::new(settings),
             session_tokens,
             state_store: Arc::new(InMemoryStateStore::new()),
+            database: None,
             authorization_resources: BTreeSet::new(),
         }
+    }
+
+    /// Attaches the app database used to provision authenticated users.
+    #[must_use]
+    #[expect(dead_code, reason = "wired by the app composition root in t8")]
+    pub(crate) fn with_database(mut self, database: Arc<CoralDb>) -> Self {
+        self.database = Some(database);
+        self
     }
 
     /// Registers a resource identifier that authorization requests may target.
@@ -141,6 +155,7 @@ impl CoralAuthorizationServer {
             self.settings,
             self.session_tokens,
             self.state_store,
+            self.database,
             Arc::new(self.authorization_resources),
         )?;
         start_listener(bind_addr, state).await
@@ -256,7 +271,7 @@ struct AuthorizationServerHttpState {
     session_tokens: SessionTokenIssuer,
     approval_store: Arc<dyn ApprovalStore>,
     session_store: Arc<dyn SessionStore>,
-    code_store: Arc<dyn CodeStore>,
+    code_store: Arc<dyn LoginCodeStore>,
     provider_client: OidcProviderClient,
     authorization_resources: Arc<BTreeSet<String>>,
     client_metadata_resolver: Arc<dyn ClientMetadataResolver>,
@@ -267,6 +282,7 @@ impl AuthorizationServerHttpState {
         settings: Arc<ResolvedAuthSettings>,
         session_tokens: SessionTokenIssuer,
         state_store: Arc<InMemoryStateStore>,
+        database: Option<Arc<CoralDb>>,
         authorization_resources: Arc<BTreeSet<String>>,
     ) -> Result<Self, AuthServerError> {
         let client_metadata_resolver = Arc::new(
@@ -276,12 +292,16 @@ impl AuthorizationServerHttpState {
             )
             .map_err(|error| AuthServerError::ClientMetadataResolver(error.to_string()))?,
         );
+        let code_store: Arc<dyn LoginCodeStore> = match database {
+            Some(database) => Arc::new(DbBackedLoginCodeStore::new(state_store.clone(), database)),
+            None => state_store.clone(),
+        };
         Ok(Self {
             settings,
             session_tokens,
             approval_store: state_store.clone(),
             session_store: state_store.clone(),
-            code_store: state_store,
+            code_store,
             provider_client: OidcProviderClient::new()
                 .map_err(|error| AuthServerError::ProviderClient(error.to_string()))?,
             authorization_resources,
@@ -307,6 +327,117 @@ impl AuthorizationServerHttpState {
             authorization_resources,
             client_metadata_resolver,
         })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LoginProvisionError {
+    Database,
+    IssuerMismatch,
+    Unavailable,
+}
+
+impl From<DbError> for LoginProvisionError {
+    fn from(_error: DbError) -> Self {
+        Self::Database
+    }
+}
+
+#[async_trait::async_trait]
+trait LoginCodeStore: CodeStore {
+    async fn provision_login(
+        &self,
+        issuer: &str,
+        subject: &str,
+        display_name: Option<&str>,
+        pre_v1_task_attribution_id: &str,
+    ) -> Result<String, LoginProvisionError>;
+}
+
+#[async_trait::async_trait]
+impl LoginCodeStore for InMemoryStateStore {
+    async fn provision_login(
+        &self,
+        _issuer: &str,
+        _subject: &str,
+        _display_name: Option<&str>,
+        _pre_v1_task_attribution_id: &str,
+    ) -> Result<String, LoginProvisionError> {
+        Err(LoginProvisionError::Unavailable)
+    }
+}
+
+struct DbBackedLoginCodeStore {
+    code_store: Arc<dyn CodeStore>,
+    database: Arc<CoralDb>,
+}
+
+impl DbBackedLoginCodeStore {
+    fn new(code_store: Arc<dyn CodeStore>, database: Arc<CoralDb>) -> Self {
+        Self {
+            code_store,
+            database,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl CodeStore for DbBackedLoginCodeStore {
+    async fn store_authorization_code(
+        &self,
+        code: &str,
+        authorization: OAuthAuthorizationCodeRecord,
+    ) -> Result<(), StateStoreError> {
+        self.code_store
+            .store_authorization_code(code, authorization)
+            .await
+    }
+
+    async fn take_authorization_code_for_request(
+        &self,
+        code: &str,
+        client_id: &str,
+        redirect_uri: &str,
+        code_challenge: &str,
+        resource: &str,
+    ) -> Result<Option<OAuthAuthorizationCodeRecord>, StateStoreError> {
+        self.code_store
+            .take_authorization_code_for_request(
+                code,
+                client_id,
+                redirect_uri,
+                code_challenge,
+                resource,
+            )
+            .await
+    }
+}
+
+#[async_trait::async_trait]
+impl LoginCodeStore for DbBackedLoginCodeStore {
+    async fn provision_login(
+        &self,
+        issuer: &str,
+        subject: &str,
+        display_name: Option<&str>,
+        pre_v1_task_attribution_id: &str,
+    ) -> Result<String, LoginProvisionError> {
+        let now_unix_nanos =
+            now_unix_nanos_i64().map_err(|_error| LoginProvisionError::Unavailable)?;
+        match self
+            .database
+            .provision_login_and_reattribute_pre_v1_tasks(
+                issuer,
+                subject,
+                display_name,
+                pre_v1_task_attribution_id,
+                now_unix_nanos,
+            )
+            .await?
+        {
+            UpsertLoginOutcome::Upserted(user) => Ok(user.user_id),
+            UpsertLoginOutcome::IssuerMismatch { .. } => Err(LoginProvisionError::IssuerMismatch),
+        }
     }
 }
 

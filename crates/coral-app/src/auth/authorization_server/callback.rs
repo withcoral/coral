@@ -9,6 +9,9 @@ use super::super::state_store::{OAuthAuthorizationCodeRecord, OAuthAuthorization
 use super::AuthorizationServerHttpState;
 use super::query;
 use super::response::{TrustedRedirect, direct_error};
+use crate::identity::pre_v1_task_attribution_id_for_principal_claim;
+
+const LOGIN_PROVISION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 pub(super) async fn oidc_callback(
     State(state): State<AuthorizationServerHttpState>,
@@ -68,12 +71,35 @@ pub(super) async fn oidc_callback(
             return trusted.error("server_error", "authorization failed");
         }
     };
+    let pre_v1_task_attribution_id =
+        pre_v1_task_attribution_id_for_principal_claim(&identity.principal);
+    let user_id = match tokio::time::timeout(
+        LOGIN_PROVISION_TIMEOUT,
+        state.code_store.provision_login(
+            &identity.issuer,
+            &identity.subject,
+            identity.display_name.as_deref(),
+            &pre_v1_task_attribution_id,
+        ),
+    )
+    .await
+    {
+        Ok(Ok(user_id)) => user_id,
+        Ok(Err(_error)) => {
+            tracing::warn!("OIDC callback could not provision the authenticated user");
+            return trusted.error("server_error", "authorization failed");
+        }
+        Err(_elapsed) => {
+            tracing::warn!("OIDC callback user provisioning timed out");
+            return trusted.error("server_error", "authorization failed");
+        }
+    };
     let Ok(authorization_code) = random_code() else {
         tracing::warn!("OIDC callback could not generate an authorization code");
         return trusted.error("server_error", "authorization failed");
     };
     let authorization = OAuthAuthorizationCodeRecord {
-        user_id: identity.principal,
+        user_id,
         client_id: session.client_id,
         redirect_uri: session.redirect_uri,
         code_challenge: session.code_challenge,
@@ -161,13 +187,16 @@ mod tests {
     use base64::engine::general_purpose::STANDARD;
     use ring::rand::SystemRandom;
     use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair};
+    use sea_query::{Alias, Expr, ExprTrait, Query};
     use serde_json::{Value, json};
     use url::{Url, form_urlencoded};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    use super::super::AuthorizationServerHttpState;
     use super::super::client_metadata::HttpClientMetadataResolver;
+    use super::super::{
+        AuthorizationServerHttpState, DbBackedLoginCodeStore, LoginCodeStore, LoginProvisionError,
+    };
     use super::*;
     use crate::auth::config::{AuthSettings, ResolvedAuthSettings};
     use crate::auth::id_token::tests::{
@@ -176,6 +205,12 @@ mod tests {
     use crate::auth::provider_client::OidcProviderClient;
     use crate::auth::session::SessionTokenIssuer;
     use crate::auth::state_store::{CodeStore, InMemoryStateStore, SessionStore, StateStoreError};
+    use crate::state::AppStateLayout;
+    use crate::state::db::{
+        CoralDb, DatabaseConfig, DbRepos, DbSession, ResolvedDatabaseConfig, TaskCreation,
+        TaskCreationResult, UpsertLoginOutcome,
+    };
+    use crate::workspaces::MemberRole;
 
     const OIDC_STATE: &str = "oidc-state";
     const CLIENT_STATE: &str = "client&error=injected";
@@ -238,6 +273,29 @@ mod tests {
             authorization_resources,
             client_metadata_resolver,
         }
+    }
+
+    fn state_with_database(
+        issuer: &str,
+        store: Arc<InMemoryStateStore>,
+        database: Arc<CoralDb>,
+    ) -> AuthorizationServerHttpState {
+        let mut state = state(issuer, store.clone());
+        state.code_store = Arc::new(DbBackedLoginCodeStore::new(store, database));
+        state
+    }
+
+    async fn open_sqlite() -> (tempfile::TempDir, Arc<CoralDb>) {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        let DatabaseConfig::Sqlite { path } = DatabaseConfig::load(&layout).expect("config") else {
+            panic!("test config must be sqlite")
+        };
+        let database = CoralDb::open(ResolvedDatabaseConfig::Sqlite { path })
+            .await
+            .expect("open sqlite");
+        database.migrate().await.expect("migrate");
+        (temp, Arc::new(database))
     }
 
     fn session() -> OAuthAuthorizationSessionRecord {
@@ -408,12 +466,45 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn success_is_single_use_and_stores_raw_identity_with_bindings() {
+    async fn login_rekeys_legacy_task_attribution_before_code_storage() {
         let server = MockServer::start().await;
         mount_provider(&server, 200, 200, NONCE).await;
+        let provider_issuer = server.uri();
+        let (_temp, database) = open_sqlite().await;
+        let UpsertLoginOutcome::Upserted(existing_user) = database
+            .provision_login(&provider_issuer, "raw-principal", Some("Existing User"), 1)
+            .await
+            .expect("seed existing user")
+        else {
+            panic!("same issuer should provision")
+        };
+        let legacy_attribution = pre_v1_task_attribution_id_for_principal_claim("raw-principal");
+        let mut tx = database.begin().await.expect("begin workspace transaction");
+        tx.workspaces()
+            .create("legacy-workspace", 2)
+            .await
+            .expect("legacy workspace");
+        tx.commit().await.expect("commit workspace");
+        assert_eq!(
+            database
+                .task_state()
+                .create(
+                    TaskCreation {
+                        id: "legacy-task",
+                        workspace_id: "legacy-workspace",
+                        created_by_principal_id: &legacy_attribution,
+                        intent: "legacy task",
+                        created_at_unix_nanos: 3,
+                    },
+                    10,
+                )
+                .await
+                .expect("seed legacy task"),
+            TaskCreationResult::Created
+        );
         let store = Arc::new(InMemoryStateStore::new());
         seed(store.as_ref(), OIDC_STATE).await;
-        let app = state(&server.uri(), store.clone());
+        let app = state_with_database(&provider_issuer, store.clone(), Arc::clone(&database));
         let raw = query(&[("state", OIDC_STATE), ("code", PROVIDER_CODE)]);
         let (first, second) = tokio::join!(
             callback_raw(app.clone(), raw.clone()),
@@ -448,8 +539,31 @@ mod tests {
             .await
             .expect("store")
             .expect("authorization");
-        assert_eq!(authorization.user_id, "raw-principal");
+        assert_eq!(authorization.user_id, existing_user.user_id);
+        assert_ne!(authorization.user_id, legacy_attribution);
         assert_eq!(authorization.resource, RESOURCE);
+        let statement = Query::select()
+            .column(Alias::new("created_by_principal_id"))
+            .from(Alias::new("tasks"))
+            .and_where(Expr::col(Alias::new("id")).eq("legacy-task"))
+            .to_owned();
+        let mut session = database.as_ref();
+        let attribution: Option<(String,)> = session
+            .fetch_optional(statement)
+            .await
+            .expect("read rekeyed task");
+        assert_eq!(attribution, Some((existing_user.user_id.clone(),)));
+        assert_eq!(
+            session
+                .workspace_members()
+                .role_for_user_id(
+                    &format!("default-{}", existing_user.user_id),
+                    &existing_user.user_id,
+                )
+                .await
+                .expect("personal workspace ownership"),
+            Some(MemberRole::Owner)
+        );
         let requests = server.received_requests().await.expect("requests");
         let token_requests = requests
             .iter()
@@ -470,6 +584,56 @@ mod tests {
         for secret in [VERIFIER, PROVIDER_SECRET, PROVIDER_CODE] {
             assert!(!location.contains(secret));
         }
+    }
+
+    #[tokio::test]
+    async fn first_login_owns_default_workspace_and_relogin_preserves_user_id() {
+        let server = MockServer::start().await;
+        mount_provider(&server, 200, 200, NONCE).await;
+        let provider_issuer = server.uri();
+        let (_temp, database) = open_sqlite().await;
+        let store = Arc::new(InMemoryStateStore::new());
+
+        let mut user_ids = Vec::new();
+        for oidc_state in [OIDC_STATE, "second-oidc-state"] {
+            seed(store.as_ref(), oidc_state).await;
+            let response = callback(
+                state_with_database(&provider_issuer, store.clone(), Arc::clone(&database)),
+                &[("state", oidc_state), ("code", PROVIDER_CODE)],
+            )
+            .await;
+            let values = redirect_query(&response);
+            let code = values
+                .iter()
+                .find(|(key, _value)| key == "code")
+                .expect("authorization code")
+                .1
+                .clone();
+            let authorization = store
+                .take_authorization_code_for_request(
+                    &code,
+                    &session().client_id,
+                    REDIRECT_URI,
+                    &session().code_challenge,
+                    RESOURCE,
+                )
+                .await
+                .expect("store")
+                .expect("authorization");
+            user_ids.push(authorization.user_id);
+        }
+
+        assert_eq!(user_ids[0], user_ids[1]);
+        let mut session = database.as_ref();
+        assert_eq!(
+            session
+                .workspace_members()
+                .role_for_user_id(&format!("default-{}", user_ids[0]), &user_ids[0])
+                .await
+                .expect("personal workspace ownership"),
+            Some(MemberRole::Owner)
+        );
+        assert_eq!(session.users().list().await.expect("users").len(), 1);
     }
 
     async fn assert_provider_failure(token_status: u16, jwks_status: u16, nonce: &str) {
@@ -531,14 +695,110 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Copy)]
+    enum ProvisionFailure {
+        Database,
+        Timeout,
+    }
+
+    struct FailProvisioningCodeStore(ProvisionFailure);
+
+    #[async_trait::async_trait]
+    impl CodeStore for FailProvisioningCodeStore {
+        async fn store_authorization_code(
+            &self,
+            _code: &str,
+            _authorization: OAuthAuthorizationCodeRecord,
+        ) -> Result<(), StateStoreError> {
+            panic!("failed provisioning must prevent authorization-code storage")
+        }
+
+        async fn take_authorization_code_for_request(
+            &self,
+            _code: &str,
+            _client_id: &str,
+            _redirect_uri: &str,
+            _challenge: &str,
+            _resource: &str,
+        ) -> Result<Option<OAuthAuthorizationCodeRecord>, StateStoreError> {
+            unreachable!("the OIDC callback issues authorization codes, it never redeems them")
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LoginCodeStore for FailProvisioningCodeStore {
+        async fn provision_login(
+            &self,
+            _issuer: &str,
+            _subject: &str,
+            _display_name: Option<&str>,
+            _pre_v1_task_attribution_id: &str,
+        ) -> Result<String, LoginProvisionError> {
+            match self.0 {
+                ProvisionFailure::Database => Err(LoginProvisionError::Database),
+                ProvisionFailure::Timeout => std::future::pending().await,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn issuer_mismatch_and_provisioning_failures_store_no_code() {
+        let server = MockServer::start().await;
+        mount_provider(&server, 200, 200, NONCE).await;
+        let provider_issuer = server.uri();
+        let (_temp, database) = open_sqlite().await;
+        database
+            .provision_login("https://different-issuer.example", "raw-principal", None, 1)
+            .await
+            .expect("seed mismatched issuer");
+
+        let store = Arc::new(InMemoryStateStore::new());
+        seed(store.as_ref(), OIDC_STATE).await;
+        let response = callback(
+            state_with_database(&provider_issuer, store, database),
+            &[("state", OIDC_STATE), ("code", PROVIDER_CODE)],
+        )
+        .await;
+        assert_server_error_without_code(&response);
+
+        for (index, failure) in [ProvisionFailure::Database, ProvisionFailure::Timeout]
+            .into_iter()
+            .enumerate()
+        {
+            let state_key = format!("failure-{index}");
+            let store = Arc::new(InMemoryStateStore::new());
+            seed(store.as_ref(), &state_key).await;
+            let mut state = state(&provider_issuer, store);
+            state.code_store = Arc::new(FailProvisioningCodeStore(failure));
+            let response = tokio::time::timeout(
+                Duration::from_secs(3),
+                callback(state, &[("state", &state_key), ("code", PROVIDER_CODE)]),
+            )
+            .await
+            .expect("callback's two-second provisioning limit");
+            assert_server_error_without_code(&response);
+        }
+    }
+
+    fn assert_server_error_without_code(response: &Response) {
+        let values = redirect_query(response);
+        assert!(values.contains(&("error".into(), "server_error".into())));
+        assert!(!values.iter().any(|(key, _value)| key == "code"));
+        assert_security(response);
+    }
+
     #[tokio::test]
     async fn code_store_capacity_failure_exposes_no_client_code() {
         let server = MockServer::start().await;
         mount_provider(&server, 200, 200, NONCE).await;
+        let (_temp, database) = open_sqlite().await;
         let store = Arc::new(InMemoryStateStore::new());
         seed(store.as_ref(), OIDC_STATE).await;
         let mut state = state(&server.uri(), store);
-        state.code_store = Arc::new(FailCodeStore);
+        state.code_store = Arc::new(DbBackedLoginCodeStore::new(
+            Arc::new(FailCodeStore),
+            database,
+        ));
         let response = callback(state, &[("state", OIDC_STATE), ("code", PROVIDER_CODE)]).await;
         let values = redirect_query(&response);
         assert!(values.contains(&("error".into(), "server_error".into())));
