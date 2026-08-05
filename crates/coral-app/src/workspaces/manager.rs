@@ -545,11 +545,14 @@ mod tests {
             .create_workspace_for_user(&default, &principal)
             .await
             .expect("the exact default workspace name is not reserved by the prefix rule");
+        let members = manager
+            .list_workspace_members(&default)
+            .await
+            .expect("list exact default members");
         assert_eq!(
-            manager
-                .list_workspace_members(&default)
-                .await
-                .expect("list exact default members")[0]
+            members
+                .first()
+                .expect("exact default workspace should have an owner")
                 .role,
             MemberRole::Owner
         );

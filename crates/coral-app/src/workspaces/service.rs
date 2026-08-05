@@ -266,8 +266,9 @@ mod tests {
             member_role_from_proto(WorkspaceRole::Member as i32).expect("member role"),
             MemberRole::Member
         );
-        assert!(member_role_from_proto(WorkspaceRole::Unspecified as i32).is_err());
-        assert!(member_role_from_proto(i32::MAX).is_err());
+        member_role_from_proto(WorkspaceRole::Unspecified as i32)
+            .expect_err("unspecified role must be rejected");
+        member_role_from_proto(i32::MAX).expect_err("unknown role must be rejected");
         assert_eq!(
             member_role_to_proto(MemberRole::Owner),
             WorkspaceRole::Owner
