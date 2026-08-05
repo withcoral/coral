@@ -58,11 +58,16 @@ pub(crate) const QUERY_TRACE_TABLE_FUNCTIONS_ATTR: &str = "coral.query.table_fun
 pub(crate) fn app_error_type(error: &AppError) -> &'static str {
     match error {
         AppError::Unauthenticated(_) => "UNAUTHENTICATED",
+        AppError::PermissionDenied(_) => "PERMISSION_DENIED",
+        AppError::UserNotFound(_) => "USER_NOT_FOUND",
+        AppError::IssuerMismatch => "ISSUER_MISMATCH",
         AppError::SourceNotFound(_) => "SOURCE_NOT_FOUND",
         AppError::FunctionNotFound(_) => "FUNCTION_NOT_FOUND",
         AppError::FunctionAlreadyExists(_) => "FUNCTION_ALREADY_EXISTS",
         AppError::WorkspaceNotFound(_) => "WORKSPACE_NOT_FOUND",
         AppError::WorkspaceAlreadyExists(_) => "WORKSPACE_ALREADY_EXISTS",
+        AppError::WorkspaceMemberRoleConflict { .. } => "WORKSPACE_MEMBER_ROLE_CONFLICT",
+        AppError::LastWorkspaceOwner(_) => "LAST_WORKSPACE_OWNER",
         AppError::InvalidInput(_) => "INVALID_INPUT",
         AppError::FailedPrecondition(_) => "FAILED_PRECONDITION",
         AppError::MissingSourceInputs { .. } => "MISSING_SOURCE_INPUTS",
@@ -727,6 +732,8 @@ mod tests {
     use tracing_opentelemetry::OpenTelemetrySpanExt as _;
     use tracing_subscriber::layer::SubscriberExt as _;
 
+    use crate::bootstrap::AppError;
+
     #[derive(Clone)]
     struct CapturedWriter(Arc<Mutex<Vec<u8>>>);
 
@@ -749,9 +756,36 @@ mod tests {
     use super::{
         DEFAULT_LOCAL_TRACE_FILTER, DEFAULT_LOG_FILTER, DEFAULT_TRACE_FILTER,
         LOCAL_TRACE_EXCLUDED_RPC_SERVICES, OTLP_STRIPPED_SPAN_ATTRIBUTE_PREFIXES,
-        OTLP_TRACE_DENIED_TARGETS, TargetFilteringSpanExporter, build_log_filter,
+        OTLP_TRACE_DENIED_TARGETS, TargetFilteringSpanExporter, app_error_type, build_log_filter,
         build_trace_targets, normalize_otlp_endpoint, parse_headers, trace_layer_filter,
     };
+
+    #[test]
+    fn access_control_errors_have_stable_telemetry_types() {
+        let cases = [
+            (
+                AppError::PermissionDenied(String::new()),
+                "PERMISSION_DENIED",
+            ),
+            (AppError::UserNotFound(String::new()), "USER_NOT_FOUND"),
+            (AppError::IssuerMismatch, "ISSUER_MISMATCH"),
+            (
+                AppError::WorkspaceMemberRoleConflict {
+                    workspace: String::new(),
+                    user_id: String::new(),
+                },
+                "WORKSPACE_MEMBER_ROLE_CONFLICT",
+            ),
+            (
+                AppError::LastWorkspaceOwner(String::new()),
+                "LAST_WORKSPACE_OWNER",
+            ),
+        ];
+
+        for (error, expected) in cases {
+            assert_eq!(app_error_type(&error), expected);
+        }
+    }
 
     #[test]
     fn normalize_otlp_endpoint_handles_signal_paths() {
