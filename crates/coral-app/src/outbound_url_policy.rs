@@ -515,7 +515,7 @@ pub(crate) enum OutboundUrlPolicyError {
     #[error("public metadata URL host must be public")]
     NonPublicHost,
     /// The hardened HTTP client could not be constructed.
-    #[error("failed to build public metadata HTTP client: {0}")]
+    #[error("failed to build metadata HTTP client: {0}")]
     ClientBuild(reqwest::Error),
     /// A response body could not be read.
     ///
