@@ -60,8 +60,26 @@ export interface SchemaGroup {
   name: string
 }
 
+export interface SchemaNamespace extends SchemaGroup {
+  kind: 'schema'
+}
+
+export interface CatalogNamespace {
+  kind: 'catalog'
+  name: string
+  schemas: SchemaGroup[]
+}
+
+export type SchemaExplorerNamespace = CatalogNamespace | SchemaNamespace
+
 export interface SchemaResponse {
-  connectors: SchemaGroup[]
+  namespaces: SchemaExplorerNamespace[]
+}
+
+export interface TableReference {
+  catalogName: string
+  schemaName: string
+  tableName: string
 }
 
 const COLUMN_PAGE_LIMIT = 200
@@ -73,16 +91,49 @@ export async function fetchSchemaFromCoral(
   signal?: AbortSignal,
 ): Promise<SchemaResponse> {
   const catalogItems = await listCatalogItems(catalogClient, workspace, signal)
-  if (catalogItems.length === 0) return { connectors: [] }
+  if (catalogItems.length === 0) return { namespaces: [] }
 
-  const schemaMap = new Map<string, SchemaItemDef[]>()
+  const namespaces: SchemaExplorerNamespace[] = []
+  const schemaNamespaces = new Map<string, SchemaNamespace>()
+  const catalogNamespaces = new Map<
+    string,
+    { namespace: CatalogNamespace; schemas: Map<string, SchemaGroup> }
+  >()
+
+  const schemaItems = (catalogName: string, schemaName: string): SchemaItemDef[] => {
+    if (!catalogName) {
+      let schema = schemaNamespaces.get(schemaName)
+      if (!schema) {
+        schema = { items: [], kind: 'schema', name: schemaName }
+        schemaNamespaces.set(schemaName, schema)
+        namespaces.push(schema)
+      }
+      return schema.items
+    }
+
+    let catalog = catalogNamespaces.get(catalogName)
+    if (!catalog) {
+      const namespace: CatalogNamespace = { kind: 'catalog', name: catalogName, schemas: [] }
+      catalog = { namespace, schemas: new Map() }
+      catalogNamespaces.set(catalogName, catalog)
+      namespaces.push(namespace)
+    }
+
+    let schema = catalog.schemas.get(schemaName)
+    if (!schema) {
+      schema = { items: [], name: schemaName }
+      catalog.schemas.set(schemaName, schema)
+      catalog.namespace.schemas.push(schema)
+    }
+    return schema.items
+  }
+
   for (const item of catalogItems) {
     if (item.item.case === 'table') {
       const table = item.item.value
       if (!table.schemaName || !table.name) continue
 
-      const schemaItems = schemaMap.get(table.schemaName) ?? []
-      schemaItems.push({
+      schemaItems(table.catalogName, table.schemaName).push({
         columns: [],
         columnsLoaded: false,
         description: optional(table.description),
@@ -90,7 +141,6 @@ export async function fetchSchemaFromCoral(
         name: table.name,
         requiredFilters: table.requiredFilters,
       })
-      schemaMap.set(table.schemaName, schemaItems)
       continue
     }
 
@@ -98,8 +148,7 @@ export async function fetchSchemaFromCoral(
       const tableFunction = item.item.value
       if (!tableFunction.schemaName || !tableFunction.name) continue
 
-      const schemaItems = schemaMap.get(tableFunction.schemaName) ?? []
-      schemaItems.push({
+      schemaItems('', tableFunction.schemaName).push({
         arguments: tableFunction.arguments.map((argument) => ({
           name: argument.name,
           required: argument.required,
@@ -115,13 +164,10 @@ export async function fetchSchemaFromCoral(
           type: column.dataType || 'unknown',
         })),
       })
-      schemaMap.set(tableFunction.schemaName, schemaItems)
     }
   }
 
-  return {
-    connectors: [...schemaMap.entries()].map(([name, items]) => ({ items, name })),
-  }
+  return { namespaces }
 }
 
 async function listCatalogItems(
@@ -143,18 +189,10 @@ async function listCatalogItems(
 export async function fetchTableColumnsFromCoral(
   catalogClient: CatalogClient,
   workspace: Workspace,
-  schemaName: string,
-  tableName: string,
+  table: TableReference,
   signal?: AbortSignal,
 ): Promise<ColumnDef[]> {
-  const firstPage = await listColumnsPage(
-    catalogClient,
-    workspace,
-    schemaName,
-    tableName,
-    0,
-    signal,
-  )
+  const firstPage = await listColumnsPage(catalogClient, workspace, table, 0, signal)
   const columns = columnsFromResponse(firstPage)
   const pagination = firstPage.pagination
   if (!pagination?.hasMore) return columns
@@ -164,21 +202,14 @@ export async function fetchTableColumnsFromCoral(
     const remainingPages = await mapWithConcurrency(
       pageOffsets(nextOffset, pagination.totalCount, COLUMN_PAGE_LIMIT),
       COLUMN_PAGE_CONCURRENCY,
-      (offset) => listColumnsPage(catalogClient, workspace, schemaName, tableName, offset, signal),
+      (offset) => listColumnsPage(catalogClient, workspace, table, offset, signal),
     )
     return columns.concat(remainingPages.flatMap(columnsFromResponse))
   }
 
   let offset = pagination.nextOffset
   while (offset > 0) {
-    const page = await listColumnsPage(
-      catalogClient,
-      workspace,
-      schemaName,
-      tableName,
-      offset,
-      signal,
-    )
+    const page = await listColumnsPage(catalogClient, workspace, table, offset, signal)
     columns.push(...columnsFromResponse(page))
     if (!page.pagination?.hasMore) break
     offset = page.pagination.nextOffset
@@ -189,19 +220,19 @@ export async function fetchTableColumnsFromCoral(
 async function listColumnsPage(
   catalogClient: CatalogClient,
   workspace: Workspace,
-  schemaName: string,
-  tableName: string,
+  table: TableReference,
   offset: number,
   signal?: AbortSignal,
 ): Promise<ListColumnsResponse> {
   return catalogClient.listColumns(
     create(ListColumnsRequestSchema, {
+      catalogName: table.catalogName,
       pagination: {
         limit: COLUMN_PAGE_LIMIT,
         offset,
       },
-      schemaName,
-      tableName,
+      schemaName: table.schemaName,
+      tableName: table.tableName,
       workspace,
     }),
     { signal },

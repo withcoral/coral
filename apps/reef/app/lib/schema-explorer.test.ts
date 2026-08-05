@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { CatalogItemKind } from '@/generated/coral/v1/catalog_pb'
 import { WorkspaceSchema } from '@/generated/coral/v1/resources_pb'
 
-import { fetchSchemaFromCoral } from './schema-explorer'
+import { fetchSchemaFromCoral, fetchTableColumnsFromCoral } from './schema-explorer'
 import type { CatalogClient } from './schema-explorer'
 
 describe('fetchSchemaFromCoral', () => {
@@ -54,8 +54,9 @@ describe('fetchSchemaFromCoral', () => {
     await expect(
       fetchSchemaFromCoral({ listCatalog } as unknown as CatalogClient, workspace),
     ).resolves.toEqual({
-      connectors: [
+      namespaces: [
         {
+          kind: 'schema',
           items: [
             {
               arguments: [
@@ -95,5 +96,117 @@ describe('fetchSchemaFromCoral', () => {
       kind: CatalogItemKind.UNSPECIFIED,
       workspace,
     })
+  })
+
+  it('preserves database catalogs as catalog and schema namespaces', async () => {
+    const listCatalog = vi.fn().mockResolvedValue({
+      items: [
+        {
+          item: {
+            case: 'table',
+            value: {
+              catalogName: 'pickl_v4',
+              description: '',
+              name: 'products',
+              requiredFilters: [],
+              schemaName: 'public',
+            },
+          },
+        },
+        {
+          item: {
+            case: 'table',
+            value: {
+              catalogName: 'pickl_v4',
+              description: '',
+              name: 'sales',
+              requiredFilters: [],
+              schemaName: 'public',
+            },
+          },
+        },
+        {
+          item: {
+            case: 'table',
+            value: {
+              catalogName: 'pickl_v4',
+              description: '',
+              name: 'revenue_by_product',
+              requiredFilters: [],
+              schemaName: 'analytics',
+            },
+          },
+        },
+        {
+          item: {
+            case: 'table',
+            value: {
+              catalogName: 'warehouse',
+              description: '',
+              name: 'products',
+              requiredFilters: [],
+              schemaName: 'public',
+            },
+          },
+        },
+      ],
+    })
+    const workspace = create(WorkspaceSchema, { name: 'analytics' })
+
+    await expect(
+      fetchSchemaFromCoral({ listCatalog } as unknown as CatalogClient, workspace),
+    ).resolves.toEqual({
+      namespaces: [
+        {
+          kind: 'catalog',
+          name: 'pickl_v4',
+          schemas: [
+            {
+              items: [
+                expect.objectContaining({ kind: 'table', name: 'products' }),
+                expect.objectContaining({ kind: 'table', name: 'sales' }),
+              ],
+              name: 'public',
+            },
+            {
+              items: [expect.objectContaining({ kind: 'table', name: 'revenue_by_product' })],
+              name: 'analytics',
+            },
+          ],
+        },
+        {
+          kind: 'catalog',
+          name: 'warehouse',
+          schemas: [
+            {
+              items: [expect.objectContaining({ kind: 'table', name: 'products' })],
+              name: 'public',
+            },
+          ],
+        },
+      ],
+    })
+  })
+})
+
+describe('fetchTableColumnsFromCoral', () => {
+  it('passes the complete database table identity to ListColumns', async () => {
+    const listColumns = vi.fn().mockResolvedValue({ columns: [] })
+    const workspace = create(WorkspaceSchema, { name: 'analytics' })
+
+    await fetchTableColumnsFromCoral({ listColumns } as unknown as CatalogClient, workspace, {
+      catalogName: 'pickl_v4',
+      schemaName: 'public',
+      tableName: 'products',
+    })
+
+    expect(listColumns).toHaveBeenCalledWith(
+      expect.objectContaining({
+        catalogName: 'pickl_v4',
+        schemaName: 'public',
+        tableName: 'products',
+      }),
+      expect.anything(),
+    )
   })
 })

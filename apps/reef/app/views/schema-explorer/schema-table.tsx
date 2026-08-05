@@ -22,25 +22,35 @@ interface DisplayColumn {
 
 // The parent schema layout resolves its schema before rendering this Outlet, so
 // table metadata (description, required filters) is available synchronously.
-function useSelectedTable(): { schemaName: string; tableName: string; table?: TableDef } {
+function useSelectedTable(): {
+  catalogName: string
+  schemaName: string
+  tableName: string
+  table?: TableDef
+} {
   const schema = useOutletContext<SchemaResponse>()
   const params = useParams()
+  const catalogName = params.catalogName ?? ''
   const schemaName = params.schemaName ?? ''
   const tableName = params.tableName ?? ''
-  return { schemaName, tableName, table: findSchemaTable(schema, schemaName, tableName) }
+  return {
+    catalogName,
+    schemaName,
+    tableName,
+    table: findSchemaTable(schema, catalogName, schemaName, tableName),
+  }
 }
 
 // Detail-panel scaffold for a selected table: title, description, required
 // filters, and a "Columns" section body.
 function TableDetailLayout({ children }: { children: React.ReactNode }) {
-  const { schemaName, tableName, table } = useSelectedTable()
+  const { catalogName, schemaName, tableName, table } = useSelectedTable()
+  const qualifiedName = [catalogName, schemaName, tableName].filter(Boolean).join('.')
   return (
     <div className={styles.detailContent}>
       <div className={styles.detailHeader}>
         <div>
-          <Typography.HeadingSmall as="h2">
-            {schemaName}.{tableName}
-          </Typography.HeadingSmall>
+          <Typography.HeadingSmall as="h2">{qualifiedName}</Typography.HeadingSmall>
           {table?.description ? (
             <Typography.BodySmall as="p" className={styles.description}>
               {table.description}

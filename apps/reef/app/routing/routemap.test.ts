@@ -10,6 +10,8 @@ const CANONICAL_PATTERNS = {
   workspaces: '/workspaces',
   workspaceFunctions: '/workspaces/:workspaceId/functions',
   workspaceSchema: '/workspaces/:workspaceId/schema',
+  workspaceSchemaCatalogTable:
+    '/workspaces/:workspaceId/schema/catalogs/:catalogName/:schemaName/:tableName',
   workspaceSchemaTable: '/workspaces/:workspaceId/schema/:schemaName/:tableName',
   workspaceSchemaTableFunction:
     '/workspaces/:workspaceId/schema/:schemaName/functions/:functionName',
@@ -43,6 +45,12 @@ describe('route map', () => {
       workspaces: routePath('workspaces'),
       workspaceFunctions: routePath('workspaceFunctions', { workspaceId: 'analytics' }),
       workspaceSchema: routePath('workspaceSchema', { workspaceId: 'analytics' }),
+      workspaceSchemaCatalogTable: routePath('workspaceSchemaCatalogTable', {
+        catalogName: 'pickl?',
+        schemaName: 'public schema',
+        tableName: 'orders/2026',
+        workspaceId: 'team alpha',
+      }),
       workspaceSchemaTable: routePath('workspaceSchemaTable', {
         schemaName: 'github',
         tableName: 'issues',
@@ -76,6 +84,8 @@ describe('route map', () => {
       workspaces: '/workspaces',
       workspaceFunctions: '/workspaces/analytics/functions',
       workspaceSchema: '/workspaces/analytics/schema',
+      workspaceSchemaCatalogTable:
+        '/workspaces/team%20alpha/schema/catalogs/pickl%3F/public%20schema/orders%2F2026',
       workspaceSchemaTable: '/workspaces/analytics/schema/github/issues',
       workspaceSchemaTableFunction: '/workspaces/analytics/schema/github/functions/search_issues',
       workspaceSource: '/workspaces/analytics/sources/github',

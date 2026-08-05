@@ -6,6 +6,8 @@ const ONBOARDING_PATH = '/onboarding'
 const WORKSPACES_PATH = '/workspaces'
 const WORKSPACE_FUNCTIONS_PATH = '/workspaces/:workspaceId/functions'
 const WORKSPACE_SCHEMA_PATH = '/workspaces/:workspaceId/schema'
+const WORKSPACE_SCHEMA_CATALOG_TABLE_PATH =
+  '/workspaces/:workspaceId/schema/catalogs/:catalogName/:schemaName/:tableName'
 const WORKSPACE_SCHEMA_TABLE_PATH = '/workspaces/:workspaceId/schema/:schemaName/:tableName'
 const WORKSPACE_SCHEMA_TABLE_FUNCTION_PATH =
   '/workspaces/:workspaceId/schema/:schemaName/functions/:functionName'
@@ -45,6 +47,21 @@ export const routeDefinitions = {
     path: WORKSPACE_SCHEMA_PATH,
     toPath: (params: { workspaceId: string }) =>
       generatePath(WORKSPACE_SCHEMA_PATH, {
+        workspaceId: params.workspaceId,
+      }),
+  },
+  workspaceSchemaCatalogTable: {
+    path: WORKSPACE_SCHEMA_CATALOG_TABLE_PATH,
+    toPath: (params: {
+      catalogName: string
+      schemaName: string
+      tableName: string
+      workspaceId: string
+    }) =>
+      generatePath(WORKSPACE_SCHEMA_CATALOG_TABLE_PATH, {
+        catalogName: params.catalogName,
+        schemaName: params.schemaName,
+        tableName: params.tableName,
         workspaceId: params.workspaceId,
       }),
   },
