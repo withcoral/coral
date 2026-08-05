@@ -30,7 +30,7 @@ use crate::workspaces::{WorkspaceAuthorizer, WorkspaceName};
 pub(crate) struct CatalogService {
     catalog: CatalogDiscovery,
     tasks: TaskManager,
-    _workspace_authorizer: Option<WorkspaceAuthorizer>,
+    workspace_authorizer: Option<WorkspaceAuthorizer>,
 }
 
 impl CatalogService {
@@ -38,12 +38,12 @@ impl CatalogService {
         Self {
             catalog: CatalogDiscovery::new(query_manager),
             tasks: task_manager,
-            _workspace_authorizer: None,
+            workspace_authorizer: None,
         }
     }
 
     pub(crate) fn with_authorizer(mut self, authorizer: WorkspaceAuthorizer) -> Self {
-        self._workspace_authorizer = Some(authorizer);
+        self.workspace_authorizer = Some(authorizer);
         self
     }
 }

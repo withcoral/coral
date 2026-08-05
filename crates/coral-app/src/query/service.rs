@@ -26,7 +26,7 @@ use crate::workspaces::WorkspaceAuthorizer;
 pub(crate) struct QueryService {
     queries: QueryManager,
     tasks: TaskManager,
-    _workspace_authorizer: Option<WorkspaceAuthorizer>,
+    workspace_authorizer: Option<WorkspaceAuthorizer>,
 }
 
 impl QueryService {
@@ -34,12 +34,12 @@ impl QueryService {
         Self {
             queries: query_manager,
             tasks: task_manager,
-            _workspace_authorizer: None,
+            workspace_authorizer: None,
         }
     }
 
     pub(crate) fn with_authorizer(mut self, authorizer: WorkspaceAuthorizer) -> Self {
-        self._workspace_authorizer = Some(authorizer);
+        self.workspace_authorizer = Some(authorizer);
         self
     }
 }

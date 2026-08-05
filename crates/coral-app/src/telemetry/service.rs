@@ -24,19 +24,19 @@ const MAX_TRACE_PAGE_SIZE: usize = 200;
 #[derive(Clone)]
 pub(crate) struct TraceService {
     traces: TraceManager,
-    _workspace_authorizer: Option<WorkspaceAuthorizer>,
+    workspace_authorizer: Option<WorkspaceAuthorizer>,
 }
 
 impl TraceService {
     pub(crate) fn new(trace_manager: TraceManager) -> Self {
         Self {
             traces: trace_manager,
-            _workspace_authorizer: None,
+            workspace_authorizer: None,
         }
     }
 
     pub(crate) fn with_authorizer(mut self, authorizer: WorkspaceAuthorizer) -> Self {
-        self._workspace_authorizer = Some(authorizer);
+        self.workspace_authorizer = Some(authorizer);
         self
     }
 }

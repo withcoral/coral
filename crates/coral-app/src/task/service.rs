@@ -18,19 +18,19 @@ use crate::workspaces::WorkspaceAuthorizer;
 #[derive(Clone)]
 pub(crate) struct TaskService {
     task: TaskManager,
-    _workspace_authorizer: Option<WorkspaceAuthorizer>,
+    workspace_authorizer: Option<WorkspaceAuthorizer>,
 }
 
 impl TaskService {
     pub(crate) fn new(task: TaskManager) -> Self {
         Self {
             task,
-            _workspace_authorizer: None,
+            workspace_authorizer: None,
         }
     }
 
     pub(crate) fn with_authorizer(mut self, authorizer: WorkspaceAuthorizer) -> Self {
-        self._workspace_authorizer = Some(authorizer);
+        self.workspace_authorizer = Some(authorizer);
         self
     }
 }

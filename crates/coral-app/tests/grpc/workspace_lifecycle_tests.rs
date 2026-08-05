@@ -122,6 +122,10 @@ fn local_trace_store_dir(harness: &GrpcHarness) -> std::path::PathBuf {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the end-to-end scenario verifies one complete access-control lifecycle"
+)]
 async fn workspace_access_control_grant_revoke_and_owner_floor() {
     let harness = WorkspaceAccessControlHarness::new().await;
     let owner = harness.owner();

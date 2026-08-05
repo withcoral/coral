@@ -781,6 +781,10 @@ struct ServerDependencies {
     task: TaskManager,
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the composition root keeps service construction and mounting together"
+)]
 async fn start_server(
     dependencies: ServerDependencies,
     trace_components: TraceServerComponents,
