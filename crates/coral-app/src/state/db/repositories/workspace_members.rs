@@ -46,6 +46,31 @@ where
             .map(|(workspace_id, role)| Ok((workspace_id, parse_role(&role)?)))
             .collect()
     }
+
+    pub(crate) async fn owned_workspaces_for_user_id(
+        &mut self,
+        user_id: &str,
+        after_workspace_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<String>, DbError> {
+        let mut statement = Query::select();
+        statement
+            .column(WorkspaceMembers::WorkspaceId)
+            .from(WorkspaceMembers::Table)
+            .and_where(Expr::col(WorkspaceMembers::UserId).eq(user_id))
+            .and_where(Expr::col(WorkspaceMembers::Role).eq(MemberRole::Owner.as_str()))
+            .order_by(WorkspaceMembers::WorkspaceId, Order::Asc)
+            .limit(u64::try_from(limit).unwrap_or(u64::MAX));
+        if let Some(after_workspace_id) = after_workspace_id {
+            statement.and_where(Expr::col(WorkspaceMembers::WorkspaceId).gt(after_workspace_id));
+        }
+
+        let rows: Vec<(String,)> = self.session.fetch_all(statement.to_owned()).await?;
+        Ok(rows
+            .into_iter()
+            .map(|(workspace_id,)| workspace_id)
+            .collect())
+    }
 }
 
 impl WorkspaceMembersRepo<'_, CoralTx<'_>> {
@@ -120,7 +145,7 @@ mod tests {
     use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig};
 
     #[tokio::test]
-    async fn workspace_member_repository_round_trips_against_sqlite() {
+    async fn owned_workspaces_for_user_id_and_member_repository_round_trip_against_sqlite() {
         let temp = tempdir().expect("temp dir");
         let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
         let db = open_sqlite(&layout).await;
@@ -130,7 +155,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "set CORAL_TEST_POSTGRES_URL to run the shared repository harness against Postgres"]
-    async fn workspace_member_repository_round_trips_against_postgres() {
+    async fn owned_workspaces_for_user_id_and_member_repository_round_trip_against_postgres() {
         let Some(url) = postgres_test_url() else {
             return;
         };
@@ -161,6 +186,7 @@ mod tests {
     async fn assert_workspace_member_repository_round_trip(db: &CoralDb, suffix: &str) {
         let workspace_a = format!("a-{suffix}");
         let workspace_b = format!("b-{suffix}");
+        let workspace_c = format!("c-{suffix}");
         let missing_workspace = format!("missing-{suffix}");
         let user_id = create_user(db, suffix).await;
         let other_user_id = create_user(db, &format!("other-{suffix}")).await;
@@ -174,6 +200,10 @@ mod tests {
             .create(&workspace_a, 11)
             .await
             .expect("create workspace a");
+        tx.workspaces()
+            .create(&workspace_c, 12)
+            .await
+            .expect("create workspace c");
         assert!(
             tx.workspaces()
                 .hold_for_child_mutation(&workspace_b)
@@ -198,6 +228,16 @@ mod tests {
             .insert(&workspace_a, &other_user_id, MemberRole::Owner, 22)
             .await
             .expect("insert second owner");
+        assert!(
+            tx.workspaces()
+                .hold_for_child_mutation(&workspace_c)
+                .await
+                .expect("hold workspace c")
+        );
+        tx.workspace_members()
+            .insert(&workspace_c, &user_id, MemberRole::Owner, 23)
+            .await
+            .expect("insert second owned workspace");
         assert_eq!(
             tx.workspace_members()
                 .owner_count(&workspace_a)
@@ -248,7 +288,40 @@ mod tests {
             vec![
                 (workspace_a.clone(), MemberRole::Owner),
                 (workspace_b.clone(), MemberRole::Member),
+                (workspace_c.clone(), MemberRole::Owner),
             ]
+        );
+        assert_eq!(
+            session
+                .workspace_members()
+                .owned_workspaces_for_user_id("missing-user", None, 10)
+                .await
+                .expect("list no owned workspaces"),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            session
+                .workspace_members()
+                .owned_workspaces_for_user_id(&user_id, None, 1)
+                .await
+                .expect("list first owned workspace"),
+            vec![workspace_a.clone()]
+        );
+        assert_eq!(
+            session
+                .workspace_members()
+                .owned_workspaces_for_user_id(&user_id, Some(&workspace_a), 10)
+                .await
+                .expect("list owned workspaces after cursor"),
+            vec![workspace_c.clone()]
+        );
+        assert_eq!(
+            session
+                .workspace_members()
+                .owned_workspaces_for_user_id(&user_id, None, 10)
+                .await
+                .expect("list all owned workspaces"),
+            vec![workspace_a.clone(), workspace_c.clone()]
         );
 
         let mut tx = db.begin().await.expect("begin delete tx");
@@ -302,7 +375,10 @@ mod tests {
                 .workspaces_for_user_id(&user_id)
                 .await
                 .expect("list workspaces after cascade"),
-            vec![(workspace_b, MemberRole::Member)]
+            vec![
+                (workspace_b, MemberRole::Member),
+                (workspace_c, MemberRole::Owner),
+            ]
         );
     }
 
