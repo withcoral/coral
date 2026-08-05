@@ -145,7 +145,7 @@ mod tests {
     use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig};
 
     #[tokio::test]
-    async fn owned_workspaces_for_user_id_and_member_repository_round_trip_against_sqlite() {
+    async fn owned_workspaces_for_user_id_and_member_repository_round_trips_against_sqlite() {
         let temp = tempdir().expect("temp dir");
         let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
         let db = open_sqlite(&layout).await;
@@ -155,7 +155,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "set CORAL_TEST_POSTGRES_URL to run the shared repository harness against Postgres"]
-    async fn owned_workspaces_for_user_id_and_member_repository_round_trip_against_postgres() {
+    async fn owned_workspaces_for_user_id_and_member_repository_round_trips_against_postgres() {
         let Some(url) = postgres_test_url() else {
             return;
         };

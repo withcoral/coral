@@ -133,21 +133,22 @@ impl WorkspaceAuthorizer {
         }
 
         let mut session = self.db.as_ref();
-        session
+        let mut workspaces = session
             .workspaces()
             .list()
             .await?
             .into_iter()
             .map(|record| WorkspaceName::parse(&record.id))
-            .filter(|workspace| match workspace {
-                Ok(workspace) => match after_workspace {
-                    Some(after) => workspace > after,
-                    None => true,
-                },
-                Err(_) => true,
+            .collect::<Result<Vec<_>, _>>()?;
+        workspaces.sort();
+        Ok(workspaces
+            .into_iter()
+            .filter(|workspace| match after_workspace {
+                Some(after) => workspace > after,
+                None => true,
             })
             .take(limit)
-            .collect()
+            .collect())
     }
 }
 
@@ -288,15 +289,17 @@ mod tests {
         let (_temp, db) = database(true).await;
         let owner_id = directory_user(&db, "enumeration-owner").await;
         let empty_id = directory_user(&db, "enumeration-empty").await;
-        let workspaces = ["a-owned", "b-member", "c-owned", "d-member"];
+        let persisted_workspaces = [" z-local ", "A-owned", "b-member", "c-owned", "d-member"];
+        let ordered_workspaces = ["A-owned", "b-member", "c-owned", "d-member", "z-local"];
         let roles = [
+            MemberRole::Member,
             MemberRole::Owner,
             MemberRole::Member,
             MemberRole::Owner,
             MemberRole::Member,
         ];
         let mut tx = db.begin().await.expect("begin workspace setup");
-        for (index, (workspace, role)) in workspaces.iter().zip(roles).enumerate() {
+        for (index, (workspace, role)) in persisted_workspaces.iter().zip(roles).enumerate() {
             tx.workspaces()
                 .create(workspace, i64::try_from(index).expect("small index"))
                 .await
@@ -317,7 +320,7 @@ mod tests {
         let authorizer = WorkspaceAuthorizer::new(db);
         let owner = Principal::parse(&owner_id, PrincipalKind::User).expect("owner");
         let empty = Principal::parse(&empty_id, PrincipalKind::User).expect("empty user");
-        let cursor = WorkspaceName::parse("a-owned").expect("cursor");
+        let cursor = WorkspaceName::parse("A-owned").expect("cursor");
         assert_eq!(
             authorizer
                 .owned_workspace_page_for_federated_user(&empty, None, 10)
@@ -330,7 +333,7 @@ mod tests {
                 .owned_workspace_page_for_federated_user(&owner, None, 1)
                 .await
                 .expect("first owned page"),
-            vec![WorkspaceName::parse("a-owned").expect("workspace")]
+            vec![WorkspaceName::parse("A-owned").expect("workspace")]
         );
         assert_eq!(
             authorizer
@@ -348,7 +351,7 @@ mod tests {
                 .iter()
                 .map(WorkspaceName::as_str)
                 .collect::<Vec<_>>(),
-            &workspaces[..2]
+            &ordered_workspaces[..2]
         );
         let local_cursor = WorkspaceName::parse("b-member").expect("local cursor");
         assert_eq!(
@@ -363,7 +366,7 @@ mod tests {
                 .iter()
                 .map(WorkspaceName::as_str)
                 .collect::<Vec<_>>(),
-            &workspaces[2..]
+            &ordered_workspaces[2..]
         );
         assert!(matches!(
             authorizer
