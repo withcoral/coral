@@ -33,7 +33,6 @@ impl WorkspaceService {
         }
     }
 
-    #[expect(dead_code, reason = "wired by control-plane composition in t15")]
     pub(crate) fn with_authorizer(mut self, authorizer: WorkspaceAuthorizer) -> Self {
         self.authorizer = Some(authorizer);
         self
