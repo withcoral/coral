@@ -1,7 +1,5 @@
 //! Transactional persistence for workspace creation and deletion.
 
-#![cfg_attr(not(test), expect(dead_code, reason = "wired in M3"))]
-
 use sea_query::{Expr, ExprTrait, OnConflict, Query};
 
 use super::schema::{Users, Workspaces};

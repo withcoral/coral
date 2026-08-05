@@ -1,9 +1,10 @@
 //! Transactional workspace-membership mutations.
 
-#![cfg_attr(not(test), expect(dead_code, reason = "wired in M3"))]
+use sea_query::{Expr, ExprTrait, JoinType, Order, Query};
 
 use super::repositories::users::UserRecord;
-use super::{CoralDb, DbError, DbRepos};
+use super::schema::{Users, WorkspaceMembers};
+use super::{CoralDb, DbError, DbRepos, DbSession};
 use crate::workspaces::MemberRole;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,6 +32,47 @@ pub(crate) enum RemoveMemberOutcome {
 }
 
 impl CoralDb {
+    pub(crate) async fn list_workspace_members(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Option<Vec<WorkspaceMemberView>>, DbError> {
+        let mut session = self;
+        if session.workspaces().get(workspace_id).await?.is_none() {
+            return Ok(None);
+        }
+        let statement = Query::select()
+            .column((WorkspaceMembers::Table, WorkspaceMembers::UserId))
+            .column((WorkspaceMembers::Table, WorkspaceMembers::Role))
+            .column((Users::Table, Users::DisplayName))
+            .from(WorkspaceMembers::Table)
+            .join(
+                JoinType::InnerJoin,
+                Users::Table,
+                Expr::col((WorkspaceMembers::Table, WorkspaceMembers::UserId))
+                    .equals((Users::Table, Users::UserId)),
+            )
+            .and_where(Expr::col(WorkspaceMembers::WorkspaceId).eq(workspace_id))
+            .order_by(
+                (WorkspaceMembers::Table, WorkspaceMembers::UserId),
+                Order::Asc,
+            )
+            .to_owned();
+        let rows: Vec<(String, String, Option<String>)> = session.fetch_all(statement).await?;
+        rows.into_iter()
+            .map(|(user_id, role, display_name)| {
+                let role = MemberRole::parse(&role).ok_or_else(|| {
+                    DbError::CorruptData(format!("invalid workspace member role '{role}'"))
+                })?;
+                Ok(WorkspaceMemberView {
+                    user_id,
+                    role,
+                    display_name,
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map(Some)
+    }
+
     pub(crate) async fn add_workspace_member(
         &self,
         workspace_id: &str,

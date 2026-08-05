@@ -5,13 +5,17 @@ use tracing::warn;
 
 use crate::bootstrap::AppError;
 use crate::credentials::{CredentialManager, CredentialSetId};
+use crate::identity::{Principal, PrincipalKind};
 use crate::sources::materialization::SourceDiagnosticReporter;
 use crate::state::ConfigStore;
-use crate::state::db::{CoralDb, DbRepos, now_unix_nanos_i64};
+use crate::state::db::{
+    AddMemberOutcome, CoralDb, DbRepos, RemoveMemberOutcome, WorkspaceCreationOutcome,
+    WorkspaceMemberView, now_unix_nanos_i64,
+};
 use crate::storage::fs::DirectoryBackup;
 use crate::workspaces::{
-    DeletedWorkspace, WorkspaceLifecycleLock, WorkspaceLifecycleRevision, WorkspaceName,
-    WorkspacePaths, WorkspacePoolRegistry, WorkspaceRecord,
+    DeletedWorkspace, MemberRole, WorkspaceLifecycleLock, WorkspaceLifecycleRevision,
+    WorkspaceName, WorkspacePaths, WorkspacePoolRegistry, WorkspaceRecord,
 };
 
 /// App-owned workspace lifecycle behavior.
@@ -89,6 +93,36 @@ impl WorkspaceManager {
             .collect()
     }
 
+    pub(crate) async fn list_workspaces_for(
+        &self,
+        principal: &Principal,
+    ) -> Result<Vec<(WorkspaceRecord, MemberRole)>, AppError> {
+        if principal.is_local() {
+            return Ok(self
+                .list_workspaces()
+                .await?
+                .into_iter()
+                .map(|workspace| (workspace, MemberRole::Owner))
+                .collect());
+        }
+        let mut session = self.db.as_ref();
+        session
+            .workspace_members()
+            .workspaces_for_user_id(principal.id().as_str())
+            .await?
+            .into_iter()
+            .map(|(workspace_id, role)| {
+                WorkspaceName::parse(&workspace_id)
+                    .map(|name| (WorkspaceRecord { name }, role))
+                    .map_err(|error| {
+                        AppError::Database(format!(
+                            "invalid workspace id '{workspace_id}': {error}"
+                        ))
+                    })
+            })
+            .collect()
+    }
+
     pub(crate) async fn require_workspace(
         &self,
         workspace_name: &WorkspaceName,
@@ -129,6 +163,7 @@ impl WorkspaceManager {
         &self,
         workspace_name: &WorkspaceName,
     ) -> Result<WorkspaceRecord, AppError> {
+        reject_reserved_personal_default(workspace_name)?;
         let _lifecycle_guard = self.lifecycle_lock.lock_async().await;
         let mut tx = self.db.begin().await?;
         if tx
@@ -153,6 +188,100 @@ impl WorkspaceManager {
         Ok(WorkspaceRecord {
             name: workspace_name.clone(),
         })
+    }
+
+    pub(crate) async fn create_workspace_for_user(
+        &self,
+        workspace_name: &WorkspaceName,
+        principal: &Principal,
+    ) -> Result<WorkspaceRecord, AppError> {
+        reject_reserved_personal_default(workspace_name)?;
+        if principal.kind() != PrincipalKind::User {
+            return Err(AppError::PermissionDenied(
+                "workspace creation requires a human principal".to_string(),
+            ));
+        }
+        let _lifecycle_guard = self.lifecycle_lock.lock_async().await;
+        match self
+            .db
+            .create_workspace_with_owner(
+                workspace_name.as_str(),
+                principal.id().as_str(),
+                now_unix_nanos_i64()?,
+            )
+            .await?
+        {
+            WorkspaceCreationOutcome::Created => Ok(WorkspaceRecord {
+                name: workspace_name.clone(),
+            }),
+            WorkspaceCreationOutcome::AlreadyExists => {
+                Err(AppError::WorkspaceAlreadyExists(workspace_name.to_string()))
+            }
+            WorkspaceCreationOutcome::UserNotFound => {
+                Err(AppError::UserNotFound(principal.id().to_string()))
+            }
+        }
+    }
+
+    pub(crate) async fn list_workspace_members(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<Vec<WorkspaceMemberView>, AppError> {
+        self.db
+            .list_workspace_members(workspace_name.as_str())
+            .await?
+            .ok_or_else(|| AppError::WorkspaceNotFound(workspace_name.to_string()))
+    }
+
+    pub(crate) async fn add_workspace_member(
+        &self,
+        workspace_name: &WorkspaceName,
+        user_id: &str,
+        role: MemberRole,
+    ) -> Result<WorkspaceMemberView, AppError> {
+        match self
+            .db
+            .add_workspace_member(
+                workspace_name.as_str(),
+                user_id,
+                role,
+                now_unix_nanos_i64()?,
+            )
+            .await?
+        {
+            AddMemberOutcome::Added(member) | AddMemberOutcome::ExistingSameRole(member) => {
+                Ok(member)
+            }
+            AddMemberOutcome::RoleConflict => Err(AppError::WorkspaceMemberRoleConflict {
+                workspace: workspace_name.to_string(),
+                user_id: user_id.to_string(),
+            }),
+            AddMemberOutcome::WorkspaceNotFound => {
+                Err(AppError::WorkspaceNotFound(workspace_name.to_string()))
+            }
+            AddMemberOutcome::UserNotFound => Err(AppError::UserNotFound(user_id.to_string())),
+        }
+    }
+
+    pub(crate) async fn remove_workspace_member(
+        &self,
+        workspace_name: &WorkspaceName,
+        user_id: &str,
+    ) -> Result<(), AppError> {
+        match self
+            .db
+            .remove_workspace_member(workspace_name.as_str(), user_id)
+            .await?
+        {
+            RemoveMemberOutcome::Removed => Ok(()),
+            RemoveMemberOutcome::WorkspaceNotFound => {
+                Err(AppError::WorkspaceNotFound(workspace_name.to_string()))
+            }
+            RemoveMemberOutcome::MemberNotFound => Err(AppError::UserNotFound(user_id.to_string())),
+            RemoveMemberOutcome::LastOwnerProtected => {
+                Err(AppError::LastWorkspaceOwner(workspace_name.to_string()))
+            }
+        }
     }
 
     pub(crate) async fn delete_workspace(
@@ -307,6 +436,17 @@ impl WorkspaceManager {
     }
 }
 
+fn reject_reserved_personal_default(workspace_name: &WorkspaceName) -> Result<(), AppError> {
+    if workspace_name.has_reserved_personal_default_prefix() {
+        Err(AppError::InvalidInput(
+            "workspace names beginning with 'default-' are reserved for personal default workspaces"
+                .to_string(),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -315,13 +455,15 @@ mod tests {
     use tempfile::TempDir;
 
     use super::WorkspaceManager;
+    use crate::bootstrap::AppError;
     use crate::credentials::{CredentialManager, CredentialSetId, CredentialStore};
+    use crate::identity::{Principal, PrincipalKind};
     use crate::sources::SourceName;
     use crate::sources::materialization::{SourceDiagnosticReporter, SourceLoadDiagnosticStage};
     use crate::sources::model::{InstalledSource, SourceOrigin};
-    use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig};
+    use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig, UpsertLoginOutcome};
     use crate::state::{AppStateLayout, ConfigStore};
-    use crate::workspaces::{WorkspaceName, WorkspacePoolRegistry};
+    use crate::workspaces::{MemberRole, WorkspaceName, WorkspacePoolRegistry};
 
     fn test_layout(temp: &TempDir) -> AppStateLayout {
         AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout")
@@ -349,6 +491,145 @@ mod tests {
             .expect("open sqlite");
         db.migrate().await.expect("migrate sqlite");
         Arc::new(db)
+    }
+
+    fn test_manager(layout: &AppStateLayout, db: Arc<CoralDb>) -> WorkspaceManager {
+        WorkspaceManager::new_for_tests(
+            ConfigStore::new(layout.clone()),
+            CredentialManager::new(CredentialStore::new(layout.clone())),
+            layout.clone(),
+            None,
+            db,
+        )
+    }
+
+    async fn provision_user(db: &CoralDb, subject: &str) -> String {
+        let UpsertLoginOutcome::Upserted(user) = db
+            .provision_login("issuer", subject, None, 1)
+            .await
+            .expect("provision user")
+        else {
+            panic!("new subject should create a user")
+        };
+        user.user_id
+    }
+
+    #[tokio::test]
+    async fn reserved_personal_default_prefix_is_rejected_for_user_creation() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout = test_layout(&temp);
+        let db = test_db(&layout).await;
+        let user_id = provision_user(&db, "workspace-creator").await;
+        let principal = Principal::parse(&user_id, PrincipalKind::User).expect("principal");
+        let manager = test_manager(&layout, Arc::clone(&db));
+        let reserved = WorkspaceName::parse(" default-persisted-id ")
+            .expect("persisted personal default name remains parseable");
+
+        assert!(matches!(
+            manager
+                .create_workspace_for_user(&reserved, &principal)
+                .await,
+            Err(AppError::InvalidInput(ref message))
+                if message == "workspace names beginning with 'default-' are reserved for personal default workspaces"
+        ));
+        assert!(matches!(
+            manager.create_workspace(&reserved).await,
+            Err(AppError::InvalidInput(_))
+        ));
+
+        let default = WorkspaceName::default();
+        manager
+            .create_workspace_for_user(&default, &principal)
+            .await
+            .expect("the exact default workspace name is not reserved by the prefix rule");
+        assert_eq!(
+            manager
+                .list_workspace_members(&default)
+                .await
+                .expect("list exact default members")[0]
+                .role,
+            MemberRole::Owner
+        );
+    }
+
+    #[tokio::test]
+    async fn membership_lifecycle_filters_listing_and_preserves_the_last_owner() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout = test_layout(&temp);
+        let db = test_db(&layout).await;
+        let owner_id = provision_user(&db, "owner").await;
+        let member_id = provision_user(&db, "member").await;
+        let owner = Principal::parse(&owner_id, PrincipalKind::User).expect("owner principal");
+        let member = Principal::parse(&member_id, PrincipalKind::User).expect("member principal");
+        let manager = test_manager(&layout, db);
+        let workspace = WorkspaceName::parse("team").expect("workspace");
+
+        manager
+            .create_workspace_for_user(&workspace, &owner)
+            .await
+            .expect("create owned workspace");
+        assert!(
+            manager
+                .list_workspaces_for(&member)
+                .await
+                .expect("list member workspaces")
+                .iter()
+                .all(|(record, _)| record.name != workspace)
+        );
+
+        let first = manager
+            .add_workspace_member(&workspace, &member_id, MemberRole::Member)
+            .await
+            .expect("add member");
+        let repeated = manager
+            .add_workspace_member(&workspace, &member_id, MemberRole::Member)
+            .await
+            .expect("repeat identical add");
+        assert_eq!(first, repeated);
+        assert!(matches!(
+            manager
+                .add_workspace_member(&workspace, &member_id, MemberRole::Owner)
+                .await,
+            Err(AppError::WorkspaceMemberRoleConflict { .. })
+        ));
+
+        let members = manager
+            .list_workspace_members(&workspace)
+            .await
+            .expect("list members");
+        assert_eq!(members.len(), 2);
+        assert!(
+            members
+                .iter()
+                .any(|entry| { entry.user_id == owner_id && entry.role == MemberRole::Owner })
+        );
+        assert!(
+            manager
+                .list_workspaces_for(&member)
+                .await
+                .expect("list newly shared workspace")
+                .iter()
+                .any(|(record, role)| record.name == workspace && *role == MemberRole::Member)
+        );
+
+        manager
+            .remove_workspace_member(&workspace, &member_id)
+            .await
+            .expect("remove member");
+        assert!(
+            manager
+                .list_workspace_members(&workspace)
+                .await
+                .expect("list after removal")
+                .iter()
+                .all(|entry| entry.user_id != member_id)
+        );
+        assert!(matches!(
+            manager
+                .remove_workspace_member(&workspace, &owner_id)
+                .await,
+            Err(AppError::LastWorkspaceOwner(ref name)) if name == workspace.as_str()
+        ));
     }
 
     #[tokio::test]
