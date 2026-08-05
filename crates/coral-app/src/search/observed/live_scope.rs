@@ -101,10 +101,11 @@ impl ObservedValuesLiveScopeLoader {
             loaded_runtime.runtime_contract_fingerprint.as_str(),
             source.credential_revision,
         );
-        Ok(source_surface_scopes(&loaded_runtime.query_source, seed)
-            .into_iter()
-            .map(|scope| scope.live_scope())
-            .collect())
+        // A component whose name diverges from its package fails this source
+        // closed through the existing partial-result channel.
+        let scopes = source_surface_scopes(&loaded_runtime.query_source, seed)
+            .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
+        Ok(scopes.into_iter().map(|scope| scope.live_scope()).collect())
     }
 }
 
@@ -262,6 +263,7 @@ mod tests {
                 credential_revision,
             ),
         )
+        .expect("coherent source identity")
         .into_iter()
         .next()
         .expect("publisher scope")
