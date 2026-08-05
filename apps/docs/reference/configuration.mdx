@@ -96,9 +96,10 @@ bind = "127.0.0.1:14556"
 
 The unauthenticated MCP listener is restricted to loopback addresses.
 
-Within a configured `[auth]` section, use `allowed_audiences` to register
-additional public surfaces that front the private gRPC API, such as a hosted
-Reef deployment:
+Add `allowed_audiences` to the top-level `[auth]` table of an otherwise complete
+auth configuration to register public surfaces that front the private gRPC API,
+such as a hosted Reef deployment. The required `[auth.session]`,
+`[auth.authorization_server]`, and `[auth.provider]` tables are omitted here:
 
 ```toml
 [auth]

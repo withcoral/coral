@@ -586,7 +586,7 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
     }
 
     #[test]
-    fn authenticated_reef_only_config_uses_its_allowed_audience() {
+    fn authenticated_reef_only_config_registers_its_allowed_audience() {
         let temp = TempDir::new().expect("temp dir");
         let layout = AppStateLayout::discover(Some(temp.path().join("config"))).expect("layout");
         write_authenticated_config_with_auth(
@@ -600,12 +600,15 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
             .companion_settings()
             .expect("Reef-only companions");
         assert!(companions.mcp_http.is_none());
+        let session_auth = companions.session_auth.expect("session auth");
+        assert_eq!(session_auth.public_audiences, ["https://reef.example.test"]);
+
+        let authorization_server = session_auth
+            .into_authorization_server()
+            .expect("authorization server");
         assert_eq!(
-            companions
-                .session_auth
-                .expect("session auth")
-                .public_audiences,
-            ["https://reef.example.test"]
+            authorization_server.authorization_resources(),
+            &["https://reef.example.test".to_string()].into()
         );
     }
 

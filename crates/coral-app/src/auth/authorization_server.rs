@@ -56,17 +56,25 @@ impl CoralAuthorizationServer {
     /// # Errors
     ///
     /// Returns an error when the provider secret cannot be resolved from its
-    /// environment variable, the session signing key cannot be resolved, or
-    /// the session-token key material is invalid.
+    /// environment variable, the session signing key cannot be resolved, the
+    /// session-token key material is invalid, or a configured authorization
+    /// resource is invalid.
     pub fn from_settings(
         config_path: &Path,
         settings: AuthSettings,
     ) -> Result<Self, AuthServerError> {
+        let authorization_resources = settings.allowed_audiences().to_vec();
         let (settings, session_tokens) = settings
             .resolve_runtime_dependencies(config_path, &|name| {
                 crate::bootstrap::env_var(name).map_err(|error| signing_key_env_error(&error))
             })?;
-        Self::from_resolved_settings(settings, session_tokens)
+        let mut server = Self::from_resolved_settings(settings, session_tokens)?;
+        for resource in authorization_resources {
+            server = server
+                .with_authorization_resource(resource)
+                .map_err(AuthServerError::Config)?;
+        }
+        Ok(server)
     }
 
     pub(crate) fn from_resolved_settings(
@@ -110,6 +118,12 @@ impl CoralAuthorizationServer {
                 .map_err(|error| format!("authorization resource {error}"))?,
         );
         Ok(self)
+    }
+
+    /// Returns registered resources for assertions outside this module.
+    #[cfg(test)]
+    pub(crate) fn authorization_resources(&self) -> &BTreeSet<String> {
+        &self.authorization_resources
     }
 
     /// Starts the HTTP listener.
@@ -348,8 +362,8 @@ mod tests {
         dir
     }
 
-    fn authorization_server(extra: &str) -> tempfile::TempDir {
-        config(&format!("{AUTHORIZATION_SERVER}{extra}\n{PROVIDER}"))
+    fn authorization_server(auth_fields: &str) -> tempfile::TempDir {
+        config(&format!("{auth_fields}{AUTHORIZATION_SERVER}\n{PROVIDER}"))
     }
 
     fn server(dir: &tempfile::TempDir) -> CoralAuthorizationServer {
@@ -434,6 +448,17 @@ mod tests {
                 .expect("invalid resource");
             assert!(error.contains("authorization resource"));
         }
+    }
+
+    #[test]
+    fn registers_configured_authorization_resources() {
+        let dir = authorization_server("allowed_audiences = ['https://REEF.example.test/']\n");
+        let prepared = server(&dir);
+
+        assert_eq!(
+            prepared.authorization_resources,
+            ["https://reef.example.test".to_string()].into()
+        );
     }
 
     #[tokio::test]
