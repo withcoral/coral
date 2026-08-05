@@ -243,6 +243,7 @@ async fn query_attribution(
         .validate_attribution(workspace, request_context.task_id())
         .await
         .map(QueryAttribution::new)
+        .map(|attribution| attribution.with_tool_intent(request_context.tool_intent()))
         .map_err(task_manager_status)
 }
 

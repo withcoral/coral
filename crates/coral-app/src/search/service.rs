@@ -86,7 +86,8 @@ impl SearchServiceApi for SearchService {
                     .validate_attribution(&workspace_name, request_context.task_id())
                     .await
                     .map_err(task_manager_status)?,
-            );
+            )
+            .with_tool_intent(request_context.tool_intent());
             let request = SearchRequest::new(workspace_name, &request.query, request.limit)
                 .map_err(search_status)?;
             let response = search

@@ -538,7 +538,11 @@ for one MCP server process with
 Discovery helpers include the `coral` system schema, so `search`,
 `list_catalog`, `describe_table`, `list_columns`, and `coral://tables` can
 discover `coral.tables`, `coral.columns`, `coral.filters`,
-`coral.table_functions`, and `coral.inputs`.
+`coral.table_functions`, `coral.inputs`, and `coral.task_queries`.
+
+`coral.task_queries` contains retained MCP SQL activity for tasks in the current
+workspace. Filter by `task_id`, then order by `executed_at, query_id` for a
+deterministic execution-start order.
 
 For client setup, see [Use Coral over MCP](/guides/use-coral-over-mcp).
 

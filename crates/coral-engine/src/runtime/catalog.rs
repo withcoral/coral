@@ -25,8 +25,8 @@ use crate::backends::{
 use crate::runtime::normalize_catalog_name;
 use crate::runtime::schema_provider::StaticSchemaProvider;
 use crate::{
-    ColumnInfo, TableFunctionArgumentInfo, TableFunctionInfo, TableFunctionResultColumnInfo,
-    TableInfo,
+    ColumnInfo, RuntimeSystemTable, TableFunctionArgumentInfo, TableFunctionInfo,
+    TableFunctionResultColumnInfo, TableInfo,
 };
 
 /// Schema name for source metadata tables such as `coral.tables`.
@@ -113,11 +113,16 @@ pub(crate) fn register(
     active_sources: &[RegisteredSource],
     column_fetchers: &[CatalogColumnFetcher],
     catalog_only_table_functions: &[CatalogTableFunction],
+    runtime_system_tables: &[RuntimeSystemTable],
     column_fetch_failures: CatalogColumnFetchFailures,
 ) -> Result<()> {
-    let tables_table = build_tables_table(active_sources)?;
-    let columns_table =
-        build_columns_table_with_failures(active_sources, column_fetchers, column_fetch_failures)?;
+    let tables_table = build_tables_table(active_sources, runtime_system_tables)?;
+    let columns_table = build_columns_table_with_failures(
+        active_sources,
+        column_fetchers,
+        runtime_system_tables,
+        column_fetch_failures,
+    )?;
     let filters_table = build_filters_table(active_sources)?;
     let inputs_table = build_inputs_table(active_sources)?;
     let table_functions_table =
@@ -133,6 +138,17 @@ pub(crate) fn register(
         "table_functions".to_string(),
         Arc::new(table_functions_table),
     );
+    for table in runtime_system_tables {
+        if meta_tables
+            .insert(table.name.clone(), Arc::new(LazySystemTable(table.clone())))
+            .is_some()
+        {
+            return Err(DataFusionError::Plan(format!(
+                "duplicate coral system table '{}'",
+                table.name
+            )));
+        }
+    }
 
     let catalog = ctx
         .catalog("datafusion")
@@ -143,6 +159,46 @@ pub(crate) fn register(
     )?;
 
     Ok(())
+}
+
+#[derive(Clone)]
+struct LazySystemTable(RuntimeSystemTable);
+
+impl std::fmt::Debug for LazySystemTable {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_tuple("LazySystemTable")
+            .field(&self.0.name)
+            .finish()
+    }
+}
+
+#[async_trait]
+impl TableProvider for LazySystemTable {
+    fn schema(&self) -> SchemaRef {
+        Arc::clone(&self.0.schema)
+    }
+
+    fn table_type(&self) -> TableType {
+        TableType::Base
+    }
+
+    async fn scan(
+        &self,
+        state: &dyn Session,
+        projection: Option<&Vec<usize>>,
+        filters: &[Expr],
+        limit: Option<usize>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        let batches = self
+            .0
+            .load()
+            .await
+            .map_err(|error| DataFusionError::External(Box::new(error)))?;
+        MemTable::try_new(Arc::clone(&self.0.schema), vec![batches])?
+            .scan(state, projection, filters, limit)
+            .await
+    }
 }
 
 fn sql_string_literal(value: &str) -> String {
@@ -594,7 +650,7 @@ const SYSTEM_TABLE_DEFINITIONS: &[SystemTableDefinition] = &[
     },
 ];
 
-fn system_table_infos() -> Vec<TableInfo> {
+fn system_table_infos(runtime_system_tables: &[RuntimeSystemTable]) -> Vec<TableInfo> {
     SYSTEM_TABLE_DEFINITIONS
         .iter()
         .map(|table| TableInfo {
@@ -620,13 +676,42 @@ fn system_table_infos() -> Vec<TableInfo> {
                 .collect(),
             required_filters: Vec::new(),
         })
+        .chain(runtime_system_tables.iter().map(|table| {
+            TableInfo {
+                catalog_name: None,
+                schema_name: SYSTEM_SCHEMA.to_string(),
+                table_name: table.name.clone(),
+                description: table.description.clone(),
+                guide: table.guide.clone(),
+                require_guide_read: false,
+                columns: table
+                    .schema
+                    .fields()
+                    .iter()
+                    .enumerate()
+                    .map(|(position, field)| ColumnInfo {
+                        name: field.name().clone(),
+                        data_type: field.data_type().to_string(),
+                        nullable: field.is_nullable(),
+                        is_virtual: false,
+                        is_required_filter: false,
+                        description: String::new(),
+                        ordinal_position: u32::try_from(position).unwrap_or(u32::MAX),
+                    })
+                    .collect(),
+                required_filters: Vec::new(),
+            }
+        }))
         .collect()
 }
 
 /// Collect static query-visible table metadata for the active source set.
 #[must_use]
-pub(crate) fn collect_static_tables(active_sources: &[RegisteredSource]) -> Vec<TableInfo> {
-    let mut tables = system_table_infos();
+pub(crate) fn collect_static_tables(
+    active_sources: &[RegisteredSource],
+    runtime_system_tables: &[RuntimeSystemTable],
+) -> Vec<TableInfo> {
+    let mut tables = system_table_infos(runtime_system_tables);
     tables.extend(active_sources.iter().flat_map(|source| {
         source.tables.iter().map(move |table| TableInfo {
             catalog_name: source
@@ -990,7 +1075,10 @@ struct CatalogTable {
     search_limits: Option<SearchLimitsSpec>,
 }
 
-fn build_tables_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
+fn build_tables_table(
+    active_sources: &[RegisteredSource],
+    runtime_system_tables: &[RuntimeSystemTable],
+) -> Result<MemTable> {
     let schema = Arc::new(Schema::new(vec![
         Field::new("schema_name", DataType::Utf8, false),
         Field::new("table_name", DataType::Utf8, false),
@@ -1014,6 +1102,16 @@ fn build_tables_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
             required_filters: String::new(),
             search_limits: None,
         })
+        .chain(runtime_system_tables.iter().map(|table| CatalogTable {
+            catalog_name: String::new(),
+            schema_name: SYSTEM_SCHEMA.to_string(),
+            table_name: table.name.clone(),
+            description: table.description.clone(),
+            guide: table.guide.clone(),
+            require_guide_read: false,
+            required_filters: String::new(),
+            search_limits: None,
+        }))
         .chain(active_sources.iter().flat_map(|source| {
             source.tables.iter().map(move |table| CatalogTable {
                 catalog_name: source
@@ -1303,6 +1401,7 @@ fn build_columns_table(
     build_columns_table_with_failures(
         active_sources,
         column_fetchers,
+        &[],
         CatalogColumnFetchFailures::default(),
     )
 }
@@ -1310,6 +1409,7 @@ fn build_columns_table(
 fn build_columns_table_with_failures(
     active_sources: &[RegisteredSource],
     column_fetchers: &[CatalogColumnFetcher],
+    runtime_system_tables: &[RuntimeSystemTable],
     fetch_failures: CatalogColumnFetchFailures,
 ) -> Result<CoralColumnsTable> {
     let schema = Arc::new(Schema::new(vec![
@@ -1326,7 +1426,7 @@ fn build_columns_table_with_failures(
         Field::new("catalog_name", DataType::Utf8, false),
     ]));
 
-    let rows = catalog_column_rows(active_sources);
+    let rows = catalog_column_rows(active_sources, runtime_system_tables);
     let static_batch = catalog_columns_batch(schema.clone(), &rows)?;
 
     Ok(CoralColumnsTable {
@@ -1577,8 +1677,11 @@ fn column_equality(column_side: &Expr, literal_side: &Expr) -> Option<(PinColumn
     Some((pin_column(column.name())?, literal_to_string(literal_side)?))
 }
 
-fn catalog_column_rows(active_sources: &[RegisteredSource]) -> Vec<CatalogColumn> {
-    let mut rows = system_catalog_column_rows();
+fn catalog_column_rows(
+    active_sources: &[RegisteredSource],
+    runtime_system_tables: &[RuntimeSystemTable],
+) -> Vec<CatalogColumn> {
+    let mut rows = system_catalog_column_rows(runtime_system_tables);
     rows.extend(source_catalog_column_rows(active_sources));
     rows.sort_by(|left, right| {
         (
@@ -1597,7 +1700,7 @@ fn catalog_column_rows(active_sources: &[RegisteredSource]) -> Vec<CatalogColumn
     rows
 }
 
-fn system_catalog_column_rows() -> Vec<CatalogColumn> {
+fn system_catalog_column_rows(runtime_system_tables: &[RuntimeSystemTable]) -> Vec<CatalogColumn> {
     SYSTEM_TABLE_DEFINITIONS
         .iter()
         .flat_map(|table| {
@@ -1619,6 +1722,26 @@ fn system_catalog_column_rows() -> Vec<CatalogColumn> {
                     ordinal_position: position,
                 })
         })
+        .chain(runtime_system_tables.iter().flat_map(|table| {
+            table
+                .schema
+                .fields()
+                .iter()
+                .enumerate()
+                .map(move |(position, field)| CatalogColumn {
+                    catalog_name: String::new(),
+                    schema_name: SYSTEM_SCHEMA.to_string(),
+                    table_name: table.name.clone(),
+                    column_name: field.name().clone(),
+                    data_type: field.data_type().to_string(),
+                    is_nullable: field.is_nullable(),
+                    is_virtual: false,
+                    is_required_filter: false,
+                    filter_mode: None,
+                    description: String::new(),
+                    ordinal_position: position,
+                })
+        }))
         .collect()
 }
 
@@ -1994,8 +2117,9 @@ mod tests {
             column_fetcher("failed", &[("public", "orders")], Arc::clone(&failed)),
             column_fetcher("stalled", &[("public", "users")], Arc::clone(&stalled)),
         ];
-        let mut table = build_columns_table_with_failures(&[], &fetchers, fetch_failures.clone())
-            .expect("columns table");
+        let mut table =
+            build_columns_table_with_failures(&[], &fetchers, &[], fetch_failures.clone())
+                .expect("columns table");
         table.fetch_timeout = Duration::from_millis(20);
         let state = SessionContext::new().state();
         table
@@ -2024,6 +2148,7 @@ mod tests {
                 &[("public", "orders")],
                 Arc::clone(&recovered),
             )],
+            &[],
             fetch_failures.clone(),
         )
         .expect("recovered columns table");
@@ -2081,7 +2206,7 @@ mod tests {
     fn catalog_source_metadata_keeps_catalog_and_schema_separate() {
         let sources = [catalog_source()];
 
-        let table = collect_static_tables(&sources)
+        let table = collect_static_tables(&sources, &[])
             .into_iter()
             .find(|table| table.table_name == "orders")
             .expect("catalog table metadata");

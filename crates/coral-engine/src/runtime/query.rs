@@ -52,8 +52,9 @@ use crate::{
     RequestAuthenticator, RequestIdentityHttpAuthenticatorError,
     RequestIdentityHttpAuthenticatorFactory, RequestIdentitySelectionContext,
     RequestIdentitySelectionError, RequestIdentitySelector, ResolvedQueryResources,
-    SelectedRequestIdentity, SourceDecorator, SourceInputResolver, SourceObservationPublisher,
-    TableFunctionInfo, TableInfo, UdfRuntimeDefinition, normalize_catalog_name,
+    RuntimeSystemTable, SelectedRequestIdentity, SourceDecorator, SourceInputResolver,
+    SourceObservationPublisher, TableFunctionInfo, TableInfo, UdfRuntimeDefinition,
+    normalize_catalog_name,
 };
 
 pub(crate) struct QueryRuntimeAdapter {
@@ -72,6 +73,7 @@ pub(crate) struct QueryRuntimeAdapter {
     /// catalog for database sources).
     name_to_source: HashMap<String, String>,
     query_result_observers: Vec<Arc<dyn QueryResultObserver>>,
+    system_tables: Vec<RuntimeSystemTable>,
 }
 
 pub(crate) struct InferredSqlSignature {
@@ -107,6 +109,7 @@ struct RuntimeExtensionHooks {
     request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
     source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
     source_observation_publishers: Vec<Arc<dyn SourceObservationPublisher>>,
+    system_tables: Vec<RuntimeSystemTable>,
 }
 
 #[derive(Clone)]
@@ -176,6 +179,7 @@ async fn build_runtime_inner(
         request_authenticators: extensions.request_authenticators.clone(),
         source_input_resolver: extensions.source_input_resolver.clone(),
         source_observation_publishers: extensions.source_observation_publishers.clone(),
+        system_tables: extensions.system_tables.clone(),
     };
     let udfs_installed = !udfs.is_empty();
     let request_identity_http_authenticators = bind_request_identity_http_authenticators(
@@ -231,6 +235,7 @@ async fn build_runtime_inner(
         column_fetch_failures: primary.column_fetch_failures,
         name_to_source: name_to_source_names(sources),
         query_result_observers: extensions.query_result_observers,
+        system_tables: extensions.system_tables,
     })
 }
 
@@ -361,10 +366,14 @@ async fn build_registered_runtime(
         &registration.active_sources,
         &registration.column_fetchers,
         &udf_table_functions,
+        &config.extension_hooks.system_tables,
         column_fetch_failures.clone(),
     )
     .map_err(|err| datafusion_to_core(&err, &[]))?;
-    let tables = catalog::collect_static_tables(&registration.active_sources);
+    let tables = catalog::collect_static_tables(
+        &registration.active_sources,
+        &config.extension_hooks.system_tables,
+    );
     let table_functions =
         catalog::collect_table_functions(&registration.active_sources, &udf_table_functions);
     install_table_function_call_planners(
@@ -563,6 +572,7 @@ impl QueryRuntimeAdapter {
             &self.active_sources,
             &self.column_fetchers,
             &udf_table_functions,
+            &self.system_tables,
             self.column_fetch_failures.clone(),
         )
         .map_err(|err| datafusion_to_core(&err, &self.tables))?;
@@ -1601,10 +1611,11 @@ mod tests {
             &active_sources,
             &[],
             &[],
+            &[],
             column_fetch_failures.clone(),
         )
         .expect("catalog should register");
-        let tables = catalog::collect_static_tables(&active_sources);
+        let tables = catalog::collect_static_tables(&active_sources, &[]);
         QueryRuntimeAdapter {
             ctx,
             fallback_runtime: None,
@@ -1619,6 +1630,7 @@ mod tests {
             column_fetch_failures,
             name_to_source: HashMap::new(),
             query_result_observers: Vec::new(),
+            system_tables: Vec::new(),
         }
     }
 
@@ -1888,6 +1900,7 @@ mod tests {
                 request_authenticators: HashMap::new(),
                 source_input_resolver: None,
                 source_observation_publishers: Vec::new(),
+                system_tables: Vec::new(),
             },
             request_identity_http_authenticators: HashMap::new(),
         };

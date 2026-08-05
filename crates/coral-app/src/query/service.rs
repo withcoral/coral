@@ -55,7 +55,8 @@ impl QueryServiceApi for QueryService {
                     .validate_attribution(&workspace_name, request_context.task_id())
                     .await
                     .map_err(task_manager_status)?,
-            );
+            )
+            .with_tool_intent(request_context.tool_intent());
             let outcome = Box::pin(queries.execute_sql(
                 &workspace_name,
                 &inner.sql,
@@ -107,7 +108,8 @@ impl QueryServiceApi for QueryService {
                     .validate_attribution(&workspace_name, request_context.task_id())
                     .await
                     .map_err(task_manager_status)?,
-            );
+            )
+            .with_tool_intent(request_context.tool_intent());
             let plan = queries
                 .explain_sql(&workspace_name, &inner.sql, &attribution)
                 .await

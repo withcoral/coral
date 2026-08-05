@@ -3,9 +3,9 @@
 use std::future::Future;
 use std::sync::Arc;
 
-use coral_api::CORAL_TASK_ID_METADATA_KEY;
+use coral_api::{CORAL_TASK_ID_METADATA_KEY, CORAL_TOOL_INTENT_METADATA_KEY};
 use opentelemetry::propagation::Injector;
-use tonic::metadata::{Ascii, MetadataKey, MetadataValue};
+use tonic::metadata::{Ascii, Binary, MetadataKey, MetadataValue};
 
 use crate::error::ClientError;
 
@@ -13,6 +13,7 @@ pub(crate) const AUTHORIZATION_METADATA_KEY: &str = "authorization";
 
 tokio::task_local! {
     static TASK_ID: Option<MetadataValue<Ascii>>;
+    static TOOL_INTENT: Option<MetadataValue<Binary>>;
 }
 
 /// A validated bearer credential for an authenticated Coral connection.
@@ -77,7 +78,22 @@ pub async fn with_task_metadata<F>(task_id: Option<MetadataValue<Ascii>>, future
 where
     F: Future,
 {
-    TASK_ID.scope(task_id, future).await
+    with_task_context(task_id, None, future).await
+}
+
+/// Runs a future with optional task id and tool intent attribution for Coral
+/// client calls made in the same async task.
+pub async fn with_task_context<F>(
+    task_id: Option<MetadataValue<Ascii>>,
+    tool_intent: Option<MetadataValue<Binary>>,
+    future: F,
+) -> F::Output
+where
+    F: Future,
+{
+    TASK_ID
+        .scope(task_id, TOOL_INTENT.scope(tool_intent, future))
+        .await
 }
 
 #[derive(Clone, Debug, Default)]
@@ -167,6 +183,11 @@ impl tonic::service::Interceptor for ClientMetadataInterceptor {
                 .metadata_mut()
                 .insert(CORAL_TASK_ID_METADATA_KEY, task_id);
         }
+        if let Ok(Some(tool_intent)) = TOOL_INTENT.try_with(Clone::clone) {
+            request
+                .metadata_mut()
+                .insert_bin(CORAL_TOOL_INTENT_METADATA_KEY, tool_intent);
+        }
         for (key, value) in self.static_metadata.entries.iter() {
             request.metadata_mut().append(key.clone(), value.clone());
         }
@@ -199,6 +220,32 @@ mod tests {
                 .get(CORAL_TASK_ID_METADATA_KEY)
                 .and_then(|value| value.to_str().ok()),
             Some("550e8400-e29b-41d4-a716-446655440000")
+        );
+    }
+
+    #[tokio::test]
+    async fn client_metadata_interceptor_preserves_utf8_tool_intent() {
+        let task_id = "550e8400-e29b-41d4-a716-446655440000"
+            .parse()
+            .expect("metadata value");
+        let intent = MetadataValue::<Binary>::from_bytes("Sprawdź odnowienia".as_bytes());
+
+        let request = with_task_context(Some(task_id), Some(intent), async {
+            ClientMetadataInterceptor::new(StaticClientMetadata::default())
+                .call(tonic::Request::new(()))
+                .expect("interceptor")
+        })
+        .await;
+
+        assert_eq!(
+            request
+                .metadata()
+                .get_bin(CORAL_TOOL_INTENT_METADATA_KEY)
+                .expect("tool intent")
+                .to_bytes()
+                .expect("binary metadata")
+                .as_ref(),
+            "Sprawdź odnowienia".as_bytes()
         );
     }
 
