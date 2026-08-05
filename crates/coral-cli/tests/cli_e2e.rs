@@ -21,8 +21,8 @@ use coral_api::v1::{
     Function, FunctionArgument, FunctionRuntimeInvalid, FunctionRuntimeReady, FunctionWriteSurface,
     ListFunctionsResponse, ListSourcesResponse, ListWorkspacesResponse, RebuildSearchIndexResponse,
     SearchDataScope, SearchIndexProvider, SearchMaintenanceResult, SearchMaintenanceState,
-    SearchProvider, Source, SourceCredentialStorage, SourceInfo, SourceOrigin, Workspace, function,
-    search_clear_target, search_maintenance_result,
+    SearchProvider, Source, SourceCredentialStorage, SourceInfo, SourceOrigin, Workspace,
+    WorkspaceMembership, WorkspaceRole, function, search_clear_target, search_maintenance_result,
 };
 use tempfile::tempdir;
 use tonic::Code;
@@ -320,12 +320,18 @@ async fn functions_remove_uses_selected_workspace() {
 async fn workspace_list_renders_configured_workspaces() {
     let server = MockServer::start_with_config(MockServerConfig::default().with_list_workspaces(
         ListWorkspacesResponse {
-            workspaces: vec![
-                Workspace {
-                    name: "default".to_string(),
+            memberships: vec![
+                WorkspaceMembership {
+                    workspace: Some(Workspace {
+                        name: "default".to_string(),
+                    }),
+                    role: WorkspaceRole::Owner as i32,
                 },
-                Workspace {
-                    name: "work".to_string(),
+                WorkspaceMembership {
+                    workspace: Some(Workspace {
+                        name: "work".to_string(),
+                    }),
+                    role: WorkspaceRole::Member as i32,
                 },
             ],
         },

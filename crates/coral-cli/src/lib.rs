@@ -1050,7 +1050,10 @@ async fn run_workspace(app: &AppClient, args: WorkspaceArgs) -> Result<(), CliEr
                 .await
                 .map_err(anyhow::Error::from)?
                 .into_inner()
-                .workspaces;
+                .memberships
+                .into_iter()
+                .filter_map(|membership| membership.workspace)
+                .collect::<Vec<_>>();
             if workspaces.is_empty() {
                 println!("No workspaces configured.");
             } else {

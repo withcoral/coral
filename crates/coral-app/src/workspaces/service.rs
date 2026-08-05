@@ -6,7 +6,7 @@ use coral_api::v1::{
     CreateWorkspaceResponse, DeleteWorkspaceRequest, DeleteWorkspaceResponse,
     ListWorkspaceMembersRequest, ListWorkspaceMembersResponse, ListWorkspacesRequest,
     ListWorkspacesResponse, RemoveWorkspaceMemberRequest, RemoveWorkspaceMemberResponse, Workspace,
-    WorkspaceMember, WorkspaceRole,
+    WorkspaceMember, WorkspaceMembership, WorkspaceRole,
 };
 use tonic::{Request, Response, Status};
 
@@ -69,14 +69,17 @@ impl WorkspaceServiceApi for WorkspaceService {
         let principal = request_context(&request)?.principal().clone();
         let workspaces = self.workspaces.clone();
         instrument_grpc(span, async move {
-            let workspaces = workspaces
+            let memberships = workspaces
                 .list_workspaces_for(&principal)
                 .await
                 .map_err(app_status)?
-                .iter()
-                .map(|(workspace, _role)| workspace_record_to_proto(workspace))
+                .into_iter()
+                .map(|(workspace, role)| WorkspaceMembership {
+                    workspace: Some(workspace_record_to_proto(&workspace)),
+                    role: member_role_to_proto(role) as i32,
+                })
                 .collect();
-            Ok(Response::new(ListWorkspacesResponse { workspaces }))
+            Ok(Response::new(ListWorkspacesResponse { memberships }))
         })
         .await
     }

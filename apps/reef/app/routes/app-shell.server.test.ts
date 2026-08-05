@@ -22,7 +22,10 @@ describe('app shell loader', () => {
   it('loads the local workspace list once for the sidebar', async () => {
     const request = new Request('http://reef.test/workspaces/default/sources')
     const workspaces = [{ name: 'default' }, { name: 'analytics' }]
-    listWorkspacesForRequest.mockResolvedValue(workspaces)
+    listWorkspacesForRequest.mockResolvedValue([
+      { workspace: workspaces[0], role: 1 },
+      { workspace: workspaces[1], role: 2 },
+    ])
 
     await expect(loader({ request } as Parameters<typeof loader>[0])).resolves.toEqual({
       workspaces,

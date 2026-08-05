@@ -19,19 +19,22 @@ describe('local workspaces', () => {
   it('lists workspaces through the local WorkspaceService and selects the first', async () => {
     const request = new Request('http://localhost/')
     listWorkspaces.mockResolvedValue({
-      workspaces: [{ name: 'default' }, { name: 'analytics' }],
+      memberships: [
+        { workspace: { name: 'default' }, role: 1 },
+        { workspace: { name: 'analytics' }, role: 2 },
+      ],
     })
 
     await expect(listWorkspacesForRequest(request)).resolves.toEqual([
-      { name: 'default' },
-      { name: 'analytics' },
+      { workspace: { name: 'default' }, role: 1 },
+      { workspace: { name: 'analytics' }, role: 2 },
     ])
     await expect(firstWorkspaceForRequest(request)).resolves.toEqual({ name: 'default' })
     expect(workspaceClientForRequest).toHaveBeenCalledWith(request)
   })
 
   it('returns a clear route error when no local workspace exists', async () => {
-    listWorkspaces.mockResolvedValue({ workspaces: [] })
+    listWorkspaces.mockResolvedValue({ memberships: [] })
 
     await expect(firstWorkspaceForRequest(new Request('http://localhost/'))).rejects.toMatchObject({
       status: 404,

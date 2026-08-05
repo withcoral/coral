@@ -18,7 +18,10 @@ export async function loader({ request }: Route.LoaderArgs) {
   if (isWorkspaceRedirectRoute(request)) return { workspaces: [] }
 
   try {
-    return { workspaces: await listWorkspacesForRequest(request) }
+    const memberships = await listWorkspacesForRequest(request)
+    return {
+      workspaces: memberships.flatMap(({ workspace }) => (workspace ? [workspace] : [])),
+    }
   } catch (error) {
     console.error('Failed to load sidebar workspaces:', error)
     return { workspaces: [] }
