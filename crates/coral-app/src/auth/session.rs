@@ -100,12 +100,12 @@ impl SessionTokenIssuer {
 
     pub(crate) fn issue_access_token(
         &self,
-        subject: &str,
+        user_id: &str,
         client_id: &str,
         audience: &str,
     ) -> Result<IssuedAccessToken, SessionTokenError> {
-        if subject.trim().is_empty() {
-            return Err(config_error("subject must not be empty"));
+        if user_id.trim().is_empty() {
+            return Err(config_error("user_id must not be empty"));
         }
         if client_id.trim().is_empty()
             || client_id.trim() != client_id
@@ -123,7 +123,7 @@ impl SessionTokenIssuer {
         let claims = SessionTokenClaims {
             iss: self.issuer.clone(),
             aud: audience.to_string(),
-            sub: subject.to_string(),
+            sub: user_id.to_string(),
             jti: Uuid::new_v4().to_string(),
             client_id: client_id.to_string(),
             exp: expires_at,
@@ -502,7 +502,11 @@ mod tests {
         let issuer = test_issuer();
         let verifier = issuer.verifier();
         let access = issuer
-            .issue_access_token("opaque:subject/123", CLIENT_ID, MCP_AUDIENCE)
+            .issue_access_token(
+                "d84c7dd4-2698-4e2c-8181-ffd53149b133",
+                CLIENT_ID,
+                MCP_AUDIENCE,
+            )
             .unwrap();
         let header = decode_header(&access.access_token).unwrap();
         assert_eq!(header.alg, Algorithm::ES256);
@@ -520,9 +524,7 @@ mod tests {
         assert_eq!(session.token_id, token_id);
         assert_eq!(session.audience, MCP_AUDIENCE);
         assert_eq!(session.client_id, CLIENT_ID);
-        // The subject is the upstream `sub` claim verbatim: a single OIDC provider
-        // is ever configured, so nothing prefixes an issuer onto it.
-        assert_eq!(session.subject, "opaque:subject/123");
+        assert_eq!(session.subject, "d84c7dd4-2698-4e2c-8181-ffd53149b133");
     }
 
     #[test]

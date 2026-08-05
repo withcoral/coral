@@ -98,49 +98,10 @@ impl Principal {
         }
     }
 
-    /// Derives the stable Coral user identity for a federated session subject.
-    ///
-    /// The subject alone is the identity: `[auth.provider]` holds exactly one
-    /// OIDC provider (not a list), so every subject Coral ever sees is issued
-    /// by that provider and two subjects cannot collide. The `subject` argument
-    /// is the raw upstream `sub` claim, with no issuer or provider prefix.
-    ///
-    /// The preimage is versioned because of that assumption: admitting a second
-    /// provider would make the provider part of the identity, which needs a `-v2`
-    /// preimage. Note what that costs — and the limit of the cost. The derivation
-    /// is one-way and the upstream subject is persisted nowhere (only the
-    /// short-lived in-memory authorization-code store holds it), but the subject
-    /// is re-presented at every login, so a stored id is recomputable then. A
-    /// version bump is therefore a lazy rekey — `UPDATE ... WHERE
-    /// created_by_principal_id = <old id>` as each user next signs in — rather
-    /// than dual-prefix acceptance or orphaned attribution rows. What it does
-    /// cost is time: a user's rows carry the old id until they come back.
-    ///
-    /// The digest is stable and collision-free, but it is not opaque against a
-    /// guesser: it is unkeyed, and subjects are low-entropy (emails, numeric
-    /// provider ids), so anyone holding this value and a candidate list can confirm a
-    /// match offline. Nothing deployment-specific enters the preimage either, so
-    /// the same subject yields the same id everywhere — two databases join on it
-    /// directly. That is accepted rather than fixed. The value reaches exactly one
-    /// place, `created_by_principal_id` on `tasks`: it is in no proto, no log and
-    /// no query attribution, so reading it takes database access, and it authorizes
-    /// nothing, since any valid session token already grants full access to the
-    /// instance and every source in it.
-    ///
-    /// It is also a placeholder. Managing authorization needs a users table — a
-    /// role cannot be granted to someone the instance can neither enumerate nor
-    /// show an admin — and a one-way digest is structurally opposed to that. When
-    /// that table lands the identity becomes a random surrogate key with the
-    /// provider's `sub` in its own column: opaque by construction rather than by
-    /// keeping a key secret, updatable when an upstream subject changes, and
-    /// enumerable, so users can be listed and deleted at all. Getting there is the
-    /// same lazy rekey described above. Do not key this digest in the meantime —
-    /// that swaps one derivation for another and pays that rekey twice.
-    pub(crate) fn for_federated(subject: &str) -> Self {
-        Self {
-            id: PrincipalId(pre_v1_task_attribution_id(subject)),
-            kind: PrincipalKind::User,
-        }
+    /// Returns whether this is the app-owned local-mode principal.
+    #[must_use]
+    pub fn is_local(&self) -> bool {
+        self.id.as_str() == LOCAL_PRINCIPAL_ID
     }
 
     /// Returns the stable principal identity.
@@ -391,12 +352,18 @@ mod tests {
     }
 
     #[test]
-    fn federated_principal_is_stable_and_namespaces_subject() {
-        let principal = Principal::for_federated("alice");
-        assert_eq!(principal, Principal::for_federated("alice"));
-        assert_ne!(principal, Principal::for_federated("bob"));
-        PrincipalId::parse(principal.id().as_str()).expect("generated id is canonical");
-        assert_eq!(principal.kind(), PrincipalKind::User);
+    fn local_detection_uses_only_the_reserved_local_identity() {
+        assert!(Principal::local().is_local());
+        assert!(
+            !Principal::parse("user-123", PrincipalKind::User)
+                .expect("user principal")
+                .is_local()
+        );
+        assert!(
+            !Principal::parse("agent-123", PrincipalKind::Agent)
+                .expect("agent principal")
+                .is_local()
+        );
     }
 
     #[tokio::test]

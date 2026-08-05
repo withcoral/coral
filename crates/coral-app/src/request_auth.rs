@@ -6,7 +6,9 @@ use std::sync::Arc;
 use tonic::metadata::MetadataMap;
 
 use crate::auth::session::SessionTokenVerifier;
-use crate::identity::{BearerAuthenticator, Principal, PrincipalProvider, PrincipalProviderError};
+use crate::identity::{
+    BearerAuthenticator, Principal, PrincipalKind, PrincipalProvider, PrincipalProviderError,
+};
 
 const AUTHORIZATION_METADATA: &str = "authorization";
 const UNAUTHENTICATED_MESSAGE: &str = "authentication required";
@@ -48,7 +50,8 @@ impl SessionPrincipalProvider {
             .verifier
             .validate_access_token(token, &accepted)
             .map_err(|_error| unauthenticated())?;
-        Ok(Principal::for_federated(&session.subject))
+        Principal::parse(&session.subject, PrincipalKind::User)
+            .map_err(|_error| unauthenticated())
     }
 }
 
@@ -103,11 +106,12 @@ mod tests {
 
     use super::SessionPrincipalProvider;
     use crate::auth::session::{SessionTokenIssuer, test_signing_key};
-    use crate::identity::{BearerAuthenticator as _, PrincipalProvider as _};
+    use crate::identity::{BearerAuthenticator as _, PrincipalKind, PrincipalProvider as _};
 
     const MCP_AUDIENCE: &str = "https://coral.example/mcp";
     const BFF_AUDIENCE: &str = "https://app.example";
     const CLIENT_ID: &str = "https://client.example/client.json";
+    const USER_ID: &str = "d84c7dd4-2698-4e2c-8181-ffd53149b133";
 
     fn session(key: &[u8]) -> SessionTokenIssuer {
         SessionTokenIssuer::new(Some("https://auth.example"), key, Duration::from_mins(5))
@@ -124,11 +128,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn valid_session_selects_a_namespaced_user_principal() {
+    async fn valid_session_selects_the_internal_user_principal() {
         let signing_key = test_signing_key();
         let config = session(&signing_key);
         let token = config
-            .issue_access_token("raw/subject with spaces", CLIENT_ID, MCP_AUDIENCE)
+            .issue_access_token(USER_ID, CLIENT_ID, MCP_AUDIENCE)
             .expect("session token")
             .access_token;
         let provider = SessionPrincipalProvider::new(config.verifier(), [MCP_AUDIENCE.to_string()]);
@@ -146,8 +150,9 @@ mod tests {
             "the metadata and bare-token entry points must agree"
         );
 
-        assert!(principal.id().as_str().starts_with("federated-"));
-        assert!(!principal.id().as_str().contains("raw"));
+        assert_eq!(principal.id().as_str(), USER_ID);
+        assert_eq!(principal.kind(), PrincipalKind::User);
+        assert!(!principal.is_local());
     }
 
     #[tokio::test]
@@ -162,6 +167,10 @@ mod tests {
         let wrong_audience = config
             .issue_access_token("alice", CLIENT_ID, "https://other.example/mcp")
             .expect("wrong-audience token")
+            .access_token;
+        let reserved_local_id = config
+            .issue_access_token("coral:local", CLIENT_ID, MCP_AUDIENCE)
+            .expect("reserved-local-id token")
             .access_token;
         let provider = SessionPrincipalProvider::new(config.verifier(), [MCP_AUDIENCE.to_string()]);
 
@@ -181,6 +190,7 @@ mod tests {
         }
         cases.push(bearer_metadata(&wrong_key));
         cases.push(bearer_metadata(&wrong_audience));
+        cases.push(bearer_metadata(&reserved_local_id));
 
         for metadata in cases {
             let error = provider
