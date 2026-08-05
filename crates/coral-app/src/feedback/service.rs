@@ -102,11 +102,22 @@ fn feedback_report_to_proto(report: FeedbackReport) -> ProtoFeedbackReport {
 
 #[cfg(test)]
 mod tests {
-    use tonic::Code;
+    use std::{fs, sync::Arc};
 
-    use super::authorize_read;
-    use crate::identity::Principal;
-    use crate::workspaces::WorkspaceName;
+    use coral_api::v1::{SubmitFeedbackRequest, Workspace};
+    use tempfile::TempDir;
+    use tonic::{Code, Request};
+
+    use super::{FeedbackService, FeedbackServiceApi, authorize_read};
+    use crate::feedback::manager::FeedbackManager;
+    use crate::identity::{Principal, PrincipalKind};
+    use crate::request_context::RequestContext;
+    use crate::state::AppStateLayout;
+    use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig, UpsertLoginOutcome};
+    use crate::task::id::TaskId;
+    use crate::task::manager::TaskManager;
+    use crate::task::store::TaskStore;
+    use crate::workspaces::{WorkspaceAuthorizer, WorkspaceName};
 
     #[tokio::test]
     async fn read_authorization_fails_closed_without_injected_authorizer() {
@@ -115,5 +126,128 @@ mod tests {
             .expect_err("missing authorizer must never bypass policy");
 
         assert_eq!(denied.code(), Code::Internal);
+    }
+
+    #[tokio::test]
+    async fn authorized_submission_persists_feedback_through_handler() {
+        let fixture = fixture().await;
+
+        let response = fixture
+            .service
+            .submit_feedback(request(submission(&fixture.workspace), fixture.owner, None))
+            .await
+            .expect("workspace owner can submit feedback")
+            .into_inner();
+
+        let report = response.report.expect("feedback report");
+        assert_eq!(report.workspace.expect("workspace").name, fixture.workspace);
+        assert_eq!(report.trying_to_do, "trace a failed query");
+        let persisted = fs::read_to_string(
+            fixture
+                .layout
+                .feedback_reports_file(&WorkspaceName::parse(&fixture.workspace).expect("name")),
+        )
+        .expect("authorized feedback is persisted");
+        assert_eq!(persisted.lines().count(), 1);
+    }
+
+    #[tokio::test]
+    async fn denied_submission_stops_before_attribution_and_persistence() {
+        let fixture = fixture().await;
+        let missing_task = TaskId::parse("550e8400-e29b-41d4-a716-446655440000").expect("task id");
+
+        let denied = fixture
+            .service
+            .submit_feedback(request(
+                submission(&fixture.workspace),
+                fixture.nonmember,
+                Some(missing_task),
+            ))
+            .await
+            .expect_err("nonmember must not submit feedback");
+
+        assert_eq!(denied.code(), Code::NotFound);
+        assert!(denied.message().contains(&fixture.workspace));
+        assert!(
+            !fixture
+                .layout
+                .feedback_reports_file(
+                    &WorkspaceName::parse(&fixture.workspace).expect("workspace name")
+                )
+                .exists()
+        );
+    }
+
+    struct Fixture {
+        _temp: TempDir,
+        layout: AppStateLayout,
+        service: FeedbackService,
+        workspace: String,
+        owner: Principal,
+        nonmember: Principal,
+    }
+
+    async fn fixture() -> Fixture {
+        let temp = TempDir::new().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        let DatabaseConfig::Sqlite { path } = DatabaseConfig::load(&layout).expect("config") else {
+            panic!("default test database must be SQLite")
+        };
+        let db = Arc::new(
+            CoralDb::open(ResolvedDatabaseConfig::Sqlite { path })
+                .await
+                .expect("open sqlite"),
+        );
+        db.migrate().await.expect("migrate sqlite");
+        let owner_id = provision_user(&db, "owner").await;
+        let nonmember_id = provision_user(&db, "nonmember").await;
+        let workspace = format!("default-{owner_id}");
+        let feedback = FeedbackManager::new(layout.clone());
+        let tasks = TaskManager::new(TaskStore::new(Arc::clone(&db)));
+        let service =
+            FeedbackService::new(feedback, tasks).with_authorizer(WorkspaceAuthorizer::new(db));
+
+        Fixture {
+            _temp: temp,
+            layout,
+            service,
+            workspace,
+            owner: Principal::parse(&owner_id, PrincipalKind::User).expect("owner"),
+            nonmember: Principal::parse(&nonmember_id, PrincipalKind::User).expect("nonmember"),
+        }
+    }
+
+    async fn provision_user(db: &CoralDb, subject: &str) -> String {
+        let UpsertLoginOutcome::Upserted(user) = db
+            .provision_login("issuer", subject, None, 1)
+            .await
+            .expect("provision user")
+        else {
+            panic!("new subject should create a user")
+        };
+        user.user_id
+    }
+
+    fn submission(workspace: &str) -> SubmitFeedbackRequest {
+        SubmitFeedbackRequest {
+            workspace: Some(Workspace {
+                name: workspace.to_string(),
+            }),
+            trying_to_do: " trace a failed query ".to_string(),
+            tried: "restarted the source".to_string(),
+            stuck: "the query still fails".to_string(),
+        }
+    }
+
+    fn request(
+        message: SubmitFeedbackRequest,
+        principal: Principal,
+        task_id: Option<TaskId>,
+    ) -> Request<SubmitFeedbackRequest> {
+        let mut request = Request::new(message);
+        request
+            .extensions_mut()
+            .insert(RequestContext::new(principal).with_task_id(task_id));
+        request
     }
 }
