@@ -13,7 +13,7 @@ use zeroize::Zeroizing;
 use super::super::super::state_store::{
     OAuthAuthorizationApprovalBrowserBinding, OAuthAuthorizationApprovalTicket,
 };
-use super::super::response::security_headers;
+use super::super::response::approval_page_security_headers;
 
 const MAX_FORM_BYTES: usize = 256;
 const TICKET_LENGTH: usize = 43;
@@ -21,8 +21,33 @@ const BROWSER_BINDING_LENGTH: usize = 43;
 const APPROVAL_COOKIE_MAX_AGE_SECONDS: u64 = 5 * 60;
 const SECURE_APPROVAL_COOKIE_NAME: &str = "__Host-coral_oauth_approval";
 const LOOPBACK_APPROVAL_COOKIE_NAME: &str = "coral_oauth_approval";
-const CONTENT_SECURITY_POLICY: &str =
-    "default-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
+/// Builds the approval page's policy, naming where its form may end up.
+///
+/// Submitting the form posts back here, and this handler answers with a
+/// redirect to the upstream provider. A browser applies `form-action` to every
+/// URL in that navigation, redirects included, so a bare `'self'` blocks the
+/// hand-off to the provider — the POST is delivered and the approval consumed,
+/// then the redirect is dropped, and Chromium reports the violation against
+/// this same-origin action rather than the provider it actually blocked. The
+/// provider's origin therefore has to be named here.
+///
+/// The origin comes from the configured issuer rather than the discovered
+/// `authorization_endpoint`, so rendering this page costs no discovery fetch.
+/// Discovery is only performed once the form is submitted, and naming an origin
+/// this page cannot yet know would mean fetching it on every render.
+///
+/// That leaves one provider shape unsupported: one whose `authorization_endpoint`
+/// sits on a different origin than its issuer, which the discovery policy permits
+/// today (it constrains the scheme, not the origin). Such a provider's redirect
+/// is blocked here with no error naming it — the failure this whole policy is
+/// written to avoid. No known provider is shaped that way, and constraining the
+/// endpoint to the issuer's origin at discovery is the fix if one appears.
+fn content_security_policy(provider_origin: &str) -> String {
+    format!(
+        "default-src 'none'; base-uri 'none'; form-action 'self' {provider_origin}; \
+         frame-ancestors 'none'"
+    )
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum ApprovalDecision {
@@ -114,8 +139,8 @@ pub(super) async fn parse_submission(
 /// `Cancel` comes before `Continue` in the form because the first submit button
 /// is the one a browser presses for a bare Enter key, and the safe decision is
 /// the better default for a keystroke nobody aimed at either button. Source
-/// order is display order here: the page has no stylesheet, and the policy in
-/// [`CONTENT_SECURITY_POLICY`] has no `style-src`, so it inherits
+/// order is display order here: the page has no stylesheet, and the policy from
+/// [`content_security_policy`] has no `style-src`, so it inherits
 /// `default-src 'none'` and no styling could reverse the two.
 pub(super) fn response(
     ticket: &OAuthAuthorizationApprovalTicket,
@@ -124,7 +149,12 @@ pub(super) fn response(
     redirect_uri: &Url,
     browser_binding: &OAuthAuthorizationApprovalBrowserBinding,
     secure_cookie: bool,
+    provider_issuer: &str,
 ) -> Option<Response> {
+    let provider_origin = Url::parse(provider_issuer)
+        .ok()?
+        .origin()
+        .ascii_serialization();
     let client_host = Url::parse(client_id)
         .ok()?
         .host()
@@ -149,10 +179,13 @@ pub(super) fn response(
     );
     let mut response = (
         StatusCode::OK,
-        security_headers(),
+        approval_page_security_headers(),
         [
             (header::CONTENT_TYPE, "text/html; charset=utf-8"),
-            (header::CONTENT_SECURITY_POLICY, CONTENT_SECURITY_POLICY),
+            (
+                header::CONTENT_SECURITY_POLICY,
+                content_security_policy(&provider_origin).as_str(),
+            ),
             (header::X_FRAME_OPTIONS, "DENY"),
         ],
         body,

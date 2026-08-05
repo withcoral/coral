@@ -129,6 +129,9 @@ pub(super) fn redirect(location: &str) -> Response {
 /// reaches every response that carries a code, a token, an error, or the
 /// approval page. The discovery metadata document is deliberately not among
 /// them: it is public and meant to be cached.
+///
+/// The approval page uses [`approval_page_security_headers`] instead, because
+/// `no-referrer` breaks the form it serves.
 pub(super) fn security_headers() -> [(header::HeaderName, &'static str); 4] {
     [
         (header::CACHE_CONTROL, "no-store"),
@@ -136,4 +139,24 @@ pub(super) fn security_headers() -> [(header::HeaderName, &'static str); 4] {
         (header::REFERRER_POLICY, "no-referrer"),
         (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
     ]
+}
+
+/// [`security_headers`] with the referrer policy the approval page needs.
+///
+/// The approval page is the one response whose own form posts back here, and
+/// that submission is checked against an exact `Origin`. Chromium derives a
+/// form submission's `Origin` from the document's referrer policy: under
+/// `no-referrer` it sends `Origin: null`, which no exact-origin check can
+/// accept, so every approval fails. `same-origin` restores a real `Origin` on
+/// the same-origin POST while still sending nothing cross-origin — so the
+/// redirect that carries the authorization code to the client still leaks no
+/// `Referer`, which is the property `no-referrer` was protecting here.
+pub(super) fn approval_page_security_headers() -> [(header::HeaderName, &'static str); 4] {
+    security_headers().map(|(name, value)| {
+        if name == header::REFERRER_POLICY {
+            (name, "same-origin")
+        } else {
+            (name, value)
+        }
+    })
 }

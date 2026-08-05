@@ -94,6 +94,7 @@ pub(super) async fn oauth_authorize_get(
         &callback,
         &browser_binding,
         secure_cookie,
+        &state.settings.provider().issuer,
     ) else {
         return trusted.error("server_error", "authorization failed");
     };
@@ -563,12 +564,21 @@ mod tests {
             (header::CONTENT_TYPE, "text/html; charset=utf-8"),
             (header::CACHE_CONTROL, "no-store"),
             (header::PRAGMA, "no-cache"),
+            // `form-action` names the provider's origin as well as `'self'`:
+            // a browser applies the directive to the redirect this page's own
+            // submission produces, so a bare `'self'` silently drops the
+            // hand-off to the provider. See
+            // `approval_page_allows_the_provider_redirect_it_produces`.
             (
                 header::CONTENT_SECURITY_POLICY,
-                "default-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+                "default-src 'none'; base-uri 'none'; form-action 'self' https://provider.invalid; frame-ancestors 'none'",
             ),
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
-            (header::REFERRER_POLICY, "no-referrer"),
+            // Not `no-referrer`: that policy makes Chromium submit this page's
+            // own form with `Origin: null`, which the exact-origin check on the
+            // submission can never accept. See
+            // `approval_page_referrer_policy_preserves_the_submission_origin`.
+            (header::REFERRER_POLICY, "same-origin"),
             (header::X_FRAME_OPTIONS, "DENY"),
         ] {
             assert_eq!(response.headers()[name], value);
@@ -627,6 +637,7 @@ mod tests {
             &Url::parse("http://127.0.0.1:14554/oauth/callback").expect("loopback redirect"),
             &browser_binding(),
             false,
+            "https://provider.invalid",
         )
         .expect("page");
         let loopback_cookie = loopback.headers()[header::SET_COOKIE]
@@ -653,6 +664,7 @@ mod tests {
             &Url::parse(REDIRECT_URI).expect("redirect"),
             &browser_binding(),
             true,
+            "https://provider.invalid",
         )
         .expect("page");
         let escaped = response_body(escaped).await;
@@ -770,6 +782,70 @@ mod tests {
         assert!(
             location(&bound_browser).is_some_and(|location| location.contains("access_denied"))
         );
+    }
+
+    /// The approval page must permit the redirect its own submission produces.
+    ///
+    /// Submitting the form posts back here and this handler answers with a
+    /// redirect to the provider. Browsers apply `form-action` to every URL in
+    /// that navigation, redirects included, so a bare `'self'` delivers the
+    /// POST — consuming the approval — and then drops the redirect. The user
+    /// sees nothing happen, and a second attempt reports the now-consumed
+    /// approval as expired. Chromium blames the same-origin form action in its
+    /// console, never the provider it actually blocked.
+    #[tokio::test]
+    async fn approval_page_allows_the_provider_redirect_it_produces() {
+        let auth_state = state(
+            "https://provider.invalid",
+            Arc::new(InMemoryStateStore::new()),
+        );
+        let page = request(auth_state, &pairs()).await;
+        assert_eq!(page.status(), StatusCode::OK);
+        let policy = page.headers()[header::CONTENT_SECURITY_POLICY]
+            .to_str()
+            .expect("policy");
+        assert!(
+            policy.contains("form-action 'self' https://provider.invalid;"),
+            "form-action must name the provider origin, got: {policy}"
+        );
+        // The rest of the policy is unchanged: nothing else may load or frame.
+        assert!(policy.contains("default-src 'none'"));
+        assert!(policy.contains("base-uri 'none'"));
+        assert!(policy.contains("frame-ancestors 'none'"));
+    }
+
+    /// The approval page must not carry `no-referrer`.
+    ///
+    /// Its own form posts back to this handler, and that submission is checked
+    /// against an exact `Origin`. Chromium derives a form submission's `Origin`
+    /// from the document's referrer policy, so a page served with `no-referrer`
+    /// submits `Origin: null` and every approval fails — the whole browser
+    /// login flow, for every client. Asserting the header's presence is what
+    /// missed this: both halves were tested, their interaction was not. The
+    /// `Origin: null` case below is the submission this policy would produce.
+    #[tokio::test]
+    async fn approval_page_referrer_policy_preserves_the_submission_origin() {
+        let auth_state = state(
+            "https://provider.invalid",
+            Arc::new(InMemoryStateStore::new()),
+        );
+        let page = request(auth_state.clone(), &pairs()).await;
+        assert_eq!(page.status(), StatusCode::OK);
+        assert_eq!(page.headers()[header::CACHE_CONTROL], "no-store");
+        assert_eq!(page.headers()[header::PRAGMA], "no-cache");
+        assert_eq!(page.headers()[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+        assert_eq!(page.headers()[header::REFERRER_POLICY], "same-origin");
+
+        let ticket = ticket_from_page(&response_body(page).await);
+        let mut null_origin = submission_request(&ticket, "cancel");
+        null_origin
+            .headers_mut()
+            .insert(header::ORIGIN, "null".parse().unwrap());
+        let null_origin = oauth_authorize_post(State(auth_state.clone()), null_origin).await;
+        assert_eq!(null_origin.status(), StatusCode::BAD_REQUEST);
+
+        let bound_browser = submit(auth_state, &ticket, "cancel").await;
+        assert_eq!(bound_browser.status(), StatusCode::FOUND);
     }
 
     #[tokio::test]
