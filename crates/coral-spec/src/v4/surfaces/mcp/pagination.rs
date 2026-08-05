@@ -109,8 +109,8 @@ fn offset_pagination_input<'a>(
         name: input.name.as_str(),
         default: input
             .default_value
-            .as_deref()
-            .and_then(|value| value.parse::<usize>().ok())
+            .as_ref()
+            .and_then(|default| json_unsigned_integer(default.value()))
             .or_else(|| schema_unsigned_integer(schema, "default"))?,
         maximum: schema_unsigned_integer(schema, "maximum"),
     })
@@ -126,7 +126,10 @@ fn schema_allows_unsigned_value(schema: &Value, value: usize) -> bool {
 }
 
 fn schema_unsigned_integer(schema: &Value, key: &str) -> Option<usize> {
-    let value = schema.get(key)?;
+    json_unsigned_integer(schema.get(key)?)
+}
+
+fn json_unsigned_integer(value: &Value) -> Option<usize> {
     value
         .as_u64()
         .and_then(|value| usize::try_from(value).ok())
@@ -136,6 +139,7 @@ fn schema_unsigned_integer(schema: &Value, key: &str) -> Option<usize> {
                 .filter(|value| *value >= 0)
                 .and_then(|value| usize::try_from(value).ok())
         })
+        .or_else(|| value.as_str()?.parse().ok())
 }
 
 fn cursor_input_name(inputs: &[IrOperationInput]) -> Option<&str> {

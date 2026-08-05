@@ -4,6 +4,7 @@ use crate::v4::diagnostics::Diagnostic;
 use crate::v4::ir::mcp::McpExecutionAttachment;
 use crate::v4::ir::rest::RestExecutionAttachment;
 use crate::v4::manifest::SurfaceType;
+use crate::{DeclaredDefaultValue, common::deserialize_declared_default};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SemanticIr {
@@ -23,6 +24,12 @@ pub struct IrOperation {
     pub description: String,
     pub deprecated: bool,
     pub read_only: bool,
+    /// Whether replaying the operation with the same inputs is declared safe.
+    ///
+    /// MCP imports preserve the tool's `idempotentHint` here. REST imports
+    /// derive the property from the HTTP method.
+    #[serde(default)]
+    pub idempotent: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub naming: Option<IrOperationNaming>,
     pub inputs: Vec<IrOperationInput>,
@@ -46,7 +53,14 @@ pub struct IrOperationInput {
     pub location: IrInputLocation,
     pub required: bool,
     pub data_type: IrScalarType,
-    pub default_value: Option<String>,
+    /// A type-preserving JSON Schema default. The outer option distinguishes
+    /// an omitted `default` annotation from an explicitly authored `null`.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_declared_default",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub default_value: Option<DeclaredDefaultValue>,
     pub description: String,
 }
 
@@ -98,6 +112,17 @@ pub struct IrField {
     pub required: bool,
     pub nullable: bool,
     pub description: String,
+    /// Whether this field was synthesized by an importer for compatibility.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub synthetic: bool,
+}
+
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde skip_serializing_if callbacks receive a reference"
+)]
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -164,6 +189,8 @@ pub enum IrExecutionAttachment {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::{
         HttpMethod, IrExecutionAttachment, IrInputLocation, IrOperation, IrOperationInput,
         IrOperationNaming, IrOperationOutput, IrScalarType, IrType, IrTypeShape, OutputCardinality,
@@ -174,6 +201,47 @@ mod tests {
     use crate::v4::ir::rest::{RestExecutionAttachment, RestResponseAttachment};
     use crate::v4::manifest::SurfaceType;
     use crate::v4::{MCP_IMPORTER_VERSION, OPENAPI_IMPORTER_VERSION, V4_ARTIFACT_SCHEMA_VERSION};
+
+    #[test]
+    fn input_defaults_distinguish_missing_from_explicit_null() {
+        let base = json!({
+            "name": "scope",
+            "location": "query",
+            "required": false,
+            "data_type": "string",
+            "description": ""
+        });
+        let absent: IrOperationInput =
+            serde_json::from_value(base.clone()).expect("input without default");
+        assert!(absent.default_value.is_none());
+        assert!(
+            serde_json::to_value(&absent)
+                .expect("serialize absent default")
+                .get("default_value")
+                .is_none()
+        );
+
+        let mut explicit_null = base;
+        explicit_null
+            .as_object_mut()
+            .expect("object")
+            .insert("default_value".to_string(), serde_json::Value::Null);
+        let explicit_null: IrOperationInput =
+            serde_json::from_value(explicit_null).expect("input with null default");
+        assert_eq!(
+            explicit_null
+                .default_value
+                .as_ref()
+                .map(crate::DeclaredDefaultValue::value),
+            Some(&serde_json::Value::Null)
+        );
+        assert_eq!(
+            serde_json::to_value(&explicit_null)
+                .expect("serialize explicit null")
+                .get("default_value"),
+            Some(&serde_json::Value::Null)
+        );
+    }
 
     #[test]
     fn semantic_ir_yaml_uses_editor_friendly_enum_shapes() {
@@ -188,6 +256,7 @@ mod tests {
                 description: String::new(),
                 deprecated: false,
                 read_only: true,
+                idempotent: true,
                 naming: Some(IrOperationNaming {
                     group: Some("issues".to_string()),
                     operation: Some("list".to_string()),
@@ -253,6 +322,7 @@ mod tests {
                 description: String::new(),
                 deprecated: false,
                 read_only: true,
+                idempotent: true,
                 naming: None,
                 inputs: vec![IrOperationInput {
                     name: "cursor".to_string(),

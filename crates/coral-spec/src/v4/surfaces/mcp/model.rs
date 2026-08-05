@@ -13,5 +13,8 @@ pub struct McpToolDescriptor {
     pub description: Option<String>,
     pub input_schema: Value,
     pub output_schema: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub read_only_hint: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotent_hint: Option<bool>,
 }

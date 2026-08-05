@@ -120,11 +120,64 @@ mod tests {
 
     use serde_json::json;
 
-    use super::{RequestBody, build_request_body, set_path_value};
+    use super::{RequestBody, build_query_pairs, build_request_body, set_path_value};
     use crate::backends::shared::template::RenderContext;
     use coral_spec::{
-        BodyFieldSpec, BodySpec, HttpMethod, ParsedTemplate, RequestSpec, ValueSourceSpec,
+        BodyFieldSpec, BodySpec, HttpMethod, ParsedTemplate, QueryParamSpec, RequestSpec,
+        ValueSourceSpec,
     };
+
+    #[test]
+    fn build_query_pairs_omits_missing_args_but_preserves_explicit_values() {
+        let request = RequestSpec {
+            method: HttpMethod::GET,
+            path: ParsedTemplate::parse("/items").expect("template"),
+            query: vec![QueryParamSpec {
+                name: "scope".to_string(),
+                value: ValueSourceSpec::Arg {
+                    key: "scope".to_string(),
+                    default: None,
+                },
+            }],
+            body: BodySpec::default(),
+            headers: vec![],
+        };
+        let filters = HashMap::new();
+        let state = HashMap::new();
+        let resolved_inputs = BTreeMap::new();
+
+        let missing_args = HashMap::new();
+        let missing_context = RenderContext::new(&filters, &missing_args, &state, &resolved_inputs);
+        assert!(
+            build_query_pairs(&request, &missing_context)
+                .expect("query should render")
+                .is_empty()
+        );
+
+        for explicit in ["", "null"] {
+            let args = HashMap::from([("scope".to_string(), explicit.to_string())]);
+            let context = RenderContext::new(&filters, &args, &state, &resolved_inputs);
+            assert_eq!(
+                build_query_pairs(&request, &context).expect("query should render"),
+                [("scope".to_string(), explicit.to_string())]
+            );
+        }
+
+        let literal_null = RequestSpec {
+            query: vec![QueryParamSpec {
+                name: "scope".to_string(),
+                value: ValueSourceSpec::Literal {
+                    value: serde_json::Value::Null,
+                },
+            }],
+            ..request
+        };
+        assert_eq!(
+            build_query_pairs(&literal_null, &missing_context)
+                .expect("literal null should preserve generic renderer behavior"),
+            [("scope".to_string(), String::new())]
+        );
+    }
 
     #[test]
     fn build_request_body_omits_json_body_when_no_fields_resolve() {

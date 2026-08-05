@@ -2,7 +2,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::v4::diagnostics::Diagnostic;
 use crate::v4::ir::IrInputLocation;
-use crate::{DetailHintSpec, ManifestDataType, SearchLimitsSpec, SourceTableFunctionKind};
+use crate::{
+    DeclaredDefaultValue, DetailHintSpec, ManifestDataType, SearchLimitsSpec,
+    SourceTableFunctionKind, common::deserialize_declared_default,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectionCatalog {
@@ -55,7 +58,14 @@ pub struct ProjectionInput {
     pub wire_name: String,
     pub required: bool,
     pub data_type: ManifestDataType,
-    pub default_value: Option<String>,
+    /// A type-preserving operation default. The outer option distinguishes an
+    /// omitted default from an explicitly authored JSON `null`.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_declared_default",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub default_value: Option<DeclaredDefaultValue>,
     pub description: String,
     /// Whether this filter input is a complete exact lookup: the API returns
     /// every row matching an equality value, so dependent joins may bind to
@@ -87,11 +97,51 @@ pub struct ProjectionColumn {
 #[cfg(test)]
 mod tests {
     use super::{
-        Projection, ProjectionCatalog, ProjectionColumn, ProjectionKind, ProjectionVisibility,
-        SqlInputExposure,
+        Projection, ProjectionCatalog, ProjectionColumn, ProjectionInput, ProjectionKind,
+        ProjectionVisibility, SqlInputExposure,
     };
+    use crate::v4::ir::IrInputLocation;
     use crate::v4::{PROJECTION_GENERATOR_VERSION, V4_ARTIFACT_SCHEMA_VERSION};
     use crate::{ManifestDataType, SearchLimitsSpec, SourceTableFunctionKind};
+    use serde_json::json;
+
+    #[test]
+    fn projection_input_defaults_distinguish_missing_from_explicit_null() {
+        let base = json!({
+            "name": "scope",
+            "sql_exposure": "function_arg",
+            "source_location": "tool_arg",
+            "wire_name": "scope",
+            "required": false,
+            "data_type": "Utf8",
+            "description": ""
+        });
+        let absent: ProjectionInput =
+            serde_json::from_value(base.clone()).expect("projection input without default");
+        assert!(absent.default_value.is_none());
+
+        let mut explicit_null = base;
+        explicit_null
+            .as_object_mut()
+            .expect("object")
+            .insert("default_value".to_string(), serde_json::Value::Null);
+        let explicit_null: ProjectionInput =
+            serde_json::from_value(explicit_null).expect("projection input with null default");
+        assert_eq!(explicit_null.source_location, IrInputLocation::ToolArg);
+        assert_eq!(
+            explicit_null
+                .default_value
+                .as_ref()
+                .map(crate::DeclaredDefaultValue::value),
+            Some(&serde_json::Value::Null)
+        );
+        assert_eq!(
+            serde_json::to_value(&explicit_null)
+                .expect("serialize explicit null")
+                .get("default_value"),
+            Some(&serde_json::Value::Null)
+        );
+    }
 
     #[test]
     fn projection_catalog_yaml_uses_editor_friendly_enum_shapes() {

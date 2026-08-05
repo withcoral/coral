@@ -33,9 +33,7 @@ pub fn validate_projection_compatibility(
                 projection.name, projection.operation_id
             )));
         };
-        if matches!(operation.execution, IrExecutionAttachment::Rest(_)) {
-            validate_projection_columns(plan, &types, projection, &operation.id)?;
-        }
+        validate_projection_columns(plan, &types, projection, &operation.id)?;
         validate_projection_inputs(plan, projection, operation)?;
     }
     Ok(())
@@ -59,6 +57,12 @@ fn validate_projection_inputs(
                 projection.name, input.name, input.source_location, input.wire_name, operation.id
             )));
         };
+        if input.default_value != operation_input.default_value {
+            return Err(ManifestError::validation(format!(
+                "projection '{}' input '{}' on operation '{}' changes the imported default_value; projection overrides cannot change operation defaults",
+                projection.name, input.name, operation.id
+            )));
+        }
 
         let pagination_owned =
             plan.pagination_owns_input(operation, &input.wire_name, input.source_location);
@@ -139,7 +143,7 @@ fn validate_projection_inputs(
     Ok(())
 }
 
-/// Checks that a REST projection's columns describe the rows the effective
+/// Checks that a projection's columns describe the rows the effective
 /// operation policy actually yields.
 ///
 /// The projection catalog is a snapshot: an operation-metadata override that
@@ -153,7 +157,7 @@ fn validate_projection_columns(
     projection: &Projection,
     operation_id: &str,
 ) -> Result<()> {
-    let row_type_ref = plan.rest_output_type_ref(operation_id);
+    let row_type_ref = plan.output_row_type_ref(operation_id);
     // Only an object row type names its fields. Every other shape is projected
     // whole, as a single column with no source path — including a `json` row,
     // which the semantic IR carries no entry for at all.
@@ -185,8 +189,14 @@ fn validate_projection_columns(
                 projection.name, column.name
             )));
         };
-        // The generator only ever emits one segment, but an authored override
-        // may nest, and runtime follows every segment it is given.
+        if field.synthetic {
+            return Err(ManifestError::validation(format!(
+                "projection '{}' column '{}' reads synthetic field '{field_name}' on rows operation '{operation_id}'; synthetic compatibility fields are not addressable response fields",
+                projection.name, column.name
+            )));
+        }
+        // Generated and authored columns may both nest, and runtime follows
+        // every segment it is given.
         let nested = column.source_path.get(1..).unwrap_or_default();
         if let Err(reason) = walk_source_path(&field.type_ref, nested, types) {
             return Err(ManifestError::validation(format!(
@@ -205,11 +215,12 @@ fn validate_projection_columns(
 ///
 /// `get_path_value` reads a segment that parses as an integer only as an array
 /// index, never as a key, so whether a segment is numeric decides as much as the
-/// shape it lands on does. The generator can emit a numeric *first* segment, for
-/// a resource whose field really is named `0`, and those columns already resolve
-/// to null; rejecting them here would make a freshly generated catalog fail its
-/// own validation, so the rule applies only below the first segment, where
-/// nothing but an authored override can put one.
+/// shape it lands on does. Established top-level projection columns can contain
+/// a numeric *first* segment for a resource whose field really is named `0`, and
+/// those columns already resolve to null; rejecting them here would invalidate
+/// existing generated catalogs. The nested scalar-leaf generator omits numeric
+/// object keys, so the rule applies below the first segment to reject authored
+/// overrides and stale generated artifacts that runtime cannot read.
 fn walk_source_path(
     type_ref: &str,
     segments: &[String],
@@ -230,6 +241,11 @@ fn walk_source_path(
                 let Some(field) = fields.iter().find(|field| field.name == *segment) else {
                     return Err(format!("type '{type_ref}' has no field '{segment}'"));
                 };
+                if field.synthetic {
+                    return Err(format!(
+                        "field '{segment}' on type '{type_ref}' is synthetic and is not an addressable response field"
+                    ));
+                }
                 field.type_ref.as_str()
             }
             // Any key selects a map value, so only a numeric one is ruled out.

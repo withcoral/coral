@@ -4,7 +4,7 @@ use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::backends::mcp::{McpOffsetPaginationSpec, McpPaginationSpec};
-use crate::v4::ir::{IrExecutionAttachment, IrInputLocation, IrOperation, SemanticIr};
+use crate::v4::ir::{IrInputLocation, IrOperation, SemanticIr};
 use crate::v4::operation_metadata::model::{OperationMetadata, OperationMetadataCatalog};
 use crate::v4::operation_metadata::policy::{
     resolve_output_row_type_ref, rest_pagination_owned_inputs,
@@ -18,13 +18,13 @@ use crate::{PaginationSpec, Result};
 pub struct ValidatedSurfacePlan {
     semantic_ir: SemanticIr,
     operation_metadata: OperationMetadataCatalog,
-    /// Row type each REST operation yields once its row path is applied.
+    /// Row type each operation yields once its row path is applied.
     ///
     /// Resolved once, because resolving one walks the whole type catalog and a
     /// validated plan is immutable. Rebuilt on deserialization, so it stays out
     /// of the serialized form.
     #[serde(skip)]
-    rest_row_type_refs: BTreeMap<String, String>,
+    output_row_type_refs: BTreeMap<String, String>,
 }
 
 impl<'de> Deserialize<'de> for ValidatedSurfacePlan {
@@ -50,11 +50,11 @@ impl ValidatedSurfacePlan {
     ) -> Result<Self> {
         validate_semantic_ir_structure(&semantic_ir)?;
         validate_operation_metadata_structure(&semantic_ir, &operation_metadata)?;
-        let rest_row_type_refs = resolve_rest_row_type_refs(&semantic_ir, &operation_metadata);
+        let output_row_type_refs = resolve_output_row_type_refs(&semantic_ir, &operation_metadata);
         Ok(Self {
             semantic_ir,
             operation_metadata,
-            rest_row_type_refs,
+            output_row_type_refs,
         })
     }
 
@@ -88,17 +88,17 @@ impl ValidatedSurfacePlan {
     }
 
     #[must_use]
-    /// Returns the REST row type that remains after applying the operation's
+    /// Returns the row type that remains after applying the operation's
     /// row path.
     ///
     /// # Panics
     ///
-    /// Panics when the operation is absent, is not a REST operation, or the
-    /// validated-plan invariant that its row path resolves has been violated.
-    pub fn rest_output_type_ref(&self, operation_id: &str) -> &str {
-        self.rest_row_type_refs
+    /// Panics when the operation is absent or the validated-plan invariant
+    /// that its row path resolves has been violated.
+    pub fn output_row_type_ref(&self, operation_id: &str) -> &str {
+        self.output_row_type_refs
             .get(operation_id)
-            .expect("validated plan resolves a row type for every REST operation")
+            .expect("validated plan resolves a row type for every operation")
             .as_str()
     }
 
@@ -172,12 +172,12 @@ impl ValidatedSurfacePlan {
     }
 }
 
-/// Resolves every REST operation's row type against one shared type index.
+/// Resolves every operation's row type against one shared type index.
 ///
 /// Runs after structural validation, so a resolution failure cannot happen for
-/// a valid plan; skipping one leaves `rest_output_type_ref` to panic, which is
+/// a valid plan; skipping one leaves `output_row_type_ref` to panic, which is
 /// the contract it already documents.
-fn resolve_rest_row_type_refs(
+fn resolve_output_row_type_refs(
     semantic_ir: &SemanticIr,
     operation_metadata: &OperationMetadataCatalog,
 ) -> BTreeMap<String, String> {
@@ -189,7 +189,6 @@ fn resolve_rest_row_type_refs(
     semantic_ir
         .operations
         .iter()
-        .filter(|operation| matches!(operation.execution, IrExecutionAttachment::Rest(_)))
         .filter_map(|operation| {
             let row_path = operation_metadata
                 .operations

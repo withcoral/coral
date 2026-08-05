@@ -13,12 +13,11 @@ use crate::v4::lookup_keys::infer_rest_lookup_keys;
 use crate::v4::naming::normalize_identifier;
 use crate::v4::response_cursors::{StringTypeRequirement, find_response_cursor_path};
 use crate::v4::surfaces::json_schema::{
-    json_schema_default_to_string, json_schema_scalar_type_or_string, json_schema_type_contains,
-    json_schema_type_display,
+    json_schema_scalar_type_or_string, json_schema_type_contains, json_schema_type_display,
 };
 use crate::v4::wrapped_lists::{WrappedListInferenceContext, infer_wrapped_list_row_path};
 use crate::{
-    ManifestError, PageSizeSpec, PaginationMode, PaginationSpec, Result,
+    DeclaredDefaultValue, ManifestError, PageSizeSpec, PaginationMode, PaginationSpec, Result,
     v4::resolve_output_row_type_ref,
 };
 
@@ -92,6 +91,15 @@ impl OpenApiImporter<'_> {
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
             read_only: method == HttpMethod::Get,
+            idempotent: matches!(
+                method,
+                HttpMethod::Get
+                    | HttpMethod::Head
+                    | HttpMethod::Options
+                    | HttpMethod::Put
+                    | HttpMethod::Delete
+                    | HttpMethod::Trace
+            ),
             naming,
             inputs: parameters,
             output,
@@ -208,14 +216,18 @@ impl OpenApiImporter<'_> {
                     .and_then(Value::as_str)
                     .and_then(parse_parameter_location)?;
                 let schema = parameter_obj.get("schema").unwrap_or(&Value::Null);
-                let scalar =
+                let (scalar, resolved_schema) =
                     self.import_parameter_scalar(schema, &name, operation_id, diagnostics)?;
                 Some(IrOperationInput {
                     name,
                     location,
                     required: parameter_is_required(parameter_obj, location),
                     data_type: scalar,
-                    default_value: schema.get("default").map(json_schema_default_to_string),
+                    default_value: schema
+                        .get("default")
+                        .or_else(|| resolved_schema.get("default"))
+                        .cloned()
+                        .map(DeclaredDefaultValue::new),
                     description: parameter_obj
                         .get("description")
                         .and_then(Value::as_str)
@@ -232,7 +244,7 @@ impl OpenApiImporter<'_> {
         name: &str,
         operation_id: &str,
         diagnostics: &mut Vec<Diagnostic>,
-    ) -> Option<IrScalarType> {
+    ) -> Option<(IrScalarType, Value)> {
         let resolved = self.resolve_ref(schema, operation_id, diagnostics)?;
         let Some(scalar) = json_schema_scalar_type_or_string(&resolved) else {
             diagnostics.push(Diagnostic::new(
@@ -244,7 +256,7 @@ impl OpenApiImporter<'_> {
             ));
             return None;
         };
-        Some(scalar)
+        Some((scalar, resolved))
     }
 
     fn import_request_body(
@@ -737,7 +749,11 @@ fn page_size_spec(input: &IrOperationInput) -> PageSizeSpec {
 }
 
 fn numeric_input_default(input: &IrOperationInput) -> Option<i64> {
-    input.default_value.as_deref()?.parse().ok()
+    let value = input.default_value.as_ref()?.value();
+    value
+        .as_i64()
+        .or_else(|| value.as_u64().and_then(|value| i64::try_from(value).ok()))
+        .or_else(|| value.as_str()?.parse().ok())
 }
 
 fn name_token(value: &str) -> String {

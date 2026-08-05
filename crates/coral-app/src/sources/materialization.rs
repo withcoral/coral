@@ -1866,7 +1866,7 @@ surface:
             .iter()
             .map(|column| column.name.as_str())
             .collect::<Vec<_>>();
-        assert_eq!(column_names, ["result", "result_json"]);
+        assert_eq!(column_names, ["result", "result_json", "id"]);
     }
 
     #[test]
