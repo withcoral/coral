@@ -1004,11 +1004,35 @@ mod tests {
         assert_eq!(unavailable.code(), Code::Internal);
     }
 
+    #[tokio::test]
+    async fn source_configuration_requires_manage_allows_owner_oauth_validation() {
+        let fixture = source_service_fixture().await;
+
+        let status = match fixture
+            .service
+            .create_bundled_source_with_o_auth(authenticated(
+                CreateBundledSourceWithOAuthRequest {
+                    workspace: Some(workspace(&fixture.workspace)),
+                    name: "invalid/name".to_string(),
+                    ..Default::default()
+                },
+                &fixture.owner,
+            ))
+            .await
+        {
+            Ok(_) => panic!("invalid source name must be rejected"),
+            Err(status) => status,
+        };
+
+        assert_eq!(status.code(), Code::InvalidArgument);
+    }
+
     struct SourceServiceFixture {
         _temp: TempDir,
         service: SourceService,
         workspace: String,
         member: Principal,
+        owner: Principal,
         owner_agent: Principal,
     }
 
@@ -1078,6 +1102,7 @@ mod tests {
             service,
             workspace,
             member: Principal::parse(&member_id, PrincipalKind::User).expect("member"),
+            owner: Principal::parse(&owner_id, PrincipalKind::User).expect("owner"),
             owner_agent: Principal::parse(&owner_id, PrincipalKind::Agent).expect("owner agent"),
         }
     }
