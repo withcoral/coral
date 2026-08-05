@@ -4,6 +4,34 @@ package coral.v1;
 
 import "coral/v1/resources.proto";
 
+// A user's role within one workspace.
+enum WorkspaceRole {
+  // The role is unknown or was not provided.
+  WORKSPACE_ROLE_UNSPECIFIED = 0;
+  // May read and manage the workspace.
+  WORKSPACE_ROLE_OWNER = 1;
+  // May read the workspace.
+  WORKSPACE_ROLE_MEMBER = 2;
+}
+
+// One user who belongs to a workspace.
+message WorkspaceMember {
+  // Stable internal user identifier.
+  string user_id = 1;
+  // User's role within the workspace.
+  WorkspaceRole role = 2;
+  // Configured display name, or empty when unavailable.
+  string display_name = 3;
+}
+
+// One workspace visible to the current user and their role within it.
+message WorkspaceMembership {
+  // Visible workspace resource.
+  Workspace workspace = 1;
+  // Current user's role within the workspace.
+  WorkspaceRole role = 2;
+}
+
 // Lists configured workspaces.
 message ListWorkspacesRequest {}
 
