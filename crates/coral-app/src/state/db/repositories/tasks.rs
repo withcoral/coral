@@ -105,6 +105,19 @@ where
 }
 
 impl TasksRepo<'_, CoralTx<'_>> {
+    pub(crate) async fn reattribute_pre_v1_principal_digest(
+        &mut self,
+        pre_v1_principal_digest: &str,
+        user_id: &str,
+    ) -> Result<u64, DbError> {
+        let statement = Query::update()
+            .table(Tasks::Table)
+            .value(Tasks::CreatedByPrincipalId, Expr::val(user_id.to_string()))
+            .and_where(Expr::col(Tasks::CreatedByPrincipalId).eq(pre_v1_principal_digest))
+            .to_owned();
+        self.session.execute_rows_affected(statement).await
+    }
+
     pub(crate) async fn insert(
         &mut self,
         workspace_id: &str,

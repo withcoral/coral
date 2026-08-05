@@ -12,6 +12,8 @@ mod schema;
 mod session;
 mod task_state;
 mod transaction;
+mod user_state;
+mod workspace_member_state;
 mod workspace_state;
 
 pub(crate) use clock::now_unix_nanos_i64;
@@ -27,8 +29,21 @@ pub(crate) use repositories::identity_specs::{
     IdentitySpecDocumentRecord, IdentitySpecKey, IdentitySpecRecord, IdentitySpecScope,
 };
 pub(crate) use repositories::tasks::{TaskCompletionUpdate, TaskLifecycleState};
+#[expect(
+    unused_imports,
+    reason = "user persistence types are wired to production consumers in M2"
+)]
+pub(crate) use repositories::users::{UpsertLoginOutcome, UserRecord};
 pub(crate) use session::{DbRepos, DbSession};
 #[cfg(test)]
 pub(crate) use task_state::TaskMutationBarrier;
 pub(crate) use task_state::{TaskCreation, TaskCreationResult};
 pub(crate) use transaction::CoralTx;
+#[allow(unused_imports, reason = "wired in M2")]
+pub(crate) use user_state::EnsureUserDefaultWorkspaceOutcome;
+#[allow(unused_imports, reason = "wired in M3")]
+pub(crate) use workspace_member_state::{
+    AddMemberOutcome, RemoveMemberOutcome, WorkspaceMemberView,
+};
+#[allow(unused_imports, reason = "wired in M3")]
+pub(crate) use workspace_state::WorkspaceCreationOutcome;
