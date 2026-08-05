@@ -1004,7 +1004,6 @@ mod tests {
             .expect("valid search request");
         let task_id = TaskId::parse("550e8400-e29b-41d4-a716-446655440000").expect("valid task id");
         let response = SearchResponse {
-            workspace_name: request.workspace_name.clone(),
             results: Vec::new(),
             provider_statuses: Vec::new(),
             truncation: SearchTruncation {
