@@ -65,6 +65,43 @@ message DeleteWorkspaceResponse {
   Workspace workspace = 1;
 }
 
+// Lists members of one workspace.
+message ListWorkspaceMembersRequest {
+  // Workspace whose members should be listed.
+  Workspace workspace = 1;
+}
+
+// Returns members of one workspace.
+message ListWorkspaceMembersResponse {
+  // Workspace members.
+  repeated WorkspaceMember members = 1;
+}
+
+// Adds one user to a workspace.
+message AddWorkspaceMemberRequest {
+  // Workspace to modify.
+  Workspace workspace = 1;
+  // User and role to add. The display name is ignored.
+  WorkspaceMember member = 2;
+}
+
+// Returns the added or existing identical membership.
+message AddWorkspaceMemberResponse {
+  // Added workspace member.
+  WorkspaceMember member = 1;
+}
+
+// Removes one user from a workspace.
+message RemoveWorkspaceMemberRequest {
+  // Workspace to modify.
+  Workspace workspace = 1;
+  // Stable internal identifier of the user to remove.
+  string user_id = 2;
+}
+
+// Confirms removal of one workspace member.
+message RemoveWorkspaceMemberResponse {}
+
 // Workspace management APIs.
 service WorkspaceService {
   // Lists configured workspaces.
@@ -73,4 +110,10 @@ service WorkspaceService {
   rpc CreateWorkspace(CreateWorkspaceRequest) returns (CreateWorkspaceResponse);
   // Deletes one workspace and its managed artifacts.
   rpc DeleteWorkspace(DeleteWorkspaceRequest) returns (DeleteWorkspaceResponse);
+  // Lists members of one workspace.
+  rpc ListWorkspaceMembers(ListWorkspaceMembersRequest) returns (ListWorkspaceMembersResponse);
+  // Adds one user to a workspace.
+  rpc AddWorkspaceMember(AddWorkspaceMemberRequest) returns (AddWorkspaceMemberResponse);
+  // Removes one user from a workspace.
+  rpc RemoveWorkspaceMember(RemoveWorkspaceMemberRequest) returns (RemoveWorkspaceMemberResponse);
 }

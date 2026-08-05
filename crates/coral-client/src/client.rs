@@ -10,6 +10,7 @@ use coral_api::v1::query_service_client::QueryServiceClient;
 use coral_api::v1::search_service_client::SearchServiceClient;
 use coral_api::v1::source_service_client::SourceServiceClient;
 use coral_api::v1::task_service_client::TaskServiceClient;
+use coral_api::v1::user_service_client::UserServiceClient;
 use coral_api::v1::workspace_service_client::WorkspaceServiceClient;
 use coral_api::{
     CATALOG_RESPONSE_MAX_MESSAGE_SIZE, HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE,
@@ -55,6 +56,9 @@ pub type SourceClient = SourceServiceClient<GrpcService>;
 /// Public workspace-management gRPC client.
 pub type WorkspaceClient = WorkspaceServiceClient<GrpcService>;
 
+/// Public user-directory gRPC client.
+pub type UserClient = UserServiceClient<GrpcService>;
+
 /// Public catalog-discovery gRPC client.
 pub type CatalogClient = CatalogServiceClient<GrpcService>;
 
@@ -83,6 +87,7 @@ pub type HealthCheckClient = HealthClient<GrpcService>;
 pub struct AppClient {
     source: SourceClient,
     workspace: WorkspaceClient,
+    user: UserClient,
     catalog: CatalogClient,
     query: QueryClient,
     search: SearchClient,
@@ -198,6 +203,11 @@ impl AppClient {
             &grpc_endpoint,
             static_metadata.clone(),
         ));
+        let user_client = UserClient::new(grpc_service(
+            channel.clone(),
+            &grpc_endpoint,
+            static_metadata.clone(),
+        ));
         let catalog_client = CatalogClient::new(grpc_service(
             channel.clone(),
             &grpc_endpoint,
@@ -237,6 +247,7 @@ impl AppClient {
         Ok(Self {
             source: source_client,
             workspace: workspace_client,
+            user: user_client,
             catalog: catalog_client,
             query: query_client,
             search: search_client,
@@ -257,6 +268,12 @@ impl AppClient {
     /// Returns a cloned workspace-management client.
     pub fn workspace_client(&self) -> WorkspaceClient {
         self.workspace.clone()
+    }
+
+    #[must_use]
+    /// Returns a cloned user-directory client.
+    pub fn user_client(&self) -> UserClient {
+        self.user.clone()
     }
 
     #[must_use]

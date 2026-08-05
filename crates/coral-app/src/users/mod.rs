@@ -1,11 +1,10 @@
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired to the UserService adapter in t14")
-)]
+#![allow(dead_code, reason = "mounted by control-plane composition in t15")]
 
 mod manager;
 mod model;
+mod service;
 
-#[expect(unused_imports, reason = "wired to the UserService adapter in t14")]
 pub(crate) use manager::UserManager;
 pub(crate) use model::{CurrentUser, UserView};
+#[expect(unused_imports, reason = "mounted by control-plane composition in t15")]
+pub(crate) use service::UserService;
