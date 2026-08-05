@@ -2,9 +2,9 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use rusqlite::{Connection, ErrorCode, TransactionBehavior};
+use rusqlite::{Connection, ErrorCode, Transaction, TransactionBehavior};
 
 use crate::search::catalog::sqlite_index::{
     CatalogClearResult, CatalogDocumentClass, CatalogIndexSnapshot, CatalogRebuildResult,
@@ -20,7 +20,7 @@ use crate::state::AppStateLayout;
 use crate::storage::fs::create_new_file_private;
 use crate::workspaces::WorkspaceName;
 
-pub(crate) const SEARCH_SQLITE_SCHEMA_VERSION: u32 = 4;
+pub(crate) const SEARCH_SQLITE_SCHEMA_VERSION: u32 = 5;
 
 struct SearchSqliteMigration {
     version: u32,
@@ -46,6 +46,10 @@ const SEARCH_SQLITE_MIGRATIONS: &[SearchSqliteMigration] = &[
     SearchSqliteMigration {
         version: 4,
         sql: include_str!("migrations/0004_catalog_source_ownership.sql"),
+    },
+    SearchSqliteMigration {
+        version: 5,
+        sql: include_str!("migrations/0005_observed_source_identity.sql"),
     },
 ];
 
@@ -86,7 +90,7 @@ impl SqliteSearchStore {
         configure_connection(&connection)?;
         let capabilities = detect_capabilities(&connection)?;
         ensure_supported(&capabilities)?;
-        migrate_if_needed(&mut connection)?;
+        migrate_if_needed(&mut connection, &workspace_name)?;
 
         Ok(Self {
             path,
@@ -164,20 +168,17 @@ impl SqliteSearchStore {
 
     pub(crate) fn clear_source_all(
         &self,
-        owner_source_name: &str,
+        source_name: &str,
     ) -> Result<(CatalogClearResult, ObservedValuesClearResult), SqliteSearchError> {
         let mut connection = self.connect()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let catalog = clear_catalog_source_documents_in_transaction(
             &transaction,
             &self.workspace_name,
-            owner_source_name,
+            source_name,
         )?;
-        let observed = clear_observed_source_in_transaction(
-            &transaction,
-            &self.workspace_name,
-            owner_source_name,
-        )?;
+        let observed =
+            clear_observed_source_in_transaction(&transaction, &self.workspace_name, source_name)?;
         transaction.commit()?;
         Ok((catalog, observed))
     }
@@ -447,7 +448,10 @@ fn ensure_supported(capabilities: &SqliteSearchCapabilities) -> Result<(), Sqlit
     Ok(())
 }
 
-fn migrate_if_needed(connection: &mut Connection) -> Result<(), SqliteSearchError> {
+fn migrate_if_needed(
+    connection: &mut Connection,
+    workspace_name: &WorkspaceName,
+) -> Result<(), SqliteSearchError> {
     if schema_is_current(connection)? {
         return Ok(());
     }
@@ -460,9 +464,31 @@ fn migrate_if_needed(connection: &mut Connection) -> Result<(), SqliteSearchErro
         });
     }
 
+    // A singular observed schema must never reach the owner-era replay below.
+    // Migration 0002 names `owner_source_name` in three index statements, and
+    // creating one of those indexes when it is *missing* fails against singular
+    // tables -- which would route intact observed values and queue jobs into the
+    // discarding reset further down. Restating the current-era objects first
+    // repairs the gap and also makes the later replay inert, because
+    // `CREATE INDEX IF NOT EXISTS` short-circuits on the index name before it
+    // resolves the column list.
+    if observed_schema_has_singular_tables(connection)? {
+        match apply_singular_observed_migrations(connection, workspace_name) {
+            Ok(()) if schema_is_current(connection)? => return Ok(()),
+            Ok(()) => {}
+            Err(error) if schema_rebuild_can_recover(&error) => {
+                tracing::warn!(
+                    error = %error,
+                    "singular observed-values schema repair failed before replaying migrations"
+                );
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
     // Replay the full idempotent history before upgrading so a damaged older
     // schema cannot carry missing objects into the current version.
-    match apply_all_migrations(connection) {
+    match apply_all_migrations(connection, workspace_name) {
         Ok(()) if schema_is_current(connection)? => return Ok(()),
         Ok(()) => {
             tracing::warn!("SQLite search schema remained incomplete after replaying migrations");
@@ -481,7 +507,7 @@ fn migrate_if_needed(connection: &mut Connection) -> Result<(), SqliteSearchErro
             "resetting incompatible observed-values schema while preserving the catalog index"
         );
         discard_observed_values_schema(connection)?;
-        apply_all_migrations(connection)?;
+        apply_all_migrations(connection, workspace_name)?;
         if schema_is_current(connection)? {
             return Ok(());
         }
@@ -492,7 +518,7 @@ fn migrate_if_needed(connection: &mut Connection) -> Result<(), SqliteSearchErro
 
     tracing::warn!("rebuilding the disposable search index after catalog schema repair failed");
     discard_search_index_schema(connection)?;
-    apply_all_migrations(connection)?;
+    apply_all_migrations(connection, workspace_name)?;
     if !schema_is_current(connection)? {
         return Err(SqliteSearchError::IncompleteSchemaAfterRebuild {
             schema_version: SEARCH_SQLITE_SCHEMA_VERSION,
@@ -525,9 +551,12 @@ fn sqlite_error_code(error: &rusqlite::Error) -> Option<ErrorCode> {
     }
 }
 
-fn apply_all_migrations(connection: &mut Connection) -> Result<(), SqliteSearchError> {
+fn apply_all_migrations(
+    connection: &mut Connection,
+    workspace_name: &WorkspaceName,
+) -> Result<(), SqliteSearchError> {
     for migration in SEARCH_SQLITE_MIGRATIONS {
-        apply_migration(connection, migration)?;
+        apply_migration(connection, migration, workspace_name)?;
     }
     Ok(())
 }
@@ -618,14 +647,329 @@ fn discard_search_index_schema(connection: &mut Connection) -> Result<(), Sqlite
     Ok(())
 }
 
+/// Legacy observed tables renamed aside by the version-5 hook before the
+/// singular schema is created, then copied from and dropped in the same
+/// transaction.
+const LEGACY_OBSERVED_VALUES_TABLE: &str = "observed_values_legacy_v4";
+const LEGACY_OBSERVED_QUEUE_JOBS_TABLE: &str = "observed_queue_jobs_legacy_v4";
+
+/// Columns carried across the version-5 copy, one constant per table.
+///
+/// Each is interpolated into both halves of an `INSERT ... SELECT`, so the two
+/// lists cannot drift. Written out twice they could, and a mismatch would not
+/// fail -- it would shuffle values between columns as the migration copied them.
+const OBSERVED_VALUES_COPY_COLUMNS: &str = "
+    workspace,
+    source_name,
+    source_scope_id,
+    surface_kind,
+    surface_name,
+    column_name,
+    value_key,
+    display_value,
+    search_text,
+    first_observed_at,
+    last_observed_at,
+    observation_count,
+    source_generation,
+    workspace_generation
+";
+
+/// `id` is carried explicitly so queue ordering survives; `SQLite` advances the
+/// `AUTOINCREMENT` sequence to match the highest inserted id.
+const OBSERVED_QUEUE_JOBS_COPY_COLUMNS: &str = "
+    id,
+    workspace,
+    source_name,
+    source_scope_id,
+    surface_kind,
+    surface_name,
+    workspace_generation,
+    source_generation,
+    payload_json,
+    attempts,
+    last_error,
+    created_at,
+    updated_at
+";
+
+/// `rowid` is carried explicitly: the projection keys every FTS row to its
+/// canonical rowid and refreshes by inserting at that exact rowid. Letting fts5
+/// assign fresh sequential rowids would silently misalign the two whenever
+/// canonical rowids are gapped -- as they are after eviction or a stale purge --
+/// and the next refresh of a gapped row would collide with whichever value now
+/// occupies its rowid, failing the queue job until it dead-letters.
+const OBSERVED_VALUES_FTS_COPY_COLUMNS: &str = "
+    rowid,
+    workspace,
+    source_name,
+    source_scope_id,
+    surface_kind,
+    surface_name,
+    column_name,
+    value_key,
+    display_value,
+    search_text
+";
+
+/// First migration whose observed schema is singular. A database that already
+/// reached it must be repaired from here, never by replaying the owner-era DDL
+/// below it.
+const SINGULAR_OBSERVED_SCHEMA_VERSION: u32 = 5;
+
+/// Observed tables that carried the pre-#1791 owner/component identity pair.
+const OWNER_ERA_OBSERVED_TABLES: &[&str] = &[
+    "observed_values",
+    "observed_values_fts",
+    "observed_queue_jobs",
+];
+
+/// Restates the current-era observed schema without replaying owner-era DDL.
+///
+/// Every statement is `IF NOT EXISTS`, so this fills in missing objects and
+/// leaves existing rows alone.
+fn apply_singular_observed_migrations(
+    connection: &mut Connection,
+    workspace_name: &WorkspaceName,
+) -> Result<(), SqliteSearchError> {
+    for migration in SEARCH_SQLITE_MIGRATIONS
+        .iter()
+        .filter(|migration| migration.version >= SINGULAR_OBSERVED_SCHEMA_VERSION)
+    {
+        apply_migration(connection, migration, workspace_name)?;
+    }
+    Ok(())
+}
+
+/// Whether any observed table has already dropped the owner column.
+///
+/// Probed per table because a partially repaired sidecar can be singular in one
+/// table while another still carries the pair; the owner-era DDL is unsafe as
+/// soon as *one* table has moved on.
+fn observed_schema_has_singular_tables(connection: &Connection) -> Result<bool, SqliteSearchError> {
+    for table_name in OWNER_ERA_OBSERVED_TABLES {
+        if tables_exist(connection, &[table_name])?
+            && !schema_query_is_valid(
+                connection,
+                &format!("SELECT owner_source_name FROM {table_name} LIMIT 0"),
+            )?
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Which observed tables still carry the pre-#1791 owner/component identity
+/// pair, decided per table so a partially repaired sidecar is healed by the
+/// same preserving path rather than falling through to the discarding reset.
+#[derive(Debug, Clone, Copy)]
+struct LegacyObservedIdentity {
+    values: bool,
+    queue_jobs: bool,
+    fts: bool,
+}
+
+/// Row counts carried across the version-5 transform, for the migration log.
+#[derive(Debug, Clone, Copy, Default)]
+struct PreservedObservedRows {
+    values: usize,
+    discarded_values: i64,
+    queue_jobs: usize,
+    discarded_queue_jobs: i64,
+}
+
+impl LegacyObservedIdentity {
+    const NONE: Self = Self {
+        values: false,
+        queue_jobs: false,
+        fts: false,
+    };
+
+    /// A missing table reads as not-legacy, which is what fresh and
+    /// already-singular databases need.
+    fn detect(transaction: &Transaction<'_>) -> Result<Self, SqliteSearchError> {
+        Ok(Self {
+            values: schema_query_is_valid(
+                transaction,
+                "SELECT owner_source_name FROM observed_values LIMIT 0",
+            )?,
+            queue_jobs: schema_query_is_valid(
+                transaction,
+                "SELECT owner_source_name FROM observed_queue_jobs LIMIT 0",
+            )?,
+            fts: schema_query_is_valid(
+                transaction,
+                "SELECT owner_source_name FROM observed_values_fts LIMIT 0",
+            )?,
+        })
+    }
+
+    const fn is_legacy(self) -> bool {
+        self.values || self.queue_jobs || self.fts
+    }
+
+    /// The FTS index is a projection of `observed_values`, so it is rebuilt
+    /// whenever either side is legacy.
+    const fn rebuilds_fts(self) -> bool {
+        self.values || self.fts
+    }
+
+    fn move_legacy_objects_aside(
+        self,
+        transaction: &Transaction<'_>,
+    ) -> Result<(), SqliteSearchError> {
+        if self.values {
+            // SQLite keeps index *names* attached to a renamed table, so 0005's
+            // `CREATE INDEX` statements would silently no-op and leave the new
+            // table unindexed. Drop them by name before the rename lands.
+            transaction.execute_batch(&format!(
+                "
+                DROP TABLE IF EXISTS {LEGACY_OBSERVED_VALUES_TABLE};
+                DROP INDEX IF EXISTS idx_observed_values_source;
+                DROP INDEX IF EXISTS idx_observed_values_workspace_last_observed;
+                ALTER TABLE observed_values RENAME TO {LEGACY_OBSERVED_VALUES_TABLE};
+                "
+            ))?;
+        }
+        if self.queue_jobs {
+            transaction.execute_batch(&format!(
+                "
+                DROP TABLE IF EXISTS {LEGACY_OBSERVED_QUEUE_JOBS_TABLE};
+                DROP INDEX IF EXISTS idx_observed_queue_jobs_workspace_id;
+                DROP INDEX IF EXISTS idx_observed_queue_jobs_source;
+                DROP INDEX IF EXISTS idx_observed_queue_jobs_pending_scope;
+                ALTER TABLE observed_queue_jobs RENAME TO {LEGACY_OBSERVED_QUEUE_JOBS_TABLE};
+                "
+            ))?;
+        }
+        if self.rebuilds_fts() {
+            // Dropping the fts5 table takes its shadow tables with it.
+            transaction.execute_batch("DROP TABLE IF EXISTS observed_values_fts")?;
+        }
+        Ok(())
+    }
+
+    fn copy_preserved_rows(
+        self,
+        transaction: &Transaction<'_>,
+    ) -> Result<PreservedObservedRows, SqliteSearchError> {
+        let mut preserved = PreservedObservedRows::default();
+        if self.values {
+            (preserved.values, preserved.discarded_values) = copy_preserved_rows(
+                transaction,
+                LEGACY_OBSERVED_VALUES_TABLE,
+                "observed_values",
+                OBSERVED_VALUES_COPY_COLUMNS,
+            )?;
+        }
+        if self.queue_jobs {
+            (preserved.queue_jobs, preserved.discarded_queue_jobs) = copy_preserved_rows(
+                transaction,
+                LEGACY_OBSERVED_QUEUE_JOBS_TABLE,
+                "observed_queue_jobs",
+                OBSERVED_QUEUE_JOBS_COPY_COLUMNS,
+            )?;
+        }
+        if self.rebuilds_fts() {
+            repopulate_observed_fts_from_canonical(transaction)?;
+        }
+        Ok(preserved)
+    }
+}
+
+/// Copies rows whose two identities agreed from a renamed legacy table into its
+/// singular replacement, drops the legacy table, and reports
+/// `(preserved, discarded)`.
+///
+/// Divergence is unreachable on production paths, so a nonzero discard count in
+/// the wild would falsify that premise -- which is why it is logged.
+///
+/// `legacy_table`, `target_table`, and `columns` are interpolated into SQL, so
+/// every caller passes a constant defined in this file. None of them is reachable
+/// from a request, a manifest, or a stored row.
+fn copy_preserved_rows(
+    transaction: &Transaction<'_>,
+    legacy_table: &str,
+    target_table: &str,
+    columns: &str,
+) -> Result<(usize, i64), SqliteSearchError> {
+    let discarded = transaction.query_row(
+        &format!(
+            "
+            SELECT COUNT(*)
+            FROM {legacy_table}
+            WHERE owner_source_name <> source_name
+            "
+        ),
+        [],
+        |row| row.get(0),
+    )?;
+    let preserved = transaction.execute(
+        &format!(
+            "
+            INSERT INTO {target_table} ({columns})
+            SELECT {columns}
+            FROM {legacy_table}
+            WHERE owner_source_name = source_name
+            "
+        ),
+        [],
+    )?;
+    transaction.execute_batch(&format!("DROP TABLE {legacy_table}"))?;
+    Ok((preserved, discarded))
+}
+
+/// `observed_values` already holds exactly the preserved rows and carries both
+/// indexed columns, so the values are searchable the moment this transaction
+/// commits -- no reconcile gap.
+fn repopulate_observed_fts_from_canonical(
+    transaction: &Transaction<'_>,
+) -> Result<(), SqliteSearchError> {
+    transaction.execute(
+        &format!(
+            "
+            INSERT INTO observed_values_fts ({OBSERVED_VALUES_FTS_COPY_COLUMNS})
+            SELECT {OBSERVED_VALUES_FTS_COPY_COLUMNS}
+            FROM observed_values
+            "
+        ),
+        [],
+    )?;
+    Ok(())
+}
+
 fn apply_migration(
     connection: &mut Connection,
     migration: &SearchSqliteMigration,
+    workspace_name: &WorkspaceName,
 ) -> Result<(), SqliteSearchError> {
+    let started_at = Instant::now();
     let transaction = connection.transaction()?;
     let initializes_catalog_source_ownership =
         migration.version == 4 && !tables_exist(&transaction, &["catalog_source_owners"])?;
+    let legacy_observed = if migration.version == 5 {
+        LegacyObservedIdentity::detect(&transaction)?
+    } else {
+        LegacyObservedIdentity::NONE
+    };
+    // The renames must precede `execute_batch`: 0005 creates its tables with
+    // `IF NOT EXISTS`, so it would no-op against legacy tables still occupying
+    // the canonical names.
+    legacy_observed.move_legacy_objects_aside(&transaction)?;
     transaction.execute_batch(migration.sql)?;
+    let preserved = legacy_observed.copy_preserved_rows(&transaction)?;
+    if legacy_observed.is_legacy() {
+        tracing::info!(
+            workspace = %workspace_name.as_str(),
+            preserved_values = preserved.values,
+            discarded_divergent_values = preserved.discarded_values,
+            preserved_queue_jobs = preserved.queue_jobs,
+            discarded_divergent_queue_jobs = preserved.discarded_queue_jobs,
+            duration_ms = started_at.elapsed().as_millis(),
+            "migrated observed-values storage to singular source identity"
+        );
+    }
     if initializes_catalog_source_ownership {
         // Existing catalog rows predate durable installed-owner identity. They
         // are disposable and cannot be safely backfilled for multi-component
@@ -764,7 +1108,6 @@ fn observed_values_schema_is_current(connection: &Connection) -> Result<bool, Sq
         "
         SELECT
             workspace,
-            owner_source_name,
             source_name,
             source_scope_id,
             surface_kind,
@@ -784,7 +1127,6 @@ fn observed_values_schema_is_current(connection: &Connection) -> Result<bool, Sq
         "
         SELECT
             workspace,
-            owner_source_name,
             source_name,
             source_scope_id,
             surface_kind,
@@ -800,7 +1142,6 @@ fn observed_values_schema_is_current(connection: &Connection) -> Result<bool, Sq
         SELECT
             id,
             workspace,
-            owner_source_name,
             source_name,
             source_scope_id,
             surface_kind,
@@ -817,6 +1158,19 @@ fn observed_values_schema_is_current(connection: &Connection) -> Result<bool, Sq
         ",
     ] {
         if !schema_query_is_valid(connection, query)? {
+            return Ok(false);
+        }
+    }
+
+    // Presence probes cannot see a *surplus* column, and a surviving legacy
+    // queue table (`owner_source_name NOT NULL`, no default) would pass the
+    // probes above and then reject every rewritten enqueue with no self-heal.
+    for query in [
+        "SELECT owner_source_name FROM observed_values LIMIT 0",
+        "SELECT owner_source_name FROM observed_values_fts LIMIT 0",
+        "SELECT owner_source_name FROM observed_queue_jobs LIMIT 0",
+    ] {
+        if schema_query_is_valid(connection, query)? {
             return Ok(false);
         }
     }
@@ -926,8 +1280,10 @@ mod tests {
         let mut connection = rusqlite::Connection::open(&path).expect("raw connection");
 
         for migration in SEARCH_SQLITE_MIGRATIONS {
-            super::apply_migration(&mut connection, migration).expect("first apply");
-            super::apply_migration(&mut connection, migration).expect("second apply");
+            super::apply_migration(&mut connection, migration, &WorkspaceName::default())
+                .expect("first apply");
+            super::apply_migration(&mut connection, migration, &WorkspaceName::default())
+                .expect("second apply");
         }
 
         let user_version: u32 = connection
@@ -942,9 +1298,10 @@ mod tests {
         let path = temp.path().join("search.sqlite3");
         let mut connection = Connection::open(&path).expect("raw v2 connection");
         for migration in SEARCH_SQLITE_MIGRATIONS.iter().take(2) {
-            super::apply_migration(&mut connection, migration).expect("apply v2 history");
+            super::apply_migration(&mut connection, migration, &WorkspaceName::default())
+                .expect("apply v2 history");
         }
-        seed_observed_queue_job(&connection);
+        seed_legacy_v4_observed_queue_job(&connection);
         assert!(!index_exists(
             &connection,
             "idx_observed_values_workspace_last_observed"
@@ -966,10 +1323,11 @@ mod tests {
         let path = temp.path().join("search.sqlite3");
         let mut connection = Connection::open(&path).expect("raw v3 connection");
         for migration in SEARCH_SQLITE_MIGRATIONS.iter().take(3) {
-            super::apply_migration(&mut connection, migration).expect("apply v3 history");
+            super::apply_migration(&mut connection, migration, &WorkspaceName::default())
+                .expect("apply v3 history");
         }
         seed_catalog_document(&connection);
-        seed_observed_queue_job(&connection);
+        seed_legacy_v4_observed_queue_job(&connection);
         connection
             .execute(
                 "INSERT INTO search_meta (key, value) VALUES ('catalog_snapshot_fingerprint:default', 'legacy')",
@@ -1294,7 +1652,7 @@ mod tests {
             .expect("seed catalog source owner");
         connection
             .execute(
-                "INSERT INTO observed_values (workspace, owner_source_name, source_name, source_scope_id, surface_kind, surface_name, column_name, value_key, display_value, search_text, source_generation, workspace_generation) VALUES ('default', 'github', 'github_v4_mcp', 'scope', 'table', 'issues', 'title', 'value', 'Payment issue', 'payment issue', 0, 0)",
+                "INSERT INTO observed_values (workspace, source_name, source_scope_id, surface_kind, surface_name, column_name, value_key, display_value, search_text, source_generation, workspace_generation) VALUES ('default', 'github', 'scope', 'table', 'issues', 'title', 'value', 'Payment issue', 'payment issue', 0, 0)",
                 [],
             )
             .expect("seed observed value");
@@ -1319,7 +1677,7 @@ mod tests {
             .expect("catalog count");
         let observed_count: i64 = connection
             .query_row(
-                "SELECT COUNT(*) FROM observed_values WHERE workspace = 'default' AND owner_source_name = 'github' AND source_name = 'github_v4_mcp'",
+                "SELECT COUNT(*) FROM observed_values WHERE workspace = 'default' AND source_name = 'github'",
                 [],
                 |row| row.get(0),
             )
@@ -1386,14 +1744,14 @@ mod tests {
             })
             .expect("refresh catalog projection");
         let connection = store.connect_for_test().expect("connect");
-        for (owner_source_name, source_name, display_value) in [
-            ("github_v4", "github_v4_rest", "Payment issue"),
-            ("slack_v4", "slack_v4_rest", "Payment message"),
+        for (source_name, display_value) in [
+            ("github_v4", "Payment issue"),
+            ("slack_v4", "Payment message"),
         ] {
             connection
                 .execute(
-                    "INSERT INTO observed_values (workspace, owner_source_name, source_name, source_scope_id, surface_kind, surface_name, column_name, value_key, display_value, search_text, source_generation, workspace_generation) VALUES ('default', ?1, ?2, 'scope', 'table', 'items', 'title', ?3, ?3, ?3, 0, 0)",
-                    (owner_source_name, source_name, display_value),
+                    "INSERT INTO observed_values (workspace, source_name, source_scope_id, surface_kind, surface_name, column_name, value_key, display_value, search_text, source_generation, workspace_generation) VALUES ('default', ?1, 'scope', 'table', 'items', 'title', ?2, ?2, ?2, 0, 0)",
+                    (source_name, display_value),
                 )
                 .expect("seed observed value");
         }
@@ -1417,17 +1775,17 @@ mod tests {
             .expect("query catalog sources")
             .collect::<Result<Vec<_>, _>>()
             .expect("catalog sources");
-        let remaining_observed_owners = connection
+        let remaining_observed_sources = connection
             .prepare(
-                "SELECT owner_source_name FROM observed_values WHERE workspace = 'default' ORDER BY owner_source_name",
+                "SELECT source_name FROM observed_values WHERE workspace = 'default' ORDER BY source_name",
             )
-            .expect("prepare observed owners")
+            .expect("prepare observed sources")
             .query_map([], |row| row.get::<_, String>(0))
-            .expect("query observed owners")
+            .expect("query observed sources")
             .collect::<Result<Vec<_>, _>>()
-            .expect("observed owners");
+            .expect("observed sources");
         assert_eq!(remaining_catalog_sources, ["slack_v4_rest"]);
-        assert_eq!(remaining_observed_owners, ["slack_v4"]);
+        assert_eq!(remaining_observed_sources, ["slack_v4"]);
     }
 
     #[test]
@@ -1632,6 +1990,7 @@ mod tests {
         super::apply_migration(
             &mut connection,
             SEARCH_SQLITE_MIGRATIONS.first().expect("v1 migration"),
+            &WorkspaceName::default(),
         )
         .expect("apply v1 migration");
         connection
@@ -1708,10 +2067,10 @@ mod tests {
                 VALUES ('default', 'github', 'github', 'fingerprint');
                 INSERT INTO search_meta (key, value)
                 VALUES ('catalog_snapshot_fingerprint:default', 'fingerprint');
-                INSERT INTO observed_values (workspace, owner_source_name, source_name, source_scope_id, surface_kind, surface_name, column_name, value_key, display_value, search_text, source_generation, workspace_generation)
-                VALUES ('default', 'github', 'github', 'scope', 'table', 'issues', 'title', 'value', 'Payment issue', 'payment issue', 0, 0);
-                INSERT INTO observed_values_fts (workspace, owner_source_name, source_name, source_scope_id, surface_kind, surface_name, column_name, value_key, display_value, search_text)
-                VALUES ('default', 'github', 'github', 'scope', 'table', 'issues', 'title', 'value', 'Payment issue', 'payment issue');
+                INSERT INTO observed_values (workspace, source_name, source_scope_id, surface_kind, surface_name, column_name, value_key, display_value, search_text, source_generation, workspace_generation)
+                VALUES ('default', 'github', 'scope', 'table', 'issues', 'title', 'value', 'Payment issue', 'payment issue', 0, 0);
+                INSERT INTO observed_values_fts (workspace, source_name, source_scope_id, surface_kind, surface_name, column_name, value_key, display_value, search_text)
+                VALUES ('default', 'github', 'scope', 'table', 'issues', 'title', 'value', 'Payment issue', 'payment issue');
                 CREATE TRIGGER fail_workspace_epoch_insert
                 BEFORE INSERT ON observed_workspace_generations
                 BEGIN
@@ -1754,12 +2113,12 @@ mod tests {
             ),
             observed_fts_values: matching_row_count(
                 connection,
-                "SELECT COUNT(*) FROM observed_values_fts WHERE workspace = 'default' AND owner_source_name = 'github' AND source_name = 'github' AND source_scope_id = 'scope' AND surface_kind = 'table' AND surface_name = 'issues' AND column_name = 'title' AND value_key = 'value' AND display_value = 'Payment issue' AND search_text = 'payment issue'",
+                "SELECT COUNT(*) FROM observed_values_fts WHERE workspace = 'default' AND source_name = 'github' AND source_scope_id = 'scope' AND surface_kind = 'table' AND surface_name = 'issues' AND column_name = 'title' AND value_key = 'value' AND display_value = 'Payment issue' AND search_text = 'payment issue'",
                 "observed FTS value count",
             ),
             observed_queue_jobs: matching_row_count(
                 connection,
-                "SELECT COUNT(*) FROM observed_queue_jobs WHERE workspace = 'default' AND owner_source_name = 'github' AND source_name = 'github' AND source_scope_id = 'fixture-scope' AND surface_kind = 'table' AND surface_name = 'issues' AND workspace_generation = 0 AND source_generation = 0 AND payload_json = '{}'",
+                "SELECT COUNT(*) FROM observed_queue_jobs WHERE workspace = 'default' AND source_name = 'github' AND source_scope_id = 'fixture-scope' AND surface_kind = 'table' AND surface_name = 'issues' AND workspace_generation = 0 AND source_generation = 0 AND payload_json = '{}'",
                 "observed queue job count",
             ),
             observed_workspace_generations: matching_row_count(
@@ -1783,13 +2142,396 @@ mod tests {
         }
     }
 
+    // ---- version-5 observed-identity migration -------------------------------
+
+    #[test]
+    fn seeded_v4_upgrade_preserves_equal_identity_observed_rows() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("search.sqlite3");
+        let connection = seed_v4_observed_fixture(&path);
+        drop(connection);
+
+        let connection = open_current_search_connection(&path);
+
+        assert_eq!(
+            observed_source_names(&connection, "observed_values"),
+            ["github_mcp_v4", "github_v4"],
+            "rows whose two identities were equal must survive"
+        );
+        // Preserved values are searchable the moment the migration commits --
+        // the FTS index is rebuilt from the canonical table in the same
+        // transaction, so there is no reconcile gap.
+        assert_eq!(
+            matching_row_count(
+                &connection,
+                "SELECT COUNT(*) FROM observed_values_fts WHERE observed_values_fts MATCH 'payment'",
+                "searchable preserved values",
+            ),
+            2
+        );
+        assert_eq!(
+            observed_source_names(&connection, "observed_values_fts"),
+            ["github_mcp_v4", "github_v4"]
+        );
+        assert_eq!(
+            observed_source_names(&connection, "observed_queue_jobs"),
+            ["github_v4"],
+            "queue jobs follow the same preserve-equal-rows rule"
+        );
+        assert_eq!(
+            matching_row_count(
+                &connection,
+                "SELECT id FROM observed_queue_jobs",
+                "preserved queue job id",
+            ),
+            7,
+            "explicit ids are carried across so queue ordering is stable"
+        );
+        assert_eq!(
+            matching_row_count(
+                &connection,
+                "SELECT generation FROM observed_workspace_generations WHERE workspace = 'default'",
+                "workspace generation",
+            ),
+            3
+        );
+        assert_eq!(
+            matching_row_count(
+                &connection,
+                "SELECT generation FROM observed_source_generations WHERE source_name = 'github_v4'",
+                "source generation",
+            ),
+            5
+        );
+        assert!(
+            !observed_tables_carry_owner_column(&connection),
+            "no observed table may keep the legacy owner column"
+        );
+    }
+
+    #[test]
+    fn already_singular_schema_replay_preserves_observed_rows() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("search.sqlite3");
+        let connection = open_current_search_connection(&path);
+        seed_singular_observed_value(&connection, "github_v4", "payment outage");
+        seed_observed_queue_job(&connection);
+        drop(connection);
+
+        // Reopening replays the whole idempotent history; the version-5 hook
+        // must be a complete no-op against a schema that is already singular.
+        let connection = open_current_search_connection(&path);
+
+        assert_eq!(observed_value_count(&connection), 1);
+        assert_eq!(observed_queue_job_count(&connection), 1);
+    }
+
+    #[test]
+    fn mis_stamped_v5_is_repaired_with_data_preserved() {
+        for legacy_table in [
+            "observed_values",
+            "observed_values_fts",
+            "observed_queue_jobs",
+        ] {
+            let temp = tempdir().expect("tempdir");
+            let path = temp.path().join("search.sqlite3");
+            let connection = seed_v4_observed_fixture(&path);
+            if legacy_table != "observed_values" {
+                // Leave the owner column on only one table, so the repair path
+                // cannot lean on detecting it everywhere.
+                make_observed_values_singular(&connection);
+            }
+            if legacy_table != "observed_queue_jobs" {
+                make_observed_queue_jobs_singular(&connection);
+            }
+            if legacy_table == "observed_queue_jobs" {
+                rebuild_observed_fts_as_singular(&connection);
+            }
+            connection
+                .pragma_update(None, "user_version", SEARCH_SQLITE_SCHEMA_VERSION)
+                .expect("mis-stamp the schema version");
+            assert!(
+                !super::schema_is_current(&connection).expect("validate mis-stamped schema"),
+                "a surplus owner column on {legacy_table} must fail validation"
+            );
+            drop(connection);
+
+            let connection = open_current_search_connection(&path);
+
+            assert!(
+                observed_value_count(&connection) > 0,
+                "repairing a mis-stamped {legacy_table} must preserve observed data"
+            );
+            assert!(!observed_tables_carry_owner_column(&connection));
+        }
+    }
+
+    #[test]
+    fn missing_singular_index_is_repaired_without_discarding_observed_data() {
+        // Migration 0002 builds three of the five observed indexes over
+        // `owner_source_name`. On a singular database a *missing* one of those
+        // cannot be replayed, and before the singular-era repair that failure
+        // routed intact data into the discarding reset.
+        for index_name in [
+            "idx_observed_values_source",
+            "idx_observed_queue_jobs_source",
+            "idx_observed_queue_jobs_pending_scope",
+        ] {
+            let temp = tempdir().expect("tempdir");
+            let path = temp.path().join("search.sqlite3");
+            let connection = open_current_search_connection(&path);
+            seed_singular_observed_value(&connection, "github_v4", "payment outage");
+            seed_observed_queue_job(&connection);
+            connection
+                .execute_batch(&format!("DROP INDEX {index_name}"))
+                .expect("drop a singular index");
+            assert!(
+                !super::schema_is_current(&connection).expect("validate damaged schema"),
+                "a missing {index_name} must fail validation"
+            );
+            drop(connection);
+
+            let connection = open_current_search_connection(&path);
+
+            assert_eq!(
+                observed_value_count(&connection),
+                1,
+                "repairing a missing {index_name} must preserve observed values"
+            );
+            assert_eq!(
+                observed_queue_job_count(&connection),
+                1,
+                "repairing a missing {index_name} must preserve queued jobs"
+            );
+            assert!(index_exists(&connection, index_name));
+        }
+    }
+
+    #[test]
+    fn fts_repair_keeps_fts_rowids_aligned_with_gapped_canonical_rowids() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("search.sqlite3");
+        let connection = open_current_search_connection(&path);
+        for source_name in ["source_a", "source_b", "source_c"] {
+            seed_singular_observed_value(&connection, source_name, "payment outage");
+        }
+        // Eviction and stale purges leave gaps, so canonical rowids are not a
+        // dense 1..N sequence the FTS index can reproduce by counting.
+        connection
+            .execute("DELETE FROM observed_values WHERE rowid = 1", [])
+            .expect("evict the first canonical row");
+        rebuild_observed_fts_as_owner_era(&connection);
+        drop(connection);
+
+        let connection = open_current_search_connection(&path);
+
+        let misaligned: i64 = connection
+            .query_row(
+                "
+                SELECT COUNT(*)
+                FROM observed_values v
+                LEFT JOIN observed_values_fts f
+                    ON f.rowid = v.rowid
+                   AND f.value_key = v.value_key
+                WHERE f.rowid IS NULL
+                ",
+                [],
+                |row| row.get(0),
+            )
+            .expect("rowid alignment query");
+        assert_eq!(
+            misaligned, 0,
+            "every preserved row must keep its canonical rowid in the FTS index"
+        );
+        assert_eq!(observed_value_count(&connection), 2);
+    }
+
+    /// Replaces the FTS index with the pre-#1791 shape, leaving the canonical
+    /// table singular -- the partial-repair state the version-5 hook heals.
+    fn rebuild_observed_fts_as_owner_era(connection: &Connection) {
+        connection
+            .execute_batch(
+                "
+                DROP TABLE observed_values_fts;
+                CREATE VIRTUAL TABLE observed_values_fts USING fts5(
+                    workspace UNINDEXED,
+                    owner_source_name UNINDEXED,
+                    source_name UNINDEXED,
+                    source_scope_id UNINDEXED,
+                    surface_kind UNINDEXED,
+                    surface_name UNINDEXED,
+                    column_name UNINDEXED,
+                    value_key UNINDEXED,
+                    display_value,
+                    search_text,
+                    tokenize = 'trigram'
+                );
+                ",
+            )
+            .expect("install an owner-era FTS index");
+    }
+
+    fn seed_v4_observed_fixture(path: &std::path::Path) -> Connection {
+        let mut connection = Connection::open(path).expect("raw v4 connection");
+        for migration in SEARCH_SQLITE_MIGRATIONS.iter().take(4) {
+            super::apply_migration(&mut connection, migration, &WorkspaceName::default())
+                .expect("apply v4 history");
+        }
+        connection
+            .execute_batch(
+                "
+                INSERT INTO observed_values (
+                    workspace, owner_source_name, source_name, source_scope_id, surface_kind,
+                    surface_name, column_name, value_key, display_value, search_text,
+                    source_generation, workspace_generation
+                ) VALUES
+                    ('default', 'github_v4', 'github_v4', 'rest-scope', 'table', 'issues',
+                     'title', 'rest', 'REST payment outage', 'rest payment outage', 0, 0),
+                    ('default', 'github_mcp_v4', 'github_mcp_v4', 'mcp-scope', 'table', 'issues',
+                     'title', 'mcp', 'MCP payment outage', 'mcp payment outage', 0, 0),
+                    ('default', 'github_v4', 'github_v4_rest', 'rest-scope', 'table', 'issues',
+                     'title', 'divergent', 'Divergent value', 'divergent value', 0, 0);
+
+                INSERT INTO observed_values_fts (
+                    workspace, owner_source_name, source_name, source_scope_id, surface_kind,
+                    surface_name, column_name, value_key, display_value, search_text
+                )
+                SELECT workspace, owner_source_name, source_name, source_scope_id, surface_kind,
+                       surface_name, column_name, value_key, display_value, search_text
+                FROM observed_values;
+
+                INSERT INTO observed_queue_jobs (
+                    id, workspace, owner_source_name, source_name, source_scope_id, surface_kind,
+                    surface_name, workspace_generation, source_generation, payload_json
+                ) VALUES
+                    (7, 'default', 'github_v4', 'github_v4', 'rest-scope', 'table', 'issues',
+                     0, 0, '{}'),
+                    (8, 'default', 'github_v4', 'github_v4_rest', 'rest-scope', 'table', 'pulls',
+                     0, 0, '{}');
+
+                INSERT INTO observed_workspace_generations (workspace, generation)
+                VALUES ('default', 3);
+                INSERT INTO observed_source_generations (workspace, source_name, generation)
+                VALUES ('default', 'github_v4', 5);
+                ",
+            )
+            .expect("seed v4 observed fixture");
+        connection
+    }
+
+    fn seed_singular_observed_value(connection: &Connection, source_name: &str, search_text: &str) {
+        connection
+            .execute(
+                "
+                INSERT INTO observed_values (
+                    workspace, source_name, source_scope_id, surface_kind, surface_name,
+                    column_name, value_key, display_value, search_text,
+                    source_generation, workspace_generation
+                ) VALUES ('default', ?1, 'scope', 'table', 'issues', 'title', 'key', ?2, ?2, 0, 0)
+                ",
+                (source_name, search_text),
+            )
+            .expect("seed singular observed value");
+    }
+
+    fn make_observed_values_singular(connection: &Connection) {
+        connection
+            .execute_batch(
+                "
+                DROP INDEX IF EXISTS idx_observed_values_source;
+                DROP INDEX IF EXISTS idx_observed_values_workspace_last_observed;
+                ALTER TABLE observed_values RENAME TO observed_values_owner_era;
+                ",
+            )
+            .expect("move the owner-era canonical table aside");
+        connection
+            .execute_batch(include_str!("migrations/0005_observed_source_identity.sql"))
+            .expect("create the singular canonical table");
+        connection
+            .execute_batch(
+                "
+                INSERT INTO observed_values (
+                    workspace, source_name, source_scope_id, surface_kind, surface_name,
+                    column_name, value_key, display_value, search_text, first_observed_at,
+                    last_observed_at, observation_count, source_generation, workspace_generation
+                )
+                SELECT workspace, source_name, source_scope_id, surface_kind, surface_name,
+                       column_name, value_key, display_value, search_text, first_observed_at,
+                       last_observed_at, observation_count, source_generation, workspace_generation
+                FROM observed_values_owner_era
+                WHERE owner_source_name = source_name;
+                DROP TABLE observed_values_owner_era;
+                ",
+            )
+            .expect("copy rows into the singular canonical table");
+    }
+
+    fn make_observed_queue_jobs_singular(connection: &Connection) {
+        connection
+            .execute_batch(
+                "
+                DROP INDEX IF EXISTS idx_observed_queue_jobs_workspace_id;
+                DROP INDEX IF EXISTS idx_observed_queue_jobs_source;
+                DROP INDEX IF EXISTS idx_observed_queue_jobs_pending_scope;
+                DROP TABLE observed_queue_jobs;
+                ",
+            )
+            .expect("drop the owner-era queue table");
+        connection
+            .execute_batch(include_str!("migrations/0005_observed_source_identity.sql"))
+            .expect("create the singular queue table");
+    }
+
+    fn rebuild_observed_fts_as_singular(connection: &Connection) {
+        connection
+            .execute_batch("DROP TABLE observed_values_fts")
+            .expect("drop the owner-era FTS table");
+        connection
+            .execute_batch(include_str!("migrations/0005_observed_source_identity.sql"))
+            .expect("create the singular FTS table");
+    }
+
+    fn observed_source_names(connection: &Connection, table_name: &str) -> Vec<String> {
+        let sql = format!("SELECT source_name FROM {table_name} ORDER BY source_name");
+        let mut statement = connection.prepare(&sql).expect("source-name query");
+        statement
+            .query_map([], |row| row.get(0))
+            .expect("query source names")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect source names")
+    }
+
+    fn observed_tables_carry_owner_column(connection: &Connection) -> bool {
+        [
+            "observed_values",
+            "observed_values_fts",
+            "observed_queue_jobs",
+        ]
+        .into_iter()
+        .any(|table_name| {
+            super::schema_query_is_valid(
+                connection,
+                &format!("SELECT owner_source_name FROM {table_name} LIMIT 0"),
+            )
+            .expect("owner-column probe")
+        })
+    }
+
+    fn observed_value_count(connection: &Connection) -> i64 {
+        connection
+            .query_row("SELECT COUNT(*) FROM observed_values", [], |row| row.get(0))
+            .expect("observed value count")
+    }
+
     fn matching_row_count(connection: &Connection, query: &str, context: &str) -> i64 {
         connection
             .query_row(query, [], |row| row.get(0))
             .expect(context)
     }
 
-    fn seed_observed_queue_job(connection: &Connection) {
+    /// Seeds the pre-#1791 owner/component shape, for tests that build a v2/v3
+    /// era database and then upgrade through the version-5 copy path.
+    fn seed_legacy_v4_observed_queue_job(connection: &Connection) {
         connection
             .execute(
                 "
@@ -1806,6 +2548,35 @@ mod tests {
                 ) VALUES (
                     'default',
                     'github',
+                    'github',
+                    'fixture-scope',
+                    'table',
+                    'issues',
+                    0,
+                    0,
+                    '{}'
+                )
+                ",
+                [],
+            )
+            .expect("seed legacy observed queue job");
+    }
+
+    fn seed_observed_queue_job(connection: &Connection) {
+        connection
+            .execute(
+                "
+                INSERT INTO observed_queue_jobs (
+                    workspace,
+                    source_name,
+                    source_scope_id,
+                    surface_kind,
+                    surface_name,
+                    workspace_generation,
+                    source_generation,
+                    payload_json
+                ) VALUES (
+                    'default',
                     'github',
                     'fixture-scope',
                     'table',

@@ -1178,7 +1178,6 @@ enabled = false
             .enqueue_if_current(
                 &workspace,
                 &ObservedValuesQueueJob {
-                    owner_source_name: "github".to_string(),
                     source_name: "github".to_string(),
                     source_scope_id: "scope".to_string(),
                     surface_kind: ObservedValuesSurfaceKind::Table,
@@ -1638,7 +1637,6 @@ backend = "unsupported"
             .enqueue_if_current(
                 &workspace,
                 &ObservedValuesQueueJob {
-                    owner_source_name: "github".to_string(),
                     source_name: "github".to_string(),
                     source_scope_id: "scope".to_string(),
                     surface_kind: ObservedValuesSurfaceKind::Table,
@@ -1687,7 +1685,6 @@ backend = "unsupported"
             .enqueue_if_current(
                 &workspace,
                 &ObservedValuesQueueJob {
-                    owner_source_name: "github".to_string(),
                     source_name: "github".to_string(),
                     source_scope_id: "scope".to_string(),
                     surface_kind: ObservedValuesSurfaceKind::Table,
