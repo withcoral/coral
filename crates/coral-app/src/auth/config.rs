@@ -776,6 +776,7 @@ fn session_file_error(action: &str, path: &Path, error: &std::io::Error) -> Auth
     session_config_error(format!("failed to {action} {}: {error}", path.display()))
 }
 
+#[cfg(test)]
 pub(super) fn signing_key_env_error(error: &std::env::VarError) -> String {
     match error {
         std::env::VarError::NotPresent => "environment variable is not present".to_string(),

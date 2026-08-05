@@ -271,8 +271,9 @@ impl McpHttpServeConfig {
 ///
 /// Nothing here is live. The gRPC server's bootstrap resolves configuration; the
 /// call site turns these settings into services and owns their lifecycle, so a
-/// server builder never constructs a transport it does not run. `coral serve`
-/// composes them in `coral-cli`'s `serve::compose_session_policies`.
+/// server builder never constructs a transport it does not run. The CLI derives
+/// the MCP authenticator from its single audience; `start_for_serve` derives the
+/// gRPC policy from the full public-audience set.
 pub struct ServeSettings {
     pub(super) mcp_http: Option<McpHttpServeConfig>,
     pub(super) session_auth: Option<SessionAuthSettings>,

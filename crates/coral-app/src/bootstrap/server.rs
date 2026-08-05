@@ -324,10 +324,10 @@ impl ServerBuilder {
     /// request. Product runtimes can authenticate inbound metadata and select
     /// any canonical principal by installing their own provider.
     ///
-    /// Whoever resolves `[auth]` composes the provider it asks for and installs
-    /// it here — `coral-cli`'s `serve::compose_session_policies` does this for
-    /// `coral server`. Without this call a standalone listener serves the local
-    /// principal to every caller its address is reachable from.
+    /// `start_for_serve` owns the gRPC authentication policy: it derives one
+    /// provider from every configured public audience and installs it here.
+    /// Without this call a standalone listener serves the local principal to
+    /// every caller its address is reachable from.
     pub fn with_principal_provider(
         mut self,
         principal_provider: Arc<dyn PrincipalProvider>,
@@ -545,9 +545,9 @@ fn build_authorization_server(
     coral_db: Arc<CoralDb>,
 ) -> Result<CoralAuthorizationServer, AppError> {
     let (settings, session_tokens, public_audiences) = session_auth.into_parts();
-    let mut server = CoralAuthorizationServer::from_resolved_settings(settings, session_tokens)
-        .map_err(|error| AppError::FailedPrecondition(error.to_string()))?
-        .with_database(coral_db);
+    let mut server =
+        CoralAuthorizationServer::from_resolved_settings(settings, session_tokens, coral_db)
+            .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
     for audience in public_audiences {
         server = server
             .with_authorization_resource(audience)

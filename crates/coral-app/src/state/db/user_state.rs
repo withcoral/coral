@@ -1,11 +1,12 @@
 //! Transactional login provisioning and pre-v1 task-attribution rekeying.
 
-#![cfg_attr(not(test), expect(dead_code, reason = "wired in M2"))]
-
 use super::repositories::users::UpsertLoginOutcome;
-use super::workspace_state::{hold_user_for_workspace_creation, try_create_workspace_with_owner};
+#[cfg(test)]
+use super::workspace_state::hold_user_for_workspace_creation;
+use super::workspace_state::try_create_workspace_with_owner;
 use super::{CoralDb, DbError, DbRepos};
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum EnsureUserDefaultWorkspaceOutcome {
     Created(String),
@@ -41,6 +42,7 @@ impl CoralDb {
         Ok(outcome)
     }
 
+    #[cfg(test)]
     pub(crate) async fn provision_login(
         &self,
         issuer: &str,
@@ -64,6 +66,7 @@ impl CoralDb {
         Ok(outcome)
     }
 
+    #[cfg(test)]
     pub(crate) async fn ensure_user_default_workspace(
         &self,
         user_id: &str,
@@ -86,6 +89,7 @@ impl CoralDb {
         }
     }
 
+    #[cfg(test)]
     pub(crate) async fn reattribute_pre_v1_task_principal_digest(
         &self,
         pre_v1_principal_digest: &str,

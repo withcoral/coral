@@ -2,12 +2,15 @@
 
 use std::collections::BTreeSet;
 use std::net::SocketAddr;
+#[cfg(test)]
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
 use super::OIDC_CALLBACK_PATH;
-use super::config::{AuthSettings, ResolvedAuthSettings, signing_key_env_error};
+use super::config::ResolvedAuthSettings;
+#[cfg(test)]
+use super::config::{AuthSettings, signing_key_env_error};
 use super::error::AuthServerError;
 use super::provider_client::OidcProviderClient;
 use super::session::SessionTokenIssuer;
@@ -42,7 +45,7 @@ pub struct CoralAuthorizationServer {
     settings: Arc<ResolvedAuthSettings>,
     session_tokens: SessionTokenIssuer,
     state_store: Arc<InMemoryStateStore>,
-    database: Option<Arc<CoralDb>>,
+    database: Arc<CoralDb>,
     authorization_resources: BTreeSet<String>,
 }
 
@@ -64,16 +67,18 @@ impl CoralAuthorizationServer {
     /// environment variable, the session signing key cannot be resolved, the
     /// session-token key material is invalid, or a configured authorization
     /// resource is invalid.
-    pub fn from_settings(
+    #[cfg(test)]
+    fn from_settings(
         config_path: &Path,
         settings: AuthSettings,
+        database: Arc<CoralDb>,
     ) -> Result<Self, AuthServerError> {
         let authorization_resources = settings.allowed_audiences().to_vec();
         let (settings, session_tokens) = settings
             .resolve_runtime_dependencies(config_path, &|name| {
                 crate::bootstrap::env_var(name).map_err(|error| signing_key_env_error(&error))
             })?;
-        let mut server = Self::from_resolved_settings(settings, session_tokens)?;
+        let mut server = Self::from_resolved_settings(settings, session_tokens, database)?;
         for resource in authorization_resources {
             server = server
                 .with_authorization_resource(resource)
@@ -85,31 +90,30 @@ impl CoralAuthorizationServer {
     pub(crate) fn from_resolved_settings(
         settings: ResolvedAuthSettings,
         session_tokens: SessionTokenIssuer,
+        database: Arc<CoralDb>,
     ) -> Result<Self, AuthServerError> {
         if !settings.matches_session_token_issuer(&session_tokens) {
             return Err(AuthServerError::SessionIssuerMismatch);
         }
-        Ok(Self::from_validated_parts(settings, session_tokens))
+        Ok(Self::from_validated_parts(
+            settings,
+            session_tokens,
+            database,
+        ))
     }
 
     fn from_validated_parts(
         settings: ResolvedAuthSettings,
         session_tokens: SessionTokenIssuer,
+        database: Arc<CoralDb>,
     ) -> Self {
         Self {
             settings: Arc::new(settings),
             session_tokens,
             state_store: Arc::new(InMemoryStateStore::new()),
-            database: None,
+            database,
             authorization_resources: BTreeSet::new(),
         }
-    }
-
-    /// Attaches the app database used to provision authenticated users.
-    #[must_use]
-    pub(crate) fn with_database(mut self, database: Arc<CoralDb>) -> Self {
-        self.database = Some(database);
-        self
     }
 
     /// Registers a resource identifier that authorization requests may target.
@@ -281,7 +285,7 @@ impl AuthorizationServerHttpState {
         settings: Arc<ResolvedAuthSettings>,
         session_tokens: SessionTokenIssuer,
         state_store: &Arc<InMemoryStateStore>,
-        database: Option<Arc<CoralDb>>,
+        database: Arc<CoralDb>,
         authorization_resources: Arc<BTreeSet<String>>,
     ) -> Result<Self, AuthServerError> {
         let client_metadata_resolver = Arc::new(
@@ -291,10 +295,8 @@ impl AuthorizationServerHttpState {
             )
             .map_err(|error| AuthServerError::ClientMetadataResolver(error.to_string()))?,
         );
-        let code_store: Arc<dyn LoginCodeStore> = match database {
-            Some(database) => Arc::new(DbBackedLoginCodeStore::new(state_store.clone(), database)),
-            None => state_store.clone(),
-        };
+        let code_store: Arc<dyn LoginCodeStore> =
+            Arc::new(DbBackedLoginCodeStore::new(state_store.clone(), database));
         Ok(Self {
             settings,
             session_tokens,
@@ -354,6 +356,7 @@ trait LoginCodeStore: CodeStore {
 }
 
 #[async_trait::async_trait]
+#[cfg(test)]
 impl LoginCodeStore for InMemoryStateStore {
     async fn provision_login(
         &self,
@@ -476,6 +479,7 @@ fn json_response(value: &serde_json::Value) -> impl IntoResponse + use<> {
 mod tests {
     use std::fs;
     use std::net::SocketAddr;
+    use std::sync::Arc;
 
     use ring::rand::SystemRandom;
     use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair};
@@ -484,6 +488,7 @@ mod tests {
     use super::{AuthSettings, CoralAuthorizationServer, RunningCoralAuthorizationServer};
 
     use crate::auth::test_config::{AUTHORIZATION_SERVER, PROVIDER, SESSION};
+    use crate::state::db::{CoralDb, ResolvedDatabaseConfig};
 
     fn config(auth: &str) -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -500,13 +505,26 @@ mod tests {
         config(&format!("{auth_fields}{AUTHORIZATION_SERVER}\n{PROVIDER}"))
     }
 
-    fn server(dir: &tempfile::TempDir) -> CoralAuthorizationServer {
+    async fn database(dir: &tempfile::TempDir) -> Arc<CoralDb> {
+        let database = CoralDb::open(ResolvedDatabaseConfig::Sqlite {
+            path: dir.path().join("auth-server.sqlite"),
+        })
+        .await
+        .expect("open auth server database");
+        database
+            .migrate()
+            .await
+            .expect("migrate auth server database");
+        Arc::new(database)
+    }
+
+    async fn server(dir: &tempfile::TempDir) -> CoralAuthorizationServer {
         let config_path = dir.path().join("config.toml");
         let raw = fs::read_to_string(&config_path).expect("config snapshot");
         let settings = AuthSettings::from_toml(&raw)
             .expect("valid config")
             .expect("auth settings");
-        CoralAuthorizationServer::from_settings(&config_path, settings)
+        CoralAuthorizationServer::from_settings(&config_path, settings, database(dir).await)
             .expect("valid server dependencies")
     }
 
@@ -516,22 +534,23 @@ mod tests {
         response.json().await.expect("JSON")
     }
 
-    #[test]
-    fn uses_passed_settings_without_reopening_config() {
+    #[tokio::test]
+    async fn uses_passed_settings_without_reopening_config() {
         let dir = authorization_server("");
         let config_path = dir.path().join("config.toml");
         let raw = fs::read_to_string(&config_path).expect("config snapshot");
         let settings = AuthSettings::from_toml(&raw)
             .expect("valid config")
             .expect("auth settings");
+        let database = database(&dir).await;
         fs::remove_file(&config_path).expect("remove config after parsing");
 
-        CoralAuthorizationServer::from_settings(&config_path, settings)
+        CoralAuthorizationServer::from_settings(&config_path, settings, database)
             .expect("prepared from snapshot");
     }
 
-    #[test]
-    fn rejects_session_tokens_resolved_from_different_settings() {
+    #[tokio::test]
+    async fn rejects_session_tokens_resolved_from_different_settings() {
         let dir = authorization_server("");
         let config_path = dir.path().join("config.toml");
         let raw = fs::read_to_string(&config_path).expect("config snapshot");
@@ -548,8 +567,11 @@ mod tests {
         )
         .expect("session token issuer");
 
-        let Err(error) = CoralAuthorizationServer::from_resolved_settings(settings, session_tokens)
-        else {
+        let Err(error) = CoralAuthorizationServer::from_resolved_settings(
+            settings,
+            session_tokens,
+            database(&dir).await,
+        ) else {
             panic!("expected mismatched session settings");
         };
         assert!(
@@ -559,10 +581,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn validates_and_canonicalizes_authorization_resources() {
+    #[tokio::test]
+    async fn validates_and_canonicalizes_authorization_resources() {
         let dir = authorization_server("");
         let prepared = server(&dir)
+            .await
             .with_authorization_resource("https://mcp.example.test/")
             .expect("resource");
         assert_eq!(
@@ -577,6 +600,7 @@ mod tests {
             "https://mcp.example.test/#fragment",
         ] {
             let error = server(&dir)
+                .await
                 .with_authorization_resource(resource)
                 .err()
                 .expect("invalid resource");
@@ -598,7 +622,7 @@ mod tests {
     #[tokio::test]
     async fn serves_metadata_and_stops_cleanly() {
         let dir = authorization_server("");
-        let server = server(&dir).start().await.expect("start");
+        let server = server(&dir).await.start().await.expect("start");
         let endpoint = server.endpoint_uri().to_string();
         let client = reqwest::Client::new();
         let metadata_url = format!("{endpoint}/.well-known/oauth-authorization-server");
