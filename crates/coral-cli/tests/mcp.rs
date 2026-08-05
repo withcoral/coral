@@ -1421,7 +1421,7 @@ async fn assert_describe_tool(
     server: &MockServer,
     task_id: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let describe_before = server.describe_table_requests().len();
+    let describe_before = server.describe_catalog_surface_requests().len();
     let catalog_before = server.list_catalog_requests().len();
     let execute_sql_before = server.execute_sql_requests().len();
     let described = structured_tool_content(
@@ -1440,18 +1440,14 @@ async fn assert_describe_tool(
     assert_eq!(described["name"], "local_messages.messages");
     assert_eq!(described["column_count"], 3);
 
-    let describe_requests = server.describe_table_requests();
+    let describe_requests = server.describe_catalog_surface_requests();
     assert_eq!(describe_requests.len(), describe_before + 1);
     let describe_request = &describe_requests[describe_before];
     assert_eq!(describe_request.schema_name, "local_messages");
-    assert_eq!(describe_request.table_name, "messages");
-    let catalog_requests = server.list_catalog_requests();
-    assert_eq!(catalog_requests.len(), catalog_before + 1);
-    let function_request = &catalog_requests[catalog_before];
-    assert_eq!(function_request.schema_name, "local_messages");
-    assert_eq!(function_request.kind, 2);
+    assert_eq!(describe_request.surface_name, "messages");
+    assert_eq!(server.list_catalog_requests().len(), catalog_before);
 
-    let catalog_before_qualified = catalog_requests.len();
+    let catalog_before_qualified = server.list_catalog_requests().len();
     let qualified = structured_tool_content(
         client,
         CallToolRequestParams::new("describe").with_arguments(task_arguments(
@@ -1465,7 +1461,7 @@ async fn assert_describe_tool(
     )
     .await?;
     assert_eq!(qualified["kind"], "table");
-    let describe_requests = server.describe_table_requests();
+    let describe_requests = server.describe_catalog_surface_requests();
     assert_eq!(describe_requests.len(), describe_before + 2);
     assert_eq!(
         describe_requests[describe_before + 1].catalog_name,

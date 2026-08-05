@@ -8,12 +8,13 @@ use std::time::Duration;
 use coral_api::{
     CORAL_ERROR_DOMAIN, CORAL_TASK_ID_METADATA_KEY, grpc_response_status_code,
     v1::{
-        CatalogItem as ProtoCatalogItem, CatalogSearchResult as ProtoCatalogSearchResult, Column,
-        ColumnSearchResult as ProtoColumnSearchResult,
-        DescribeTableResponse as ProtoDescribeTableResponse, PaginationResponse, QueryTestFailure,
-        QueryTestResult, QueryTestSuccess, SearchLimits, Source, Table, TableFunction,
-        TableFunctionArgument, TableFunctionKind, TableFunctionResultColumn, TableSummary,
-        ValidateSourceResponse, Workspace, catalog_item, query_test_result,
+        AmbiguousCatalogSurface, CatalogItem as ProtoCatalogItem,
+        CatalogSearchResult as ProtoCatalogSearchResult, Column,
+        ColumnSearchResult as ProtoColumnSearchResult, DescribeCatalogSurfaceResponse,
+        MissingCatalogSurface, PaginationResponse, QueryTestFailure, QueryTestResult,
+        QueryTestSuccess, SearchLimits, Source, Table, TableFunction, TableFunctionArgument,
+        TableFunctionKind, TableFunctionResultColumn, TableSummary, ValidateSourceResponse,
+        Workspace, catalog_item, describe_catalog_surface_response, query_test_result,
     },
 };
 use coral_spec::{SearchLimitsSpec, SourceTableFunctionKind};
@@ -31,7 +32,7 @@ use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 use crate::bootstrap::{AppError, app_status, core_status, status_with_bounded_detail};
 use crate::catalog::discovery::{
     CatalogItem, CatalogMetadataField, CatalogSearchResult, ColumnMetadataField,
-    ColumnSearchResult, DescribeTableResult,
+    ColumnSearchResult, DescribeCatalogSurfaceResult,
 };
 use crate::identity::{PrincipalProvider, PrincipalProviderError, PrincipalProviderErrorKind};
 use crate::query::manager::QueryManagerError;
@@ -492,30 +493,47 @@ fn search_limits_to_proto(limits: &SearchLimitsSpec) -> SearchLimits {
     }
 }
 
-pub(crate) fn describe_table_response_to_proto(
+pub(crate) fn describe_catalog_surface_response_to_proto(
     workspace_name: &WorkspaceName,
-    result: DescribeTableResult,
-) -> ProtoDescribeTableResponse {
+    result: DescribeCatalogSurfaceResult,
+) -> DescribeCatalogSurfaceResponse {
+    use describe_catalog_surface_response::Result;
+
     match result {
-        DescribeTableResult::Found(table) => ProtoDescribeTableResponse {
-            table: Some(table_to_proto(workspace_name, table)),
-            suggestions: Vec::new(),
-            available_schemas: Vec::new(),
-            same_schema_tables: Vec::new(),
+        DescribeCatalogSurfaceResult::Table(table) => DescribeCatalogSurfaceResponse {
+            result: Some(Result::Table(table_to_proto(workspace_name, table))),
         },
-        DescribeTableResult::Missing(context) => ProtoDescribeTableResponse {
-            table: None,
-            suggestions: context
-                .suggestions
-                .into_iter()
-                .map(|table| table_summary_to_proto(workspace_name, table))
-                .collect(),
-            available_schemas: context.available_schemas,
-            same_schema_tables: context
-                .same_schema_tables
-                .into_iter()
-                .map(|table| table_summary_to_proto(workspace_name, table))
-                .collect(),
+        DescribeCatalogSurfaceResult::TableFunction(table_function) => {
+            DescribeCatalogSurfaceResponse {
+                result: Some(Result::TableFunction(table_function_to_proto(
+                    workspace_name,
+                    table_function,
+                ))),
+            }
+        }
+        DescribeCatalogSurfaceResult::Ambiguous {
+            table,
+            table_function,
+        } => DescribeCatalogSurfaceResponse {
+            result: Some(Result::Ambiguous(AmbiguousCatalogSurface {
+                table: Some(table_to_proto(workspace_name, table)),
+                table_function: Some(table_function_to_proto(workspace_name, table_function)),
+            })),
+        },
+        DescribeCatalogSurfaceResult::Missing(context) => DescribeCatalogSurfaceResponse {
+            result: Some(Result::Missing(MissingCatalogSurface {
+                suggestions: context
+                    .suggestions
+                    .into_iter()
+                    .map(|item| catalog_item_to_proto(workspace_name, item))
+                    .collect(),
+                available_schemas: context.available_schemas,
+                same_schema_items: context
+                    .same_schema_items
+                    .into_iter()
+                    .map(|item| catalog_item_to_proto(workspace_name, item))
+                    .collect(),
+            })),
         },
     }
 }

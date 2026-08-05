@@ -6,11 +6,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use coral_engine::{
-    CatalogInfo, CoralQuery, CoreError, DescribeTableInfo, PreparedQueryRuntime, QueryExecution,
-    QueryExecutionProvenance, QueryPlan, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,
-    ResolvedQueryResources, SourceDecorator, SourceDecoratorError, SourceFailurePolicy,
-    SourceInputResolver, SourceTables, SourceValidationReport, StatusCode, TableInfo,
-    UdfRuntimeDefinition,
+    CatalogInfo, CoralQuery, CoreError, DescribeCatalogSurfaceInfo, PreparedQueryRuntime,
+    QueryExecution, QueryExecutionProvenance, QueryPlan, QueryRuntimeConfig, QueryRuntimeContext,
+    QuerySource, ResolvedQueryResources, SourceDecorator, SourceDecoratorError,
+    SourceFailurePolicy, SourceInputResolver, SourceTables, SourceValidationReport, StatusCode,
+    TableInfo, UdfRuntimeDefinition,
 };
 use coral_spec::{ManifestInputKind, ManifestInputSpec};
 use opentelemetry::trace::Status as OtelStatus;
@@ -376,17 +376,17 @@ impl QueryManager {
         .await
     }
 
-    pub(crate) async fn describe_table(
+    pub(crate) async fn describe_catalog_surface(
         &self,
         workspace_name: &WorkspaceName,
         catalog_name: Option<&str>,
         schema_name: &str,
-        table_name: &str,
+        surface_name: &str,
         attribution: &QueryAttribution,
-    ) -> Result<DescribeTableInfo, QueryManagerError> {
-        let trace_sql = describe_table_trace_sql(catalog_name, schema_name, table_name);
+    ) -> Result<DescribeCatalogSurfaceInfo, QueryManagerError> {
+        let trace_sql = describe_catalog_surface_trace_sql(catalog_name, schema_name, surface_name);
         run_query_operation(
-            QueryOperation::DescribeTable,
+            QueryOperation::DescribeCatalogSurface,
             workspace_name,
             &trace_sql,
             attribution.task_id.as_ref(),
@@ -395,21 +395,28 @@ impl QueryManager {
                     .load_query_sources(workspace_name)
                     .await
                     .map_err(QueryManagerError::App)?;
+                let failure_recorder = CatalogFailureRecorder::default();
                 let runtime = self
-                    .prepared_runtime_with_udfs(
+                    .prepared_catalog_runtime_with_udfs(
                         workspace_name,
                         &source_load.loaded,
                         &config,
-                        CredentialResolutionMode::Refreshing,
-                        SourceObservationMode::Disabled,
+                        failure_recorder,
                     )
                     .await?;
                 runtime
-                    .describe_table(catalog_name, schema_name, table_name)
+                    .describe_catalog_surface(catalog_name, schema_name, surface_name)
                     .await
                     .map_err(QueryManagerError::Core)
             },
-            |_| None,
+            |result| {
+                Some(match result {
+                    DescribeCatalogSurfaceInfo::Ambiguous { .. } => 2,
+                    DescribeCatalogSurfaceInfo::Table(_)
+                    | DescribeCatalogSurfaceInfo::TableFunction(_) => 1,
+                    DescribeCatalogSurfaceInfo::Missing(_) => 0,
+                })
+            },
             |_, _| {},
         )
         .await
@@ -1066,7 +1073,7 @@ enum QueryOperation {
     ExplainSql,
     ListTables,
     ListCatalog,
-    DescribeTable,
+    DescribeCatalogSurface,
 }
 
 #[derive(Clone, Copy)]
@@ -1082,7 +1089,7 @@ impl QueryOperation {
             Self::ExplainSql => "explain_sql",
             Self::ListTables => "list_tables",
             Self::ListCatalog => "list_catalog",
-            Self::DescribeTable => "describe_table",
+            Self::DescribeCatalogSurface => "describe_catalog_surface",
         }
     }
 }
@@ -1115,14 +1122,14 @@ fn list_catalog_trace_sql(catalog_filter: Option<&str>, schema_filter: Option<&s
     }
 }
 
-fn describe_table_trace_sql(
+fn describe_catalog_surface_trace_sql(
     catalog_name: Option<&str>,
     schema_name: &str,
-    table_name: &str,
+    surface_name: &str,
 ) -> String {
     catalog_name.map_or_else(
-        || format!("DESCRIBE TABLE {schema_name}.{table_name}"),
-        |catalog| format!("DESCRIBE TABLE {catalog}.{schema_name}.{table_name}"),
+        || format!("DESCRIBE CATALOG SURFACE {schema_name}.{surface_name}"),
+        |catalog| format!("DESCRIBE CATALOG SURFACE {catalog}.{schema_name}.{surface_name}"),
     )
 }
 
@@ -1733,8 +1740,8 @@ mod tests {
     ) {
         use coral_api::v1::catalog_service_server::CatalogService as CatalogServiceApi;
         use coral_api::v1::{
-            DescribeTableRequest, ListCatalogRequest, ListColumnsRequest, PaginationRequest,
-            SearchCatalogRequest,
+            DescribeCatalogSurfaceRequest, ListCatalogRequest, ListColumnsRequest,
+            PaginationRequest, SearchCatalogRequest,
         };
 
         let _list_catalog_result = service
@@ -1769,14 +1776,14 @@ mod tests {
                 },
             ))
             .await;
-        let _describe_table_result = service
-            .describe_table(tagged_catalog_request(
+        let _describe_surface_result = service
+            .describe_catalog_surface(tagged_catalog_request(
                 request_context,
-                DescribeTableRequest {
+                DescribeCatalogSurfaceRequest {
                     workspace: Some(default_workspace_proto()),
                     catalog_name: String::new(),
                     schema_name: "coral".to_string(),
-                    table_name: "tables".to_string(),
+                    surface_name: "tables".to_string(),
                 },
             ))
             .await;
@@ -1846,7 +1853,7 @@ mod tests {
         assert!(
             operations
                 .iter()
-                .any(|operation| operation == "describe_table")
+                .any(|operation| operation == "describe_catalog_surface")
         );
         assert!(
             operations

@@ -3,16 +3,16 @@
 use coral_api::v1::catalog_service_server::CatalogService as CatalogServiceApi;
 use coral_api::v1::{
     CatalogCounts as ProtoCatalogCounts, CatalogItemKind as ProtoCatalogItemKind,
-    DescribeTableRequest, DescribeTableResponse, ListCatalogRequest, ListCatalogResponse,
-    ListColumnsRequest, ListColumnsResponse, PaginationRequest, SearchCatalogRequest,
-    SearchCatalogResponse,
+    DescribeCatalogSurfaceRequest, DescribeCatalogSurfaceResponse, ListCatalogRequest,
+    ListCatalogResponse, ListColumnsRequest, ListColumnsResponse, PaginationRequest,
+    SearchCatalogRequest, SearchCatalogResponse,
 };
 use tonic::{Request, Response, Status};
 
 use crate::bootstrap::app_status;
 use crate::catalog::discovery::{
-    CatalogDiscovery, CatalogItemKind, CatalogTableRef, ListColumnsQuery, Pagination,
-    SearchCatalogQuery, column_pagination, search_pagination,
+    CatalogDiscovery, CatalogItemKind, CatalogSurfaceRef, CatalogTableRef, ListColumnsQuery,
+    Pagination, SearchCatalogQuery, column_pagination, search_pagination,
 };
 use crate::query::QueryAttribution;
 use crate::query::manager::QueryManager;
@@ -21,7 +21,7 @@ use crate::task::manager::TaskManager;
 use crate::task::service::task_manager_status;
 use crate::transport::{
     catalog_item_to_proto, catalog_search_result_to_proto, column_search_result_to_proto,
-    describe_table_response_to_proto, grpc_span, instrument_grpc, pagination_to_proto,
+    describe_catalog_surface_response_to_proto, grpc_span, instrument_grpc, pagination_to_proto,
     query_status, request_context, workspace_name_from_proto,
 };
 use crate::workspaces::WorkspaceName;
@@ -145,10 +145,10 @@ impl CatalogServiceApi for CatalogService {
         .await
     }
 
-    async fn describe_table(
+    async fn describe_catalog_surface(
         &self,
-        request: Request<DescribeTableRequest>,
-    ) -> Result<Response<DescribeTableResponse>, Status> {
+        request: Request<DescribeCatalogSurfaceRequest>,
+    ) -> Result<Response<DescribeCatalogSurfaceResponse>, Status> {
         let span = grpc_span(&request);
         let catalog = self.catalog.clone();
         let tasks = self.tasks.clone();
@@ -159,16 +159,16 @@ impl CatalogServiceApi for CatalogService {
             let attribution = query_attribution(&tasks, &workspace_name, &request_context).await?;
             let catalog_name = optional_trimmed(&request.catalog_name);
             let schema_name = required_trimmed(&request.schema_name, "schema_name")?;
-            let table_name = required_trimmed(&request.table_name, "table_name")?;
+            let surface_name = required_trimmed(&request.surface_name, "surface_name")?;
             let result = catalog
-                .describe_table(
+                .describe_catalog_surface(
                     &workspace_name,
-                    CatalogTableRef::new(catalog_name, &schema_name, &table_name),
+                    CatalogSurfaceRef::new(catalog_name, &schema_name, &surface_name),
                     &attribution,
                 )
                 .await
                 .map_err(query_status)?;
-            Ok(Response::new(describe_table_response_to_proto(
+            Ok(Response::new(describe_catalog_surface_response_to_proto(
                 &workspace_name,
                 result,
             )))

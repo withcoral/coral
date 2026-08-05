@@ -238,28 +238,49 @@ message SearchCatalogResponse {
   PaginationResponse pagination = 2;
 }
 
-// Fetches one query-visible table.
-message DescribeTableRequest {
-  // Workspace whose current query-visible tables should be inspected.
+// Identifies one query-visible table or table function.
+message DescribeCatalogSurfaceRequest {
+  // Workspace whose current query-visible catalog should be inspected.
   Workspace workspace = 1;
   // Exact SQL schema name.
   string schema_name = 2;
-  // Exact table name.
-  string table_name = 3;
-  // SQL catalog containing the schema. Empty for two-part tables.
+  // Exact table or table-function name.
+  string surface_name = 3;
+  // Optional SQL catalog. When set, only tables can match.
   string catalog_name = 4;
 }
 
-// Returns one table, or app-owned missing-table discovery context.
-message DescribeTableResponse {
-  // The exact table when found.
+// Exact table and table-function matches for an ambiguous two-part name.
+message AmbiguousCatalogSurface {
+  // Exact table match.
   Table table = 1;
-  // Suggested nearby tables when the exact table is missing.
-  repeated TableSummary suggestions = 2;
-  // Query-visible raw schema names available in this workspace.
-  repeated string available_schemas = 3;
-  // Tables in the requested schema, capped for user-facing missing-table help.
-  repeated TableSummary same_schema_tables = 4;
+  // Exact table-function match.
+  TableFunction table_function = 2;
+}
+
+// App-owned recovery context for a missing catalog surface.
+message MissingCatalogSurface {
+  // Suggested nearby tables and table functions, capped for user-facing help.
+  repeated CatalogItem suggestions = 1;
+  // Query-visible schema names available for the requested catalog scope.
+  repeated string available_schemas = 2;
+  // Tables and table functions in the requested schema, capped for user-facing help.
+  repeated CatalogItem same_schema_items = 3;
+}
+
+// Returns the resolved catalog surface or structured recovery context.
+message DescribeCatalogSurfaceResponse {
+  // Exact resolution state or missing-surface recovery context.
+  oneof result {
+    // Exact table match.
+    Table table = 1;
+    // Exact table-function match.
+    TableFunction table_function = 2;
+    // Both surface kinds matched the same two-part name.
+    AmbiguousCatalogSurface ambiguous = 3;
+    // No surface matched the requested name.
+    MissingCatalogSurface missing = 4;
+  }
 }
 
 // Lists and filters columns for one query-visible table.
@@ -305,8 +326,8 @@ service CatalogService {
   rpc ListCatalog(ListCatalogRequest) returns (ListCatalogResponse);
   // Searches queryable catalog metadata.
   rpc SearchCatalog(SearchCatalogRequest) returns (SearchCatalogResponse);
-  // Fetches one query-visible table.
-  rpc DescribeTable(DescribeTableRequest) returns (DescribeTableResponse);
+  // Resolves one query-visible table or table function.
+  rpc DescribeCatalogSurface(DescribeCatalogSurfaceRequest) returns (DescribeCatalogSurfaceResponse);
   // Lists and filters columns for one query-visible table.
   rpc ListColumns(ListColumnsRequest) returns (ListColumnsResponse);
 }

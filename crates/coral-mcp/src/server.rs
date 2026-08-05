@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use coral_api::v1::{
-    AddFunctionRequest, CatalogItemKind as ProtoCatalogItemKind, DescribeTableRequest,
-    DescribeTableResponse, EndTaskRequest, ExecuteSqlRequest, FunctionWriteSurface,
+    AddFunctionRequest, CatalogItemKind as ProtoCatalogItemKind, DescribeCatalogSurfaceRequest,
+    DescribeCatalogSurfaceResponse, EndTaskRequest, ExecuteSqlRequest, FunctionWriteSurface,
     ListCatalogRequest, ListCatalogResponse, ListColumnsRequest, ListSourcesRequest,
     PaginationRequest, QueryGuideReadContext, SearchRequest, Source, StartTaskRequest,
     SubmitFeedbackRequest, TableSummary as ProtoTableSummary, TaskStatus as ProtoTaskStatus,
@@ -430,50 +430,22 @@ impl CoralMcpServer {
         .map(guide_catalog_from_response)
     }
 
-    async fn load_table_description(
+    async fn load_catalog_surface_description(
         &self,
         catalog_name: Option<&str>,
         schema_name: &str,
-        table_name: &str,
-    ) -> Result<DescribeTableResponse, tonic::Status> {
+        surface_name: &str,
+    ) -> Result<DescribeCatalogSurfaceResponse, tonic::Status> {
         let mut catalog_client = self.catalog.clone();
         Ok(catalog_client
-            .describe_table(Request::new(DescribeTableRequest {
+            .describe_catalog_surface(Request::new(DescribeCatalogSurfaceRequest {
                 workspace: Some(self.workspace()),
                 catalog_name: catalog_name.unwrap_or_default().to_string(),
                 schema_name: schema_name.to_string(),
-                table_name: table_name.to_string(),
+                surface_name: surface_name.to_string(),
             }))
             .await?
             .into_inner())
-    }
-
-    async fn load_table_function_description(
-        &self,
-        schema_name: &str,
-        function_name: &str,
-    ) -> Result<Option<coral_api::v1::TableFunction>, tonic::Status> {
-        self.load_catalog(
-            None,
-            Some(schema_name),
-            CATALOG_KIND_TABLE_FUNCTION,
-            PaginationRequest {
-                limit: LIST_CATALOG_UNBOUNDED_LIMIT,
-                offset: 0,
-            },
-        )
-        .await
-        .map(|response| {
-            response.items.into_iter().find_map(|item| match item.item {
-                Some(catalog_item::Item::TableFunction(function))
-                    if function.name == function_name =>
-                {
-                    Some(function)
-                }
-                Some(catalog_item::Item::TableFunction(_) | catalog_item::Item::Table(_))
-                | None => None,
-            })
-        })
     }
 
     async fn load_catalog_counts(&self) -> Result<(usize, usize), tonic::Status> {
@@ -769,23 +741,14 @@ impl CoralMcpServer {
         request_arguments: Option<&Map<String, Value>>,
     ) -> Result<ToolCallOutcome, ErrorData> {
         let arguments = describe_arguments(request_arguments)?;
-        let result = if arguments.catalog.is_some() {
-            self.load_table_description(
+        let result = self
+            .load_catalog_surface_description(
                 arguments.catalog.as_deref(),
                 &arguments.schema,
                 &arguments.surface,
             )
             .await
-            .map(|table| describe_value(&arguments, &table, None))
-        } else {
-            tokio::try_join!(
-                self.load_table_description(None, &arguments.schema, &arguments.surface),
-                self.load_table_function_description(&arguments.schema, &arguments.surface),
-            )
-            .map(|(table, table_function)| {
-                describe_value(&arguments, &table, table_function.as_ref())
-            })
-        };
+            .and_then(|response| describe_value(&arguments, &response));
         Ok(ToolCallOutcome::from_value_result(
             "Catalog item description",
             result,
@@ -910,21 +873,25 @@ impl CoralMcpServer {
             }
             Err(status) if status.code() == tonic::Code::NotFound => {
                 match self
-                    .load_table_description(
+                    .load_catalog_surface_description(
                         arguments.catalog.as_deref(),
                         &arguments.schema,
                         &arguments.table,
                     )
                     .await
                 {
-                    Ok(response) => {
-                        Ok(ToolCallOutcome::success(list_columns_table_fallback_value(
-                            arguments.catalog.as_deref(),
-                            &arguments.schema,
-                            &arguments.table,
-                            &response,
-                        )))
-                    }
+                    Ok(response) => match list_columns_table_fallback_value(
+                        arguments.catalog.as_deref(),
+                        &arguments.schema,
+                        &arguments.table,
+                        &response,
+                    ) {
+                        Ok(value) => Ok(ToolCallOutcome::success(value)),
+                        Err(status) => Ok(ToolCallOutcome::ToolError {
+                            operation: "Column listing",
+                            status,
+                        }),
+                    },
                     Err(status) => Ok(ToolCallOutcome::ToolError {
                         operation: "Column listing",
                         status,
