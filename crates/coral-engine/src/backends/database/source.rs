@@ -21,7 +21,7 @@ use datafusion_table_providers::util::secrets::to_secret_map;
 
 use super::catalog::{DatabaseCatalog, DatabaseRelation, build_database_catalog, provider_error};
 use super::columns::{MYSQL_COLUMNS_SQL, POSTGRES_COLUMNS_SQL, SQLITE_COLUMNS_SQL};
-use super::registry::{DatabasePool, DatabasePoolRegistry};
+use super::registry::{DatabasePool, DatabasePoolRegistry, DatabaseRegistrationAttempt};
 use crate::backends::shared::template::{RenderContext, render_template};
 use crate::backends::{
     BackendCatalogRegistration, BackendCompileRequest, BackendRegistration,
@@ -65,7 +65,7 @@ trait DatabaseCatalogStrategy: Send + Sync {
         &self,
         catalog_name: &str,
         context: &RenderContext<'_>,
-        pool_registry: &DatabasePoolRegistry,
+        registration: &DatabaseRegistrationAttempt,
     ) -> DataFusionResult<DatabaseCatalog>;
 }
 
@@ -84,15 +84,32 @@ async fn register_database_catalog(
     pool_registry: &DatabasePoolRegistry,
 ) -> DataFusionResult<DatabaseCatalog> {
     let Some(timeout) = strategy.registration_timeout() else {
-        return strategy
-            .build_catalog(catalog_name, context, pool_registry)
-            .await;
+        let registration = pool_registry.begin_registration(catalog_name).await;
+        return match strategy
+            .build_catalog(catalog_name, context, &registration)
+            .await
+        {
+            Ok(catalog) => {
+                registration.succeeded();
+                Ok(catalog)
+            }
+            Err(error) => Err(error),
+        };
     };
-    let registration = || strategy.build_catalog(catalog_name, context, pool_registry);
     for _attempt in 0..MAX_REMOTE_DATABASE_REGISTRATION_ATTEMPTS {
-        match tokio::time::timeout(timeout, registration()).await {
-            Ok(result) => return result,
-            Err(_elapsed) => pool_registry.remove_catalog(catalog_name),
+        let registration = pool_registry.begin_registration(catalog_name).await;
+        match tokio::time::timeout(
+            timeout,
+            strategy.build_catalog(catalog_name, context, &registration),
+        )
+        .await
+        {
+            Ok(Ok(catalog)) => {
+                registration.succeeded();
+                return Ok(catalog);
+            }
+            Ok(Err(error)) => return Err(error),
+            Err(_elapsed) => registration.evict_after_timeout().await,
         }
     }
     Err(DataFusionError::Execution(format!(
@@ -162,7 +179,7 @@ impl DatabaseCatalogStrategy for PostgresConnectionSpec {
         &self,
         catalog_name: &str,
         context: &RenderContext<'_>,
-        pool_registry: &DatabasePoolRegistry,
+        registration: &DatabaseRegistrationAttempt,
     ) -> DataFusionResult<DatabaseCatalog> {
         let mut params = render_connection_params(
             [
@@ -177,8 +194,8 @@ impl DatabaseCatalogStrategy for PostgresConnectionSpec {
         if let Some(sslmode) = self.sslmode.as_ref() {
             params.insert("sslmode".to_string(), render_template(sslmode, context)?);
         }
-        let pool = pool_registry
-            .get_or_create(catalog_name, async move {
+        let pool = registration
+            .get_or_create(async move {
                 Ok(DatabasePool::Postgres(Arc::new(
                     PostgresConnectionPool::new(to_secret_map(params))
                         .await
@@ -214,7 +231,7 @@ impl DatabaseCatalogStrategy for MySqlConnectionSpec {
         &self,
         catalog_name: &str,
         context: &RenderContext<'_>,
-        pool_registry: &DatabasePoolRegistry,
+        registration: &DatabaseRegistrationAttempt,
     ) -> DataFusionResult<DatabaseCatalog> {
         let mut params = render_connection_params(
             [
@@ -236,8 +253,8 @@ impl DatabaseCatalogStrategy for MySqlConnectionSpec {
             }
         };
         params.insert("tcp_port".to_string(), tcp_port.to_string());
-        let pool = pool_registry
-            .get_or_create(catalog_name, async move {
+        let pool = registration
+            .get_or_create(async move {
                 Ok(DatabasePool::MySql(Arc::new(
                     MySQLConnectionPool::new(to_secret_map(params))
                         .await
@@ -287,7 +304,7 @@ impl DatabaseCatalogStrategy for SqliteConnectionSpec {
         &self,
         catalog_name: &str,
         context: &RenderContext<'_>,
-        _pool_registry: &DatabasePoolRegistry,
+        _registration: &DatabaseRegistrationAttempt,
     ) -> DataFusionResult<DatabaseCatalog> {
         let path = render_template(&self.path, context)?;
         let pool = SqliteConnectionPoolFactory::new(&path, Mode::File, SQLITE_BUSY_TIMEOUT)
@@ -436,23 +453,104 @@ fn database_relation_inventory(relations: &[DatabaseRelation]) -> Vec<Registered
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::future::pending;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
 
+    use async_trait::async_trait;
     use coral_spec::{
         DatabaseConnectionSpec, DatabaseSourceManifest, MySqlConnectionSpec, ParsedTemplate,
         SourceManifestCommon, SqliteConnectionSpec,
     };
+    use datafusion::catalog::MemoryCatalogProvider;
+    use tokio::sync::Notify;
 
     use super::{
-        DatabaseCatalogStrategy, MYSQL_INVENTORY_RECOGNIZED_DATA_TYPES,
-        MYSQL_INVENTORY_SESSION_SQL, mysql_relations_sql,
+        DatabaseCatalog, DatabaseCatalogStrategy, DatabasePool,
+        MYSQL_INVENTORY_RECOGNIZED_DATA_TYPES, MYSQL_INVENTORY_SESSION_SQL, mysql_relations_sql,
+        register_database_catalog,
     };
     use crate::backends::shared::template::RenderContext;
+    use crate::backends::{ColumnInventoryFilter, DatabaseColumnFetcher, DatabaseColumnRow};
     use crate::{
         CoralQuery, QueryRuntimeConfig, QuerySource, RuntimeSourceComponent, RuntimeSourcePackage,
         SourceDecorator, SourceDecoratorError, SourceFailurePolicy, SourceTables,
     };
 
     struct AbortOnSourceFailureDecorator;
+
+    #[derive(Debug)]
+    struct EmptyColumnFetcher;
+
+    #[async_trait]
+    impl DatabaseColumnFetcher for EmptyColumnFetcher {
+        async fn fetch_columns(
+            &self,
+            _filter: &ColumnInventoryFilter,
+        ) -> datafusion::error::Result<Vec<DatabaseColumnRow>> {
+            Ok(Vec::new())
+        }
+    }
+
+    struct TimeoutRaceStrategy {
+        calls: AtomicUsize,
+        creations: AtomicUsize,
+        progressed: Notify,
+    }
+
+    impl TimeoutRaceStrategy {
+        fn new() -> Self {
+            Self {
+                calls: AtomicUsize::new(0),
+                creations: AtomicUsize::new(0),
+                progressed: Notify::new(),
+            }
+        }
+
+        async fn wait_for_calls(&self, expected: usize) {
+            while self.calls.load(Ordering::SeqCst) < expected {
+                self.progressed.notified().await;
+            }
+        }
+    }
+
+    #[async_trait]
+    impl DatabaseCatalogStrategy for TimeoutRaceStrategy {
+        fn provider_name(&self) -> &'static str {
+            "test"
+        }
+
+        fn registration_timeout(&self) -> Option<Duration> {
+            Some(Duration::from_millis(25))
+        }
+
+        async fn build_catalog(
+            &self,
+            _catalog_name: &str,
+            _context: &RenderContext<'_>,
+            registration: &super::DatabaseRegistrationAttempt,
+        ) -> datafusion::error::Result<DatabaseCatalog> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+            registration
+                .get_or_create(async {
+                    self.creations.fetch_add(1, Ordering::SeqCst);
+                    Ok(DatabasePool::Test)
+                })
+                .await?;
+            self.progressed.notify_waiters();
+
+            if call == 1 || call == 3 {
+                return pending().await;
+            }
+
+            Ok(DatabaseCatalog {
+                provider: Arc::new(MemoryCatalogProvider::new()),
+                relations: Vec::new(),
+                column_fetcher: Arc::new(EmptyColumnFetcher),
+            })
+        }
+    }
 
     impl SourceDecorator for AbortOnSourceFailureDecorator {
         fn name(&self) -> &'static str {
@@ -488,6 +586,46 @@ mod tests {
             user: template("root"),
             password: template("password"),
         }
+    }
+
+    #[tokio::test]
+    async fn timed_out_registration_does_not_evict_pool_used_by_successful_peer() {
+        let strategy = Arc::new(TimeoutRaceStrategy::new());
+        let registry = Arc::new(super::DatabasePoolRegistry::new());
+
+        let first = tokio::spawn({
+            let strategy = Arc::clone(&strategy);
+            let registry = Arc::clone(&registry);
+            async move {
+                let inputs = BTreeMap::new();
+                let context = RenderContext::source_scoped(&inputs);
+                register_database_catalog(strategy.as_ref(), "orders", &context, &registry).await
+            }
+        });
+        strategy.wait_for_calls(1).await;
+
+        let second = tokio::spawn({
+            let strategy = Arc::clone(&strategy);
+            let registry = Arc::clone(&registry);
+            async move {
+                let inputs = BTreeMap::new();
+                let context = RenderContext::source_scoped(&inputs);
+                register_database_catalog(strategy.as_ref(), "orders", &context, &registry).await
+            }
+        });
+        second
+            .await
+            .expect("successful registration task")
+            .expect("concurrent registration should succeed");
+
+        strategy.wait_for_calls(3).await;
+        assert_eq!(strategy.creations.load(Ordering::SeqCst), 1);
+
+        first.abort();
+        let Err(error) = first.await else {
+            panic!("aborted registration should not complete");
+        };
+        assert!(error.is_cancelled());
     }
 
     #[test]
@@ -564,8 +702,9 @@ mod tests {
             let connection = mysql_connection(port);
             let context = RenderContext::source_scoped(&resolved_inputs);
             let registry = super::DatabasePoolRegistry::new();
+            let registration = registry.begin_registration("coral_db").await;
             let Err(error) = connection
-                .build_catalog("coral_db", &context, &registry)
+                .build_catalog("coral_db", &context, &registration)
                 .await
             else {
                 panic!("invalid MySQL port should fail before provider fallback");
