@@ -1,11 +1,3 @@
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "workspace membership APIs are wired to production consumers in later milestones"
-    )
-)]
-
 use super::WorkspaceAction;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

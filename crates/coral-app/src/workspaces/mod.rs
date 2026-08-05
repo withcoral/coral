@@ -7,10 +7,6 @@ pub(crate) mod paths;
 pub(crate) mod pool_registry;
 pub(crate) mod service;
 
-#[expect(
-    unused_imports,
-    reason = "wired to service handlers in later milestones"
-)]
 pub(crate) use authorization::{LocalPrincipalPolicy, WorkspaceAction, WorkspaceAuthorizer};
 pub(crate) use manager::WorkspaceManager;
 pub(crate) use member::MemberRole;

@@ -1,11 +1,3 @@
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "workspace membership APIs are wired to production consumers in later milestones"
-    )
-)]
-
 use sea_query::{Expr, ExprTrait, Func, Order, Query};
 
 use crate::state::db::schema::WorkspaceMembers;
