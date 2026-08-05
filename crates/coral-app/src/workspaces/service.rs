@@ -252,9 +252,21 @@ fn workspace_member_to_proto(member: crate::state::db::WorkspaceMemberView) -> W
 
 #[cfg(test)]
 mod tests {
-    use super::{member_role_from_proto, member_role_to_proto};
-    use crate::workspaces::MemberRole;
-    use coral_api::v1::WorkspaceRole;
+    use std::sync::Arc;
+
+    use coral_api::v1::{AddWorkspaceMemberRequest, Workspace, WorkspaceMember, WorkspaceRole};
+    use tempfile::TempDir;
+    use tonic::{Code, Request};
+
+    use super::{
+        WorkspaceService, WorkspaceServiceApi, member_role_from_proto, member_role_to_proto,
+    };
+    use crate::credentials::{CredentialManager, CredentialStore};
+    use crate::identity::{Principal, PrincipalKind};
+    use crate::request_context::RequestContext;
+    use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig, UpsertLoginOutcome};
+    use crate::state::{AppStateLayout, ConfigStore};
+    use crate::workspaces::{MemberRole, WorkspaceAuthorizer, WorkspaceManager, WorkspaceName};
 
     #[test]
     fn workspace_member_roles_are_strict_at_the_transport_edge() {
@@ -277,5 +289,173 @@ mod tests {
             member_role_to_proto(MemberRole::Member),
             WorkspaceRole::Member
         );
+    }
+
+    #[tokio::test]
+    async fn add_workspace_member_enforces_authorization_and_frozen_add_semantics() {
+        let fixture = service_fixture().await;
+
+        let added = WorkspaceServiceApi::add_workspace_member(
+            &fixture.service,
+            add_request(
+                &fixture,
+                fixture.owner.clone(),
+                &fixture.member_id,
+                WorkspaceRole::Member as i32,
+            ),
+        )
+        .await
+        .expect("owner adds member")
+        .into_inner()
+        .member
+        .expect("added member");
+        assert_eq!(added.user_id, fixture.member_id);
+        assert_eq!(added.role, WorkspaceRole::Member as i32);
+        assert_eq!(added.display_name, "Member");
+
+        WorkspaceServiceApi::add_workspace_member(
+            &fixture.service,
+            add_request(
+                &fixture,
+                fixture.owner.clone(),
+                &fixture.member_id,
+                WorkspaceRole::Member as i32,
+            ),
+        )
+        .await
+        .expect("identical add remains idempotent");
+        let conflict = WorkspaceServiceApi::add_workspace_member(
+            &fixture.service,
+            add_request(
+                &fixture,
+                fixture.owner.clone(),
+                &fixture.member_id,
+                WorkspaceRole::Owner as i32,
+            ),
+        )
+        .await
+        .expect_err("different-role add conflicts");
+        assert_eq!(conflict.code(), Code::AlreadyExists);
+
+        let member = Principal::parse(&fixture.member_id, PrincipalKind::User).expect("member");
+        let denied = WorkspaceServiceApi::add_workspace_member(
+            &fixture.service,
+            add_request(
+                &fixture,
+                member,
+                &fixture.unknown_user_id,
+                WorkspaceRole::Unspecified as i32,
+            ),
+        )
+        .await
+        .expect_err("member cannot manage membership");
+        assert_eq!(denied.code(), Code::PermissionDenied);
+
+        let invalid_role = WorkspaceServiceApi::add_workspace_member(
+            &fixture.service,
+            add_request(
+                &fixture,
+                fixture.owner.clone(),
+                &fixture.member_id,
+                WorkspaceRole::Unspecified as i32,
+            ),
+        )
+        .await
+        .expect_err("unspecified role is invalid");
+        assert_eq!(invalid_role.code(), Code::InvalidArgument);
+
+        let unknown_user = WorkspaceServiceApi::add_workspace_member(
+            &fixture.service,
+            add_request(
+                &fixture,
+                fixture.owner.clone(),
+                &fixture.unknown_user_id,
+                WorkspaceRole::Member as i32,
+            ),
+        )
+        .await
+        .expect_err("unknown user is not addable");
+        assert_eq!(unknown_user.code(), Code::NotFound);
+    }
+
+    struct ServiceFixture {
+        _temp: TempDir,
+        service: WorkspaceService,
+        workspace: Workspace,
+        owner: Principal,
+        member_id: String,
+        unknown_user_id: String,
+    }
+
+    async fn service_fixture() -> ServiceFixture {
+        let temp = TempDir::new().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        let DatabaseConfig::Sqlite { path } = DatabaseConfig::load(&layout).expect("db config")
+        else {
+            panic!("test database must be SQLite")
+        };
+        let db = Arc::new(
+            CoralDb::open(ResolvedDatabaseConfig::Sqlite { path })
+                .await
+                .expect("open database"),
+        );
+        db.migrate().await.expect("migrate database");
+        let owner_id = provision_user(&db, "owner", Some("Owner")).await;
+        let member_id = provision_user(&db, "member", Some("Member")).await;
+        let owner = Principal::parse(&owner_id, PrincipalKind::User).expect("owner");
+        let workspace_name = WorkspaceName::parse("team").expect("workspace");
+        let manager = WorkspaceManager::new_for_tests(
+            ConfigStore::new(layout.clone()),
+            CredentialManager::new(CredentialStore::new(layout.clone())),
+            layout,
+            None,
+            Arc::clone(&db),
+        );
+        manager
+            .create_workspace_for_user(&workspace_name, &owner)
+            .await
+            .expect("create workspace");
+
+        ServiceFixture {
+            _temp: temp,
+            service: WorkspaceService::new(manager).with_authorizer(WorkspaceAuthorizer::new(db)),
+            workspace: Workspace {
+                name: workspace_name.to_string(),
+            },
+            owner,
+            member_id,
+            unknown_user_id: uuid::Uuid::new_v4().to_string(),
+        }
+    }
+
+    async fn provision_user(db: &CoralDb, subject: &str, display_name: Option<&str>) -> String {
+        let UpsertLoginOutcome::Upserted(user) = db
+            .provision_login("issuer", subject, display_name, 1)
+            .await
+            .expect("provision user")
+        else {
+            panic!("new subject should create a user")
+        };
+        user.user_id
+    }
+
+    fn add_request(
+        fixture: &ServiceFixture,
+        principal: Principal,
+        user_id: &str,
+        role: i32,
+    ) -> Request<AddWorkspaceMemberRequest> {
+        let mut request = Request::new(AddWorkspaceMemberRequest {
+            workspace: Some(fixture.workspace.clone()),
+            member: Some(WorkspaceMember {
+                user_id: user_id.to_string(),
+                role,
+                display_name: String::new(),
+            }),
+        });
+        request
+            .extensions_mut()
+            .insert(RequestContext::new(principal));
+        request
     }
 }
