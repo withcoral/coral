@@ -46,7 +46,7 @@ describe('route map', () => {
       workspaceFunctions: routePath('workspaceFunctions', { workspaceId: 'analytics' }),
       workspaceSchema: routePath('workspaceSchema', { workspaceId: 'analytics' }),
       workspaceSchemaCatalogTable: routePath('workspaceSchemaCatalogTable', {
-        catalogName: 'pickl?',
+        catalogName: 'commerce?',
         schemaName: 'public schema',
         tableName: 'orders/2026',
         workspaceId: 'team alpha',
@@ -85,7 +85,7 @@ describe('route map', () => {
       workspaceFunctions: '/workspaces/analytics/functions',
       workspaceSchema: '/workspaces/analytics/schema',
       workspaceSchemaCatalogTable:
-        '/workspaces/team%20alpha/schema/catalogs/pickl%3F/public%20schema/orders%2F2026',
+        '/workspaces/team%20alpha/schema/catalogs/commerce%3F/public%20schema/orders%2F2026',
       workspaceSchemaTable: '/workspaces/analytics/schema/github/issues',
       workspaceSchemaTableFunction: '/workspaces/analytics/schema/github/functions/search_issues',
       workspaceSource: '/workspaces/analytics/sources/github',

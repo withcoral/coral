@@ -54,9 +54,9 @@ describe('fetchSchemaFromCoral', () => {
     await expect(
       fetchSchemaFromCoral({ listCatalog } as unknown as CatalogClient, workspace),
     ).resolves.toEqual({
-      namespaces: [
+      catalogs: [],
+      schemas: [
         {
-          kind: 'schema',
           items: [
             {
               arguments: [
@@ -98,14 +98,14 @@ describe('fetchSchemaFromCoral', () => {
     })
   })
 
-  it('preserves database catalogs as catalog and schema namespaces', async () => {
+  it('groups database tables into catalogs and provider schemas', async () => {
     const listCatalog = vi.fn().mockResolvedValue({
       items: [
         {
           item: {
             case: 'table',
             value: {
-              catalogName: 'pickl_v4',
+              catalogName: 'commerce',
               description: '',
               name: 'products',
               requiredFilters: [],
@@ -117,7 +117,7 @@ describe('fetchSchemaFromCoral', () => {
           item: {
             case: 'table',
             value: {
-              catalogName: 'pickl_v4',
+              catalogName: 'commerce',
               description: '',
               name: 'sales',
               requiredFilters: [],
@@ -129,7 +129,7 @@ describe('fetchSchemaFromCoral', () => {
           item: {
             case: 'table',
             value: {
-              catalogName: 'pickl_v4',
+              catalogName: 'commerce',
               description: '',
               name: 'revenue_by_product',
               requiredFilters: [],
@@ -156,10 +156,9 @@ describe('fetchSchemaFromCoral', () => {
     await expect(
       fetchSchemaFromCoral({ listCatalog } as unknown as CatalogClient, workspace),
     ).resolves.toEqual({
-      namespaces: [
+      catalogs: [
         {
-          kind: 'catalog',
-          name: 'pickl_v4',
+          name: 'commerce',
           schemas: [
             {
               items: [
@@ -175,7 +174,6 @@ describe('fetchSchemaFromCoral', () => {
           ],
         },
         {
-          kind: 'catalog',
           name: 'warehouse',
           schemas: [
             {
@@ -185,6 +183,7 @@ describe('fetchSchemaFromCoral', () => {
           ],
         },
       ],
+      schemas: [],
     })
   })
 })
@@ -195,14 +194,14 @@ describe('fetchTableColumnsFromCoral', () => {
     const workspace = create(WorkspaceSchema, { name: 'analytics' })
 
     await fetchTableColumnsFromCoral({ listColumns } as unknown as CatalogClient, workspace, {
-      catalogName: 'pickl_v4',
+      catalogName: 'commerce',
       schemaName: 'public',
       tableName: 'products',
     })
 
     expect(listColumns).toHaveBeenCalledWith(
       expect.objectContaining({
-        catalogName: 'pickl_v4',
+        catalogName: 'commerce',
         schemaName: 'public',
         tableName: 'products',
       }),

@@ -8,23 +8,9 @@ import { routePath, routePattern } from '@/routing/routemap'
 import { SchemaTableView } from './schema-table'
 
 const SCHEMA = {
-  namespaces: [
+  catalogs: [
     {
-      kind: 'schema',
-      name: 'github',
-      items: [
-        {
-          columns: [],
-          columnsLoaded: false,
-          kind: 'table',
-          name: 'issues',
-          requiredFilters: [],
-        },
-      ],
-    },
-    {
-      kind: 'catalog',
-      name: 'pickl_v4',
+      name: 'commerce',
       schemas: [
         {
           name: 'public',
@@ -37,6 +23,20 @@ const SCHEMA = {
               requiredFilters: [],
             },
           ],
+        },
+      ],
+    },
+  ],
+  schemas: [
+    {
+      name: 'github',
+      items: [
+        {
+          columns: [],
+          columnsLoaded: false,
+          kind: 'table',
+          name: 'issues',
+          requiredFilters: [],
         },
       ],
     },
@@ -68,7 +68,7 @@ function tableRouter(path: string) {
 it('shows the fully qualified database table name', async () => {
   const router = tableRouter(
     routePath('workspaceSchemaCatalogTable', {
-      catalogName: 'pickl_v4',
+      catalogName: 'commerce',
       schemaName: 'public',
       tableName: 'products',
       workspaceId: 'analytics',
@@ -77,7 +77,7 @@ it('shows the fully qualified database table name', async () => {
   const screen = await render(<RouterProvider router={router} />)
 
   await expect
-    .element(screen.getByRole('heading', { name: 'pickl_v4.public.products' }))
+    .element(screen.getByRole('heading', { name: 'commerce.public.products' }))
     .toBeVisible()
 })
 

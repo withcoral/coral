@@ -25,7 +25,7 @@ describe('schema loaders', () => {
 
   it('lists catalog tables for the workspace route parameter', async () => {
     const request = new Request('http://reef.test/workspaces/analytics/schema')
-    const schema = { namespaces: [] }
+    const schema = { catalogs: [], schemas: [] }
     fetchSchemaFromCoral.mockResolvedValue(schema)
 
     await expect(
@@ -68,14 +68,14 @@ describe('schema loaders', () => {
 
   it('lists database table columns with the complete catalog identity', async () => {
     const request = new Request(
-      'http://reef.test/workspaces/analytics/schema/catalogs/pickl_v4/public/products',
+      'http://reef.test/workspaces/analytics/schema/catalogs/commerce/public/products',
     )
     fetchTableColumnsFromCoral.mockResolvedValue([])
 
     await expect(
       schemaCatalogTableLoader({
         params: {
-          catalogName: 'pickl_v4',
+          catalogName: 'commerce',
           schemaName: 'public',
           tableName: 'products',
           workspaceId: 'analytics',
@@ -87,7 +87,7 @@ describe('schema loaders', () => {
       catalogClient,
       expect.objectContaining({ name: 'analytics' }),
       {
-        catalogName: 'pickl_v4',
+        catalogName: 'commerce',
         schemaName: 'public',
         tableName: 'products',
       },

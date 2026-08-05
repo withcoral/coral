@@ -60,20 +60,14 @@ export interface SchemaGroup {
   name: string
 }
 
-export interface SchemaNamespace extends SchemaGroup {
-  kind: 'schema'
-}
-
-export interface CatalogNamespace {
-  kind: 'catalog'
+export interface CatalogGroup {
   name: string
   schemas: SchemaGroup[]
 }
 
-export type SchemaExplorerNamespace = CatalogNamespace | SchemaNamespace
-
 export interface SchemaResponse {
-  namespaces: SchemaExplorerNamespace[]
+  catalogs: CatalogGroup[]
+  schemas: SchemaGroup[]
 }
 
 export interface TableReference {
@@ -91,39 +85,40 @@ export async function fetchSchemaFromCoral(
   signal?: AbortSignal,
 ): Promise<SchemaResponse> {
   const catalogItems = await listCatalogItems(catalogClient, workspace, signal)
-  if (catalogItems.length === 0) return { namespaces: [] }
+  if (catalogItems.length === 0) return { catalogs: [], schemas: [] }
 
-  const namespaces: SchemaExplorerNamespace[] = []
-  const schemaNamespaces = new Map<string, SchemaNamespace>()
-  const catalogNamespaces = new Map<
+  const catalogs: CatalogGroup[] = []
+  const schemas: SchemaGroup[] = []
+  const schemaGroups = new Map<string, SchemaGroup>()
+  const catalogGroups = new Map<
     string,
-    { namespace: CatalogNamespace; schemas: Map<string, SchemaGroup> }
+    { catalog: CatalogGroup; schemas: Map<string, SchemaGroup> }
   >()
 
   const schemaItems = (catalogName: string, schemaName: string): SchemaItemDef[] => {
     if (!catalogName) {
-      let schema = schemaNamespaces.get(schemaName)
+      let schema = schemaGroups.get(schemaName)
       if (!schema) {
-        schema = { items: [], kind: 'schema', name: schemaName }
-        schemaNamespaces.set(schemaName, schema)
-        namespaces.push(schema)
+        schema = { items: [], name: schemaName }
+        schemaGroups.set(schemaName, schema)
+        schemas.push(schema)
       }
       return schema.items
     }
 
-    let catalog = catalogNamespaces.get(catalogName)
+    let catalog = catalogGroups.get(catalogName)
     if (!catalog) {
-      const namespace: CatalogNamespace = { kind: 'catalog', name: catalogName, schemas: [] }
-      catalog = { namespace, schemas: new Map() }
-      catalogNamespaces.set(catalogName, catalog)
-      namespaces.push(namespace)
+      const catalogGroup: CatalogGroup = { name: catalogName, schemas: [] }
+      catalog = { catalog: catalogGroup, schemas: new Map() }
+      catalogGroups.set(catalogName, catalog)
+      catalogs.push(catalogGroup)
     }
 
     let schema = catalog.schemas.get(schemaName)
     if (!schema) {
       schema = { items: [], name: schemaName }
       catalog.schemas.set(schemaName, schema)
-      catalog.namespace.schemas.push(schema)
+      catalog.catalog.schemas.push(schema)
     }
     return schema.items
   }
@@ -167,7 +162,7 @@ export async function fetchSchemaFromCoral(
     }
   }
 
-  return { namespaces }
+  return { catalogs, schemas }
 }
 
 async function listCatalogItems(

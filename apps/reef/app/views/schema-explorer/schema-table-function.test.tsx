@@ -8,9 +8,9 @@ import { routePath, routePattern } from '@/routing/routemap'
 import { SchemaTableFunctionView } from './schema-table-function'
 
 const SCHEMA = {
-  namespaces: [
+  catalogs: [],
+  schemas: [
     {
-      kind: 'schema',
       items: [
         {
           arguments: [

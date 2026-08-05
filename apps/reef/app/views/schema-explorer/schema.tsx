@@ -3,7 +3,7 @@ import { NavLink, Outlet, useParams, useRouteError } from 'react-router'
 
 import { ErrorBanner } from '@/components/error-banner'
 import type {
-  CatalogNamespace,
+  CatalogGroup,
   SchemaGroup,
   SchemaItemDef,
   SchemaResponse,
@@ -29,17 +29,11 @@ export function findSchemaTable(
 ): TableDef | undefined {
   let schemaGroup: SchemaGroup | undefined
   if (catalogName) {
-    schemaGroup = schema.namespaces
-      .find(
-        (namespace): namespace is CatalogNamespace =>
-          namespace.kind === 'catalog' && namespace.name === catalogName,
-      )
+    schemaGroup = schema.catalogs
+      .find((catalog) => catalog.name === catalogName)
       ?.schemas.find((providerSchema) => providerSchema.name === schemaName)
   } else {
-    const namespace = schema.namespaces.find(
-      (candidate) => candidate.kind === 'schema' && candidate.name === schemaName,
-    )
-    if (namespace?.kind === 'schema') schemaGroup = namespace
+    schemaGroup = schema.schemas.find((candidate) => candidate.name === schemaName)
   }
   return schemaGroup?.items.find(
     (item): item is TableDef => item.kind === 'table' && item.name === tableName,
@@ -51,16 +45,14 @@ export function findSchemaTableFunction(
   schemaName: string,
   functionName: string,
 ): TableFunctionDef | undefined {
-  const schemaGroup = schema.namespaces.find(
-    (namespace) => namespace.kind === 'schema' && namespace.name === schemaName,
-  )
-  if (!schemaGroup || schemaGroup.kind !== 'schema') return undefined
+  const schemaGroup = schema.schemas.find((candidate) => candidate.name === schemaName)
+  if (!schemaGroup) return undefined
   return schemaGroup.items.find(
     (item): item is TableFunctionDef => item.kind === 'tableFunction' && item.name === functionName,
   )
 }
 
-function catalogMatchesSearch(catalog: CatalogNamespace, search: string) {
+function catalogMatchesSearch(catalog: CatalogGroup, search: string) {
   if (!search || catalog.name.toLowerCase().includes(search)) return true
   return catalog.schemas.some((schema) => schemaMatchesSearch(schema, search))
 }
@@ -95,7 +87,7 @@ function visibleItemsForSchema(schema: SchemaGroup, search: string) {
   return schema.items.filter((item) => catalogItemMatchesSearch(item, search))
 }
 
-function visibleSchemasForCatalog(catalog: CatalogNamespace, search: string) {
+function visibleSchemasForCatalog(catalog: CatalogGroup, search: string) {
   if (!search || catalog.name.toLowerCase().includes(search)) return catalog.schemas
   return catalog.schemas.filter((schema) => schemaMatchesSearch(schema, search))
 }
@@ -203,6 +195,152 @@ function SchemaItemLinks({
   )
 }
 
+function CatalogTreeGroup({
+  activeItem,
+  catalog,
+  expandedCatalogs,
+  expandedSchemas,
+  normalizedSearch,
+  setExpandedCatalogs,
+  setExpandedSchemas,
+  workspaceId,
+}: {
+  activeItem: Readonly<Record<string, string | undefined>>
+  catalog: CatalogGroup
+  expandedCatalogs: Set<string>
+  expandedSchemas: Set<string>
+  normalizedSearch: string
+  setExpandedCatalogs: React.Dispatch<React.SetStateAction<Set<string>>>
+  setExpandedSchemas: React.Dispatch<React.SetStateAction<Set<string>>>
+  workspaceId: string
+}) {
+  const catalogMatches = catalog.name.toLowerCase().includes(normalizedSearch)
+  const descendantSearch = catalogMatches ? '' : normalizedSearch
+  const visibleSchemas = visibleSchemasForCatalog(catalog, normalizedSearch)
+  const expanded = normalizedSearch !== '' || expandedCatalogs.has(catalog.name)
+  const catalogChildrenId = `catalog-${catalog.name}-schemas`
+  return (
+    <div>
+      <ButtonContainer
+        aria-controls={expanded ? catalogChildrenId : undefined}
+        aria-expanded={expanded}
+        className={styles.treeRow}
+        fullWidth
+        onClick={() => toggleExpanded(setExpandedCatalogs, catalog.name)}
+        size="22"
+        variant="bare"
+      >
+        <Icon color="secondary" name={expanded ? 'ChevronDown' : 'ChevronRight'} size="14" />
+        <Typography.BodyStrong className={styles.connectorName}>
+          {catalog.name}
+        </Typography.BodyStrong>
+        <Typography.BodySmall className={styles.connectorItemCount} variant="tertiary">
+          {visibleSchemas.length}
+        </Typography.BodySmall>
+      </ButtonContainer>
+
+      {expanded ? (
+        <div className={styles.connectorChildren} id={catalogChildrenId}>
+          {visibleSchemas.map((providerSchema) => {
+            const schemaKey = expansionKey(catalog.name, providerSchema.name)
+            const schemaExpanded = normalizedSearch !== '' || expandedSchemas.has(schemaKey)
+            const schemaChildrenId = `catalog-${catalog.name}-schema-${providerSchema.name}-items`
+            const visibleItems = visibleItemsForSchema(providerSchema, descendantSearch)
+            return (
+              <div key={schemaKey}>
+                <ButtonContainer
+                  aria-controls={schemaExpanded ? schemaChildrenId : undefined}
+                  aria-expanded={schemaExpanded}
+                  className={styles.treeRow}
+                  fullWidth
+                  onClick={() => toggleExpanded(setExpandedSchemas, schemaKey)}
+                  size="22"
+                  variant="bare"
+                >
+                  <Icon
+                    color="secondary"
+                    name={schemaExpanded ? 'ChevronDown' : 'ChevronRight'}
+                    size="14"
+                  />
+                  <Typography.BodyStrong className={styles.connectorName}>
+                    {providerSchema.name}
+                  </Typography.BodyStrong>
+                  <Typography.BodySmall className={styles.connectorItemCount} variant="tertiary">
+                    {visibleItems.length}
+                  </Typography.BodySmall>
+                </ButtonContainer>
+
+                {schemaExpanded ? (
+                  <SchemaItemLinks
+                    activeItem={activeItem}
+                    catalogName={catalog.name}
+                    childrenId={schemaChildrenId}
+                    items={visibleItems}
+                    schemaName={providerSchema.name}
+                    workspaceId={workspaceId}
+                  />
+                ) : null}
+              </div>
+            )
+          })}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function SchemaTreeGroup({
+  activeItem,
+  expandedSchemas,
+  normalizedSearch,
+  schema,
+  setExpandedSchemas,
+  workspaceId,
+}: {
+  activeItem: Readonly<Record<string, string | undefined>>
+  expandedSchemas: Set<string>
+  normalizedSearch: string
+  schema: SchemaGroup
+  setExpandedSchemas: React.Dispatch<React.SetStateAction<Set<string>>>
+  workspaceId: string
+}) {
+  const expanded = normalizedSearch !== '' || expandedSchemas.has(schema.name)
+  const schemaChildrenId = `schema-${schema.name}-items`
+  const visibleItems = visibleItemsForSchema(schema, normalizedSearch)
+  return (
+    <div>
+      <ButtonContainer
+        aria-controls={expanded ? schemaChildrenId : undefined}
+        aria-expanded={expanded}
+        className={styles.treeRow}
+        fullWidth
+        onClick={() => toggleExpanded(setExpandedSchemas, schema.name)}
+        size="22"
+        variant="bare"
+      >
+        <Icon color="secondary" name={expanded ? 'ChevronDown' : 'ChevronRight'} size="14" />
+        <Typography.BodyStrong className={styles.connectorName}>
+          {schema.name}
+        </Typography.BodyStrong>
+        <Typography.BodySmall className={styles.connectorItemCount} variant="tertiary">
+          {visibleItems.length}
+        </Typography.BodySmall>
+      </ButtonContainer>
+
+      {expanded ? (
+        <SchemaItemLinks
+          activeItem={activeItem}
+          catalogName=""
+          childrenId={schemaChildrenId}
+          items={visibleItems}
+          schemaName={schema.name}
+          workspaceId={workspaceId}
+        />
+      ) : null}
+    </div>
+  )
+}
+
 export function tableFunctionTreeArguments(tableFunction: TableFunctionDef) {
   const argumentsToShow = tableFunction.arguments
     .filter((argument) => argument.required)
@@ -259,21 +397,22 @@ export function SchemaExplorer({
 }) {
   const activeItem = useParams()
   const [search, setSearch] = useState('')
-  // Collapsed by default so the initial render is one row per root namespace.
+  // Collapsed by default so the initial render is one row per schema or catalog.
   // A search exposes matching descendants without mutating these expansion sets.
   const [expandedCatalogs, setExpandedCatalogs] = useState<Set<string>>(() => new Set())
   const [expandedSchemas, setExpandedSchemas] = useState<Set<string>>(() => new Set())
 
   const normalizedSearch = search.trim().toLowerCase()
-  const filteredNamespaces = useMemo(
+  const filteredSchemas = useMemo(
     () =>
-      schema.namespaces.filter((namespace) =>
-        namespace.kind === 'catalog'
-          ? catalogMatchesSearch(namespace, normalizedSearch)
-          : schemaMatchesSearch(namespace, normalizedSearch),
-      ),
-    [normalizedSearch, schema],
+      schema.schemas.filter((schemaGroup) => schemaMatchesSearch(schemaGroup, normalizedSearch)),
+    [normalizedSearch, schema.schemas],
   )
+  const filteredCatalogs = useMemo(
+    () => schema.catalogs.filter((catalog) => catalogMatchesSearch(catalog, normalizedSearch)),
+    [normalizedSearch, schema.catalogs],
+  )
+  const filteredCount = filteredSchemas.length + filteredCatalogs.length
 
   return (
     <section aria-label="Schema explorer" className={styles.root}>
@@ -293,13 +432,13 @@ export function SchemaExplorer({
         <div className={styles.treePanel}>
           <div className={styles.treeContent}>
             <ScrollArea constrainWidth>
-              {normalizedSearch && filteredNamespaces.length === 0 ? (
+              {normalizedSearch && filteredCount === 0 ? (
                 <div className={styles.treeEmpty}>
                   <Typography.BodySmall variant="tertiary">
                     No results for "{search}"
                   </Typography.BodySmall>
                 </div>
-              ) : filteredNamespaces.length === 0 ? (
+              ) : filteredCount === 0 ? (
                 <div className={styles.treeEmpty}>
                   <Typography.BodySmall variant="tertiary">
                     No queryable tables or table functions in this workspace.
@@ -307,141 +446,30 @@ export function SchemaExplorer({
                 </div>
               ) : (
                 <div className={styles.treeList}>
-                  {filteredNamespaces.map((namespace) => {
-                    if (namespace.kind === 'catalog') {
-                      const catalogMatches = namespace.name.toLowerCase().includes(normalizedSearch)
-                      const descendantSearch = catalogMatches ? '' : normalizedSearch
-                      const visibleSchemas = visibleSchemasForCatalog(namespace, normalizedSearch)
-                      const expanded =
-                        normalizedSearch !== '' || expandedCatalogs.has(namespace.name)
-                      const catalogChildrenId = `catalog-${namespace.name}-schemas`
-                      return (
-                        <div key={`catalog:${namespace.name}`}>
-                          <ButtonContainer
-                            aria-controls={expanded ? catalogChildrenId : undefined}
-                            aria-expanded={expanded}
-                            className={styles.treeRow}
-                            fullWidth
-                            onClick={() => toggleExpanded(setExpandedCatalogs, namespace.name)}
-                            size="22"
-                            variant="bare"
-                          >
-                            <Icon
-                              color="secondary"
-                              name={expanded ? 'ChevronDown' : 'ChevronRight'}
-                              size="14"
-                            />
-                            <Typography.BodyStrong className={styles.connectorName}>
-                              {namespace.name}
-                            </Typography.BodyStrong>
-                            <Typography.BodySmall
-                              className={styles.connectorItemCount}
-                              variant="tertiary"
-                            >
-                              {visibleSchemas.length}
-                            </Typography.BodySmall>
-                          </ButtonContainer>
-
-                          {expanded ? (
-                            <div className={styles.connectorChildren} id={catalogChildrenId}>
-                              {visibleSchemas.map((providerSchema) => {
-                                const schemaKey = expansionKey(namespace.name, providerSchema.name)
-                                const schemaExpanded =
-                                  normalizedSearch !== '' || expandedSchemas.has(schemaKey)
-                                const schemaChildrenId = `catalog-${namespace.name}-schema-${providerSchema.name}-items`
-                                const visibleItems = visibleItemsForSchema(
-                                  providerSchema,
-                                  descendantSearch,
-                                )
-                                return (
-                                  <div key={schemaKey}>
-                                    <ButtonContainer
-                                      aria-controls={schemaExpanded ? schemaChildrenId : undefined}
-                                      aria-expanded={schemaExpanded}
-                                      className={styles.treeRow}
-                                      fullWidth
-                                      onClick={() => toggleExpanded(setExpandedSchemas, schemaKey)}
-                                      size="22"
-                                      variant="bare"
-                                    >
-                                      <Icon
-                                        color="secondary"
-                                        name={schemaExpanded ? 'ChevronDown' : 'ChevronRight'}
-                                        size="14"
-                                      />
-                                      <Typography.BodyStrong className={styles.connectorName}>
-                                        {providerSchema.name}
-                                      </Typography.BodyStrong>
-                                      <Typography.BodySmall
-                                        className={styles.connectorItemCount}
-                                        variant="tertiary"
-                                      >
-                                        {visibleItems.length}
-                                      </Typography.BodySmall>
-                                    </ButtonContainer>
-
-                                    {schemaExpanded ? (
-                                      <SchemaItemLinks
-                                        activeItem={activeItem}
-                                        catalogName={namespace.name}
-                                        childrenId={schemaChildrenId}
-                                        items={visibleItems}
-                                        schemaName={providerSchema.name}
-                                        workspaceId={workspaceId}
-                                      />
-                                    ) : null}
-                                  </div>
-                                )
-                              })}
-                            </div>
-                          ) : null}
-                        </div>
-                      )
-                    }
-
-                    const expanded = normalizedSearch !== '' || expandedSchemas.has(namespace.name)
-                    const connectorChildrenId = `schema-${namespace.name}-items`
-                    const visibleItems = visibleItemsForSchema(namespace, normalizedSearch)
-                    return (
-                      <div key={`schema:${namespace.name}`}>
-                        <ButtonContainer
-                          aria-controls={expanded ? connectorChildrenId : undefined}
-                          aria-expanded={expanded}
-                          className={styles.treeRow}
-                          fullWidth
-                          onClick={() => toggleExpanded(setExpandedSchemas, namespace.name)}
-                          size="22"
-                          variant="bare"
-                        >
-                          <Icon
-                            color="secondary"
-                            name={expanded ? 'ChevronDown' : 'ChevronRight'}
-                            size="14"
-                          />
-                          <Typography.BodyStrong className={styles.connectorName}>
-                            {namespace.name}
-                          </Typography.BodyStrong>
-                          <Typography.BodySmall
-                            className={styles.connectorItemCount}
-                            variant="tertiary"
-                          >
-                            {visibleItems.length}
-                          </Typography.BodySmall>
-                        </ButtonContainer>
-
-                        {expanded ? (
-                          <SchemaItemLinks
-                            activeItem={activeItem}
-                            catalogName=""
-                            childrenId={connectorChildrenId}
-                            items={visibleItems}
-                            schemaName={namespace.name}
-                            workspaceId={workspaceId}
-                          />
-                        ) : null}
-                      </div>
-                    )
-                  })}
+                  {filteredSchemas.map((schemaGroup) => (
+                    <SchemaTreeGroup
+                      activeItem={activeItem}
+                      expandedSchemas={expandedSchemas}
+                      key={schemaGroup.name}
+                      normalizedSearch={normalizedSearch}
+                      schema={schemaGroup}
+                      setExpandedSchemas={setExpandedSchemas}
+                      workspaceId={workspaceId}
+                    />
+                  ))}
+                  {filteredCatalogs.map((catalog) => (
+                    <CatalogTreeGroup
+                      activeItem={activeItem}
+                      catalog={catalog}
+                      expandedCatalogs={expandedCatalogs}
+                      expandedSchemas={expandedSchemas}
+                      key={catalog.name}
+                      normalizedSearch={normalizedSearch}
+                      setExpandedCatalogs={setExpandedCatalogs}
+                      setExpandedSchemas={setExpandedSchemas}
+                      workspaceId={workspaceId}
+                    />
+                  ))}
                 </div>
               )}
             </ScrollArea>

@@ -8,32 +8,9 @@ import { routePath, routePattern } from '@/routing/routemap'
 import { SchemaExplorer } from './schema'
 
 const SCHEMA = {
-  namespaces: [
+  catalogs: [
     {
-      kind: 'schema',
-      name: 'github?api',
-      items: [
-        {
-          columns: [],
-          columnsLoaded: false,
-          kind: 'table',
-          name: 'issues/closed',
-          requiredFilters: [],
-        },
-        {
-          arguments: [
-            { name: 'channel', required: true, values: [] },
-            { name: 'cursor', required: false, values: [] },
-          ],
-          kind: 'tableFunction',
-          name: 'messages',
-          resultColumns: [],
-        },
-      ],
-    },
-    {
-      kind: 'catalog',
-      name: 'pickl_v4',
+      name: 'commerce',
       schemas: [
         {
           name: 'public',
@@ -65,6 +42,29 @@ const SCHEMA = {
               requiredFilters: [],
             },
           ],
+        },
+      ],
+    },
+  ],
+  schemas: [
+    {
+      name: 'github?api',
+      items: [
+        {
+          columns: [],
+          columnsLoaded: false,
+          kind: 'table',
+          name: 'issues/closed',
+          requiredFilters: [],
+        },
+        {
+          arguments: [
+            { name: 'channel', required: true, values: [] },
+            { name: 'cursor', required: false, values: [] },
+          ],
+          kind: 'tableFunction',
+          name: 'messages',
+          resultColumns: [],
         },
       ],
     },
@@ -120,7 +120,7 @@ it('renders and links database catalogs through their provider schemas', async (
   )
   const screen = await render(<RouterProvider router={router} />)
 
-  await screen.getByRole('button', { name: /pickl_v4/ }).click()
+  await screen.getByRole('button', { name: /commerce/ }).click()
   await expect.element(screen.getByRole('button', { name: /public/ })).toBeVisible()
   await expect.element(screen.getByRole('button', { name: /analytics/ })).toBeVisible()
 
@@ -128,7 +128,7 @@ it('renders and links database catalogs through their provider schemas', async (
   await expect.element(screen.getByRole('link', { name: 'products' })).toHaveAttribute(
     'href',
     routePath('workspaceSchemaCatalogTable', {
-      catalogName: 'pickl_v4',
+      catalogName: 'commerce',
       schemaName: 'public',
       tableName: 'products',
       workspaceId,
