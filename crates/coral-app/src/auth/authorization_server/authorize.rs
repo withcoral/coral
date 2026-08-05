@@ -94,7 +94,6 @@ pub(super) async fn oauth_authorize_get(
         &callback,
         &browser_binding,
         secure_cookie,
-        &state.settings.provider().issuer,
     ) else {
         return trusted.error("server_error", "authorization failed");
     };
@@ -564,14 +563,10 @@ mod tests {
             (header::CONTENT_TYPE, "text/html; charset=utf-8"),
             (header::CACHE_CONTROL, "no-store"),
             (header::PRAGMA, "no-cache"),
-            // `form-action` names the provider's origin as well as `'self'`:
-            // a browser applies the directive to the redirect this page's own
-            // submission produces, so a bare `'self'` silently drops the
-            // hand-off to the provider. See
-            // `approval_page_allows_the_provider_redirect_it_produces`.
+            // No `form-action`: see `approval_page_does_not_restrict_form_action`.
             (
                 header::CONTENT_SECURITY_POLICY,
-                "default-src 'none'; base-uri 'none'; form-action 'self' https://provider.invalid; frame-ancestors 'none'",
+                "default-src 'none'; base-uri 'none'; frame-ancestors 'none'",
             ),
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
             // Not `no-referrer`: that policy makes Chromium submit this page's
@@ -637,7 +632,6 @@ mod tests {
             &Url::parse("http://127.0.0.1:14554/oauth/callback").expect("loopback redirect"),
             &browser_binding(),
             false,
-            "https://provider.invalid",
         )
         .expect("page");
         let loopback_cookie = loopback.headers()[header::SET_COOKIE]
@@ -664,7 +658,6 @@ mod tests {
             &Url::parse(REDIRECT_URI).expect("redirect"),
             &browser_binding(),
             true,
-            "https://provider.invalid",
         )
         .expect("page");
         let escaped = response_body(escaped).await;
@@ -784,17 +777,18 @@ mod tests {
         );
     }
 
-    /// The approval page must permit the redirect its own submission produces.
+    /// The approval page must not restrict `form-action`.
     ///
-    /// Submitting the form posts back here and this handler answers with a
-    /// redirect to the provider. Browsers apply `form-action` to every URL in
-    /// that navigation, redirects included, so a bare `'self'` delivers the
-    /// POST — consuming the approval — and then drops the redirect. The user
-    /// sees nothing happen, and a second attempt reports the now-consumed
-    /// approval as expired. Chromium blames the same-origin form action in its
-    /// console, never the provider it actually blocked.
+    /// Submitting the form starts a sign-in that navigates through this server,
+    /// the provider, any hop the provider adds, this server's callback, and
+    /// finally the client's redirect URI. Browsers apply `form-action` to every
+    /// one of them, so any list short of all of them blocks the login — after
+    /// the POST has already consumed the approval, leaving the user on a page
+    /// where nothing happened and a retry reporting the approval as expired.
+    /// A real sign-in through a hosted provider crossed five origins this way.
+    /// The remaining directives still deny every fetch, base URI and framing.
     #[tokio::test]
-    async fn approval_page_allows_the_provider_redirect_it_produces() {
+    async fn approval_page_does_not_restrict_form_action() {
         let auth_state = state(
             "https://provider.invalid",
             Arc::new(InMemoryStateStore::new()),
@@ -805,10 +799,9 @@ mod tests {
             .to_str()
             .expect("policy");
         assert!(
-            policy.contains("form-action 'self' https://provider.invalid;"),
-            "form-action must name the provider origin, got: {policy}"
+            !policy.contains("form-action"),
+            "form-action cannot enumerate an OAuth redirect chain, got: {policy}"
         );
-        // The rest of the policy is unchanged: nothing else may load or frame.
         assert!(policy.contains("default-src 'none'"));
         assert!(policy.contains("base-uri 'none'"));
         assert!(policy.contains("frame-ancestors 'none'"));
