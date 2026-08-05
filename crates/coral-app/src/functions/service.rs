@@ -17,9 +17,10 @@ use crate::functions::manager::{FunctionInstallMode, FunctionListing, FunctionRu
 use crate::functions::model::{FunctionName, FunctionWriteSurface};
 use crate::query::manager::QueryManager;
 use crate::transport::{
-    grpc_span, instrument_grpc, query_status, workspace_name_from_proto, workspace_to_proto,
+    grpc_span, instrument_grpc, query_status, request_context, workspace_name_from_proto,
+    workspace_to_proto,
 };
-use crate::workspaces::{WorkspaceAuthorizer, WorkspaceName};
+use crate::workspaces::{WorkspaceAction, WorkspaceAuthorizer, WorkspaceName};
 
 #[derive(Clone)]
 pub(crate) struct FunctionService {
@@ -49,9 +50,18 @@ impl FunctionServiceApi for FunctionService {
     ) -> Result<Response<AddFunctionResponse>, Status> {
         let span = grpc_span(&request);
         let queries = self.queries.clone();
+        let workspace_authorizer = self.workspace_authorizer.clone();
+        let principal = request_context(&request)?.principal().clone();
         Box::pin(instrument_grpc(span, async move {
             let inner = request.into_inner();
             let workspace_name = workspace_name_from_proto(inner.workspace.as_ref())?;
+            authorize(
+                workspace_authorizer.as_ref(),
+                &principal,
+                &workspace_name,
+                WorkspaceAction::Manage,
+            )
+            .await?;
             let mode = if inner.fail_if_exists {
                 FunctionInstallMode::CreateOnly
             } else {
@@ -80,9 +90,18 @@ impl FunctionServiceApi for FunctionService {
     ) -> Result<Response<ListFunctionsResponse>, Status> {
         let span = grpc_span(&request);
         let queries = self.queries.clone();
+        let workspace_authorizer = self.workspace_authorizer.clone();
+        let principal = request_context(&request)?.principal().clone();
         instrument_grpc(span, async move {
             let inner = request.into_inner();
             let workspace_name = workspace_name_from_proto(inner.workspace.as_ref())?;
+            authorize(
+                workspace_authorizer.as_ref(),
+                &principal,
+                &workspace_name,
+                WorkspaceAction::Read,
+            )
+            .await?;
             let functions = queries
                 .list_functions(&workspace_name)
                 .await
@@ -101,9 +120,18 @@ impl FunctionServiceApi for FunctionService {
     ) -> Result<Response<DeleteFunctionResponse>, Status> {
         let span = grpc_span(&request);
         let queries = self.queries.clone();
+        let workspace_authorizer = self.workspace_authorizer.clone();
+        let principal = request_context(&request)?.principal().clone();
         instrument_grpc(span, async move {
             let inner = request.into_inner();
             let workspace_name = workspace_name_from_proto(inner.workspace.as_ref())?;
+            authorize(
+                workspace_authorizer.as_ref(),
+                &principal,
+                &workspace_name,
+                WorkspaceAction::Manage,
+            )
+            .await?;
             let function_name = FunctionName::parse(&inner.name).map_err(app_status)?;
             queries
                 .function_manager()
@@ -114,6 +142,20 @@ impl FunctionServiceApi for FunctionService {
         })
         .await
     }
+}
+
+async fn authorize(
+    authorizer: Option<&WorkspaceAuthorizer>,
+    principal: &crate::identity::Principal,
+    workspace: &WorkspaceName,
+    action: WorkspaceAction,
+) -> Result<(), Status> {
+    let authorizer =
+        authorizer.ok_or_else(|| Status::internal("workspace authorization is unavailable"))?;
+    authorizer
+        .authorize(principal, workspace, action)
+        .await
+        .map_err(app_status)
 }
 
 fn function_listing_to_proto(workspace_name: &WorkspaceName, listing: FunctionListing) -> Function {
@@ -208,7 +250,60 @@ fn function_table_function_publish_to_proto(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use tempfile::TempDir;
+    use tonic::Code;
+
     use super::*;
+    use crate::identity::{Principal, PrincipalKind};
+    use crate::state::AppStateLayout;
+    use crate::state::db::{
+        AddMemberOutcome, CoralDb, DatabaseConfig, ResolvedDatabaseConfig, UpsertLoginOutcome,
+    };
+    use crate::workspaces::{MemberRole, WorkspaceAction, WorkspaceAuthorizer};
+
+    #[tokio::test]
+    async fn function_actions_enforce_read_and_manage_policy() {
+        let (_temp, db) = database().await;
+        let owner_id = provision_user(&db, "owner").await;
+        let member_id = provision_user(&db, "member").await;
+        let workspace =
+            WorkspaceName::parse(&format!("default-{owner_id}")).expect("owner workspace");
+        assert!(matches!(
+            db.add_workspace_member(workspace.as_str(), &member_id, MemberRole::Member, 2)
+                .await
+                .expect("add member"),
+            AddMemberOutcome::Added(_)
+        ));
+        let authorizer = WorkspaceAuthorizer::new(db);
+
+        let unavailable = authorize(None, &Principal::local(), &workspace, WorkspaceAction::Read)
+            .await
+            .expect_err("missing authorizer must never bypass policy");
+        assert_eq!(unavailable.code(), Code::Internal);
+
+        for kind in [PrincipalKind::User, PrincipalKind::Agent] {
+            let principal = Principal::parse(&member_id, kind).expect("member principal");
+            authorize(
+                Some(&authorizer),
+                &principal,
+                &workspace,
+                WorkspaceAction::Read,
+            )
+            .await
+            .expect("member principals can list functions");
+            let denied = authorize(
+                Some(&authorizer),
+                &principal,
+                &workspace,
+                WorkspaceAction::Manage,
+            )
+            .await
+            .expect_err("members and agents cannot mutate functions");
+            assert_eq!(denied.code(), Code::PermissionDenied);
+        }
+    }
 
     #[test]
     fn invalid_function_listing_keeps_inventory_identity_and_error() {
@@ -231,5 +326,31 @@ mod tests {
             function.workspace.expect("workspace").name,
             workspace.as_str()
         );
+    }
+
+    async fn database() -> (TempDir, Arc<CoralDb>) {
+        let temp = TempDir::new().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        let DatabaseConfig::Sqlite { path } = DatabaseConfig::load(&layout).expect("config") else {
+            panic!("default test database must be SQLite")
+        };
+        let db = Arc::new(
+            CoralDb::open(ResolvedDatabaseConfig::Sqlite { path })
+                .await
+                .expect("open sqlite"),
+        );
+        db.migrate().await.expect("migrate sqlite");
+        (temp, db)
+    }
+
+    async fn provision_user(db: &CoralDb, subject: &str) -> String {
+        let UpsertLoginOutcome::Upserted(user) = db
+            .provision_login("issuer", subject, None, 1)
+            .await
+            .expect("provision user")
+        else {
+            panic!("new subject should create a user")
+        };
+        user.user_id
     }
 }

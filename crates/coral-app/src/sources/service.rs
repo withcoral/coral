@@ -45,11 +45,12 @@ use crate::sources::manager::{
 };
 use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
 use crate::transport::{
-    grpc_span, instrument_grpc, query_status, validate_source_response_to_proto,
+    grpc_span, instrument_grpc, query_status, request_context, validate_source_response_to_proto,
     workspace_name_from_proto, workspace_to_proto,
 };
 use crate::workspaces::{
-    WorkspaceAuthorizer, WorkspaceLifecycleRevision, WorkspaceManager, WorkspaceName,
+    WorkspaceAction, WorkspaceAuthorizer, WorkspaceLifecycleRevision, WorkspaceManager,
+    WorkspaceName,
 };
 use tokio::sync::mpsc;
 use tokio_stream::Stream;
@@ -95,9 +96,12 @@ impl SourceServiceApi for SourceService {
         let span = grpc_span(&request);
         let sources = self.sources.clone();
         let workspaces = self.workspaces.clone();
+        let workspace_authorizer = self.workspace_authorizer.clone();
+        let principal = request_context(&request)?.principal().clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            authorize_manage(workspace_authorizer.as_ref(), &principal, &workspace_name).await?;
             require_workspace(&workspaces, &workspace_name).await?;
             let sources = sources
                 .discover_sources(&workspace_name)
@@ -117,9 +121,12 @@ impl SourceServiceApi for SourceService {
         let span = grpc_span(&request);
         let sources = self.sources.clone();
         let workspaces = self.workspaces.clone();
+        let workspace_authorizer = self.workspace_authorizer.clone();
+        let principal = request_context(&request)?.principal().clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            authorize_manage(workspace_authorizer.as_ref(), &principal, &workspace_name).await?;
             require_workspace(&workspaces, &workspace_name).await?;
             let sources: Vec<_> = sources
                 .list_workspace_sources(&workspace_name)
@@ -139,9 +146,12 @@ impl SourceServiceApi for SourceService {
         let span = grpc_span(&request);
         let sources = self.sources.clone();
         let workspaces = self.workspaces.clone();
+        let workspace_authorizer = self.workspace_authorizer.clone();
+        let principal = request_context(&request)?.principal().clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            authorize_manage(workspace_authorizer.as_ref(), &principal, &workspace_name).await?;
             require_workspace(&workspaces, &workspace_name).await?;
             let source_name = SourceName::parse(&request.name).map_err(app_status)?;
             let source = sources
@@ -161,9 +171,12 @@ impl SourceServiceApi for SourceService {
         let span = grpc_span(&request);
         let sources = self.sources.clone();
         let workspaces = self.workspaces.clone();
+        let workspace_authorizer = self.workspace_authorizer.clone();
+        let principal = request_context(&request)?.principal().clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            authorize_manage(workspace_authorizer.as_ref(), &principal, &workspace_name).await?;
             require_workspace(&workspaces, &workspace_name).await?;
             let source_name = SourceName::parse(&request.name).map_err(app_status)?;
             let source = sources
@@ -183,9 +196,12 @@ impl SourceServiceApi for SourceService {
         let span = grpc_span(&request);
         let sources = self.sources.clone();
         let workspaces = self.workspaces.clone();
+        let workspace_authorizer = self.workspace_authorizer.clone();
+        let principal = request_context(&request)?.principal().clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            authorize_manage(workspace_authorizer.as_ref(), &principal, &workspace_name).await?;
             let revision = require_active_workspace_revision(&workspaces, &workspace_name).await?;
             let bundled_name = SourceName::parse(&request.name).map_err(app_status)?;
             let command = CreateBundledSourceCommand {
@@ -214,9 +230,12 @@ impl SourceServiceApi for SourceService {
         let span = grpc_span(&request);
         let sources = self.sources.clone();
         let workspaces = self.workspaces.clone();
+        let workspace_authorizer = self.workspace_authorizer.clone();
+        let principal = request_context(&request)?.principal().clone();
         instrument_grpc(span.clone(), async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            authorize_manage(workspace_authorizer.as_ref(), &principal, &workspace_name).await?;
             let revision = require_active_workspace_revision(&workspaces, &workspace_name).await?;
             let response_workspace_name = workspace_name.clone();
             let command = CreateBundledSourceWithOAuthCommand {
@@ -258,9 +277,12 @@ impl SourceServiceApi for SourceService {
         let span = grpc_span(&request);
         let sources = self.sources.clone();
         let workspaces = self.workspaces.clone();
+        let workspace_authorizer = self.workspace_authorizer.clone();
+        let principal = request_context(&request)?.principal().clone();
         instrument_grpc(span.clone(), async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            authorize_manage(workspace_authorizer.as_ref(), &principal, &workspace_name).await?;
             let revision = require_active_workspace_revision(&workspaces, &workspace_name).await?;
             let response_workspace_name = workspace_name.clone();
             if request.oauth_credential_retrievals.is_empty() {
@@ -317,9 +339,12 @@ impl SourceServiceApi for SourceService {
         let span = grpc_span(&request);
         let sources = self.sources.clone();
         let workspaces = self.workspaces.clone();
+        let workspace_authorizer = self.workspace_authorizer.clone();
+        let principal = request_context(&request)?.principal().clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            authorize_manage(workspace_authorizer.as_ref(), &principal, &workspace_name).await?;
             let revision = require_active_workspace_revision(&workspaces, &workspace_name).await?;
             let source_name = SourceName::parse(&request.name).map_err(app_status)?;
             sources
@@ -338,9 +363,12 @@ impl SourceServiceApi for SourceService {
         let span = grpc_span(&request);
         let queries = self.queries.clone();
         let workspaces = self.workspaces.clone();
+        let workspace_authorizer = self.workspace_authorizer.clone();
+        let principal = request_context(&request)?.principal().clone();
         Box::pin(instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            authorize_manage(workspace_authorizer.as_ref(), &principal, &workspace_name).await?;
             require_workspace(&workspaces, &workspace_name).await?;
             let source_name = SourceName::parse(&request.name).map_err(app_status)?;
             let result = queries
@@ -357,6 +385,19 @@ impl SourceServiceApi for SourceService {
         }))
         .await
     }
+}
+
+async fn authorize_manage(
+    authorizer: Option<&WorkspaceAuthorizer>,
+    principal: &crate::identity::Principal,
+    workspace: &WorkspaceName,
+) -> Result<(), Status> {
+    let authorizer =
+        authorizer.ok_or_else(|| Status::internal("workspace authorization is unavailable"))?;
+    authorizer
+        .authorize(principal, workspace, WorkspaceAction::Manage)
+        .await
+        .map_err(app_status)
 }
 
 async fn require_workspace(
@@ -788,7 +829,10 @@ mod tests {
         reason = "credential method order assertions intentionally fail loudly in tests"
     )]
 
+    use std::{collections::BTreeMap, sync::Arc};
+
     use super::*;
+    use coral_engine::QueryRuntimeContext;
     use coral_spec::{
         ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestCredentialSpec,
         ManifestOAuthClientIdSpec, ManifestOAuthClientSpec, ManifestOAuthCredentialSpec,
@@ -796,6 +840,276 @@ mod tests {
         ManifestOAuthDynamicClientRegistrationSpec, ManifestOAuthFlowKind, ManifestOAuthFlowSpec,
         ManifestOAuthPkceMode, ManifestOAuthRedirectUriPortMode,
     };
+    use tempfile::TempDir;
+    use tonic::Code;
+
+    use crate::credentials::{CredentialManager, CredentialStore};
+    use crate::identity::{Principal, PrincipalKind};
+    use crate::query::extensions::NoopEngineExtensionsProvider;
+    use crate::request_context::RequestContext;
+    use crate::state::db::{
+        AddMemberOutcome, CoralDb, DatabaseConfig, ResolvedDatabaseConfig, UpsertLoginOutcome,
+    };
+    use crate::state::{AppStateLayout, ConfigStore};
+    use crate::workspaces::{MemberRole, WorkspaceAuthorizer};
+
+    #[tokio::test]
+    async fn source_configuration_requires_manage() {
+        let fixture = source_service_fixture().await;
+        let workspace = workspace(&fixture.workspace);
+
+        assert_manage_denied(
+            fixture
+                .service
+                .discover_sources(authenticated(
+                    DiscoverSourcesRequest {
+                        workspace: Some(workspace.clone()),
+                    },
+                    &fixture.member,
+                ))
+                .await
+                .expect_err("members cannot discover source setup metadata"),
+        );
+        assert_manage_denied(
+            fixture
+                .service
+                .list_sources(authenticated(
+                    ListSourcesRequest {
+                        workspace: Some(workspace.clone()),
+                    },
+                    &fixture.member,
+                ))
+                .await
+                .expect_err("members cannot list source configuration"),
+        );
+        assert_manage_denied(
+            fixture
+                .service
+                .get_source(authenticated(
+                    GetSourceRequest {
+                        workspace: Some(workspace.clone()),
+                        name: "sensitive".to_string(),
+                    },
+                    &fixture.member,
+                ))
+                .await
+                .expect_err("members cannot read configured values or secret names"),
+        );
+        assert_manage_denied(
+            fixture
+                .service
+                .get_source_info(authenticated(
+                    GetSourceInfoRequest {
+                        workspace: Some(workspace.clone()),
+                        name: "github".to_string(),
+                    },
+                    &fixture.member,
+                ))
+                .await
+                .expect_err("members cannot read credential setup metadata"),
+        );
+        assert_manage_denied(
+            fixture
+                .service
+                .create_bundled_source(authenticated(
+                    CreateBundledSourceRequest {
+                        workspace: Some(workspace.clone()),
+                        name: "invalid/name".to_string(),
+                        ..Default::default()
+                    },
+                    &fixture.member,
+                ))
+                .await
+                .expect_err("members cannot create bundled sources"),
+        );
+        let denied = match fixture
+            .service
+            .create_bundled_source_with_o_auth(authenticated(
+                CreateBundledSourceWithOAuthRequest {
+                    workspace: Some(workspace.clone()),
+                    name: "invalid/name".to_string(),
+                    ..Default::default()
+                },
+                &fixture.member,
+            ))
+            .await
+        {
+            Ok(_) => panic!("members cannot start credential retrieval"),
+            Err(status) => status,
+        };
+        assert_manage_denied(denied);
+        let denied = match fixture
+            .service
+            .import_source(authenticated(
+                ImportSourceRequest {
+                    workspace: Some(workspace.clone()),
+                    manifest_yaml: "not: [valid".to_string(),
+                    ..Default::default()
+                },
+                &fixture.member,
+            ))
+            .await
+        {
+            Ok(_) => panic!("members cannot import sources"),
+            Err(status) => status,
+        };
+        assert_manage_denied(denied);
+        assert_manage_denied(
+            fixture
+                .service
+                .delete_source(authenticated(
+                    DeleteSourceRequest {
+                        workspace: Some(workspace.clone()),
+                        name: "invalid/name".to_string(),
+                    },
+                    &fixture.member,
+                ))
+                .await
+                .expect_err("members cannot delete sources"),
+        );
+        assert_manage_denied(
+            fixture
+                .service
+                .validate_source(authenticated(
+                    ValidateSourceRequest {
+                        workspace: Some(workspace.clone()),
+                        name: "invalid/name".to_string(),
+                    },
+                    &fixture.member,
+                ))
+                .await
+                .expect_err("members cannot validate source configuration"),
+        );
+
+        assert_manage_denied(
+            fixture
+                .service
+                .list_sources(authenticated(
+                    ListSourcesRequest {
+                        workspace: Some(workspace),
+                    },
+                    &fixture.owner_agent,
+                ))
+                .await
+                .expect_err("an owner role cannot promote an agent credential"),
+        );
+
+        let unavailable = authorize_manage(
+            None,
+            &Principal::local(),
+            &WorkspaceName::parse(&fixture.workspace).expect("workspace"),
+        )
+        .await
+        .expect_err("missing authorizer must never bypass policy");
+        assert_eq!(unavailable.code(), Code::Internal);
+    }
+
+    struct SourceServiceFixture {
+        _temp: TempDir,
+        service: SourceService,
+        workspace: String,
+        member: Principal,
+        owner_agent: Principal,
+    }
+
+    async fn source_service_fixture() -> SourceServiceFixture {
+        let temp = TempDir::new().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        layout.ensure().expect("layout dirs");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(CredentialStore::new(layout.clone()));
+        let DatabaseConfig::Sqlite { path } = DatabaseConfig::load(&layout).expect("config") else {
+            panic!("default test database must be SQLite")
+        };
+        let db = Arc::new(
+            CoralDb::open(ResolvedDatabaseConfig::Sqlite { path })
+                .await
+                .expect("open sqlite"),
+        );
+        db.migrate().await.expect("migrate sqlite");
+        let owner_id = provision_user(&db, "owner").await;
+        let member_id = provision_user(&db, "member").await;
+        let workspace = format!("default-{owner_id}");
+        assert!(matches!(
+            db.add_workspace_member(&workspace, &member_id, MemberRole::Member, 2)
+                .await
+                .expect("add member"),
+            AddMemberOutcome::Added(_)
+        ));
+        config_store
+            .upsert_source(
+                &WorkspaceName::parse(&workspace).expect("workspace"),
+                InstalledSource {
+                    name: SourceName::parse("sensitive").expect("source"),
+                    version: Some("1".to_string()),
+                    variables: BTreeMap::from([("REGION".to_string(), "private".to_string())]),
+                    secrets: vec!["API_TOKEN".to_string()],
+                    credential_storage: Some(CredentialStorageKind::File),
+                    credential_revision: uuid::Uuid::nil(),
+                    origin: SourceOrigin::Imported,
+                },
+            )
+            .expect("seed sensitive source configuration");
+        let sources = SourceManager::new_for_tests(
+            config_store.clone(),
+            credential_manager.clone(),
+            layout.clone(),
+        );
+        let workspaces = WorkspaceManager::new_for_tests(
+            config_store.clone(),
+            credential_manager.clone(),
+            layout.clone(),
+            None,
+            Arc::clone(&db),
+        );
+        let queries = QueryManager::new_for_tests(
+            config_store,
+            workspaces.clone(),
+            credential_manager,
+            QueryRuntimeContext::default(),
+            layout,
+            vec![Arc::new(NoopEngineExtensionsProvider)],
+        );
+        let service = SourceService::new(sources, queries, workspaces)
+            .with_authorizer(WorkspaceAuthorizer::new(db));
+
+        SourceServiceFixture {
+            _temp: temp,
+            service,
+            workspace,
+            member: Principal::parse(&member_id, PrincipalKind::User).expect("member"),
+            owner_agent: Principal::parse(&owner_id, PrincipalKind::Agent).expect("owner agent"),
+        }
+    }
+
+    async fn provision_user(db: &CoralDb, subject: &str) -> String {
+        let UpsertLoginOutcome::Upserted(user) = db
+            .provision_login("issuer", subject, None, 1)
+            .await
+            .expect("provision user")
+        else {
+            panic!("new subject should create a user")
+        };
+        user.user_id
+    }
+
+    fn workspace(name: &str) -> coral_api::v1::Workspace {
+        coral_api::v1::Workspace {
+            name: name.to_string(),
+        }
+    }
+
+    fn authenticated<T>(message: T, principal: &Principal) -> Request<T> {
+        let mut request = Request::new(message);
+        request
+            .extensions_mut()
+            .insert(RequestContext::new(principal.clone()));
+        request
+    }
+
+    fn assert_manage_denied(status: Status) {
+        assert_eq!(status.code(), Code::PermissionDenied);
+    }
 
     #[test]
     fn converts_credential_methods_to_source_input_spec() {
