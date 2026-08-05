@@ -14,10 +14,6 @@ const MAX_SUBJECT_BYTES: usize = 255;
 const MAX_DISPLAY_NAME_BYTES: usize = 255;
 
 /// A fully verified identity. Intentionally does not implement `Debug`.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "consumed by OAuth callback descendants")
-)]
 pub(super) struct ValidatedOidcIdentity {
     pub(super) issuer: String,
     pub(super) subject: String,

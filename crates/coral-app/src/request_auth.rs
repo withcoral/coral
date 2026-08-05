@@ -50,8 +50,7 @@ impl SessionPrincipalProvider {
             .verifier
             .validate_access_token(token, &accepted)
             .map_err(|_error| unauthenticated())?;
-        Principal::parse(&session.subject, PrincipalKind::User)
-            .map_err(|_error| unauthenticated())
+        Principal::parse(&session.subject, PrincipalKind::User).map_err(|_error| unauthenticated())
     }
 }
 

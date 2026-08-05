@@ -50,12 +50,10 @@ pub(crate) trait DbRepos: DbSession + Sized {
         TasksRepo::new(self)
     }
 
-    #[cfg_attr(not(test), expect(dead_code, reason = "M2 wires production consumers"))]
     fn users(&mut self) -> UsersRepo<'_, Self> {
         UsersRepo::new(self)
     }
 
-    #[cfg_attr(not(test), expect(dead_code, reason = "M2 wires production consumers"))]
     fn workspace_members(&mut self) -> WorkspaceMembersRepo<'_, Self> {
         WorkspaceMembersRepo::new(self)
     }
