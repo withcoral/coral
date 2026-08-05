@@ -466,6 +466,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "covers the complete legacy-attribution login transition"
+    )]
     async fn login_rekeys_legacy_task_attribution_before_code_storage() {
         let server = MockServer::start().await;
         mount_provider(&server, 200, 200, NONCE).await;
@@ -623,12 +627,15 @@ mod tests {
             user_ids.push(authorization.user_id);
         }
 
-        assert_eq!(user_ids[0], user_ids[1]);
+        let [first_user_id, second_user_id] = user_ids.as_slice() else {
+            panic!("two logins must return two user IDs")
+        };
+        assert_eq!(first_user_id, second_user_id);
         let mut session = database.as_ref();
         assert_eq!(
             session
                 .workspace_members()
-                .role_for_user_id(&format!("default-{}", user_ids[0]), &user_ids[0])
+                .role_for_user_id(&format!("default-{first_user_id}"), first_user_id)
                 .await
                 .expect("personal workspace ownership"),
             Some(MemberRole::Owner)
