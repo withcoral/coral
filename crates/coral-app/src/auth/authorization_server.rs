@@ -154,7 +154,7 @@ impl CoralAuthorizationServer {
         let state = AuthorizationServerHttpState::new(
             self.settings,
             self.session_tokens,
-            self.state_store,
+            &self.state_store,
             self.database,
             Arc::new(self.authorization_resources),
         )?;
@@ -281,7 +281,7 @@ impl AuthorizationServerHttpState {
     fn new(
         settings: Arc<ResolvedAuthSettings>,
         session_tokens: SessionTokenIssuer,
-        state_store: Arc<InMemoryStateStore>,
+        state_store: &Arc<InMemoryStateStore>,
         database: Option<Arc<CoralDb>>,
         authorization_resources: Arc<BTreeSet<String>>,
     ) -> Result<Self, AuthServerError> {
