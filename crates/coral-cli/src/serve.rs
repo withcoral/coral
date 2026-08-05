@@ -222,9 +222,7 @@ fn mcp_session_authenticator(
     session_auth: Option<&SessionAuthSettings>,
     mcp_config: Option<&McpHttpServeConfig>,
 ) -> Option<Arc<dyn BearerAuthenticator>> {
-    let Some(session_auth) = session_auth else {
-        return None;
-    };
+    let session_auth = session_auth?;
     match mcp_config {
         Some(McpHttpServeConfig::Authenticated { public_url, .. }) => {
             Some(session_auth.principal_provider([public_url.clone()])
