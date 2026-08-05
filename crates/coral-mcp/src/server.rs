@@ -43,10 +43,10 @@ use crate::{
         build_tool_result, describe_arguments, describe_value, end_task_arguments,
         feedback_arguments, function_added_value, guide_resource, guide_resource_content,
         initial_instructions, list_catalog_arguments, list_catalog_value, list_columns_arguments,
-        list_columns_table_fallback_value, list_columns_value, render_function_artifact,
-        required_task_id_argument, required_tool_intent_argument, search_arguments, sql_arguments,
-        start_task_arguments, status_to_error_data, tables_resource, tables_resource_content,
-        tool_error_from_status, tool_error_result,
+        list_columns_value, render_function_artifact, required_task_id_argument,
+        required_tool_intent_argument, search_arguments, sql_arguments, start_task_arguments,
+        status_to_error_data, tables_resource, tables_resource_content, tool_error_from_status,
+        tool_error_result,
     },
     telemetry,
 };
@@ -870,33 +870,6 @@ impl CoralMcpServer {
             ))),
             Err(status) if status.code() == tonic::Code::InvalidArgument => {
                 Err(status_to_error_data(&status))
-            }
-            Err(status) if status.code() == tonic::Code::NotFound => {
-                match self
-                    .load_catalog_surface_description(
-                        arguments.catalog.as_deref(),
-                        &arguments.schema,
-                        &arguments.table,
-                    )
-                    .await
-                {
-                    Ok(response) => match list_columns_table_fallback_value(
-                        arguments.catalog.as_deref(),
-                        &arguments.schema,
-                        &arguments.table,
-                        &response,
-                    ) {
-                        Ok(value) => Ok(ToolCallOutcome::success(value)),
-                        Err(status) => Ok(ToolCallOutcome::ToolError {
-                            operation: "Column listing",
-                            status,
-                        }),
-                    },
-                    Err(status) => Ok(ToolCallOutcome::ToolError {
-                        operation: "Column listing",
-                        status,
-                    }),
-                }
             }
             Err(status) => Ok(ToolCallOutcome::ToolError {
                 operation: "Column listing",

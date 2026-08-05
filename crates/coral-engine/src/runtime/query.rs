@@ -349,12 +349,13 @@ async fn build_registered_runtime(
     let source_function_names = source_functions.names();
     let udf_table_functions = published_table_functions(config.udfs, &source_function_names)
         .map_err(|err| datafusion_to_core(&err, &[]))?;
-    catalog::register(&ctx, &registration.active_sources, &udf_table_functions)
-        .await
-        .map_err(|err| datafusion_to_core(&err, &[]))?;
     let tables = catalog::collect_static_tables(&registration.active_sources);
     let table_functions =
         catalog::collect_table_functions(&registration.active_sources, &udf_table_functions);
+    validate_catalog_surface_namespace(&tables, &table_functions)?;
+    catalog::register(&ctx, &registration.active_sources, &udf_table_functions)
+        .await
+        .map_err(|err| datafusion_to_core(&err, &[]))?;
     install_table_function_call_planners(
         &ctx,
         source_functions,
@@ -407,6 +408,29 @@ async fn install_table_function_call_planners(
             Ok(())
         }
     }
+}
+
+fn validate_catalog_surface_namespace(
+    tables: &[TableInfo],
+    table_functions: &[TableFunctionInfo],
+) -> Result<(), CoreError> {
+    let two_part_tables = tables
+        .iter()
+        .filter(|table| table.catalog_name.is_none())
+        .map(|table| (table.schema_name.as_str(), table.table_name.as_str()))
+        .collect::<BTreeSet<_>>();
+    if let Some(function) = table_functions.iter().find(|function| {
+        two_part_tables.contains(&(
+            function.schema_name.as_str(),
+            function.function_name.as_str(),
+        ))
+    }) {
+        return Err(CoreError::FailedPrecondition(format!(
+            "catalog surface '{}.{}' is registered as both a table and a table function",
+            function.schema_name, function.function_name
+        )));
+    }
+    Ok(())
 }
 
 async fn install_udf_call_planner(
@@ -537,6 +561,9 @@ impl QueryRuntimeAdapter {
 
         let udf_table_functions = published_table_functions(&udfs, &self.source_function_names)
             .map_err(|err| datafusion_to_core(&err, &self.tables))?;
+        let table_functions =
+            catalog::collect_table_functions(&self.active_sources, &udf_table_functions);
+        validate_catalog_surface_namespace(&self.tables, &table_functions)?;
         let udf_calls = Box::pin(UdfCallRegistry::new(
             &self.ctx,
             &udfs,
@@ -551,8 +578,7 @@ impl QueryRuntimeAdapter {
             .install(&self.ctx)
             .map_err(|err| datafusion_to_core(&err, &self.tables))?;
 
-        self.table_functions =
-            catalog::collect_table_functions(&self.active_sources, &udf_table_functions);
+        self.table_functions = table_functions;
         if let Some(fallback_runtime) = &mut self.fallback_runtime {
             fallback_runtime.config.udfs = udfs;
         }
@@ -665,10 +691,9 @@ impl QueryRuntimeAdapter {
         };
 
         match (table, table_function) {
-            (Some(table), Some(table_function)) => Ok(DescribeCatalogSurfaceInfo::Ambiguous {
-                table,
-                table_function,
-            }),
+            (Some(_), Some(_)) => Err(CoreError::FailedPrecondition(format!(
+                "catalog surface '{schema_name}.{surface_name}' is registered as both a table and a table function"
+            ))),
             (Some(table), None) => Ok(DescribeCatalogSurfaceInfo::Table(table)),
             (None, Some(table_function)) => {
                 Ok(DescribeCatalogSurfaceInfo::TableFunction(table_function))
@@ -1624,7 +1649,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn describe_catalog_surface_reports_table_function_name_collision() {
+    async fn describe_catalog_surface_rejects_table_function_name_collision() {
         let mut adapter = adapter_with_table().await;
         let mut function = adapter
             .table_functions
@@ -1634,15 +1659,21 @@ mod tests {
         function.function_name = "events".to_string();
         adapter.table_functions.push(function);
 
-        let result = adapter
+        let registration_error =
+            validate_catalog_surface_namespace(&adapter.tables, &adapter.table_functions)
+                .expect_err("runtime should reject a catalog surface collision");
+        assert!(matches!(
+            registration_error,
+            CoreError::FailedPrecondition(_)
+        ));
+
+        let error = adapter
             .describe_catalog_surface(None, "demo", "events")
             .await
-            .expect("describe ambiguous catalog surface");
+            .expect_err("describe should reject a catalog surface collision");
 
-        assert!(matches!(
-            result,
-            DescribeCatalogSurfaceInfo::Ambiguous { .. }
-        ));
+        assert!(matches!(error, CoreError::FailedPrecondition(_)));
+        assert!(error.to_string().contains("demo.events"));
     }
 
     #[tokio::test]

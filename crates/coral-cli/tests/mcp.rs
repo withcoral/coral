@@ -1286,7 +1286,7 @@ async fn mcp_stdio_sql_and_catalog_tools_return_structured_content()
         .expect_err("removed search_catalog tool should not be callable");
     assert_search_tool(&client, &server, &task_id).await?;
     assert_describe_tool(&client, &server, &task_id).await?;
-    assert_list_columns_tool(&client, &task_id).await?;
+    assert_list_columns_tool(&client, &server, &task_id).await?;
     assert_sql_tool(&client, &task_id).await?;
 
     client.cancel().await?;
@@ -1435,10 +1435,9 @@ async fn assert_describe_tool(
         )),
     )
     .await?;
-    assert_eq!(described["found"], true);
     assert_eq!(described["kind"], "table");
-    assert_eq!(described["name"], "local_messages.messages");
     assert_eq!(described["column_count"], 3);
+    assert!(described.get("name").is_none());
 
     let describe_requests = server.describe_catalog_surface_requests();
     assert_eq!(describe_requests.len(), describe_before + 1);
@@ -1477,6 +1476,7 @@ async fn assert_describe_tool(
 
 async fn assert_list_columns_tool(
     client: &RunningService<RoleClient, ()>,
+    server: &MockServer,
     task_id: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let columns = structured_tool_content(
@@ -1522,6 +1522,30 @@ async fn assert_list_columns_tool(
     .await?;
     assert_eq!(filtered_columns["total"], 1);
     assert_eq!(filtered_columns["rows"][0][0], "text");
+
+    let describe_before = server.describe_catalog_surface_requests().len();
+    let missing = client
+        .call_tool(
+            CallToolRequestParams::new("list_columns").with_arguments(task_arguments(
+                task_id,
+                &json!({
+                    "schema": "local_messages",
+                    "table": "missing"
+                }),
+            )),
+        )
+        .await?;
+    assert_eq!(missing.is_error, Some(true));
+    assert!(
+        tool_error_text(&missing).contains("Column listing target was not found"),
+        "unexpected list_columns error: {}",
+        tool_error_text(&missing)
+    );
+    assert_eq!(
+        server.describe_catalog_surface_requests().len(),
+        describe_before,
+        "list_columns must not call the surface-description operation"
+    );
     Ok(())
 }
 

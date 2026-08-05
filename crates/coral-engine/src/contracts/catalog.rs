@@ -58,13 +58,6 @@ pub enum DescribeCatalogSurfaceInfo {
     Table(TableInfo),
     /// One table function matched.
     TableFunction(TableFunctionInfo),
-    /// A table and table function share the requested two-part name.
-    Ambiguous {
-        /// Exact table match.
-        table: TableInfo,
-        /// Exact table-function match.
-        table_function: TableFunctionInfo,
-    },
     /// No exact match. Contains lightweight metadata for recovery hints.
     Missing(CatalogInfo),
 }

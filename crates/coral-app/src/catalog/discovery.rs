@@ -107,10 +107,6 @@ impl CatalogMetadataField {
 pub(crate) enum DescribeCatalogSurfaceResult {
     Table(TableInfo),
     TableFunction(TableFunctionInfo),
-    Ambiguous {
-        table: TableInfo,
-        table_function: TableFunctionInfo,
-    },
     Missing(MissingCatalogSurfaceContext),
 }
 
@@ -313,13 +309,6 @@ impl CatalogDiscovery {
             DescribeCatalogSurfaceInfo::TableFunction(table_function) => {
                 Ok(DescribeCatalogSurfaceResult::TableFunction(table_function))
             }
-            DescribeCatalogSurfaceInfo::Ambiguous {
-                table,
-                table_function,
-            } => Ok(DescribeCatalogSurfaceResult::Ambiguous {
-                table,
-                table_function,
-            }),
             DescribeCatalogSurfaceInfo::Missing(catalog) => {
                 let mut items = catalog_items(catalog, None);
                 items.retain(|item| surface_ref.catalog.is_none() || item.is_table());

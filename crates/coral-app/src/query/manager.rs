@@ -411,7 +411,6 @@ impl QueryManager {
             },
             |result| {
                 Some(match result {
-                    DescribeCatalogSurfaceInfo::Ambiguous { .. } => 2,
                     DescribeCatalogSurfaceInfo::Table(_)
                     | DescribeCatalogSurfaceInfo::TableFunction(_) => 1,
                     DescribeCatalogSurfaceInfo::Missing(_) => 0,

@@ -8,8 +8,7 @@ use std::time::Duration;
 use coral_api::{
     CORAL_ERROR_DOMAIN, CORAL_TASK_ID_METADATA_KEY, grpc_response_status_code,
     v1::{
-        AmbiguousCatalogSurface, CatalogItem as ProtoCatalogItem,
-        CatalogSearchResult as ProtoCatalogSearchResult, Column,
+        CatalogItem as ProtoCatalogItem, CatalogSearchResult as ProtoCatalogSearchResult, Column,
         ColumnSearchResult as ProtoColumnSearchResult, DescribeCatalogSurfaceResponse,
         MissingCatalogSurface, PaginationResponse, QueryTestFailure, QueryTestResult,
         QueryTestSuccess, SearchLimits, Source, Table, TableFunction, TableFunctionArgument,
@@ -511,15 +510,6 @@ pub(crate) fn describe_catalog_surface_response_to_proto(
                 ))),
             }
         }
-        DescribeCatalogSurfaceResult::Ambiguous {
-            table,
-            table_function,
-        } => DescribeCatalogSurfaceResponse {
-            result: Some(Result::Ambiguous(AmbiguousCatalogSurface {
-                table: Some(table_to_proto(workspace_name, table)),
-                table_function: Some(table_function_to_proto(workspace_name, table_function)),
-            })),
-        },
         DescribeCatalogSurfaceResult::Missing(context) => DescribeCatalogSurfaceResponse {
             result: Some(Result::Missing(MissingCatalogSurface {
                 suggestions: context

@@ -250,14 +250,6 @@ message DescribeCatalogSurfaceRequest {
   string catalog_name = 4;
 }
 
-// Exact table and table-function matches for an ambiguous two-part name.
-message AmbiguousCatalogSurface {
-  // Exact table match.
-  Table table = 1;
-  // Exact table-function match.
-  TableFunction table_function = 2;
-}
-
 // App-owned recovery context for a missing catalog surface.
 message MissingCatalogSurface {
   // Suggested nearby tables and table functions, capped for user-facing help.
@@ -276,8 +268,6 @@ message DescribeCatalogSurfaceResponse {
     Table table = 1;
     // Exact table-function match.
     TableFunction table_function = 2;
-    // Both surface kinds matched the same two-part name.
-    AmbiguousCatalogSurface ambiguous = 3;
     // No surface matched the requested name.
     MissingCatalogSurface missing = 4;
   }

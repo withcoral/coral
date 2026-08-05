@@ -1210,9 +1210,9 @@ async fn mcp_catalog_helpers_expose_coral_system_tables_from_sql_catalog() {
     );
 
     let described = describe_surface(client, &task_id, "coral", "columns").await;
-    assert_eq!(described["found"], true);
-    assert_eq!(described["name"], "coral.columns");
+    assert_eq!(described["kind"], "table");
     assert_eq!(described["column_count"], 11);
+    assert!(described.get("name").is_none());
 
     let columns = client
         .call_tool(
@@ -1523,19 +1523,15 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     assert_matches_output_schema(search_tool, &universal_search);
 
     let described = describe_surface(client, &task_id, "local_messages", "messages").await;
-    assert_eq!(described["found"], true);
     assert_eq!(described["kind"], "table");
-    assert_eq!(described["name"], "local_messages.messages");
     assert_eq!(described["column_count"], 3);
     assert!(described["columns_hint"].as_str().is_some());
     assert!(described["columns"].is_null());
     assert_matches_output_schema(describe_tool, &described);
 
     let missing_table = describe_surface(client, &task_id, "local_messages", "missing").await;
-    assert_eq!(missing_table["found"], false);
     assert_eq!(missing_table["reason"], "missing");
-    assert_eq!(missing_table["requested"]["schema"], "local_messages");
-    assert_eq!(missing_table["requested"]["surface"], "missing");
+    assert!(missing_table.get("requested").is_none());
     assert_eq!(missing_table["suggested_calls"][0]["tool"], "list_catalog");
     assert_eq!(
         missing_table["suggested_calls"][0]["arguments"]["schema"],
@@ -1678,25 +1674,9 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
         )
         .await
         .expect("list columns for missing table");
-    let missing_columns = missing_columns
-        .structured_content
-        .expect("structured content");
-    assert_eq!(missing_columns["found"], false);
-    assert_eq!(missing_columns["requested"]["schema"], "local_messages");
-    assert_eq!(missing_columns["requested"]["table"], "missing");
-    assert_eq!(
-        missing_columns["same_schema_tables"][0]["name"],
-        "local_messages.events"
-    );
-    assert_eq!(
-        missing_columns["suggestions"][0]["name"],
-        "local_messages.events"
-    );
-    assert_eq!(
-        missing_columns["suggested_calls"][0]["arguments"]["schema"],
-        "local_messages"
-    );
-    assert_matches_output_schema(list_columns_tool, &missing_columns);
+    assert_eq!(missing_columns.is_error, Some(true));
+    assert_tool_error_text_contains(&missing_columns, "Column listing target was not found");
+    assert_tool_error_text_contains(&missing_columns, "table 'local_messages.missing' not found");
 
     let missing_columns_with_bad_pattern = client
         .call_tool(
@@ -1711,11 +1691,11 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
         )
         .await
         .expect("list columns for missing table with bad pattern");
-    let missing_columns_with_bad_pattern = missing_columns_with_bad_pattern
-        .structured_content
-        .expect("structured content");
-    assert_eq!(missing_columns_with_bad_pattern["found"], false);
-    assert_matches_output_schema(list_columns_tool, &missing_columns_with_bad_pattern);
+    assert_eq!(missing_columns_with_bad_pattern.is_error, Some(true));
+    assert_tool_error_text_contains(
+        &missing_columns_with_bad_pattern,
+        "table 'local_messages.missing' not found",
+    );
 
     client
         .call_tool(
@@ -1827,15 +1807,13 @@ async fn list_catalog_surfaces_table_functions() {
 
     let describe_tool = tool_by_name(&tools, "describe");
     let described_function = describe_surface(client, &task_id, "searchy", "search_issues").await;
-    assert_eq!(described_function["found"], true);
     assert_eq!(described_function["kind"], "table_function");
-    assert_eq!(described_function["name"], "searchy.search_issues");
     assert_eq!(
-        described_function["table_function"]["arguments"][1]["values"],
+        described_function["arguments"][1]["values"],
         json!(["lexical", "semantic", "hybrid"])
     );
     assert_eq!(
-        described_function["table_function"]["result_columns"][1]["column_name"],
+        described_function["result_columns"][1]["column_name"],
         "score"
     );
     assert_matches_output_schema(describe_tool, &described_function);

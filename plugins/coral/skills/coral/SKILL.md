@@ -24,7 +24,7 @@ Use this as the Coral entrypoint for external context. Query Coral before answer
 
 1. Identify the needed source, entity, and scope from the user request.
 2. Discover relevant tables, table functions, columns, and filters with `search`; use `list_catalog` when you need a paged catalog view narrowed by catalog, schema, or kind.
-3. Use `describe` with `schema` and a bare `surface` name when you need exact metadata; add `catalog` for a three-part table. Coral resolves whether the surface is a table or table function. Read `sql_reference`, `sql_call_example`, `guide`, and `required_filters`; use `coral://guide` for query patterns and `coral://tables` for table summaries.
+3. Use `describe` with `schema` and a bare `surface` name when you need exact metadata; add `catalog` for a three-part table. Coral resolves whether the surface is a table or table function. Keep the request target or earlier discovery result because an exact response returns metadata without repeating the target. Read `kind`, `guide`, `required_filters`, function arguments, and result columns; use `coral://guide` for query patterns and `coral://tables` for table summaries.
 4. Inspect `coral.columns` for table columns, required filters, virtual columns, and descriptions.
 5. Inspect `coral.table_functions` for source-scoped function guides, arguments, and result columns.
 6. Inspect `coral.inputs` when source configuration affects the answer.
