@@ -52,7 +52,7 @@ use crate::sources::SourceName;
 use crate::task::manager::TaskManager;
 use crate::task::service::task_manager_status;
 use crate::transport::{grpc_span, instrument_grpc, request_context, workspace_name_from_proto};
-use crate::workspaces::WorkspaceAuthorizer;
+use crate::workspaces::{WorkspaceAction, WorkspaceAuthorizer, WorkspaceName};
 
 #[derive(Clone)]
 pub(crate) struct SearchService {
@@ -85,10 +85,18 @@ impl SearchServiceApi for SearchService {
         let span = grpc_span(&request);
         let search = self.search.clone();
         let tasks = self.tasks.clone();
+        let workspace_authorizer = self.workspace_authorizer.clone();
         let request_context = request_context(&request)?.clone();
         Box::pin(instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            authorize(
+                workspace_authorizer.as_ref(),
+                request_context.principal(),
+                &workspace_name,
+                WorkspaceAction::Read,
+            )
+            .await?;
             let attribution = QueryAttribution::new(
                 tasks
                     .validate_attribution(&workspace_name, request_context.task_id())
@@ -112,9 +120,18 @@ impl SearchServiceApi for SearchService {
     ) -> Result<Response<ProtoRebuildSearchIndexResponse>, Status> {
         let span = grpc_span(&request);
         let search = self.search.clone();
+        let workspace_authorizer = self.workspace_authorizer.clone();
+        let principal = request_context(&request)?.principal().clone();
         Box::pin(instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            authorize(
+                workspace_authorizer.as_ref(),
+                &principal,
+                &workspace_name,
+                WorkspaceAction::Manage,
+            )
+            .await?;
             let request = DomainRebuildSearchIndexRequest {
                 workspace_name,
                 provider: index_provider_from_proto(proto_index_provider(request.provider)?),
@@ -135,9 +152,18 @@ impl SearchServiceApi for SearchService {
     ) -> Result<Response<ProtoDrainSearchQueueResponse>, Status> {
         let span = grpc_span(&request);
         let search = self.search.clone();
+        let workspace_authorizer = self.workspace_authorizer.clone();
+        let principal = request_context(&request)?.principal().clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            authorize(
+                workspace_authorizer.as_ref(),
+                &principal,
+                &workspace_name,
+                WorkspaceAction::Manage,
+            )
+            .await?;
             let request = DomainDrainSearchQueueRequest {
                 workspace_name,
                 budget_ms: request.budget_ms,
@@ -154,9 +180,18 @@ impl SearchServiceApi for SearchService {
     ) -> Result<Response<ProtoClearSearchDataResponse>, Status> {
         let span = grpc_span(&request);
         let search = self.search.clone();
+        let workspace_authorizer = self.workspace_authorizer.clone();
+        let principal = request_context(&request)?.principal().clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            authorize(
+                workspace_authorizer.as_ref(),
+                &principal,
+                &workspace_name,
+                WorkspaceAction::Manage,
+            )
+            .await?;
             let request = DomainClearSearchDataRequest {
                 workspace_name,
                 scope: data_scope_from_proto(proto_data_scope(request.scope)?)?,
@@ -167,6 +202,20 @@ impl SearchServiceApi for SearchService {
         })
         .await
     }
+}
+
+async fn authorize(
+    authorizer: Option<&WorkspaceAuthorizer>,
+    principal: &crate::identity::Principal,
+    workspace: &WorkspaceName,
+    action: WorkspaceAction,
+) -> Result<(), Status> {
+    let authorizer =
+        authorizer.ok_or_else(|| Status::internal("workspace authorization is unavailable"))?;
+    authorizer
+        .authorize(principal, workspace, action)
+        .await
+        .map_err(app_status)
 }
 
 fn search_status(error: SearchManagerError) -> Status {
@@ -504,18 +553,69 @@ fn provider_coverage_to_proto(coverage: &ProviderCoverage) -> SearchProviderCove
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use coral_api::v1::{
         SearchClearTarget as ProtoSearchClearTarget,
         SearchProviderState as ProtoSearchProviderState, search_clear_target,
     };
+    use tempfile::TempDir;
     use tonic::Code;
 
-    use super::{clear_target_from_proto, provider_status_to_proto};
+    use super::{authorize, clear_target_from_proto, provider_status_to_proto};
+    use crate::identity::{Principal, PrincipalKind};
     use crate::search::maintenance::SearchClearTarget;
     use crate::search::result::{
         ProviderCoverage, ProviderStatus, SearchProviderKind,
         SearchProviderState as DomainProviderState,
     };
+    use crate::state::AppStateLayout;
+    use crate::state::db::{
+        AddMemberOutcome, CoralDb, DatabaseConfig, ResolvedDatabaseConfig, UpsertLoginOutcome,
+    };
+    use crate::workspaces::{MemberRole, WorkspaceAction, WorkspaceAuthorizer, WorkspaceName};
+
+    #[tokio::test]
+    async fn search_actions_enforce_member_and_agent_policy() {
+        let (_temp, db) = database().await;
+        let owner_id = provision_user(&db, "owner").await;
+        let member_id = provision_user(&db, "member").await;
+        let workspace =
+            WorkspaceName::parse(&format!("default-{owner_id}")).expect("owner workspace");
+        assert!(matches!(
+            db.add_workspace_member(workspace.as_str(), &member_id, MemberRole::Member, 2)
+                .await
+                .expect("add member"),
+            AddMemberOutcome::Added(_)
+        ));
+        let authorizer = WorkspaceAuthorizer::new(db);
+
+        let unavailable = authorize(None, &Principal::local(), &workspace, WorkspaceAction::Read)
+            .await
+            .expect_err("missing authorizer must never bypass policy");
+        assert_eq!(unavailable.code(), Code::Internal);
+
+        for kind in [PrincipalKind::User, PrincipalKind::Agent] {
+            let principal = Principal::parse(&member_id, kind).expect("member principal");
+            authorize(
+                Some(&authorizer),
+                &principal,
+                &workspace,
+                WorkspaceAction::Read,
+            )
+            .await
+            .expect("member principals can read search data");
+            let denied = authorize(
+                Some(&authorizer),
+                &principal,
+                &workspace,
+                WorkspaceAction::Manage,
+            )
+            .await
+            .expect_err("members and agents cannot mutate search state");
+            assert_eq!(denied.code(), Code::PermissionDenied);
+        }
+    }
 
     #[test]
     fn skipped_provider_status_maps_without_coverage() {
@@ -577,5 +677,31 @@ mod tests {
                 "source={source_name:?}"
             );
         }
+    }
+
+    async fn database() -> (TempDir, Arc<CoralDb>) {
+        let temp = TempDir::new().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        let DatabaseConfig::Sqlite { path } = DatabaseConfig::load(&layout).expect("config") else {
+            panic!("default test database must be SQLite")
+        };
+        let db = Arc::new(
+            CoralDb::open(ResolvedDatabaseConfig::Sqlite { path })
+                .await
+                .expect("open sqlite"),
+        );
+        db.migrate().await.expect("migrate sqlite");
+        (temp, db)
+    }
+
+    async fn provision_user(db: &CoralDb, subject: &str) -> String {
+        let UpsertLoginOutcome::Upserted(user) = db
+            .provision_login("issuer", subject, None, 1)
+            .await
+            .expect("provision user")
+        else {
+            panic!("new subject should create a user")
+        };
+        user.user_id
     }
 }
