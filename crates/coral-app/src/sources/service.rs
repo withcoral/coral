@@ -48,7 +48,9 @@ use crate::transport::{
     grpc_span, instrument_grpc, query_status, validate_source_response_to_proto,
     workspace_name_from_proto, workspace_to_proto,
 };
-use crate::workspaces::{WorkspaceLifecycleRevision, WorkspaceManager, WorkspaceName};
+use crate::workspaces::{
+    WorkspaceAuthorizer, WorkspaceLifecycleRevision, WorkspaceManager, WorkspaceName,
+};
 use tokio::sync::mpsc;
 use tokio_stream::Stream;
 use tokio_stream::StreamExt as _;
@@ -58,6 +60,7 @@ pub(crate) struct SourceService {
     sources: SourceManager,
     queries: QueryManager,
     workspaces: WorkspaceManager,
+    _workspace_authorizer: Option<WorkspaceAuthorizer>,
 }
 
 impl SourceService {
@@ -70,7 +73,13 @@ impl SourceService {
             sources: source_manager,
             queries: query_manager,
             workspaces: workspace_manager,
+            _workspace_authorizer: None,
         }
+    }
+
+    pub(crate) fn with_authorizer(mut self, authorizer: WorkspaceAuthorizer) -> Self {
+        self._workspace_authorizer = Some(authorizer);
+        self
     }
 }
 

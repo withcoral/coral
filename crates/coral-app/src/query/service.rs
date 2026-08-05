@@ -20,11 +20,13 @@ use crate::task::service::task_manager_status;
 use crate::transport::{
     grpc_span, instrument_grpc, query_status, request_context, workspace_name_from_proto,
 };
+use crate::workspaces::WorkspaceAuthorizer;
 
 #[derive(Clone)]
 pub(crate) struct QueryService {
     queries: QueryManager,
     tasks: TaskManager,
+    _workspace_authorizer: Option<WorkspaceAuthorizer>,
 }
 
 impl QueryService {
@@ -32,7 +34,13 @@ impl QueryService {
         Self {
             queries: query_manager,
             tasks: task_manager,
+            _workspace_authorizer: None,
         }
+    }
+
+    pub(crate) fn with_authorizer(mut self, authorizer: WorkspaceAuthorizer) -> Self {
+        self._workspace_authorizer = Some(authorizer);
+        self
     }
 }
 

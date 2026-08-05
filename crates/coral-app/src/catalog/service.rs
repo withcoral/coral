@@ -24,12 +24,13 @@ use crate::transport::{
     describe_table_response_to_proto, grpc_span, instrument_grpc, pagination_to_proto,
     query_status, request_context, workspace_name_from_proto,
 };
-use crate::workspaces::WorkspaceName;
+use crate::workspaces::{WorkspaceAuthorizer, WorkspaceName};
 
 #[derive(Clone)]
 pub(crate) struct CatalogService {
     catalog: CatalogDiscovery,
     tasks: TaskManager,
+    _workspace_authorizer: Option<WorkspaceAuthorizer>,
 }
 
 impl CatalogService {
@@ -37,7 +38,13 @@ impl CatalogService {
         Self {
             catalog: CatalogDiscovery::new(query_manager),
             tasks: task_manager,
+            _workspace_authorizer: None,
         }
+    }
+
+    pub(crate) fn with_authorizer(mut self, authorizer: WorkspaceAuthorizer) -> Self {
+        self._workspace_authorizer = Some(authorizer);
+        self
     }
 }
 

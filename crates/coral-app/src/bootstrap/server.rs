@@ -21,6 +21,7 @@ use coral_api::v1::search_service_server::SearchServiceServer;
 use coral_api::v1::source_service_server::SourceServiceServer;
 use coral_api::v1::task_service_server::TaskServiceServer;
 use coral_api::v1::trace_service_server::TraceServiceServer;
+use coral_api::v1::user_service_server::UserServiceServer;
 use coral_api::v1::workspace_service_server::WorkspaceServiceServer;
 use coral_api::{
     CATALOG_RESPONSE_MAX_MESSAGE_SIZE, HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE,
@@ -72,8 +73,10 @@ use crate::task::store::TaskStore;
 use crate::telemetry::service::TraceService;
 use crate::telemetry::{TelemetryConfig, TraceManager};
 use crate::transport::GrpcRequestContextLayer;
+use crate::users::{UserManager, UserService};
 use crate::workspaces::{
-    WorkspaceLifecycleLock, WorkspaceManager, WorkspacePoolRegistry, WorkspaceService,
+    WorkspaceAuthorizer, WorkspaceLifecycleLock, WorkspaceManager, WorkspacePoolRegistry,
+    WorkspaceService,
 };
 
 /// A static asset (e.g., a built SPA file) served on the same port as
@@ -520,6 +523,7 @@ async fn start_components(
     let trace_components = trace_components_for_store(active_trace_store);
     let grpc = start_server(
         ServerDependencies {
+            db: Arc::clone(&coral_db),
             source: source_manager,
             workspace: workspace_manager,
             query: query_manager,
@@ -751,6 +755,7 @@ struct TraceServerComponents {
 }
 
 struct ServerDependencies {
+    db: Arc<CoralDb>,
     source: SourceManager,
     workspace: WorkspaceManager,
     query: QueryManager,
@@ -772,6 +777,7 @@ async fn start_server(
         local_trace_store_dir,
     } = trace_components;
     let ServerDependencies {
+        db,
         source,
         workspace,
         query,
@@ -780,6 +786,7 @@ async fn start_server(
         feedback,
         task,
     } = dependencies;
+    let authorizer = WorkspaceAuthorizer::new(Arc::clone(&db));
     let (source, query) = match search_observations.as_ref() {
         Some(search_observations) => (
             source.with_search_observation_handle(search_observations.clone()),
@@ -788,20 +795,27 @@ async fn start_server(
         None => (source, query),
     };
     let health_queries = query.clone();
-    let source_service = SourceService::new(source, query.clone(), workspace.clone());
-    let workspace_service = WorkspaceService::new(workspace);
-    let catalog_service = CatalogService::new(query.clone(), task.clone());
-    let function_service = FunctionService::new(query.clone());
-    let query_service = QueryService::new(query, task.clone());
-    let search_service = SearchService::new(search.clone(), task.clone());
-    let feedback_service = FeedbackService::new(feedback, task.clone());
-    let task_service = TaskService::new(task);
+    let source_service = SourceService::new(source, query.clone(), workspace.clone())
+        .with_authorizer(authorizer.clone());
+    let workspace_service = WorkspaceService::new(workspace).with_authorizer(authorizer.clone());
+    let user_service = UserService::new(UserManager::new(db));
+    let catalog_service =
+        CatalogService::new(query.clone(), task.clone()).with_authorizer(authorizer.clone());
+    let function_service = FunctionService::new(query.clone()).with_authorizer(authorizer.clone());
+    let query_service = QueryService::new(query, task.clone()).with_authorizer(authorizer.clone());
+    let search_service =
+        SearchService::new(search.clone(), task.clone()).with_authorizer(authorizer.clone());
+    let feedback_service =
+        FeedbackService::new(feedback, task.clone()).with_authorizer(authorizer.clone());
+    let task_service = TaskService::new(task).with_authorizer(authorizer.clone());
+    let trace_service = trace_service.map(|service| service.with_authorizer(authorizer));
     let mut application_routes = Routes::default()
         .add_service(
             SourceServiceServer::new(source_service)
                 .max_encoding_message_size(SOURCE_RESPONSE_MAX_MESSAGE_SIZE),
         )
         .add_service(WorkspaceServiceServer::new(workspace_service))
+        .add_service(UserServiceServer::new(user_service))
         .add_service(
             CatalogServiceServer::new(catalog_service)
                 .max_encoding_message_size(CATALOG_RESPONSE_MAX_MESSAGE_SIZE),
@@ -1919,6 +1933,7 @@ backend = "unsupported"
         ));
         let server = start_server(
             ServerDependencies {
+                db: Arc::clone(&db),
                 source: source_manager,
                 workspace: workspace_manager,
                 query: query_manager,
@@ -2371,6 +2386,7 @@ tables:
         );
         let running = start_server(
             ServerDependencies {
+                db: Arc::clone(&db),
                 source: source_manager,
                 workspace: workspace_manager,
                 query: query_manager,
@@ -2499,6 +2515,7 @@ tables:
         );
         let running = start_server(
             ServerDependencies {
+                db: Arc::clone(&db),
                 source: source_manager,
                 workspace: workspace_manager,
                 query: query_manager,
@@ -2627,6 +2644,7 @@ tables:
         );
         let running = start_server(
             ServerDependencies {
+                db: Arc::clone(&db),
                 source: source_manager,
                 workspace: workspace_manager,
                 query: query_manager,

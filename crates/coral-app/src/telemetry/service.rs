@@ -16,7 +16,7 @@ use crate::telemetry::manager::{
     GetTraceQuery, ListTracesQuery, TraceListView, TraceManager, TraceManagerError,
 };
 use crate::transport::{grpc_span, instrument_grpc};
-use crate::workspaces::WorkspaceName;
+use crate::workspaces::{WorkspaceAuthorizer, WorkspaceName};
 
 const DEFAULT_TRACE_PAGE_SIZE: usize = 50;
 const MAX_TRACE_PAGE_SIZE: usize = 200;
@@ -24,13 +24,20 @@ const MAX_TRACE_PAGE_SIZE: usize = 200;
 #[derive(Clone)]
 pub(crate) struct TraceService {
     traces: TraceManager,
+    _workspace_authorizer: Option<WorkspaceAuthorizer>,
 }
 
 impl TraceService {
     pub(crate) fn new(trace_manager: TraceManager) -> Self {
         Self {
             traces: trace_manager,
+            _workspace_authorizer: None,
         }
+    }
+
+    pub(crate) fn with_authorizer(mut self, authorizer: WorkspaceAuthorizer) -> Self {
+        self._workspace_authorizer = Some(authorizer);
+        self
     }
 }
 

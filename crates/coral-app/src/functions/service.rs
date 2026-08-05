@@ -19,18 +19,25 @@ use crate::query::manager::QueryManager;
 use crate::transport::{
     grpc_span, instrument_grpc, query_status, workspace_name_from_proto, workspace_to_proto,
 };
-use crate::workspaces::WorkspaceName;
+use crate::workspaces::{WorkspaceAuthorizer, WorkspaceName};
 
 #[derive(Clone)]
 pub(crate) struct FunctionService {
     queries: QueryManager,
+    _workspace_authorizer: Option<WorkspaceAuthorizer>,
 }
 
 impl FunctionService {
     pub(crate) fn new(query_manager: QueryManager) -> Self {
         Self {
             queries: query_manager,
+            _workspace_authorizer: None,
         }
+    }
+
+    pub(crate) fn with_authorizer(mut self, authorizer: WorkspaceAuthorizer) -> Self {
+        self._workspace_authorizer = Some(authorizer);
+        self
     }
 }
 

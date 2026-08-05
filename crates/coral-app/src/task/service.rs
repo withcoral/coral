@@ -13,15 +13,25 @@ use super::manager::{TaskManager, TaskManagerError};
 use super::store::{TaskCompletion, TaskOutcome as DomainTaskOutcome, TaskStart, TaskStoreError};
 use crate::bootstrap::app_status;
 use crate::transport::{grpc_span, instrument_grpc, request_context, workspace_name_from_proto};
+use crate::workspaces::WorkspaceAuthorizer;
 
 #[derive(Clone)]
 pub(crate) struct TaskService {
     task: TaskManager,
+    _workspace_authorizer: Option<WorkspaceAuthorizer>,
 }
 
 impl TaskService {
     pub(crate) fn new(task: TaskManager) -> Self {
-        Self { task }
+        Self {
+            task,
+            _workspace_authorizer: None,
+        }
+    }
+
+    pub(crate) fn with_authorizer(mut self, authorizer: WorkspaceAuthorizer) -> Self {
+        self._workspace_authorizer = Some(authorizer);
+        self
     }
 }
 
