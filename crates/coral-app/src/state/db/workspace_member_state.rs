@@ -147,6 +147,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{AddMemberOutcome, RemoveMemberOutcome};
+    use crate::bootstrap;
     use crate::state::AppStateLayout;
     use crate::state::db::repositories::users::UpsertLoginOutcome;
     use crate::state::db::{
@@ -155,23 +156,58 @@ mod tests {
     use crate::workspaces::MemberRole;
 
     #[tokio::test]
-    async fn membership_mutations_converge_and_protect_the_last_owner() {
+    async fn workspace_member_state_round_trips_against_sqlite() {
         let temp = tempdir().expect("temp dir");
         let db = open_sqlite(&temp).await;
-        let owner_id = create_user(&db, "owner").await;
-        let member_id = create_user(&db, "member").await;
-        let other_owner_id = create_user(&db, "other-owner").await;
-        let workspace_id = "team";
+
+        assert_workspace_member_state_lifecycle(&db, &uuid::Uuid::new_v4().to_string()).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "set CORAL_TEST_POSTGRES_URL to run the shared state harness against Postgres"]
+    async fn workspace_member_state_repository_round_trips_against_postgres() {
+        let Some(url) = postgres_test_url() else {
+            return;
+        };
+        let db = CoralDb::open(ResolvedDatabaseConfig::Postgres { url })
+            .await
+            .expect("open postgres");
+        db.migrate().await.expect("migrate postgres");
+
+        assert_workspace_member_state_lifecycle(&db, &uuid::Uuid::new_v4().to_string()).await;
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the shared backend harness verifies one transactional membership lifecycle"
+    )]
+    async fn assert_workspace_member_state_lifecycle(db: &CoralDb, suffix: &str) {
+        let owner_id = create_user(db, &format!("owner-{suffix}")).await;
+        let member_id = create_user(db, &format!("member-{suffix}")).await;
+        let conflicting_member_id = create_user(db, &format!("conflicting-member-{suffix}")).await;
+        let other_owner_id = create_user(db, &format!("other-owner-{suffix}")).await;
+
+        let identical_add_workspace_id = format!("identical-add-{suffix}");
         assert_eq!(
-            db.create_workspace_with_owner(workspace_id, &owner_id, 10)
+            db.create_workspace_with_owner(&identical_add_workspace_id, &owner_id, 10)
                 .await
                 .expect("create owned workspace"),
             WorkspaceCreationOutcome::Created
         );
 
         let (first, second) = tokio::join!(
-            db.add_workspace_member(workspace_id, &member_id, MemberRole::Member, 11),
-            db.add_workspace_member(workspace_id, &member_id, MemberRole::Member, 12),
+            db.add_workspace_member(
+                &identical_add_workspace_id,
+                &member_id,
+                MemberRole::Member,
+                11,
+            ),
+            db.add_workspace_member(
+                &identical_add_workspace_id,
+                &member_id,
+                MemberRole::Member,
+                12,
+            ),
         );
         let outcomes = [first.expect("first add"), second.expect("second add")];
         assert_eq!(
@@ -188,37 +224,118 @@ mod tests {
                 .count(),
             1
         );
+
+        let conflicting_add_workspace_id = format!("conflicting-add-{suffix}");
         assert_eq!(
-            db.add_workspace_member(workspace_id, &member_id, MemberRole::Owner, 13)
+            db.create_workspace_with_owner(&conflicting_add_workspace_id, &owner_id, 20)
                 .await
-                .expect("conflicting add"),
-            AddMemberOutcome::RoleConflict
+                .expect("create conflicting-add workspace"),
+            WorkspaceCreationOutcome::Created
+        );
+        let (member_add, owner_add) = tokio::join!(
+            db.add_workspace_member(
+                &conflicting_add_workspace_id,
+                &conflicting_member_id,
+                MemberRole::Member,
+                21,
+            ),
+            db.add_workspace_member(
+                &conflicting_add_workspace_id,
+                &conflicting_member_id,
+                MemberRole::Owner,
+                22,
+            ),
+        );
+        let outcomes = [
+            member_add.expect("member-role add"),
+            owner_add.expect("owner-role add"),
+        ];
+        let added_role = outcomes
+            .iter()
+            .find_map(|outcome| match outcome {
+                AddMemberOutcome::Added(member) => Some(member.role),
+                AddMemberOutcome::ExistingSameRole(_)
+                | AddMemberOutcome::RoleConflict
+                | AddMemberOutcome::WorkspaceNotFound
+                | AddMemberOutcome::UserNotFound => None,
+            })
+            .expect("one conflicting add must win");
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|outcome| matches!(outcome, AddMemberOutcome::Added(_)))
+                .count(),
+            1
+        );
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|outcome| matches!(outcome, AddMemberOutcome::RoleConflict))
+                .count(),
+            1
+        );
+        let mut session = db;
+        assert_eq!(
+            session
+                .workspace_members()
+                .role_for_user_id(&conflicting_add_workspace_id, &conflicting_member_id)
+                .await
+                .expect("read role after conflicting adds"),
+            Some(added_role),
+            "the losing conflicting add must not mutate the winning role"
         );
 
+        let owner_removal_workspace_id = format!("owner-removal-{suffix}");
         assert_eq!(
-            db.remove_workspace_member(workspace_id, &owner_id)
+            db.create_workspace_with_owner(&owner_removal_workspace_id, &owner_id, 30)
                 .await
-                .expect("protect owner"),
-            RemoveMemberOutcome::LastOwnerProtected
+                .expect("create owner-removal workspace"),
+            WorkspaceCreationOutcome::Created
         );
         assert!(matches!(
-            db.add_workspace_member(workspace_id, &other_owner_id, MemberRole::Owner, 14)
-                .await
-                .expect("add owner"),
+            db.add_workspace_member(
+                &owner_removal_workspace_id,
+                &other_owner_id,
+                MemberRole::Owner,
+                31,
+            )
+            .await
+            .expect("add owner"),
             AddMemberOutcome::Added(_)
         ));
+
+        let (first, second) = tokio::join!(
+            db.remove_workspace_member(&owner_removal_workspace_id, &owner_id),
+            db.remove_workspace_member(&owner_removal_workspace_id, &other_owner_id),
+        );
+        let outcomes = [
+            first.expect("remove first owner"),
+            second.expect("remove second owner"),
+        ];
         assert_eq!(
-            db.remove_workspace_member(workspace_id, &owner_id)
-                .await
-                .expect("remove one owner"),
-            RemoveMemberOutcome::Removed
+            outcomes
+                .iter()
+                .filter(|outcome| matches!(outcome, RemoveMemberOutcome::Removed))
+                .count(),
+            1
         );
         assert_eq!(
-            db.remove_workspace_member(workspace_id, &other_owner_id)
-                .await
-                .expect("protect remaining owner"),
-            RemoveMemberOutcome::LastOwnerProtected
+            outcomes
+                .iter()
+                .filter(|outcome| matches!(outcome, RemoveMemberOutcome::LastOwnerProtected))
+                .count(),
+            1
         );
+        let mut tx = db.begin().await.expect("begin owner verification tx");
+        assert_eq!(
+            tx.workspace_members()
+                .owner_count(&owner_removal_workspace_id)
+                .await
+                .expect("count remaining owners"),
+            1,
+            "concurrent owner removals must preserve exactly one owner"
+        );
+        tx.rollback().await.expect("rollback owner verification tx");
     }
 
     async fn create_user(db: &CoralDb, suffix: &str) -> String {
@@ -244,5 +361,11 @@ mod tests {
             .expect("open sqlite");
         db.migrate().await.expect("migrate");
         db
+    }
+
+    fn postgres_test_url() -> Option<String> {
+        bootstrap::env_var("CORAL_TEST_POSTGRES_URL")
+            .expect("read CORAL_TEST_POSTGRES_URL")
+            .filter(|value| !value.is_empty())
     }
 }
