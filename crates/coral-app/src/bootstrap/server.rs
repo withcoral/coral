@@ -41,8 +41,9 @@ use tower::{Layer, Service};
 use super::env::AppEnvironment;
 use super::error::AppError;
 use super::health::{AggregateHealthService, EngineReadiness};
-use super::server_config::{LoadedServerConfig, ServeSettings};
+use super::server_config::{LoadedServerConfig, ServeSettings, SessionAuthSettings};
 use crate::EngineExtensionsProvider;
+use crate::auth::CoralAuthorizationServer;
 use crate::catalog::discovery::CatalogDiscovery;
 use crate::catalog::service::CatalogService;
 use crate::credentials::config::CredentialStorageConfig;
@@ -385,100 +386,170 @@ impl ServerBuilder {
     /// required directories cannot be created, the config or credential backends
     /// fail to initialize, or the gRPC server cannot be started.
     pub async fn start(self) -> Result<RunningServer, AppError> {
-        let env = AppEnvironment::discover();
-        let layout = env.app_state_layout(self.config.config_dir.clone())?;
-        let mode = self.config.resolved_mode(&layout)?;
-        let principal_provider = self.config.principal_provider.clone();
-        let grpc_listener = self.config.grpc_listener.clone();
-        layout.ensure()?;
-        let features = FeatureStore::from_layout(layout.clone())
-            .load_with_overrides(&self.config.feature_overrides)?;
-        let coral_db = init_database(&layout).await?;
-        let config_store = ConfigStore::new(layout.clone());
-        run_state_migrations(&coral_db, &config_store, &layout).await?;
-        let coral_db = Arc::new(coral_db);
-        let (telemetry_config, active_trace_store) =
-            init_server_telemetry(&layout, self.config.enable_stderr_logs)?;
-        let active_trace_store_dir = active_trace_store.as_ref().map(|store| store.dir.clone());
-        let credential_config = CredentialStorageConfig::load(&layout)?;
-        let credential_store =
-            CredentialStore::with_preference(layout.clone(), credential_config.storage);
-        let credential_manager = CredentialManager::new(credential_store);
-        let workspace_lifecycle_lock = WorkspaceLifecycleLock::default();
-        let workspace_pool_registry = Arc::new(WorkspacePoolRegistry::default());
-        let diagnostic_reporter = SourceDiagnosticReporter::default();
-        let database_sources_enabled = features.enabled(Feature::DatabaseSources);
-        let source_manager = SourceManager::with_diagnostic_reporter(
-            config_store.clone(),
-            credential_manager.clone(),
-            layout.clone(),
-            workspace_lifecycle_lock.clone(),
-            diagnostic_reporter.clone(),
-        )
-        .with_pool_registry(Arc::clone(&workspace_pool_registry))
-        .with_database_sources_enabled(database_sources_enabled);
-        let workspace_manager = WorkspaceManager::new(
-            config_store.clone(),
-            credential_manager.clone(),
-            layout.clone(),
-            active_trace_store_dir.clone(),
-            workspace_lifecycle_lock.clone(),
-            Arc::clone(&coral_db),
-            diagnostic_reporter.clone(),
-        )
-        .with_pool_registry(Arc::clone(&workspace_pool_registry));
-        let feedback_manager =
-            FeedbackManager::with_publisher(layout.clone(), self.config.feedback_publisher);
-        let task_manager = TaskManager::new(TaskStore::new(Arc::clone(&coral_db)));
-        let body_capture_max_bytes = telemetry_config
-            .trace_history
-            .http_body_recording_max_bytes();
-        let query_runtime_context = env
-            .query_runtime_context()
-            .with_body_capture_max_bytes(body_capture_max_bytes);
-
-        let query_manager = QueryManager::with_diagnostic_reporter(
-            config_store.clone(),
-            workspace_manager.clone(),
-            credential_manager,
-            query_runtime_context,
-            layout.clone(),
-            workspace_lifecycle_lock.clone(),
-            self.config.engine_extensions_providers,
-            diagnostic_reporter.clone(),
-            workspace_pool_registry,
-        )
-        .with_database_sources_enabled(database_sources_enabled);
-        let observed_values_search_enabled = features.enabled(Feature::ObservedValuesSearch);
-        let search_observations =
-            observed_values_search_enabled.then(|| SearchObservationHandle::new(layout.clone()));
-        let search_manager = SearchManager::with_diagnostic_reporter(
-            layout,
-            &config_store,
-            workspace_manager.clone(),
-            observed_values_search_enabled,
-            diagnostic_reporter,
-            CatalogDiscovery::new(query_manager.clone()),
-            workspace_lifecycle_lock,
-        );
-        let trace_components = trace_components_for_store(active_trace_store);
-        start_server(
-            ServerDependencies {
-                source: source_manager,
-                workspace: workspace_manager,
-                query: query_manager,
-                search: search_manager,
-                search_observations,
-                feedback: feedback_manager,
-                task: task_manager,
-            },
-            trace_components,
-            principal_provider,
-            mode,
-            grpc_listener,
-        )
-        .await
+        start_components(self, None)
+            .await
+            .map(|started| started.grpc)
     }
+}
+
+/// Starts the app-owned components needed by `coral serve`.
+///
+/// Session authentication is resolved before this call so public transports can
+/// derive their own audience-specific authenticators. This entry point derives
+/// the private gRPC policy, then constructs the authorization server only after
+/// the app database has been opened and migrated.
+///
+/// # Errors
+///
+/// Returns [`AppError`] if app initialization, authorization-server
+/// construction, or gRPC startup fails.
+pub async fn start_for_serve(
+    builder: ServerBuilder,
+    session_auth: Option<SessionAuthSettings>,
+) -> Result<StartedServe, AppError> {
+    let builder = match session_auth.as_ref() {
+        Some(session_auth) => builder.with_principal_provider(
+            session_auth.principal_provider(session_auth.public_audiences().iter().cloned()),
+        ),
+        None => builder,
+    };
+    start_components(builder, session_auth).await
+}
+
+/// App-owned components initialized for `coral serve`.
+pub struct StartedServe {
+    grpc: RunningServer,
+    authorization_server: Option<CoralAuthorizationServer>,
+}
+
+impl StartedServe {
+    /// Consumes the initialized serve components.
+    #[must_use]
+    pub fn into_parts(self) -> (RunningServer, Option<CoralAuthorizationServer>) {
+        (self.grpc, self.authorization_server)
+    }
+}
+
+async fn start_components(
+    builder: ServerBuilder,
+    session_auth: Option<SessionAuthSettings>,
+) -> Result<StartedServe, AppError> {
+    let env = AppEnvironment::discover();
+    let layout = env.app_state_layout(builder.config.config_dir.clone())?;
+    let mode = builder.config.resolved_mode(&layout)?;
+    let principal_provider = builder.config.principal_provider.clone();
+    let grpc_listener = builder.config.grpc_listener.clone();
+    layout.ensure()?;
+    let features = FeatureStore::from_layout(layout.clone())
+        .load_with_overrides(&builder.config.feature_overrides)?;
+    let coral_db = init_database(&layout).await?;
+    let config_store = ConfigStore::new(layout.clone());
+    run_state_migrations(&coral_db, &config_store, &layout).await?;
+    let coral_db = Arc::new(coral_db);
+    let authorization_server = session_auth
+        .map(|settings| build_authorization_server(settings, Arc::clone(&coral_db)))
+        .transpose()?;
+    let (telemetry_config, active_trace_store) =
+        init_server_telemetry(&layout, builder.config.enable_stderr_logs)?;
+    let active_trace_store_dir = active_trace_store.as_ref().map(|store| store.dir.clone());
+    let credential_config = CredentialStorageConfig::load(&layout)?;
+    let credential_store =
+        CredentialStore::with_preference(layout.clone(), credential_config.storage);
+    let credential_manager = CredentialManager::new(credential_store);
+    let workspace_lifecycle_lock = WorkspaceLifecycleLock::default();
+    let workspace_pool_registry = Arc::new(WorkspacePoolRegistry::default());
+    let diagnostic_reporter = SourceDiagnosticReporter::default();
+    let database_sources_enabled = features.enabled(Feature::DatabaseSources);
+    let source_manager = SourceManager::with_diagnostic_reporter(
+        config_store.clone(),
+        credential_manager.clone(),
+        layout.clone(),
+        workspace_lifecycle_lock.clone(),
+        diagnostic_reporter.clone(),
+    )
+    .with_pool_registry(Arc::clone(&workspace_pool_registry))
+    .with_database_sources_enabled(database_sources_enabled);
+    let workspace_manager = WorkspaceManager::new(
+        config_store.clone(),
+        credential_manager.clone(),
+        layout.clone(),
+        active_trace_store_dir.clone(),
+        workspace_lifecycle_lock.clone(),
+        Arc::clone(&coral_db),
+        diagnostic_reporter.clone(),
+    )
+    .with_pool_registry(Arc::clone(&workspace_pool_registry));
+    let feedback_manager =
+        FeedbackManager::with_publisher(layout.clone(), builder.config.feedback_publisher);
+    let task_manager = TaskManager::new(TaskStore::new(Arc::clone(&coral_db)));
+    let body_capture_max_bytes = telemetry_config
+        .trace_history
+        .http_body_recording_max_bytes();
+    let query_runtime_context = env
+        .query_runtime_context()
+        .with_body_capture_max_bytes(body_capture_max_bytes);
+
+    let query_manager = QueryManager::with_diagnostic_reporter(
+        config_store.clone(),
+        workspace_manager.clone(),
+        credential_manager,
+        query_runtime_context,
+        layout.clone(),
+        workspace_lifecycle_lock.clone(),
+        builder.config.engine_extensions_providers,
+        diagnostic_reporter.clone(),
+        workspace_pool_registry,
+    )
+    .with_database_sources_enabled(database_sources_enabled);
+    let observed_values_search_enabled = features.enabled(Feature::ObservedValuesSearch);
+    let search_observations =
+        observed_values_search_enabled.then(|| SearchObservationHandle::new(layout.clone()));
+    let search_manager = SearchManager::with_diagnostic_reporter(
+        layout,
+        &config_store,
+        workspace_manager.clone(),
+        observed_values_search_enabled,
+        diagnostic_reporter,
+        CatalogDiscovery::new(query_manager.clone()),
+        workspace_lifecycle_lock,
+    );
+    let trace_components = trace_components_for_store(active_trace_store);
+    let grpc = start_server(
+        ServerDependencies {
+            source: source_manager,
+            workspace: workspace_manager,
+            query: query_manager,
+            search: search_manager,
+            search_observations,
+            feedback: feedback_manager,
+            task: task_manager,
+        },
+        trace_components,
+        principal_provider,
+        mode,
+        grpc_listener,
+    )
+    .await?;
+    Ok(StartedServe {
+        grpc,
+        authorization_server,
+    })
+}
+
+fn build_authorization_server(
+    session_auth: SessionAuthSettings,
+    coral_db: Arc<CoralDb>,
+) -> Result<CoralAuthorizationServer, AppError> {
+    let (settings, session_tokens, public_audiences) = session_auth.into_parts();
+    let mut server = CoralAuthorizationServer::from_resolved_settings(settings, session_tokens)
+        .map_err(|error| AppError::FailedPrecondition(error.to_string()))?
+        .with_database(coral_db);
+    for audience in public_audiences {
+        server = server
+            .with_authorization_resource(audience)
+            .map_err(AppError::FailedPrecondition)?;
+    }
+    Ok(server)
 }
 
 fn init_server_telemetry(
@@ -1030,8 +1101,9 @@ mod tests {
     use super::{
         RunningServer, ServerBuilder, ServerDependencies, ServerMode, StaticAsset,
         StaticAssetsProvider, TraceServerComponents, is_grpc_web_content_type,
-        is_native_grpc_content_type, start_server,
+        is_native_grpc_content_type, start_for_serve, start_server,
     };
+    use crate::auth::session::test_signing_key;
     use crate::bootstrap::AppError;
     use crate::catalog::discovery::CatalogDiscovery;
     use crate::credentials::{CredentialManager, CredentialStore};
@@ -1337,6 +1409,37 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
         .expect("write auth config");
     }
 
+    fn configure_serve_session_auth(config_dir: &Path) {
+        std::fs::create_dir_all(config_dir).expect("create config dir");
+        std::fs::write(config_dir.join("session.key"), test_signing_key())
+            .expect("write session key");
+        std::fs::write(
+            config_dir.join("config.toml"),
+            r"
+[trace_history]
+enabled = false
+
+[server.mcp_http]
+enabled = true
+bind = '127.0.0.1:0'
+public_url = 'https://mcp.example.test'
+
+[auth.authorization_server]
+issuer = 'https://auth.example.test'
+
+[auth.session]
+signing_key_file = 'session.key'
+
+[auth.provider]
+issuer = 'https://accounts.example.test'
+client_id = 'upstream-client'
+client_secret = 'test-secret'
+redirect_uri = 'https://auth.example.test/auth/oidc/callback'
+",
+        )
+        .expect("write auth config");
+    }
+
     /// Both standalone entry points bind a real address, so neither may serve
     /// the local principal to it while the configuration asks for session
     /// authentication.
@@ -1355,6 +1458,50 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
             .expect("configured auth must not block the local ephemeral server");
 
         server.shutdown().await.expect("shutdown server");
+    }
+
+    #[tokio::test]
+    async fn start_for_serve_without_session_auth_returns_only_grpc() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+        disable_internal_tracing(&config_dir);
+        let builder = ServerBuilder::ephemeral_grpc().with_config_dir(config_dir);
+
+        let started = start_for_serve(builder, None)
+            .await
+            .expect("start unauthenticated serve components");
+        let (grpc, authorization_server) = started.into_parts();
+
+        assert!(authorization_server.is_none());
+        grpc.shutdown().await.expect("shutdown gRPC server");
+    }
+
+    #[tokio::test]
+    async fn start_for_serve_builds_authorization_server_after_database_bootstrap() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+        configure_serve_session_auth(&config_dir);
+        let builder = ServerBuilder::ephemeral_grpc().with_config_dir(config_dir);
+        let mut settings = builder.serve_settings().expect("resolve serve settings");
+        let session_auth = settings
+            .take_session_auth()
+            .expect("configured session auth");
+
+        let started = start_for_serve(builder, Some(session_auth))
+            .await
+            .expect("start authenticated serve components");
+        let (grpc, authorization_server) = started.into_parts();
+        let authorization_server = authorization_server.expect("authorization server");
+        let running_authorization_server = authorization_server
+            .start()
+            .await
+            .expect("start DB-backed authorization server");
+
+        running_authorization_server
+            .shutdown()
+            .await
+            .expect("shutdown authorization server");
+        grpc.shutdown().await.expect("shutdown gRPC server");
     }
 
     #[test]

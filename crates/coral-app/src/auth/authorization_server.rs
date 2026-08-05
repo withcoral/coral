@@ -107,7 +107,6 @@ impl CoralAuthorizationServer {
 
     /// Attaches the app database used to provision authenticated users.
     #[must_use]
-    #[expect(dead_code, reason = "wired by the app composition root in t8")]
     pub(crate) fn with_database(mut self, database: Arc<CoralDb>) -> Self {
         self.database = Some(database);
         self

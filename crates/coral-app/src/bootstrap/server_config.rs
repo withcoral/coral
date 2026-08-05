@@ -11,7 +11,7 @@ use zeroize::Zeroizing;
 use super::env::AppEnvironment;
 use super::{AppError, is_loopback_ip};
 use crate::auth::session::SessionTokenIssuer;
-use crate::auth::{AuthSettings, CoralAuthorizationServer, ResolvedAuthSettings};
+use crate::auth::{AuthSettings, ResolvedAuthSettings};
 use crate::oauth_resource::CanonicalOauthUrl;
 use crate::request_auth::SessionPrincipalProvider;
 use crate::state::AppStateLayout;
@@ -325,24 +325,8 @@ impl SessionAuthSettings {
         ))
     }
 
-    /// Consumes these settings into the authorization server for the instance.
-    ///
-    /// Every public surface is registered as an authorization resource clients
-    /// may request a token for.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AppError`] when the server cannot be built from these settings.
-    pub fn into_authorization_server(self) -> Result<CoralAuthorizationServer, AppError> {
-        let mut server =
-            CoralAuthorizationServer::from_resolved_settings(self.settings, self.session_tokens)
-                .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
-        for audience in self.public_audiences {
-            server = server
-                .with_authorization_resource(audience)
-                .map_err(AppError::FailedPrecondition)?;
-        }
-        Ok(server)
+    pub(super) fn into_parts(self) -> (ResolvedAuthSettings, SessionTokenIssuer, Vec<String>) {
+        (self.settings, self.session_tokens, self.public_audiences)
     }
 }
 
