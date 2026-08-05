@@ -58,17 +58,17 @@ impl TraceServiceApi for TraceService {
         let principal = request_context(&request)?.principal().clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
-            let page_size = normalize_page_size(request.page_size);
-            let offset = parse_page_token(&request.page_token)?;
             let workspace_name = workspace_filter_from_proto(request.workspace.as_ref())?;
-            let view = trace_list_view_from_proto(request.view)?;
-            let scope =
+            let access_scope =
                 trace_access_scope(workspace_name, workspace_authorizer.as_ref(), &principal)
                     .await?;
+            let page_size = normalize_page_size(request.page_size);
+            let offset = parse_page_token(&request.page_token)?;
+            let view = trace_list_view_from_proto(request.view)?;
             let page = traces
                 .list_traces(ListTracesQuery {
                     view,
-                    scope,
+                    scope: access_scope,
                     page_size,
                     offset,
                 })
@@ -98,21 +98,21 @@ impl TraceServiceApi for TraceService {
         let principal = request_context(&request)?.principal().clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
+            let workspace_name = workspace_filter_from_proto(request.workspace.as_ref())?;
+            let access_scope =
+                trace_access_scope(workspace_name, workspace_authorizer.as_ref(), &principal)
+                    .await?;
             if request.trace_id.trim().is_empty() {
                 return Err(Status::new(
                     Code::InvalidArgument,
                     "invalid input: missing trace_id",
                 ));
             }
-            let workspace_name = workspace_filter_from_proto(request.workspace.as_ref())?;
             let view = trace_list_view_from_proto(request.view)?;
-            let scope =
-                trace_access_scope(workspace_name, workspace_authorizer.as_ref(), &principal)
-                    .await?;
             let trace = traces
                 .get_trace(GetTraceQuery {
                     trace_id: request.trace_id,
-                    scope,
+                    scope: access_scope,
                     view,
                 })
                 .await
@@ -121,12 +121,6 @@ impl TraceServiceApi for TraceService {
         })
         .await
     }
-}
-
-fn require_authorizer(
-    authorizer: Option<&WorkspaceAuthorizer>,
-) -> Result<&WorkspaceAuthorizer, Status> {
-    authorizer.ok_or_else(|| Status::internal("workspace authorization is unavailable"))
 }
 
 /// Resolves what the caller may read before any trace leaves the store.
@@ -138,7 +132,8 @@ async fn trace_access_scope(
     authorizer: Option<&WorkspaceAuthorizer>,
     principal: &Principal,
 ) -> Result<TraceAccessScope, Status> {
-    let authorizer = require_authorizer(authorizer)?;
+    let authorizer =
+        authorizer.ok_or_else(|| Status::internal("workspace authorization is unavailable"))?;
     match workspace_name {
         Some(workspace_name) => {
             authorizer
@@ -388,10 +383,10 @@ mod tests {
 
         let denied = TraceServiceApi::list_traces(
             &fixture.service,
-            list_request(&fixture.member, Some("alpha"), 10, ""),
+            list_request(&fixture.member, Some("alpha"), 10, "not-a-token"),
         )
         .await
-        .expect_err("workspace members cannot inspect traces");
+        .expect_err("authorization must precede invalid token rejection");
         assert_eq!(denied.code(), Code::PermissionDenied);
 
         let concealed = TraceServiceApi::get_trace(
@@ -401,6 +396,14 @@ mod tests {
         .await
         .expect_err("unowned trace must be concealed");
         assert_eq!(concealed.code(), Code::NotFound);
+
+        let blank = TraceServiceApi::get_trace(
+            &fixture.service,
+            get_request(&fixture.owner, "", Some("gamma")),
+        )
+        .await
+        .expect_err("authorization must precede blank trace ID rejection");
+        assert_eq!(blank.code(), Code::NotFound);
     }
 
     #[tokio::test]
