@@ -36,6 +36,7 @@ pub fn projection_arg_specs(projection: &Projection) -> Vec<TableFunctionArgSpec
             data_type: input.data_type,
             required: input.required,
             values: Vec::new(),
+            default: None,
             bind: FunctionArgBinding {
                 arg: input.name.clone(),
             },
@@ -53,6 +54,7 @@ pub fn mcp_projection_arg_specs(projection: &Projection) -> Vec<TableFunctionArg
             data_type: input.data_type,
             required: input.required,
             values: Vec::new(),
+            default: None,
             bind: FunctionArgBinding {
                 arg: input.wire_name.clone(),
             },

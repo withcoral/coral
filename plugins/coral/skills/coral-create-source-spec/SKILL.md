@@ -104,6 +104,13 @@ Only switch to Coral repo layout when the user is explicitly editing the Coral r
 - Set a table-function arg `type` when the provider argument is not string-shaped; omitted arg types default to `Utf8`.
 - Do not model provider search as a table filter. Use `mode: contains` only for ordinary provider-side substring filters. Provider-ranked retrieval belongs in a `kind: search` function.
 - Include `search_limits` on every `kind: search` function and expose stable result identifiers for follow-up detail queries.
+- Universal Search fan-out is DSL v4-only. Do not add
+  `functions[].universal_search` to a DSL v3 source; DSL v3 sources do not
+  participate in native fan-out.
+- In DSL v4, author `universal_search.routes` at the top level. Use a map key matching `[a-z][a-z0-9_]*` as the stable authorization ID, bind `target` by exact `operation_id` on the source's singular surface, and identify the original query input by `location` plus wire `name`. Do not use generated projection names as authorization IDs.
+- Use `execute: false` for an explicit denial. A denied DSL v4 route keeps its exact target and omits `query_input`. Once a source contains any authored Universal Search policy, do not assume unlisted routes will be inferred.
+- Treat `execute: true` as an assertion that the upstream operation is retrieval-only and idempotent. Fail closed on missing or ambiguous targets, missing or type-incompatible defaults imported from the DSL v4 surface, or unsafe operations; never substitute legacy `mode: search` metadata or a guessed target.
+- Keep result mapping separate from authorization. DSL v4 mappings use RFC 6901 JSON Pointers to imported result fields. Prefer ordered stable identity fields and map only the provider ID, title, URL, snippet, and attributes needed for a useful result.
 - Prefer explicit pagination when the API shape is known.
 - Verify pagination with actual row fetches, not only `COUNT(*)`.
 - Add or update `test_queries` when you want `coral source test` to perform a basic smoke/connection check.
@@ -205,7 +212,8 @@ For HTTP-backed sources:
 - define typed columns
 - add `test_queries` once you know which simple query or queries should confirm the source basically works
 
-Read `references/http-source-checklist.md` when you need table-shape and pagination guidance.
+Read `references/http-source-checklist.md` when you need table-shape,
+Universal Search authorization, or pagination guidance.
 
 If your HTTP source uses an Authorization header with a prefix (e.g. `Authorization: Bearer <token>`), use a secret input for the raw token and define the header with `from: bearer`:
 

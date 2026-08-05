@@ -49,6 +49,24 @@
         "accepts"
       ]
     },
+    "universal_search": {
+      "type": "object",
+      "properties": {
+        "routes": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/V4UniversalSearchRouteSchema"
+          },
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_]*$"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "routes"
+      ]
+    },
     "surface": {
       "$ref": "#/$defs/V4SurfaceSchema"
     }
@@ -745,6 +763,140 @@
       "required": [
         "id",
         "identity_specs"
+      ]
+    },
+    "V4UniversalSearchRouteSchema": {
+      "type": "object",
+      "properties": {
+        "execute": {
+          "type": "boolean"
+        },
+        "target": {
+          "$ref": "#/$defs/V4UniversalSearchTargetSchema"
+        },
+        "query_input": {
+          "type": "object",
+          "properties": {
+            "location": {
+              "$ref": "#/$defs/V4UniversalSearchInputLocationSchema"
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "location",
+            "name"
+          ]
+        },
+        "result": {
+          "type": "object",
+          "properties": {
+            "entity_type": {
+              "type": "string",
+              "minLength": 1
+            },
+            "identity_fields": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "pattern": "^(?:/(?:[^~/]|~[01])*)+$"
+              }
+            },
+            "provider_id": {
+              "type": "string",
+              "pattern": "^(?:/(?:[^~/]|~[01])*)+$"
+            },
+            "title": {
+              "type": "string",
+              "pattern": "^(?:/(?:[^~/]|~[01])*)+$"
+            },
+            "url": {
+              "type": "string",
+              "pattern": "^(?:/(?:[^~/]|~[01])*)+$"
+            },
+            "snippet": {
+              "type": "string",
+              "pattern": "^(?:/(?:[^~/]|~[01])*)+$"
+            },
+            "attributes": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "pattern": "^(?:/(?:[^~/]|~[01])*)+$"
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "execute",
+        "target"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "execute": {
+                "const": true
+              }
+            },
+            "required": [
+              "execute"
+            ]
+          },
+          "then": {
+            "required": [
+              "query_input"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "execute": {
+                "const": false
+              }
+            },
+            "required": [
+              "execute"
+            ]
+          },
+          "then": {
+            "not": {
+              "required": [
+                "query_input"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "V4UniversalSearchTargetSchema": {
+      "type": "object",
+      "properties": {
+        "operation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "operation_id"
+      ]
+    },
+    "V4UniversalSearchInputLocationSchema": {
+      "type": "string",
+      "enum": [
+        "path",
+        "query",
+        "tool_arg"
       ]
     },
     "V4SurfaceSchema": {

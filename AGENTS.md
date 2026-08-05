@@ -113,6 +113,8 @@
   `surface:`. The source `name` is its SQL namespace. Do not add surface ids,
   namespace suffixes, or multiple surfaces to one manifest; represent distinct
   provider interfaces as distinct source specs instead.
+- Universal Search fan-out is available only to DSL v4 sources. Do not add or
+  preserve `functions[].universal_search` authoring in DSL v3 manifests.
 - Keep cross-crate W3C trace-context propagation helpers in
   `coral-telemetry`; do not make `coral-app`, `coral-client`, `coral-engine`,
   or `coral-mcp` depend on each other just to share telemetry carrier logic.

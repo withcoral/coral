@@ -217,6 +217,7 @@ pub(crate) fn validate_http_function(
                 function.name, arg.name
             ),
         )?;
+        reject_dsl_v3_table_function_arg_default(source_name, &function.name, arg)?;
         validate_function_binding(
             source_name,
             &function.name,
@@ -251,6 +252,21 @@ pub(crate) fn validate_http_function(
         .validate(source_name, &format!("function '{}'", function.name))?;
 
     Ok(())
+}
+
+pub(crate) fn reject_dsl_v3_table_function_arg_default(
+    source_name: &str,
+    function_name: &str,
+    arg: &crate::TableFunctionArgSpec,
+) -> Result<()> {
+    if arg.default.is_none() {
+        return Ok(());
+    }
+
+    Err(ManifestError::validation(format!(
+        "source '{source_name}' DSL v3 function '{function_name}' argument '{}' cannot declare a default; defaults are imported only from DSL v4 surfaces",
+        arg.name
+    )))
 }
 
 pub(crate) fn validate_filters_and_column_exprs(
@@ -1152,6 +1168,7 @@ mod tests {
                 data_type: ManifestDataType::Utf8,
                 required: true,
                 values: vec![],
+                default: None,
                 bind: FunctionArgBinding {
                     arg: "q".to_string(),
                 },

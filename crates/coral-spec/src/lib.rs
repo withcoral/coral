@@ -104,13 +104,13 @@ pub use backends::mcp::{
 };
 pub use bundle::{IdentityManifestDocument, ManifestBundle, parse_manifest_bundle_yaml};
 pub use common::{
-    BodyFieldSpec, BodySpec, ColumnSpec, DO_NOT_INDEX_COLUMN_METADATA_KEY, DetailHintSpec,
-    ExprSpec, FilterMode, FilterSpec, FunctionArgBinding, HeaderSpec, HttpMethod, ManifestDataType,
-    PageSizeSpec, PaginationMode, PaginationSpec, QueryParamSpec, RequestRouteSpec, RequestSpec,
-    ResponseBodyFormat, ResponseSpec, RowStrategy, SearchLimitsSpec, SourceBackend,
-    SourceManifestCommon, SourceTableFunctionKind, SourceTableFunctionSpec, TableCommon,
-    TableFunctionArgSpec, TimestampInput, ValidatedPagination, ValidatedPaginationMode,
-    ValueSourceSpec,
+    BodyFieldSpec, BodySpec, ColumnSpec, DO_NOT_INDEX_COLUMN_METADATA_KEY, DeclaredDefaultValue,
+    DetailHintSpec, ExprSpec, FilterMode, FilterSpec, FunctionArgBinding, HeaderSpec, HttpMethod,
+    ManifestDataType, PageSizeSpec, PaginationMode, PaginationSpec, QueryParamSpec,
+    RequestRouteSpec, RequestSpec, ResponseBodyFormat, ResponseSpec, RowStrategy, SearchLimitsSpec,
+    SourceBackend, SourceManifestCommon, SourceTableFunctionKind, SourceTableFunctionSpec,
+    TableCommon, TableFunctionArgSpec, TimestampInput, UniversalSearchResultMappingSpec,
+    ValidatedPagination, ValidatedPaginationMode, ValueSourceSpec,
 };
 pub(crate) use common::{
     validate_reserved_source_schema_name, validate_source_name, validate_test_queries,
@@ -141,7 +141,8 @@ pub use udf::{
 };
 pub(crate) use validate::{
     DeclaredRelation, DetailHintDeclaringSurface, DetailHintTargetTable, HttpTableValidation,
-    validate_columns, validate_declared_relation_namespace, validate_detail_hint_references,
+    reject_dsl_v3_table_function_arg_default, validate_columns,
+    validate_declared_relation_namespace, validate_detail_hint_references,
     validate_filters_and_column_exprs, validate_http_function, validate_http_table,
     validate_identifier, validate_required_guide, validate_unique_values,
 };

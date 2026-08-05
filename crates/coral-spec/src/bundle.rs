@@ -43,7 +43,9 @@ pub fn parse_manifest_bundle_yaml(raw: &str) -> Result<ManifestBundle> {
     let mut identity_names = HashSet::new();
 
     for (index, document) in serde_yaml::Deserializer::from_str(raw).enumerate() {
-        let value = Value::deserialize(document).map_err(ManifestError::parse_yaml)?;
+        let yaml_value =
+            serde_yaml::Value::deserialize(document).map_err(ManifestError::parse_yaml)?;
+        let value: Value = serde_yaml::from_value(yaml_value).map_err(ManifestError::parse_yaml)?;
         if value.is_null() {
             continue;
         }
@@ -125,7 +127,7 @@ mod tests {
 
     fn source_yaml(name: &str) -> String {
         format!(
-            "name: {name}\ndsl_version: 4\nidentity_requirements:\n  accepts:\n    - id: github_api\n      identity_specs: [github_oauth, github_pat]\n      audience: {{host: api.github.com}}\nsurface:\n  type: openapi\n  file: /tmp/github-openapi.yaml\n"
+            "name: {name}\ndsl_version: 4\nidentity_requirements:\n  accepts:\n    - id: github_api\n      identity_specs: [github_oauth, github_pat]\n      audience: {{host: api.github.com}}\nuniversal_search:\n  routes:\n    primary:\n      execute: true\n      target:\n        operation_id: searchIssues\n      query_input:\n        location: query\n        name: q\nsurface:\n  type: openapi\n  file: /tmp/github-openapi.yaml\n"
         )
     }
 
@@ -147,7 +149,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_v4_source_with_multiple_identity_specs_and_canonicalizes_documents() {
+    fn parses_v4_source_with_identity_specs_and_universal_search_and_canonicalizes_documents() {
         let raw = format!(
             "---\n\n---\n{}---\n{}---\nnull\n---\n{}",
             identity_yaml("github_oauth"),
@@ -176,6 +178,9 @@ mod tests {
         let reparsed_source = parse_source_manifest_yaml(&bundle.source_manifest_yaml)
             .expect("canonical source document reparses");
         assert_eq!(reparsed_source.schema_name(), "demo");
+        let reparsed_v4 = reparsed_source.as_v4().expect("v4 source");
+        assert!(reparsed_v4.identity_requirements.is_some());
+        assert!(reparsed_v4.universal_search.is_some());
         for document in &bundle.identity_manifests {
             assert_eq!(
                 parse_identity_manifest_yaml(&document.manifest_yaml)
@@ -236,6 +241,44 @@ mod tests {
                 .to_string()
                 .contains("manifest bundle must contain exactly one source manifest document"),
             "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_yaml_mapping_keys_in_bundled_source_manifest() {
+        let raw = format!(
+            "{}---\n{}",
+            identity_yaml("github_oauth"),
+            r"
+name: demo
+dsl_version: 4
+universal_search:
+  routes:
+    issue_search:
+      execute: false
+      target:
+        operation_id: search_issues
+    issue_search:
+      execute: true
+      target:
+        operation_id: search_issues
+      query_input:
+        location: query
+        name: q
+surface:
+  type: openapi
+  file: /tmp/openapi.yaml
+"
+        );
+
+        let error = parse_manifest_bundle_yaml(&raw)
+            .expect_err("a bundled duplicate route key must not override an earlier policy");
+
+        assert!(
+            error
+                .to_string()
+                .contains("duplicate entry with key \"issue_search\""),
+            "unexpected duplicate-key error: {error}"
         );
     }
 
