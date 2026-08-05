@@ -39,9 +39,7 @@ pub(crate) use session::{DbRepos, DbSession};
 pub(crate) use task_state::TaskMutationBarrier;
 pub(crate) use task_state::{TaskCreation, TaskCreationResult};
 pub(crate) use transaction::CoralTx;
-#[expect(unused_imports, reason = "wired in M3")]
 pub(crate) use workspace_member_state::{
     AddMemberOutcome, RemoveMemberOutcome, WorkspaceMemberView,
 };
-#[cfg_attr(not(test), expect(unused_imports, reason = "wired in M3"))]
 pub(crate) use workspace_state::WorkspaceCreationOutcome;
