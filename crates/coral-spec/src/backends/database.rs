@@ -46,6 +46,7 @@ pub struct DatabaseSourceManifest {
 #[serde(rename_all = "snake_case")]
 pub enum DatabaseConnectionSpec {
     Postgres(PostgresConnectionSpec),
+    #[serde(rename = "mysql")]
     MySql(MySqlConnectionSpec),
     Sqlite(SqliteConnectionSpec),
 }
