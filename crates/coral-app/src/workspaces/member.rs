@@ -6,6 +6,8 @@
     )
 )]
 
+use super::WorkspaceAction;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MemberRole {
     Owner,
@@ -26,5 +28,12 @@ impl MemberRole {
             "member" => Some(Self::Member),
             _ => None,
         }
+    }
+
+    pub(crate) const fn allows(self, action: WorkspaceAction) -> bool {
+        matches!(
+            (self, action),
+            (Self::Owner, _) | (Self::Member, WorkspaceAction::Read)
+        )
     }
 }
