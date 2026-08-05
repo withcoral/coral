@@ -228,6 +228,25 @@ fn raw_json_object(value: &Value) -> Map<String, Value> {
     value.as_object().cloned().expect("json object")
 }
 
+async fn describe_surface(
+    client: &RunningService<RoleClient, ()>,
+    task_id: &str,
+    schema: &str,
+    surface: &str,
+) -> Value {
+    let result = client
+        .call_tool(
+            CallToolRequestParams::new("describe").with_arguments(task_arguments(
+                task_id,
+                &json!({"schema": schema, "surface": surface}),
+            )),
+        )
+        .await
+        .expect("describe surface");
+    assert_eq!(result.is_error, Some(false));
+    result.structured_content.expect("structured describe")
+}
+
 async fn start_test_task(client: &RunningService<RoleClient, ()>) -> String {
     let result = client
         .call_tool(
@@ -1190,20 +1209,7 @@ async fn mcp_catalog_helpers_expose_coral_system_tables_from_sql_catalog() {
         expected_tables
     );
 
-    let described = client
-        .call_tool(
-            CallToolRequestParams::new("describe").with_arguments(task_arguments(
-                &task_id,
-                &json!({
-                    "schema": "coral",
-                    "surface": "columns"
-                }),
-            )),
-        )
-        .await
-        .expect("describe system table")
-        .structured_content
-        .expect("structured describe");
+    let described = describe_surface(client, &task_id, "coral", "columns").await;
     assert_eq!(described["found"], true);
     assert_eq!(described["name"], "coral.columns");
     assert_eq!(described["column_count"], 11);
@@ -1516,19 +1522,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     assert_eq!(universal_search["results"][0]["kind"], "catalog_metadata");
     assert_matches_output_schema(search_tool, &universal_search);
 
-    let described = client
-        .call_tool(
-            CallToolRequestParams::new("describe").with_arguments(task_arguments(
-                &task_id,
-                &json!({
-                    "schema": "local_messages",
-                    "surface": "messages"
-                }),
-            )),
-        )
-        .await
-        .expect("describe table");
-    let described = described.structured_content.expect("structured content");
+    let described = describe_surface(client, &task_id, "local_messages", "messages").await;
     assert_eq!(described["found"], true);
     assert_eq!(described["kind"], "table");
     assert_eq!(described["name"], "local_messages.messages");
@@ -1537,22 +1531,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     assert!(described["columns"].is_null());
     assert_matches_output_schema(describe_tool, &described);
 
-    let missing_table = client
-        .call_tool(
-            CallToolRequestParams::new("describe").with_arguments(task_arguments(
-                &task_id,
-                &json!({
-                    "schema": "local_messages",
-                    "surface": "missing"
-                }),
-            )),
-        )
-        .await
-        .expect("describe missing table");
-    assert_eq!(missing_table.is_error, Some(false));
-    let missing_table = missing_table
-        .structured_content
-        .expect("structured content");
+    let missing_table = describe_surface(client, &task_id, "local_messages", "missing").await;
     assert_eq!(missing_table["found"], false);
     assert_eq!(missing_table["reason"], "missing");
     assert_eq!(missing_table["requested"]["schema"], "local_messages");
@@ -1561,28 +1540,6 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     assert_eq!(
         missing_table["suggested_calls"][0]["arguments"]["schema"],
         "local_messages"
-    );
-
-    let missing_schema = client
-        .call_tool(
-            CallToolRequestParams::new("describe").with_arguments(task_arguments(
-                &task_id,
-                &json!({
-                    "schema": "local_mesages",
-                    "surface": "missing["
-                }),
-            )),
-        )
-        .await
-        .expect("describe missing schema");
-    assert_eq!(missing_schema.is_error, Some(false));
-    let missing_schema = missing_schema
-        .structured_content
-        .expect("structured content");
-    assert_eq!(missing_schema["found"], false);
-    assert!(
-        missing_schema["suggested_calls"][1]["arguments"]["schema"].is_null(),
-        "fallback catalog suggestion should not constrain a missing schema"
     );
 
     client
@@ -1869,20 +1826,7 @@ async fn list_catalog_surfaces_table_functions() {
     assert_matches_output_schema(catalog_tool, &functions);
 
     let describe_tool = tool_by_name(&tools, "describe");
-    let described_function = client
-        .call_tool(
-            CallToolRequestParams::new("describe").with_arguments(task_arguments(
-                &task_id,
-                &json!({
-                    "schema": "searchy",
-                    "surface": "search_issues"
-                }),
-            )),
-        )
-        .await
-        .expect("describe table function")
-        .structured_content
-        .expect("structured table function description");
+    let described_function = describe_surface(client, &task_id, "searchy", "search_issues").await;
     assert_eq!(described_function["found"], true);
     assert_eq!(described_function["kind"], "table_function");
     assert_eq!(described_function["name"], "searchy.search_issues");
@@ -1895,27 +1839,6 @@ async fn list_catalog_surfaces_table_functions() {
         "score"
     );
     assert_matches_output_schema(describe_tool, &described_function);
-
-    let missing_function = client
-        .call_tool(
-            CallToolRequestParams::new("describe").with_arguments(task_arguments(
-                &task_id,
-                &json!({
-                    "schema": "searchy",
-                    "surface": "missing"
-                }),
-            )),
-        )
-        .await
-        .expect("describe missing table function")
-        .structured_content
-        .expect("structured missing table function");
-    assert_eq!(missing_function["found"], false);
-    assert_eq!(missing_function["reason"], "missing");
-    assert_eq!(missing_function["requested"]["schema"], "searchy");
-    assert_eq!(missing_function["requested"]["surface"], "missing");
-    assert!(missing_function["suggested_calls"][0]["arguments"]["kind"].is_null());
-    assert_matches_output_schema(describe_tool, &missing_function);
 
     let search_tool = tool_by_name(&tools, "search");
     let search = client

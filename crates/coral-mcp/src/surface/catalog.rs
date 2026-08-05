@@ -886,6 +886,10 @@ mod tests {
     };
     use crate::surface::discovery::{DEFAULT_PAGINATION_LIMIT, DEFAULT_PAGINATION_OFFSET};
 
+    fn json_object(value: &Value) -> Map<String, Value> {
+        value.as_object().cloned().expect("JSON object")
+    }
+
     fn value_at<'a>(value: &'a Value, pointer: &str) -> &'a Value {
         value
             .pointer(pointer)
@@ -904,17 +908,11 @@ mod tests {
 
     #[test]
     fn describe_parses_one_flat_surface_reference() {
-        let arguments = describe_arguments(Some(&Map::from_iter([
-            ("catalog".to_string(), json!("warehouse")),
-            ("schema".to_string(), json!("public")),
-            ("surface".to_string(), json!("events")),
-            (
-                "task_id".to_string(),
-                json!("task context is parsed earlier"),
-            ),
-            ("intent".to_string(), json!("test the describe parser")),
-        ])))
-        .expect("describe arguments");
+        let input = json_object(&json!({
+            "catalog": "warehouse", "schema": "public", "surface": "events",
+            "task_id": "parsed earlier", "intent": "test the parser"
+        }));
+        let arguments = describe_arguments(Some(&input)).expect("describe arguments");
 
         assert_eq!(arguments.catalog.as_deref(), Some("warehouse"));
         assert_eq!(arguments.schema, "public");
@@ -923,18 +921,16 @@ mod tests {
 
     #[test]
     fn describe_rejects_unknown_and_nested_target_arguments() {
-        describe_arguments(Some(&Map::from_iter([
-            ("schema".to_string(), json!("github")),
-            ("surface".to_string(), json!("issues")),
-            ("surafce".to_string(), json!("typo")),
-        ])))
-        .expect_err("unknown arguments must fail");
-
-        describe_arguments(Some(&Map::from_iter([(
-            "table".to_string(),
-            json!({"schema": "github", "table": "issues"}),
-        )])))
-        .expect_err("the replaced nested target must fail");
+        for value in [
+            json!({"schema": "github", "surface": "issues", "surafce": "typo"}),
+            json!({"table": {"schema": "github", "table": "issues"}}),
+        ] {
+            let input = json_object(&value);
+            assert!(
+                describe_arguments(Some(&input)).is_err(),
+                "invalid input accepted: {input:?}"
+            );
+        }
     }
 
     #[test]
@@ -942,25 +938,28 @@ mod tests {
         let schema = Value::Object((*describe_tool().input_schema).clone());
         let validator = jsonschema::validator_for(&schema).expect("describe input schema compiles");
 
-        for valid in [
-            json!({"schema": "github", "surface": "issues"}),
-            json!({"catalog": "warehouse", "schema": "public", "surface": "events"}),
+        for (input, expected) in [
+            (json!({"schema": "github", "surface": "issues"}), true),
+            (
+                json!({"catalog": "warehouse", "schema": "public", "surface": "events"}),
+                true,
+            ),
+            (json!({}), false),
+            (json!({"schema": "github"}), false),
+            (json!({"schema": "github", "surface": ""}), false),
+            (
+                json!({"schema": "github", "surface": "issues", "surafce": "typo"}),
+                false,
+            ),
+            (
+                json!({"table": {"schema": "github", "table": "issues"}}),
+                false,
+            ),
         ] {
-            assert!(
-                validator.is_valid(&valid),
-                "describe input schema rejected {valid}"
-            );
-        }
-        for invalid in [
-            json!({}),
-            json!({"schema": "github"}),
-            json!({"schema": "github", "surface": ""}),
-            json!({"schema": "github", "surface": "issues", "surafce": "typo"}),
-            json!({"table": {"schema": "github", "table": "issues"}}),
-        ] {
-            assert!(
-                !validator.is_valid(&invalid),
-                "describe input schema accepted {invalid}"
+            assert_eq!(
+                validator.is_valid(&input),
+                expected,
+                "unexpected schema result for {input}"
             );
         }
     }
@@ -982,28 +981,29 @@ mod tests {
             name: "lookup".to_string(),
             ..TableFunction::default()
         };
-
-        let table_only = describe_value(
-            &arguments,
-            &DescribeTableResponse {
-                table: Some(table.clone()),
-                ..DescribeTableResponse::default()
-            },
-            None,
-        );
-        assert_eq!(value_at(&table_only, "/found"), &json!(true));
+        let render = |table, table_function| {
+            describe_value(
+                &arguments,
+                &DescribeTableResponse {
+                    table,
+                    ..DescribeTableResponse::default()
+                },
+                table_function,
+            )
+        };
+        let schema = Value::Object((*super::describe_output_schema()).clone());
+        let validator =
+            jsonschema::validator_for(&schema).expect("describe output schema compiles");
+        let table_only = render(Some(table.clone()), None);
+        assert_eq!(value_at(&table_only, "/found"), true);
         assert_eq!(value_at(&table_only, "/kind"), "table");
 
-        let function_only = describe_value(
-            &arguments,
-            &DescribeTableResponse::default(),
-            Some(&function),
-        );
-        assert_eq!(value_at(&function_only, "/found"), &json!(true));
+        let function_only = render(None, Some(&function));
+        assert_eq!(value_at(&function_only, "/found"), true);
         assert_eq!(value_at(&function_only, "/kind"), "table_function");
 
-        let missing = describe_value(&arguments, &DescribeTableResponse::default(), None);
-        assert_eq!(value_at(&missing, "/found"), &json!(false));
+        let missing = render(None, None);
+        assert_eq!(value_at(&missing, "/found"), false);
         assert_eq!(value_at(&missing, "/reason"), "missing");
         assert_eq!(value_at(&missing, "/requested/surface"), "lookup");
         assert!(
@@ -1012,26 +1012,21 @@ mod tests {
                 .is_none()
         );
 
-        let ambiguous = describe_value(
-            &arguments,
-            &DescribeTableResponse {
-                table: Some(table),
-                ..DescribeTableResponse::default()
-            },
-            Some(&function),
-        );
-        assert_eq!(value_at(&ambiguous, "/found"), &json!(false));
+        let ambiguous = render(Some(table), Some(&function));
+        assert_eq!(value_at(&ambiguous, "/found"), false);
         assert_eq!(value_at(&ambiguous, "/reason"), "ambiguous");
         assert_eq!(value_at(&ambiguous, "/matches/0/kind"), "table");
         assert_eq!(value_at(&ambiguous, "/matches/1/kind"), "table_function");
 
-        let schema = Value::Object((*super::describe_output_schema()).clone());
-        let validator =
-            jsonschema::validator_for(&schema).expect("describe output schema compiles");
-        for output in [table_only, function_only, missing, ambiguous] {
+        for (case, output) in [
+            ("table", table_only),
+            ("table function", function_only),
+            ("missing", missing),
+            ("ambiguous", ambiguous),
+        ] {
             assert!(
                 validator.is_valid(&output),
-                "describe output schema rejected {output}"
+                "describe output schema rejected {case}: {output}"
             );
         }
     }
