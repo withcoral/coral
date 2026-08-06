@@ -982,7 +982,7 @@ async fn unknown_tool_name_is_caller_visible_but_not_exported_to_telemetry() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn mcp_sql_batch_preserves_tool_trace_context_across_spawned_queries() {
+async fn mcp_sql_batch_preserves_task_and_trace_context_across_spawned_queries() {
     let exporter = InMemorySpanExporter::default();
     let provider = SdkTracerProvider::builder()
         .with_simple_exporter(exporter.clone())
@@ -1043,6 +1043,11 @@ async fn mcp_sql_batch_preserves_tool_trace_context_across_spawned_queries() {
     let tool_trace_id = tool_call.span_context.trace_id();
     let tool_span_id = tool_call.span_context.span_id();
     for query_span in query_spans {
+        assert_eq!(
+            span_string_attribute(query_span, "task.id"),
+            Some(task_id.clone()),
+            "spawned SQL query should keep MCP task attribution"
+        );
         assert_eq!(
             query_span.span_context.trace_id(),
             tool_trace_id,

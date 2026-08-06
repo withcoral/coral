@@ -94,8 +94,8 @@ mod tests {
     use crate::bootstrap;
     use crate::state::AppStateLayout;
     use crate::state::db::{
-        CoralDb, DatabaseConfig, DbRepos, ResolvedDatabaseConfig, TaskCreation, TaskCreationResult,
-        TaskQueryWrite, TaskQueryWriteResult,
+        CoralDb, DatabaseConfig, DbRepos, ResolvedDatabaseConfig, TaskCompletionUpdate,
+        TaskCreation, TaskCreationResult, TaskQueryWrite, TaskQueryWriteResult,
     };
 
     #[tokio::test]
@@ -136,6 +136,13 @@ mod tests {
         let other_workspace_id = format!("{workspace_id}_other");
         let (task_id, other_task_id) =
             create_task_query_parents(db, workspace_id, &other_workspace_id).await;
+        assert_eq!(
+            db.task_state()
+                .complete(workspace_id, &task_id, "success", 4)
+                .await
+                .expect("complete task before recording query activity"),
+            TaskCompletionUpdate::Completed
+        );
 
         assert_task_query_records(
             db,
