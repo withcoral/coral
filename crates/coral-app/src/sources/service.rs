@@ -854,12 +854,16 @@ mod tests {
     use crate::workspaces::{MemberRole, WorkspaceAuthorizer};
 
     #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one scenario freezes authorization precedence for every source RPC"
+    )]
     async fn source_configuration_requires_manage() {
         let fixture = source_service_fixture().await;
         let workspace = workspace(&fixture.workspace);
 
         assert_manage_denied(
-            fixture
+            &fixture
                 .service
                 .discover_sources(authenticated(
                     DiscoverSourcesRequest {
@@ -871,7 +875,7 @@ mod tests {
                 .expect_err("members cannot discover source setup metadata"),
         );
         assert_manage_denied(
-            fixture
+            &fixture
                 .service
                 .list_sources(authenticated(
                     ListSourcesRequest {
@@ -883,7 +887,7 @@ mod tests {
                 .expect_err("members cannot list source configuration"),
         );
         assert_manage_denied(
-            fixture
+            &fixture
                 .service
                 .get_source(authenticated(
                     GetSourceRequest {
@@ -896,7 +900,7 @@ mod tests {
                 .expect_err("members cannot read configured values or secret names"),
         );
         assert_manage_denied(
-            fixture
+            &fixture
                 .service
                 .get_source_info(authenticated(
                     GetSourceInfoRequest {
@@ -909,7 +913,7 @@ mod tests {
                 .expect_err("members cannot read credential setup metadata"),
         );
         assert_manage_denied(
-            fixture
+            &fixture
                 .service
                 .create_bundled_source(authenticated(
                     CreateBundledSourceRequest {
@@ -922,7 +926,7 @@ mod tests {
                 .await
                 .expect_err("members cannot create bundled sources"),
         );
-        let denied = match fixture
+        let Err(denied) = fixture
             .service
             .create_bundled_source_with_o_auth(authenticated(
                 CreateBundledSourceWithOAuthRequest {
@@ -933,12 +937,11 @@ mod tests {
                 &fixture.member,
             ))
             .await
-        {
-            Ok(_) => panic!("members cannot start credential retrieval"),
-            Err(status) => status,
+        else {
+            panic!("members cannot start credential retrieval");
         };
-        assert_manage_denied(denied);
-        let denied = match fixture
+        assert_manage_denied(&denied);
+        let Err(denied) = fixture
             .service
             .import_source(authenticated(
                 ImportSourceRequest {
@@ -949,13 +952,12 @@ mod tests {
                 &fixture.member,
             ))
             .await
-        {
-            Ok(_) => panic!("members cannot import sources"),
-            Err(status) => status,
+        else {
+            panic!("members cannot import sources");
         };
-        assert_manage_denied(denied);
+        assert_manage_denied(&denied);
         assert_manage_denied(
-            fixture
+            &fixture
                 .service
                 .delete_source(authenticated(
                     DeleteSourceRequest {
@@ -968,7 +970,7 @@ mod tests {
                 .expect_err("members cannot delete sources"),
         );
         assert_manage_denied(
-            fixture
+            &fixture
                 .service
                 .validate_source(authenticated(
                     ValidateSourceRequest {
@@ -982,7 +984,7 @@ mod tests {
         );
 
         assert_manage_denied(
-            fixture
+            &fixture
                 .service
                 .list_sources(authenticated(
                     ListSourcesRequest {
@@ -1008,7 +1010,7 @@ mod tests {
     async fn source_configuration_requires_manage_allows_owner_oauth_validation() {
         let fixture = source_service_fixture().await;
 
-        let status = match fixture
+        let Err(status) = fixture
             .service
             .create_bundled_source_with_o_auth(authenticated(
                 CreateBundledSourceWithOAuthRequest {
@@ -1024,9 +1026,8 @@ mod tests {
                 &fixture.owner,
             ))
             .await
-        {
-            Ok(_) => panic!("malformed OAuth retrieval must be rejected"),
-            Err(status) => status,
+        else {
+            panic!("malformed OAuth retrieval must be rejected");
         };
 
         assert_eq!(status.code(), Code::InvalidArgument);
@@ -1140,7 +1141,7 @@ mod tests {
         request
     }
 
-    fn assert_manage_denied(status: Status) {
+    fn assert_manage_denied(status: &Status) {
         assert_eq!(status.code(), Code::PermissionDenied);
     }
 
