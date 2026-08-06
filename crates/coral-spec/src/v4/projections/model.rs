@@ -2,7 +2,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::v4::diagnostics::Diagnostic;
 use crate::v4::ir::IrInputLocation;
-use crate::{DetailHintSpec, ManifestDataType, SearchLimitsSpec, SourceTableFunctionKind};
+use crate::{
+    DetailHintSpec, ManifestDataType, SearchLimitsSpec, SourceTableFunctionKind, SqlObjectName,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectionCatalog {
@@ -16,7 +18,7 @@ pub struct ProjectionCatalog {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Projection {
-    pub name: String,
+    pub sql_name: SqlObjectName,
     pub kind: ProjectionKind,
     pub description: String,
     pub guide: String,
@@ -91,7 +93,7 @@ mod tests {
         SqlInputExposure,
     };
     use crate::v4::{PROJECTION_GENERATOR_VERSION, V4_ARTIFACT_SCHEMA_VERSION};
-    use crate::{ManifestDataType, SearchLimitsSpec, SourceTableFunctionKind};
+    use crate::{ManifestDataType, SearchLimitsSpec, SourceTableFunctionKind, SqlObjectName};
 
     #[test]
     fn projection_catalog_yaml_uses_editor_friendly_enum_shapes() {
@@ -100,7 +102,8 @@ mod tests {
             source_name: "demo".to_string(),
             generator_version: Some(PROJECTION_GENERATOR_VERSION.to_string()),
             projections: vec![Projection {
-                name: "search_issues".to_string(),
+                sql_name: SqlObjectName::try_new("demo", "issues", "search_issues")
+                    .expect("SQL name"),
                 kind: ProjectionKind::TableFunction {
                     function_kind: SourceTableFunctionKind::Search,
                 },
@@ -155,6 +158,16 @@ mod tests {
             "required guide-read policy should serialize: {yaml}"
         );
         assert!(!yaml.contains("surface_id:"), "surface ID leaked: {yaml}");
+        let value: serde_yaml::Value = serde_yaml::from_str(&yaml).expect("projection YAML");
+        let projection = &value["projections"][0];
+        assert!(
+            projection.get("sql_name").is_some(),
+            "missing sql_name: {yaml}"
+        );
+        assert!(
+            projection.get("name").is_none(),
+            "legacy flattened projection name leaked: {yaml}"
+        );
 
         let decoded = serde_yaml::from_str::<ProjectionCatalog>(&yaml)
             .expect("projection catalog should round-trip");
@@ -202,7 +215,10 @@ diagnostics: []
 artifact_schema_version: {V4_ARTIFACT_SCHEMA_VERSION}
 source_name: demo
 projections:
-  - name: items
+  - sql_name:
+      catalog_name: demo
+      schema_name: public
+      name: items
     kind:
       type: table
     description: ""
@@ -224,7 +240,12 @@ diagnostics: []
             serde_yaml::from_str(&raw).expect("unknown future fields should be advisory");
 
         assert_eq!(
-            catalog.projections.first().expect("projection").name,
+            catalog
+                .projections
+                .first()
+                .expect("projection")
+                .sql_name
+                .name(),
             "items"
         );
     }

@@ -5,10 +5,13 @@ use crate::v4::ir::{
     HttpMethod, IrExecutionAttachment, IrInputLocation, IrOperation, IrOperationInput, IrType,
     IrTypeShape, OutputCardinality, RestExecutionAttachment, SemanticIr,
 };
-use crate::v4::manifest::V4SourceManifest;
+use crate::v4::manifest::{SurfaceType, V4SourceManifest};
 use crate::v4::naming::{normalize_identifier, normalize_sql_identifier, stable_suffix};
 use crate::v4::{PROJECTION_GENERATOR_VERSION, V4_ARTIFACT_SCHEMA_VERSION, ValidatedSurfacePlan};
-use crate::{ManifestDataType, ManifestError, Result, SearchLimitsSpec, SourceTableFunctionKind};
+use crate::{
+    ManifestDataType, ManifestError, Result, SearchLimitsSpec, SourceTableFunctionKind,
+    SqlObjectName,
+};
 
 use super::model::{
     Projection, ProjectionCatalog, ProjectionColumn, ProjectionInput, ProjectionKind,
@@ -35,7 +38,8 @@ pub fn generate_projection_catalog(
     }
     let type_by_id = type_index(surface);
     for operation in &surface.operations {
-        let projection = generate_projection(plan, &type_by_id, operation, &mut diagnostics);
+        let projection =
+            generate_projection(manifest, plan, &type_by_id, operation, &mut diagnostics)?;
         projections.push(projection);
     }
     diagnostics.extend(surface.diagnostics.clone());
@@ -43,7 +47,7 @@ pub fn generate_projection_catalog(
         manifest,
         surface,
         &mut projections,
-    ));
+    )?);
     Ok(ProjectionCatalog {
         artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
         source_name: manifest.common.name.clone(),
@@ -54,11 +58,12 @@ pub fn generate_projection_catalog(
 }
 
 fn generate_projection(
+    manifest: &V4SourceManifest,
     plan: &ValidatedSurfacePlan,
     type_by_id: &TypeIndex<'_>,
     operation: &IrOperation,
     diagnostics: &mut Vec<Diagnostic>,
-) -> Projection {
+) -> Result<Projection> {
     let is_search = is_search_operation(operation);
     let rest = rest_execution(operation);
     let mut visibility = initial_projection_visibility(operation, rest);
@@ -131,9 +136,12 @@ fn generate_projection(
         .collect::<Vec<_>>();
     let columns = projection_columns(plan, type_by_id, operation);
     let name = generated_projection_name(operation, is_search);
+    let schema_name = projection_schema_name(plan.semantic_ir().surface_type, operation)?;
+    let sql_name = SqlObjectName::try_new(&manifest.common.name, schema_name, name)
+        .map_err(|error| ManifestError::validation(error.to_string()))?;
     let guide = projection_guide(&kind, &inputs, is_search);
     let projection = Projection {
-        name,
+        sql_name,
         kind,
         description: operation.description.clone(),
         guide,
@@ -151,7 +159,22 @@ fn generate_projection(
         diagnostics: projection_diagnostics.clone(),
     };
     diagnostics.extend(projection_diagnostics);
-    projection
+    Ok(projection)
+}
+
+fn projection_schema_name(surface_type: SurfaceType, operation: &IrOperation) -> Result<String> {
+    match surface_type {
+        SurfaceType::OpenApi => Ok(operation
+            .naming
+            .as_ref()
+            .and_then(|naming| naming.group.clone())
+            .filter(|group| !group.is_empty())
+            .unwrap_or_else(|| "public".to_string())),
+        SurfaceType::Mcp => Ok("public".to_string()),
+        SurfaceType::Database => Err(ManifestError::validation(
+            "database surfaces do not generate projection catalogs",
+        )),
+    }
 }
 
 fn rest_execution(operation: &IrOperation) -> Option<&RestExecutionAttachment> {

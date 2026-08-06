@@ -5,7 +5,8 @@ use super::test_support::github_openapi;
 use super::*;
 use crate::backends::mcp::McpPaginationSpec;
 use crate::{
-    ManifestDataType, PaginationMode, SourceTableFunctionKind, parse_source_manifest_yaml,
+    ManifestDataType, PaginationMode, SourceTableFunctionKind, SqlObjectName,
+    parse_source_manifest_yaml,
 };
 
 #[test]
@@ -34,11 +35,71 @@ surface:
         .projections
         .iter()
         .filter(|projection| projection.visibility == ProjectionVisibility::Published)
-        .map(|projection| projection.name.as_str())
+        .map(|projection| projection.sql_name.name())
         .collect::<Vec<_>>();
-    assert!(published.contains(&"issue"), "{published:?}");
-    assert!(published.contains(&"search_issues"), "{published:?}");
-    assert!(published.contains(&"get_issues"), "{published:?}");
+    assert!(published.contains(&"list_for_repo"), "{published:?}");
+    assert!(
+        published.contains(&"issues_and_pull_requests"),
+        "{published:?}"
+    );
+    assert!(published.contains(&"get"), "{published:?}");
+}
+
+#[test]
+fn projections_publish_complete_schema_local_sql_names() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: github_v4
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.github.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.0.3
+paths:
+  /issues:
+    get:
+      tags: ['', 'Issue Tracking', ignored]
+      operationId: issues/list
+      responses: {'200': {content: {application/json: {schema: {type: array, items: {type: object}}}}}}
+  /pulls:
+    get:
+      tags: ['Pull Requests']
+      operationId: pulls/list
+      responses: {'200': {content: {application/json: {schema: {type: array, items: {type: object}}}}}}
+  /health:
+    get:
+      operationId: health/get
+      responses: {'200': {content: {application/json: {schema: {type: object}}}}}
+"
+        .as_bytes(),
+    )
+    .expect("import");
+    let catalog =
+        generate_projection_catalog(v4, &ir.validated_plan().expect("plan")).expect("catalog");
+    let names = catalog
+        .projections
+        .iter()
+        .map(|projection| {
+            (
+                projection.sql_name.catalog_name(),
+                projection.sql_name.schema_name(),
+                projection.sql_name.name(),
+            )
+        })
+        .collect::<BTreeSet<_>>();
+
+    assert!(names.contains(&("github_v4", "issue_tracking", "list")));
+    assert!(names.contains(&("github_v4", "pull_requests", "list")));
+    assert!(names.contains(&("github_v4", "public", "get")));
 }
 
 fn items_api_catalog(lookup_keys: Option<(bool, &[&str])>) -> ProjectionCatalog {
@@ -396,23 +457,28 @@ components:
     let names = catalog
         .projections
         .iter()
-        .map(|projection| projection.name.as_str())
+        .map(|projection| {
+            (
+                projection.sql_name.schema_name(),
+                projection.sql_name.name(),
+            )
+        })
         .collect::<BTreeSet<_>>();
     let expected = [
-        "billing_get_github_billing_ai_credit_usage_report_org",
-        "billing_get_github_billing_ai_credit_usage_report_user",
-        "repos_list_for_user",
-        "activity_list_repos_watched_by_user",
-        "projects_list_items_for_org",
-        "projects_list_items_for_user",
-        "projects_list_view_items_for_org",
-        "projects_list_view_items_for_user",
+        ("billing", "get_github_billing_ai_credit_usage_report_org"),
+        ("billing", "get_github_billing_ai_credit_usage_report_user"),
+        ("repos", "list_for_user"),
+        ("activity", "list_repos_watched_by_user"),
+        ("projects", "list_items_for_org"),
+        ("projects", "list_items_for_user"),
+        ("projects", "list_view_items_for_org"),
+        ("projects", "list_view_items_for_user"),
     ];
     for name in expected {
-        assert!(names.contains(name), "missing {name}: {names:?}");
+        assert!(names.contains(&name), "missing {name:?}: {names:?}");
     }
     assert!(
-        names.iter().all(|name| !name.contains("__")),
+        names.iter().all(|(_, name)| !name.contains("__")),
         "tag-grouped names should not need hash suffixes: {names:?}"
     );
     assert!(
@@ -1147,7 +1213,7 @@ components:
         .map(|projection| {
             (
                 projection.operation_id.as_str(),
-                (projection.name.as_str(), &projection.kind),
+                (projection.sql_name.name(), &projection.kind),
             )
         })
         .collect::<HashMap<_, _>>();
@@ -1155,19 +1221,19 @@ components:
     let issues_list = names_by_operation
         .get("issues_list")
         .expect("issues_list projection");
-    assert_eq!(issues_list.0, "issue");
+    assert_eq!(issues_list.0, "list");
     let org_issues = names_by_operation
         .get("issues_list_for_org")
         .expect("issues_list_for_org projection");
-    assert_eq!(org_issues.0, "orgs_issue");
+    assert_eq!(org_issues.0, "list_for_org");
     let repo_issues = names_by_operation
         .get("issues_list_for_repo")
         .expect("issues_list_for_repo projection");
-    assert_eq!(repo_issues.0, "repos_issue");
+    assert_eq!(repo_issues.0, "list_for_repo");
     let pulls = names_by_operation
         .get("pulls_list")
         .expect("pulls_list projection");
-    assert_eq!(pulls.0, "pull_request");
+    assert_eq!(pulls.0, "repos_list");
     assert!(matches!(
         pulls.1,
         ProjectionKind::TableFunction {
@@ -1177,11 +1243,11 @@ components:
     let commits = names_by_operation
         .get("repos_list_commits")
         .expect("repos_list_commits projection");
-    assert_eq!(commits.0, "commit");
+    assert_eq!(commits.0, "list_commits");
     let pull_commits = names_by_operation
         .get("pulls_list_commits")
         .expect("pulls_list_commits projection");
-    assert_eq!(pull_commits.0, "repos_pulls_commit");
+    assert_eq!(pull_commits.0, "repos_pulls_list_commits");
     let pull_commits_projection = catalog
         .projections
         .iter()
@@ -1198,7 +1264,7 @@ components:
         .iter()
         .filter(|diagnostic| diagnostic.message.contains("projection name collision"))
         .collect::<Vec<_>>();
-    assert_eq!(catalog_collision_diagnostics.len(), 3);
+    assert_eq!(catalog_collision_diagnostics.len(), 2);
     let projection_collision_diagnostics = catalog
         .projections
         .iter()
@@ -1328,6 +1394,10 @@ fn generated_mcp_projection_exposes_current_row_result_columns() {
         .iter()
         .find(|projection| projection.operation_id == "search_issues")
         .expect("mcp search projection");
+
+    assert_eq!(projection.sql_name.catalog_name(), "github_mcp");
+    assert_eq!(projection.sql_name.schema_name(), "public");
+    assert_eq!(projection.sql_name.name(), "search_issues");
 
     let columns = projection
         .columns
@@ -2119,7 +2189,7 @@ fn projection_compatibility_rejects_missing_operation() {
     let mut catalog = generate_projection_catalog(&manifest, &plan).expect("projections");
     let projection = catalog.projections.first_mut().expect("projection");
     projection.operation_id = "items/missing".to_string();
-    let projection_name = projection.name.clone();
+    let projection_name = projection.sql_name.clone();
 
     let error = validate_projection_compatibility(&plan, &catalog)
         .expect_err("missing operation must fail");
@@ -2281,7 +2351,12 @@ fn projection_compatibility_accepts_conservative_choices_without_mutation() {
     let plan = imported.validated_plan().expect("plan");
     let mut catalog = generate_projection_catalog(&manifest, &plan).expect("projections");
     let projection = catalog.projections.first_mut().expect("projection");
-    projection.name = "authored_items".to_string();
+    projection.sql_name = SqlObjectName::try_new(
+        projection.sql_name.catalog_name(),
+        projection.sql_name.schema_name(),
+        "authored_items",
+    )
+    .expect("SQL name");
     projection.guide = "Keep this guide".to_string();
     let input = projection
         .inputs

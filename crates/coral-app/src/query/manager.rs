@@ -2448,7 +2448,7 @@ surface:
         let issues = projections
             .projections
             .iter_mut()
-            .find(|projection| projection.name == "issues")
+            .find(|projection| projection.sql_name.name() == "issues")
             .expect("issues projection");
         issues.guide = "Use issue_search for lookups.".to_string();
         issues.require_guide_read = true;

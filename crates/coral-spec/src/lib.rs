@@ -88,6 +88,7 @@ mod inputs;
 mod loader;
 mod parser;
 mod schema;
+mod sql_name;
 mod template;
 mod udf;
 pub mod v4;
@@ -134,6 +135,7 @@ pub use loader::load_manifest_path;
 pub use parser::{
     ValidatedSourceManifest, parse_source_manifest_value, parse_source_manifest_yaml,
 };
+pub use sql_name::{SqlObjectName, SqlObjectNameError};
 pub use template::{ParsedTemplate, TemplateNamespace, TemplatePart, TemplateToken};
 pub use udf::{
     FunctionCoralSqlImplementationSpec, FunctionImplementationSpec, FunctionSpec,

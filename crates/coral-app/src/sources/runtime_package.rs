@@ -261,7 +261,7 @@ fn http_manifest_for_surface(
             .ok_or_else(|| {
                 AppError::FailedPrecondition(format!(
                     "DSL v4 projection '{}' references missing operation '{}'",
-                    projection.name, projection.operation_id
+                    projection.sql_name, projection.operation_id
                 ))
             })?;
         let rest = rest_execution_for_operation(operation)?;
@@ -277,7 +277,7 @@ fn http_manifest_for_surface(
             ProjectionKind::Table => {
                 tables.push(HttpTableSpec {
                     common: TableCommon {
-                        name: projection.name.clone(),
+                        name: projection.sql_name.name().to_string(),
                         description: projection.description.clone(),
                         guide: projection.guide.clone(),
                         require_guide_read: projection.require_guide_read,
@@ -295,7 +295,7 @@ fn http_manifest_for_surface(
             }
             ProjectionKind::TableFunction { function_kind } => {
                 functions.push(SourceTableFunctionSpec {
-                    name: projection.name.clone(),
+                    name: projection.sql_name.name().to_string(),
                     kind: *function_kind,
                     description: projection.description.clone(),
                     guide: projection.guide.clone(),
@@ -371,13 +371,13 @@ fn mcp_manifest_for_surface(
             .ok_or_else(|| {
                 AppError::FailedPrecondition(format!(
                     "DSL v4 projection '{}' references missing operation '{}'",
-                    projection.name, projection.operation_id
+                    projection.sql_name, projection.operation_id
                 ))
             })?;
         let IrExecutionAttachment::Mcp(mcp) = &operation.execution else {
             return Err(AppError::FailedPrecondition(format!(
                 "DSL v4 projection '{}' is not backed by an MCP operation",
-                projection.name
+                projection.sql_name
             )));
         };
         let (cursor_pagination, offset_pagination) =
@@ -429,7 +429,7 @@ fn mcp_table_spec(
 ) -> McpTableSpec {
     McpTableSpec {
         common: TableCommon {
-            name: projection.name.clone(),
+            name: projection.sql_name.name().to_string(),
             description: projection.description.clone(),
             guide: projection.guide.clone(),
             require_guide_read: projection.require_guide_read,
@@ -462,7 +462,7 @@ fn mcp_table_function_spec(
         pagination,
         offset_pagination,
         common: SourceTableFunctionSpec {
-            name: projection.name.clone(),
+            name: projection.sql_name.name().to_string(),
             kind: function_kind,
             description: projection.description.clone(),
             guide: projection.guide.clone(),
@@ -1017,7 +1017,8 @@ mod tests {
 
     fn published_projection(operation_id: &str) -> Projection {
         Projection {
-            name: "list_issues".to_string(),
+            sql_name: coral_spec::SqlObjectName::try_new("github_v4", "public", "list_issues")
+                .expect("SQL name"),
             kind: ProjectionKind::Table,
             description: String::new(),
             guide: String::new(),
@@ -1034,7 +1035,8 @@ mod tests {
 
     fn published_function_projection(operation_id: &str) -> Projection {
         Projection {
-            name: "search_issues".to_string(),
+            sql_name: coral_spec::SqlObjectName::try_new("github_v4", "public", "search_issues")
+                .expect("SQL name"),
             kind: ProjectionKind::TableFunction {
                 function_kind: SourceTableFunctionKind::Search,
             },
@@ -1413,13 +1415,16 @@ surface:
             surface: openapi_surface(),
         };
         let mut table = published_projection("items_list");
-        table.name = "items".to_string();
+        table.sql_name =
+            coral_spec::SqlObjectName::try_new("github_v4", "public", "items").expect("SQL name");
         table.inputs = vec![
             persisted_projection_input("q", SqlInputExposure::Filter, true),
             persisted_projection_input("state", SqlInputExposure::Internal, false),
         ];
         let mut function = published_projection("items_list");
-        function.name = "search_items".to_string();
+        function.sql_name =
+            coral_spec::SqlObjectName::try_new("github_v4", "public", "search_items")
+                .expect("SQL name");
         function.kind = ProjectionKind::TableFunction {
             function_kind: SourceTableFunctionKind::Search,
         };

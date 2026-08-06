@@ -96,14 +96,22 @@ pub fn validate_materialized_source_structure(
     }
     let mut projection_names = BTreeSet::new();
     for projection in &materialized.projections.projections {
-        if !projection_names.insert(projection.name.as_str()) {
+        if projection.sql_name.catalog_name() != materialized.projections.source_name {
+            return Err(ManifestError::validation(format!(
+                "DSL v4 projection '{}' belongs to catalog '{}', not projection catalog owner '{}'",
+                projection.sql_name,
+                projection.sql_name.catalog_name(),
+                materialized.projections.source_name
+            )));
+        }
+        if !projection_names.insert(&projection.sql_name) {
             return Err(ManifestError::validation(format!(
                 "DSL v4 projection '{}' is repeated",
-                projection.name
+                projection.sql_name
             )));
         }
         crate::validate_required_guide(
-            &format!("DSL v4 projection '{}'", projection.name),
+            &format!("DSL v4 projection '{}'", projection.sql_name),
             &projection.guide,
             projection.require_guide_read,
         )?;
@@ -115,7 +123,6 @@ pub fn validate_materialized_source_structure(
 mod tests {
     use std::path::PathBuf;
 
-    use crate::parse_source_manifest_yaml;
     use crate::v4::ir::SemanticIr;
     use crate::v4::projections::{
         Projection, ProjectionCatalog, ProjectionKind, ProjectionVisibility,
@@ -125,6 +132,7 @@ mod tests {
         OperationMetadataCatalog, PROJECTION_GENERATOR_VERSION, SURFACE_IMPORTER_VERSION,
         SurfaceType, V4_ARTIFACT_SCHEMA_VERSION, V4SourceManifest, ValidatedSurfacePlan,
     };
+    use crate::{SqlObjectName, parse_source_manifest_yaml};
 
     use super::{
         Fingerprint, FingerprintSurface, MaterializedSurface, V4MaterializedSource,
@@ -212,7 +220,7 @@ surface:
 
     fn projection(name: &str) -> Projection {
         Projection {
-            name: name.to_string(),
+            sql_name: SqlObjectName::try_new("demo", "public", name).expect("SQL name"),
             kind: ProjectionKind::Table,
             description: String::new(),
             guide: String::new(),
@@ -322,7 +330,23 @@ surface:
         let error = validate_materialized_source_structure(&manifest(), &materialized)
             .expect_err("duplicate projection names should fail validation");
 
-        assert_eq!(error.to_string(), "DSL v4 projection 'items' is repeated");
+        assert_eq!(
+            error.to_string(),
+            "DSL v4 projection 'demo.public.items' is repeated"
+        );
+    }
+
+    #[test]
+    fn structural_validation_rejects_projection_owned_by_another_catalog() {
+        let mut materialized = materialized_source();
+        let mut foreign = projection("items");
+        foreign.sql_name = SqlObjectName::try_new("other", "public", "items").expect("SQL name");
+        materialized.projections.projections.push(foreign);
+
+        let error = validate_materialized_source_structure(&manifest(), &materialized)
+            .expect_err("projection catalog must own every SQL name");
+
+        assert!(error.to_string().contains("belongs to catalog 'other'"));
     }
 
     #[test]

@@ -30,7 +30,7 @@ pub fn validate_projection_compatibility(
         let Some(operation) = operations.get(projection.operation_id.as_str()) else {
             return Err(ManifestError::validation(format!(
                 "projection '{}' references missing operation '{}'",
-                projection.name, projection.operation_id
+                projection.sql_name, projection.operation_id
             )));
         };
         if matches!(operation.execution, IrExecutionAttachment::Rest(_)) {
@@ -56,7 +56,11 @@ fn validate_projection_inputs(
         }) else {
             return Err(ManifestError::validation(format!(
                 "projection '{}' input '{}' does not match a {:?} input named '{}' on operation '{}'",
-                projection.name, input.name, input.source_location, input.wire_name, operation.id
+                projection.sql_name,
+                input.name,
+                input.source_location,
+                input.wire_name,
+                operation.id
             )));
         };
 
@@ -65,7 +69,7 @@ fn validate_projection_inputs(
         if pagination_owned && input.sql_exposure != SqlInputExposure::Internal {
             return Err(ManifestError::validation(format!(
                 "projection '{}' input '{}' on operation '{}' is owned by pagination but has sql_exposure '{}'; pagination-owned inputs must be internal",
-                projection.name,
+                projection.sql_name,
                 input.name,
                 operation.id,
                 sql_exposure_name(input.sql_exposure)
@@ -76,7 +80,7 @@ fn validate_projection_inputs(
             if !matches!(operation.execution, IrExecutionAttachment::Rest(_)) {
                 return Err(ManifestError::validation(format!(
                     "projection '{}' input '{}' on operation '{}' has lookup_key=true, but lookup keys are only valid for REST inputs",
-                    projection.name, input.name, operation.id
+                    projection.sql_name, input.name, operation.id
                 )));
             }
             // The metadata allowlist is keyed by wire name alone, and only
@@ -86,13 +90,13 @@ fn validate_projection_inputs(
             if input.source_location != IrInputLocation::Query {
                 return Err(ManifestError::validation(format!(
                     "projection '{}' input '{}' on operation '{}' has lookup_key=true with source location {:?}; lookup keys are only valid for query inputs",
-                    projection.name, input.name, operation.id, input.source_location
+                    projection.sql_name, input.name, operation.id, input.source_location
                 )));
             }
             if input.sql_exposure != SqlInputExposure::Filter {
                 return Err(ManifestError::validation(format!(
                     "projection '{}' input '{}' on operation '{}' has lookup_key=true with sql_exposure '{}'; lookup keys must be exposed as filters",
-                    projection.name,
+                    projection.sql_name,
                     input.name,
                     operation.id,
                     sql_exposure_name(input.sql_exposure)
@@ -101,7 +105,7 @@ fn validate_projection_inputs(
             if !plan.input_is_lookup_key(&operation.id, &input.wire_name) {
                 return Err(ManifestError::validation(format!(
                     "projection '{}' input '{}' on operation '{}' has lookup_key=true, but wire input '{}' is not authorised by the operation metadata lookup-key allowlist",
-                    projection.name, input.name, operation.id, input.wire_name
+                    projection.sql_name, input.name, operation.id, input.wire_name
                 )));
             }
         }
@@ -113,7 +117,7 @@ fn validate_projection_inputs(
         {
             return Err(ManifestError::validation(format!(
                 "projection '{}' input '{}' on operation '{}' has sql_exposure '{}'; {} projections expose non-internal inputs as {}",
-                projection.name,
+                projection.sql_name,
                 input.name,
                 operation.id,
                 sql_exposure_name(input.sql_exposure),
@@ -132,7 +136,7 @@ fn validate_projection_inputs(
         {
             return Err(ManifestError::validation(format!(
                 "projection '{}' input '{}' on operation '{}' is required by the operation but has sql_exposure 'internal'; published projections cannot internalize required inputs",
-                projection.name, input.name, operation.id
+                projection.sql_name, input.name, operation.id
             )));
         }
     }
@@ -176,13 +180,13 @@ fn validate_projection_columns(
         let Some(fields) = row_fields else {
             return Err(ManifestError::validation(format!(
                 "projection '{}' column '{}' reads field '{field_name}', but the rows operation '{operation_id}' yields have type '{row_type_ref}', which is not an object and names no fields",
-                projection.name, column.name
+                projection.sql_name, column.name
             )));
         };
         let Some(field) = fields.iter().find(|field| field.name == *field_name) else {
             return Err(ManifestError::validation(format!(
                 "projection '{}' column '{}' reads field '{field_name}', but the rows operation '{operation_id}' yields have type '{row_type_ref}', which has no such field",
-                projection.name, column.name
+                projection.sql_name, column.name
             )));
         };
         // The generator only ever emits one segment, but an authored override
@@ -191,7 +195,7 @@ fn validate_projection_columns(
         if let Err(reason) = walk_source_path(&field.type_ref, nested, types) {
             return Err(ManifestError::validation(format!(
                 "projection '{}' column '{}' reads source path '{}', but {reason}",
-                projection.name,
+                projection.sql_name,
                 column.name,
                 column.source_path.join(".")
             )));

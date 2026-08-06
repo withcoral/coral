@@ -4,6 +4,7 @@ use crate::v4::diagnostics::Diagnostic;
 use crate::v4::ir::{IrExecutionAttachment, IrOperation, OutputCardinality, SemanticIr};
 use crate::v4::manifest::V4SourceManifest;
 use crate::v4::naming::{normalize_identifier, stable_suffix};
+use crate::{ManifestError, Result, SqlObjectName};
 
 use super::model::{
     Projection, ProjectionInput, ProjectionKind, ProjectionVisibility, SqlInputExposure,
@@ -13,16 +14,19 @@ pub(super) fn resolve_projection_name_collisions(
     manifest: &V4SourceManifest,
     surface: &SemanticIr,
     projections: &mut [Projection],
-) -> Vec<Diagnostic> {
+) -> Result<Vec<Diagnostic>> {
     let operations = surface
         .operations
         .iter()
         .map(|operation| (operation.id.as_str(), operation))
         .collect::<HashMap<_, _>>();
-    let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    let mut groups: BTreeMap<(String, String), Vec<usize>> = BTreeMap::new();
     for (index, projection) in projections.iter().enumerate() {
         groups
-            .entry(projection.name.clone())
+            .entry((
+                projection.sql_name.schema_name().to_string(),
+                projection.sql_name.name().to_string(),
+            ))
             .or_default()
             .push(index);
     }
@@ -46,7 +50,10 @@ pub(super) fn resolve_projection_name_collisions(
     let mut used_names = HashSet::new();
     for index in keep_base_name.iter().copied() {
         if let Some(projection) = projections.get(index) {
-            used_names.insert(projection.name.clone());
+            used_names.insert((
+                projection.sql_name.schema_name().to_string(),
+                projection.sql_name.name().to_string(),
+            ));
         }
     }
 
@@ -62,11 +69,16 @@ pub(super) fn resolve_projection_name_collisions(
             let operation = operations.get(projection.operation_id.as_str()).copied();
             let name =
                 collision_resolved_projection_name(manifest, projection, operation, &used_names);
-            used_names.insert(name.clone());
+            used_names.insert((projection.sql_name.schema_name().to_string(), name.clone()));
             let projection = projections
                 .get_mut(*index)
                 .expect("projection index came from projections");
-            projection.name.clone_from(&name);
+            projection.sql_name = SqlObjectName::try_new(
+                projection.sql_name.catalog_name(),
+                projection.sql_name.schema_name(),
+                &name,
+            )
+            .map_err(|error| ManifestError::validation(error.to_string()))?;
             let diagnostic = Diagnostic::new(
                 format!("projection name collision resolved as '{name}'"),
                 Some(projection.operation_id.clone()),
@@ -75,7 +87,7 @@ pub(super) fn resolve_projection_name_collisions(
             diagnostics.push(diagnostic);
         }
     }
-    diagnostics
+    Ok(diagnostics)
 }
 
 fn projection_name_priority(
@@ -96,14 +108,19 @@ fn collision_resolved_projection_name(
     manifest: &V4SourceManifest,
     projection: &Projection,
     operation: Option<&IrOperation>,
-    used_names: &HashSet<String>,
+    used_names: &HashSet<(String, String)>,
 ) -> String {
-    let base_name = projection.name.as_str();
+    let base_name = projection.sql_name.name();
     let contextual_name = operation.map_or_else(
         || normalize_identifier(&projection.operation_id, "projection"),
         |operation| contextual_projection_name(base_name, operation),
     );
-    if contextual_name != base_name && !used_names.contains(&contextual_name) {
+    if contextual_name != base_name
+        && !used_names.contains(&(
+            projection.sql_name.schema_name().to_string(),
+            contextual_name.clone(),
+        ))
+    {
         return contextual_name;
     }
 
@@ -240,9 +257,8 @@ pub(super) fn projection_name(operation: &IrOperation, is_search: bool) -> Strin
 
 pub(super) fn projection_name_from_operation_naming(operation: &IrOperation) -> Option<String> {
     let naming = operation.naming.as_ref()?;
-    let group = non_empty_naming_part(naming.group.as_deref())?;
     let operation = non_empty_naming_part(naming.operation.as_deref())?;
-    Some(format!("{group}_{operation}"))
+    Some(operation.to_string())
 }
 
 fn non_empty_naming_part(part: Option<&str>) -> Option<&str> {

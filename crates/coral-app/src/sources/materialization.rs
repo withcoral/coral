@@ -2409,7 +2409,7 @@ surface:
                 "projection_override={projection_override}, metadata_override={metadata_override}: {message}"
             );
             assert!(
-                message.contains("Re-add the source or reconcile the selected artifact files"),
+                message.contains("Re-add the source or explicitly regenerate its artifacts"),
                 "projection_override={projection_override}, metadata_override={metadata_override}: {message}"
             );
             assert!(
@@ -2654,6 +2654,49 @@ surface:
             &manifest,
         )
         .expect("full valid override should rescue old materialization");
+    }
+
+    #[test]
+    fn pre_catalog_contract_projection_requires_explicit_regeneration() {
+        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
+        let projections_path = layout
+            .v4_materialized_dir(&workspace_name(), &source_name())
+            .join(PROJECTIONS_FILENAME);
+        let mut catalog: serde_yaml::Value =
+            read_yaml(&projections_path).expect("read generated projection catalog");
+        let projections = catalog
+            .get_mut("projections")
+            .and_then(serde_yaml::Value::as_sequence_mut)
+            .expect("projection sequence");
+        for projection in projections {
+            let projection = projection.as_mapping_mut().expect("projection mapping");
+            let sql_name = projection
+                .remove(serde_yaml::Value::String("sql_name".to_string()))
+                .expect("generated SQL name");
+            let legacy_name = sql_name.get("name").cloned().expect("generated leaf name");
+            projection.insert(serde_yaml::Value::String("name".to_string()), legacy_name);
+        }
+        write_yaml(&projections_path, &catalog).expect("write pre-contract projection catalog");
+
+        let error = load_v4_materialization(
+            &layout,
+            &workspace_name(),
+            &source_name(),
+            &manifest_yaml,
+            &manifest,
+        )
+        .expect_err("projection artifacts without sql_name must be regenerated");
+
+        assert!(matches!(
+            error,
+            AppError::MissingOrIncompatibleV4Materialization { .. }
+        ));
+        assert!(error.to_string().contains("missing field `sql_name`"));
+        assert!(
+            error
+                .to_string()
+                .contains("Re-add the source or explicitly regenerate its artifacts")
+        );
     }
 
     #[test]
