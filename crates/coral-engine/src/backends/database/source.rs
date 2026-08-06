@@ -510,7 +510,11 @@ mod tests {
 
         async fn wait_for_calls(&self, expected: usize) {
             while self.calls.load(Ordering::SeqCst) < expected {
-                self.progressed.notified().await;
+                let notified = self.progressed.notified();
+                if self.calls.load(Ordering::SeqCst) >= expected {
+                    break;
+                }
+                notified.await;
             }
         }
     }
