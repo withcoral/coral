@@ -182,7 +182,9 @@ describe('TraceDetail', () => {
     await expect.element(rendered.getByText('SELECT customers FROM Zurich')).toBeVisible()
     await expect.element(rendered.getByText('Search details')).toBeVisible()
     expect(rendered.container.querySelector('.token')).toBeNull()
-    expect(rendered.container.querySelectorAll('[data-tone="query"]')).toHaveLength(2)
+    expect(
+      rendered.container.querySelector('[data-span-row-id="search"] [data-tone="query"]'),
+    ).not.toBeNull()
   })
 
   it('renders locally recorded MCP Search text as plain text', async () => {
@@ -203,30 +205,6 @@ describe('TraceDetail', () => {
     await expect.element(rendered.getByText('SELECT accounts FROM Zurich')).toBeVisible()
     await expect.element(rendered.getByText('Search details')).toBeVisible()
     expect(rendered.container.querySelector('.token')).toBeNull()
-  })
-
-  it('keeps the typed list operation when a legacy detail response is untyped', async () => {
-    const legacyDetail = detail()
-    legacyDetail.summary = {
-      ...legacyDetail.summary!,
-      invocationKind: TraceInvocationKind.UNSPECIFIED,
-      operationKind: TraceOperationKind.UNSPECIFIED,
-      operationName: '',
-      query: 'LIST CATALOGS',
-    }
-    const searchSummary = {
-      ...legacyDetail.summary!,
-      name: 'coral.mcp.call_tool',
-      invocationKind: TraceInvocationKind.MCP,
-      operationKind: TraceOperationKind.SEARCH,
-      operationName: 'search',
-      query: 'find Zurich customers',
-    }
-    const { screen } = renderDetail(null, legacyDetail, [searchSummary])
-    const rendered = await screen
-
-    await expect.element(rendered.getByText('find Zurich customers')).toBeVisible()
-    expect(rendered.getByText('LIST CATALOGS').query()).toBeNull()
   })
 
   it('prefers a current typed detail operation over a stale typed list row', async () => {

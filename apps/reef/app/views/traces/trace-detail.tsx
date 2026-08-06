@@ -20,7 +20,6 @@ import {
   formatDuration,
   formatDurationFromNanos,
   formatRows,
-  hasTypedOperation,
   isHttpSpan,
   nanosToMs,
   operationCodeLanguage,
@@ -765,12 +764,7 @@ function TraceDetailContent({
     () => handleSpanArrowShortcut(1),
     [handleSpanArrowShortcut],
   )
-  const summary =
-    detail?.summary && hasTypedOperation(detail.summary)
-      ? detail.summary
-      : initialSummary && hasTypedOperation(initialSummary)
-        ? initialSummary
-        : (detail?.summary ?? initialSummary)
+  const summary = detail?.summary ?? initialSummary
   const httpSpans = useMemo(() => detail?.spans.filter(isHttpSpan) ?? [], [detail?.spans])
   const sources = useMemo(() => sourceNames(detail?.spans ?? []), [detail?.spans])
   const resolvedExtraTabs = useMemo(

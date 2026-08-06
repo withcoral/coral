@@ -38,21 +38,6 @@ function summary(
   }
 }
 
-function legacySummary(
-  traceId: string,
-  query = `select '${traceId}'`,
-  name = query ? 'coral.query' : 'http.request',
-): TraceSummaryData {
-  return summary(
-    traceId,
-    query,
-    name,
-    TraceOperationKind.UNSPECIFIED,
-    '',
-    TraceInvocationKind.UNSPECIFIED,
-  )
-}
-
 describe('traces list loader', () => {
   const request = new Request('http://reef.test/workspaces/analytics/traces')
   const workspace = create(WorkspaceSchema, { name: 'analytics' })
@@ -77,12 +62,7 @@ describe('traces list loader', () => {
     )
     const listPage = vi.fn().mockResolvedValue({
       nextPageToken: '',
-      traces: [
-        summary('query'),
-        search,
-        futureTool,
-        legacySummary('discovery', '', 'coral.mcp.list_tools'),
-      ],
+      traces: [summary('query'), search, futureTool],
     })
 
     await expect(loadTracesRouteData(request, workspace, listPage)).resolves.toEqual({
@@ -94,40 +74,16 @@ describe('traces list loader', () => {
     expect(listPage).toHaveBeenCalledWith(request, workspace, 100, '', TraceView.QUERY_STREAM)
   })
 
-  it('uses bounded client filtering only for legacy servers', async () => {
-    const firstPage = Array.from({ length: 60 }, (_, index) => legacySummary(`trace-${index}`))
-    const secondPage = Array.from({ length: 60 }, (_, index) =>
-      legacySummary(`trace-${index + 60}`),
-    )
-    const listPage = vi
-      .fn()
-      .mockResolvedValueOnce({ nextPageToken: 'page-2', traces: firstPage })
-      .mockResolvedValueOnce({ nextPageToken: 'page-3', traces: secondPage })
-
-    const traces = await listQueryTraces(request, workspace, listPage)
-
-    expect(listPage).toHaveBeenCalledTimes(2)
-    expect(listPage).toHaveBeenNthCalledWith(
-      2,
-      request,
-      workspace,
-      100,
-      'page-2',
-      TraceView.QUERY_STREAM,
-    )
-    expect(traces).toHaveLength(80)
-    expect(traces.map(({ traceId }) => traceId)).toEqual(
-      Array.from({ length: 80 }, (_, index) => `trace-${index}`),
-    )
-  })
-
-  it('does not scan general trace pages after receiving typed operations', async () => {
+  it('uses one bounded Query Stream page', async () => {
+    const traces = Array.from({ length: 100 }, (_, index) => summary(`trace-${index}`))
     const listPage = vi.fn().mockResolvedValue({
       nextPageToken: 'unused-page',
-      traces: [summary('typed')],
+      traces,
     })
 
-    await expect(listQueryTraces(request, workspace, listPage)).resolves.toEqual([summary('typed')])
+    await expect(listQueryTraces(request, workspace, listPage)).resolves.toEqual(
+      traces.slice(0, 80),
+    )
     expect(listPage).toHaveBeenCalledOnce()
   })
 

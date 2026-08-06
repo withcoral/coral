@@ -216,12 +216,6 @@ export function sortedSpans(spans: TraceSpanData[]): TraceSpanData[] {
   })
 }
 
-export function isLegacyQueryTrace(trace: TraceSummaryData): boolean {
-  return (
-    trace.name === 'coral.query' || trace.name === 'coral.search' || trace.query.trim().length > 0
-  )
-}
-
 export function hasTypedOperation(trace: TraceSummaryData): boolean {
   return trace.operationKind !== TraceOperationKind.UNSPECIFIED
 }
