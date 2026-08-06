@@ -1,8 +1,3 @@
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired to service handlers in later milestones")
-)]
-
 use std::sync::Arc;
 
 use crate::bootstrap::AppError;
@@ -118,37 +113,6 @@ impl WorkspaceAuthorizer {
             .map(|workspace| WorkspaceName::parse(&workspace))
             .collect()
     }
-
-    pub(crate) async fn unrestricted_workspace_page_for_local_principal(
-        &self,
-        principal: &Principal,
-        after_workspace: Option<&WorkspaceName>,
-        limit: usize,
-    ) -> Result<Vec<WorkspaceName>, AppError> {
-        if !principal.is_local() {
-            return Err(AppError::PermissionDenied(
-                "unrestricted workspace enumeration requires the local principal".to_string(),
-            ));
-        }
-
-        let mut session = self.db.as_ref();
-        let mut workspaces = session
-            .workspaces()
-            .list()
-            .await?
-            .into_iter()
-            .map(|record| WorkspaceName::parse(&record.id))
-            .collect::<Result<Vec<_>, _>>()?;
-        workspaces.sort();
-        Ok(workspaces
-            .into_iter()
-            .filter(|workspace| match after_workspace {
-                Some(after) => workspace > after,
-                None => true,
-            })
-            .take(limit)
-            .collect())
-    }
 }
 
 #[cfg(test)]
@@ -225,12 +189,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn owner_and_member_permissions_follow_the_action() {
+    async fn two_users_prove_read_manage_and_concealment_boundaries() {
         let (_temp, db) = database(true).await;
         let owner_id = provision_user(&db, "owner").await;
         let member_id = provision_user(&db, "member").await;
         let workspace =
             WorkspaceName::parse(&format!("default-{owner_id}")).expect("owner default workspace");
+        let member_workspace = WorkspaceName::parse(&format!("default-{member_id}"))
+            .expect("member default workspace");
         assert!(matches!(
             db.add_workspace_member(workspace.as_str(), &member_id, MemberRole::Member, 2)
                 .await
@@ -256,6 +222,12 @@ mod tests {
                 .authorize(&member, &workspace, WorkspaceAction::Manage)
                 .await,
             Err(AppError::PermissionDenied(_))
+        ));
+        assert!(matches!(
+            authorizer
+                .authorize(&owner, &member_workspace, WorkspaceAction::Read)
+                .await,
+            Err(AppError::WorkspaceNotFound(ref name)) if name == member_workspace.as_str()
         ));
 
         let member_agent = Principal::parse(&member_id, PrincipalKind::Agent).expect("agent");
@@ -284,12 +256,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn owned_workspace_pages_are_scoped_and_local_pages_are_unrestricted() {
+    async fn owned_workspace_pages_are_scoped() {
         let (_temp, db) = database(true).await;
         let owner_id = directory_user(&db, "enumeration-owner").await;
         let empty_id = directory_user(&db, "enumeration-empty").await;
         let persisted_workspaces = [" z-local ", "A-owned", "b-member", "c-owned", "d-member"];
-        let ordered_workspaces = ["A-owned", "b-member", "c-owned", "d-member", "z-local"];
         let roles = [
             MemberRole::Member,
             MemberRole::Owner,
@@ -342,31 +313,6 @@ mod tests {
             vec![WorkspaceName::parse("c-owned").expect("workspace")]
         );
 
-        assert_eq!(
-            authorizer
-                .unrestricted_workspace_page_for_local_principal(&Principal::local(), None, 2)
-                .await
-                .expect("local workspace page")
-                .iter()
-                .map(WorkspaceName::as_str)
-                .collect::<Vec<_>>(),
-            &ordered_workspaces[..2]
-        );
-        let local_cursor = WorkspaceName::parse("b-member").expect("local cursor");
-        assert_eq!(
-            authorizer
-                .unrestricted_workspace_page_for_local_principal(
-                    &Principal::local(),
-                    Some(&local_cursor),
-                    10,
-                )
-                .await
-                .expect("remaining local workspace page")
-                .iter()
-                .map(WorkspaceName::as_str)
-                .collect::<Vec<_>>(),
-            &ordered_workspaces[2..]
-        );
         assert!(matches!(
             authorizer
                 .owned_workspace_page_for_federated_user(&Principal::local(), None, 10)
@@ -377,12 +323,6 @@ mod tests {
         assert!(matches!(
             authorizer
                 .owned_workspace_page_for_federated_user(&agent, None, 10)
-                .await,
-            Err(AppError::PermissionDenied(_))
-        ));
-        assert!(matches!(
-            authorizer
-                .unrestricted_workspace_page_for_local_principal(&owner, None, 10)
                 .await,
             Err(AppError::PermissionDenied(_))
         ));
