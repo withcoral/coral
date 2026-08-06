@@ -71,9 +71,9 @@ pub struct HttpRuntimeTableFunctionRelation {
 #[derive(Debug, Clone)]
 pub enum McpRuntimeRelation {
     /// MCP-backed table.
-    Table(McpRuntimeTableRelation),
+    Table(Box<McpRuntimeTableRelation>),
     /// MCP-backed table function.
-    TableFunction(McpRuntimeTableFunctionRelation),
+    TableFunction(Box<McpRuntimeTableFunctionRelation>),
 }
 
 /// Validated MCP table payload paired with its SQL identity.
@@ -213,6 +213,10 @@ impl DatabaseRuntimeBackend {
 
 impl HttpRuntimeRelation {
     /// Builds an HTTP table relation after checking its leaf identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::CoreError`] when the definition leaf disagrees with the SQL identity.
     pub fn try_table(
         sql_name: SqlObjectName,
         definition: HttpTableSpec,
@@ -225,6 +229,10 @@ impl HttpRuntimeRelation {
     }
 
     /// Builds an HTTP table-function relation after checking its leaf identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::CoreError`] when the definition leaf disagrees with the SQL identity.
     pub fn try_table_function(
         sql_name: SqlObjectName,
         definition: SourceTableFunctionSpec,
@@ -246,27 +254,37 @@ impl HttpRuntimeRelation {
 
 impl McpRuntimeRelation {
     /// Builds an MCP table relation after checking its leaf identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::CoreError`] when the definition leaf disagrees with the SQL identity.
     pub fn try_table(
         sql_name: SqlObjectName,
         definition: McpTableSpec,
     ) -> Result<Self, crate::CoreError> {
         validate_definition_name(&sql_name, definition.name(), "MCP table")?;
-        Ok(Self::Table(McpRuntimeTableRelation {
+        Ok(Self::Table(Box::new(McpRuntimeTableRelation {
             sql_name,
             definition,
-        }))
+        })))
     }
 
     /// Builds an MCP table-function relation after checking its leaf identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::CoreError`] when the definition leaf disagrees with the SQL identity.
     pub fn try_table_function(
         sql_name: SqlObjectName,
         definition: McpTableFunctionSpec,
     ) -> Result<Self, crate::CoreError> {
         validate_definition_name(&sql_name, &definition.common.name, "MCP table function")?;
-        Ok(Self::TableFunction(McpRuntimeTableFunctionRelation {
-            sql_name,
-            definition,
-        }))
+        Ok(Self::TableFunction(Box::new(
+            McpRuntimeTableFunctionRelation {
+                sql_name,
+                definition,
+            },
+        )))
     }
 
     fn sql_name(&self) -> &SqlObjectName {
@@ -279,6 +297,10 @@ impl McpRuntimeRelation {
 
 impl FileRuntimeRelation {
     /// Builds a file table relation after checking its leaf identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::CoreError`] when the definition leaf disagrees with the SQL identity.
     pub fn try_table(
         sql_name: SqlObjectName,
         definition: FileTableSpec,
@@ -299,6 +321,10 @@ impl FileRuntimeRelation {
 
 impl RuntimeCatalog {
     /// Builds a declared HTTP catalog.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::CoreError`] when the catalog name or relation identities are invalid.
     pub fn try_http_declared(
         catalog_name: impl Into<String>,
         backend: HttpRuntimeBackend,
@@ -319,6 +345,10 @@ impl RuntimeCatalog {
     }
 
     /// Builds a declared MCP catalog.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::CoreError`] when the catalog name or relation identities are invalid.
     pub fn try_mcp_declared(
         catalog_name: impl Into<String>,
         backend: McpRuntimeBackend,
@@ -339,6 +369,10 @@ impl RuntimeCatalog {
     }
 
     /// Builds a declared file catalog.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::CoreError`] when the catalog name or relation identities are invalid.
     pub fn try_file_declared(
         catalog_name: impl Into<String>,
         backend: FileRuntimeBackend,
@@ -359,6 +393,10 @@ impl RuntimeCatalog {
     }
 
     /// Builds a provider-discovered database catalog.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::CoreError`] when the catalog name is invalid.
     pub fn try_database_provider_discovered(
         catalog_name: impl Into<String>,
         backend: DatabaseRuntimeBackend,
@@ -374,6 +412,10 @@ impl RuntimeCatalog {
     }
 
     /// Adapts one validated v3 HTTP manifest to the canonical default catalog.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::CoreError`] when the manifest cannot form valid canonical identities.
     pub fn try_from_default_catalog_http_manifest(
         manifest: HttpSourceManifest,
     ) -> Result<Self, crate::CoreError> {
@@ -398,6 +440,10 @@ impl RuntimeCatalog {
     }
 
     /// Adapts one validated v3 MCP manifest to the canonical default catalog.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::CoreError`] when the manifest cannot form valid canonical identities.
     pub fn try_from_default_catalog_mcp_manifest(
         manifest: McpSourceManifest,
     ) -> Result<Self, crate::CoreError> {
@@ -416,6 +462,10 @@ impl RuntimeCatalog {
     }
 
     /// Adapts one validated v3 file manifest to the canonical default catalog.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::CoreError`] when the manifest cannot form valid canonical identities.
     pub fn try_from_default_catalog_file_manifest(
         manifest: FileSourceManifest,
     ) -> Result<Self, crate::CoreError> {
@@ -599,6 +649,10 @@ impl RuntimeCatalog {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "The temporary v3 compatibility adapter exhaustively branches over the closed backend algebra."
+    )]
     pub(crate) fn backend_manifests(
         &self,
         source: &QuerySource,

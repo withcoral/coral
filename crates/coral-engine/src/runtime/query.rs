@@ -1812,8 +1812,9 @@ mod tests {
             .await
             .expect("legacy function");
         assert_eq!(legacy.table_functions.len(), 1);
-        assert!(legacy.table_functions[0].catalog_name.is_none());
-        assert_eq!(legacy.table_functions[0].function_name, "search_issues");
+        let function = legacy.table_functions.first().expect("table function");
+        assert!(function.catalog_name.is_none());
+        assert_eq!(function.function_name, "search_issues");
     }
 
     #[tokio::test]

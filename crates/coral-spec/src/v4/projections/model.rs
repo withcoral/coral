@@ -159,7 +159,11 @@ mod tests {
         );
         assert!(!yaml.contains("surface_id:"), "surface ID leaked: {yaml}");
         let value: serde_yaml::Value = serde_yaml::from_str(&yaml).expect("projection YAML");
-        let projection = &value["projections"][0];
+        let projection = value
+            .get("projections")
+            .and_then(serde_yaml::Value::as_sequence)
+            .and_then(|projections| projections.first())
+            .expect("first projection");
         assert!(
             projection.get("sql_name").is_some(),
             "missing sql_name: {yaml}"
