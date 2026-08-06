@@ -430,6 +430,10 @@ impl StartedServe {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the composition root keeps database, telemetry, and manager construction together"
+)]
 async fn start_components(
     builder: ServerBuilder,
     session_auth: Option<SessionAuthSettings>,
