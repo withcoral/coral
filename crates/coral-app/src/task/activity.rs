@@ -7,7 +7,9 @@ use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use arrow::record_batch::RecordBatch;
 use coral_engine::{CoreError, RuntimeSystemTable};
 
-use crate::state::db::{CoralDb, DbError, DbRepos, TaskQueryRow};
+use crate::state::db::{
+    CoralDb, DbError, TaskQueryRecord as StoredTaskQuery, TaskQueryWrite, TaskQueryWriteResult,
+};
 use crate::task::id::TaskId;
 use crate::workspaces::WorkspaceName;
 
@@ -35,6 +37,14 @@ pub(crate) struct TaskQueryRecord<'a> {
     pub(crate) started_at_unix_nanos: i64,
 }
 
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum TaskActivityError {
+    #[error(transparent)]
+    Database(#[from] DbError),
+    #[error("task '{task_id}' was not found in workspace '{workspace}'")]
+    TaskNotFound { task_id: String, workspace: String },
+}
+
 #[derive(Clone)]
 pub(crate) struct TaskActivityRecorder {
     db: Arc<CoralDb>,
@@ -45,28 +55,41 @@ impl TaskActivityRecorder {
         Self { db }
     }
 
-    pub(crate) async fn record_query(&self, record: TaskQueryRecord<'_>) -> Result<(), DbError> {
-        let mut session = self.db.as_ref();
-        session
-            .task_queries()
-            .insert(&TaskQueryRow {
-                id: record.id.to_string(),
-                task_id: record.task_id.to_string(),
-                intent: record.intent.to_string(),
-                sql: record.sql.to_string(),
-                status: record.status.as_str().to_string(),
+    pub(crate) async fn record_query(
+        &self,
+        workspace: &WorkspaceName,
+        record: TaskQueryRecord<'_>,
+    ) -> Result<(), TaskActivityError> {
+        let id = record.id.to_string();
+        let task_id = record.task_id.to_string();
+        match self
+            .db
+            .task_query_state()
+            .record(TaskQueryWrite {
+                workspace_id: workspace.as_str(),
+                id: &id,
+                task_id: &task_id,
+                intent: record.intent,
+                sql: record.sql,
+                status: record.status.as_str(),
                 started_at_unix_nanos: record.started_at_unix_nanos,
             })
-            .await
+            .await?
+        {
+            TaskQueryWriteResult::Recorded => Ok(()),
+            TaskQueryWriteResult::TaskNotFound => Err(TaskActivityError::TaskNotFound {
+                task_id,
+                workspace: workspace.to_string(),
+            }),
+        }
     }
 
     pub(crate) async fn queries_for_workspace(
         &self,
         workspace: &WorkspaceName,
-    ) -> Result<Vec<TaskQueryRow>, DbError> {
-        let mut session = self.db.as_ref();
-        session
-            .task_queries()
+    ) -> Result<Vec<StoredTaskQuery>, DbError> {
+        self.db
+            .task_query_state()
             .list_for_workspace(workspace.as_str())
             .await
     }

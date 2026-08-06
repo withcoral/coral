@@ -194,6 +194,7 @@ pub(crate) struct QueryManager {
 
 struct PendingTaskQuery<'a> {
     recorder: TaskActivityRecorder,
+    workspace: &'a WorkspaceName,
     id: uuid::Uuid,
     task_id: TaskId,
     intent: &'a str,
@@ -483,7 +484,8 @@ impl QueryManager {
         shown_guide_ids: Option<&HashSet<String>>,
         attribution: &QueryAttribution,
     ) -> Result<ExecuteSqlOutcome, QueryManagerError> {
-        let pending_activity = pending_task_query(attribution, self.task_activity.as_ref());
+        let pending_activity =
+            pending_task_query(workspace_name, attribution, self.task_activity.as_ref());
 
         // Keep the database-enabled operation future off this async state machine: on Linux it
         // exceeds Clippy's `large_futures` threshold when awaited inline.
@@ -1085,6 +1087,7 @@ impl QueryManager {
 }
 
 fn pending_task_query<'a>(
+    workspace: &'a WorkspaceName,
     attribution: &'a QueryAttribution,
     recorder: Option<&TaskActivityRecorder>,
 ) -> Option<PendingTaskQuery<'a>> {
@@ -1098,6 +1101,7 @@ fn pending_task_query<'a>(
     match crate::state::db::now_unix_nanos_i64() {
         Ok(started_at_unix_nanos) => Some(PendingTaskQuery {
             recorder: recorder.clone(),
+            workspace,
             id: uuid::Uuid::new_v4(),
             task_id,
             intent,
@@ -1129,14 +1133,17 @@ async fn record_task_query(
     };
     if let Err(error) = pending
         .recorder
-        .record_query(TaskQueryRecord {
-            id: pending.id,
-            task_id: pending.task_id,
-            intent: pending.intent,
-            sql,
-            status,
-            started_at_unix_nanos: pending.started_at_unix_nanos,
-        })
+        .record_query(
+            pending.workspace,
+            TaskQueryRecord {
+                id: pending.id,
+                task_id: pending.task_id,
+                intent: pending.intent,
+                sql,
+                status,
+                started_at_unix_nanos: pending.started_at_unix_nanos,
+            },
+        )
         .await
     {
         tracing::warn!(

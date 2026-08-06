@@ -10,6 +10,7 @@ mod migrations;
 mod repositories;
 mod schema;
 mod session;
+mod task_query_state;
 mod task_state;
 mod transaction;
 mod workspace_state;
@@ -26,9 +27,9 @@ pub(crate) use import::run_state_migrations;
 pub(crate) use repositories::identity_specs::{
     IdentitySpecDocumentRecord, IdentitySpecKey, IdentitySpecRecord, IdentitySpecScope,
 };
-pub(crate) use repositories::task_queries::TaskQueryRow;
 pub(crate) use repositories::tasks::{TaskCompletionUpdate, TaskLifecycleState};
 pub(crate) use session::{DbRepos, DbSession};
+pub(crate) use task_query_state::{TaskQueryRecord, TaskQueryWrite, TaskQueryWriteResult};
 #[cfg(test)]
 pub(crate) use task_state::TaskMutationBarrier;
 pub(crate) use task_state::{TaskCreation, TaskCreationResult};

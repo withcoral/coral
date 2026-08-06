@@ -1,16 +1,16 @@
 use sea_query::{Expr, ExprTrait, JoinType, Order, Query};
 
 use crate::state::db::schema::{TaskQueries, Tasks};
-use crate::state::db::{DbError, DbSession};
+use crate::state::db::{CoralTx, DbError, DbSession};
 
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
-pub(crate) struct TaskQueryRow {
-    pub(crate) id: String,
-    pub(crate) task_id: String,
-    pub(crate) intent: String,
-    pub(crate) sql: String,
-    pub(crate) status: String,
-    pub(crate) started_at_unix_nanos: i64,
+pub(in crate::state::db) struct TaskQueryRow {
+    pub(in crate::state::db) id: String,
+    pub(in crate::state::db) task_id: String,
+    pub(in crate::state::db) intent: String,
+    pub(in crate::state::db) sql: String,
+    pub(in crate::state::db) status: String,
+    pub(in crate::state::db) started_at_unix_nanos: i64,
 }
 
 pub(crate) struct TaskQueriesRepo<'a, S> {
@@ -25,30 +25,7 @@ where
         Self { session }
     }
 
-    pub(crate) async fn insert(&mut self, row: &TaskQueryRow) -> Result<(), DbError> {
-        let statement = Query::insert()
-            .into_table(TaskQueries::Table)
-            .columns([
-                TaskQueries::Id,
-                TaskQueries::TaskId,
-                TaskQueries::Intent,
-                TaskQueries::Sql,
-                TaskQueries::Status,
-                TaskQueries::StartedAtUnixNanos,
-            ])
-            .values_panic([
-                Expr::val(row.id.clone()),
-                Expr::val(row.task_id.clone()),
-                Expr::val(row.intent.clone()),
-                Expr::val(row.sql.clone()),
-                Expr::val(row.status.clone()),
-                Expr::val(row.started_at_unix_nanos),
-            ])
-            .to_owned();
-        self.session.execute(statement).await
-    }
-
-    pub(crate) async fn list_for_workspace(
+    pub(in crate::state::db) async fn list_for_workspace(
         &mut self,
         workspace_id: &str,
     ) -> Result<Vec<TaskQueryRow>, DbError> {
@@ -79,15 +56,40 @@ where
     }
 }
 
+impl TaskQueriesRepo<'_, CoralTx<'_>> {
+    pub(in crate::state::db) async fn insert(&mut self, row: &TaskQueryRow) -> Result<(), DbError> {
+        let statement = Query::insert()
+            .into_table(TaskQueries::Table)
+            .columns([
+                TaskQueries::Id,
+                TaskQueries::TaskId,
+                TaskQueries::Intent,
+                TaskQueries::Sql,
+                TaskQueries::Status,
+                TaskQueries::StartedAtUnixNanos,
+            ])
+            .values_panic([
+                Expr::val(row.id.clone()),
+                Expr::val(row.task_id.clone()),
+                Expr::val(row.intent.clone()),
+                Expr::val(row.sql.clone()),
+                Expr::val(row.status.clone()),
+                Expr::val(row.started_at_unix_nanos),
+            ])
+            .to_owned();
+        self.session.execute(statement).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use tempfile::tempdir;
 
-    use super::TaskQueryRow;
     use crate::bootstrap;
     use crate::state::AppStateLayout;
     use crate::state::db::{
         CoralDb, DatabaseConfig, DbRepos, ResolvedDatabaseConfig, TaskCreation, TaskCreationResult,
+        TaskQueryRecord, TaskQueryWrite, TaskQueryWriteResult,
     };
 
     #[tokio::test]
@@ -126,13 +128,31 @@ mod tests {
 
     async fn assert_task_query_repository(db: &CoralDb, workspace_id: &str) {
         let other_workspace_id = format!("{workspace_id}_other");
+        let (task_id, other_task_id) =
+            create_task_query_parents(db, workspace_id, &other_workspace_id).await;
+
+        assert_task_query_records(
+            db,
+            workspace_id,
+            &other_workspace_id,
+            &task_id,
+            &other_task_id,
+        )
+        .await;
+    }
+
+    async fn create_task_query_parents(
+        db: &CoralDb,
+        workspace_id: &str,
+        other_workspace_id: &str,
+    ) -> (String, String) {
         let mut tx = db.begin().await.expect("begin workspace tx");
         tx.workspaces()
             .ensure(workspace_id, 1)
             .await
             .expect("workspace");
         tx.workspaces()
-            .ensure(&other_workspace_id, 2)
+            .ensure(other_workspace_id, 2)
             .await
             .expect("other workspace");
         tx.commit().await.expect("commit workspaces");
@@ -141,7 +161,7 @@ mod tests {
         let other_task_id = uuid::Uuid::new_v4().to_string();
         for (workspace, task) in [
             (workspace_id, task_id.as_str()),
-            (other_workspace_id.as_str(), other_task_id.as_str()),
+            (other_workspace_id, other_task_id.as_str()),
         ] {
             assert_eq!(
                 db.task_state()
@@ -160,58 +180,102 @@ mod tests {
                 TaskCreationResult::Created
             );
         }
+        (task_id, other_task_id)
+    }
 
-        let first = TaskQueryRow {
+    async fn assert_task_query_records(
+        db: &CoralDb,
+        workspace_id: &str,
+        other_workspace_id: &str,
+        task_id: &str,
+        other_task_id: &str,
+    ) {
+        let first = TaskQueryRecord {
             id: "00000000-0000-0000-0000-000000000001".to_string(),
-            task_id: task_id.clone(),
+            task_id: task_id.to_string(),
             intent: "First query".to_string(),
             sql: "SELECT 1".to_string(),
             status: "success".to_string(),
             started_at_unix_nanos: 10,
         };
-        let second = TaskQueryRow {
+        let second = TaskQueryRecord {
             id: "00000000-0000-0000-0000-000000000002".to_string(),
-            task_id: task_id.clone(),
+            task_id: task_id.to_string(),
             intent: "Second query".to_string(),
             sql: "SELECT broken".to_string(),
             status: "error".to_string(),
             started_at_unix_nanos: 10,
         };
-        let other = TaskQueryRow {
+        let other = TaskQueryRecord {
             id: "00000000-0000-0000-0000-000000000003".to_string(),
-            task_id: other_task_id,
+            task_id: other_task_id.to_string(),
             intent: "Other workspace".to_string(),
             sql: "SELECT 3".to_string(),
             status: "success".to_string(),
             started_at_unix_nanos: 9,
         };
-        let mut session = db;
         for row in [&second, &other, &first] {
-            session
-                .task_queries()
-                .insert(row)
-                .await
-                .expect("insert task query");
+            let workspace = if row.task_id == task_id {
+                workspace_id
+            } else {
+                other_workspace_id
+            };
+            assert_eq!(
+                db.task_query_state()
+                    .record(TaskQueryWrite {
+                        workspace_id: workspace,
+                        id: &row.id,
+                        task_id: &row.task_id,
+                        intent: &row.intent,
+                        sql: &row.sql,
+                        status: &row.status,
+                        started_at_unix_nanos: row.started_at_unix_nanos,
+                    })
+                    .await
+                    .expect("record task query"),
+                TaskQueryWriteResult::Recorded
+            );
         }
 
         assert_eq!(
-            session
-                .task_queries()
+            db.task_query_state()
+                .record(TaskQueryWrite {
+                    workspace_id: other_workspace_id,
+                    id: "00000000-0000-0000-0000-000000000004",
+                    task_id,
+                    intent: "Wrong workspace",
+                    sql: "SELECT 4",
+                    status: "success",
+                    started_at_unix_nanos: 11,
+                })
+                .await
+                .expect("reject cross-workspace task query"),
+            TaskQueryWriteResult::TaskNotFound
+        );
+
+        assert_eq!(
+            db.task_query_state()
                 .list_for_workspace(workspace_id)
                 .await
                 .expect("list task queries"),
-            vec![first, second]
+            vec![first.clone(), second]
+        );
+        assert_eq!(
+            db.task_query_state()
+                .list_for_workspace(other_workspace_id)
+                .await
+                .expect("list other workspace task queries"),
+            vec![other]
         );
 
         let mut tx = db.begin().await.expect("begin delete tx");
         tx.tasks()
-            .delete(workspace_id, &task_id)
+            .delete(workspace_id, task_id)
             .await
             .expect("delete task");
         tx.commit().await.expect("commit task delete");
         assert!(
-            session
-                .task_queries()
+            db.task_query_state()
                 .list_for_workspace(workspace_id)
                 .await
                 .expect("list cascaded task queries")
