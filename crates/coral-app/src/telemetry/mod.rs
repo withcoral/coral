@@ -384,14 +384,13 @@ pub(crate) async fn delete_workspace_traces(
         .map_err(|error| error.to_string())
 }
 
-pub(crate) async fn has_unexpired_workspace_traces(
+pub(crate) fn has_retained_workspace_trace_attribution(
     trace_store_dir: PathBuf,
     retention: Duration,
     workspace_name: &WorkspaceName,
 ) -> Result<bool, TraceStoreError> {
     local_store::TraceStore::with_retention(trace_store_dir, retention)
-        .has_unexpired_traces_for_workspace(workspace_name.as_str().to_string())
-        .await
+        .has_retained_workspace_attribution(workspace_name.as_str())
 }
 
 fn telemetry_resource(service_name: &str) -> Resource {

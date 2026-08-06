@@ -722,14 +722,27 @@ impl TraceStore {
             .map_err(|source| TraceStoreError::Worker { source })?
     }
 
-    pub(crate) async fn has_unexpired_traces_for_workspace(
+    pub(crate) fn has_retained_workspace_attribution(
         &self,
-        workspace_name: String,
+        workspace_name: &str,
     ) -> Result<bool, TraceStoreError> {
-        Ok(!self
-            .list_traces_for_workspace(1, 0, workspace_name)
-            .await?
-            .is_empty())
+        self.prune_expired()?;
+        for file in self.jsonl_files_by_modified()? {
+            for span in read_workspace_trace_records_file(&file.path, true)? {
+                let attributes = serde_json::from_str(&span.attributes_json).map_err(|source| {
+                    TraceStoreError::ReadFile {
+                        path: file.path.clone(),
+                        source: std::io::Error::new(std::io::ErrorKind::InvalidData, source),
+                    }
+                })?;
+                if attr_string(&attributes, WORKSPACE_SPAN_ATTRIBUTE).as_deref()
+                    == Some(workspace_name)
+                {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
     }
 
     pub(crate) async fn get_trace_for_owned_workspaces(
@@ -1572,13 +1585,14 @@ fn read_workspace_trace_ids(
 ) -> Result<HashSet<String>, TraceStoreError> {
     let mut spans = Vec::new();
     for file in files {
-        spans.extend(read_workspace_trace_records_file(&file.path)?);
+        spans.extend(read_workspace_trace_records_file(&file.path, false)?);
     }
     Ok(workspace_trace_ids(spans, workspace_name))
 }
 
 fn read_workspace_trace_records_file(
     path: &Path,
+    fail_on_malformed: bool,
 ) -> Result<Vec<TraceWorkspaceRecord>, TraceStoreError> {
     let file = File::open(path).map_err(|source| TraceStoreError::OpenFile {
         path: path.to_path_buf(),
@@ -1610,6 +1624,12 @@ fn read_workspace_trace_records_file(
         match serde_json::from_str::<TraceWorkspaceRecord>(trimmed) {
             Ok(record) => spans.push(record),
             Err(_source) if !complete_line => break,
+            Err(source) if fail_on_malformed => {
+                return Err(TraceStoreError::ReadFile {
+                    path: path.to_path_buf(),
+                    source: std::io::Error::new(std::io::ErrorKind::InvalidData, source),
+                });
+            }
             // Workspace trace cleanup is best-effort. A complete malformed line
             // cannot be attributed to a workspace, so preserve it during rewrite
             // instead of blocking deletion of config-owned workspace state.

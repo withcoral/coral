@@ -7,7 +7,7 @@ use super::schema::{IdentitySpecs, Users, WorkspaceMembers};
 use super::{CoralDb, DbRepos, DbSession, now_unix_nanos_i64};
 use crate::bootstrap::AppError;
 use crate::state::{AppStateLayout, ConfigStore};
-use crate::telemetry::{TelemetryConfig, has_unexpired_workspace_traces};
+use crate::telemetry::{TelemetryConfig, has_retained_workspace_trace_attribution};
 use crate::workspaces::{MemberRole, WorkspaceName};
 
 const LOCAL_IDENTITY: &str = "coral:local";
@@ -134,31 +134,28 @@ async fn enforce_multi_user(
             && identity_spec_count == 0
             && membership_count == 0;
         if db_pristine {
-            let (config_pristine, files_pristine, retention) = {
-                let _state_lock = config_store.state_lock_shared()?;
-                (
-                    config_store
-                        .load_config_unlocked()?
-                        .workspace_config_is_content_pristine(&default),
-                    !directory_has_content(&layout.workspace_dir(&default))?,
-                    TelemetryConfig::load(layout)?.trace_history.retention(),
+            let _state_lock = config_store.state_lock_shared()?;
+            let config_pristine = config_store
+                .load_config_unlocked()?
+                .workspace_config_is_content_pristine(&default);
+            let files_pristine = !directory_has_content(&layout.workspace_dir(&default))?;
+            if config_pristine && files_pristine {
+                let retention = TelemetryConfig::load(layout)?.trace_history.retention();
+                let has_traces = has_retained_workspace_trace_attribution(
+                    layout.local_trace_store_dir(),
+                    retention,
+                    &default,
                 )
-            };
-            let has_traces = has_unexpired_workspace_traces(
-                layout.local_trace_store_dir(),
-                retention,
-                &default,
-            )
-            .await
-            .map_err(|error| {
-                AppError::FailedPrecondition(format!(
-                    "could not verify local trace history before removing the default workspace: {error}"
-                ))
-            })?;
-            if config_pristine && files_pristine && !has_traces {
-                tx.workspaces().delete(default.as_str()).await?;
-                tx.commit().await?;
-                return Ok(());
+                .map_err(|error| {
+                    AppError::FailedPrecondition(format!(
+                        "could not verify local trace history before removing the default workspace: {error}"
+                    ))
+                })?;
+                if !has_traces {
+                    tx.workspaces().delete(default.as_str()).await?;
+                    tx.commit().await?;
+                    return Ok(());
+                }
             }
         }
     }
@@ -406,21 +403,14 @@ mod tests {
         tx.commit().await.expect("commit trace setup");
         let trace_dir = layout.local_trace_store_dir();
         std::fs::create_dir_all(&trace_dir).expect("trace dir");
-        let trace = serde_json::json!({
-            "trace_id": "bootstrap-trace",
-            "span_id": "bootstrap-span",
-            "parent_span_id": null,
-            "name": "coral.query",
-            "status": "ok",
-            "start_time_unix_nanos": 1,
-            "end_time_unix_nanos": 2,
-            "attributes_json": r#"{"workspace":"default"}"#,
-        });
-        std::fs::write(
-            trace_dir.join("spans-bootstrap.jsonl"),
-            format!("{trace}\n"),
-        )
-        .expect("trace record");
+        let trace_file = trace_dir.join("spans-bootstrap.jsonl");
+        let mixed_trace = concat!(
+            r#"{"trace_id":"bootstrap-trace","span_id":"default","parent_span_id":null,"name":"root","start_time_unix_nanos":1,"end_time_unix_nanos":2,"attributes_json":"{\"workspace\":\"default\"}"}"#,
+            "\n",
+            r#"{"trace_id":"bootstrap-trace","span_id":"unattributed","parent_span_id":"default","name":"child","start_time_unix_nanos":1,"end_time_unix_nanos":2,"attributes_json":"{}"}"#,
+            "\n"
+        );
+        std::fs::write(&trace_file, mixed_trace).expect("mixed trace records");
         let error = bootstrap_workspace_ownership(
             db,
             &config_store,
@@ -431,8 +421,7 @@ mod tests {
         .expect_err("trace-only default must fail");
         assert!(error.to_string().contains("default"));
 
-        std::fs::remove_dir_all(&trace_dir).expect("remove trace dir");
-        std::fs::write(&trace_dir, "not a directory").expect("invalid trace store");
+        std::fs::write(&trace_file, "{malformed}\n").expect("malformed complete trace record");
         let error = bootstrap_workspace_ownership(
             db,
             &config_store,
