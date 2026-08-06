@@ -1728,6 +1728,7 @@ mod tests {
     async fn explicit_datafusion_catalog_filters_schema_metadata() {
         let mut adapter = adapter_with_sources(vec![demo_source()]);
         adapter.table_functions.push(TableFunctionInfo {
+            catalog_name: None,
             schema_name: "demo".to_string(),
             function_name: "search_events".to_string(),
             description: "Search events.".to_string(),

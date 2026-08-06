@@ -483,7 +483,7 @@ async fn coral_table_functions_lists_source_functions() {
         &CoralQuery::execute_sql(
             &sources,
             test_runtime(),
-            "SELECT schema_name, function_name, kind, description, arguments_json, result_columns_json, search_limits_json, guide \
+            "SELECT schema_name, function_name, kind, description, arguments_json, result_columns_json, search_limits_json, guide, catalog_name \
              FROM coral.table_functions WHERE schema_name = 'searchy'",
         )
         .await
@@ -494,6 +494,7 @@ async fn coral_table_functions_lists_source_functions() {
     let row = &rows[0];
     assert_eq!(row["schema_name"], "searchy");
     assert_eq!(row["function_name"], "search_issues");
+    assert_eq!(row["catalog_name"], "");
     assert_eq!(row["kind"], "search");
     assert_eq!(row["description"], "Search issues");
     assert_eq!(row["guide"], "Prefer this function for issue lookup.");
@@ -639,6 +640,7 @@ async fn coral_search_metadata_appends_columns_without_shifting_existing_ordinal
             "kind",
             "search_limits_json",
             "guide",
+            "catalog_name",
         ]
     );
 

@@ -442,10 +442,12 @@ pub(crate) fn table_function_to_proto(
     workspace_name: &WorkspaceName,
     function: coral_engine::TableFunctionInfo,
 ) -> TableFunction {
+    let catalog_name = function.catalog_name.unwrap_or_default();
     let schema_name = function.schema_name;
     let function_name = function.function_name;
     TableFunction {
         workspace: Some(workspace_to_proto(workspace_name)),
+        catalog_name,
         schema_name,
         name: function_name,
         description: function.description,
@@ -977,11 +979,12 @@ mod tests {
     }
 
     #[test]
-    fn table_function_to_proto_preserves_argument_metadata() {
+    fn table_function_to_proto_preserves_catalog_and_argument_metadata() {
         let workspace_name = WorkspaceName::parse("default").expect("workspace");
         let function = TableFunctionInfo {
-            schema_name: "demo".to_string(),
-            function_name: "search".to_string(),
+            catalog_name: Some("github_v4".to_string()),
+            schema_name: "issues".to_string(),
+            function_name: "list_for_repo".to_string(),
             description: "Search demo records".to_string(),
             guide: "Prefer search for record lookup.".to_string(),
             require_guide_read: true,
@@ -999,8 +1002,9 @@ mod tests {
         let proto = table_function_to_proto(&workspace_name, function);
 
         assert_eq!(proto.workspace, Some(workspace_to_proto(&workspace_name)));
-        assert_eq!(proto.schema_name, "demo");
-        assert_eq!(proto.name, "search");
+        assert_eq!(proto.catalog_name, "github_v4");
+        assert_eq!(proto.schema_name, "issues");
+        assert_eq!(proto.name, "list_for_repo");
         assert_eq!(proto.description, "Search demo records");
         assert_eq!(proto.guide, "Prefer search for record lookup.");
         assert_eq!(proto.arguments.len(), 1);
