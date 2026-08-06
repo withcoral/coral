@@ -24,7 +24,15 @@ describe('schema loaders', () => {
 
   it('lists catalog tables for the workspace route parameter', async () => {
     const request = new Request('http://reef.test/workspaces/analytics/schema')
-    const schema = { connectors: [] }
+    const schema = {
+      connectors: [
+        {
+          catalogName: 'github_v4',
+          items: [{ kind: 'tableFunction', name: 'list_for_repo' }],
+          name: 'issues',
+        },
+      ],
+    }
     fetchSchemaFromCoral.mockResolvedValue(schema)
 
     await expect(

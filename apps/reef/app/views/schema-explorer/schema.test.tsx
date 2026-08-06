@@ -30,6 +30,25 @@ const SCHEMA = {
         },
       ],
     },
+    {
+      catalogName: 'github_v4',
+      name: 'issues',
+      items: [
+        {
+          columns: [],
+          columnsLoaded: false,
+          kind: 'table',
+          name: 'list_for_repo',
+          requiredFilters: [],
+        },
+        {
+          arguments: [],
+          kind: 'tableFunction',
+          name: 'search',
+          resultColumns: [],
+        },
+      ],
+    },
   ],
 } satisfies SchemaResponse
 
@@ -67,4 +86,24 @@ it('links tables within the active workspace schema route', async () => {
         workspaceId,
       }),
     )
+
+  await screen.getByRole('button', { name: /github_v4\.issues/ }).click()
+  await expect.element(screen.getByRole('link', { name: 'list_for_repo' })).toHaveAttribute(
+    'href',
+    routePath('workspaceSchemaCatalogTable', {
+      catalogName: 'github_v4',
+      schemaName: 'issues',
+      tableName: 'list_for_repo',
+      workspaceId,
+    }),
+  )
+  await expect.element(screen.getByRole('link', { name: 'search()' })).toHaveAttribute(
+    'href',
+    routePath('workspaceSchemaCatalogTableFunction', {
+      catalogName: 'github_v4',
+      functionName: 'search',
+      schemaName: 'issues',
+      workspaceId,
+    }),
+  )
 })

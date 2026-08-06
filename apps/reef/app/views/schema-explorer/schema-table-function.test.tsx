@@ -68,3 +68,51 @@ it('shows table-function arguments and result columns from the parent schema res
   await expect.element(screen.getByRole('cell', { name: 'general, random' })).toBeVisible()
   await expect.element(screen.getByRole('cell', { name: 'Message text.' })).toBeVisible()
 })
+
+it('shows a catalog-qualified table function at its disambiguated route', async () => {
+  const schema = {
+    connectors: [
+      {
+        catalogName: 'github_v4',
+        items: [
+          {
+            arguments: [],
+            kind: 'tableFunction',
+            name: 'list_for_repo',
+            resultColumns: [],
+          },
+        ],
+        name: 'issues',
+      },
+    ],
+  } satisfies SchemaResponse
+  const router = createMemoryRouter(
+    [
+      {
+        children: [
+          {
+            element: <SchemaTableFunctionView />,
+            path: 'catalogs/:catalogName/:schemaName/functions/:functionName',
+          },
+        ],
+        element: <Outlet context={schema} />,
+        path: routePattern('workspaceSchema'),
+      },
+    ],
+    {
+      initialEntries: [
+        routePath('workspaceSchemaCatalogTableFunction', {
+          catalogName: 'github_v4',
+          functionName: 'list_for_repo',
+          schemaName: 'issues',
+          workspaceId: 'analytics',
+        }),
+      ],
+    },
+  )
+  const screen = await render(<RouterProvider router={router} />)
+
+  await expect
+    .element(screen.getByRole('heading', { name: 'github_v4.issues.list_for_repo()' }))
+    .toBeVisible()
+})

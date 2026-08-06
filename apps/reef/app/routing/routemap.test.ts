@@ -10,6 +10,10 @@ const CANONICAL_PATTERNS = {
   workspaces: '/workspaces',
   workspaceFunctions: '/workspaces/:workspaceId/functions',
   workspaceSchema: '/workspaces/:workspaceId/schema',
+  workspaceSchemaCatalogTable:
+    '/workspaces/:workspaceId/schema/catalogs/:catalogName/:schemaName/:tableName',
+  workspaceSchemaCatalogTableFunction:
+    '/workspaces/:workspaceId/schema/catalogs/:catalogName/:schemaName/functions/:functionName',
   workspaceSchemaTable: '/workspaces/:workspaceId/schema/:schemaName/:tableName',
   workspaceSchemaTableFunction:
     '/workspaces/:workspaceId/schema/:schemaName/functions/:functionName',
@@ -43,6 +47,18 @@ describe('route map', () => {
       workspaces: routePath('workspaces'),
       workspaceFunctions: routePath('workspaceFunctions', { workspaceId: 'analytics' }),
       workspaceSchema: routePath('workspaceSchema', { workspaceId: 'analytics' }),
+      workspaceSchemaCatalogTable: routePath('workspaceSchemaCatalogTable', {
+        catalogName: 'github_v4',
+        schemaName: 'issues',
+        tableName: 'list_for_repo',
+        workspaceId: 'analytics',
+      }),
+      workspaceSchemaCatalogTableFunction: routePath('workspaceSchemaCatalogTableFunction', {
+        catalogName: 'github_v4',
+        functionName: 'list_for_repo',
+        schemaName: 'issues',
+        workspaceId: 'analytics',
+      }),
       workspaceSchemaTable: routePath('workspaceSchemaTable', {
         schemaName: 'github',
         tableName: 'issues',
@@ -76,6 +92,10 @@ describe('route map', () => {
       workspaces: '/workspaces',
       workspaceFunctions: '/workspaces/analytics/functions',
       workspaceSchema: '/workspaces/analytics/schema',
+      workspaceSchemaCatalogTable:
+        '/workspaces/analytics/schema/catalogs/github_v4/issues/list_for_repo',
+      workspaceSchemaCatalogTableFunction:
+        '/workspaces/analytics/schema/catalogs/github_v4/issues/functions/list_for_repo',
       workspaceSchemaTable: '/workspaces/analytics/schema/github/issues',
       workspaceSchemaTableFunction: '/workspaces/analytics/schema/github/functions/search_issues',
       workspaceSource: '/workspaces/analytics/sources/github',

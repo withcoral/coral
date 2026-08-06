@@ -56,6 +56,7 @@ export interface TableFunctionDef {
 export type SchemaItemDef = TableDef | TableFunctionDef
 
 export interface SchemaGroup {
+  catalogName?: string
   items: SchemaItemDef[]
   name: string
 }
