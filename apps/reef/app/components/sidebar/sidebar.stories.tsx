@@ -2,10 +2,16 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 
 import { createRoutesStub } from 'react-router'
 
+import { WorkspaceRole } from '@/generated/coral/v1/workspaces_pb'
 import { Typography } from '@/wax/components/typography'
 import { theme } from '@/wax/theme/theme.css'
 
 import { Sidebar } from './sidebar'
+
+const MEMBERSHIPS = [
+  { role: WorkspaceRole.OWNER, workspace: { name: 'default' } },
+  { role: WorkspaceRole.MEMBER, workspace: { name: 'analytics' } },
+]
 
 const meta = {
   component: Sidebar,
@@ -52,14 +58,14 @@ type Story = StoryObj<typeof meta>
 export const Default: Story = {
   args: {
     initialIsMinimized: false,
-    workspaces: [{ name: 'default' }, { name: 'analytics' }],
+    memberships: MEMBERSHIPS,
   },
 }
 
 export const Settings: Story = {
   args: {
     initialIsMinimized: false,
-    workspaces: [{ name: 'default' }, { name: 'analytics' }],
+    memberships: MEMBERSHIPS,
   },
   parameters: {
     initialEntry: '/settings',

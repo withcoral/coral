@@ -46,9 +46,7 @@ export default function AppShell({ loaderData }: Route.ComponentProps) {
     <div className={styles.layout}>
       <Sidebar
         initialIsMinimized={rootData?.sidebarIsMinimized ?? false}
-        workspaces={loaderData.memberships.flatMap(({ workspace }) =>
-          workspace ? [workspace] : [],
-        )}
+        memberships={loaderData.memberships}
       />
       <ContentContainer>
         <ToastContainer />

@@ -16,6 +16,7 @@ import type { IconName } from '@/wax/components/icon'
 import * as Menu from '@/wax/components/menu'
 import { getAvatarColorFromSeed } from '@/wax/components/avatar/utils/get-avatar-color'
 import type { Workspace } from '@/generated/coral/v1/resources_pb'
+import { WorkspaceRole } from '@/generated/coral/v1/workspaces_pb'
 import {
   DesktopUpdateIndicator,
   useDesktopUpdateState,
@@ -28,14 +29,32 @@ import { routePath } from '@/routing/routemap'
 import * as styles from './sidebar.css'
 import { useSidebarState } from './use-sidebar-state'
 
+/** One workspace the current user belongs to, and the role they hold in it. */
+export interface SidebarMembership {
+  readonly role: WorkspaceRole
+  readonly workspace?: Pick<Workspace, 'name'> | undefined
+}
+
 interface SidebarProps {
   initialIsMinimized: boolean
-  workspaces: ReadonlyArray<Pick<Workspace, 'name'>>
+  memberships: ReadonlyArray<SidebarMembership>
 }
 
 type NavItem = { icon: IconName; label: string; paths: string[]; to: string }
 
-export function Sidebar({ initialIsMinimized, workspaces }: SidebarProps) {
+const WORKSPACE_ROLE_NAMES: Record<WorkspaceRole, string> = {
+  [WorkspaceRole.MEMBER]: 'member',
+  [WorkspaceRole.OWNER]: 'owner',
+  [WorkspaceRole.UNSPECIFIED]: 'unspecified',
+}
+
+// Roles reach the DOM as a stable name so policy-aware styling and assertions can read them
+// without the sidebar taking on any membership management of its own.
+function workspaceRoleName(role: WorkspaceRole): string {
+  return WORKSPACE_ROLE_NAMES[role] ?? WORKSPACE_ROLE_NAMES[WorkspaceRole.UNSPECIFIED]
+}
+
+export function Sidebar({ initialIsMinimized, memberships }: SidebarProps) {
   const location = useLocation()
   const { workspaceId } = useParams()
   const { isMinimized, toggleSidebar } = useSidebarState(initialIsMinimized)
@@ -44,6 +63,11 @@ export function Sidebar({ initialIsMinimized, workspaces }: SidebarProps) {
   const [createWorkspaceDialogOpen, setCreateWorkspaceDialogOpen] = useState(false)
   const createWorkspaceDialogSession = useRef(0)
   const createWorkspaceFetcherKey = `create-workspace-${createWorkspaceDialogSession.current}`
+  // Only a membership the server sent with a workspace can be navigated to. Its role travels with
+  // it so policy-aware surfaces have it without a second lookup.
+  const workspaces = memberships.flatMap(({ role, workspace }) =>
+    workspace ? [{ name: workspace.name, role }] : [],
+  )
   const currentWorkspace = workspaces.find((workspace) => workspace.name === workspaceId)
   const workspaceNavTarget = currentWorkspace ?? workspaces[0]
   const workspaceSelectorLabel = workspaceNavTarget?.name ?? 'Coral'
@@ -187,6 +211,7 @@ export function Sidebar({ initialIsMinimized, workspaces }: SidebarProps) {
                         {workspaces.map((workspace) => (
                           <Menu.RadioItem
                             as={Link}
+                            data-workspace-role={workspaceRoleName(workspace.role)}
                             key={workspace.name}
                             to={workspacePathForCurrentSection(workspace.name, location.pathname)}
                             value={workspace.name}

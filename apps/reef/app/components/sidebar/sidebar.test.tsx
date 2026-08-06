@@ -4,17 +4,22 @@ import { page } from 'vitest/browser'
 import { render } from 'vitest-browser-react'
 
 import { Sidebar } from './sidebar'
+import type { SidebarMembership } from './sidebar'
 import { SIDEBAR_COOKIE_NAME } from './sidebar-state'
+import { WorkspaceRole } from '@/generated/coral/v1/workspaces_pb'
 import { validateWorkspaceName } from '@/lib/workspace-name'
 import { routePath, routePattern } from '@/routing/routemap'
 import { createDesktopApi } from '@/test-utils/desktop-api'
 
-const WORKSPACES = [{ name: 'default' }, { name: 'analytics' }]
+const MEMBERSHIPS: SidebarMembership[] = [
+  { role: WorkspaceRole.OWNER, workspace: { name: 'default' } },
+  { role: WorkspaceRole.MEMBER, workspace: { name: 'analytics' } },
+]
 
 async function renderSidebar(
   initialIsMinimized: boolean,
   initialEntry = routePath('home'),
-  workspaces: Array<{ name: string }> = [],
+  memberships: SidebarMembership[] = [],
 ) {
   const router = createMemoryRouter(
     [
@@ -32,35 +37,35 @@ async function renderSidebar(
         path: routePattern('workspaces'),
       },
       {
-        element: <Sidebar initialIsMinimized={initialIsMinimized} workspaces={workspaces} />,
+        element: <Sidebar initialIsMinimized={initialIsMinimized} memberships={memberships} />,
         path: routePattern('workspaceSource'),
       },
       {
-        element: <Sidebar initialIsMinimized={initialIsMinimized} workspaces={workspaces} />,
+        element: <Sidebar initialIsMinimized={initialIsMinimized} memberships={memberships} />,
         path: routePattern('workspaceSources'),
       },
       {
-        element: <Sidebar initialIsMinimized={initialIsMinimized} workspaces={workspaces} />,
+        element: <Sidebar initialIsMinimized={initialIsMinimized} memberships={memberships} />,
         path: routePattern('workspaceSchemaTable'),
       },
       {
-        element: <Sidebar initialIsMinimized={initialIsMinimized} workspaces={workspaces} />,
+        element: <Sidebar initialIsMinimized={initialIsMinimized} memberships={memberships} />,
         path: routePattern('workspaceSchema'),
       },
       {
-        element: <Sidebar initialIsMinimized={initialIsMinimized} workspaces={workspaces} />,
+        element: <Sidebar initialIsMinimized={initialIsMinimized} memberships={memberships} />,
         path: routePattern('workspaceFunctions'),
       },
       {
-        element: <Sidebar initialIsMinimized={initialIsMinimized} workspaces={workspaces} />,
+        element: <Sidebar initialIsMinimized={initialIsMinimized} memberships={memberships} />,
         path: routePattern('workspaceTrace'),
       },
       {
-        element: <Sidebar initialIsMinimized={initialIsMinimized} workspaces={workspaces} />,
+        element: <Sidebar initialIsMinimized={initialIsMinimized} memberships={memberships} />,
         path: routePattern('workspaceTraces'),
       },
       {
-        element: <Sidebar initialIsMinimized={initialIsMinimized} workspaces={workspaces} />,
+        element: <Sidebar initialIsMinimized={initialIsMinimized} memberships={memberships} />,
         path: '*',
       },
     ],
@@ -135,7 +140,7 @@ describe('Sidebar', () => {
   })
 
   it('keeps source navigation in the active workspace', async () => {
-    const screen = await renderSidebar(false, '/workspaces/analytics/sources/github', WORKSPACES)
+    const screen = await renderSidebar(false, '/workspaces/analytics/sources/github', MEMBERSHIPS)
 
     await expect
       .element(screen.getByRole('link', { name: 'Sources' }))
@@ -143,7 +148,7 @@ describe('Sidebar', () => {
   })
 
   it('keeps trace navigation in the active workspace', async () => {
-    const screen = await renderSidebar(false, '/workspaces/analytics/traces/trace-1', WORKSPACES)
+    const screen = await renderSidebar(false, '/workspaces/analytics/traces/trace-1', MEMBERSHIPS)
 
     await expect
       .element(screen.getByRole('link', { name: 'Traces' }))
@@ -158,7 +163,7 @@ describe('Sidebar', () => {
         tableName: 'issues',
         workspaceId: 'analytics',
       }),
-      WORKSPACES,
+      MEMBERSHIPS,
     )
 
     await expect
@@ -170,7 +175,7 @@ describe('Sidebar', () => {
     const screen = await renderSidebar(
       false,
       routePath('workspaceFunctions', { workspaceId: 'analytics' }),
-      WORKSPACES,
+      MEMBERSHIPS,
     )
 
     await expect
@@ -179,7 +184,7 @@ describe('Sidebar', () => {
   })
 
   it('shows the active workspace and lists every local workspace', async () => {
-    const screen = await renderSidebar(false, '/workspaces/analytics/sources', WORKSPACES)
+    const screen = await renderSidebar(false, '/workspaces/analytics/sources', MEMBERSHIPS)
 
     await expect.element(screen.getByText('analytics', { exact: true })).toBeVisible()
     await screen.getByRole('button', { name: 'Open workspace menu' }).click()
@@ -194,8 +199,48 @@ describe('Sidebar', () => {
     expect(activeWorkspace.element().querySelector('svg')).not.toBeNull()
   })
 
+  it('keeps each membership role available on its workspace entry', async () => {
+    const screen = await renderSidebar(false, '/workspaces/analytics/sources', MEMBERSHIPS)
+
+    await screen.getByRole('button', { name: 'Open workspace menu' }).click()
+
+    // The role has to survive loader -> props -> render: erasing it anywhere drops the attribute.
+    await expect
+      .element(screen.getByRole('menuitemradio', { name: 'default' }))
+      .toHaveAttribute('data-workspace-role', 'owner')
+    await expect
+      .element(screen.getByRole('menuitemradio', { name: 'analytics' }))
+      .toHaveAttribute('data-workspace-role', 'member')
+  })
+
+  it('renders only the memberships that carry a workspace', async () => {
+    const screen = await renderSidebar(false, '/workspaces/analytics/sources', [
+      ...MEMBERSHIPS,
+      { role: WorkspaceRole.MEMBER },
+    ])
+
+    await screen.getByRole('button', { name: 'Open workspace menu' }).click()
+
+    expect(
+      [...document.querySelectorAll('[role="menuitemradio"]')].map((item) => item.textContent),
+    ).toEqual(['default', 'analytics'])
+  })
+
+  it('ships no membership management controls', async () => {
+    const screen = await renderSidebar(false, '/workspaces/analytics/sources', MEMBERSHIPS)
+
+    await screen.getByRole('button', { name: 'Open workspace menu' }).click()
+
+    // Member management is an explicit product non-goal for this release; the workspace menu
+    // offers workspace switching, creation, and settings, and nothing that edits membership.
+    expect(
+      [...document.querySelectorAll('[role="menuitem"]')].map((item) => item.textContent),
+    ).toEqual(['Create workspace', 'Settings'])
+    expect(document.body.textContent).not.toMatch(/member|invite|people|remove|manage access/i)
+  })
+
   it('opens and closes the create workspace dialog from the workspace menu', async () => {
-    const screen = await renderSidebar(false, '/workspaces/analytics/sources', WORKSPACES)
+    const screen = await renderSidebar(false, '/workspaces/analytics/sources', MEMBERSHIPS)
 
     await screen.getByRole('button', { name: 'Open workspace menu' }).click()
     await screen.getByRole('menuitem', { name: 'Create workspace' }).click()
@@ -208,7 +253,7 @@ describe('Sidebar', () => {
   })
 
   it('always shows settings in the workspace menu', async () => {
-    const screen = await renderSidebar(false, '/workspaces/analytics/sources', WORKSPACES)
+    const screen = await renderSidebar(false, '/workspaces/analytics/sources', MEMBERSHIPS)
 
     await screen.getByRole('button', { name: 'Open workspace menu' }).click()
     const createWorkspace = screen.getByRole('menuitem', { name: 'Create workspace' }).element()
@@ -234,7 +279,7 @@ describe('Sidebar', () => {
     window.coralDesktop = createDesktopApi({
       getUpdateState: vi.fn(async () => ({ status: 'ready' as const, version: '0.9.0' })),
     })
-    const screen = await renderSidebar(false, routePath('settings'), WORKSPACES)
+    const screen = await renderSidebar(false, routePath('settings'), MEMBERSHIPS)
 
     await expect.element(screen.getByRole('link', { name: 'Home' })).toBeVisible()
     await expect
@@ -249,7 +294,7 @@ describe('Sidebar', () => {
 
   it('shows MCP Clients in desktop settings navigation', async () => {
     vi.stubEnv('CORAL_DESKTOP_APP', 'true')
-    const screen = await renderSidebar(false, routePath('settings'), WORKSPACES)
+    const screen = await renderSidebar(false, routePath('settings'), MEMBERSHIPS)
 
     await expect.element(screen.getByRole('link', { name: 'MCP Clients' })).toBeVisible()
   })
@@ -259,7 +304,7 @@ describe('Sidebar', () => {
       getUpdateState: vi.fn(async () => ({ status: 'available' as const, version: '0.9.0' })),
     })
     vi.stubEnv('CORAL_DESKTOP_APP', 'true')
-    const screen = await renderSidebar(false, routePath('home'), WORKSPACES)
+    const screen = await renderSidebar(false, routePath('home'), MEMBERSHIPS)
 
     await expect
       .element(
@@ -273,7 +318,7 @@ describe('Sidebar', () => {
   it('keeps the create workspace dialog closed after back and forward navigation', async () => {
     const tracesPath = routePath('workspaceTraces', { workspaceId: 'analytics' })
     const sourcesPath = routePath('workspaceSources', { workspaceId: 'analytics' })
-    const screen = await renderSidebar(false, tracesPath, WORKSPACES)
+    const screen = await renderSidebar(false, tracesPath, MEMBERSHIPS)
 
     await screen.getByRole('link', { name: 'Sources' }).click()
     await expect.poll(() => screen.router.state.location.pathname).toBe(sourcesPath)
@@ -295,7 +340,7 @@ describe('Sidebar', () => {
   })
 
   it('keeps validation errors while open and clears them when reopening', async () => {
-    const screen = await renderSidebar(false, '/workspaces/analytics/sources', WORKSPACES)
+    const screen = await renderSidebar(false, '/workspaces/analytics/sources', MEMBERSHIPS)
 
     await screen.getByRole('button', { name: 'Open workspace menu' }).click()
     await screen.getByRole('menuitem', { name: 'Create workspace' }).click()
@@ -344,7 +389,7 @@ describe('Sidebar', () => {
       routePath('workspaceTraces', { workspaceId: 'default' }),
     ],
   ])('switches workspaces within the current section from %s', async (currentPath, targetPath) => {
-    const screen = await renderSidebar(false, currentPath, WORKSPACES)
+    const screen = await renderSidebar(false, currentPath, MEMBERSHIPS)
 
     await screen.getByRole('button', { name: 'Open workspace menu' }).click()
     await expect
@@ -353,7 +398,7 @@ describe('Sidebar', () => {
   })
 
   it('falls back to the first workspace outside a canonical workspace route', async () => {
-    const screen = await renderSidebar(false, routePath('home'), WORKSPACES)
+    const screen = await renderSidebar(false, routePath('home'), MEMBERSHIPS)
 
     await expect.element(screen.getByText('default', { exact: true })).toBeVisible()
     await expect
@@ -373,7 +418,7 @@ describe('Sidebar', () => {
   })
 
   it('links to the onboarding flow', async () => {
-    const screen = await renderSidebar(false, routePath('home'), WORKSPACES)
+    const screen = await renderSidebar(false, routePath('home'), MEMBERSHIPS)
 
     await expect
       .element(screen.getByRole('link', { name: 'Onboarding' }))
@@ -381,7 +426,7 @@ describe('Sidebar', () => {
   })
 
   it('keeps collapsed navigation labels available through tooltips', async () => {
-    const screen = await renderSidebar(true, '/workspaces/analytics/sources', WORKSPACES)
+    const screen = await renderSidebar(true, '/workspaces/analytics/sources', MEMBERSHIPS)
 
     await screen.getByRole('link', { name: 'Sources' }).hover()
     await expect
