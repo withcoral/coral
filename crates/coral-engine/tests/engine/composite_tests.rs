@@ -1,14 +1,15 @@
 use std::collections::BTreeMap;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use coral_engine::{
-    BoundRequestIdentityHttpAuthenticator, CoralQuery, HttpRuntimeBackend, HttpRuntimeRelation,
-    QueryRuntimeConfig, QuerySource, RequestIdentityHttpAuthenticatorError,
-    RequestIdentityHttpAuthenticatorFactory, RequestIdentitySelectionContext,
-    RequestIdentitySelectionError, RequestIdentitySelector, RuntimeCatalog, RuntimeSourcePackage,
-    SelectedRequestIdentity,
+    BoundRequestIdentityHttpAuthenticator, CoralQuery, EngineExtensions, HttpRuntimeBackend,
+    HttpRuntimeRelation, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,
+    RequestIdentityHttpAuthenticatorError, RequestIdentityHttpAuthenticatorFactory,
+    RequestIdentitySelectionContext, RequestIdentitySelectionError, RequestIdentitySelector,
+    RuntimeCatalog, RuntimeSourcePackage, SelectedRequestIdentity, SourceDecorator,
+    SourceDecoratorError, SourceTables,
 };
 use coral_spec::SqlObjectName;
 use coral_spec::parse_source_manifest_yaml;
@@ -33,7 +34,7 @@ fn declared_http_catalog_rejects_relation_catalog_disagreement() {
     );
     let relation = HttpRuntimeRelation::try_table(
         SqlObjectName::try_new("other", "github", "issues").expect("SQL name"),
-        manifest.tables[0].clone(),
+        manifest.tables.first().expect("HTTP table").clone(),
     )
     .expect("relation");
 
@@ -60,7 +61,7 @@ fn declared_http_catalog_rejects_duplicate_sql_identity() {
     );
     let relation = HttpRuntimeRelation::try_table(
         SqlObjectName::try_new("datafusion", "github", "issues").expect("SQL name"),
-        manifest.tables[0].clone(),
+        manifest.tables.first().expect("HTTP table").clone(),
     )
     .expect("relation");
 
@@ -82,7 +83,7 @@ fn http_relation_rejects_definition_leaf_disagreement() {
 
     let error = HttpRuntimeRelation::try_table(
         SqlObjectName::try_new("datafusion", "github", "pulls").expect("SQL name"),
-        manifest.tables[0].clone(),
+        manifest.tables.first().expect("HTTP table").clone(),
     )
     .expect_err("definition disagreement must fail");
 
@@ -242,6 +243,94 @@ async fn multi_component_source_can_register_multiple_schemas() {
         vec![
             json!({"kind": "issue", "id": 1, "title": "Issue"}),
             json!({"kind": "pull", "id": 2, "title": "Pull"}),
+        ]
+    );
+}
+
+struct RecordingSourceDecorator {
+    calls: Arc<AtomicUsize>,
+    sql_names: Arc<Mutex<Vec<String>>>,
+}
+
+impl SourceDecorator for RecordingSourceDecorator {
+    fn name(&self) -> &'static str {
+        "recording-source-decorator"
+    }
+
+    fn decorate_source(
+        &mut self,
+        _source: &QuerySource,
+        tables: SourceTables,
+    ) -> Result<SourceTables, SourceDecoratorError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.sql_names
+            .lock()
+            .map_err(|_poison| {
+                SourceDecoratorError::failed_precondition("SQL name recorder poisoned")
+            })?
+            .extend(
+                tables
+                    .iter()
+                    .map(|(sql_name, _provider)| sql_name.to_string()),
+            );
+        tables.try_map_providers(|_sql_name, provider| Ok(provider))
+    }
+}
+
+#[tokio::test]
+async fn composite_declared_catalogs_decorate_one_complete_source_inventory() {
+    let source = QuerySource::from_runtime_components(
+        RuntimeSourcePackage {
+            source_name: "github".to_string(),
+            authored_version: None,
+            description: "Composite GitHub runtime package".to_string(),
+            declared_inputs: Vec::new(),
+            test_queries: Vec::new(),
+            identity_requirements: None,
+            catalogs: vec![
+                RuntimeCatalog::try_from_default_catalog_http_manifest(http_component(
+                    "https://api.example.com",
+                    "github_rest",
+                    "issues",
+                    "/issues",
+                ))
+                .expect("issues catalog"),
+                RuntimeCatalog::try_from_default_catalog_http_manifest(http_component(
+                    "https://api.example.com",
+                    "github_mcp",
+                    "pulls",
+                    "/pulls",
+                ))
+                .expect("pulls catalog"),
+            ],
+        },
+        BTreeMap::new(),
+        BTreeMap::new(),
+    )
+    .expect("runtime package");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let sql_names = Arc::new(Mutex::new(Vec::new()));
+    let mut extensions = EngineExtensions::default();
+    extensions
+        .source_decorators
+        .push(Box::new(RecordingSourceDecorator {
+            calls: Arc::clone(&calls),
+            sql_names: Arc::clone(&sql_names),
+        }));
+
+    CoralQuery::prepare(
+        &[source],
+        QueryRuntimeConfig::new(QueryRuntimeContext::default(), extensions),
+    )
+    .await
+    .expect("prepare composite source");
+
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        *sql_names.lock().expect("SQL name recorder"),
+        vec![
+            "datafusion.github_mcp.pulls".to_string(),
+            "datafusion.github_rest.issues".to_string(),
         ]
     );
 }
