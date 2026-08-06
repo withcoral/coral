@@ -275,7 +275,6 @@ async fn parquet_provider_exposes_inferred_schema_in_coral_columns() {
         &active_sources.active_sources,
         &active_sources.column_fetchers,
         &[],
-        &[],
         catalog::CatalogColumnFetchFailures::default(),
     )
     .expect("metadata tables should register");

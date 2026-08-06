@@ -29,7 +29,7 @@ pub(crate) use repositories::identity_specs::{
 };
 pub(crate) use repositories::tasks::{TaskCompletionUpdate, TaskLifecycleState};
 pub(crate) use session::{DbRepos, DbSession};
-pub(crate) use task_query_state::{TaskQueryRecord, TaskQueryWrite, TaskQueryWriteResult};
+pub(crate) use task_query_state::{TaskQueryWrite, TaskQueryWriteResult};
 #[cfg(test)]
 pub(crate) use task_state::TaskMutationBarrier;
 pub(crate) use task_state::{TaskCreation, TaskCreationResult};

@@ -1,6 +1,10 @@
-use sea_query::{Expr, ExprTrait, JoinType, Order, Query};
+use sea_query::{Expr, Query};
+#[cfg(test)]
+use sea_query::{ExprTrait, JoinType, Order};
 
-use crate::state::db::schema::{TaskQueries, Tasks};
+use crate::state::db::schema::TaskQueries;
+#[cfg(test)]
+use crate::state::db::schema::Tasks;
 use crate::state::db::{CoralTx, DbError, DbSession};
 
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
@@ -25,6 +29,7 @@ where
         Self { session }
     }
 
+    #[cfg(test)]
     pub(in crate::state::db) async fn list_for_workspace(
         &mut self,
         workspace_id: &str,
@@ -85,11 +90,12 @@ impl TaskQueriesRepo<'_, CoralTx<'_>> {
 mod tests {
     use tempfile::tempdir;
 
+    use super::TaskQueryRow;
     use crate::bootstrap;
     use crate::state::AppStateLayout;
     use crate::state::db::{
         CoralDb, DatabaseConfig, DbRepos, ResolvedDatabaseConfig, TaskCreation, TaskCreationResult,
-        TaskQueryRecord, TaskQueryWrite, TaskQueryWriteResult,
+        TaskQueryWrite, TaskQueryWriteResult,
     };
 
     #[tokio::test]
@@ -190,7 +196,7 @@ mod tests {
         task_id: &str,
         other_task_id: &str,
     ) {
-        let first = TaskQueryRecord {
+        let first = TaskQueryRow {
             id: "00000000-0000-0000-0000-000000000001".to_string(),
             task_id: task_id.to_string(),
             intent: "First query".to_string(),
@@ -198,7 +204,7 @@ mod tests {
             status: "success".to_string(),
             started_at_unix_nanos: 10,
         };
-        let second = TaskQueryRecord {
+        let second = TaskQueryRow {
             id: "00000000-0000-0000-0000-000000000002".to_string(),
             task_id: task_id.to_string(),
             intent: "Second query".to_string(),
@@ -206,7 +212,7 @@ mod tests {
             status: "error".to_string(),
             started_at_unix_nanos: 10,
         };
-        let other = TaskQueryRecord {
+        let other = TaskQueryRow {
             id: "00000000-0000-0000-0000-000000000003".to_string(),
             task_id: other_task_id.to_string(),
             intent: "Other workspace".to_string(),
@@ -254,15 +260,13 @@ mod tests {
         );
 
         assert_eq!(
-            db.task_query_state()
-                .list_for_workspace(workspace_id)
+            task_queries_for_workspace(db, workspace_id)
                 .await
                 .expect("list task queries"),
             vec![first.clone(), second]
         );
         assert_eq!(
-            db.task_query_state()
-                .list_for_workspace(other_workspace_id)
+            task_queries_for_workspace(db, other_workspace_id)
                 .await
                 .expect("list other workspace task queries"),
             vec![other]
@@ -275,11 +279,21 @@ mod tests {
             .expect("delete task");
         tx.commit().await.expect("commit task delete");
         assert!(
-            db.task_query_state()
-                .list_for_workspace(workspace_id)
+            task_queries_for_workspace(db, workspace_id)
                 .await
                 .expect("list cascaded task queries")
                 .is_empty()
         );
+    }
+
+    async fn task_queries_for_workspace(
+        db: &CoralDb,
+        workspace_id: &str,
+    ) -> Result<Vec<TaskQueryRow>, crate::state::db::DbError> {
+        let mut session = db;
+        session
+            .task_queries()
+            .list_for_workspace(workspace_id)
+            .await
     }
 }

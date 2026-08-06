@@ -75,10 +75,9 @@ pub use composition::{
     QueryResultObserverError, RequestAuthenticator, RequestAuthenticatorError,
     RequestIdentityHttpAuthenticatorError, RequestIdentityHttpAuthenticatorFactory,
     RequestIdentitySelectionContext, RequestIdentitySelectionError, RequestIdentitySelector,
-    RuntimeSystemTable, SelectedRequestIdentity, SourceDecorator, SourceDecoratorError,
-    SourceFailurePolicy, SourceInputResolutionContext, SourceInputResolver,
-    SourceInputResolverError, SourceObservationPublisher, SourceObservationSurfaceKind,
-    SourceScanObservation, SourceTables,
+    SelectedRequestIdentity, SourceDecorator, SourceDecoratorError, SourceFailurePolicy,
+    SourceInputResolutionContext, SourceInputResolver, SourceInputResolverError,
+    SourceObservationPublisher, SourceObservationSurfaceKind, SourceScanObservation, SourceTables,
 };
 pub use contracts::{
     CatalogInfo, ColumnInfo, CoreError, DependentJoinConfig, DependentJoinSourceConfig,

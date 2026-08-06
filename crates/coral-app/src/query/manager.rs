@@ -820,11 +820,6 @@ impl QueryManager {
                 .source_observation_publishers
                 .extend(observed_extensions.source_observation_publishers);
         }
-        if let Some(task_activity) = &self.task_activity {
-            extensions
-                .system_tables
-                .push(task_activity.system_table(workspace_name.clone()));
-        }
         let provider_input_resolver = extensions.source_input_resolver.take();
         let source_credentials = selected_sources
             .iter()
@@ -1730,9 +1725,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn execute_sql_records_task_history_and_exposes_the_workspace_table() {
-        use arrow::array::StringArray;
-
+    async fn execute_sql_records_success_and_error_task_activity() {
         let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
         let (tasks, request_context, task_id) = active_task_context(&fixture.db).await;
         let workspace = WorkspaceName::default();
@@ -1766,33 +1759,22 @@ mod tests {
             .await
             .expect("task-ID-only SQL remains supported");
 
-        let history_sql = format!(
-            "SELECT task_id, intent, sql, status FROM coral.task_queries \
-             WHERE task_id = '{task_id}' ORDER BY executed_at, query_id"
-        );
-        let history = fixture
-            .manager
-            .execute_sql(&workspace, &history_sql, None, &QueryAttribution::default())
+        let recorded = fixture
+            .db
+            .task_query_state()
+            .list_for_workspace(workspace.as_str())
             .await
-            .expect("query task history");
-        let ExecuteSqlOutcome::Executed(history) = history else {
-            panic!("history query should execute");
-        };
-        assert_eq!(history.row_count(), 2);
-        let batch = history.batches().first().expect("history batch");
-        let strings = |index| {
-            batch
-                .column(index)
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .expect("UTF-8 history column")
-        };
-        assert_eq!(strings(0).value(0), task_id);
-        assert_eq!(strings(1).value(0), "Check renewal risk");
-        assert_eq!(strings(2).value(0), "SELECT 1");
-        assert_eq!(strings(3).value(0), "success");
-        assert_eq!(strings(2).value(1), "SELECT FROM");
-        assert_eq!(strings(3).value(1), "error");
+            .expect("load recorded task activity");
+        assert_eq!(recorded.len(), 2);
+        for (sql, status) in [("SELECT 1", "success"), ("SELECT FROM", "error")] {
+            let record = recorded
+                .iter()
+                .find(|record| record.sql == sql)
+                .unwrap_or_else(|| panic!("recorded SQL '{sql}'"));
+            assert_eq!(record.task_id, task_id);
+            assert_eq!(record.intent, "Check renewal risk");
+            assert_eq!(record.status, status);
+        }
     }
 
     #[tokio::test]
@@ -2461,8 +2443,10 @@ tables:
                 .len(),
             provider_requests_before + 1
         );
-        let recorded = TaskActivityRecorder::new(Arc::clone(&fixture.db))
-            .queries_for_workspace(&workspace_name)
+        let recorded = fixture
+            .db
+            .task_query_state()
+            .list_for_workspace(workspace_name.as_str())
             .await
             .expect("load task query activity");
         assert_eq!(recorded.len(), 1, "GuideRequired must not record activity");

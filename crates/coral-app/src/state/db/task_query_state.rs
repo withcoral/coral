@@ -13,6 +13,7 @@ pub(crate) struct TaskQueryWrite<'a> {
     pub(crate) started_at_unix_nanos: i64,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TaskQueryRecord {
     pub(crate) id: String,
@@ -73,6 +74,7 @@ impl TaskQueryState<'_> {
         Ok(TaskQueryWriteResult::Recorded)
     }
 
+    #[cfg(test)]
     pub(crate) async fn list_for_workspace(
         &self,
         workspace_id: &str,
@@ -86,6 +88,7 @@ impl TaskQueryState<'_> {
     }
 }
 
+#[cfg(test)]
 impl From<TaskQueryRow> for TaskQueryRecord {
     fn from(row: TaskQueryRow) -> Self {
         Self {

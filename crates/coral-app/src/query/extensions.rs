@@ -53,7 +53,6 @@ pub(crate) fn engine_extensions_for_providers(
             source_observation_publishers,
             request_authenticators,
             source_input_resolver,
-            system_tables,
         } = extra;
         merged.source_decorators.extend(source_decorators);
         merged.query_result_observers.extend(query_result_observers);
@@ -61,7 +60,6 @@ pub(crate) fn engine_extensions_for_providers(
             .source_observation_publishers
             .extend(source_observation_publishers);
         merged.request_authenticators.extend(request_authenticators);
-        merged.system_tables.extend(system_tables);
         if source_input_resolver.is_some() {
             merged.source_input_resolver = source_input_resolver;
         }

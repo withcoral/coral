@@ -2,14 +2,7 @@
 
 use std::sync::Arc;
 
-use arrow::array::{ArrayRef, StringArray, TimestampNanosecondArray};
-use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
-use arrow::record_batch::RecordBatch;
-use coral_engine::{CoreError, RuntimeSystemTable};
-
-use crate::state::db::{
-    CoralDb, DbError, TaskQueryRecord as StoredTaskQuery, TaskQueryWrite, TaskQueryWriteResult,
-};
+use crate::state::db::{CoralDb, DbError, TaskQueryWrite, TaskQueryWriteResult};
 use crate::task::id::TaskId;
 use crate::workspaces::WorkspaceName;
 
@@ -82,98 +75,5 @@ impl TaskActivityRecorder {
                 workspace: workspace.to_string(),
             }),
         }
-    }
-
-    pub(crate) async fn queries_for_workspace(
-        &self,
-        workspace: &WorkspaceName,
-    ) -> Result<Vec<StoredTaskQuery>, DbError> {
-        self.db
-            .task_query_state()
-            .list_for_workspace(workspace.as_str())
-            .await
-    }
-
-    pub(crate) fn system_table(&self, workspace: WorkspaceName) -> RuntimeSystemTable {
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("query_id", DataType::Utf8, false),
-            Field::new("task_id", DataType::Utf8, false),
-            Field::new("intent", DataType::Utf8, false),
-            Field::new(
-                "executed_at",
-                DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
-                false,
-            ),
-            Field::new("sql", DataType::Utf8, false),
-            Field::new("status", DataType::Utf8, false),
-        ]));
-        let recorder = self.clone();
-        let loader_schema = Arc::clone(&schema);
-        RuntimeSystemTable::new(
-            "task_queries",
-            "Retained SQL statements attributed to tasks in this workspace.",
-            "Filter by task_id and order by executed_at, query_id for deterministic execution-start order.",
-            schema,
-            move || {
-                let recorder = recorder.clone();
-                let workspace = workspace.clone();
-                let schema = Arc::clone(&loader_schema);
-                async move {
-                    let rows =
-                        recorder
-                            .queries_for_workspace(&workspace)
-                            .await
-                            .map_err(|error| {
-                                tracing::warn!(
-                                    workspace = %workspace,
-                                    error = %error,
-                                    "could not load task query activity"
-                                );
-                                CoreError::internal("could not load task query activity")
-                            })?;
-                    let executed_at: ArrayRef = Arc::new(
-                        TimestampNanosecondArray::from(
-                            rows.iter()
-                                .map(|row| Some(row.started_at_unix_nanos))
-                                .collect::<Vec<_>>(),
-                        )
-                        .with_timezone("UTC"),
-                    );
-                    let batch = RecordBatch::try_new(
-                        schema,
-                        vec![
-                            Arc::new(
-                                rows.iter()
-                                    .map(|row| Some(row.id.as_str()))
-                                    .collect::<StringArray>(),
-                            ),
-                            Arc::new(
-                                rows.iter()
-                                    .map(|row| Some(row.task_id.as_str()))
-                                    .collect::<StringArray>(),
-                            ),
-                            Arc::new(
-                                rows.iter()
-                                    .map(|row| Some(row.intent.as_str()))
-                                    .collect::<StringArray>(),
-                            ),
-                            executed_at,
-                            Arc::new(
-                                rows.iter()
-                                    .map(|row| Some(row.sql.as_str()))
-                                    .collect::<StringArray>(),
-                            ),
-                            Arc::new(
-                                rows.iter()
-                                    .map(|row| Some(row.status.as_str()))
-                                    .collect::<StringArray>(),
-                            ),
-                        ],
-                    )
-                    .map_err(CoreError::from)?;
-                    Ok(vec![batch])
-                }
-            },
-        )
     }
 }

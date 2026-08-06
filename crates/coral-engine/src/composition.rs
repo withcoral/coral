@@ -1,7 +1,6 @@
 //! Advanced composition seams for engine extension points.
 
 use std::collections::{BTreeMap, HashMap};
-use std::future::Future;
 use std::sync::Arc;
 
 use arrow::datatypes::Schema;
@@ -35,56 +34,6 @@ pub struct EngineExtensions {
     pub request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
     /// Request-time resolver for app-managed source inputs.
     pub source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
-    /// App-owned tables registered lazily in the `coral` system schema.
-    pub system_tables: Vec<RuntimeSystemTable>,
-}
-
-/// One app-owned, query-visible table in the `coral` system schema.
-#[derive(Clone)]
-pub struct RuntimeSystemTable {
-    pub(crate) name: String,
-    pub(crate) description: String,
-    pub(crate) guide: String,
-    pub(crate) schema: Arc<Schema>,
-    loader: Arc<dyn Fn() -> BoxFuture<'static, Result<Vec<RecordBatch>, CoreError>> + Send + Sync>,
-}
-
-impl RuntimeSystemTable {
-    /// Builds a lazy system table. The loader runs only when the table is scanned.
-    #[must_use]
-    pub fn new<F, Fut>(
-        name: impl Into<String>,
-        description: impl Into<String>,
-        guide: impl Into<String>,
-        schema: Arc<Schema>,
-        loader: F,
-    ) -> Self
-    where
-        F: Fn() -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<Vec<RecordBatch>, CoreError>> + Send + 'static,
-    {
-        Self {
-            name: name.into(),
-            description: description.into(),
-            guide: guide.into(),
-            schema,
-            loader: Arc::new(move || Box::pin(loader())),
-        }
-    }
-
-    pub(crate) async fn load(&self) -> Result<Vec<RecordBatch>, CoreError> {
-        (self.loader)().await
-    }
-}
-
-impl std::fmt::Debug for RuntimeSystemTable {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("RuntimeSystemTable")
-            .field("name", &self.name)
-            .field("schema", &self.schema)
-            .finish_non_exhaustive()
-    }
 }
 
 /// Neutral policy decision for one source registration failure.

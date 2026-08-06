@@ -579,7 +579,6 @@ fn register_test_sources_with_catalog(ctx: &SessionContext, sources: Vec<Compile
         &registration.active_sources,
         &registration.column_fetchers,
         &[],
-        &[],
         catalog::CatalogColumnFetchFailures::default(),
     )
     .expect("catalog should register");
