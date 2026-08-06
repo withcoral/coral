@@ -132,7 +132,7 @@ pub(crate) fn list_catalog_tool(context: &ToolDescriptionContext) -> Tool {
 pub(crate) fn describe_tool() -> Tool {
     Tool::new(
         ToolName::Describe.as_str(),
-        "Describe one database table or table function from its SQL catalog, schema, and bare surface name. Coral resolves whether the surface is a table or table function.",
+        "Describe one exact database table or table function from its SQL catalog, schema, and bare surface name. Coral resolves whether the surface is a table or table function and returns missing when no exact target exists.",
         tool_input_schema::<CatalogSurfaceRef>(),
     )
     .with_raw_output_schema(describe_output_schema())
@@ -222,18 +222,16 @@ fn default_required_only() -> bool {
 }
 
 pub(crate) fn describe_value(
-    arguments: &CatalogSurfaceRef,
     response: &DescribeCatalogSurfaceResponse,
 ) -> Result<Value, tonic::Status> {
-    serde_json::to_value(describe_output(arguments, response)?).map_err(|error| {
+    serde_json::to_value(describe_output(response)?).map_err(|error| {
         tonic::Status::internal(format!("failed to serialize describe response: {error}"))
     })
 }
 
-fn describe_output<'a>(
-    arguments: &'a CatalogSurfaceRef,
-    response: &'a DescribeCatalogSurfaceResponse,
-) -> Result<DescribeOutput<'a>, tonic::Status> {
+fn describe_output(
+    response: &DescribeCatalogSurfaceResponse,
+) -> Result<DescribeOutput<'_>, tonic::Status> {
     use describe_catalog_surface_response::Result;
 
     match response.result.as_ref() {
@@ -241,53 +239,12 @@ fn describe_output<'a>(
         Some(Result::TableFunction(table_function)) => Ok(DescribeOutput::TableFunction(
             DescribeTableFunctionValue::from(table_function),
         )),
-        Some(Result::Missing(missing)) => Ok(DescribeOutput::Missing(MissingSurfaceValue {
+        Some(Result::Missing(_)) => Ok(DescribeOutput::Missing(MissingSurfaceValue {
             reason: MissingSurfaceReason::Missing,
-            available_schemas: &missing.available_schemas,
-            same_schema_surfaces: missing
-                .same_schema_items
-                .iter()
-                .filter_map(MissingSurfaceCandidateValue::from_catalog_item)
-                .collect(),
-            suggestions: missing
-                .suggestions
-                .iter()
-                .filter_map(MissingSurfaceCandidateValue::from_catalog_item)
-                .collect(),
-            suggested_calls: vec![
-                suggested_catalog_call(
-                    arguments,
-                    arguments.catalog.as_ref().map(|_| CatalogToolKind::Table),
-                ),
-                SuggestedCall {
-                    tool: CatalogSuggestedTool::ListCatalog,
-                    arguments: SuggestedCallArguments {
-                        catalog: arguments.catalog.as_deref(),
-                        schema: None,
-                        kind: arguments.catalog.as_ref().map(|_| CatalogToolKind::Table),
-                        limit: Some(10),
-                    },
-                },
-            ],
         })),
         None => Err(tonic::Status::internal(
             "describe catalog surface response missing result",
         )),
-    }
-}
-
-fn suggested_catalog_call(
-    arguments: &CatalogSurfaceRef,
-    kind: Option<CatalogToolKind>,
-) -> SuggestedCall<'_> {
-    SuggestedCall {
-        tool: CatalogSuggestedTool::ListCatalog,
-        arguments: SuggestedCallArguments {
-            catalog: arguments.catalog.as_deref(),
-            schema: Some(&arguments.schema),
-            kind,
-            limit: Some(10),
-        },
     }
 }
 
@@ -365,7 +322,7 @@ fn column_search_result_row(result: &ColumnSearchResult) -> Option<ColumnSearchR
 enum DescribeOutput<'a> {
     Table(DescribeTableValue<'a>),
     TableFunction(DescribeTableFunctionValue<'a>),
-    Missing(MissingSurfaceValue<'a>),
+    Missing(MissingSurfaceValue),
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -472,86 +429,14 @@ impl<'a> From<&'a ProtoTable> for DescribeTableValue<'a> {
 
 #[derive(Serialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
-struct MissingSurfaceValue<'a> {
+struct MissingSurfaceValue {
     reason: MissingSurfaceReason,
-    available_schemas: &'a [String],
-    same_schema_surfaces: Vec<MissingSurfaceCandidateValue<'a>>,
-    suggestions: Vec<MissingSurfaceCandidateValue<'a>>,
-    suggested_calls: Vec<SuggestedCall<'a>>,
-}
-
-#[derive(Serialize, JsonSchema)]
-#[schemars(deny_unknown_fields)]
-struct MissingSurfaceCandidateValue<'a> {
-    kind: CatalogToolKind,
-    target: SurfaceTargetValue<'a>,
-    description: &'a str,
-}
-
-impl<'a> MissingSurfaceCandidateValue<'a> {
-    fn from_catalog_item(item: &'a coral_api::v1::CatalogItem) -> Option<Self> {
-        match item.item.as_ref()? {
-            catalog_item::Item::Table(table) => Some(Self {
-                kind: CatalogToolKind::Table,
-                target: SurfaceTargetValue {
-                    catalog: optional_catalog_name(&table.catalog_name),
-                    schema: &table.schema_name,
-                    surface: &table.name,
-                },
-                description: &table.description,
-            }),
-            catalog_item::Item::TableFunction(function) => Some(Self {
-                kind: CatalogToolKind::TableFunction,
-                target: SurfaceTargetValue {
-                    catalog: None,
-                    schema: &function.schema_name,
-                    surface: &function.name,
-                },
-                description: &function.description,
-            }),
-        }
-    }
-}
-
-#[derive(Serialize, JsonSchema)]
-#[schemars(deny_unknown_fields)]
-struct SurfaceTargetValue<'a> {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    catalog: Option<&'a str>,
-    schema: &'a str,
-    surface: &'a str,
 }
 
 #[derive(Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 enum MissingSurfaceReason {
     Missing,
-}
-
-#[derive(Serialize, JsonSchema)]
-#[schemars(deny_unknown_fields)]
-struct SuggestedCall<'a> {
-    tool: CatalogSuggestedTool,
-    arguments: SuggestedCallArguments<'a>,
-}
-
-#[derive(Serialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-enum CatalogSuggestedTool {
-    ListCatalog,
-}
-
-#[derive(Serialize, JsonSchema)]
-#[schemars(deny_unknown_fields)]
-struct SuggestedCallArguments<'a> {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    catalog: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    schema: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    kind: Option<CatalogToolKind>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    limit: Option<u32>,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -747,16 +632,15 @@ struct ColumnSearchRowValue<'a>(
 #[cfg(test)]
 mod tests {
     use coral_api::v1::{
-        CatalogItem, Column, ColumnSearchResult, DescribeCatalogSurfaceResponse,
-        ListColumnsResponse, MissingCatalogSurface, PaginationResponse, Table, TableFunction,
-        TableSummary, catalog_item, describe_catalog_surface_response,
+        Column, ColumnSearchResult, DescribeCatalogSurfaceResponse, ListColumnsResponse,
+        MissingCatalogSurface, PaginationResponse, Table, TableFunction,
+        describe_catalog_surface_response,
     };
     use serde_json::{Map, Value, json};
 
     use super::{
-        CatalogSurfaceRef, DEFAULT_IGNORE_CASE, DEFAULT_REQUIRED_ONLY, describe_arguments,
-        describe_tool, describe_value, list_catalog_arguments, list_columns_arguments,
-        list_columns_value,
+        DEFAULT_IGNORE_CASE, DEFAULT_REQUIRED_ONLY, describe_arguments, describe_tool,
+        describe_value, list_catalog_arguments, list_columns_arguments, list_columns_value,
     };
     use crate::surface::discovery::{DEFAULT_PAGINATION_LIMIT, DEFAULT_PAGINATION_OFFSET};
 
@@ -857,11 +741,6 @@ mod tests {
     fn describe_renders_table_function_and_missing_surfaces() {
         use describe_catalog_surface_response::Result;
 
-        let arguments = CatalogSurfaceRef {
-            catalog: None,
-            schema: "searchy".to_string(),
-            surface: "lookup".to_string(),
-        };
         let table = Table {
             schema_name: "searchy".to_string(),
             name: "lookup".to_string(),
@@ -875,8 +754,7 @@ mod tests {
             ..TableFunction::default()
         };
         let render = |result| {
-            describe_value(&arguments, &DescribeCatalogSurfaceResponse { result })
-                .expect("describe response")
+            describe_value(&DescribeCatalogSurfaceResponse { result }).expect("describe response")
         };
         let schema = Value::Object((*super::describe_output_schema()).clone());
         let validator =
@@ -890,50 +768,8 @@ mod tests {
         assert_eq!(value_at(&function_only, "/description"), "Lookup function");
         assert_absent(&function_only, &["name", "sql_reference", "schema_name"]);
 
-        let missing = render(Some(Result::Missing(MissingCatalogSurface {
-            suggestions: vec![
-                CatalogItem {
-                    item: Some(catalog_item::Item::Table(TableSummary {
-                        catalog_name: "warehouse".to_string(),
-                        schema_name: "searchy".to_string(),
-                        name: "lookups".to_string(),
-                        description: "Lookup table".to_string(),
-                        ..TableSummary::default()
-                    })),
-                },
-                CatalogItem {
-                    item: Some(catalog_item::Item::TableFunction(TableFunction {
-                        schema_name: "searchy".to_string(),
-                        name: "lookup_issue".to_string(),
-                        description: "Lookup function".to_string(),
-                        ..TableFunction::default()
-                    })),
-                },
-            ],
-            available_schemas: vec!["searchy".to_string()],
-            same_schema_items: Vec::new(),
-        })));
-        assert_eq!(value_at(&missing, "/reason"), "missing");
-        assert_eq!(value_at(&missing, "/suggestions/0/kind"), "table");
-        assert_eq!(
-            value_at(&missing, "/suggestions/0/target/catalog"),
-            "warehouse"
-        );
-        assert_eq!(
-            value_at(&missing, "/suggestions/0/target/surface"),
-            "lookups"
-        );
-        assert_eq!(value_at(&missing, "/suggestions/1/kind"), "table_function");
-        assert_eq!(
-            value_at(&missing, "/suggestions/1/target/surface"),
-            "lookup_issue"
-        );
-        assert!(missing.pointer("/suggestions/1/target/catalog").is_none());
-        assert!(
-            missing
-                .pointer("/suggested_calls/1/arguments/schema")
-                .is_none()
-        );
+        let missing = render(Some(Result::Missing(MissingCatalogSurface {})));
+        assert_eq!(missing, json!({"reason": "missing"}));
 
         for (case, output) in [
             ("table", table_only),

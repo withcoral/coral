@@ -250,19 +250,12 @@ message DescribeCatalogSurfaceRequest {
   string catalog_name = 4;
 }
 
-// App-owned recovery context for a missing catalog surface.
-message MissingCatalogSurface {
-  // Suggested nearby tables and table functions, capped for user-facing help.
-  repeated CatalogItem suggestions = 1;
-  // Query-visible schema names available for the requested catalog scope.
-  repeated string available_schemas = 2;
-  // Tables and table functions in the requested schema, capped for user-facing help.
-  repeated CatalogItem same_schema_items = 3;
-}
+// Indicates that no catalog surface matched the exact target.
+message MissingCatalogSurface {}
 
-// Returns the resolved catalog surface or structured recovery context.
+// Returns the resolved catalog surface or a missing result.
 message DescribeCatalogSurfaceResponse {
-  // Exact resolution state or missing-surface recovery context.
+  // Exact resolution state or missing result.
   oneof result {
     // Exact table match.
     Table table = 1;

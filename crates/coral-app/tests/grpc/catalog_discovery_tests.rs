@@ -268,7 +268,7 @@ async fn list_columns_filters_required_columns_and_patterns() {
 }
 
 #[tokio::test]
-async fn describe_missing_surface_returns_kind_tagged_suggestions() {
+async fn describe_missing_surface_returns_missing() {
     let harness = GrpcHarness::new().await;
     harness
         .import_source(
@@ -290,46 +290,9 @@ async fn describe_missing_surface_returns_kind_tagged_suggestions() {
         .expect("describe missing surface")
         .into_inner();
 
-    let Some(describe_catalog_surface_response::Result::Missing(missing)) = response.result else {
+    let Some(describe_catalog_surface_response::Result::Missing(_)) = response.result else {
         panic!("expected missing surface");
     };
-    assert_eq!(missing.available_schemas, vec!["coral", "local_messages"]);
-    assert_eq!(missing.same_schema_items.len(), 3);
-    assert_eq!(missing.suggestions.len(), 3);
-    let Some(catalog_item::Item::Table(table)) = missing.suggestions[0].item.as_ref() else {
-        panic!("expected table suggestion");
-    };
-    assert_eq!(table.name, "events");
-}
-
-#[tokio::test]
-async fn describe_missing_surface_name_does_not_apply_regex_limits() {
-    let harness = GrpcHarness::new().await;
-    harness
-        .import_source(
-            fixture_manifest_with_multiple_tables_yaml(harness.temp_path()),
-            Vec::new(),
-            Vec::new(),
-        )
-        .await;
-
-    let response = harness
-        .catalog_client()
-        .describe_catalog_surface(Request::new(DescribeCatalogSurfaceRequest {
-            workspace: Some(default_workspace()),
-            catalog_name: String::new(),
-            schema_name: "local_messages".to_string(),
-            surface_name: "missing_surface_".repeat(40),
-        }))
-        .await
-        .expect("describe long missing surface name")
-        .into_inner();
-
-    let Some(describe_catalog_surface_response::Result::Missing(missing)) = response.result else {
-        panic!("expected missing surface");
-    };
-    assert_eq!(missing.same_schema_items.len(), 3);
-    assert_eq!(missing.suggestions.len(), 3);
 }
 
 #[tokio::test]
@@ -364,7 +327,7 @@ async fn describe_catalog_surface_returns_exact_table_function() {
 }
 
 #[tokio::test]
-async fn describe_catalog_surface_missing_suggests_table_functions() {
+async fn describe_catalog_surface_does_not_resolve_partial_function_name() {
     let harness = GrpcHarness::new().await;
     harness
         .import_source(
@@ -386,13 +349,9 @@ async fn describe_catalog_surface_missing_suggests_table_functions() {
         .expect("describe missing catalog surface")
         .into_inner();
 
-    let Some(describe_catalog_surface_response::Result::Missing(missing)) = response.result else {
+    let Some(describe_catalog_surface_response::Result::Missing(_)) = response.result else {
         panic!("expected missing surface");
     };
-    assert!(missing.suggestions.iter().any(|item| matches!(
-        item.item.as_ref(),
-        Some(catalog_item::Item::TableFunction(function)) if function.name == "lookup_issue"
-    )));
 }
 
 #[tokio::test]

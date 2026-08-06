@@ -417,12 +417,12 @@ fn validate_catalog_surface_namespace(
     let two_part_tables = tables
         .iter()
         .filter(|table| table.catalog_name.is_none())
-        .map(|table| (table.schema_name.as_str(), table.table_name.as_str()))
-        .collect::<BTreeSet<_>>();
+        .map(|table| ScopedTableFunctionName::from_parts(&table.schema_name, &table.table_name))
+        .collect::<HashSet<_>>();
     if let Some(function) = table_functions.iter().find(|function| {
-        two_part_tables.contains(&(
-            function.schema_name.as_str(),
-            function.function_name.as_str(),
+        two_part_tables.contains(&ScopedTableFunctionName::from_parts(
+            &function.schema_name,
+            &function.function_name,
         ))
     }) {
         return Err(CoreError::FailedPrecondition(format!(
@@ -698,23 +698,7 @@ impl QueryRuntimeAdapter {
             (None, Some(table_function)) => {
                 Ok(DescribeCatalogSurfaceInfo::TableFunction(table_function))
             }
-            (None, None) => {
-                let tables = catalog::collect_table_metadata(&self.ctx, None, None, None)
-                    .await
-                    .map_err(|err| datafusion_to_core(&err, &self.tables))?
-                    .iter()
-                    .map(table_metadata_without_columns)
-                    .collect();
-                let table_functions = if catalog_name.is_none() {
-                    self.table_functions.clone()
-                } else {
-                    Vec::new()
-                };
-                Ok(DescribeCatalogSurfaceInfo::Missing(CatalogInfo {
-                    tables,
-                    table_functions,
-                }))
-            }
+            (None, None) => Ok(DescribeCatalogSurfaceInfo::Missing),
         }
     }
 
@@ -1502,19 +1486,6 @@ fn relation_parts(table_reference: &TableReference) -> Option<(&str, &str)> {
     Some((schema_name, table_reference.table()))
 }
 
-fn table_metadata_without_columns(table: &TableInfo) -> TableInfo {
-    TableInfo {
-        catalog_name: table.catalog_name.clone(),
-        schema_name: table.schema_name.clone(),
-        table_name: table.table_name.clone(),
-        description: table.description.clone(),
-        guide: table.guide.clone(),
-        require_guide_read: table.require_guide_read,
-        columns: Vec::new(),
-        required_filters: table.required_filters.clone(),
-    }
-}
-
 fn query_result_observer_error(name: &str, error: &QueryResultObserverError) -> CoreError {
     let core = query_result_observer_error_to_core(error);
     match core {
@@ -1614,24 +1585,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn describe_catalog_surface_miss_returns_columnless_context() {
+    async fn describe_catalog_surface_miss_returns_missing() {
         let result = adapter_with_table()
             .await
             .describe_catalog_surface(None, "demo", "missing")
             .await
             .expect("describe catalog surface miss");
 
-        let DescribeCatalogSurfaceInfo::Missing(context) = result else {
-            panic!("expected missing context");
-        };
-        let context_table = context
-            .tables
-            .iter()
-            .find(|table| table.schema_name == "demo" && table.table_name == "events")
-            .expect("missing context table");
-        assert!(context_table.columns.is_empty());
-        assert_eq!(context_table.required_filters, ["owner".to_string()]);
-        assert_eq!(context.table_functions.len(), 1);
+        assert!(matches!(result, DescribeCatalogSurfaceInfo::Missing));
     }
 
     #[tokio::test]
@@ -1677,6 +1638,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn describe_catalog_surface_rejects_case_only_name_collision() {
+        let mut adapter = adapter_with_table().await;
+        let mut function = adapter
+            .table_functions
+            .first()
+            .expect("table function")
+            .clone();
+        function.schema_name = "DEMO".to_string();
+        function.function_name = "EVENTS".to_string();
+        adapter.table_functions.push(function);
+
+        let error = validate_catalog_surface_namespace(&adapter.tables, &adapter.table_functions)
+            .expect_err("runtime should reject a case-only catalog surface collision");
+
+        assert!(matches!(error, CoreError::FailedPrecondition(_)));
+    }
+
+    #[tokio::test]
     async fn describe_catalog_surface_catalog_qualifier_excludes_functions() {
         let result = adapter_with_table()
             .await
@@ -1684,10 +1663,9 @@ mod tests {
             .await
             .expect("describe catalog-qualified surface");
 
-        let DescribeCatalogSurfaceInfo::Missing(context) = result else {
+        let DescribeCatalogSurfaceInfo::Missing = result else {
             panic!("catalog-qualified function name must not resolve");
         };
-        assert!(context.table_functions.is_empty());
     }
 
     #[tokio::test]

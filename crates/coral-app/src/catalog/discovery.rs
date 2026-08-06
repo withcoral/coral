@@ -1,7 +1,5 @@
 //! Workspace-scoped catalog discovery operations.
 
-use std::collections::BTreeSet;
-
 use coral_engine::{
     CatalogInfo, ColumnInfo, DescribeCatalogSurfaceInfo, TableFunctionInfo, TableInfo,
     normalize_catalog_name,
@@ -20,7 +18,6 @@ const DEFAULT_COLUMN_LIMIT: u32 = 50;
 const MAX_COLUMN_LIMIT: u32 = 200;
 const MAX_METADATA_PATTERN_BYTES: usize = 256;
 const REGEX_SIZE_LIMIT_BYTES: usize = 1 << 20;
-const MISSING_SURFACE_SUGGESTION_LIMIT: usize = 10;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct Pagination {
@@ -107,14 +104,7 @@ impl CatalogMetadataField {
 pub(crate) enum DescribeCatalogSurfaceResult {
     Table(TableInfo),
     TableFunction(TableFunctionInfo),
-    Missing(MissingCatalogSurfaceContext),
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct MissingCatalogSurfaceContext {
-    pub(crate) suggestions: Vec<CatalogItem>,
-    pub(crate) available_schemas: Vec<String>,
-    pub(crate) same_schema_items: Vec<CatalogItem>,
+    Missing,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -131,9 +121,7 @@ impl<'a> CatalogSurfaceRef<'a> {
         surface_name: &'a str,
     ) -> Self {
         Self {
-            catalog: catalog_name
-                .map(str::trim)
-                .filter(|catalog_name| !catalog_name.is_empty()),
+            catalog: catalog_name,
             schema: schema_name,
             surface: surface_name,
         }
@@ -309,28 +297,8 @@ impl CatalogDiscovery {
             DescribeCatalogSurfaceInfo::TableFunction(table_function) => {
                 Ok(DescribeCatalogSurfaceResult::TableFunction(table_function))
             }
-            DescribeCatalogSurfaceInfo::Missing(catalog) => {
-                let mut items = catalog_items(catalog, None);
-                items.retain(|item| surface_ref.catalog.is_none() || item.is_table());
-                let available_schemas = available_surface_schemas(&items, surface_ref);
-                let same_schema_items = same_schema_items(&items, surface_ref);
-                let suggestions =
-                    missing_surface_suggestions(&items, surface_ref, same_schema_items.as_slice());
-                Ok(DescribeCatalogSurfaceResult::Missing(
-                    MissingCatalogSurfaceContext {
-                        suggestions,
-                        available_schemas,
-                        same_schema_items,
-                    },
-                ))
-            }
+            DescribeCatalogSurfaceInfo::Missing => Ok(DescribeCatalogSurfaceResult::Missing),
         }
-    }
-}
-
-impl CatalogItem {
-    fn is_table(&self) -> bool {
-        matches!(self, Self::Table(_))
     }
 }
 
@@ -614,126 +582,6 @@ fn column_matched_fields(column: &ColumnInfo, regex: &Regex) -> Vec<ColumnMetada
         .collect()
 }
 
-fn available_surface_schemas(
-    items: &[CatalogItem],
-    surface_ref: CatalogSurfaceRef<'_>,
-) -> Vec<String> {
-    items
-        .iter()
-        .filter_map(|item| match item {
-            CatalogItem::Table(table)
-                if surface_ref.catalog.is_none_or(|catalog_name| {
-                    table.catalog_name.as_deref() == normalize_catalog_name(Some(catalog_name))
-                }) =>
-            {
-                Some(table.schema_name.clone())
-            }
-            CatalogItem::TableFunction(function) if surface_ref.catalog.is_none() => {
-                Some(function.schema_name.clone())
-            }
-            CatalogItem::Table(_) | CatalogItem::TableFunction(_) => None,
-        })
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect()
-}
-
-fn same_schema_items(
-    items: &[CatalogItem],
-    surface_ref: CatalogSurfaceRef<'_>,
-) -> Vec<CatalogItem> {
-    items
-        .iter()
-        .filter(|item| surface_schema_matches(item, surface_ref))
-        .take(MISSING_SURFACE_SUGGESTION_LIMIT)
-        .cloned()
-        .collect()
-}
-
-fn missing_surface_suggestions(
-    all_items: &[CatalogItem],
-    surface_ref: CatalogSurfaceRef<'_>,
-    same_schema_items: &[CatalogItem],
-) -> Vec<CatalogItem> {
-    let mut suggestions = all_items
-        .iter()
-        .filter(|item| same_schema_items.is_empty() || surface_schema_matches(item, surface_ref))
-        .filter(|item| catalog_item_metadata_contains_literal(item, surface_ref.surface))
-        .take(MISSING_SURFACE_SUGGESTION_LIMIT)
-        .cloned()
-        .collect::<Vec<_>>();
-    if suggestions.is_empty() {
-        suggestions.extend_from_slice(same_schema_items);
-    }
-    suggestions
-}
-
-fn catalog_item_metadata_contains_literal(item: &CatalogItem, literal: &str) -> bool {
-    match item {
-        CatalogItem::Table(table) => table_metadata_contains_literal(table, literal),
-        CatalogItem::TableFunction(function) => {
-            table_function_metadata_contains_literal(function, literal)
-        }
-    }
-}
-
-fn table_metadata_contains_literal(table: &TableInfo, literal: &str) -> bool {
-    let literal = literal.trim();
-    if literal.is_empty() {
-        return false;
-    }
-    let literal = literal.to_lowercase();
-    let schema_name = table_addressable_schema_name(table);
-    let name = table_addressable_name(table);
-    table
-        .catalog_name
-        .as_deref()
-        .into_iter()
-        .chain([
-            table.schema_name.as_str(),
-            schema_name.as_str(),
-            table.table_name.as_str(),
-            name.as_str(),
-            table.description.as_str(),
-            table.guide.as_str(),
-        ])
-        .any(|value| value.to_lowercase().contains(&literal))
-        || table
-            .required_filters
-            .iter()
-            .any(|filter| filter.to_lowercase().contains(&literal))
-}
-
-fn table_function_metadata_contains_literal(function: &TableFunctionInfo, literal: &str) -> bool {
-    let literal = literal.trim();
-    if literal.is_empty() {
-        return false;
-    }
-    let literal = literal.to_lowercase();
-    let name = format!("{}.{}", function.schema_name, function.function_name);
-    [
-        function.schema_name.as_str(),
-        function.function_name.as_str(),
-        name.as_str(),
-        function.description.as_str(),
-        function.guide.as_str(),
-    ]
-    .into_iter()
-    .any(|value| value.to_lowercase().contains(&literal))
-        || function.arguments.iter().any(|argument| {
-            argument.name.to_lowercase().contains(&literal)
-                || argument
-                    .values
-                    .iter()
-                    .any(|value| value.to_lowercase().contains(&literal))
-        })
-        || function.result_columns.iter().any(|column| {
-            column.name.to_lowercase().contains(&literal)
-                || column.data_type.to_lowercase().contains(&literal)
-                || column.description.to_lowercase().contains(&literal)
-        })
-}
-
 fn table_addressable_schema_name(table: &TableInfo) -> String {
     match table.catalog_name.as_deref() {
         Some(catalog_name) => format!("{catalog_name}.{}", table.schema_name),
@@ -756,19 +604,6 @@ fn table_matches_ref(table: &TableInfo, table_ref: CatalogTableRef<'_>) -> bool 
 fn table_qualifier_matches(table: &TableInfo, table_ref: CatalogTableRef<'_>) -> bool {
     table.catalog_name.as_deref() == table_ref.catalog_name
         && table.schema_name == table_ref.schema_name
-}
-
-fn surface_schema_matches(item: &CatalogItem, surface_ref: CatalogSurfaceRef<'_>) -> bool {
-    match item {
-        CatalogItem::Table(table) => {
-            surface_ref.catalog.is_none_or(|catalog_name| {
-                table.catalog_name.as_deref() == normalize_catalog_name(Some(catalog_name))
-            }) && table.schema_name == surface_ref.schema
-        }
-        CatalogItem::TableFunction(function) => {
-            surface_ref.catalog.is_none() && function.schema_name == surface_ref.schema
-        }
-    }
 }
 
 pub(crate) fn page_items<T>(items: Vec<T>, pagination: Pagination) -> Page<T> {
@@ -800,10 +635,8 @@ pub(crate) fn page_items<T>(items: Vec<T>, pagination: Pagination) -> Page<T> {
 #[cfg(test)]
 mod tests {
     use super::{
-        CatalogItem, CatalogMetadataField, CatalogSurfaceRef, CatalogTableRef,
-        available_surface_schemas, compile_metadata_regex, missing_surface_suggestions,
-        same_schema_items, table_matched_fields, table_matches_ref,
-        table_metadata_contains_literal,
+        CatalogMetadataField, CatalogSurfaceRef, CatalogTableRef, compile_metadata_regex,
+        table_matched_fields, table_matches_ref,
     };
     use coral_engine::TableInfo;
 
@@ -891,37 +724,7 @@ mod tests {
             vec![CatalogMetadataField::CatalogName]
         );
 
-        let items = tables
-            .iter()
-            .cloned()
-            .map(CatalogItem::Table)
-            .collect::<Vec<_>>();
-        let surface_ref = CatalogSurfaceRef::new(Some("coral_db"), "main", "user");
-        assert_eq!(
-            available_surface_schemas(&items, surface_ref),
-            vec!["analytics", "main"]
-        );
-        let same_schema = same_schema_items(&items, surface_ref);
-        assert_eq!(same_schema.len(), 1);
-        let CatalogItem::Table(same_schema_table) = same_schema.first().expect("same schema table")
-        else {
-            panic!("expected table");
-        };
-        assert_eq!(same_schema_table.catalog_name.as_deref(), Some("coral_db"));
-        assert_eq!(same_schema_table.schema_name, "main");
-        assert_eq!(same_schema_table.table_name, "users");
-
-        let suggestions = missing_surface_suggestions(&items, surface_ref, &same_schema);
-        assert_eq!(suggestions.len(), 1);
-        let CatalogItem::Table(suggestion) = suggestions.first().expect("suggestion") else {
-            panic!("expected table suggestion");
-        };
-        assert_eq!(suggestion.catalog_name.as_deref(), Some("coral_db"));
-        assert_eq!(suggestion.schema_name, "main");
-        assert_eq!(suggestion.table_name, "users");
-        assert!(table_metadata_contains_literal(
-            same_schema_table,
-            "coral_db.main.users"
-        ));
+        let surface_ref = CatalogSurfaceRef::new(Some(" coral_db "), "main", "users");
+        assert_eq!(surface_ref.catalog, Some(" coral_db "));
     }
 }

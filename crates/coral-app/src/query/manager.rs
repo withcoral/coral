@@ -413,7 +413,7 @@ impl QueryManager {
                 Some(match result {
                     DescribeCatalogSurfaceInfo::Table(_)
                     | DescribeCatalogSurfaceInfo::TableFunction(_) => 1,
-                    DescribeCatalogSurfaceInfo::Missing(_) => 0,
+                    DescribeCatalogSurfaceInfo::Missing => 0,
                 })
             },
             |_, _| {},

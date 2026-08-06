@@ -1126,21 +1126,9 @@ impl CatalogService for MockCatalogService {
                 result: Some(describe_catalog_surface_response::Result::Table(table)),
             }));
         }
-        let same_schema_items = mock_visible_tables()
-            .into_iter()
-            .filter(|table| table.schema_name == request.schema_name)
-            .take(10)
-            .map(|table| CatalogItem {
-                item: Some(catalog_item::Item::Table(table_summary(&table))),
-            })
-            .collect();
         Ok(Response::new(DescribeCatalogSurfaceResponse {
             result: Some(describe_catalog_surface_response::Result::Missing(
-                MissingCatalogSurface {
-                    suggestions: Vec::new(),
-                    available_schemas: vec!["local_messages".to_string()],
-                    same_schema_items,
-                },
+                MissingCatalogSurface {},
             )),
         }))
     }

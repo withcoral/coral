@@ -748,7 +748,7 @@ impl CoralMcpServer {
                 &arguments.surface,
             )
             .await
-            .and_then(|response| describe_value(&arguments, &response));
+            .and_then(|response| describe_value(&response));
         Ok(ToolCallOutcome::from_value_result(
             "Catalog item description",
             result,
@@ -798,9 +798,7 @@ impl CoralMcpServer {
                     .await
             }
             ToolName::Search => self.search_tool_result(request.arguments.as_ref()).await,
-            ToolName::Describe => {
-                Box::pin(self.describe_tool_result(request.arguments.as_ref())).await
-            }
+            ToolName::Describe => self.describe_tool_result(request.arguments.as_ref()).await,
             ToolName::ListColumns => {
                 self.list_columns_tool_result(request.arguments.as_ref())
                     .await

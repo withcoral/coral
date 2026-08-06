@@ -58,8 +58,8 @@ pub enum DescribeCatalogSurfaceInfo {
     Table(TableInfo),
     /// One table function matched.
     TableFunction(TableFunctionInfo),
-    /// No exact match. Contains lightweight metadata for recovery hints.
-    Missing(CatalogInfo),
+    /// No exact match.
+    Missing,
 }
 
 /// Describes one argument accepted by a table function.

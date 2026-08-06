@@ -359,10 +359,9 @@ impl CoralQuery {
             .await
     }
 
-    /// Resolves one table or table function, or returns lightweight recovery metadata.
+    /// Resolves one table or table function, or returns a missing result.
     ///
-    /// This builds the runtime once, returns the exact match or matches, and
-    /// clones lightweight catalog metadata only when the surface is missing.
+    /// This builds the runtime once and returns only an exact match.
     ///
     /// # Errors
     ///

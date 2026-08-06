@@ -510,20 +510,8 @@ pub(crate) fn describe_catalog_surface_response_to_proto(
                 ))),
             }
         }
-        DescribeCatalogSurfaceResult::Missing(context) => DescribeCatalogSurfaceResponse {
-            result: Some(Result::Missing(MissingCatalogSurface {
-                suggestions: context
-                    .suggestions
-                    .into_iter()
-                    .map(|item| catalog_item_to_proto(workspace_name, item))
-                    .collect(),
-                available_schemas: context.available_schemas,
-                same_schema_items: context
-                    .same_schema_items
-                    .into_iter()
-                    .map(|item| catalog_item_to_proto(workspace_name, item))
-                    .collect(),
-            })),
+        DescribeCatalogSurfaceResult::Missing => DescribeCatalogSurfaceResponse {
+            result: Some(Result::Missing(MissingCatalogSurface {})),
         },
     }
 }
