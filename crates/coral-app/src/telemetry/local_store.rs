@@ -371,6 +371,7 @@ impl OwnedWorkspaceScope {
     }
 }
 
+#[derive(Clone, Copy)]
 enum FederatedTraceScope<'a> {
     Named(&'a str),
     Owned(&'a OwnedWorkspaceScope),
