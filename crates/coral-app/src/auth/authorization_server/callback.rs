@@ -140,8 +140,8 @@ fn random_code() -> Result<String, ()> {
 
 /// Rebuilds the client callback this login was started for.
 ///
-/// `redirect_uri` is only ever stored after `authorize`'s `registered_client`
-/// matched it against a registered URI and parsed that URI under
+/// `redirect_uri` is only ever stored after `authorize`'s `registered_redirect`
+/// matched it against a registered URI and parsed it under
 /// [`BrowserRedirect`](crate::outbound_url_policy::BrowserRedirect), so
 /// re-applying `BrowserRedirect` here would not add a check — it would only
 /// move where the same policy was applied. [`TrustedRedirect::parse`] carries

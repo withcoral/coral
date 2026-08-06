@@ -449,6 +449,20 @@ impl SelfContainedPolicy for BrowserRedirect {
 
 impl ParsedUrlPolicy for BrowserRedirect {}
 
+impl EndpointUrl<BrowserRedirect> {
+    /// Reports whether this target is a plain-HTTP loopback callback.
+    ///
+    /// This is the shape a native client registers for a listener on the user's
+    /// own machine, and the only one whose port an authorization server is
+    /// required to treat as unregistered (RFC 8252 §7.3). A caller that relaxes
+    /// a comparison for that reason asks here, so the loopback rule keeps its
+    /// single definition next to the policy that admits loopback HTTP at all,
+    /// rather than growing a second spelling that could drift from it.
+    pub(crate) fn is_loopback_http(&self) -> bool {
+        self.0.scheme() == "http" && is_explicit_loopback(&self.0)
+    }
+}
+
 struct RedactedUrl<'a>(&'a Url);
 
 impl fmt::Debug for RedactedUrl<'_> {

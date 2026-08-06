@@ -49,7 +49,7 @@ impl TrustedRedirect {
     /// Rebuilds a callback from a redirect URI a store handed back.
     ///
     /// The `None` arm is unreachable in practice: a stored `redirect_uri` was
-    /// string-matched against a registration and parsed under
+    /// matched against a registration and parsed under
     /// [`BrowserRedirect`](crate::outbound_url_policy::BrowserRedirect) before
     /// it was written, so it has already parsed once. It is checked rather than
     /// unwrapped because a store sits between the handler that wrote it and the

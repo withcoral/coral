@@ -224,16 +224,51 @@ async fn resolve_client(
 
 /// Resolves the redirect URI a request names, under [`BrowserRedirect`].
 ///
-/// The candidates come from the client's own metadata document, so they are
-/// remote input: the policy is applied here rather than trusted to have been
-/// applied at resolution. A URI the policy rejects resolves to `None`, and the
-/// request fails with a direct error instead of becoming a redirect.
+/// Both sides are remote input — the candidates come from the client's own
+/// metadata document, the requested URI from the query string — so the policy
+/// is applied here to each of them rather than trusted to have been applied
+/// where they arrived. A URI the policy rejects, and a requested URI no
+/// registration covers, both resolve to `None`, and the request fails with a
+/// direct error instead of becoming a redirect.
+///
+/// The resolved URI is the requested one, not the registration that matched it:
+/// under [`loopback_port_variant`] the two can differ in port, and it is the
+/// requested port that a native client is listening on.
 fn registered_redirect(redirect_uris: &[String], redirect_uri: &str) -> Option<Url> {
-    redirect_uris
-        .iter()
-        .find(|uri| uri.as_str() == redirect_uri)
-        .and_then(|uri| EndpointUrl::<BrowserRedirect>::parse(uri).ok())
-        .map(EndpointUrl::into_url)
+    let requested = EndpointUrl::<BrowserRedirect>::parse(redirect_uri).ok()?;
+    let matched = redirect_uris.iter().any(|uri| {
+        uri.as_str() == redirect_uri
+            || EndpointUrl::<BrowserRedirect>::parse(uri)
+                .is_ok_and(|registered| loopback_port_variant(&registered, &requested))
+    });
+    matched.then(|| requested.into_url())
+}
+
+/// Reports whether `requested` is `registered` listening on another port.
+///
+/// A native client asks the operating system for a free port as it starts the
+/// flow, so the port it will receive its callback on cannot be in the metadata
+/// document it published earlier. RFC 8252 §7.3 therefore requires an
+/// authorization server to "allow any port to be specified at the time of the
+/// request for loopback IP redirect URIs"; matching those byte for byte leaves
+/// every native client unable to authorize at all.
+///
+/// The relaxation is confined to a registered URI that is loopback over plain
+/// HTTP — the one shape that can only describe a listener on the user's own
+/// machine — and it moves the port alone, by re-serializing the registered URI
+/// on the requested port and requiring the result to equal the request. Scheme,
+/// host, path, and query still have to match, and a registered URI that is not
+/// loopback never reaches the comparison, so no other host becomes reachable on
+/// a port its client never registered.
+fn loopback_port_variant(
+    registered: &EndpointUrl<BrowserRedirect>,
+    requested: &EndpointUrl<BrowserRedirect>,
+) -> bool {
+    if !registered.is_loopback_http() {
+        return false;
+    }
+    let mut candidate = registered.as_url().clone();
+    candidate.set_port(requested.as_url().port()).is_ok() && candidate == *requested.as_url()
 }
 
 fn valid_s256_challenge(value: &str) -> bool {
@@ -1020,6 +1055,177 @@ mod tests {
             assert_security(&response);
             assert!(location(&response).is_none(), "redirected to {uri}");
         }
+    }
+
+    /// RFC 8252 §7.3: a native client takes an ephemeral port from the
+    /// operating system as it starts the flow, so the port cannot be in the
+    /// metadata document it published earlier. The requested port is also the
+    /// one the client is listening on, so it is the resolved callback.
+    #[test]
+    fn loopback_callbacks_match_whatever_port_the_request_names() {
+        for (registered, requested) in [
+            (
+                "http://127.0.0.1/callback",
+                "http://127.0.0.1:3118/callback",
+            ),
+            (
+                "http://localhost/callback",
+                "http://localhost:51234/callback",
+            ),
+            // Ephemeral ports vary between runs, so a registration that named
+            // one still has to accept the next.
+            (
+                "http://127.0.0.1:3118/callback",
+                "http://127.0.0.1:51234/callback",
+            ),
+            ("http://[::1]/callback", "http://[::1]:3118/callback"),
+            // A loopback address outside 127.0.0.1, and a registration whose
+            // query the request repeats unchanged.
+            (
+                "http://127.42.0.1/callback?tenant=one",
+                "http://127.42.0.1:3118/callback?tenant=one",
+            ),
+            // The client may equally drop a registered port.
+            (
+                "http://localhost:3118/callback",
+                "http://localhost/callback",
+            ),
+        ] {
+            let resolved = registered_redirect(&[registered.to_string()], requested);
+            assert_eq!(
+                resolved.as_ref().map(Url::as_str),
+                Some(requested),
+                "registered {registered}"
+            );
+        }
+    }
+
+    /// The port is the only thing §7.3 relaxes, and only for the callback shape
+    /// that can name nothing but the user's own machine. Everything here would
+    /// otherwise be an open redirect or a callback handed to the wrong listener.
+    #[test]
+    fn nothing_but_a_loopback_port_is_relaxed() {
+        for (registered, requested) in [
+            // A public host never gains a port it did not register.
+            (
+                "https://app.example.com/cb",
+                "https://app.example.com:8443/cb",
+            ),
+            // Loopback over HTTPS is not the native-client shape §7.3 describes.
+            (
+                "https://127.0.0.1/callback",
+                "https://127.0.0.1:3118/callback",
+            ),
+            // Neither direction crosses schemes.
+            (
+                "http://127.0.0.1/callback",
+                "https://127.0.0.1:3118/callback",
+            ),
+            (
+                "https://127.0.0.1/callback",
+                "http://127.0.0.1:3118/callback",
+            ),
+            // A host that merely reads as loopback is a public host.
+            (
+                "https://127.0.0.1.evil.com/callback",
+                "https://127.0.0.1.evil.com:3118/callback",
+            ),
+            (
+                "https://localhost.evil.com/callback",
+                "https://localhost.evil.com:3118/callback",
+            ),
+            // Plain HTTP on those hosts does not even register.
+            (
+                "http://127.0.0.1.evil.com/callback",
+                "http://127.0.0.1.evil.com:3118/callback",
+            ),
+            // A registered public host is not a loopback listener.
+            ("https://app.example.com/cb", "http://127.0.0.1:3118/cb"),
+            // Loopback spellings are distinct hosts, not aliases.
+            (
+                "http://127.0.0.1/callback",
+                "http://localhost:3118/callback",
+            ),
+            (
+                "http://127.0.0.1/callback",
+                "http://127.0.0.2:3118/callback",
+            ),
+            // Path and query still match exactly.
+            ("http://127.0.0.1/callback", "http://127.0.0.1:3118/other"),
+            (
+                "http://127.0.0.1/callback?tenant=one",
+                "http://127.0.0.1:3118/callback?tenant=two",
+            ),
+            // The request is held to the redirect policy in its own right.
+            (
+                "http://127.0.0.1/callback",
+                "http://user:password@127.0.0.1:3118/callback",
+            ),
+            (
+                "http://127.0.0.1/callback",
+                "http://127.0.0.1:3118/callback#fragment",
+            ),
+        ] {
+            assert_eq!(
+                registered_redirect(&[registered.to_string()], requested),
+                None,
+                "registered {registered} accepted {requested}"
+            );
+        }
+    }
+
+    /// A browser client registers the callback it will actually be sent to, and
+    /// keeps matching byte for byte.
+    #[test]
+    fn https_registrations_still_match_exactly() {
+        let registered = [REDIRECT_URI.to_string()];
+        assert_eq!(
+            registered_redirect(&registered, REDIRECT_URI)
+                .as_ref()
+                .map(Url::as_str),
+            Some(REDIRECT_URI)
+        );
+        for requested in [
+            "https://client.example.test/callback",
+            "https://client.example.test/callback?tenant=two",
+            "https://client.example.test:8443/callback?tenant=one",
+        ] {
+            assert_eq!(
+                registered_redirect(&registered, requested),
+                None,
+                "{requested}"
+            );
+        }
+    }
+
+    /// The port a native client names is the one it is listening on, so it has
+    /// to reach the consent page and the `Location` the browser follows rather
+    /// than the portless URI the metadata document registered.
+    #[tokio::test]
+    async fn loopback_client_returns_to_the_port_it_requested() {
+        let requested = "http://127.0.0.1:3118/callback";
+        let (resolver, _calls) = fake_resolver(Ok(registration(&["http://127.0.0.1/callback"])));
+        let auth_state = state_with_resolver(
+            "https://provider.invalid",
+            Arc::new(InMemoryStateStore::new()),
+            resolver,
+        );
+        let mut request_pairs = pairs();
+        replace(&mut request_pairs, "redirect_uri", Some(requested));
+        let response = request(auth_state.clone(), &request_pairs).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let page = response_body(response).await;
+        assert!(page.contains("<code>127.0.0.1:3118</code>"));
+        let ticket = ticket_from_page(&page);
+
+        let response = submit(auth_state, &ticket, "cancel").await;
+        assert_eq!(response.status(), StatusCode::FOUND);
+        assert_security(&response);
+        let location = location(&response).expect("cancel redirect");
+        assert!(
+            location.starts_with(&format!("{requested}?error=access_denied")),
+            "redirected to {location}"
+        );
     }
 
     #[tokio::test]
