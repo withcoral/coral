@@ -2719,7 +2719,7 @@ mod tests {
     }
 
     #[test]
-    fn owned_scope_scans_older_files_before_returning_trace() {
+    fn owned_workspace_scope_scans_older_files_before_returning_trace() {
         let temp = TempDir::new().expect("temp dir");
         let dir = temp.path().join("telemetry").join("traces");
         fs::create_dir_all(&dir).expect("trace dir");
