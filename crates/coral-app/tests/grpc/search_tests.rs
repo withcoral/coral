@@ -52,7 +52,7 @@ impl SourceDecorator for PausingCatalogDecorator {
         "pausing_catalog_resolution"
     }
 
-    fn supports_catalog_sources(&self) -> bool {
+    fn supports_provider_discovered_catalogs(&self) -> bool {
         true
     }
 

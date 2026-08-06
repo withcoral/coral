@@ -779,7 +779,11 @@ mod tests {
         };
 
         let value = list_catalog_value(&response);
-        let item = &value["items"][0];
+        let item = value
+            .get("items")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|items| items.first())
+            .expect("first catalog item");
         assert_eq!(item["catalog_name"], "github_v4");
         assert_eq!(item["name"], "github_v4.issues.list_for_repo");
         assert_eq!(item["sql_reference"], "github_v4.issues.list_for_repo");

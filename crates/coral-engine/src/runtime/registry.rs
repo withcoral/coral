@@ -8,11 +8,10 @@ use datafusion::prelude::SessionContext;
 use tracing::{Instrument as _, info_span};
 
 use crate::backends::{
-    BackendCatalogRegistration, BackendRegistration, BackendRegistrationContext,
-    BackendSchemaRegistration, CatalogColumnFetcher, CompiledBackendSource, RegisteredSource,
+    BackendRegistrationContext, CatalogColumnFetcher, CatalogPreparation, CatalogPublication,
+    CatalogRegistration, CompiledBackendSource, RegisteredSource,
 };
 use crate::runtime::error::{datafusion_to_core, source_decorator_error_to_core};
-use crate::runtime::schema_provider::StaticSchemaProvider;
 use crate::{CoreError, QuerySource, SourceDecorator, SourceFailurePolicy};
 
 /// Source SQL names the runtime owns. Mirrored by `RESERVED_SOURCE_SCHEMA_NAMES`
@@ -137,38 +136,40 @@ async fn register_sources_inner(
                 match register_source(
                     ctx,
                     &registration_context,
-                    &mut seen_schemas,
-                    &mut seen_catalogs,
                     compiled_source.as_ref(),
+                    query_source,
+                    source_decorators,
                 )
                 .await
                 {
-                    Ok(registration) => {
-                        register_backend_registration(
+                    Ok(registrations) => {
+                        claim_catalog_registrations(
+                            &registrations,
+                            &mut seen_schemas,
+                            &mut seen_catalogs,
+                        )?;
+                        publish_catalog_registrations(
                             ctx,
                             catalog.as_ref(),
-                            source_decorators,
-                            query_source,
                             &source_name,
-                            registration,
+                            registrations,
                             &mut result,
                         )?;
                     }
                     Err(error) => {
-                        let core_error = datafusion_to_core(&error, &[]);
                         if handle_source_registration_failure(
                             source_decorators,
                             query_source,
-                            &core_error,
+                            &error,
                         )? {
-                            return Err(core_error);
+                            return Err(error);
                         }
                         let qualified_name = compiled_source.qualified_name();
                         push_source_failure(
                             &mut result,
                             &source_name,
                             qualified_name.name(),
-                            core_error.to_string(),
+                            error.to_string(),
                         );
                     }
                 }
@@ -241,157 +242,120 @@ pub(crate) fn register_sources_blocking(
 async fn register_source(
     ctx: &SessionContext,
     registration_context: &BackendRegistrationContext,
-    seen_schemas: &mut std::collections::HashSet<String>,
-    seen_catalogs: &mut std::collections::HashSet<String>,
     source: &dyn CompiledBackendSource,
-) -> DataFusionResult<BackendRegistration> {
-    source.validate_runtime_capabilities()?;
-
-    let registration = source.register(ctx, registration_context).await?;
-    claim_registration_schemas(&registration, seen_schemas)?;
-    claim_registration_catalogs(&registration, seen_catalogs)?;
-
-    Ok(registration)
+    query_source: &QuerySource,
+    source_decorators: &mut [Box<dyn SourceDecorator>],
+) -> std::result::Result<Vec<CatalogRegistration>, CoreError> {
+    source
+        .validate_runtime_capabilities()
+        .map_err(|error| datafusion_to_core(&error, &[]))?;
+    let registration = source
+        .register(ctx, registration_context)
+        .await
+        .map_err(|error| datafusion_to_core(&error, &[]))?;
+    let mut preparation = CatalogPreparation::new(query_source, source_decorators);
+    preparation.stage_backend_registration(registration)?;
+    preparation.finish()
 }
 
-fn claim_registration_schemas(
-    registration: &BackendRegistration,
+fn claim_catalog_registrations(
+    registrations: &[CatalogRegistration],
     seen_schemas: &mut std::collections::HashSet<String>,
-) -> DataFusionResult<()> {
+    seen_catalogs: &mut std::collections::HashSet<String>,
+) -> std::result::Result<(), CoreError> {
     let mut registration_schemas = std::collections::HashSet::new();
-    for schema in &registration.schemas {
-        let schema_name = schema.source.qualified_name.name();
-        check_reserved_schema(schema_name)?;
-
-        if !registration_schemas.insert(schema_name.to_string())
-            || seen_schemas.contains(schema_name)
-        {
-            return Err(DataFusionError::Execution(format!(
-                "duplicate source schema '{schema_name}'"
-            )));
+    let mut registration_catalogs = std::collections::HashSet::new();
+    for registration in registrations {
+        match registration.target.publication {
+            CatalogPublication::ExtendExisting => {
+                for schema_name in registration.provider.schema_names() {
+                    check_reserved_schema(&schema_name)
+                        .map_err(|error| datafusion_to_core(&error, &[]))?;
+                    if !registration_schemas.insert(schema_name.clone())
+                        || seen_schemas.contains(&schema_name)
+                    {
+                        return Err(CoreError::InvalidInput(format!(
+                            "duplicate source schema '{schema_name}'"
+                        )));
+                    }
+                }
+            }
+            CatalogPublication::InstallNew => {
+                let catalog_name = &registration.target.catalog_name;
+                check_reserved_schema(catalog_name)
+                    .map_err(|error| datafusion_to_core(&error, &[]))?;
+                if !registration_catalogs.insert(catalog_name.clone())
+                    || seen_catalogs.contains(catalog_name)
+                {
+                    return Err(CoreError::InvalidInput(format!(
+                        "duplicate source catalog '{catalog_name}'"
+                    )));
+                }
+            }
         }
     }
     seen_schemas.extend(registration_schemas);
-    Ok(())
-}
-
-fn claim_registration_catalogs(
-    registration: &BackendRegistration,
-    seen_catalogs: &mut std::collections::HashSet<String>,
-) -> DataFusionResult<()> {
-    let mut registration_catalogs = std::collections::HashSet::new();
-    for catalog in &registration.catalogs {
-        let catalog_name = catalog.source.qualified_name.name();
-        check_reserved_schema(catalog_name)?;
-
-        if !registration_catalogs.insert(catalog_name.to_string())
-            || seen_catalogs.contains(catalog_name)
-        {
-            return Err(DataFusionError::Execution(format!(
-                "duplicate source catalog '{catalog_name}'"
-            )));
-        }
-    }
     seen_catalogs.extend(registration_catalogs);
     Ok(())
 }
 
-fn register_backend_registration(
+fn publish_catalog_registrations(
     ctx: &SessionContext,
-    catalog: &dyn datafusion::catalog::CatalogProvider,
-    source_decorators: &mut [Box<dyn SourceDecorator>],
-    query_source: &QuerySource,
+    default_catalog: &dyn datafusion::catalog::CatalogProvider,
     source_name: &str,
-    registration: BackendRegistration,
+    registrations: Vec<CatalogRegistration>,
     result: &mut SourceRegistrationResult,
 ) -> std::result::Result<(), CoreError> {
-    // Source decorators wrap table providers at registration time, but catalog
-    // registrations expose providers lazily through the catalog itself.
-    // Decorators must explicitly allow that their table-decoration hook is
-    // skipped so policy decorators fail closed while lifecycle observers can
-    // still participate.
-    if let Some(decorator) = source_decorators.iter().find(|decorator| {
-        !registration.catalogs.is_empty() && !decorator.supports_catalog_sources()
-    }) {
-        let core_error = CoreError::FailedPrecondition(format!(
-            "source '{source_name}' registers database catalogs, which source decorator '{}' does not support",
-            decorator.name()
-        ));
-        if handle_source_registration_failure(source_decorators, query_source, &core_error)? {
-            return Err(core_error);
+    let mut registered_schema_names = Vec::new();
+    for registration in &registrations {
+        if registration.target.publication != CatalogPublication::ExtendExisting {
+            continue;
         }
-        push_source_failure(result, source_name, source_name, core_error.to_string());
-        return Ok(());
-    }
-
-    let mut staged = Vec::with_capacity(registration.schemas.len());
-    let mut catalog_staged = Vec::with_capacity(registration.catalogs.len());
-    for catalog_registration in registration.catalogs {
-        let BackendCatalogRegistration {
-            catalog,
-            source,
-            column_fetcher,
-        } = catalog_registration;
-        let catalog_name = source.qualified_name.name().to_string();
-        catalog_staged.push((catalog_name, catalog, source, column_fetcher));
-    }
-
-    for schema_registration in registration.schemas {
-        let BackendSchemaRegistration {
-            tables,
-            source: registered_source,
-        } = schema_registration;
-        let schema_name = registered_source.qualified_name.name().to_string();
-        let decorated_tables = decorate_source_tables(source_decorators, query_source, tables)?;
-        staged.push((schema_name, decorated_tables, registered_source));
-    }
-
-    let mut registered_schema_names = Vec::with_capacity(staged.len());
-    for (schema_name, decorated_tables, _registered_source) in &mut staged {
-        match catalog.register_schema(
-            schema_name,
-            Arc::new(StaticSchemaProvider::new(std::mem::take(decorated_tables))),
-        ) {
-            Ok(_) => {
-                registered_schema_names.push(schema_name.clone());
+        for schema_name in registration.provider.schema_names() {
+            let schema = registration.provider.schema(&schema_name).ok_or_else(|| {
+                CoreError::FailedPrecondition(format!(
+                    "prepared catalog '{}' omitted schema '{schema_name}'",
+                    registration.target.catalog_name
+                ))
+            })?;
+            if let Err(error) = default_catalog.register_schema(&schema_name, schema) {
+                rollback_registered_schemas(default_catalog, &registered_schema_names);
+                return Err(datafusion_to_core(&error, &[]));
             }
-            Err(error) => {
-                rollback_registered_schemas(catalog, &registered_schema_names);
-                let core_error = datafusion_to_core(&error, &[]);
-                if handle_source_registration_failure(source_decorators, query_source, &core_error)?
-                {
-                    return Err(core_error);
-                }
-                push_source_failure(result, source_name, schema_name, core_error.to_string());
-                return Ok(());
-            }
+            registered_schema_names.push(schema_name);
         }
     }
 
-    for (catalog_name, registered_catalog, _registered_source, _column_fetcher) in &catalog_staged {
-        ctx.register_catalog(catalog_name, Arc::clone(registered_catalog));
+    for registration in &registrations {
+        if registration.target.publication == CatalogPublication::InstallNew {
+            ctx.register_catalog(
+                &registration.target.catalog_name,
+                Arc::clone(&registration.provider),
+            );
+        }
     }
 
-    for (_schema_name, _decorated_tables, registered_source) in staged {
-        result.active_sources.push(registered_source);
+    for registration in registrations {
+        if let Some(column_fetcher) = registration.column_fetcher {
+            result.column_fetchers.push(CatalogColumnFetcher {
+                catalog_name: registration.target.catalog_name,
+                relation_names: registration
+                    .source
+                    .tables
+                    .iter()
+                    .filter_map(|table| {
+                        table
+                            .schema_name
+                            .as_ref()
+                            .map(|schema_name| (schema_name.clone(), table.table_name.clone()))
+                    })
+                    .collect(),
+                fetcher: column_fetcher,
+            });
+        }
+        result.active_sources.push(registration.source);
     }
-    for (catalog_name, _registered_catalog, registered_source, column_fetcher) in catalog_staged {
-        result.column_fetchers.push(CatalogColumnFetcher {
-            catalog_name,
-            relation_names: registered_source
-                .tables
-                .iter()
-                .filter_map(|table| {
-                    table
-                        .schema_name
-                        .as_ref()
-                        .map(|schema_name| (schema_name.clone(), table.table_name.clone()))
-                })
-                .collect(),
-            fetcher: column_fetcher,
-        });
-        result.active_sources.push(registered_source);
-    }
+    tracing::debug!(source = source_name, "published prepared source catalogs");
     Ok(())
 }
 
@@ -439,19 +403,6 @@ fn prepare_source_decorators(
             .map_err(|error| source_decorator_error(decorator.name(), &error))?;
     }
     Ok(())
-}
-
-fn decorate_source_tables(
-    source_decorators: &mut [Box<dyn SourceDecorator>],
-    source: &QuerySource,
-    mut tables: crate::SourceTables,
-) -> std::result::Result<crate::SourceTables, CoreError> {
-    for decorator in source_decorators {
-        tables = decorator
-            .decorate_source(source, tables)
-            .map_err(|error| source_decorator_error(decorator.name(), &error))?;
-    }
-    Ok(tables)
 }
 
 fn handle_source_registration_failure(

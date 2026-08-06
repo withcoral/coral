@@ -95,7 +95,10 @@ pub(crate) mod database;
 pub(crate) mod file;
 pub(crate) mod http;
 pub(crate) mod mcp;
+mod preparation;
 pub(crate) mod shared;
+
+pub(crate) use preparation::{CatalogPreparation, CatalogPublication, CatalogRegistration};
 
 pub(crate) fn compile_query_source(
     source: &QuerySource,

@@ -14,10 +14,56 @@ use serde_json::Value;
 use crate::CoreError;
 use crate::contracts::{QueryExecutionProvenance, QuerySource};
 use coral_spec::v4::IdentityRequirements;
-use coral_spec::{ManifestInputKind, ManifestInputSpec};
+use coral_spec::{ManifestInputKind, ManifestInputSpec, SqlObjectName};
 
-/// One source's table providers keyed by manifest table name.
-pub type SourceTables = HashMap<String, Arc<dyn TableProvider>>;
+/// One source's table providers keyed by complete canonical SQL identity.
+pub struct SourceTables {
+    tables: BTreeMap<SqlObjectName, Arc<dyn TableProvider>>,
+}
+
+impl SourceTables {
+    pub(crate) fn new(tables: BTreeMap<SqlObjectName, Arc<dyn TableProvider>>) -> Self {
+        Self { tables }
+    }
+
+    /// Iterates over providers in canonical SQL-name order.
+    pub fn iter(&self) -> impl Iterator<Item = (&SqlObjectName, &Arc<dyn TableProvider>)> {
+        self.tables.iter()
+    }
+
+    /// Returns the provider for one complete canonical SQL identity.
+    #[must_use]
+    pub fn get(&self, sql_name: &SqlObjectName) -> Option<&Arc<dyn TableProvider>> {
+        self.tables.get(sql_name)
+    }
+
+    /// Replaces providers while preserving the exact canonical identity set.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first error produced by `map`.
+    pub fn try_map_providers<F>(self, mut map: F) -> Result<Self, SourceDecoratorError>
+    where
+        F: FnMut(
+            &SqlObjectName,
+            Arc<dyn TableProvider>,
+        ) -> Result<Arc<dyn TableProvider>, SourceDecoratorError>,
+    {
+        let tables = self
+            .tables
+            .into_iter()
+            .map(|(sql_name, provider)| {
+                let provider = map(&sql_name, provider)?;
+                Ok((sql_name, provider))
+            })
+            .collect::<Result<_, SourceDecoratorError>>()?;
+        Ok(Self { tables })
+    }
+
+    pub(crate) fn into_inner(self) -> BTreeMap<SqlObjectName, Arc<dyn TableProvider>> {
+        self.tables
+    }
+}
 
 /// Neutral bundle of optional engine extensions for one runtime build.
 #[derive(Default)]
@@ -541,14 +587,14 @@ pub trait SourceDecorator: Send + Sync {
     /// Stable decorator name used in diagnostics.
     fn name(&self) -> &'static str;
 
-    /// Whether this decorator supports sources registered as `SQL` catalogs.
+    /// Whether this decorator supports provider-discovered `SQL` catalogs.
     ///
-    /// Catalog-backed sources expose table providers lazily, so
+    /// Provider-discovered catalogs expose table providers lazily, so
     /// [`SourceDecorator::decorate_source`] is not called for them. Decorators
     /// should return `true` only when their guarantees remain intact without
     /// decorating those table providers, such as when they only observe
     /// registration lifecycle events.
-    fn supports_catalog_sources(&self) -> bool {
+    fn supports_provider_discovered_catalogs(&self) -> bool {
         false
     }
 
@@ -602,12 +648,42 @@ pub trait SourceDecorator: Send + Sync {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::sync::Arc;
 
+    use arrow::datatypes::Schema;
+    use coral_spec::SqlObjectName;
     use coral_spec::parse_source_manifest_value;
     use coral_spec::v4::{AcceptedIdentityRequirement, IdentityRequirements};
+    use datafusion::catalog::empty::EmptyTable;
+    use datafusion::datasource::TableProvider;
     use serde_json::{Value, json};
 
-    use crate::{QuerySource, RequestIdentitySelectionContext, SourceInputResolutionContext};
+    use crate::{
+        QuerySource, RequestIdentitySelectionContext, SourceInputResolutionContext, SourceTables,
+    };
+
+    #[test]
+    fn source_tables_provider_mapping_preserves_canonical_identities() {
+        let first = SqlObjectName::try_new("datafusion", "github", "issues").expect("SQL name");
+        let second = SqlObjectName::try_new("datafusion", "github", "pulls").expect("SQL name");
+        let provider =
+            || -> Arc<dyn TableProvider> { Arc::new(EmptyTable::new(Arc::new(Schema::empty()))) };
+        let tables = SourceTables::new(BTreeMap::from([
+            (first.clone(), provider()),
+            (second.clone(), provider()),
+        ]));
+
+        let mapped = tables
+            .try_map_providers(|_sql_name, provider| Ok(provider))
+            .expect("map providers");
+
+        assert!(mapped.get(&first).is_some());
+        assert!(mapped.get(&second).is_some());
+        assert_eq!(
+            mapped.iter().map(|(name, _)| name).collect::<Vec<_>>(),
+            vec![&first, &second]
+        );
+    }
 
     fn identity_context(
         identity_specs: &[&str],

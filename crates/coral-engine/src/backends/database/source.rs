@@ -663,7 +663,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn database_catalog_registration_rejects_source_decorators() {
+    async fn provider_discovered_catalog_rejects_unsupported_source_decorators() {
         let temp = tempfile::tempdir().expect("temp dir");
         let db_path = temp.path().join("coral.sqlite");
         drop(rusqlite::Connection::open(&db_path).expect("sqlite db"));
@@ -682,10 +682,10 @@ mod tests {
             Some("users"),
         )
         .await
-        .expect_err("catalog registrations must reject source decorators");
+        .expect_err("provider-discovered catalogs must reject unsupported decorators");
         assert!(
             error.to_string().contains(
-                "registers database catalogs, which source decorator \
+                "registers provider-discovered catalogs, which source decorator \
                      'abort-on-source-failure' does not support"
             ),
             "unexpected error: {error}"

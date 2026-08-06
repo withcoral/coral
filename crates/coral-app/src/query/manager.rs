@@ -149,7 +149,7 @@ impl SourceDecorator for CatalogFailureRecorder {
         "catalog_failure_recorder"
     }
 
-    fn supports_catalog_sources(&self) -> bool {
+    fn supports_provider_discovered_catalogs(&self) -> bool {
         true
     }
 
@@ -1506,9 +1506,10 @@ mod tests {
         let guides = required_query_guides(&catalog, &resources);
 
         assert_eq!(guides.len(), 1);
-        assert_eq!(guides[0].guide, "Use GitHub guidance.");
+        let guide = guides.first().expect("required guide");
+        assert_eq!(guide.guide, "Use GitHub guidance.");
         assert_eq!(
-            guides[0].guide_id,
+            guide.guide_id,
             required_guide_id(Some("github_v4"), "issues", "list", "Use GitHub guidance.")
         );
     }
@@ -2448,7 +2449,7 @@ surface:
         let issues = projections
             .projections
             .iter_mut()
-            .find(|projection| projection.sql_name.name() == "issues")
+            .find(|projection| projection.operation_id == "issues_list")
             .expect("issues projection");
         issues.guide = "Use issue_search for lookups.".to_string();
         issues.require_guide_read = true;
@@ -2465,7 +2466,7 @@ surface:
         )
         .expect("write projection override");
 
-        let sql = "SELECT id, title FROM github_v4_query.issues";
+        let sql = "SELECT id, title FROM github_v4_query.list";
         let required = fixture
             .manager
             .execute_sql(
@@ -2480,7 +2481,7 @@ surface:
             panic!("overridden projection guide should be required");
         };
         let required = required.first().expect("required projection guide");
-        assert_eq!(required.resource_name, "issues");
+        assert_eq!(required.resource_name, "list");
         assert_eq!(required.guide, "Use issue_search for lookups.");
         assert!(
             server
@@ -2647,7 +2648,7 @@ surface:
             .manager
             .execute_sql(
                 &workspace_name,
-                "SELECT id FROM github_v4_pagination_override.widgets LIMIT 3",
+                "SELECT id FROM github_v4_pagination_override.list LIMIT 3",
                 None,
                 &QueryAttribution::default(),
             )

@@ -74,11 +74,11 @@ impl SqlObjectName {
 
 impl fmt::Display for SqlObjectName {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "{}.{}.{}",
-            self.catalog_name, self.schema_name, self.name
-        )
+        fmt_coordinate(formatter, &self.catalog_name)?;
+        formatter.write_str(".")?;
+        fmt_coordinate(formatter, &self.schema_name)?;
+        formatter.write_str(".")?;
+        fmt_coordinate(formatter, &self.name)
     }
 }
 
@@ -112,29 +112,34 @@ fn validate_coordinate(
     coordinate: SqlObjectNameCoordinate,
     value: &str,
 ) -> Result<(), SqlObjectNameError> {
-    let mut chars = value.chars();
-    let Some(first) = chars.next() else {
+    if value.trim().is_empty() {
         return Err(SqlObjectNameError {
             coordinate,
             value: value.to_string(),
             reason: "must not be empty",
         });
-    };
-    if first != '_' && !first.is_ascii_alphabetic() {
-        return Err(SqlObjectNameError {
-            coordinate,
-            value: value.to_string(),
-            reason: "must start with an ASCII letter or underscore",
-        });
     }
-    if chars.any(|character| character != '_' && !character.is_ascii_alphanumeric()) {
+    if value.chars().any(char::is_control) {
         return Err(SqlObjectNameError {
             coordinate,
             value: value.to_string(),
-            reason: "may contain only ASCII letters, numbers, and underscores",
+            reason: "must not contain control characters",
         });
     }
     Ok(())
+}
+
+fn fmt_coordinate(formatter: &mut fmt::Formatter<'_>, value: &str) -> fmt::Result {
+    let mut chars = value.chars();
+    let can_render_bare = chars
+        .next()
+        .is_some_and(|first| first == '_' || first.is_ascii_alphabetic())
+        && chars.all(|character| character == '_' || character.is_ascii_alphanumeric());
+    if can_render_bare {
+        formatter.write_str(value)
+    } else {
+        write!(formatter, "\"{}\"", value.replace('"', "\"\""))
+    }
 }
 
 #[cfg(test)]
@@ -157,11 +162,11 @@ mod tests {
     }
 
     #[test]
-    fn complete_sql_name_rejects_empty_or_non_identifier_coordinates() {
+    fn complete_sql_name_rejects_empty_or_control_character_coordinates() {
         for (catalog, schema, name, coordinate) in [
             ("", "issues", "list", "catalog_name"),
-            ("github_v4", "9issues", "list", "schema_name"),
-            ("github_v4", "issues", "list-for-repo", "name"),
+            ("github_v4", "\n", "list", "schema_name"),
+            ("github_v4", "issues", "list\0for_repo", "name"),
         ] {
             let error = SqlObjectName::try_new(catalog, schema, name).expect_err("invalid name");
             assert!(error.to_string().contains(coordinate), "{error}");
@@ -171,13 +176,21 @@ mod tests {
     #[test]
     fn deserialization_cannot_bypass_coordinate_validation() {
         let error = serde_yaml::from_str::<SqlObjectName>(
-            "catalog_name: github_v4\nschema_name: issues\nname: list-for-repo\n",
+            "catalog_name: github_v4\nschema_name: issues\nname: \"\\0\"\n",
         )
         .expect_err("invalid serialized SQL name");
 
         assert!(
-            error.to_string().contains("name may contain only"),
+            error.to_string().contains("name must not contain control"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn complete_sql_name_quotes_non_bare_coordinates_for_display() {
+        let name = SqlObjectName::try_new("source-name", "public", "player.stats")
+            .expect("quoted SQL name");
+
+        assert_eq!(name.to_string(), "\"source-name\".public.\"player.stats\"");
     }
 }

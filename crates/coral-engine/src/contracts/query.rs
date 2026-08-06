@@ -1248,7 +1248,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_source_package_rejects_identity_requirements_on_non_v4_http_component() {
+    fn runtime_source_package_rejects_identity_requirements_on_non_v4_http_catalog() {
         let error = QuerySource::from_runtime_components(
             RuntimeSourcePackage {
                 source_name: "github".to_string(),
@@ -1265,11 +1265,11 @@ mod tests {
             BTreeMap::new(),
             BTreeMap::new(),
         )
-        .expect_err("v3 HTTP component should not accept identity requirements");
+        .expect_err("v3 HTTP catalog should not accept identity requirements");
 
         assert!(
             error.to_string().contains(
-                "declares identity_requirements, but component 'github' uses DSL v3 HTTP instead of DSL v4 HTTP"
+                "declares identity_requirements, but catalog 'datafusion' uses DSL v3 HTTP instead of DSL v4 HTTP"
             ),
             "unexpected error: {error}"
         );
