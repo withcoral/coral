@@ -19,6 +19,8 @@
 
 #![cfg_attr(not(test), expect(dead_code, reason = "wired by OAuth descendants"))]
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use base64::Engine as _;
@@ -28,6 +30,8 @@ use ring::rand::{SecureRandom as _, SystemRandom};
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 use thiserror::Error;
+use tokio::sync::{RwLock, broadcast};
+use tokio::time::Instant;
 use url::Url;
 use zeroize::Zeroizing;
 
@@ -67,6 +71,7 @@ const RESERVED_TOKEN_PARAMS: &[&str] = &[
 pub(super) struct OidcProviderClient {
     http: reqwest::Client,
     random: SystemRandom,
+    discovery: Arc<DiscoveryCache>,
 }
 
 /// An authorization URL and the per-login values that must outlive it.
@@ -159,6 +164,7 @@ impl OidcProviderClient {
         Ok(Self {
             http,
             random: SystemRandom::new(),
+            discovery: Arc::new(DiscoveryCache::default()),
         })
     }
 
@@ -279,8 +285,51 @@ impl OidcProviderClient {
         identity.map_err(|_error| OidcProviderClientError::IdTokenValidation)
     }
 
-    /// Fetches and validates the provider's discovery document.
+    /// Returns the provider's validated discovery document, reusing a cached
+    /// copy while one is live.
+    ///
+    /// Only successes are cached, so a provider outage never outlives itself:
+    /// a failed discovery leaves the previous entry expired and the next call
+    /// retries. A caller that misses while another caller's fetch is already
+    /// running joins that fetch rather than starting its own, so a burst of
+    /// authorization requests makes one outbound call and every caller in the
+    /// burst finishes on its result — including when that result is a failure,
+    /// which is what keeps an outage from charging each caller in turn for its
+    /// own [`REQUEST_TIMEOUT`].
     async fn discover(
+        &self,
+        provider: &ResolvedOidcProvider,
+    ) -> Result<ValidatedDiscovery, OidcProviderClientError> {
+        let ttl = provider.discovery_cache_ttl();
+        loop {
+            if let Some(cached) = self.discovery.get(&provider.issuer).await {
+                return Ok(cached);
+            }
+            match self.discovery.join(&provider.issuer) {
+                Flight::Lead(mut flight) => {
+                    let outcome = self.fetch_discovery(provider).await;
+                    if let Ok(discovery) = &outcome {
+                        self.discovery
+                            .insert(&provider.issuer, discovery, ttl)
+                            .await;
+                    }
+                    flight.publish(&outcome);
+                    return outcome;
+                }
+                Flight::Follow(mut flight) => {
+                    if let Ok(outcome) = flight.recv().await {
+                        return outcome;
+                    }
+                    // The leader went away without publishing, which is what a
+                    // cancelled request looks like, so no outcome is coming.
+                    // Looping finds that flight retired and leads the retry.
+                }
+            }
+        }
+    }
+
+    /// Fetches and validates the provider's discovery document.
+    async fn fetch_discovery(
         &self,
         provider: &ResolvedOidcProvider,
     ) -> Result<ValidatedDiscovery, OidcProviderClientError> {
@@ -341,12 +390,156 @@ impl OidcProviderClient {
     }
 }
 
-/// A discovery document that passed every check in [`OidcProviderClient::discover`].
+/// A discovery document that passed every check in
+/// [`OidcProviderClient::fetch_discovery`].
+///
+/// Only a validated document is cached, so a copy handed back by
+/// [`OidcProviderClient::discover`] carries the same guarantees as a freshly
+/// fetched one.
+#[derive(Clone)]
 struct ValidatedDiscovery {
     authorization_endpoint: EndpointUrl<Discovered>,
     token_endpoint: EndpointUrl<Discovered>,
     jwks_uri: EndpointUrl<Discovered>,
     signing_algorithms: Vec<String>,
+}
+
+/// The result of one discovery fetch, as handed to every caller that joined it.
+type DiscoveryOutcome = Result<ValidatedDiscovery, OidcProviderClientError>;
+
+/// Live discovery documents, keyed by the configured issuer they were fetched
+/// for.
+///
+/// The key space is the set of configured providers, so `entries` is bounded by
+/// configuration rather than by request traffic. `inflight` holds the fetches
+/// running right now, one per issuer, and is what gives the cache single-flight
+/// semantics: the first caller to miss performs the outbound request and every
+/// caller that misses while it runs waits on that one result. No lock is held
+/// across the fetch, so callers waiting on one issuer never delay another, and
+/// a fetch that resolves to a failure ends the whole burst at once instead of
+/// releasing it one retry at a time.
+///
+/// `inflight` is a synchronous mutex because [`FlightLead`] releases its entry
+/// from `Drop`, which cannot await. Every critical section is a map operation
+/// and at most a channel send, so no guard ever spans an `await`.
+#[derive(Default)]
+struct DiscoveryCache {
+    entries: RwLock<HashMap<String, CachedDiscovery>>,
+    inflight: Mutex<HashMap<String, broadcast::Sender<DiscoveryOutcome>>>,
+}
+
+struct CachedDiscovery {
+    discovery: ValidatedDiscovery,
+    expires_at: Instant,
+}
+
+impl DiscoveryCache {
+    async fn get(&self, issuer: &str) -> Option<ValidatedDiscovery> {
+        let now = Instant::now();
+        self.entries
+            .read()
+            .await
+            .get(issuer)
+            .filter(|entry| entry.expires_at > now)
+            .map(|entry| entry.discovery.clone())
+    }
+
+    /// Stores `discovery` for `ttl`, dropping it when the deadline cannot be
+    /// represented or has already passed.
+    ///
+    /// A zero `ttl` therefore disables caching without a separate code path.
+    async fn insert(&self, issuer: &str, discovery: &ValidatedDiscovery, ttl: Duration) {
+        let now = Instant::now();
+        let Some(expires_at) = now.checked_add(ttl).filter(|deadline| *deadline > now) else {
+            return;
+        };
+        self.entries.write().await.insert(
+            issuer.to_string(),
+            CachedDiscovery {
+                discovery: discovery.clone(),
+                expires_at,
+            },
+        );
+    }
+
+    /// Joins the fetch already running for `issuer`, or starts one.
+    ///
+    /// The caller that starts it gets [`Flight::Lead`] and owes an outcome to
+    /// everyone else; a caller that arrives while it runs gets
+    /// [`Flight::Follow`] and waits for that outcome instead of fetching.
+    fn join(&self, issuer: &str) -> Flight<'_> {
+        let mut inflight = self.inflight();
+        if let Some(sender) = inflight.get(issuer) {
+            return Flight::Follow(sender.subscribe());
+        }
+        // One outcome is ever published per flight, and every follower attaches
+        // before it is sent, so a single slot is all the channel needs.
+        let (sender, _initial_receiver) = broadcast::channel(1);
+        inflight.insert(issuer.to_string(), sender.clone());
+        drop(inflight);
+        Flight::Lead(FlightLead {
+            cache: self,
+            issuer: issuer.to_string(),
+            sender,
+            retired: false,
+        })
+    }
+
+    /// Locks the in-flight map, recovering a poisoned guard.
+    ///
+    /// The map holds nothing but channel senders, so a panic while it was held
+    /// cannot leave a broken invariant behind, and the alternative — panicking
+    /// inside [`FlightLead::drop`] — would abort the process.
+    fn inflight(&self) -> MutexGuard<'_, HashMap<String, broadcast::Sender<DiscoveryOutcome>>> {
+        self.inflight.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// A caller's part in the fetch for one issuer, as decided by
+/// [`DiscoveryCache::join`].
+enum Flight<'cache> {
+    /// This caller performs the fetch and publishes its outcome.
+    Lead(FlightLead<'cache>),
+    /// Another caller is already fetching; this one waits for that outcome.
+    Follow(broadcast::Receiver<DiscoveryOutcome>),
+}
+
+/// The right to perform one discovery fetch, and the obligation to hand its
+/// outcome to everyone waiting on it.
+///
+/// Dropping without publishing — which is what a cancelled request does —
+/// retires the flight, so the next caller starts a fresh one rather than
+/// waiting on a fetch that will never finish.
+struct FlightLead<'cache> {
+    cache: &'cache DiscoveryCache,
+    issuer: String,
+    sender: broadcast::Sender<DiscoveryOutcome>,
+    retired: bool,
+}
+
+impl FlightLead<'_> {
+    /// Retires the flight and hands `outcome` to every caller that joined it.
+    fn publish(&mut self, outcome: &DiscoveryOutcome) {
+        self.retire();
+        // Every follower subscribed before the flight was retired, so all of
+        // them are still attached. Leading alone is the ordinary case, and a
+        // send with nobody listening is not a failure.
+        let _followers = self.sender.send(outcome.clone());
+    }
+
+    /// Drops the flight from the cache so that the next miss starts a new one.
+    fn retire(&mut self) {
+        if !self.retired {
+            self.retired = true;
+            self.cache.inflight().remove(&self.issuer);
+        }
+    }
+}
+
+impl Drop for FlightLead<'_> {
+    fn drop(&mut self) {
+        self.retire();
+    }
 }
 
 /// The fields this module reads from a provider's discovery document.
@@ -462,6 +655,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use serde_json::{Value, json};
+    use tokio::sync::Barrier;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -476,6 +670,10 @@ mod tests {
     const CLIENT_SECRET: &str = "client-secret-must-not-leak";
 
     fn provider(issuer: &str) -> ResolvedOidcProvider {
+        provider_with(issuer, "")
+    }
+
+    fn provider_with(issuer: &str, extra: &str) -> ResolvedOidcProvider {
         let settings = AuthSettings::from_toml(&format!(
             "[auth]
              [auth.session]
@@ -487,6 +685,7 @@ mod tests {
              client_secret = '{CLIENT_SECRET}'
              redirect_uri = 'http://localhost/auth/oidc/callback'
              scopes = ['openid', 'email']
+             {extra}
              [auth.provider.auth_params]
              prompt = 'login'"
         ))
@@ -615,6 +814,280 @@ mod tests {
         assert_eq!(query.get("nonce"), Some(&request.nonce));
         let expected = URL_SAFE_NO_PAD.encode(Sha256::digest(request.code_verifier.as_bytes()));
         assert_eq!(query.get("code_challenge"), Some(&expected));
+    }
+
+    async fn discovery_requests(server: &MockServer) -> usize {
+        server
+            .received_requests()
+            .await
+            .expect("requests")
+            .iter()
+            .filter(|request| {
+                request
+                    .url
+                    .path()
+                    .ends_with("/.well-known/openid-configuration")
+            })
+            .count()
+    }
+
+    async fn mount_valid_discovery(server: &MockServer, issuer: &str) {
+        mount_discovery(
+            server,
+            "/tenant/.well-known/openid-configuration",
+            valid_document(server, issuer).to_string(),
+        )
+        .await;
+    }
+
+    fn validated_discovery() -> ValidatedDiscovery {
+        let issuer =
+            EndpointUrl::<Configured>::parse("https://accounts.example.test").expect("issuer");
+        let endpoint = |endpoint: DiscoveredEndpoint, path: &str| {
+            let label = endpoint.label();
+            discovered_endpoint(
+                endpoint,
+                &format!("https://accounts.example.test{path}"),
+                &issuer,
+            )
+            .expect(label)
+        };
+        ValidatedDiscovery {
+            authorization_endpoint: endpoint(DiscoveredEndpoint::Authorization, "/authorize"),
+            token_endpoint: endpoint(DiscoveredEndpoint::Token, "/token"),
+            jwks_uri: endpoint(DiscoveredEndpoint::Jwks, "/jwks"),
+            signing_algorithms: vec!["RS256".to_string()],
+        }
+    }
+
+    #[tokio::test]
+    async fn discovery_is_reused_across_authorization_requests() {
+        let server = MockServer::start().await;
+        let issuer = format!("{}/tenant/", server.uri());
+        mount_valid_discovery(&server, &issuer).await;
+        let client = OidcProviderClient::new().expect("client");
+        let provider = provider(&issuer);
+
+        for _ in 0..3 {
+            client
+                .authorization_request(&provider)
+                .await
+                .expect("authorization request");
+        }
+        assert_eq!(discovery_requests(&server).await, 1);
+    }
+
+    /// Expiry is checked against the cache directly: `start_paused` auto-advances
+    /// while a real socket read is pending, which would trip the client's own
+    /// request timeout in an end-to-end test.
+    #[tokio::test(start_paused = true)]
+    async fn cached_discovery_is_dropped_once_its_ttl_expires() {
+        let cache = DiscoveryCache::default();
+        let issuer = "https://accounts.example.test";
+        let ttl = Duration::from_mins(5);
+        cache.insert(issuer, &validated_discovery(), ttl).await;
+        assert!(cache.get("https://other.example.test").await.is_none());
+
+        tokio::time::advance(Duration::from_mins(4)).await;
+        assert!(cache.get(issuer).await.is_some(), "expired before its TTL");
+
+        tokio::time::advance(Duration::from_mins(2)).await;
+        assert!(cache.get(issuer).await.is_none(), "outlived its TTL");
+    }
+
+    /// A cached failure would turn a provider blip into an outage lasting a
+    /// whole TTL, so only successes are stored.
+    #[tokio::test]
+    async fn discovery_failures_are_never_cached() {
+        let server = MockServer::start().await;
+        let issuer = format!("{}/tenant/", server.uri());
+        Mock::given(method("GET"))
+            .and(path("/tenant/.well-known/openid-configuration"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let client = OidcProviderClient::new().expect("client");
+        let provider = provider(&issuer);
+        let Err(error) = client.authorization_request(&provider).await else {
+            panic!("expected the provider outage to fail discovery");
+        };
+        assert_eq!(error, OidcProviderClientError::Discovery);
+
+        server.reset().await;
+        mount_valid_discovery(&server, &issuer).await;
+        client
+            .authorization_request(&provider)
+            .await
+            .expect("recovers without waiting out a TTL");
+    }
+
+    /// How long a mounted discovery response is held open, so that every caller
+    /// in a burst reaches the cache while the first one's request is still
+    /// running. Only the tests that turn reuse off need it: with reuse on, a
+    /// late caller finds the stored document instead.
+    const BURST_WINDOW: Duration = Duration::from_millis(250);
+
+    /// Mounts a discovery response that stays open for [`BURST_WINDOW`].
+    async fn mount_held_open(server: &MockServer, response: ResponseTemplate) {
+        Mock::given(method("GET"))
+            .and(path("/tenant/.well-known/openid-configuration"))
+            .respond_with(response.set_delay(BURST_WINDOW))
+            .mount(server)
+            .await;
+    }
+
+    /// Runs `count` authorization requests that all start together.
+    async fn authorization_burst(
+        client: &OidcProviderClient,
+        provider: &ResolvedOidcProvider,
+        count: usize,
+    ) -> Vec<Result<OidcAuthorizationRequest, OidcProviderClientError>> {
+        let barrier = Arc::new(Barrier::new(count));
+        let requests = (0..count)
+            .map(|_index| {
+                let client = client.clone();
+                let provider = provider.clone();
+                let barrier = Arc::clone(&barrier);
+                tokio::spawn(async move {
+                    barrier.wait().await;
+                    client.authorization_request(&provider).await
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut outcomes = Vec::with_capacity(count);
+        for request in requests {
+            outcomes.push(request.await.expect("join"));
+        }
+        outcomes
+    }
+
+    /// The cache exists so that a burst of authorization requests cannot be
+    /// amplified into a burst of provider requests.
+    #[tokio::test]
+    async fn concurrent_discovery_misses_collapse_into_one_request() {
+        let server = MockServer::start().await;
+        let issuer = format!("{}/tenant/", server.uri());
+        mount_valid_discovery(&server, &issuer).await;
+        let client = OidcProviderClient::new().expect("client");
+        let provider = provider(&issuer);
+
+        for outcome in authorization_burst(&client, &provider, 16).await {
+            outcome.expect("concurrent authorization request");
+        }
+        assert_eq!(discovery_requests(&server).await, 1);
+    }
+
+    #[tokio::test]
+    async fn zero_discovery_cache_ttl_disables_reuse() {
+        let server = MockServer::start().await;
+        let issuer = format!("{}/tenant/", server.uri());
+        mount_valid_discovery(&server, &issuer).await;
+        let client = OidcProviderClient::new().expect("client");
+        let provider = provider_with(&issuer, "discovery_cache_ttl_seconds = 0");
+
+        for _ in 0..2 {
+            client
+                .authorization_request(&provider)
+                .await
+                .expect("authorization request");
+        }
+        assert_eq!(discovery_requests(&server).await, 2);
+    }
+
+    /// Nothing is cached to release a burst that failed, so the fetch itself has
+    /// to be what the burst shares. Otherwise each caller waits out the one
+    /// ahead of it, and an unreachable provider turns into a queue whose tail
+    /// waits a multiple of [`REQUEST_TIMEOUT`].
+    #[tokio::test]
+    async fn concurrent_discovery_failures_collapse_into_one_request() {
+        let server = MockServer::start().await;
+        let issuer = format!("{}/tenant/", server.uri());
+        mount_held_open(&server, ResponseTemplate::new(500)).await;
+        let client = OidcProviderClient::new().expect("client");
+        let provider = provider(&issuer);
+
+        for outcome in authorization_burst(&client, &provider, 16).await {
+            let Err(error) = outcome else {
+                panic!("expected the provider outage to fail discovery");
+            };
+            assert_eq!(error, OidcProviderClientError::Discovery);
+        }
+        assert_eq!(discovery_requests(&server).await, 1);
+    }
+
+    /// Turning reuse off must not turn discovery into a queue: callers still
+    /// share a fetch that is already running, they just keep no document once
+    /// it finishes.
+    #[tokio::test]
+    async fn zero_discovery_cache_ttl_still_shares_one_in_flight_request() {
+        let server = MockServer::start().await;
+        let issuer = format!("{}/tenant/", server.uri());
+        mount_held_open(
+            &server,
+            ResponseTemplate::new(200).set_body_bytes(valid_document(&server, &issuer).to_string()),
+        )
+        .await;
+        let client = OidcProviderClient::new().expect("client");
+        let provider = provider_with(&issuer, "discovery_cache_ttl_seconds = 0");
+
+        for outcome in authorization_burst(&client, &provider, 16).await {
+            outcome.expect("concurrent authorization request");
+        }
+        assert_eq!(discovery_requests(&server).await, 1);
+    }
+
+    #[tokio::test]
+    async fn a_published_flight_reaches_every_follower() {
+        let cache = DiscoveryCache::default();
+        let issuer = "https://accounts.example.test";
+        let Flight::Lead(mut lead) = cache.join(issuer) else {
+            panic!("the first caller leads its own flight");
+        };
+        let followers = (0..3)
+            .map(|_index| match cache.join(issuer) {
+                Flight::Follow(follower) => follower,
+                Flight::Lead(_) => panic!("a caller arriving mid-flight follows it"),
+            })
+            .collect::<Vec<_>>();
+
+        lead.publish(&Err(OidcProviderClientError::Discovery));
+
+        for mut follower in followers {
+            let Err(error) = follower.recv().await.expect("published outcome") else {
+                panic!("the published outcome was a failure");
+            };
+            assert_eq!(error, OidcProviderClientError::Discovery);
+        }
+        assert!(
+            matches!(cache.join(issuer), Flight::Lead(_)),
+            "a finished flight still holds later callers"
+        );
+    }
+
+    /// A cancelled request drops its lead mid-fetch. Its followers have to be
+    /// released rather than left waiting on an outcome nobody will publish, and
+    /// the flight has to be retired rather than left for callers to join.
+    #[tokio::test]
+    async fn a_cancelled_flight_lead_releases_its_followers() {
+        let cache = DiscoveryCache::default();
+        let issuer = "https://accounts.example.test";
+        let Flight::Lead(lead) = cache.join(issuer) else {
+            panic!("the first caller leads its own flight");
+        };
+        let Flight::Follow(mut follower) = cache.join(issuer) else {
+            panic!("a caller arriving mid-flight follows it");
+        };
+
+        drop(lead);
+
+        assert!(
+            follower.recv().await.is_err(),
+            "a follower is still waiting on a flight that will never publish"
+        );
+        assert!(
+            matches!(cache.join(issuer), Flight::Lead(_)),
+            "an abandoned flight still holds later callers"
+        );
     }
 
     #[tokio::test]

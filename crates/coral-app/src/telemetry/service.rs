@@ -2,16 +2,19 @@
 
 use coral_api::v1::trace_service_server::TraceService as TraceServiceApi;
 use coral_api::v1::{
-    GetTraceRequest, GetTraceResponse, ListTracesRequest, ListTracesResponse, TraceSpan,
-    TraceStatus, TraceSummary, Workspace,
+    GetTraceRequest, GetTraceResponse, ListTracesRequest, ListTracesResponse, TraceInvocationKind,
+    TraceOperationKind, TraceSpan, TraceStatus, TraceSummary, TraceView, Workspace,
 };
 use tonic::{Code, Request, Response, Status};
 
 use crate::bootstrap::app_status;
 use crate::telemetry::local_store::{
-    StoredTraceStatus, TraceDetailRecord, TraceSpanRecord, TraceSummaryRecord,
+    StoredTraceInvocationKind, StoredTraceOperationKind, StoredTraceStatus, TraceDetailRecord,
+    TraceSpanRecord, TraceSummaryRecord,
 };
-use crate::telemetry::manager::{GetTraceQuery, ListTracesQuery, TraceManager, TraceManagerError};
+use crate::telemetry::manager::{
+    GetTraceQuery, ListTracesQuery, TraceListView, TraceManager, TraceManagerError,
+};
 use crate::transport::{grpc_span, instrument_grpc};
 use crate::workspaces::WorkspaceName;
 
@@ -44,8 +47,10 @@ impl TraceServiceApi for TraceService {
             let page_size = normalize_page_size(request.page_size);
             let offset = parse_page_token(&request.page_token)?;
             let workspace = workspace_filter_from_proto(request.workspace.as_ref())?;
+            let view = trace_list_view_from_proto(request.view)?;
             let page = traces
                 .list_traces(ListTracesQuery {
+                    view,
                     workspace,
                     page_size,
                     offset,
@@ -81,10 +86,12 @@ impl TraceServiceApi for TraceService {
                 ));
             }
             let workspace = workspace_filter_from_proto(request.workspace.as_ref())?;
+            let view = trace_list_view_from_proto(request.view)?;
             let trace = traces
                 .get_trace(GetTraceQuery {
                     trace_id: request.trace_id,
                     workspace,
+                    view,
                 })
                 .await
                 .map_err(trace_manager_status)?;
@@ -114,6 +121,17 @@ fn parse_page_token(page_token: &str) -> Result<usize, Status> {
             "invalid input: page_token must be returned by ListTraces",
         )
     })
+}
+
+fn trace_list_view_from_proto(view: i32) -> Result<TraceListView, Status> {
+    match TraceView::try_from(view) {
+        Ok(TraceView::Unspecified) => Ok(TraceListView::All),
+        Ok(TraceView::QueryStream) => Ok(TraceListView::QueryStream),
+        Err(_unknown_view) => Err(Status::new(
+            Code::InvalidArgument,
+            "invalid input: unknown trace view",
+        )),
+    }
 }
 
 fn workspace_filter_from_proto(
@@ -153,6 +171,9 @@ fn trace_summary_to_proto(summary: TraceSummaryRecord) -> TraceSummary {
         span_count: summary.span_count,
         row_count: summary.row_count,
         row_count_recorded: summary.row_count_recorded,
+        operation_kind: trace_operation_kind_to_proto(summary.operation_kind) as i32,
+        operation_name: summary.operation_name,
+        invocation_kind: trace_invocation_kind_to_proto(summary.invocation_kind) as i32,
     }
 }
 
@@ -191,18 +212,41 @@ fn trace_status_to_proto(status: StoredTraceStatus) -> TraceStatus {
     }
 }
 
+fn trace_operation_kind_to_proto(kind: StoredTraceOperationKind) -> TraceOperationKind {
+    match kind {
+        StoredTraceOperationKind::Unspecified => TraceOperationKind::Unspecified,
+        StoredTraceOperationKind::Query => TraceOperationKind::Query,
+        StoredTraceOperationKind::Search => TraceOperationKind::Search,
+        StoredTraceOperationKind::Tool => TraceOperationKind::Tool,
+        StoredTraceOperationKind::Other => TraceOperationKind::Other,
+    }
+}
+
+fn trace_invocation_kind_to_proto(kind: StoredTraceInvocationKind) -> TraceInvocationKind {
+    match kind {
+        StoredTraceInvocationKind::Unspecified => TraceInvocationKind::Unspecified,
+        StoredTraceInvocationKind::Direct => TraceInvocationKind::Direct,
+        StoredTraceInvocationKind::Mcp => TraceInvocationKind::Mcp,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
 
     use coral_api::v1::trace_service_server::TraceService as TraceServiceApi;
-    use coral_api::v1::{GetTraceRequest, ListTracesRequest, Workspace};
+    use coral_api::v1::{
+        GetTraceRequest, ListTracesRequest, TraceInvocationKind, TraceOperationKind, TraceView,
+        Workspace,
+    };
     use serde_json::json;
     use tempfile::TempDir;
     use tonic::{Code, Request};
 
-    use super::{TraceService, normalize_page_size, parse_page_token};
-    use crate::telemetry::TraceManager;
+    use super::{
+        TraceService, normalize_page_size, parse_page_token, trace_invocation_kind_to_proto,
+    };
+    use crate::telemetry::{TraceManager, local_store::StoredTraceInvocationKind};
 
     #[test]
     fn page_size_defaults_and_caps() {
@@ -217,6 +261,22 @@ mod tests {
         assert_eq!(parse_page_token("").expect("empty token"), 0);
         assert_eq!(parse_page_token("25").expect("offset token"), 25);
         parse_page_token("not-an-offset").unwrap_err();
+    }
+
+    #[test]
+    fn invocation_kinds_map_to_wire_values() {
+        assert_eq!(
+            trace_invocation_kind_to_proto(StoredTraceInvocationKind::Unspecified),
+            TraceInvocationKind::Unspecified
+        );
+        assert_eq!(
+            trace_invocation_kind_to_proto(StoredTraceInvocationKind::Direct),
+            TraceInvocationKind::Direct
+        );
+        assert_eq!(
+            trace_invocation_kind_to_proto(StoredTraceInvocationKind::Mcp),
+            TraceInvocationKind::Mcp
+        );
     }
 
     #[tokio::test]
@@ -239,6 +299,7 @@ mod tests {
                 page_size: 10,
                 page_token: String::new(),
                 workspace: Some(workspace("alpha")),
+                view: TraceView::Unspecified as i32,
             }),
         )
         .await
@@ -250,12 +311,33 @@ mod tests {
             response.traces.first().expect("alpha trace").trace_id,
             "alpha-trace"
         );
+        assert_eq!(
+            response.traces.first().expect("alpha trace").operation_kind,
+            TraceOperationKind::Unspecified as i32
+        );
+        assert!(
+            response
+                .traces
+                .first()
+                .expect("alpha trace")
+                .operation_name
+                .is_empty()
+        );
+        assert_eq!(
+            response
+                .traces
+                .first()
+                .expect("alpha trace")
+                .invocation_kind,
+            TraceInvocationKind::Unspecified as i32
+        );
 
         let detail = TraceServiceApi::get_trace(
             &service,
             Request::new(GetTraceRequest {
                 trace_id: "alpha-trace".to_string(),
                 workspace: Some(workspace("alpha")),
+                view: TraceView::Unspecified as i32,
             }),
         )
         .await
@@ -268,11 +350,71 @@ mod tests {
             Request::new(GetTraceRequest {
                 trace_id: "beta-trace".to_string(),
                 workspace: Some(workspace("alpha")),
+                view: TraceView::Unspecified as i32,
             }),
         )
         .await
         .expect_err("beta trace should not match alpha workspace");
         assert_eq!(status.code(), Code::NotFound);
+    }
+
+    #[tokio::test]
+    async fn trace_service_projects_query_stream_entries() {
+        let temp = TempDir::new().expect("temp dir");
+        let trace_store = temp.path().join("trace-store");
+        std::fs::create_dir_all(&trace_store).expect("trace store dir");
+        write_query_stream_trace_fixture(&trace_store);
+        let service = TraceService::new(TraceManager::new(trace_store, Duration::from_mins(1)));
+
+        let response = TraceServiceApi::list_traces(
+            &service,
+            Request::new(ListTracesRequest {
+                page_size: 10,
+                page_token: String::new(),
+                workspace: Some(workspace("alpha")),
+                view: TraceView::QueryStream as i32,
+            }),
+        )
+        .await
+        .expect("list query stream")
+        .into_inner();
+        assert_eq!(response.traces.len(), 1);
+        let summary = response.traces.first().expect("tool summary");
+        assert_eq!(summary.root_span_id, "tool-span");
+        assert_eq!(summary.operation_kind, TraceOperationKind::Query as i32);
+        assert_eq!(summary.operation_name, "sql");
+        assert_eq!(summary.invocation_kind, TraceInvocationKind::Mcp as i32);
+        assert_eq!(summary.query, "SELECT 42");
+        assert_eq!(summary.start_time_unix_nanos, 10);
+        assert_eq!(summary.end_time_unix_nanos, 40);
+
+        let detail = TraceServiceApi::get_trace(
+            &service,
+            Request::new(GetTraceRequest {
+                trace_id: "shared-trace".to_string(),
+                workspace: Some(workspace("alpha")),
+                view: TraceView::QueryStream as i32,
+            }),
+        )
+        .await
+        .expect("get query stream trace")
+        .into_inner();
+        let detail_summary = detail.summary.expect("query stream detail summary");
+        assert_eq!(detail_summary, *summary);
+        assert_eq!(detail.spans.len(), 2);
+
+        let unknown_view = TraceServiceApi::list_traces(
+            &service,
+            Request::new(ListTracesRequest {
+                page_size: 10,
+                page_token: String::new(),
+                workspace: None,
+                view: 999,
+            }),
+        )
+        .await
+        .expect_err("unknown view is rejected");
+        assert_eq!(unknown_view.code(), Code::InvalidArgument);
     }
 
     fn workspace(name: &str) -> Workspace {
@@ -288,6 +430,49 @@ mod tests {
             lines.push('\n');
         }
         std::fs::write(dir.join("spans-test.jsonl"), lines).expect("write trace records");
+    }
+
+    fn write_query_stream_trace_fixture(trace_store: &std::path::Path) {
+        let mut tool = trace_record_json("shared-trace", "tool-span", "alpha", 10, 40);
+        let tool_object = tool.as_object_mut().expect("tool record object");
+        tool_object.insert("parent_span_id".to_string(), json!("remote-parent"));
+        tool_object.insert("parent_span_is_remote".to_string(), json!(true));
+        tool_object.insert("name".to_string(), json!("coral.mcp.call_tool"));
+        tool_object.insert(
+            "attributes_json".to_string(),
+            json!(
+                json!({
+                    "coral.stream.entry": true,
+                    "coral.stream.kind": "tool",
+                    "coral.stream.name": "sql",
+                    "mcp.method": "tools/call",
+                    "mcp.tool.name": "sql",
+                    "workspace": "alpha",
+                    "status": "ok",
+                })
+                .to_string()
+            ),
+        );
+
+        let mut nested = trace_record_json("shared-trace", "nested-query", "alpha", 20, 30);
+        let nested_object = nested.as_object_mut().expect("nested record object");
+        nested_object.insert("parent_span_id".to_string(), json!("tool-span"));
+        nested_object.insert(
+            "attributes_json".to_string(),
+            json!(
+                json!({
+                    "coral.stream.entry": true,
+                    "coral.stream.kind": "query",
+                    "coral.stream.name": "sql",
+                    "workspace": "alpha",
+                    "sql": "SELECT 42",
+                    "row_count": 1,
+                    "status": "ok",
+                })
+                .to_string()
+            ),
+        );
+        write_trace_records(trace_store, &[tool, nested]);
     }
 
     fn trace_record_json(

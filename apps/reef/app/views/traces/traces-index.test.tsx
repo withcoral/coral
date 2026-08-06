@@ -4,7 +4,11 @@ import {
   useLoaderData,
   type LoaderFunction,
 } from 'react-router'
-import { TraceStatus } from '@/generated/coral/v1/traces_pb'
+import {
+  TraceInvocationKind,
+  TraceOperationKind,
+  TraceStatus,
+} from '@/generated/coral/v1/traces_pb'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { userEvent } from 'vitest/browser'
 import { render } from 'vitest-browser-react'
@@ -30,6 +34,9 @@ function summary(traceId: string): TraceSummaryData {
     durationNanos: '1000000',
     endTimeUnixNanos: '2000000',
     name: 'coral.query',
+    invocationKind: TraceInvocationKind.UNSPECIFIED,
+    operationKind: TraceOperationKind.UNSPECIFIED,
+    operationName: '',
     query: `select '${traceId}'`,
     rootSpanId: `root-${traceId}`,
     rowCount: '1',
