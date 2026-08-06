@@ -4,12 +4,14 @@
 # published images continue to use checksum-verified release artifacts instead.
 FROM --platform=$TARGETPLATFORM rust:1.97-trixie AS build
 ARG TARGETARCH
+ARG CORAL_GIT_SHA
 WORKDIR /src
 COPY . .
 RUN --mount=type=cache,id=coral-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,id=coral-cargo-git,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,id=coral-cargo-target-${TARGETARCH},target=/src/target,sharing=locked \
-    cargo build --locked --release -p coral-cli \
+    test -n "$CORAL_GIT_SHA" \
+    && cargo build --locked --release -p coral-cli \
     && install -D -m 0755 target/release/coral /out/coral
 
 FROM scratch AS binary

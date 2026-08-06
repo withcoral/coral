@@ -36,20 +36,21 @@ rm -f "$probe"
 # 3. Seed only when NOTHING exists at the path — no file, no directory, no
 #    symlink (dangling included: a dangling symlink is user intent, e.g. a
 #    not-yet-mounted secret; coral itself stats via symlink_metadata,
-#    server_config.rs:53). Atomic: mktemp in the same directory + rename(2),
-#    so a kill mid-write can never leave a half-written config.toml — the file
-#    either exists complete or does not exist. Stale temps from a previous
-#    killed write are swept first and are never visible at the config path.
+#    server_config.rs:53). Atomic: mktemp in the same directory, then hard-link
+#    the completed temporary file into place. link(2) never overwrites an
+#    existing path, so concurrent starts preserve the first complete config.
 if [ ! -e "$CONFIG_FILE" ] && [ ! -L "$CONFIG_FILE" ]; then
-    rm -f "$CORAL_CONFIG_DIR"/.config.toml.seed.*
     seed="$(mktemp "$CORAL_CONFIG_DIR/.config.toml.seed.XXXXXX")"
+    trap 'rm -f "$seed"' EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
     if [ -n "${CORAL_SEED_CONFIG:-}" ]; then
         # Whole-file seed supplied by the operator: written VERBATIM (no
         # templating, no parsing) through the same atomic path. Once-only:
         # this branch is unreachable when any config exists.
-        printf '%s\n' "$CORAL_SEED_CONFIG" > "$seed"
-        mv "$seed" "$CONFIG_FILE"
-        echo "coral-entrypoint: seeded $CONFIG_FILE from CORAL_SEED_CONFIG" >&2
+        printf '%s' "$CORAL_SEED_CONFIG" > "$seed"
+        seed_source="CORAL_SEED_CONFIG"
     else
         cat > "$seed" <<'EOF'
 # Generated once by the Coral Docker image on first start. The image will
@@ -59,8 +60,26 @@ if [ ! -e "$CONFIG_FILE" ] && [ ! -L "$CONFIG_FILE" ]; then
 [server]
 bind_addr = "0.0.0.0:14555"
 EOF
-        mv "$seed" "$CONFIG_FILE"
-        echo "coral-entrypoint: seeded starter $CONFIG_FILE (bind_addr 0.0.0.0:14555)" >&2
+        seed_source="starter"
+    fi
+
+    if ln "$seed" "$CONFIG_FILE" 2>/dev/null; then
+        rm -f "$seed"
+        trap - EXIT HUP INT TERM
+        if [ "$seed_source" = "CORAL_SEED_CONFIG" ]; then
+            echo "coral-entrypoint: seeded $CONFIG_FILE from CORAL_SEED_CONFIG" >&2
+        else
+            echo "coral-entrypoint: seeded starter $CONFIG_FILE (bind_addr 0.0.0.0:14555)" >&2
+        fi
+    elif [ -e "$CONFIG_FILE" ] || [ -L "$CONFIG_FILE" ]; then
+        rm -f "$seed"
+        trap - EXIT HUP INT TERM
+        if [ -n "${CORAL_SEED_CONFIG:-}" ]; then
+            echo "coral-entrypoint: $CONFIG_FILE exists; CORAL_SEED_CONFIG ignored (seed applies only to first start)" >&2
+        fi
+        echo "coral-entrypoint: using existing $CONFIG_FILE" >&2
+    else
+        fatal "cannot atomically create $CONFIG_FILE"
     fi
 else
     if [ -n "${CORAL_SEED_CONFIG:-}" ]; then

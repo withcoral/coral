@@ -172,7 +172,86 @@ jobs:
             echo "line-tag=${line}"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Tag the pushed manifest
+      - name: Prepare smoke helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/wait-healthy.sh" <<'HELPER'
+          #!/usr/bin/env bash
+          # Poll the image's own grpc_health_probe from inside the container, so the
+          # probe under test is the one the HEALTHCHECK uses.
+          set -euo pipefail
+          container="$1"
+          for _ in $(seq 1 60); do
+            if docker exec "$container" /usr/local/bin/grpc_health_probe -addr=127.0.0.1:14555 >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "container ${container} never became healthy" >&2
+          docker logs "$container" >&2 || true
+          exit 1
+          HELPER
+          chmod +x "$RUNNER_TEMP/wait-healthy.sh"
+
+      - name: Smoke - first boot seeds a starter config
+        shell: bash
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          docker volume create coral-smoke > /dev/null
+          docker run -d --name coral-smoke -v coral-smoke:/var/lib/coral "${IMAGE}@${DIGEST}" > /dev/null
+          "$RUNNER_TEMP/wait-healthy.sh" coral-smoke
+          docker logs coral-smoke 2>&1 | grep -F 'coral-entrypoint: seeded starter'
+          docker logs coral-smoke 2>&1 | grep -F 'Coral gRPC server listening on http://0.0.0.0:14555'
+
+      - name: Smoke - restart reuses the existing config
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker restart coral-smoke > /dev/null
+          "$RUNNER_TEMP/wait-healthy.sh" coral-smoke
+          docker logs coral-smoke 2>&1 | grep -F 'coral-entrypoint: using existing'
+          test "$(docker logs coral-smoke 2>&1 | grep -c -F 'coral-entrypoint: seeded starter')" -eq 1
+
+      - name: Smoke - read-only volume fails fast
+        shell: bash
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          status=0
+          output="$(timeout --kill-after=5s 30s docker run --rm -v coral-smoke:/var/lib/coral:ro "${IMAGE}@${DIGEST}" 2>&1)" || status=$?
+          printf '%s\n' "$output"
+          test "$status" -eq 1
+          printf '%s\n' "$output" | grep -F 'coral-entrypoint: FATAL'
+
+      - name: Smoke - CORAL_SEED_CONFIG seeds once
+        shell: bash
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          marker='# coral-docker-smoke-marker'
+          seed="$(printf '%s\n[server]\nbind_addr = "0.0.0.0:14555"\n' "$marker")"
+          docker volume create coral-smoke-seed > /dev/null
+          docker run -d --name coral-smoke-seed \
+            -e CORAL_SEED_CONFIG="$seed" \
+            -v coral-smoke-seed:/var/lib/coral \
+            "${IMAGE}@${DIGEST}" > /dev/null
+          "$RUNNER_TEMP/wait-healthy.sh" coral-smoke-seed
+          docker logs coral-smoke-seed 2>&1 | grep -F 'from CORAL_SEED_CONFIG'
+          expected_sha="$(printf '%s' "$seed" | sha256sum | awk '{print $1}')"
+          actual_sha="$(docker exec coral-smoke-seed sha256sum /var/lib/coral/config/config.toml | awk '{print $1}')"
+          test "$actual_sha" = "$expected_sha"
+          docker restart coral-smoke-seed > /dev/null
+          "$RUNNER_TEMP/wait-healthy.sh" coral-smoke-seed
+          docker logs coral-smoke-seed 2>&1 | grep -F 'CORAL_SEED_CONFIG ignored'
+
+      # The digest is deliberately untagged until every smoke check passes, so
+      # a broken rebuild cannot move an existing release, line, or latest tag.
+      - name: Tag the validated manifest
         id: manifest
         shell: bash
         env:
@@ -211,79 +290,3 @@ jobs:
         run: |
           set -euo pipefail
           cosign sign --yes "${IMAGE}@${DIGEST}"
-
-      - name: Prepare smoke helper
-        shell: bash
-        run: |
-          set -euo pipefail
-          cat > "$RUNNER_TEMP/wait-healthy.sh" <<'HELPER'
-          #!/usr/bin/env bash
-          # Poll the image's own grpc_health_probe from inside the container, so the
-          # probe under test is the one the HEALTHCHECK uses.
-          set -euo pipefail
-          container="$1"
-          for _ in $(seq 1 60); do
-            if docker exec "$container" /usr/local/bin/grpc_health_probe -addr=127.0.0.1:14555 >/dev/null 2>&1; then
-              exit 0
-            fi
-            sleep 1
-          done
-          echo "container ${container} never became healthy" >&2
-          docker logs "$container" >&2 || true
-          exit 1
-          HELPER
-          chmod +x "$RUNNER_TEMP/wait-healthy.sh"
-
-      - name: Smoke - first boot seeds a starter config
-        shell: bash
-        env:
-          DIGEST: ${{ steps.manifest.outputs.digest }}
-        run: |
-          set -euo pipefail
-          docker volume create coral-smoke > /dev/null
-          docker run -d --name coral-smoke -v coral-smoke:/var/lib/coral "${IMAGE}@${DIGEST}" > /dev/null
-          "$RUNNER_TEMP/wait-healthy.sh" coral-smoke
-          docker logs coral-smoke 2>&1 | grep -F 'coral-entrypoint: seeded starter'
-          docker logs coral-smoke 2>&1 | grep -F 'Coral gRPC server listening on http://0.0.0.0:14555'
-
-      - name: Smoke - restart reuses the existing config
-        shell: bash
-        run: |
-          set -euo pipefail
-          docker restart coral-smoke > /dev/null
-          "$RUNNER_TEMP/wait-healthy.sh" coral-smoke
-          docker logs coral-smoke 2>&1 | grep -F 'coral-entrypoint: using existing'
-          test "$(docker logs coral-smoke 2>&1 | grep -c -F 'coral-entrypoint: seeded starter')" -eq 1
-
-      - name: Smoke - read-only volume fails fast
-        shell: bash
-        env:
-          DIGEST: ${{ steps.manifest.outputs.digest }}
-        run: |
-          set -euo pipefail
-          status=0
-          output="$(docker run --rm -v coral-smoke:/var/lib/coral:ro "${IMAGE}@${DIGEST}" 2>&1)" || status=$?
-          printf '%s\n' "$output"
-          test "$status" -eq 1
-          printf '%s\n' "$output" | grep -F 'coral-entrypoint: FATAL'
-
-      - name: Smoke - CORAL_SEED_CONFIG seeds once
-        shell: bash
-        env:
-          DIGEST: ${{ steps.manifest.outputs.digest }}
-        run: |
-          set -euo pipefail
-          marker='# coral-docker-smoke-marker'
-          seed="$(printf '%s\n[server]\nbind_addr = "0.0.0.0:14555"\n' "$marker")"
-          docker volume create coral-smoke-seed > /dev/null
-          docker run -d --name coral-smoke-seed \
-            -e CORAL_SEED_CONFIG="$seed" \
-            -v coral-smoke-seed:/var/lib/coral \
-            "${IMAGE}@${DIGEST}" > /dev/null
-          "$RUNNER_TEMP/wait-healthy.sh" coral-smoke-seed
-          docker logs coral-smoke-seed 2>&1 | grep -F 'from CORAL_SEED_CONFIG'
-          # Path is docker/Dockerfile's baked CORAL_CONFIG_DIR; expansion stays host-side.
-          docker exec coral-smoke-seed cat /var/lib/coral/config/config.toml | grep -F "$marker"
-          docker restart coral-smoke-seed > /dev/null
-          "$RUNNER_TEMP/wait-healthy.sh" coral-smoke-seed
-          docker logs coral-smoke-seed 2>&1 | grep -F 'CORAL_SEED_CONFIG ignored'

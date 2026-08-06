@@ -50,6 +50,8 @@ docker-build:
 	  1|true) no_cache=1 ;; \
 	  *) echo "DOCKER_NO_CACHE must be 0, 1, false, or true" >&2; exit 1 ;; \
 	esac; \
+	git_sha=$$(git rev-parse --short HEAD); \
+	test -n "$$git_sha"; \
 	tmpdir=$$(mktemp -d); \
 	trap 'rm -rf "$$tmpdir"' EXIT HUP INT TERM; \
 	context="$$tmpdir/context"; \
@@ -57,6 +59,7 @@ docker-build:
 	set -- docker buildx build \
 	  --platform "linux/$$image_arch" \
 	  --provenance=false \
+	  --build-arg "CORAL_GIT_SHA=$$git_sha" \
 	  --file docker/Dockerfile.local \
 	  --target binary \
 	  --output "type=local,dest=$$context/dist/$$image_arch"; \
