@@ -217,13 +217,20 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "set CORAL_TEST_POSTGRES_URL to run the ownership bootstrap contract"]
-    async fn ownership_bootstrap_contract_against_postgres() {
+    async fn ownership_bootstrap_repository_round_trips_against_postgres() {
         let Some(url) = bootstrap::env_var("CORAL_TEST_POSTGRES_URL")
             .expect("read CORAL_TEST_POSTGRES_URL")
             .filter(|value| !value.is_empty())
         else {
             return;
         };
+        let admin = sqlx::PgPool::connect(&url).await.expect("connect postgres");
+        sqlx::query("CREATE SCHEMA IF NOT EXISTS ownership_bootstrap")
+            .execute(&admin)
+            .await
+            .expect("create isolated schema");
+        let separator = if url.contains('?') { '&' } else { '?' };
+        let url = format!("{url}{separator}options=-csearch_path%3Downership_bootstrap");
         let temp = tempdir().expect("temp dir");
         let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
         layout.ensure().expect("layout dirs");
@@ -231,7 +238,6 @@ mod tests {
             .await
             .expect("open postgres");
         db.migrate().await.expect("migrate postgres");
-
         assert_ownership_bootstrap_contract(&db, &layout).await;
     }
 
@@ -240,11 +246,9 @@ mod tests {
         let temp = TempDir::new().expect("temp dir");
         let missing = temp.path().join("missing");
         assert!(!directory_has_content(&missing).expect("missing directory"));
-
         let nested = temp.path().join("empty").join("nested");
         std::fs::create_dir_all(&nested).expect("nested directories");
         assert!(!directory_has_content(temp.path()).expect("recursive empty directories"));
-
         let content = nested.join("content");
         std::fs::write(&content, "content").expect("nested content");
         assert!(directory_has_content(temp.path()).expect("recursive content"));
@@ -279,7 +283,6 @@ mod tests {
             .await
             .expect("add existing owner");
         tx.commit().await.expect("commit setup");
-
         bootstrap_workspace_ownership(db, &config_store, layout, OwnershipBootstrapPolicy::Local)
             .await
             .expect("bootstrap local ownership");
@@ -311,7 +314,6 @@ mod tests {
                 .expect("load local role"),
             None
         );
-
         let mut tx = db.begin().await.expect("begin pristine setup");
         tx.workspaces()
             .delete_all()
@@ -338,7 +340,6 @@ mod tests {
                 .expect("load default")
                 .is_none()
         );
-
         let mut tx = db.begin().await.expect("begin content setup");
         tx.workspaces()
             .ensure("default", now)
@@ -366,7 +367,6 @@ mod tests {
                 .expect("load retained default")
                 .is_some()
         );
-
         let mut tx = db.begin().await.expect("begin member setup");
         tx.workspaces()
             .delete_all()
