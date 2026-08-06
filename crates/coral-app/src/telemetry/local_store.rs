@@ -722,6 +722,16 @@ impl TraceStore {
             .map_err(|source| TraceStoreError::Worker { source })?
     }
 
+    pub(crate) async fn has_unexpired_traces_for_workspace(
+        &self,
+        workspace_name: String,
+    ) -> Result<bool, TraceStoreError> {
+        Ok(!self
+            .list_traces_for_workspace(1, 0, workspace_name)
+            .await?
+            .is_empty())
+    }
+
     pub(crate) async fn get_trace_for_owned_workspaces(
         &self,
         trace_id: String,

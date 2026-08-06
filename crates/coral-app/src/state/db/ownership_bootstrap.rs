@@ -3,10 +3,11 @@ use std::path::Path;
 
 use sea_query::{Expr, ExprTrait, Func, OnConflict, Query};
 
-use super::schema::{IdentitySpecs, Users};
+use super::schema::{IdentitySpecs, Users, WorkspaceMembers};
 use super::{CoralDb, DbRepos, DbSession, now_unix_nanos_i64};
 use crate::bootstrap::AppError;
 use crate::state::{AppStateLayout, ConfigStore};
+use crate::telemetry::{TelemetryConfig, has_unexpired_workspace_traces};
 use crate::workspaces::{MemberRole, WorkspaceName};
 
 const LOCAL_IDENTITY: &str = "coral:local";
@@ -112,11 +113,6 @@ async fn enforce_multi_user(
 
     let default_is_sole_ownerless = ownerless.as_slice() == [default.as_str()];
     if default_is_sole_ownerless {
-        let _state_lock = config_store.state_lock_shared()?;
-        let config_pristine = config_store
-            .load_config_unlocked()?
-            .workspace_config_is_content_pristine(&default);
-        let files_pristine = !directory_has_content(&layout.workspace_dir(&default))?;
         let identity_spec_count = Query::select()
             .expr(Func::count(Expr::col(IdentitySpecs::Id)))
             .from(IdentitySpecs::Table)
@@ -126,12 +122,44 @@ async fn enforce_multi_user(
             DbSession::fetch_optional(&mut tx, identity_spec_count)
                 .await?
                 .unwrap_or_default();
-        let db_pristine =
-            tx.tasks().count(default.as_str()).await? == 0 && identity_spec_count == 0;
-        if config_pristine && files_pristine && db_pristine {
-            tx.workspaces().delete(default.as_str()).await?;
-            tx.commit().await?;
-            return Ok(());
+        let membership_count = Query::select()
+            .expr(Func::count(Expr::col(WorkspaceMembers::UserId)))
+            .from(WorkspaceMembers::Table)
+            .and_where(Expr::col(WorkspaceMembers::WorkspaceId).eq(default.as_str()))
+            .to_owned();
+        let (membership_count,): (i64,) = DbSession::fetch_optional(&mut tx, membership_count)
+            .await?
+            .unwrap_or_default();
+        let db_pristine = tx.tasks().count(default.as_str()).await? == 0
+            && identity_spec_count == 0
+            && membership_count == 0;
+        if db_pristine {
+            let (config_pristine, files_pristine, retention) = {
+                let _state_lock = config_store.state_lock_shared()?;
+                (
+                    config_store
+                        .load_config_unlocked()?
+                        .workspace_config_is_content_pristine(&default),
+                    !directory_has_content(&layout.workspace_dir(&default))?,
+                    TelemetryConfig::load(layout)?.trace_history.retention(),
+                )
+            };
+            let has_traces = has_unexpired_workspace_traces(
+                layout.local_trace_store_dir(),
+                retention,
+                &default,
+            )
+            .await
+            .map_err(|error| {
+                AppError::FailedPrecondition(format!(
+                    "could not verify local trace history before removing the default workspace: {error}"
+                ))
+            })?;
+            if config_pristine && files_pristine && !has_traces {
+                tx.workspaces().delete(default.as_str()).await?;
+                tx.commit().await?;
+                return Ok(());
+            }
         }
     }
 
@@ -159,10 +187,11 @@ fn directory_has_content(path: &Path) -> Result<bool, io::Error> {
 
 #[cfg(test)]
 mod tests {
-    use tempfile::tempdir;
+    use tempfile::{TempDir, tempdir};
 
     use super::{
-        LOCAL_DISPLAY_NAME, LOCAL_IDENTITY, OwnershipBootstrapPolicy, bootstrap_workspace_ownership,
+        LOCAL_DISPLAY_NAME, LOCAL_IDENTITY, OwnershipBootstrapPolicy,
+        bootstrap_workspace_ownership, directory_has_content,
     };
     use crate::bootstrap;
     use crate::state::db::{
@@ -207,6 +236,22 @@ mod tests {
         db.migrate().await.expect("migrate postgres");
 
         assert_ownership_bootstrap_contract(&db, &layout).await;
+    }
+
+    #[test]
+    fn directory_has_content_handles_recursive_empty_missing_content_and_errors() {
+        let temp = TempDir::new().expect("temp dir");
+        let missing = temp.path().join("missing");
+        assert!(!directory_has_content(&missing).expect("missing directory"));
+
+        let nested = temp.path().join("empty").join("nested");
+        std::fs::create_dir_all(&nested).expect("nested directories");
+        assert!(!directory_has_content(temp.path()).expect("recursive empty directories"));
+
+        let content = nested.join("content");
+        std::fs::write(&content, "content").expect("nested content");
+        assert!(directory_has_content(temp.path()).expect("recursive content"));
+        assert!(directory_has_content(&content).is_err());
     }
 
     async fn assert_ownership_bootstrap_contract(db: &CoralDb, layout: &AppStateLayout) {
@@ -322,6 +367,91 @@ mod tests {
                 .get("default")
                 .await
                 .expect("load retained default")
+                .is_some()
+        );
+
+        let mut tx = db.begin().await.expect("begin member setup");
+        tx.workspaces()
+            .delete_all()
+            .await
+            .expect("clear workspaces");
+        tx.workspaces()
+            .ensure("default", now)
+            .await
+            .expect("create member-only default");
+        tx.workspace_members()
+            .insert("default", LOCAL_IDENTITY, MemberRole::Member, now)
+            .await
+            .expect("insert member-only membership");
+        tx.commit().await.expect("commit member setup");
+        let error = bootstrap_workspace_ownership(
+            db,
+            &config_store,
+            layout,
+            OwnershipBootstrapPolicy::MultiUser,
+        )
+        .await
+        .expect_err("member-only default must fail");
+        assert!(error.to_string().contains("default"));
+
+        let mut tx = db.begin().await.expect("begin trace setup");
+        tx.workspaces()
+            .delete_all()
+            .await
+            .expect("clear workspaces");
+        tx.workspaces()
+            .ensure("default", now)
+            .await
+            .expect("create trace-only default");
+        tx.commit().await.expect("commit trace setup");
+        let trace_dir = layout.local_trace_store_dir();
+        std::fs::create_dir_all(&trace_dir).expect("trace dir");
+        let trace = serde_json::json!({
+            "trace_id": "bootstrap-trace",
+            "span_id": "bootstrap-span",
+            "parent_span_id": null,
+            "name": "coral.query",
+            "status": "ok",
+            "start_time_unix_nanos": 1,
+            "end_time_unix_nanos": 2,
+            "attributes_json": r#"{"workspace":"default"}"#,
+        });
+        std::fs::write(
+            trace_dir.join("spans-bootstrap.jsonl"),
+            format!("{trace}\n"),
+        )
+        .expect("trace record");
+        let error = bootstrap_workspace_ownership(
+            db,
+            &config_store,
+            layout,
+            OwnershipBootstrapPolicy::MultiUser,
+        )
+        .await
+        .expect_err("trace-only default must fail");
+        assert!(error.to_string().contains("default"));
+
+        std::fs::remove_dir_all(&trace_dir).expect("remove trace dir");
+        std::fs::write(&trace_dir, "not a directory").expect("invalid trace store");
+        let error = bootstrap_workspace_ownership(
+            db,
+            &config_store,
+            layout,
+            OwnershipBootstrapPolicy::MultiUser,
+        )
+        .await
+        .expect_err("trace inspection failure must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("could not verify local trace history")
+        );
+        assert!(
+            session
+                .workspaces()
+                .get("default")
+                .await
+                .expect("load retained trace-only default")
                 .is_some()
         );
     }
