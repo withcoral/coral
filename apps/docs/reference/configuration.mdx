@@ -96,6 +96,260 @@ bind = "127.0.0.1:14556"
 
 The unauthenticated MCP listener is restricted to loopback addresses.
 
+## Workspace access control
+
+What a caller may do in a workspace follows from their membership in it. One
+state directory runs in one of two modes:
+
+- **Single-user.** `config.toml` has no `[auth]` section. Every request runs as
+  Coral's built-in local principal, `coral:local`, which reaches every workspace
+  with full control.
+- **Multi-user.** `config.toml` has an `[auth]` section, so `coral server`
+  authenticates callers against your identity provider and each person reaches
+  only the workspaces they belong to.
+
+A workspace member and a workspace owner see different surfaces:
+
+| Action | Member | Owner |
+| ------ | ------ | ----- |
+| Query, search, browse the catalog, and call functions | Yes | Yes |
+| Manage sources and functions, and read traces | No | Yes |
+| Add and remove members, and delete the workspace | No | Yes |
+
+Someone with no membership at all gets the same `workspace '<name>' not found`
+answer as for a workspace that does not exist, so non-members cannot tell that
+it exists. A member who attempts an owner-only action gets
+`permission denied: owner access is required for workspace '<name>'`.
+
+Commands you run on the host — `coral sql`, `coral workspace`, `coral functions`
+— do not authenticate and always run as `coral:local`, in either mode. What that
+principal can reach is not the same in both. In single-user mode it owns every
+workspace. In multi-user mode it is an ordinary principal holding whatever
+memberships it was granted, which on a deployment that has only ever run with
+`[auth]` is none — so those commands read nothing. `coral workspace list` prints
+`No workspaces configured.`, and naming a workspace answers
+`workspace '<name>' not found`. A shared deployment has no superuser, and
+nothing you can run on the host is one.
+
+<Note>
+  A state directory that was served in single-user mode before `[auth]` was
+  added is the exception: those earlier starts recorded `coral:local` as owner
+  of every workspace, and that membership survives. Host commands still reach
+  those workspaces, and no signed-in person can. Appoint a person as owner and
+  then remove the host's membership, as described below.
+</Note>
+
+<Warning>
+  Before this release, every authenticated caller reached every workspace.
+  Upgrading turns "anyone logged in" into "members only". Workspaces that
+  predate the upgrade have no members at all, so nobody reaches them —
+  the host included — until you appoint an owner.
+</Warning>
+
+### Workspaces nobody owns
+
+A multi-user server starts normally with ownerless workspaces present. It
+serves around them rather than refusing: a workspace with no members conceals
+itself from every caller, so there is nothing to refuse and nothing to leak.
+
+An upgrade produces them in bulk — every workspace that predates this release
+has no memberships. A fresh multi-user install produces one too: the seeded
+`default` workspace belongs to nobody, because no sign-in ever created it.
+
+They stay invisible until somebody owns them. Every call answers
+`workspace '<name>' not found`, and they appear in no workspace listing,
+because listing is scoped to the caller's memberships. Being locked out is not
+a way to take one over either: creating a workspace with a name that is already
+taken is refused with `workspace '<name>' already exists`.
+
+Nothing inside the product can list them — that is the point of concealment —
+so find them with the repair tool, from a checkout of the Coral repository:
+
+```shellscript
+cargo run -p xtask --features admin -- workspace-admin list-workspaces
+```
+
+It prints every workspace with its owner and member counts, flags each one with
+no owner as `<- OWNERLESS: unreachable until an owner is appointed`, and ends
+with a count such as `3 workspaces, 2 ownerless`. Give each one an owner as
+described under [Appoint an owner](#appoint-an-owner) below.
+
+<Note>
+  On a shared deployment the host cannot create workspaces at all. `coral
+  workspace create` answers `user 'coral:local' not found`, because a creator
+  with no entry in the user directory could only produce a workspace nobody can
+  open. Create shared workspaces as a signed-in owner.
+</Note>
+
+### Personal workspaces
+
+Every person gets a personal workspace named `default-<user_id>`, created at
+their first sign-in and owned by them. `<user_id>` is the random identifier
+Coral assigns; it is not your identity provider's subject.
+
+Each later sign-in recreates that workspace whenever the name is free, so a
+personal workspace someone deleted comes back at their next login. When a
+workspace with that name already exists, login leaves it alone: Coral never
+grants or transfers an existing workspace.
+
+The lowercase `default-` prefix is reserved for those workspaces, so
+caller-driven creation rejects it through every adapter — CLI, API, UI, and MCP
+alike:
+
+```shellscript
+coral workspace create default-analytics
+```
+
+```text
+invalid input: workspace names beginning with 'default-' are reserved for personal default workspaces
+```
+
+The shared workspace named exactly `default` does not carry the prefix and is
+unaffected.
+
+### Appoint an owner
+
+`workspace-admin set-owner` is the only way to give an ownerless workspace an
+owner. It is deliberately outside the shipped product: `coral` does not build
+it, and it authenticates nobody and authorizes nothing — it writes to the state
+database underneath the authorization plane, which is the only place a repair
+can come from once no principal is a superuser.
+
+It reads the same state the server does. Point it at the deployment with
+`--state-dir`, or let it fall back to `CORAL_CONFIG_DIR` and then to the
+platform app-state directory, and it resolves `[database]` exactly as the server
+does. It never runs migrations, so a tool built from a newer checkout cannot
+move a running deployment's schema forward.
+
+<Warning>
+  What gates this tool is access to the state, not access to the machine. With
+  SQLite that is filesystem access to the state directory. With Postgres it is
+  possession of the connection URL, which nothing in Coral can confine to the
+  host running the server: no locality guarantee is claimed for Postgres.
+</Warning>
+
+The tool can only appoint someone who already exists in the user directory, and
+a person is created there at their first login. So an upgrade runs in this
+order, and none of it requires stopping the server — membership is read per
+request, so an appointment takes effect on that person's next call:
+
+1. Start the upgraded server. It serves; the pre-upgrade workspaces are
+   unreachable.
+2. Have the people who need those workspaces sign in once. Each one gets a user
+   record and a personal workspace.
+3. Appoint owners.
+
+Find the internal user ID:
+
+```shellscript
+cargo run -p xtask --features admin -- workspace-admin list-users
+```
+
+The output carries the user ID, display name, and issuer. Provider subjects
+identify people and are frequently email addresses, so they are withheld; pass
+`--show-subjects` when two identities are otherwise indistinguishable, and keep
+that output out of tickets and chat.
+
+Then appoint an owner:
+
+```shellscript
+cargo run -p xtask --features admin -- workspace-admin set-owner \
+  --workspace analytics --user <user-id>
+```
+
+It reports `<user-id> is now an owner of analytics`, promotes an existing member
+rather than duplicating them, and repeating it changes nothing. Naming someone
+who has never signed in fails without writing anything:
+
+```text
+xtask: no user <user-id>; run `list-users` for internal user IDs, and note that a person only appears there after their first login
+```
+
+Once a workspace has one human owner, that owner manages it through the product,
+and you should not need the tool again for it.
+
+### Manage members as an owner
+
+This release ships no member-management UI and no membership subcommands.
+Members are managed through the `WorkspaceService` RPCs on the native gRPC API,
+called by someone who already owns the workspace. Coral does not serve gRPC
+reflection, so point your client at the `.proto` files from the Coral repository
+under `crates/coral-api/proto`.
+
+`AddWorkspaceMember` carries the person inside a member message, and takes
+`WORKSPACE_ROLE_MEMBER` for query-only access:
+
+```json
+{"workspace": {"name": "analytics"}, "member": {"user_id": "<user-id>", "role": "WORKSPACE_ROLE_OWNER"}}
+```
+
+`RemoveWorkspaceMember` takes the same shape with the user outside the member
+message. Passing `coral:local` as the `user_id` is how you drop the host from a
+workspace an earlier single-user run left it owning, once a person owns it too:
+
+```json
+{"workspace": {"name": "analytics"}, "user_id": "coral:local"}
+```
+
+`ListWorkspaceMembers` takes `{"workspace": {"name": "analytics"}}` and is how
+an owner verifies either change.
+
+Repeating an identical add succeeds and returns the existing membership. Asking
+for a different role never overwrites the current one; it answers
+`user '<user-id>' already has a different role in workspace 'analytics'`, so
+remove the membership and add it again. Removing the only owner is refused with
+`workspace 'analytics' must retain at least one owner` — which is also why a
+workspace never becomes ownerless on its own.
+
+### Rebind the identity-provider issuer
+
+Coral stores the verified issuer next to each user, and login never moves a
+stored subject to a different issuer on its own. That refusal is what stops a
+provider that reuses a subject from inheriting someone's workspaces.
+
+So when you change the configured provider issuer, people who signed in under
+the old one can no longer log in. The browser returns to the client with the
+OAuth error `server_error` and the description `authorization failed`, and the
+server logs `OIDC callback could not provision the authenticated user` —
+without the issuer or subject value. A legitimate issuer rename needs an
+explicit rebind, which is the same repair tool as above.
+
+Before you rebind:
+
+- Confirm the new issuer is the same directory under a new URL and still issues
+  the same subjects. If subjects are re-issued, do not rebind: let people sign
+  in as new users and re-add their memberships.
+- Stop the server. `[auth]` has to move to the new issuer anyway, and that is
+  read at startup.
+- Back up the app database — copy `coral.db` out of the local state directory,
+  or take a dump of the configured Postgres database.
+- Note how many people are bound to the old issuer. `workspace-admin
+  list-users` prints each user's issuer.
+
+Then rebind, and confirm the reported count is the one you expected:
+
+```shellscript
+cargo run -p xtask --features admin -- workspace-admin rebind-issuer \
+  --from <old-issuer> --to <new-issuer>
+```
+
+```text
+rebound 12 users from <old-issuer> to <new-issuer>
+```
+
+Point `[auth]` at the new issuer, start the server, and have one person sign in
+before you announce the change. Memberships are keyed by `user_id` rather than
+by issuer or subject, so a correct rebind leaves every workspace membership
+exactly as it was. Verify one with `ListWorkspaceMembers` as described above.
+
+<Note>
+  Issuer and subject values stay inside Coral's user directory. They never
+  appear in an API response, and Coral does not log them. The repair tool is the
+  one place they surface: it prints issuers, and prints subjects when asked.
+  Keep that output out of the tickets and chat you work through these procedures
+  in.
+</Note>
+
 ## Runtime features
 
 Experimental runtime features are configured under `[features]`.
