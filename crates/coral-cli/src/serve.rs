@@ -1,4 +1,5 @@
 use std::fmt;
+use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 
@@ -246,16 +247,39 @@ async fn shutdown_components(
     oauth: Option<RunningCoralAuthorizationServer>,
     mcp_http: Option<RunningMcpHttpServer>,
 ) -> Result<(), ShutdownFailures> {
-    let mcp_result = match mcp_http {
-        Some(server) => server.shutdown().await,
-        None => Ok(()),
-    };
-    let oauth_result = match oauth {
-        Some(server) => server.shutdown().await,
-        None => Ok(()),
-    };
-    let grpc_result = grpc.shutdown().await;
+    let (mcp_result, oauth_result, grpc_result) = shutdown_in_reverse_startup_order(
+        move || async move {
+            match mcp_http {
+                Some(server) => server.shutdown().await,
+                None => Ok(()),
+            }
+        },
+        move || async move {
+            match oauth {
+                Some(server) => server.shutdown().await,
+                None => Ok(()),
+            }
+        },
+        move || async move { grpc.shutdown().await },
+    )
+    .await;
     ShutdownFailures::from_results(mcp_result, oauth_result, grpc_result)
+}
+
+async fn shutdown_in_reverse_startup_order<McpFuture, OAuthFuture, GrpcFuture>(
+    shutdown_mcp: impl FnOnce() -> McpFuture,
+    shutdown_oauth: impl FnOnce() -> OAuthFuture,
+    shutdown_grpc: impl FnOnce() -> GrpcFuture,
+) -> (McpFuture::Output, OAuthFuture::Output, GrpcFuture::Output)
+where
+    McpFuture: Future,
+    OAuthFuture: Future,
+    GrpcFuture: Future,
+{
+    let mcp_result = shutdown_mcp().await;
+    let oauth_result = shutdown_oauth().await;
+    let grpc_result = shutdown_grpc().await;
+    (mcp_result, oauth_result, grpc_result)
 }
 
 async fn start_mcp_http(

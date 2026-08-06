@@ -395,16 +395,42 @@ fn loopback_grpc_endpoint_maps_wildcards_and_rejects_public_addresses() {
     .expect_err("IPv4-mapped IPv6 address must be rejected");
 }
 
-#[test]
-fn shutdown_failures_retain_every_component_in_order() {
-    let failures = ShutdownFailures::from_results(
-        Err(McpHttpError::ShutdownTimedOut),
-        Err(AuthServerError::Config("OAuth test failure".to_string())),
-        Err(LocalServerError::Unavailable(
-            "gRPC test failure".to_string(),
-        )),
+#[tokio::test]
+async fn shutdown_components_run_in_reverse_order_and_retain_every_failure() {
+    let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mcp_calls = Arc::clone(&calls);
+    let oauth_calls = Arc::clone(&calls);
+    let grpc_calls = Arc::clone(&calls);
+    let (mcp_result, oauth_result, grpc_result) = shutdown_in_reverse_startup_order(
+        move || async move {
+            mcp_calls.lock().expect("record MCP shutdown").push("MCP");
+            Err(McpHttpError::ShutdownTimedOut)
+        },
+        move || async move {
+            oauth_calls
+                .lock()
+                .expect("record OAuth shutdown")
+                .push("OAuth");
+            Err(AuthServerError::Config("OAuth test failure".to_string()))
+        },
+        move || async move {
+            grpc_calls
+                .lock()
+                .expect("record gRPC shutdown")
+                .push("gRPC");
+            Err(LocalServerError::Unavailable(
+                "gRPC test failure".to_string(),
+            ))
+        },
     )
-    .expect_err("all shutdown failures");
+    .await;
+
+    assert_eq!(
+        *calls.lock().expect("read shutdown order"),
+        ["MCP", "OAuth", "gRPC"]
+    );
+    let failures = ShutdownFailures::from_results(mcp_result, oauth_result, grpc_result)
+        .expect_err("all shutdown failures");
 
     assert!(failures.mcp.is_some());
     assert!(failures.oauth.is_some());
