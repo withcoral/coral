@@ -137,12 +137,6 @@ impl CoralAuthorizationServer {
         Ok(self)
     }
 
-    /// Returns registered resources for assertions outside this module.
-    #[cfg(test)]
-    pub(crate) fn authorization_resources(&self) -> &BTreeSet<String> {
-        &self.authorization_resources
-    }
-
     /// Starts the HTTP listener.
     ///
     /// The server is intended to run on loopback or behind a TLS-terminating
@@ -608,10 +602,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn registers_configured_authorization_resources() {
+    #[tokio::test]
+    async fn registers_configured_authorization_resources() {
         let dir = authorization_server("allowed_audiences = ['https://REEF.example.test/']\n");
-        let prepared = server(&dir);
+        let prepared = server(&dir).await;
 
         assert_eq!(
             prepared.authorization_resources,
