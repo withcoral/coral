@@ -4,8 +4,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use coral_api::CORAL_ERROR_REASON_WORKSPACE_NOT_FOUND;
 use coral_api::v1::{
     AddFunctionRequest, AddWorkspaceMemberRequest, CatalogItemKind, CreateWorkspaceRequest,
-    FunctionWriteSurface, ListCatalogRequest, ListWorkspaceMembersRequest, PaginationRequest,
-    RemoveWorkspaceMemberRequest, StartTaskRequest, Workspace, WorkspaceMember, WorkspaceRole,
+    FunctionWriteSurface, ListCatalogRequest, PaginationRequest, RemoveWorkspaceMemberRequest,
+    StartTaskRequest, Workspace, WorkspaceMember, WorkspaceRole,
 };
 use jsonwebtoken::jwk::{Jwk, ThumbprintHash};
 use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
