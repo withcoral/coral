@@ -7,7 +7,8 @@ use coral_spec::{SearchLimitsSpec, SourceTableFunctionKind};
 pub struct ColumnInfo {
     /// Column name.
     pub name: String,
-    /// Data type rendered in `Arrow`/`DataFusion` string form.
+    /// Data type rendered as text: `Arrow`/`DataFusion` string form for
+    /// static sources, the provider-native type name for database catalogs.
     pub data_type: String,
     /// Whether the column can contain null values.
     pub nullable: bool,
@@ -67,6 +68,8 @@ pub enum DescribeCatalogSurfaceInfo {
 pub struct TableFunctionArgumentInfo {
     /// Argument name as used in a named SQL function call.
     pub name: String,
+    /// Argument type in manifest spelling, matching result column types.
+    pub data_type: String,
     /// Whether callers must provide this argument.
     pub required: bool,
     /// Allowed values, if the source declares an enum-like value set.

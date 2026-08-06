@@ -12,9 +12,9 @@ use sha2::{Digest as _, Sha256};
 use crate::search::catalog::sqlite_index::{
     CatalogIndexDocument, CatalogIndexDocumentKind, CatalogIndexSnapshot,
 };
-use crate::search::result::{SearchFieldRole, SearchSurfaceKind};
+use crate::search::result::{FieldRole, SearchSurfaceKind};
 
-const CATALOG_SEARCH_SNAPSHOT_VERSION: &str = "catalog-search-snapshot-v3";
+const CATALOG_SEARCH_SNAPSHOT_VERSION: &str = "catalog-search-snapshot-v4";
 
 #[derive(Debug, Clone)]
 pub(crate) struct CatalogSearchSnapshot {
@@ -77,10 +77,11 @@ pub(crate) struct CatalogDocument {
     pub(crate) doc_kind: CatalogDocumentKind,
     pub(crate) owner_source_name: String,
     pub(crate) source_name: String,
+    pub(crate) catalog_name: Option<String>,
     pub(crate) surface_kind: Option<SearchSurfaceKind>,
     pub(crate) surface_name: String,
     pub(crate) field_name: String,
-    pub(crate) field_role: Option<SearchFieldRole>,
+    pub(crate) field_role: Option<FieldRole>,
     pub(crate) qualified_name: String,
     pub(crate) title: String,
     pub(crate) description: String,
@@ -101,6 +102,7 @@ impl CatalogDocument {
             doc_kind: catalog_document_kind_to_index(self.doc_kind),
             owner_source_name: self.owner_source_name.clone(),
             source_name: self.source_name.clone(),
+            catalog_name: self.catalog_name.clone(),
             surface_kind: surface_kind_as_str(self.surface_kind).to_string(),
             surface_name: self.surface_name.clone(),
             field_name: self.field_name.clone(),
@@ -109,7 +111,6 @@ impl CatalogDocument {
             title: self.title.clone(),
             description: self.description.clone(),
             searchable_text: self.searchable_text.clone(),
-            payload_json: "{}".to_string(),
         }
     }
 }
@@ -138,22 +139,22 @@ pub(crate) fn surface_kind_from_str(value: &str) -> Option<SearchSurfaceKind> {
     }
 }
 
-pub(crate) fn field_role_as_str(field_role: Option<SearchFieldRole>) -> &'static str {
+pub(crate) fn field_role_as_str(field_role: Option<FieldRole>) -> &'static str {
     match field_role {
-        Some(SearchFieldRole::TableColumn) => "table_column",
-        Some(SearchFieldRole::TableFilter) => "table_filter",
-        Some(SearchFieldRole::TableFunctionArgument) => "table_function_argument",
-        Some(SearchFieldRole::TableFunctionResultColumn) => "table_function_result_column",
+        Some(FieldRole::Column) => "table_column",
+        Some(FieldRole::Filter) => "table_filter",
+        Some(FieldRole::Argument) => "table_function_argument",
+        Some(FieldRole::ResultColumn) => "table_function_result_column",
         None => "",
     }
 }
 
-pub(crate) fn field_role_from_str(value: &str) -> Option<SearchFieldRole> {
+pub(crate) fn field_role_from_str(value: &str) -> Option<FieldRole> {
     match value {
-        "table_column" => Some(SearchFieldRole::TableColumn),
-        "table_filter" => Some(SearchFieldRole::TableFilter),
-        "table_function_argument" => Some(SearchFieldRole::TableFunctionArgument),
-        "table_function_result_column" => Some(SearchFieldRole::TableFunctionResultColumn),
+        "table_column" => Some(FieldRole::Column),
+        "table_filter" => Some(FieldRole::Filter),
+        "table_function_argument" => Some(FieldRole::Argument),
+        "table_function_result_column" => Some(FieldRole::ResultColumn),
         _ => None,
     }
 }
@@ -203,6 +204,7 @@ fn table_documents(table: &TableInfo, documents: &mut Vec<CatalogDocument>) {
         doc_kind: CatalogDocumentKind::CatalogTable,
         owner_source_name: table.schema_name.clone(),
         source_name: table.schema_name.clone(),
+        catalog_name: table.catalog_name.clone(),
         surface_kind: Some(SearchSurfaceKind::Table),
         surface_name: table.table_name.clone(),
         field_name: String::new(),
@@ -243,10 +245,11 @@ fn table_column_document(
         doc_kind: CatalogDocumentKind::ColumnHint,
         owner_source_name: table.schema_name.clone(),
         source_name: table.schema_name.clone(),
+        catalog_name: table.catalog_name.clone(),
         surface_kind: Some(SearchSurfaceKind::Table),
         surface_name: table.table_name.clone(),
         field_name: column.name.clone(),
-        field_role: Some(SearchFieldRole::TableColumn),
+        field_role: Some(FieldRole::Column),
         qualified_name: format!("{surface_qualified_name}.{}", column.name),
         title: column.name.clone(),
         description: column.description.clone(),
@@ -275,10 +278,11 @@ fn table_required_filter_document(
         doc_kind: CatalogDocumentKind::ColumnHint,
         owner_source_name: table.schema_name.clone(),
         source_name: table.schema_name.clone(),
+        catalog_name: table.catalog_name.clone(),
         surface_kind: Some(SearchSurfaceKind::Table),
         surface_name: table.table_name.clone(),
         field_name: filter.to_string(),
-        field_role: Some(SearchFieldRole::TableFilter),
+        field_role: Some(FieldRole::Filter),
         qualified_name: format!("{surface_qualified_name}.{filter}"),
         title: filter.to_string(),
         description: "Required table filter".to_string(),
@@ -315,6 +319,7 @@ fn table_function_documents(function: &TableFunctionInfo, documents: &mut Vec<Ca
         doc_kind: CatalogDocumentKind::CatalogTableFunction,
         owner_source_name: function.schema_name.clone(),
         source_name: function.schema_name.clone(),
+        catalog_name: None,
         surface_kind: Some(SearchSurfaceKind::TableFunction),
         surface_name: function.function_name.clone(),
         field_name: String::new(),
@@ -359,10 +364,11 @@ fn table_function_argument_document(
         doc_kind: CatalogDocumentKind::ColumnHint,
         owner_source_name: function.schema_name.clone(),
         source_name: function.schema_name.clone(),
+        catalog_name: None,
         surface_kind: Some(SearchSurfaceKind::TableFunction),
         surface_name: function.function_name.clone(),
         field_name: argument.name.clone(),
-        field_role: Some(SearchFieldRole::TableFunctionArgument),
+        field_role: Some(FieldRole::Argument),
         qualified_name: format!("{surface_qualified_name}.{}", argument.name),
         title: argument.name.clone(),
         description: "Table function argument".to_string(),
@@ -391,10 +397,11 @@ fn table_function_result_column_document(
         doc_kind: CatalogDocumentKind::ColumnHint,
         owner_source_name: function.schema_name.clone(),
         source_name: function.schema_name.clone(),
+        catalog_name: None,
         surface_kind: Some(SearchSurfaceKind::TableFunction),
         surface_name: function.function_name.clone(),
         field_name: column.name.clone(),
-        field_role: Some(SearchFieldRole::TableFunctionResultColumn),
+        field_role: Some(FieldRole::ResultColumn),
         qualified_name: format!("{surface_qualified_name}.{}", column.name),
         title: column.name.clone(),
         description: column.description.clone(),
@@ -442,11 +449,23 @@ fn catalog_snapshot_fingerprint(
 
     let mut tables = catalog.tables.iter().collect::<Vec<_>>();
     tables.sort_by(|left, right| {
-        (left.schema_name.as_str(), left.table_name.as_str())
-            .cmp(&(right.schema_name.as_str(), right.table_name.as_str()))
+        (
+            left.catalog_name.as_deref(),
+            left.schema_name.as_str(),
+            left.table_name.as_str(),
+        )
+            .cmp(&(
+                right.catalog_name.as_deref(),
+                right.schema_name.as_str(),
+                right.table_name.as_str(),
+            ))
     });
     for table in tables {
         update_hash(&mut hasher, "table");
+        update_hash(
+            &mut hasher,
+            table.catalog_name.as_deref().unwrap_or_default(),
+        );
         update_hash(&mut hasher, &table.schema_name);
         update_hash(&mut hasher, &table.table_name);
         update_hash(&mut hasher, &table.description);
@@ -545,6 +564,33 @@ mod tests {
         let second = CatalogSearchSnapshot::from_catalog(&catalog_with_table("tasks"));
 
         assert_ne!(first.fingerprint, second.fingerprint);
+    }
+
+    #[test]
+    fn snapshot_fingerprint_and_documents_include_catalog_identity() {
+        let mut first_catalog = catalog_with_table("messages");
+        first_catalog
+            .tables
+            .first_mut()
+            .expect("fixture table")
+            .catalog_name = Some("primary".to_string());
+        let mut second_catalog = first_catalog.clone();
+        second_catalog
+            .tables
+            .first_mut()
+            .expect("fixture table")
+            .catalog_name = Some("archive".to_string());
+
+        let first = CatalogSearchSnapshot::from_catalog(&first_catalog);
+        let second = CatalogSearchSnapshot::from_catalog(&second_catalog);
+
+        assert_ne!(first.fingerprint, second.fingerprint);
+        assert!(
+            first
+                .documents
+                .iter()
+                .all(|document| document.catalog_name.as_deref() == Some("primary"))
+        );
     }
 
     #[test]

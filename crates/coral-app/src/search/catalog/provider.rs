@@ -1,30 +1,31 @@
 //! Catalog metadata Universal Search provider.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use coral_engine::{CatalogInfo, TableFunctionInfo, TableInfo};
 
 use crate::bootstrap::AppError;
-use crate::catalog::discovery::CatalogItem;
 use crate::catalog::model::CatalogResolution;
 use crate::query::manager::QueryManagerError;
-use crate::search::catalog::ranking::{RankedCatalogHit, rank_catalog_hits};
 use crate::search::catalog::snapshot::{
     CatalogSearchSnapshot, field_role_from_str, surface_kind_from_str,
 };
 use crate::search::catalog::sqlite_index::{
-    CatalogIndexDocumentKind, CatalogRefreshResult, CatalogSearchHit, CatalogSearchHits,
+    CatalogDocumentClass, CatalogRefreshResult, CatalogSearchHit,
 };
 use crate::search::maintenance::{
     CatalogClearMaintenanceResult, CatalogRebuildMaintenanceResult, SearchClearTarget,
     SearchDataScope, SearchMaintenanceDetail, SearchMaintenanceResult, SearchMaintenanceState,
     SearchProviderClearOutcome, SearchProviderClearRequest, SearchStorageCleanupResult,
 };
-use crate::search::provider::{LocalSearchWriteCoordinator, ProviderSearchOutcome};
+use crate::search::provider::{
+    LocalSearchWriteCoordinator, PreparedRetrievers, ProviderFailure, Retriever, RetrieverError,
+    RetrieverOutcome, SearchExecutionContext, SearchProvider,
+};
 use crate::search::result::{
-    CatalogMetadataResult, ColumnHintResult, ProviderCoverage, ProviderStatus, SearchCandidate,
-    SearchFieldRole, SearchManagerError, SearchPayload, SearchProviderKind, SearchProviderState,
-    SearchRequest, SearchSurfaceKind, TableColumnPreview, TableColumnPreviewColumn,
+    CatalogSurface, Field, FieldRef, FieldRole, MatchEvidence, ProviderCoverage, RetrieverId,
+    SearchManagerError, SearchProviderKind, SearchProviderState, SearchRequest, SearchResult,
+    SearchSurfaceId, SearchSurfaceKind, SurfaceMatch, SurfaceShape,
 };
 use crate::search::sqlite_store::{
     SqliteSearchCompactionResult, SqliteSearchError, SqliteSearchStore,
@@ -33,8 +34,20 @@ use crate::state::AppStateLayout;
 
 const CATALOG_PROVIDER_RETRIEVAL_MULTIPLIER: usize = 5;
 const CATALOG_PROVIDER_MIN_RETRIEVAL_LIMIT: usize = 25;
-const MAX_COLUMN_HINTS_PER_SURFACE: usize = 3;
-const TABLE_COLUMN_PREVIEW_LIMIT: usize = 5;
+const MAX_FAILED_SOURCE_NAMES_IN_NOTE: usize = 3;
+
+impl SearchProvider for CatalogMetadataProvider {
+    fn kind(&self) -> SearchProviderKind {
+        SearchProviderKind::CatalogMetadata
+    }
+
+    fn retrievers(
+        &self,
+        context: &SearchExecutionContext,
+    ) -> Result<PreparedRetrievers, ProviderFailure> {
+        self.prepared_retrievers(context)
+    }
+}
 
 struct CatalogProjection {
     store: SqliteSearchStore,
@@ -68,44 +81,60 @@ impl CatalogMetadataProvider {
         }
     }
 
-    pub(crate) fn search(
+    /// Prepares the projection once, then binds both retrievers to it.
+    ///
+    /// Only the refresh needs the write coordinator; retrieval is read-only, so
+    /// it runs outside the serialised section.
+    fn prepared_retrievers(
         &self,
-        request: &SearchRequest,
-        resolution: Result<&CatalogResolution, &QueryManagerError>,
-    ) -> ProviderSearchOutcome {
-        let resolution = match resolution {
-            Ok(resolution) => resolution,
-            Err(error) => return catalog_query_error_outcome(error),
-        };
-        self.write_coordinator.run(&request.workspace_name, || {
-            self.search_with_resolution(request, resolution)
-        })
-    }
+        context: &SearchExecutionContext,
+    ) -> Result<PreparedRetrievers, ProviderFailure> {
+        let request = &context.request;
+        let resolution = context
+            .catalog_resolution
+            .as_ref()
+            .map_err(catalog_query_failure)?;
 
-    fn search_with_resolution(
-        &self,
-        request: &SearchRequest,
-        resolution: &CatalogResolution,
-    ) -> ProviderSearchOutcome {
-        let projection = match self.prepare_projection(request, resolution) {
-            Ok(projection) => projection,
-            Err(error) => return catalog_index_error_outcome(&error),
-        };
-        let search_hits = match Self::search_projection(request, &projection.store) {
-            Ok(search_hits) => search_hits,
-            Err(error) => return catalog_index_error_outcome(&error),
-        };
-        if let Some(outcome) = missing_cached_projection_outcome(&projection, &search_hits) {
-            return outcome;
+        let projection = self
+            .write_coordinator
+            .run(&request.workspace_name, || {
+                self.prepare_projection(request, resolution)
+            })
+            .map_err(|error| catalog_index_failure(&error))?;
+
+        if let Some(failure) = missing_cached_projection_failure(&projection) {
+            return Err(failure);
         }
 
-        catalog_search_outcome(
-            request,
-            &resolution.catalog,
-            &resolution.failed_source_names,
-            search_hits,
-            &projection,
-        )
+        let limit = usize::try_from(request.limit)
+            .unwrap_or(usize::MAX)
+            .saturating_mul(CATALOG_PROVIDER_RETRIEVAL_MULTIPLIER)
+            .max(CATALOG_PROVIDER_MIN_RETRIEVAL_LIMIT);
+        let documents = projection.refresh.document_count;
+        let failed_sources = &resolution.failed_source_names;
+        let stale = projection.stale_index || !failed_sources.is_empty();
+        let degraded = stale.then(|| degraded_note(&projection, failed_sources));
+
+        Ok(PreparedRetrievers {
+            retrievers: vec![
+                Box::new(EntryRetriever {
+                    store: projection.store.clone(),
+                    limit,
+                }),
+                Box::new(FieldRetriever {
+                    store: projection.store,
+                    limit,
+                }),
+            ],
+            coverage: ProviderCoverage {
+                eligible_units: documents,
+                searched_units: documents,
+                failed_units: u32::try_from(failed_sources.len()).unwrap_or(u32::MAX),
+                stale_index: stale,
+                ..ProviderCoverage::default()
+            },
+            degraded,
+        })
     }
 
     fn prepare_projection(
@@ -196,17 +225,6 @@ impl CatalogMetadataProvider {
             }
             Err(error) => Err(error),
         }
-    }
-
-    fn search_projection(
-        request: &SearchRequest,
-        store: &SqliteSearchStore,
-    ) -> Result<CatalogSearchHits, SqliteSearchError> {
-        let retrieval_limit = usize::try_from(request.limit)
-            .unwrap_or(usize::MAX)
-            .saturating_mul(CATALOG_PROVIDER_RETRIEVAL_MULTIPLIER)
-            .max(CATALOG_PROVIDER_MIN_RETRIEVAL_LIMIT);
-        store.search_catalog(&request.terms, retrieval_limit)
     }
 }
 
@@ -382,336 +400,387 @@ fn search_sqlite_app_error(error: &SqliteSearchError) -> AppError {
     }
 }
 
-fn catalog_search_outcome(
-    request: &SearchRequest,
-    catalog: &CatalogInfo,
-    failed_source_names: &BTreeSet<String>,
-    search_hits: CatalogSearchHits,
-    projection: &CatalogProjection,
-) -> ProviderSearchOutcome {
-    let retrieved_hit_count = search_hits.hits.len();
-    let ranked_hits = rank_catalog_hits(search_hits.hits, &request.terms);
-    let candidate_set = catalog_candidates_from_hits(catalog, ranked_hits);
-    let candidate_count = candidate_set.candidates.len();
-    if retrieved_hit_count != candidate_count {
-        tracing::debug!(
-            workspace = %request.workspace_name,
-            retrieved_hit_count,
-            candidate_count,
-            omitted_column_hint_count = candidate_set.omitted_column_hint_count,
-            "mapped SQLite catalog hits into provider candidates"
-        );
-    }
-    let has_more = search_hits.retrieval_limited || candidate_set.omitted_column_hint_count > 0;
-    let has_failures = !failed_source_names.is_empty();
-    let state = if has_more || has_failures {
-        SearchProviderState::Partial
-    } else if candidate_set.candidates.is_empty() {
-        SearchProviderState::Empty
-    } else {
-        SearchProviderState::ResultsFound
-    };
-    let note = catalog_provider_note(
-        state,
-        candidate_count,
-        projection.refresh.refreshed,
-        projection.stale_index,
-        search_hits.retrieval_limited,
-        candidate_set.omitted_column_hint_count,
-        failed_source_names,
-    );
-    ProviderSearchOutcome {
-        candidates: candidate_set.candidates,
-        status: ProviderStatus {
-            provider: SearchProviderKind::CatalogMetadata,
-            state,
-            note,
-            coverage: Some(ProviderCoverage {
-                eligible_units: search_hits.document_count,
-                searched_units: search_hits.document_count,
-                failed_units: u32::try_from(failed_source_names.len()).unwrap_or(u32::MAX),
-                returned_count: u32::try_from(candidate_count).unwrap_or(u32::MAX),
-                has_more,
-                stale_index: projection.stale_index || has_failures,
-                ..ProviderCoverage::default()
-            }),
-        },
-    }
-}
-
-fn missing_cached_projection_outcome(
-    projection: &CatalogProjection,
-    search_hits: &CatalogSearchHits,
-) -> Option<ProviderSearchOutcome> {
+fn missing_cached_projection_failure(projection: &CatalogProjection) -> Option<ProviderFailure> {
     if !(projection.stale_index
-        && search_hits.document_count == 0
+        && projection.refresh.document_count == 0
         && projection.expected_document_count > 0)
     {
         return None;
     }
-    Some(catalog_index_note_outcome(format!(
-        "Catalog metadata search index is unavailable: refresh could not acquire the SQLite writer lock and no cached projection exists{}",
-        projection
-            .refresh_lock_error
-            .as_deref()
-            .map_or_else(String::new, |error| format!(": {error}"))
-    )))
+    Some(ProviderFailure {
+        state: SearchProviderState::Error,
+        note: format!(
+            "Catalog metadata search index is unavailable: refresh could not acquire the SQLite writer lock and no cached projection exists{}",
+            projection
+                .refresh_lock_error
+                .as_deref()
+                .map_or_else(String::new, |error| format!(": {error}"))
+        ),
+        coverage: None,
+    })
 }
 
-fn catalog_candidates_from_hits(
-    catalog: &CatalogInfo,
-    hits: Vec<RankedCatalogHit>,
-) -> CatalogCandidateSet {
-    let mut candidates = Vec::new();
-    let mut column_hints_by_surface = BTreeMap::<(SearchSurfaceKind, String, String), usize>::new();
-    let mut omitted_column_hint_count = 0;
-
-    for ranked_hit in hits {
-        let hit = ranked_hit.hit;
-        match hit.doc_kind {
-            CatalogIndexDocumentKind::CatalogTable => {
-                if let Some(table) = find_table(catalog, &hit.source_name, &hit.surface_name) {
-                    candidates.push(table_candidate(table, &hit, ranked_hit.score));
-                }
-            }
-            CatalogIndexDocumentKind::CatalogTableFunction => {
-                if let Some(function) = find_function(catalog, &hit.source_name, &hit.surface_name)
-                {
-                    candidates.push(table_function_candidate(function, &hit, ranked_hit.score));
-                }
-            }
-            CatalogIndexDocumentKind::ColumnHint => {
-                let Some(surface_kind) = surface_kind_from_str(&hit.surface_kind) else {
-                    continue;
-                };
-                let count_key = (
-                    surface_kind,
-                    hit.source_name.clone(),
-                    hit.surface_name.clone(),
-                );
-                let count = column_hints_by_surface.entry(count_key).or_default();
-                if *count >= MAX_COLUMN_HINTS_PER_SURFACE {
-                    omitted_column_hint_count += 1;
-                    continue;
-                }
-                candidates.push(column_hint_candidate(
-                    catalog,
-                    &hit,
-                    surface_kind,
-                    ranked_hit.score,
-                ));
-                *count += 1;
-            }
-        }
+fn degraded_note(projection: &CatalogProjection, failed_source_names: &BTreeSet<String>) -> String {
+    let mut notes = Vec::new();
+    if projection.stale_index {
+        notes.push("serving catalog results from a stale index".to_string());
     }
-
-    CatalogCandidateSet {
-        candidates,
-        omitted_column_hint_count,
+    if !failed_source_names.is_empty() {
+        notes.push(failed_sources_note(failed_source_names));
     }
+    notes.join("; ")
 }
 
-struct CatalogCandidateSet {
-    candidates: Vec<SearchCandidate>,
-    omitted_column_hint_count: usize,
-}
-
-fn table_candidate(table: &TableInfo, hit: &CatalogSearchHit, score: u32) -> SearchCandidate {
-    SearchCandidate {
-        key: hit.doc_id.clone(),
-        score,
-        provider: SearchProviderKind::CatalogMetadata,
-        payload: SearchPayload::CatalogMetadata(CatalogMetadataResult {
-            item: CatalogItem::Table(table_summary(table)),
-            matched_fields: hit.matched_fields.clone(),
-            table_column_preview: Some(table_column_preview(table)),
-        }),
-    }
-}
-
-fn table_function_candidate(
-    function: &TableFunctionInfo,
-    hit: &CatalogSearchHit,
-    score: u32,
-) -> SearchCandidate {
-    SearchCandidate {
-        key: hit.doc_id.clone(),
-        score,
-        provider: SearchProviderKind::CatalogMetadata,
-        payload: SearchPayload::CatalogMetadata(CatalogMetadataResult {
-            item: CatalogItem::TableFunction(function.clone()),
-            matched_fields: hit.matched_fields.clone(),
-            table_column_preview: None,
-        }),
-    }
-}
-
-fn column_hint_candidate(
-    catalog: &CatalogInfo,
-    hit: &CatalogSearchHit,
-    surface_kind: SearchSurfaceKind,
-    score: u32,
-) -> SearchCandidate {
-    let metadata = column_hint_metadata(catalog, hit, surface_kind);
-    SearchCandidate {
-        key: hit.doc_id.clone(),
-        score,
-        provider: SearchProviderKind::CatalogMetadata,
-        payload: SearchPayload::ColumnHint(ColumnHintResult {
-            schema_name: hit.source_name.clone(),
-            surface_name: hit.surface_name.clone(),
-            surface_kind,
-            name: hit.field_name.clone(),
-            data_type: metadata.data_type,
-            required: metadata.required,
-            description: metadata.description,
-            matched_fields: hit.matched_fields.clone(),
-            field_role: metadata.field_role,
-        }),
-    }
-}
-
-struct ColumnHintMetadata {
-    data_type: String,
-    required: bool,
-    description: String,
-    field_role: SearchFieldRole,
-}
-
-fn column_hint_metadata(
-    catalog: &CatalogInfo,
-    hit: &CatalogSearchHit,
-    surface_kind: SearchSurfaceKind,
-) -> ColumnHintMetadata {
-    let fallback_role = match surface_kind {
-        SearchSurfaceKind::Table => SearchFieldRole::TableColumn,
-        SearchSurfaceKind::TableFunction => SearchFieldRole::TableFunctionResultColumn,
+fn failed_sources_note(failed_source_names: &BTreeSet<String>) -> String {
+    let displayed_names = failed_source_names
+        .iter()
+        .take(MAX_FAILED_SOURCE_NAMES_IN_NOTE)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    let omitted_count = failed_source_names
+        .len()
+        .saturating_sub(MAX_FAILED_SOURCE_NAMES_IN_NOTE);
+    let omitted_note = if omitted_count > 0 {
+        format!(", and {omitted_count} more")
+    } else {
+        String::new()
     };
-    let field_role = field_role_from_str(&hit.field_role).unwrap_or(fallback_role);
-    match (surface_kind, field_role) {
-        (SearchSurfaceKind::Table, SearchFieldRole::TableColumn) => {
-            find_table(catalog, &hit.source_name, &hit.surface_name)
-                .and_then(|table| {
-                    table
-                        .columns
-                        .iter()
-                        .find(|column| column.name == hit.field_name)
-                })
-                .map_or_else(
-                    || fallback_column_hint_metadata(hit, field_role),
-                    |column| ColumnHintMetadata {
-                        data_type: column.data_type.clone(),
-                        required: column.is_required_filter,
-                        description: column.description.clone(),
-                        field_role,
+    format!(
+        "{} source(s) failed to load: {displayed_names}{omitted_note}",
+        failed_source_names.len(),
+    )
+}
+
+/// Ranks entries by how well their own name, description, and guide text match.
+///
+/// Entries get their own candidate window. Sharing one window with field
+/// documents starves them: measured, a 50-document shared window holds 45 field
+/// documents and yields 7 distinct entries.
+struct EntryRetriever {
+    store: SqliteSearchStore,
+    limit: usize,
+}
+
+impl Retriever for EntryRetriever {
+    fn id(&self) -> RetrieverId {
+        RetrieverId::CatalogEntries
+    }
+
+    fn retrieve(&self, request: &SearchRequest) -> Result<RetrieverOutcome, RetrieverError> {
+        let hits = self
+            .store
+            .search_catalog(&request.terms, self.limit, CatalogDocumentClass::Entries)
+            .map_err(|error| retriever_error(&error))?;
+        let matches = hits
+            .hits
+            .iter()
+            .filter_map(surface_id)
+            .map(|id| SurfaceMatch {
+                id,
+                evidence: MatchEvidence::default(),
+            })
+            .collect();
+        Ok(RetrieverOutcome {
+            matches,
+            retrieval_limited: hits.retrieval_limited,
+        })
+    }
+}
+
+/// Ranks entries by their best-matching field, and carries the matching field
+/// names up as evidence for the entry that owns them.
+struct FieldRetriever {
+    store: SqliteSearchStore,
+    limit: usize,
+}
+
+impl Retriever for FieldRetriever {
+    fn id(&self) -> RetrieverId {
+        RetrieverId::CatalogFields
+    }
+
+    fn retrieve(&self, request: &SearchRequest) -> Result<RetrieverOutcome, RetrieverError> {
+        let hits = self
+            .store
+            .search_catalog(&request.terms, self.limit, CatalogDocumentClass::Fields)
+            .map_err(|error| retriever_error(&error))?;
+        // Scoring reorders the lane, so an entry takes the position of its
+        // best-scoring field rather than its first-retrieved one.
+        let mut matches = Vec::<SurfaceMatch>::new();
+        for hit in &hits.hits {
+            let (Some(id), Some(role)) = (surface_id(hit), field_role_from_str(&hit.field_role))
+            else {
+                continue;
+            };
+            let field = FieldRef {
+                name: hit.field_name.clone(),
+                role,
+            };
+            // Retrieval order is the ranking, so an entry keeps the position of
+            // its best field and accumulates the rest as evidence.
+            if let Some(existing) = matches.iter_mut().find(|existing| existing.id == id) {
+                if !existing.evidence.matched_fields.contains(&field) {
+                    existing.evidence.matched_fields.push(field);
+                }
+            } else {
+                matches.push(SurfaceMatch {
+                    id,
+                    evidence: MatchEvidence {
+                        matched_fields: vec![field],
+                        matching_values: Vec::new(),
                     },
-                )
-        }
-        (SearchSurfaceKind::Table, SearchFieldRole::TableFilter) => {
-            let column =
-                find_table(catalog, &hit.source_name, &hit.surface_name).and_then(|table| {
-                    table
-                        .columns
-                        .iter()
-                        .find(|column| column.name == hit.field_name)
                 });
-            ColumnHintMetadata {
-                data_type: column.map_or_else(String::new, |column| column.data_type.clone()),
-                required: true,
-                description: column.map_or_else(
-                    || "Required table filter".to_string(),
-                    |column| column.description.clone(),
-                ),
-                field_role,
             }
         }
-        (SearchSurfaceKind::TableFunction, SearchFieldRole::TableFunctionArgument) => {
-            find_function(catalog, &hit.source_name, &hit.surface_name)
-                .and_then(|function| {
-                    function
-                        .arguments
-                        .iter()
-                        .find(|argument| argument.name == hit.field_name)
-                })
-                .map_or_else(
-                    || fallback_column_hint_metadata(hit, field_role),
-                    |argument| ColumnHintMetadata {
-                        data_type: String::new(),
-                        required: argument.required,
-                        description: "Table function argument".to_string(),
-                        field_role,
-                    },
-                )
+
+        // A field that matched only because its table's name matched is not
+        // field-level evidence. Retrieval cannot tell them apart — an exact
+        // match on `surface_name` returns every column of that surface, ordered
+        // by document id — so without this a query for `channels purpose` shows
+        // the alphabetically-first five columns and drops `purpose`.
+        for entry in &mut matches {
+            entry
+                .evidence
+                .matched_fields
+                .sort_by_key(|field| !query_names_field(&request.terms, &field.name));
         }
-        (SearchSurfaceKind::TableFunction, SearchFieldRole::TableFunctionResultColumn) => {
-            find_function(catalog, &hit.source_name, &hit.surface_name)
-                .and_then(|function| {
-                    function
-                        .result_columns
-                        .iter()
-                        .find(|column| column.name == hit.field_name)
-                })
-                .map_or_else(
-                    || fallback_column_hint_metadata(hit, field_role),
-                    |column| ColumnHintMetadata {
-                        data_type: column.data_type.clone(),
-                        required: false,
-                        description: column.description.clone(),
-                        field_role,
-                    },
-                )
-        }
-        _ => fallback_column_hint_metadata(hit, field_role),
+        Ok(RetrieverOutcome {
+            matches,
+            retrieval_limited: hits.retrieval_limited,
+        })
     }
 }
 
-fn fallback_column_hint_metadata(
-    hit: &CatalogSearchHit,
-    field_role: SearchFieldRole,
-) -> ColumnHintMetadata {
-    ColumnHintMetadata {
-        data_type: String::new(),
-        required: matches!(field_role, SearchFieldRole::TableFilter),
-        description: hit.description.clone(),
-        field_role,
+/// True when a query term is the field's name or one of its identifier parts.
+fn query_names_field(terms: &[String], field_name: &str) -> bool {
+    let field_name = field_name.to_lowercase();
+    terms.iter().any(|term| {
+        let term = term.to_lowercase();
+        field_name == term
+            || field_name
+                .split(|ch: char| !ch.is_alphanumeric())
+                .any(|part| !part.is_empty() && part == term)
+    })
+}
+
+fn surface_id(hit: &CatalogSearchHit) -> Option<SearchSurfaceId> {
+    surface_kind_from_str(&hit.surface_kind).map(|kind| SearchSurfaceId {
+        catalog_name: hit.catalog_name.clone(),
+        schema_name: hit.source_name.clone(),
+        name: hit.surface_name.clone(),
+        kind,
+    })
+}
+
+fn retriever_error(error: &SqliteSearchError) -> RetrieverError {
+    RetrieverError {
+        note: error.to_string(),
     }
 }
 
-fn table_summary(table: &TableInfo) -> TableInfo {
-    let mut table = table.clone();
-    table.columns.clear();
-    table
+/// Number of query-matching fields shown beyond the entry's required ones.
+const MATCHING_FIELD_LIMIT: usize = 5;
+
+/// Resolves one fused entry into a result.
+///
+/// Retrievers only ever emitted an identity and evidence, so this is where
+/// catalog metadata is read — once per surviving entry rather than once per
+/// matched field, which is what keeps the parent from being repeated.
+pub(crate) fn resolve_entry(
+    catalog: &CatalogInfo,
+    id: &SearchSurfaceId,
+    evidence: &MatchEvidence,
+    providers: &BTreeSet<SearchProviderKind>,
+) -> Option<SearchResult> {
+    let id = resolve_surface_id(catalog, id)?;
+    let (surface, omitted) = match id.kind {
+        SearchSurfaceKind::Table => {
+            let table = find_table(
+                catalog,
+                id.catalog_name.as_deref(),
+                &id.schema_name,
+                &id.name,
+            )?;
+            let (fields, omitted) = table_fields(table, evidence);
+            (
+                CatalogSurface {
+                    id,
+                    description: table.description.clone(),
+                    guide: table.guide.clone(),
+                    shape: SurfaceShape::Table { fields },
+                },
+                omitted,
+            )
+        }
+        SearchSurfaceKind::TableFunction => {
+            let function = find_function(catalog, &id.schema_name, &id.name)?;
+            let (arguments, returns, omitted) = function_fields(function, evidence);
+            (
+                CatalogSurface {
+                    id,
+                    description: function.description.clone(),
+                    guide: function.guide.clone(),
+                    shape: SurfaceShape::Function { arguments, returns },
+                },
+                omitted,
+            )
+        }
+    };
+    Some(SearchResult {
+        surface,
+        providers: providers.iter().copied().collect(),
+        matching_values: evidence.matching_values.clone(),
+        omitted_matching_field_count: u32::try_from(omitted).unwrap_or(u32::MAX),
+    })
 }
 
-fn table_column_preview(table: &TableInfo) -> TableColumnPreview {
-    let columns = table
+/// Resolves a retriever identity to the catalog's canonical SQL identity.
+pub(crate) fn resolve_surface_id(
+    catalog: &CatalogInfo,
+    id: &SearchSurfaceId,
+) -> Option<SearchSurfaceId> {
+    match id.kind {
+        SearchSurfaceKind::Table => {
+            let table = find_table(
+                catalog,
+                id.catalog_name.as_deref(),
+                &id.schema_name,
+                &id.name,
+            )?;
+            Some(SearchSurfaceId {
+                catalog_name: table.catalog_name.clone(),
+                schema_name: table.schema_name.clone(),
+                name: table.table_name.clone(),
+                kind: SearchSurfaceKind::Table,
+            })
+        }
+        SearchSurfaceKind::TableFunction => {
+            let function = find_function(catalog, &id.schema_name, &id.name)?;
+            Some(SearchSurfaceId {
+                catalog_name: None,
+                schema_name: function.schema_name.clone(),
+                name: function.function_name.clone(),
+                kind: SearchSurfaceKind::TableFunction,
+            })
+        }
+    }
+}
+
+/// Required filters always appear; they do not consume a matching-field slot,
+/// because an entry you cannot query is not a useful result.
+fn table_fields(table: &TableInfo, evidence: &MatchEvidence) -> (Vec<Field>, usize) {
+    let required = table.required_filters.iter().collect::<BTreeSet<_>>();
+    let mut fields = table
         .columns
         .iter()
-        .take(TABLE_COLUMN_PREVIEW_LIMIT)
-        .cloned()
-        .map(|column| TableColumnPreviewColumn {
-            column,
-            matched_fields: Vec::new(),
+        .filter(|column| required.contains(&column.name))
+        .map(|column| Field {
+            name: column.name.clone(),
+            data_type: column.data_type.clone(),
+            required: true,
         })
         .collect::<Vec<_>>();
-    let column_count = u32::try_from(table.columns.len()).unwrap_or(u32::MAX);
-    let omitted_column_count = table.columns.len().saturating_sub(columns.len());
-    TableColumnPreview {
-        column_count,
-        columns,
-        omitted_column_count: u32::try_from(omitted_column_count).unwrap_or(u32::MAX),
+    let required_count = fields.len();
+    let mut omitted = 0_usize;
+    for matched in &evidence.matched_fields {
+        if required.contains(&matched.name) {
+            continue;
+        }
+        let Some(column) = table
+            .columns
+            .iter()
+            .find(|column| column.name == matched.name)
+        else {
+            continue;
+        };
+        if fields.len().saturating_sub(required_count) >= MATCHING_FIELD_LIMIT {
+            omitted = omitted.saturating_add(1);
+            continue;
+        }
+        fields.push(Field {
+            name: column.name.clone(),
+            data_type: column.data_type.clone(),
+            required: false,
+        });
     }
+    (fields, omitted)
+}
+
+fn function_fields(
+    function: &TableFunctionInfo,
+    evidence: &MatchEvidence,
+) -> (Vec<Field>, Vec<Field>, usize) {
+    let mut arguments = function
+        .arguments
+        .iter()
+        .filter(|argument| argument.required)
+        .map(|argument| Field {
+            name: argument.name.clone(),
+            data_type: argument.data_type.clone(),
+            required: true,
+        })
+        .collect::<Vec<_>>();
+    let required_count = arguments.len();
+    let mut returns = Vec::new();
+    let mut omitted = 0_usize;
+    for matched in &evidence.matched_fields {
+        match matched.role {
+            FieldRole::Argument => {
+                let Some(argument) = function
+                    .arguments
+                    .iter()
+                    .find(|argument| argument.name == matched.name && !argument.required)
+                else {
+                    continue;
+                };
+                let selected = arguments.len().saturating_sub(required_count) + returns.len();
+                if selected >= MATCHING_FIELD_LIMIT {
+                    omitted = omitted.saturating_add(1);
+                    continue;
+                }
+                arguments.push(Field {
+                    name: argument.name.clone(),
+                    data_type: argument.data_type.clone(),
+                    required: false,
+                });
+            }
+            FieldRole::ResultColumn => {
+                let Some(column) = function
+                    .result_columns
+                    .iter()
+                    .find(|column| column.name == matched.name)
+                else {
+                    continue;
+                };
+                let selected = arguments.len().saturating_sub(required_count) + returns.len();
+                if selected >= MATCHING_FIELD_LIMIT {
+                    omitted = omitted.saturating_add(1);
+                    continue;
+                }
+                returns.push(Field {
+                    name: column.name.clone(),
+                    data_type: column.data_type.clone(),
+                    required: false,
+                });
+            }
+            FieldRole::Column | FieldRole::Filter => {}
+        }
+    }
+    (arguments, returns, omitted)
 }
 
 fn find_table<'a>(
     catalog: &'a CatalogInfo,
+    catalog_name: Option<&str>,
     schema_name: &str,
     table_name: &str,
 ) -> Option<&'a TableInfo> {
-    catalog
-        .tables
-        .iter()
-        .find(|table| table.schema_name == schema_name && table.table_name == table_name)
+    catalog.tables.iter().find(|table| {
+        table.catalog_name.as_deref() == catalog_name
+            && table.schema_name == schema_name
+            && table.table_name == table_name
+    })
 }
 
 fn find_function<'a>(
@@ -724,374 +793,126 @@ fn find_function<'a>(
     })
 }
 
-fn catalog_query_error_outcome(error: &QueryManagerError) -> ProviderSearchOutcome {
-    let detail = match error {
-        QueryManagerError::App(error) => error.to_string(),
-        QueryManagerError::Core(error) => error.to_string(),
-    };
-    ProviderSearchOutcome {
-        candidates: Vec::new(),
-        status: ProviderStatus {
-            provider: SearchProviderKind::CatalogMetadata,
-            state: SearchProviderState::Error,
-            note: format!("Workspace catalog is unavailable: {detail}"),
-            coverage: Some(ProviderCoverage::default()),
-        },
+fn catalog_query_failure(error: &QueryManagerError) -> ProviderFailure {
+    ProviderFailure {
+        state: SearchProviderState::Error,
+        note: format!("catalog metadata is unavailable: {error:?}"),
+        coverage: None,
     }
 }
 
-fn catalog_index_error_outcome(error: &SqliteSearchError) -> ProviderSearchOutcome {
-    catalog_index_note_outcome(format!(
-        "Catalog metadata search index is unavailable: {error}"
-    ))
-}
-
-fn catalog_index_note_outcome(note: String) -> ProviderSearchOutcome {
-    ProviderSearchOutcome {
-        candidates: Vec::new(),
-        status: ProviderStatus {
-            provider: SearchProviderKind::CatalogMetadata,
-            state: SearchProviderState::Error,
-            note,
-            coverage: Some(ProviderCoverage::default()),
-        },
+fn catalog_index_failure(error: &SqliteSearchError) -> ProviderFailure {
+    ProviderFailure {
+        state: SearchProviderState::Error,
+        note: format!("catalog metadata search index is unavailable: {error}"),
+        coverage: None,
     }
-}
-
-fn catalog_provider_note(
-    state: SearchProviderState,
-    total_count: usize,
-    refreshed: bool,
-    stale_index: bool,
-    retrieval_limited: bool,
-    omitted_column_hint_count: usize,
-    failed_source_names: &BTreeSet<String>,
-) -> String {
-    let refresh_note = if stale_index {
-        " from cached SQLite projection because refresh is currently locked"
-    } else if refreshed {
-        " after refreshing the SQLite projection"
-    } else {
-        ""
-    };
-    match state {
-        SearchProviderState::ResultsFound => {
-            format!("Catalog metadata returned {total_count} search hints{refresh_note}")
-        }
-        SearchProviderState::Partial => {
-            let reason = partial_catalog_provider_reason(
-                retrieval_limited,
-                omitted_column_hint_count,
-                failed_source_names,
-            );
-            format!("Catalog metadata returned {total_count} search hints; {reason}{refresh_note}")
-        }
-        SearchProviderState::Empty => {
-            format!("Catalog metadata returned no search hints{refresh_note}")
-        }
-        SearchProviderState::NotEnabled
-        | SearchProviderState::Skipped
-        | SearchProviderState::Error => String::new(),
-    }
-}
-
-fn partial_catalog_provider_reason(
-    retrieval_limited: bool,
-    omitted_column_hint_count: usize,
-    failed_source_names: &BTreeSet<String>,
-) -> String {
-    const MAX_FAILED_SOURCE_NAMES_IN_NOTE: usize = 3;
-
-    let mut reasons = Vec::new();
-    if retrieval_limited {
-        reasons.push("local retrieval cap was reached".to_string());
-    }
-    if omitted_column_hint_count > 0 {
-        reasons.push(format!(
-            "{omitted_column_hint_count} matching column hint(s) exceeded the per-surface cap"
-        ));
-    }
-    if !failed_source_names.is_empty() {
-        let displayed_names = failed_source_names
-            .iter()
-            .take(MAX_FAILED_SOURCE_NAMES_IN_NOTE)
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(", ");
-        let omitted_count = failed_source_names
-            .len()
-            .saturating_sub(MAX_FAILED_SOURCE_NAMES_IN_NOTE);
-        let omitted_note = if omitted_count > 0 {
-            format!(", and {omitted_count} more")
-        } else {
-            String::new()
-        };
-        let source_label = if failed_source_names.len() == 1 {
-            "source"
-        } else {
-            "sources"
-        };
-        reasons.push(format!(
-            "catalog preparation skipped {} {source_label}: {displayed_names}{omitted_note}",
-            failed_source_names.len(),
-        ));
-    }
-    if reasons.is_empty() {
-        reasons.push("partial results were returned".to_string());
-    }
-    reasons.join("; ")
 }
 
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
 
-    use coral_engine::{CatalogInfo, ColumnInfo, TableInfo};
-    use tempfile::tempdir;
+    use coral_engine::{ColumnInfo, TableFunctionArgumentInfo, TableFunctionInfo, TableInfo};
+    use coral_spec::SourceTableFunctionKind;
 
-    use super::{
-        CatalogProjection, MAX_COLUMN_HINTS_PER_SURFACE, catalog_provider_note,
-        catalog_search_outcome, search_sqlite_app_error,
-    };
-    use crate::bootstrap::AppError;
-    use crate::search::catalog::sqlite_index::{
-        CatalogIndexDocumentKind, CatalogRefreshResult, CatalogSearchHit, CatalogSearchHits,
-    };
-    use crate::search::result::{SearchProviderState, SearchRequest};
-    use crate::search::sqlite_store::{SqliteSearchError, SqliteSearchStore};
-    use crate::workspaces::WorkspaceName;
+    use super::{failed_sources_note, function_fields, table_fields};
+    use crate::search::result::{FieldRef, FieldRole, MatchEvidence};
 
     #[test]
-    fn catalog_provider_note_reports_cached_projection_fallback() {
-        let note = catalog_provider_note(
-            SearchProviderState::ResultsFound,
-            3,
-            false,
-            true,
-            false,
-            0,
-            &BTreeSet::new(),
-        );
-
-        assert_eq!(
-            note,
-            "Catalog metadata returned 3 search hints from cached SQLite projection because refresh is currently locked"
-        );
-    }
-
-    #[test]
-    fn maintenance_error_mapping_preserves_retry_and_failure_categories() {
-        assert!(matches!(
-            search_sqlite_app_error(&sqlite_failure(rusqlite::ffi::SQLITE_BUSY)),
-            AppError::Unavailable(_)
-        ));
-        assert!(matches!(
-            search_sqlite_app_error(&sqlite_failure(rusqlite::ffi::SQLITE_FULL)),
-            AppError::ResourceExhausted(_)
-        ));
-        assert!(matches!(
-            search_sqlite_app_error(&SqliteSearchError::Io(std::io::Error::new(
-                std::io::ErrorKind::StorageFull,
-                "fixture disk full",
-            ))),
-            AppError::ResourceExhausted(_)
-        ));
-        assert!(matches!(
-            search_sqlite_app_error(&sqlite_failure(rusqlite::ffi::SQLITE_CORRUPT)),
-            AppError::Internal(_)
-        ));
-        assert!(matches!(
-            search_sqlite_app_error(&SqliteSearchError::UnsupportedCapability {
-                feature: "FTS5",
-                sqlite_version: "fixture".to_string(),
-            }),
-            AppError::FailedPrecondition(_)
-        ));
-        assert!(matches!(
-            search_sqlite_app_error(&SqliteSearchError::Io(std::io::Error::other(
-                "fixture storage failure"
-            ))),
-            AppError::Internal(_)
-        ));
-    }
-
-    #[test]
-    fn column_hint_cap_reports_partial_provider_coverage() {
-        let temp = tempdir().expect("tempdir");
-        let workspace_name = WorkspaceName::default();
-        let projection = CatalogProjection {
-            store: SqliteSearchStore::open(
-                temp.path().join("search.sqlite3"),
-                workspace_name.clone(),
-            )
-            .expect("search store"),
-            refresh: CatalogRefreshResult {
-                refreshed: false,
-                document_count: 5,
-            },
-            stale_index: false,
-            refresh_lock_error: None,
-            expected_document_count: 5,
+    fn required_function_argument_does_not_count_as_omitted_evidence() {
+        let mut function = TableFunctionInfo {
+            schema_name: "fixture".to_string(),
+            function_name: "search".to_string(),
+            description: String::new(),
+            guide: String::new(),
+            require_guide_read: false,
+            arguments: vec![argument("required", true)],
+            result_columns: Vec::new(),
+            kind: SourceTableFunctionKind::Search,
+            search_limits: None,
         };
-        let request = SearchRequest::new(workspace_name, "alpha", 10).expect("search request");
-        let catalog = column_cap_catalog(5);
-        let outcome = catalog_search_outcome(
-            &request,
-            &catalog,
-            &BTreeSet::new(),
-            CatalogSearchHits {
-                hits: column_cap_hits(5),
-                document_count: 5,
-                retrieval_limited: false,
-            },
-            &projection,
-        );
-
-        assert_eq!(outcome.candidates.len(), MAX_COLUMN_HINTS_PER_SURFACE);
-        assert_eq!(outcome.status.state, SearchProviderState::Partial);
-        assert!(outcome.status.coverage.as_ref().expect("coverage").has_more);
-        assert!(
-            outcome
-                .status
-                .note
-                .contains("2 matching column hint(s) exceeded the per-surface cap")
-        );
-    }
-
-    #[test]
-    fn skipped_sources_report_partial_coverage_without_hiding_healthy_results() {
-        let temp = tempdir().expect("tempdir");
-        let workspace_name = WorkspaceName::default();
-        let projection = CatalogProjection {
-            store: SqliteSearchStore::open(
-                temp.path().join("search.sqlite3"),
-                workspace_name.clone(),
-            )
-            .expect("search store"),
-            refresh: CatalogRefreshResult {
-                refreshed: false,
-                document_count: 1,
-            },
-            stale_index: false,
-            refresh_lock_error: None,
-            expected_document_count: 1,
-        };
-        let request = SearchRequest::new(workspace_name, "alpha", 10).expect("search request");
-        let catalog = column_cap_catalog(1);
-        let failed_source_names = BTreeSet::from(["broken_source".to_string()]);
-        let degraded = catalog_search_outcome(
-            &request,
-            &catalog,
-            &failed_source_names,
-            CatalogSearchHits {
-                hits: column_cap_hits(1),
-                document_count: 1,
-                retrieval_limited: false,
-            },
-            &projection,
-        );
-
-        assert_eq!(degraded.candidates.len(), 1);
-        assert_eq!(degraded.status.state, SearchProviderState::Partial);
-        let coverage = degraded.status.coverage.as_ref().expect("coverage");
-        assert_eq!(coverage.failed_units, 1);
-        assert!(coverage.stale_index);
-        assert!(!coverage.has_more);
-        assert_eq!(
-            degraded.status.note,
-            "Catalog metadata returned 1 search hints; catalog preparation skipped 1 source: broken_source"
-        );
-
-        let recovered = catalog_search_outcome(
-            &request,
-            &catalog,
-            &BTreeSet::new(),
-            CatalogSearchHits {
-                hits: column_cap_hits(1),
-                document_count: 1,
-                retrieval_limited: false,
-            },
-            &projection,
-        );
-        assert_eq!(recovered.status.state, SearchProviderState::ResultsFound);
-        let coverage = recovered.status.coverage.as_ref().expect("coverage");
-        assert_eq!(coverage.failed_units, 0);
-        assert!(!coverage.stale_index);
-    }
-
-    #[test]
-    fn skipped_source_note_bounds_source_names() {
-        let failed_source_names = BTreeSet::from([
-            "alpha".to_string(),
-            "bravo".to_string(),
-            "charlie".to_string(),
-            "delta".to_string(),
-            "echo".to_string(),
-        ]);
-
-        let note = catalog_provider_note(
-            SearchProviderState::Partial,
-            1,
-            false,
-            false,
-            false,
-            0,
-            &failed_source_names,
-        );
-
-        assert_eq!(
-            note,
-            "Catalog metadata returned 1 search hints; catalog preparation skipped 5 sources: alpha, bravo, charlie, and 2 more"
-        );
-    }
-
-    fn sqlite_failure(code: i32) -> SqliteSearchError {
-        SqliteSearchError::Sqlite(rusqlite::Error::SqliteFailure(
-            rusqlite::ffi::Error::new(code),
-            None,
-        ))
-    }
-
-    fn column_cap_catalog(column_count: usize) -> CatalogInfo {
-        CatalogInfo {
-            tables: vec![TableInfo {
-                catalog_name: None,
-                schema_name: "fixture".to_string(),
-                table_name: "payments".to_string(),
-                description: "Payments".to_string(),
-                guide: String::new(),
-                require_guide_read: false,
-                columns: (0..column_count)
-                    .map(|index| ColumnInfo {
-                        name: format!("alpha_{index}"),
-                        data_type: "Utf8".to_string(),
-                        nullable: true,
-                        is_virtual: false,
-                        is_required_filter: false,
-                        description: format!("Alpha {index}"),
-                        ordinal_position: u32::try_from(index).unwrap_or(u32::MAX),
-                    })
-                    .collect(),
-                required_filters: Vec::new(),
-            }],
-            table_functions: Vec::new(),
-        }
-    }
-
-    fn column_cap_hits(column_count: usize) -> Vec<CatalogSearchHit> {
-        (0..column_count)
-            .map(|index| CatalogSearchHit {
-                doc_id: format!("column:table:fixture.payments:alpha_{index}"),
-                doc_kind: CatalogIndexDocumentKind::ColumnHint,
-                source_name: "fixture".to_string(),
-                surface_kind: "table".to_string(),
-                surface_name: "payments".to_string(),
-                field_name: format!("alpha_{index}"),
-                field_role: "table_column".to_string(),
-                description: format!("Alpha {index}"),
-                matched_fields: vec!["field_name".to_string()],
-                retrieval_score: 1,
+        function
+            .arguments
+            .extend((0..5).map(|index| argument(&format!("optional_{index}"), false)));
+        let mut matched_fields = (0..5)
+            .map(|index| FieldRef {
+                name: format!("optional_{index}"),
+                role: FieldRole::Argument,
             })
-            .collect()
+            .collect::<Vec<_>>();
+        matched_fields.push(FieldRef {
+            name: "required".to_string(),
+            role: FieldRole::Argument,
+        });
+        let evidence = MatchEvidence {
+            matched_fields,
+            matching_values: Vec::new(),
+        };
+
+        let (arguments, _, omitted) = function_fields(&function, &evidence);
+
+        assert_eq!(arguments.len(), 6);
+        assert_eq!(omitted, 0);
+    }
+
+    #[test]
+    fn filter_only_required_input_does_not_expand_matching_field_limit() {
+        let table = TableInfo {
+            catalog_name: None,
+            schema_name: "fixture".to_string(),
+            table_name: "events".to_string(),
+            description: String::new(),
+            guide: String::new(),
+            require_guide_read: false,
+            columns: (0..6)
+                .map(|index| ColumnInfo {
+                    name: format!("optional_{index}"),
+                    data_type: "Utf8".to_string(),
+                    nullable: false,
+                    is_virtual: false,
+                    is_required_filter: false,
+                    description: String::new(),
+                    ordinal_position: index,
+                })
+                .collect(),
+            required_filters: vec!["account_id".to_string()],
+        };
+        let evidence = MatchEvidence {
+            matched_fields: (0..6)
+                .map(|index| FieldRef {
+                    name: format!("optional_{index}"),
+                    role: FieldRole::Column,
+                })
+                .collect(),
+            matching_values: Vec::new(),
+        };
+
+        let (fields, omitted) = table_fields(&table, &evidence);
+
+        assert_eq!(fields.len(), 5);
+        assert_eq!(omitted, 1);
+    }
+
+    #[test]
+    fn failed_source_note_bounds_source_names() {
+        let failed = ["alpha", "bravo", "charlie", "delta", "echo"]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(
+            failed_sources_note(&failed),
+            "5 source(s) failed to load: alpha, bravo, charlie, and 2 more"
+        );
+    }
+
+    fn argument(name: &str, required: bool) -> TableFunctionArgumentInfo {
+        TableFunctionArgumentInfo {
+            name: name.to_string(),
+            data_type: "Utf8".to_string(),
+            required,
+            values: Vec::new(),
+        }
     }
 }

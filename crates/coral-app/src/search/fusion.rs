@@ -1,255 +1,224 @@
-//! Request-wide candidate ordering across Universal Search providers.
+//! Request-wide fusion across Universal Search retrievers.
 
 use std::cmp::Reverse;
+use std::collections::{BTreeMap, BTreeSet};
 
-use crate::search::provider::ProviderSearchOutcome;
-use crate::search::result::{SearchCandidate, SearchProviderKind};
+use crate::search::result::{MatchEvidence, Ranking, SearchProviderKind, SearchSurfaceId};
 
-// Fixed-point scale preserves reciprocal-rank precision in the existing u32
-// score field.
-const RECIPROCAL_RANK_SCORE_SCALE: u64 = 1_000_000_000;
 // Standard RRF smoothing offset; changing it requires an explicit ranking
 // decision.
 const RECIPROCAL_RANK_SMOOTHING_OFFSET: u64 = 60;
+// Fixed-point scale preserves reciprocal-rank precision in integer arithmetic.
+const RECIPROCAL_RANK_SCORE_SCALE: u64 = 1_000_000_000;
 
-pub(crate) fn order_candidates(outcomes: &mut [ProviderSearchOutcome]) -> Vec<SearchCandidate> {
-    if outcomes.iter().any(|outcome| {
-        outcome.status.provider == SearchProviderKind::NativeFanout
-            && !outcome.candidates.is_empty()
-    }) {
-        reciprocal_rank_order(outcomes)
-    } else {
-        legacy_score_order(outcomes)
-    }
+#[derive(Debug, Clone)]
+pub(crate) struct FusedEntry {
+    pub(crate) id: SearchSurfaceId,
+    pub(crate) evidence: MatchEvidence,
+    pub(crate) providers: BTreeSet<SearchProviderKind>,
+    pub(crate) score: u64,
 }
 
-fn legacy_score_order(outcomes: &mut [ProviderSearchOutcome]) -> Vec<SearchCandidate> {
-    let mut candidates = outcomes
-        .iter_mut()
-        .flat_map(|outcome| std::mem::take(&mut outcome.candidates))
-        .collect::<Vec<_>>();
-    candidates.sort();
-    candidates
-}
-
-fn reciprocal_rank_order(outcomes: &mut [ProviderSearchOutcome]) -> Vec<SearchCandidate> {
-    let mut candidates = Vec::new();
-    for outcome in outcomes {
-        for (provider_rank, mut candidate) in std::mem::take(&mut outcome.candidates)
-            .into_iter()
-            .enumerate()
-        {
-            candidate.score = reciprocal_rank_score(provider_rank);
-            candidates.push(candidate);
+/// Fuses every retriever's ranked list into one ordering.
+///
+/// Reciprocal rank fusion sums `1 / (k + rank)` over the lists an entry appears
+/// in, so an entry corroborated by several retrievers outranks one found by a
+/// single retriever. Only positions cross this boundary — no retriever's score
+/// is compared against another's, which is what lets name matching, field
+/// matching, and value matching share one ordering without a common scale.
+pub(crate) fn fuse(rankings: Vec<Ranking>) -> Vec<FusedEntry> {
+    let mut fused = BTreeMap::<SearchSurfaceId, FusedEntry>::new();
+    for ranking in rankings {
+        let provider = ranking.retriever.provider();
+        // A retriever that emits the same entry twice must not be paid twice,
+        // and the duplicate must not consume a rank position either.
+        let mut counted = BTreeSet::new();
+        let mut rank = 0_usize;
+        for entry_match in ranking.matches {
+            if !counted.insert(entry_match.id.clone()) {
+                continue;
+            }
+            let contribution = reciprocal_rank_score(rank);
+            rank = rank.saturating_add(1);
+            if let Some(existing) = fused.get_mut(&entry_match.id) {
+                existing.score = existing.score.saturating_add(contribution);
+                existing.evidence.merge(entry_match.evidence);
+                existing.providers.insert(provider);
+            } else {
+                fused.insert(
+                    entry_match.id.clone(),
+                    FusedEntry {
+                        id: entry_match.id,
+                        evidence: entry_match.evidence,
+                        providers: BTreeSet::from([provider]),
+                        score: contribution,
+                    },
+                );
+            }
         }
     }
-    candidates.sort_by(|left, right| {
-        (
-            Reverse(left.score),
-            provider_order(left.provider),
-            left.type_order(),
-            left.key.as_str(),
-        )
-            .cmp(&(
-                Reverse(right.score),
-                provider_order(right.provider),
-                right.type_order(),
-                right.key.as_str(),
-            ))
+
+    let mut fused = fused.into_values().collect::<Vec<_>>();
+    fused.sort_by(|left, right| {
+        (Reverse(left.score), &left.id).cmp(&(Reverse(right.score), &right.id))
     });
-    candidates
+    fused
 }
 
-fn reciprocal_rank_score(provider_rank: usize) -> u32 {
-    let provider_rank = u64::try_from(provider_rank).unwrap_or(u64::MAX);
+fn reciprocal_rank_score(rank: usize) -> u64 {
+    let rank = u64::try_from(rank).unwrap_or(u64::MAX);
     let denominator = RECIPROCAL_RANK_SMOOTHING_OFFSET
-        .saturating_add(provider_rank)
+        .saturating_add(rank)
         .saturating_add(1);
-    u32::try_from(RECIPROCAL_RANK_SCORE_SCALE / denominator).unwrap_or(u32::MAX)
-}
-
-fn provider_order(provider: SearchProviderKind) -> u8 {
-    match provider {
-        SearchProviderKind::CatalogMetadata => 0,
-        SearchProviderKind::ObservedValues => 1,
-        SearchProviderKind::NativeFanout => 2,
-    }
+    RECIPROCAL_RANK_SCORE_SCALE / denominator
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{order_candidates, reciprocal_rank_score};
-    use crate::search::provider::ProviderSearchOutcome;
+    use std::collections::BTreeSet;
+
+    use super::{FusedEntry, fuse, reciprocal_rank_score};
     use crate::search::result::{
-        ObservedValueResult, ProviderStatus, SearchCandidate, SearchPayload, SearchProviderKind,
-        SearchProviderState, SearchSurfaceKind,
+        FieldRef, FieldRole, FieldValues, MatchEvidence, Ranking, RetrieverId, SearchProviderKind,
+        SearchSurfaceId, SearchSurfaceKind, SurfaceMatch,
     };
 
     #[test]
-    fn local_only_candidates_keep_legacy_scores_and_order() {
-        let mut outcomes = vec![outcome(
-            SearchProviderKind::CatalogMetadata,
-            vec![
-                candidate(SearchProviderKind::CatalogMetadata, "low", 1),
-                candidate(SearchProviderKind::CatalogMetadata, "high", 9),
-            ],
-        )];
+    fn entries_found_by_two_retrievers_outrank_entries_found_by_one() {
+        let fused = fuse(vec![
+            ranking(RetrieverId::CatalogEntries, &["shared", "entries_only"]),
+            ranking(RetrieverId::CatalogFields, &["shared", "fields_only"]),
+        ]);
 
-        let ordered = order_candidates(&mut outcomes);
-
-        assert_eq!(candidate_keys(&ordered), ["high", "low"]);
-        assert_eq!(ordered.first().expect("high candidate").score, 9);
-        assert_eq!(ordered.get(1).expect("low candidate").score, 1);
-    }
-
-    #[test]
-    fn empty_native_outcome_keeps_legacy_scores_and_order() {
-        let mut native = outcome(SearchProviderKind::NativeFanout, Vec::new());
-        native.status.state = SearchProviderState::Empty;
-        let mut outcomes = vec![
-            outcome(
-                SearchProviderKind::CatalogMetadata,
-                vec![candidate(SearchProviderKind::CatalogMetadata, "catalog", 9)],
-            ),
-            outcome(
-                SearchProviderKind::ObservedValues,
-                vec![candidate(
-                    SearchProviderKind::ObservedValues,
-                    "observed",
-                    11,
-                )],
-            ),
-            native,
-        ];
-
-        let ordered = order_candidates(&mut outcomes);
-
-        assert_eq!(candidate_keys(&ordered), ["observed", "catalog"]);
-        assert_eq!(ordered.first().expect("observed candidate").score, 11);
-        assert_eq!(ordered.get(1).expect("catalog candidate").score, 9);
-    }
-
-    #[test]
-    fn three_provider_fusion_uses_exact_rank_formula_and_provider_ties() {
-        let mut outcomes = vec![
-            outcome(
-                SearchProviderKind::CatalogMetadata,
-                vec![
-                    candidate(SearchProviderKind::CatalogMetadata, "catalog-0", 99),
-                    candidate(SearchProviderKind::CatalogMetadata, "catalog-1", 98),
-                ],
-            ),
-            outcome(
-                SearchProviderKind::ObservedValues,
-                vec![
-                    candidate(SearchProviderKind::ObservedValues, "observed-0", 7),
-                    candidate(SearchProviderKind::ObservedValues, "observed-1", 6),
-                ],
-            ),
-            outcome(
-                SearchProviderKind::NativeFanout,
-                vec![
-                    candidate(SearchProviderKind::NativeFanout, "native-0", 1),
-                    candidate(SearchProviderKind::NativeFanout, "native-1", 0),
-                ],
-            ),
-        ];
-
-        let ordered = order_candidates(&mut outcomes);
-
+        assert_eq!(names(&fused), ["shared", "entries_only", "fields_only"]);
         assert_eq!(
-            candidate_keys(&ordered),
-            [
-                "catalog-0",
-                "observed-0",
-                "native-0",
-                "catalog-1",
-                "observed-1",
-                "native-1",
-            ]
+            fused.first().expect("shared entry").score,
+            reciprocal_rank_score(0).saturating_mul(2)
         );
+    }
+
+    #[test]
+    fn evidence_from_every_retriever_accumulates_on_one_entry() {
+        let mut field_evidence = MatchEvidence::default();
+        field_evidence.matched_fields.push(FieldRef {
+            name: "job_id".to_string(),
+            role: FieldRole::Column,
+        });
+        let mut value_evidence = MatchEvidence::default();
+        value_evidence.matching_values.push(FieldValues {
+            field: "owner".to_string(),
+            values: vec!["acme".to_string()],
+        });
+
+        let fused = fuse(vec![
+            Ranking {
+                retriever: RetrieverId::CatalogFields,
+                matches: vec![SurfaceMatch {
+                    id: id("repo_action_jobs"),
+                    evidence: field_evidence,
+                }],
+            },
+            Ranking {
+                retriever: RetrieverId::ObservedValues,
+                matches: vec![SurfaceMatch {
+                    id: id("repo_action_jobs"),
+                    evidence: value_evidence,
+                }],
+            },
+        ]);
+
+        assert_eq!(fused.len(), 1);
+        let entry = fused.first().expect("entry");
+        assert_eq!(entry.evidence.matched_fields.len(), 1);
+        assert_eq!(entry.evidence.matching_values.len(), 1);
         assert_eq!(
-            ordered.first().expect("first rank candidate").score,
+            entry.providers,
+            BTreeSet::from([
+                SearchProviderKind::CatalogMetadata,
+                SearchProviderKind::ObservedValues,
+            ])
+        );
+    }
+
+    #[test]
+    fn a_retriever_repeating_an_entry_is_not_paid_twice() {
+        let fused = fuse(vec![ranking(
+            RetrieverId::ObservedValues,
+            &["repeated", "repeated", "other"],
+        )]);
+
+        assert_eq!(names(&fused), ["repeated", "other"]);
+        assert_eq!(
+            fused.first().expect("repeated entry").score,
             reciprocal_rank_score(0)
         );
         assert_eq!(
-            ordered.get(3).expect("second rank candidate").score,
-            reciprocal_rank_score(1)
+            fused.get(1).expect("other entry").score,
+            reciprocal_rank_score(1),
+            "a duplicate must not consume a rank position"
         );
     }
 
     #[test]
-    fn equal_keys_from_different_providers_remain_distinct() {
-        let mut outcomes = vec![
-            outcome(
-                SearchProviderKind::CatalogMetadata,
-                vec![candidate(
-                    SearchProviderKind::CatalogMetadata,
-                    "provider-scoped-key",
-                    99,
-                )],
-            ),
-            outcome(
-                SearchProviderKind::NativeFanout,
-                vec![candidate(
-                    SearchProviderKind::NativeFanout,
-                    "provider-scoped-key",
-                    1,
-                )],
-            ),
-        ];
+    fn a_table_and_a_function_sharing_a_name_stay_distinct() {
+        let fused = fuse(vec![Ranking {
+            retriever: RetrieverId::CatalogEntries,
+            matches: vec![
+                SurfaceMatch {
+                    id: surface_id("search", SearchSurfaceKind::Table),
+                    evidence: MatchEvidence::default(),
+                },
+                SurfaceMatch {
+                    id: surface_id("search", SearchSurfaceKind::TableFunction),
+                    evidence: MatchEvidence::default(),
+                },
+            ],
+        }]);
 
-        let ordered = order_candidates(&mut outcomes);
+        assert_eq!(fused.len(), 2);
+    }
 
-        assert_eq!(
-            ordered
+    #[test]
+    fn ordering_does_not_depend_on_which_retriever_ran_first() {
+        let forward = fuse(vec![
+            ranking(RetrieverId::CatalogEntries, &["a", "b"]),
+            ranking(RetrieverId::ObservedValues, &["b", "c"]),
+        ]);
+        let reversed = fuse(vec![
+            ranking(RetrieverId::ObservedValues, &["b", "c"]),
+            ranking(RetrieverId::CatalogEntries, &["a", "b"]),
+        ]);
+
+        assert_eq!(names(&forward), names(&reversed));
+    }
+
+    fn ranking(retriever: RetrieverId, names: &[&str]) -> Ranking {
+        Ranking {
+            retriever,
+            matches: names
                 .iter()
-                .map(|candidate| (candidate.provider, candidate.key.as_str()))
-                .collect::<Vec<_>>(),
-            [
-                (SearchProviderKind::CatalogMetadata, "provider-scoped-key"),
-                (SearchProviderKind::NativeFanout, "provider-scoped-key"),
-            ]
-        );
-    }
-
-    fn outcome(
-        provider: SearchProviderKind,
-        candidates: Vec<SearchCandidate>,
-    ) -> ProviderSearchOutcome {
-        ProviderSearchOutcome {
-            candidates,
-            status: ProviderStatus {
-                provider,
-                state: SearchProviderState::ResultsFound,
-                note: String::new(),
-                coverage: None,
-            },
+                .map(|name| SurfaceMatch {
+                    id: id(name),
+                    evidence: MatchEvidence::default(),
+                })
+                .collect(),
         }
     }
 
-    fn candidate(provider: SearchProviderKind, key: &str, score: u32) -> SearchCandidate {
-        SearchCandidate {
-            key: key.to_string(),
-            score,
-            provider,
-            payload: SearchPayload::ObservedValue(ObservedValueResult {
-                value: key.to_string(),
-                schema_name: "github".to_string(),
-                surface_name: "issues".to_string(),
-                column_name: "title".to_string(),
-                surface_kind: SearchSurfaceKind::Table,
-                field_path: "title".to_string(),
-                observed_count: 1,
-                last_observed_at: "2026-07-16T00:00:00Z".to_string(),
-            }),
+    fn id(name: &str) -> SearchSurfaceId {
+        surface_id(name, SearchSurfaceKind::Table)
+    }
+
+    fn surface_id(name: &str, kind: SearchSurfaceKind) -> SearchSurfaceId {
+        SearchSurfaceId {
+            catalog_name: None,
+            schema_name: "github".to_string(),
+            name: name.to_string(),
+            kind,
         }
     }
 
-    fn candidate_keys(candidates: &[SearchCandidate]) -> Vec<&str> {
-        candidates
-            .iter()
-            .map(|candidate| candidate.key.as_str())
-            .collect()
+    fn names(fused: &[FusedEntry]) -> Vec<String> {
+        fused.iter().map(|entry| entry.id.name.clone()).collect()
     }
 }

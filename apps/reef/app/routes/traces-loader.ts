@@ -3,15 +3,14 @@ import { create } from '@bufbuild/protobuf'
 import type { Route } from './+types/traces'
 
 import type { Workspace } from '@/generated/coral/v1/resources_pb'
-import { ListTracesRequestSchema } from '@/generated/coral/v1/traces_pb'
+import { ListTracesRequestSchema, TraceView } from '@/generated/coral/v1/traces_pb'
 import { traceClientForRequest } from '@/lib/coral-request.server'
 import { errorMessage } from '@/lib/utils'
 import { workspaceFromParams } from '@/lib/workspace-routing'
-import { formatTraceError, isQueryTrace, type TraceSummaryData } from '@/views/traces/trace-utils'
+import { formatTraceError, type TraceSummaryData } from '@/views/traces/trace-utils'
 
 const MAX_QUERY_TRACES = 80
 const TRACE_LIST_PAGE_SIZE = 100
-const MAX_TRACE_LIST_PAGES = 2
 
 export interface TracesRouteData {
   endpointLabel: string
@@ -25,6 +24,7 @@ export type ListTracePage = (
   workspace: Workspace,
   pageSize: number,
   pageToken: string,
+  view: TraceView,
 ) => Promise<{ nextPageToken: string; traces: TraceSummaryData[] }>
 
 export async function loader({ params, request }: Route.LoaderArgs): Promise<TracesRouteData> {
@@ -59,21 +59,14 @@ export async function listQueryTraces(
   workspace: Workspace,
   listPage: ListTracePage = listTracePageForRequest,
 ): Promise<TraceSummaryData[]> {
-  const queryTraces: TraceSummaryData[] = []
-  let pageToken = ''
-
-  for (
-    let page = 0;
-    page < MAX_TRACE_LIST_PAGES && queryTraces.length < MAX_QUERY_TRACES;
-    page += 1
-  ) {
-    const response = await listPage(request, workspace, TRACE_LIST_PAGE_SIZE, pageToken)
-    queryTraces.push(...response.traces.filter(isQueryTrace))
-    pageToken = response.nextPageToken
-    if (!pageToken) break
-  }
-
-  return queryTraces.slice(0, MAX_QUERY_TRACES)
+  const response = await listPage(
+    request,
+    workspace,
+    TRACE_LIST_PAGE_SIZE,
+    '',
+    TraceView.QUERY_STREAM,
+  )
+  return response.traces.slice(0, MAX_QUERY_TRACES)
 }
 
 export function traceEndpointLabel(request: Request): string {
@@ -89,8 +82,9 @@ async function listTracePageForRequest(
   workspace: Workspace,
   pageSize: number,
   pageToken: string,
+  view: TraceView,
 ): Promise<{ nextPageToken: string; traces: TraceSummaryData[] }> {
   return traceClientForRequest(request).listTraces(
-    create(ListTracesRequestSchema, { pageSize, pageToken, workspace }),
+    create(ListTracesRequestSchema, { pageSize, pageToken, view, workspace }),
   )
 }

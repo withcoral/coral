@@ -1,4 +1,4 @@
-.PHONY: install ui-build rust-checks perf-check
+.PHONY: install ui-build docker-build rust-checks perf-check
 .PHONY: postgres-start postgres-url postgres-stop postgres-clean postgres-tests
 .PHONY: license-check lint-proto lint-sources fix-sources
 .PHONY: docs-generate docs-check schema-generate schema-check
@@ -6,6 +6,8 @@
 LOCAL_POSTGRES_IMAGE ?= postgres:17
 LOCAL_POSTGRES_CONTAINER ?= coral-test-postgres
 LOCAL_POSTGRES_PORT ?=
+DOCKER_IMAGE ?= coral:local
+DOCKER_NO_CACHE ?= 0
 
 install: ui-build
 	cargo install --path crates/coral-cli --locked
@@ -14,6 +16,70 @@ ui-build:
 	npm ci --prefix apps/ui
 	npm run build --prefix apps/ui
 	test -s apps/ui/dist/index.html
+
+# ----------------------------------------------------------------------------
+# Local Coral image build
+# ----------------------------------------------------------------------------
+# Compiles the current checkout in a native Linux BuildKit stage, then packages
+# that binary with the same runtime Dockerfile used by the publishing workflow.
+# The image platform follows the Docker daemon (arm64 or amd64), so this works
+# without cross-compilers or QEMU on both Apple Silicon and Intel machines.
+#
+#   make docker-build
+#   DOCKER_IMAGE=coral:test make docker-build
+#   DOCKER_NO_CACHE=1 make docker-build
+
+docker-build:
+	@set -eu; \
+	if ! command -v docker >/dev/null 2>&1; then \
+	  echo "docker is required to build the Coral image" >&2; \
+	  exit 1; \
+	fi; \
+	if ! docker buildx version >/dev/null 2>&1; then \
+	  echo "docker buildx is required to build the Coral image" >&2; \
+	  exit 1; \
+	fi; \
+	daemon_arch=$$(docker info --format '{{.Architecture}}'); \
+	case "$$daemon_arch" in \
+	  amd64|x86_64) image_arch=amd64 ;; \
+	  arm64|aarch64) image_arch=arm64 ;; \
+	  *) echo "unsupported Docker architecture: $$daemon_arch" >&2; exit 1 ;; \
+	esac; \
+	case "$(DOCKER_NO_CACHE)" in \
+	  0|false|'') no_cache=0 ;; \
+	  1|true) no_cache=1 ;; \
+	  *) echo "DOCKER_NO_CACHE must be 0, 1, false, or true" >&2; exit 1 ;; \
+	esac; \
+	git_sha=$$(git rev-parse --short HEAD); \
+	test -n "$$git_sha"; \
+	tmpdir=$$(mktemp -d); \
+	trap 'rm -rf "$$tmpdir"' EXIT HUP INT TERM; \
+	context="$$tmpdir/context"; \
+	mkdir -p "$$context/dist/$$image_arch" "$$context/docker"; \
+	set -- docker buildx build \
+	  --platform "linux/$$image_arch" \
+	  --provenance=false \
+	  --build-arg "CORAL_GIT_SHA=$$git_sha" \
+	  --file docker/Dockerfile.local \
+	  --target binary \
+	  --output "type=local,dest=$$context/dist/$$image_arch"; \
+	if [ "$$no_cache" -eq 1 ]; then set -- "$$@" --no-cache; fi; \
+	set -- "$$@" .; \
+	echo "Compiling the current checkout for linux/$$image_arch..."; \
+	"$$@"; \
+	test -x "$$context/dist/$$image_arch/coral"; \
+	cp docker/Dockerfile docker/entrypoint.sh "$$context/docker/"; \
+	set -- docker buildx build \
+	  --platform "linux/$$image_arch" \
+	  --provenance=true \
+	  --file "$$context/docker/Dockerfile" \
+	  --load \
+	  --tag "$(DOCKER_IMAGE)"; \
+	if [ "$$no_cache" -eq 1 ]; then set -- "$$@" --no-cache; fi; \
+	set -- "$$@" "$$context"; \
+	echo "Building $(DOCKER_IMAGE) from the local linux/$$image_arch binary..."; \
+	"$$@"; \
+	echo "Built $(DOCKER_IMAGE)"
 
 rust-checks:
 	cargo fmt --all -- --check

@@ -11,6 +11,9 @@
 //!   when the configured issuer already uses it.
 //! - [`PublicMetadata`] — supplied by an untrusted client and fetched. Public
 //!   HTTPS only, with a DNS resolver that rejects non-public answers.
+//! - [`ClientMetadata`] — a CIMD URL. Public HTTPS follows the same hardened
+//!   rule, while an exact operator-derived loopback URL is admitted only when
+//!   the configured authorization-server issuer also uses loopback HTTP.
 //! - [`ResourceIdentifier`] — an RFC 8707 `resource`, compared and recorded.
 //! - [`BrowserRedirect`] — an OAuth redirect target, handed to a browser.
 //!
@@ -34,6 +37,7 @@
     )
 )]
 
+use std::collections::BTreeSet;
 use std::fmt;
 use std::marker::PhantomData;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -324,6 +328,62 @@ impl SelfContainedPolicy for PublicMetadata {
 
 impl FetchablePolicy for PublicMetadata {}
 
+/// An attacker-controlled OAuth client metadata URL with a contextual local exception.
+///
+/// Public HTTPS uses the same URL and DNS restrictions as [`PublicMetadata`].
+/// Plain HTTP is admitted only for an explicit-loopback client ID that exactly
+/// matches one derived from an operator-registered loopback resource, and only
+/// when the authorization-server issuer itself uses explicit-loopback HTTP.
+pub(crate) struct ClientMetadata;
+
+impl UrlPolicy for ClientMetadata {
+    const NAME: &'static str = "EndpointUrl<ClientMetadata>";
+
+    fn transport_error() -> OutboundUrlPolicyError {
+        OutboundUrlPolicyError::ClientMetadataTransport
+    }
+}
+
+impl FetchablePolicy for ClientMetadata {}
+
+impl EndpointUrl<ClientMetadata> {
+    /// Parses a CIMD client ID under the topology established by `issuer` and
+    /// the exact local IDs derived from operator-registered resources.
+    pub(crate) fn parse(
+        value: &str,
+        issuer: &EndpointUrl<Configured>,
+        allowed_loopback_client_ids: &BTreeSet<String>,
+    ) -> Result<Self, OutboundUrlPolicyError> {
+        PublicMetadata::check_raw(value)?;
+        let url = Url::parse(value).map_err(OutboundUrlPolicyError::InvalidUrl)?;
+        if url.path().is_empty() || url.path() == "/" {
+            return Err(OutboundUrlPolicyError::MetadataPathRequired);
+        }
+        check_shape(&url)?;
+
+        if url.scheme() == "https" {
+            if public_metadata_host_is_blocked(&url) {
+                return Err(OutboundUrlPolicyError::NonPublicHost);
+            }
+            return Ok(Self(url, PhantomData));
+        }
+
+        // Check canonical byte identity before allowlist membership. Otherwise
+        // a rewritten spelling could inherit permission from the one exact ID
+        // the operator's resource derives.
+        if url.scheme() == "http"
+            && issuer.as_url().scheme() == "http"
+            && is_explicit_loopback(&url)
+            && url.as_str() == value
+            && allowed_loopback_client_ids.contains(value)
+        {
+            return Ok(Self(url, PhantomData));
+        }
+
+        Err(ClientMetadata::transport_error())
+    }
+}
+
 /// A resource identifier Coral compares and records but never requests.
 ///
 /// # Trust
@@ -389,6 +449,20 @@ impl SelfContainedPolicy for BrowserRedirect {
 
 impl ParsedUrlPolicy for BrowserRedirect {}
 
+impl EndpointUrl<BrowserRedirect> {
+    /// Reports whether this target is a plain-HTTP loopback callback.
+    ///
+    /// This is the shape a native client registers for a listener on the user's
+    /// own machine, and the only one whose port an authorization server is
+    /// required to treat as unregistered (RFC 8252 §7.3). A caller that relaxes
+    /// a comparison for that reason asks here, so the loopback rule keeps its
+    /// single definition next to the policy that admits loopback HTTP at all,
+    /// rather than growing a second spelling that could drift from it.
+    pub(crate) fn is_loopback_http(&self) -> bool {
+        self.0.scheme() == "http" && is_explicit_loopback(&self.0)
+    }
+}
+
 struct RedactedUrl<'a>(&'a Url);
 
 impl fmt::Debug for RedactedUrl<'_> {
@@ -425,6 +499,11 @@ pub(crate) enum OutboundUrlPolicyError {
     /// Public metadata did not use HTTPS.
     #[error("public metadata URL must use HTTPS")]
     PublicMetadataTransport,
+    /// Client metadata used neither public HTTPS nor the contextual local exception.
+    #[error(
+        "OAuth client metadata URL must use public HTTPS or an authorized explicit-loopback HTTP endpoint"
+    )]
+    ClientMetadataTransport,
     /// A resource identifier did not use HTTPS or explicit loopback HTTP.
     #[error("resource identifier must use HTTPS or explicit loopback HTTP")]
     ResourceIdentifierTransport,
@@ -450,7 +529,7 @@ pub(crate) enum OutboundUrlPolicyError {
     #[error("public metadata URL host must be public")]
     NonPublicHost,
     /// The hardened HTTP client could not be constructed.
-    #[error("failed to build public metadata HTTP client: {0}")]
+    #[error("failed to build metadata HTTP client: {0}")]
     ClientBuild(reqwest::Error),
     /// A response body could not be read.
     ///
@@ -479,6 +558,22 @@ pub(crate) fn public_metadata_http_client() -> Result<reqwest::Client, OutboundU
         .connect_timeout(PUBLIC_METADATA_TIMEOUT)
         .timeout(PUBLIC_METADATA_TIMEOUT)
         .dns_resolver(PublicMetadataResolver)
+        .build()
+        .map_err(OutboundUrlPolicyError::ClientBuild)
+}
+
+/// Builds an HTTP client for CIMD URLs validated under [`ClientMetadata`].
+///
+/// The caller must still construct requests from an
+/// [`EndpointUrl<ClientMetadata>`]. Exact `localhost` DNS answers must all be
+/// loopback; every other hostname must resolve exclusively to public addresses.
+pub(crate) fn client_metadata_http_client() -> Result<reqwest::Client, OutboundUrlPolicyError> {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
+        .connect_timeout(PUBLIC_METADATA_TIMEOUT)
+        .timeout(PUBLIC_METADATA_TIMEOUT)
+        .dns_resolver(ClientMetadataDnsResolver)
         .build()
         .map_err(OutboundUrlPolicyError::ClientBuild)
 }
@@ -539,6 +634,51 @@ impl reqwest::dns::Resolve for PublicMetadataResolver {
             Ok(Box::new(addresses.into_iter()) as reqwest::dns::Addrs)
         })
     }
+}
+
+#[derive(Clone)]
+struct ClientMetadataDnsResolver;
+
+impl reqwest::dns::Resolve for ClientMetadataDnsResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let host = name.as_str().to_string();
+        Box::pin(async move {
+            let addresses = tokio::net::lookup_host((host.as_str(), 0))
+                .await
+                .map_err(|error| {
+                    std::io::Error::other(format!(
+                        "OAuth client metadata DNS lookup failed for {host}: {error}"
+                    ))
+                })?
+                .collect::<Vec<_>>();
+            validate_client_metadata_resolution(&host, &addresses)?;
+            Ok(Box::new(addresses.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
+}
+
+fn validate_client_metadata_resolution(
+    host: &str,
+    addresses: &[SocketAddr],
+) -> std::io::Result<()> {
+    if host.trim_end_matches('.').eq_ignore_ascii_case("localhost") {
+        if addresses.is_empty() {
+            return Err(std::io::Error::other(
+                "OAuth client metadata DNS lookup returned no localhost records",
+            ));
+        }
+        if let Some(address) = addresses
+            .iter()
+            .find(|address| !is_loopback_ip(address.ip()))
+        {
+            return Err(std::io::Error::other(format!(
+                "OAuth client metadata DNS lookup resolved localhost to disallowed address {address}"
+            )));
+        }
+        return Ok(());
+    }
+
+    validate_public_resolution(host, addresses)
 }
 
 fn validate_public_resolution(host: &str, addresses: &[SocketAddr]) -> std::io::Result<()> {
@@ -729,15 +869,17 @@ fn append_bounded_chunk(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::net::SocketAddr;
 
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::{
-        BrowserRedirect, Configured, Discovered, EndpointUrl, OutboundUrlPolicyError,
-        PublicMetadata, ResourceIdentifier, append_bounded_chunk, public_metadata_http_client,
-        public_metadata_ip_is_blocked, read_bounded_body, validate_public_resolution,
+        BrowserRedirect, ClientMetadata, Configured, Discovered, EndpointUrl,
+        OutboundUrlPolicyError, PublicMetadata, ResourceIdentifier, append_bounded_chunk,
+        client_metadata_http_client, public_metadata_http_client, public_metadata_ip_is_blocked,
+        read_bounded_body, validate_client_metadata_resolution, validate_public_resolution,
     };
 
     #[test]
@@ -994,6 +1136,74 @@ mod tests {
     }
 
     #[test]
+    fn client_metadata_allows_public_https_and_exact_contextual_loopback_ids() {
+        let public_issuer =
+            EndpointUrl::<Configured>::parse("https://auth.example.test").expect("issuer");
+        let loopback_issuer =
+            EndpointUrl::<Configured>::parse("http://localhost:9080").expect("issuer");
+        let loopback_ids = BTreeSet::from([
+            "http://localhost:3000/.well-known/oauth-client".to_string(),
+            "http://127.42.0.1:3000/.well-known/oauth-client".to_string(),
+            "http://[::1]:3000/.well-known/oauth-client".to_string(),
+            "http://[::ffff:7f00:1]:3000/.well-known/oauth-client".to_string(),
+        ]);
+
+        for issuer in [&public_issuer, &loopback_issuer] {
+            EndpointUrl::<ClientMetadata>::parse(
+                "https://client.example.test/.well-known/oauth-client",
+                issuer,
+                &loopback_ids,
+            )
+            .expect("public HTTPS remains valid");
+        }
+
+        for client_id in &loopback_ids {
+            EndpointUrl::<ClientMetadata>::parse(client_id, &loopback_issuer, &loopback_ids)
+                .expect(client_id);
+        }
+    }
+
+    #[test]
+    fn client_metadata_rejects_unlisted_or_unsafe_local_urls_before_fetching() {
+        let loopback_issuer =
+            EndpointUrl::<Configured>::parse("http://localhost:9080").expect("issuer");
+        let allowed =
+            BTreeSet::from(["http://localhost:3000/.well-known/oauth-client".to_string()]);
+
+        for client_id in [
+            "http://localhost:3001/.well-known/oauth-client",
+            "http://localhost:3000/other-client",
+            "http://127.0.0.1:3000/.well-known/oauth-client",
+            "http://api.localhost:3000/.well-known/oauth-client",
+            "http://10.0.0.1:3000/.well-known/oauth-client",
+            "http://169.254.169.254/.well-known/oauth-client",
+            "http://user@localhost:3000/.well-known/oauth-client",
+            "http://localhost:3000",
+            "http://localhost:3000/.well-known/oauth-client#fragment",
+            "http://localhost:3000/a/../.well-known/oauth-client",
+            "http://localhost:3000/a/%2e%2e%2f.well-known/oauth-client",
+            "http://LOCALHOST:3000/.well-known/oauth-client",
+            "http://[::ffff:127.0.0.1]:3000/.well-known/oauth-client",
+        ] {
+            EndpointUrl::<ClientMetadata>::parse(client_id, &loopback_issuer, &allowed)
+                .expect_err(client_id);
+        }
+    }
+
+    #[test]
+    fn client_metadata_rejects_loopback_http_for_a_public_issuer() {
+        let public_issuer =
+            EndpointUrl::<Configured>::parse("https://auth.example.test").expect("issuer");
+        let client_id = "http://localhost:3000/.well-known/oauth-client";
+        let allowed = BTreeSet::from([client_id.to_string()]);
+
+        assert!(matches!(
+            EndpointUrl::<ClientMetadata>::parse(client_id, &public_issuer, &allowed),
+            Err(OutboundUrlPolicyError::ClientMetadataTransport)
+        ));
+    }
+
+    #[test]
     fn public_metadata_rejects_localhost_and_non_public_ipv4() {
         for host in [
             "localhost",
@@ -1092,6 +1302,29 @@ mod tests {
     }
 
     #[test]
+    fn client_metadata_dns_requires_loopback_localhost_and_public_other_hosts() {
+        let ipv4_loopback: SocketAddr = "127.42.0.1:0".parse().expect("IPv4 loopback");
+        let ipv6_loopback: SocketAddr = "[::1]:0".parse().expect("IPv6 loopback");
+        let mapped_loopback: SocketAddr = "[::ffff:127.0.0.1]:0".parse().expect("mapped loopback");
+        let public: SocketAddr = "93.184.216.34:0".parse().expect("public");
+        let private: SocketAddr = "10.0.0.1:0".parse().expect("private");
+
+        validate_client_metadata_resolution(
+            "localhost",
+            &[ipv4_loopback, ipv6_loopback, mapped_loopback],
+        )
+        .expect("all localhost answers are loopback");
+        validate_client_metadata_resolution("localhost.", &[public])
+            .expect_err("localhost must not resolve publicly");
+        validate_client_metadata_resolution("public.test", &[public])
+            .expect("other hosts may resolve publicly");
+        validate_client_metadata_resolution("public.test", &[public, private])
+            .expect_err("mixed public/private answers are rejected");
+        validate_client_metadata_resolution("public.test", &[ipv4_loopback])
+            .expect_err("other hosts must not resolve to loopback");
+    }
+
+    #[test]
     fn ip_classifier_keeps_public_addresses_public() {
         assert!(!public_metadata_ip_is_blocked(
             "93.184.216.34".parse().expect("IPv4")
@@ -1147,6 +1380,7 @@ mod tests {
     #[test]
     fn hardened_public_client_builds() {
         public_metadata_http_client().expect("public metadata client");
+        client_metadata_http_client().expect("client metadata client");
     }
 
     /// Refusing redirects is the hardening that matters most for SSRF: without
@@ -1155,7 +1389,7 @@ mod tests {
     /// not pin that, so drive a real 302. The mock listens on a literal IP,
     /// which hyper resolves without consulting the custom resolver.
     #[tokio::test]
-    async fn hardened_public_client_does_not_follow_redirects() {
+    async fn hardened_metadata_clients_do_not_follow_redirects() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/metadata"))
@@ -1165,21 +1399,25 @@ mod tests {
             .mount(&server)
             .await;
 
-        let response = public_metadata_http_client()
-            .expect("public metadata client")
-            .get(format!("{}/metadata", server.uri()))
-            .send()
-            .await
-            .expect("response");
+        for client in [
+            public_metadata_http_client().expect("public metadata client"),
+            client_metadata_http_client().expect("client metadata client"),
+        ] {
+            let response = client
+                .get(format!("{}/metadata", server.uri()))
+                .send()
+                .await
+                .expect("response");
 
-        assert_eq!(response.status().as_u16(), 302);
-        assert_eq!(
-            response
-                .headers()
-                .get("location")
-                .and_then(|location| location.to_str().ok()),
-            Some("http://169.254.169.254/")
-        );
+            assert_eq!(response.status().as_u16(), 302);
+            assert_eq!(
+                response
+                    .headers()
+                    .get("location")
+                    .and_then(|location| location.to_str().ok()),
+                Some("http://169.254.169.254/")
+            );
+        }
     }
 
     /// A server that omits `Content-Length` skips the declared-size early

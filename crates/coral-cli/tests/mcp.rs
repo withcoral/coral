@@ -1396,9 +1396,9 @@ async fn assert_search_tool(
         )),
     )
     .await?;
-    assert_eq!(search["results"][0]["kind"], "catalog_metadata");
+    assert_eq!(search["results"][0]["kind"], "table");
     assert_eq!(
-        search["results"][0]["catalog_metadata"]["item"]["sql_reference"],
+        search["results"][0]["sql_reference"],
         "local_messages.messages"
     );
     assert_eq!(

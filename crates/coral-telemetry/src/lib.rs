@@ -43,11 +43,11 @@ pub const QUERY_STREAM_KIND_ATTRIBUTE: &str = "coral.stream.kind";
 /// Span attribute containing the privacy-safe Query Stream operation name.
 pub const QUERY_STREAM_NAME_ATTRIBUTE: &str = "coral.stream.name";
 
-/// Semantic Query Stream kind for direct SQL and catalog query operations.
+/// Semantic Query Stream kind for SQL and catalog query operations.
 pub const QUERY_STREAM_KIND_QUERY: &str = "query";
-/// Semantic Query Stream kind for direct Universal Search operations.
+/// Semantic Query Stream kind for Universal Search operations.
 pub const QUERY_STREAM_KIND_SEARCH: &str = "search";
-/// Semantic Query Stream kind for MCP tool invocations.
+/// Semantic Query Stream kind for tool operations without a more specific kind.
 pub const QUERY_STREAM_KIND_TOOL: &str = "tool";
 /// Semantic Query Stream kind for another explicitly marked user-visible operation.
 pub const QUERY_STREAM_KIND_OTHER: &str = "other";

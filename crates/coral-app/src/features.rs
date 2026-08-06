@@ -13,6 +13,8 @@ use crate::state::{
 /// Runtime feature keys recognized by Coral.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Feature {
+    /// Enable relational database source installation and runtime loading.
+    DatabaseSources,
     /// Expose the optional MCP `feedback` tool.
     Feedback,
     /// Enable observed-value collection, storage, retrieval, and maintenance
@@ -69,6 +71,14 @@ struct FeatureSpec {
 }
 
 const FEATURE_SPECS: &[FeatureSpec] = &[
+    FeatureSpec {
+        feature: Feature::DatabaseSources,
+        key: "database_sources",
+        default_enabled: false,
+        description: "Enables installing and querying database sources. Off by default.",
+        enable_flag: "enable-database-sources",
+        disable_flag: "disable-database-sources",
+    },
     FeatureSpec {
         feature: Feature::Feedback,
         key: "feedback",
@@ -456,7 +466,10 @@ observed_values_search = true
             .iter()
             .map(|spec| status_from_raw(spec, &raw, &features))
             .collect::<Vec<_>>();
-        let status = statuses.first().expect("feedback status");
+        let status = statuses
+            .iter()
+            .find(|status| status.key == "feedback")
+            .expect("feedback status");
 
         assert_eq!(status.key, "feedback");
         assert_eq!(status.configured, FeatureConfiguredState::InvalidValue);
@@ -482,7 +495,11 @@ observed_values_search = true
         let keys = Feature::all().map(Feature::key).collect::<Vec<_>>();
         let error = unknown_feature_error("tasks");
 
-        assert_eq!(keys, vec!["feedback", "observed_values_search"]);
+        assert_eq!(
+            keys,
+            vec!["database_sources", "feedback", "observed_values_search"]
+        );
+        assert!(!features.enabled(Feature::DatabaseSources));
         assert!(!features.enabled(Feature::Feedback));
         assert!(!features.enabled(Feature::ObservedValuesSearch));
         assert!(error.to_string().contains("unknown feature 'tasks'"));

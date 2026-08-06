@@ -22,7 +22,7 @@
 )]
 
 use coral_api::v1::trace_service_client::TraceServiceClient;
-use coral_api::v1::{ListSourcesRequest, ListTracesRequest, SearchRequest};
+use coral_api::v1::{ListSourcesRequest, ListTracesRequest, SearchRequest, TraceView};
 use coral_client::{AppClient, default_workspace, local::ServerBuilder};
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
@@ -104,6 +104,7 @@ async fn host_subscriber_keeps_server_available_without_local_only_attributes() 
             page_size: 10,
             page_token: String::new(),
             workspace: None,
+            view: TraceView::Unspecified as i32,
         }))
         .await
         .expect_err("host-owned subscriber should leave trace service disabled");

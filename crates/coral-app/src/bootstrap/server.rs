@@ -68,8 +68,8 @@ use crate::state::{AppStateLayout, ConfigStore};
 use crate::task::manager::TaskManager;
 use crate::task::service::TaskService;
 use crate::task::store::TaskStore;
-use crate::telemetry::TelemetryConfig;
 use crate::telemetry::service::TraceService;
+use crate::telemetry::{TelemetryConfig, TraceManager};
 use crate::transport::GrpcRequestContextLayer;
 use crate::workspaces::{
     WorkspaceLifecycleLock, WorkspaceManager, WorkspacePoolRegistry, WorkspaceService,
@@ -407,6 +407,7 @@ impl ServerBuilder {
         let workspace_lifecycle_lock = WorkspaceLifecycleLock::default();
         let workspace_pool_registry = Arc::new(WorkspacePoolRegistry::default());
         let diagnostic_reporter = SourceDiagnosticReporter::default();
+        let database_sources_enabled = features.enabled(Feature::DatabaseSources);
         let source_manager = SourceManager::with_diagnostic_reporter(
             config_store.clone(),
             credential_manager.clone(),
@@ -414,7 +415,8 @@ impl ServerBuilder {
             workspace_lifecycle_lock.clone(),
             diagnostic_reporter.clone(),
         )
-        .with_pool_registry(Arc::clone(&workspace_pool_registry));
+        .with_pool_registry(Arc::clone(&workspace_pool_registry))
+        .with_database_sources_enabled(database_sources_enabled);
         let workspace_manager = WorkspaceManager::new(
             config_store.clone(),
             credential_manager.clone(),
@@ -445,7 +447,8 @@ impl ServerBuilder {
             self.config.engine_extensions_providers,
             diagnostic_reporter.clone(),
             workspace_pool_registry,
-        );
+        )
+        .with_database_sources_enabled(database_sources_enabled);
         let observed_values_search_enabled = features.enabled(Feature::ObservedValuesSearch);
         let search_observations =
             observed_values_search_enabled.then(|| SearchObservationHandle::new(layout.clone()));
@@ -509,7 +512,10 @@ fn trace_components_for_store(
     active_trace_store.map_or_else(TraceServerComponents::default, |store| {
         TraceServerComponents {
             local_trace_store_dir: Some(store.dir.clone()),
-            service: Some(TraceService::new(store.dir, store.retention)),
+            service: Some(TraceService::new(TraceManager::new(
+                store.dir,
+                store.retention,
+            ))),
         }
     })
 }
@@ -1011,7 +1017,7 @@ mod tests {
     use coral_api::v1::trace_service_client::TraceServiceClient;
     use coral_api::v1::{
         EndTaskRequest, ExecuteSqlRequest, ImportSourceRequest, ImportSourceResponse,
-        ListSourcesRequest, ListTracesRequest, StartTaskRequest, TaskStatus, Workspace,
+        ListSourcesRequest, ListTracesRequest, StartTaskRequest, TaskStatus, TraceView, Workspace,
         import_source_response,
     };
     use coral_api::{HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE};
@@ -1042,7 +1048,7 @@ mod tests {
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::task::manager::TaskManager;
     use crate::task::store::TaskStore;
-    use crate::telemetry::service::TraceService;
+    use crate::telemetry::{TraceManager, service::TraceService};
     use crate::transport::workspace_to_proto;
     use crate::workspaces::{WorkspaceManager, WorkspaceName};
     use crate::{
@@ -1532,6 +1538,7 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
                 page_size: 10,
                 page_token: String::new(),
                 workspace: None,
+                view: TraceView::Unspecified as i32,
             }))
             .await
             .expect_err("trace service should be disabled");
@@ -1755,8 +1762,10 @@ backend = "unsupported"
             CatalogDiscovery::new(query_manager.clone()),
             lifecycle_lock,
         );
-        let trace_service =
-            TraceService::new(temp.path().join("trace-store"), Duration::from_mins(1));
+        let trace_service = TraceService::new(TraceManager::new(
+            temp.path().join("trace-store"),
+            Duration::from_mins(1),
+        ));
         let server = start_server(
             ServerDependencies {
                 source: source_manager,
@@ -1789,6 +1798,7 @@ backend = "unsupported"
                 page_size: 10,
                 page_token: String::new(),
                 workspace: None,
+                view: TraceView::Unspecified as i32,
             }))
             .await
             .expect("list traces")

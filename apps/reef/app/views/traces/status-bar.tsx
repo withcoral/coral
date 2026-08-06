@@ -28,8 +28,8 @@ export function StatusBar({
       <div className={s.statusRight}>
         <Typography.BodySmall as="span" variant="tertiary">
           {count === totalCount
-            ? `${count} ${count === 1 ? 'query' : 'queries'}`
-            : `${count} of ${totalCount} queries`}
+            ? `${count} ${count === 1 ? 'operation' : 'operations'}`
+            : `${count} of ${totalCount} operations`}
         </Typography.BodySmall>
         <span className={s.statusSep} />
         <Typography.BodySmall as="span" variant="tertiary">

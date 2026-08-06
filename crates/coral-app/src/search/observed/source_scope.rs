@@ -48,6 +48,23 @@ impl<'a> SourceScopeSeed<'a> {
     }
 }
 
+/// A runtime component whose name diverges from its package's source name.
+///
+/// Since #1791 one source publishes exactly one surface and one SQL namespace,
+/// and the sources domain copies both names from the same `manifest.common.name`
+/// field, so this is unreachable on every production path. Search still refuses
+/// the source rather than writing rows under an identity that would select
+/// nothing back -- a tripwire at the single seam that derives identity from a
+/// runtime package, not an enforcement boundary.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "source '{source_name}' exposes runtime component '{component_source_name}'; one installed source must publish exactly one runtime schema"
+)]
+pub(crate) struct ObservedSourceIdentityMismatch {
+    source_name: String,
+    component_source_name: String,
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct ObservedSourceSurfaceScope {
     /// Canonical installed source that owns lifecycle clears and invalidation epochs.
@@ -77,9 +94,26 @@ impl ObservedSourceSurfaceScope {
 pub(super) fn source_surface_scopes(
     source: &QuerySource,
     seed: SourceScopeSeed<'_>,
-) -> Vec<ObservedSourceSurfaceScope> {
+) -> Result<Vec<ObservedSourceSurfaceScope>, ObservedSourceIdentityMismatch> {
+    let source_name = source.source_name();
     let mut scopes = Vec::new();
     for component in source.components() {
+        let component_source_name = match component {
+            // Database components declare no HTTP/MCP observation surfaces, so
+            // they never contribute a stored identity for the tripwire to
+            // protect; the arm below enumerates nothing for them.
+            RuntimeSourceComponent::Database(_) => source_name,
+            RuntimeSourceComponent::Http(manifest) => manifest.common.name.as_str(),
+            RuntimeSourceComponent::File(manifest) => manifest.common.name.as_str(),
+            RuntimeSourceComponent::Mcp(manifest) => manifest.common.name.as_str(),
+        };
+        if component_source_name != source_name {
+            return Err(ObservedSourceIdentityMismatch {
+                source_name: source_name.to_string(),
+                component_source_name: component_source_name.to_string(),
+            });
+        }
+
         match component {
             RuntimeSourceComponent::Database(_) => {
                 // Database tables do not declare HTTP/MCP observation surfaces.
@@ -137,7 +171,7 @@ pub(super) fn source_surface_scopes(
             }
         }
     }
-    scopes
+    Ok(scopes)
 }
 
 fn surface_scope(
@@ -176,4 +210,48 @@ struct ScopeFingerprint<'a> {
     component_source_name: &'a str,
     surface_kind: &'static str,
     surface_name: &'a str,
+}
+
+#[cfg(test)]
+mod tests {
+    use uuid::Uuid;
+
+    use super::{SOURCE_SCOPE_FORMAT_VERSION, ScopeFingerprint};
+    use crate::hash::sha256_hex;
+
+    /// Pins the exact bytes hashed into `source_scope_id`.
+    ///
+    /// Every stored observed row is keyed by that id and retrieval is
+    /// fail-closed, so a change to this serialization silently hides the entire
+    /// observed corpus rather than failing anything. The struct is private and
+    /// its field names are part of the on-disk format, not an implementation
+    /// detail -- if a refactor needs to rename one, it owes a `#[serde(rename)]`
+    /// and this test must keep passing untouched.
+    #[test]
+    fn scope_fingerprint_hash_is_stable() {
+        let scope_bytes = serde_json::to_vec(&ScopeFingerprint {
+            format_version: SOURCE_SCOPE_FORMAT_VERSION,
+            runtime_contract_fingerprint: "v1:test-runtime-contract",
+            credential_revision: Uuid::nil(),
+            component_source_name: "github_v4",
+            surface_kind: "table",
+            surface_name: "issues",
+        })
+        .expect("scope fingerprint serializes");
+
+        assert_eq!(
+            String::from_utf8(scope_bytes.clone()).expect("scope fingerprint is utf-8"),
+            concat!(
+                r#"{"format_version":1,"#,
+                r#""runtime_contract_fingerprint":"v1:test-runtime-contract","#,
+                r#""credential_revision":"00000000-0000-0000-0000-000000000000","#,
+                r#""component_source_name":"github_v4","#,
+                r#""surface_kind":"table","surface_name":"issues"}"#,
+            )
+        );
+        assert_eq!(
+            sha256_hex(&scope_bytes),
+            "82fca0aa8c55fc4b8a22cf7a8f57a63d5acab8d7d2d84853d3f12b3b7a24886b"
+        );
+    }
 }

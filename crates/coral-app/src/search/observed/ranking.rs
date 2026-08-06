@@ -5,13 +5,6 @@ use std::collections::VecDeque;
 use crate::search::observed::sqlite_projection::ObservedValuesSearchHit;
 use crate::search::observed::sqlite_queue::ObservedValuesSurfaceKind;
 
-const OBSERVED_VALUE_BASE_SCORE: u32 = 10_000;
-
-pub(crate) fn observed_candidate_score(_hit: &ObservedValuesSearchHit, index: usize) -> u32 {
-    let rank_penalty = u32::try_from(index).unwrap_or(u32::MAX);
-    OBSERVED_VALUE_BASE_SCORE.saturating_sub(rank_penalty)
-}
-
 pub(crate) fn diversify_observed_hits(
     hits: Vec<ObservedValuesSearchHit>,
     limit: usize,
@@ -65,39 +58,10 @@ fn observed_diversity_key(hit: &ObservedValuesSearchHit) -> ObservedDiversityKey
 
 #[cfg(test)]
 mod tests {
-    use super::{OBSERVED_VALUE_BASE_SCORE, diversify_observed_hits, observed_candidate_score};
+    use super::diversify_observed_hits;
+    use crate::hash::sha256_hex;
     use crate::search::observed::sqlite_projection::ObservedValuesSearchHit;
     use crate::search::observed::sqlite_queue::ObservedValuesSurfaceKind;
-
-    #[test]
-    fn observed_score_ignores_observation_count_boost() {
-        let hit = observed_hit_with_count(1_250);
-
-        assert_eq!(observed_candidate_score(&hit, 0), OBSERVED_VALUE_BASE_SCORE);
-    }
-
-    #[test]
-    fn observed_candidate_score_preserves_rank_over_observation_count() {
-        let low_count_first = observed_hit("github", "issues", "title", "Payment issue", 1);
-        let high_count_second = observed_hit("github", "pulls", "title", "Payment pull", 1_000);
-
-        assert!(
-            observed_candidate_score(&low_count_first, 0)
-                > observed_candidate_score(&high_count_second, 1)
-        );
-    }
-
-    #[test]
-    fn observed_score_preserves_store_rank_order_by_index() {
-        let hit = observed_hit_with_count(7);
-
-        let first_score = observed_candidate_score(&hit, 0);
-        let second_score = observed_candidate_score(&hit, 1);
-        let third_score = observed_candidate_score(&hit, 2);
-
-        assert!(first_score > second_score);
-        assert!(second_score > third_score);
-    }
 
     #[test]
     fn diversify_observed_hits_interleaves_groups() {
@@ -147,16 +111,6 @@ mod tests {
         assert_eq!(diversify_observed_hits(vec![hit], 10).len(), 1);
     }
 
-    fn observed_hit_with_count(observation_count: u64) -> ObservedValuesSearchHit {
-        observed_hit(
-            "github",
-            "issues",
-            "title",
-            "Payment outage",
-            observation_count,
-        )
-    }
-
     fn observed_hit(
         source_name: &str,
         surface_name: &str,
@@ -170,7 +124,9 @@ mod tests {
             surface_kind: ObservedValuesSurfaceKind::Table,
             surface_name: surface_name.to_string(),
             column_name: column_name.to_string(),
-            value_key: display_value.to_ascii_lowercase().replace(' ', "-"),
+            // Storage hashes the value; a readable slug here would let code
+            // that matches on `value_key` pass tests and match nothing live.
+            value_key: sha256_hex(display_value.as_bytes()),
             display_value: display_value.to_string(),
             last_observed_at: "2026-07-09T12:00:00.000Z".to_string(),
             observation_count,

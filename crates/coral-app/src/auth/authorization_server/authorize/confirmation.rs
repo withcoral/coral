@@ -13,7 +13,7 @@ use zeroize::Zeroizing;
 use super::super::super::state_store::{
     OAuthAuthorizationApprovalBrowserBinding, OAuthAuthorizationApprovalTicket,
 };
-use super::super::response::security_headers;
+use super::super::response::approval_page_security_headers;
 
 const MAX_FORM_BYTES: usize = 256;
 const TICKET_LENGTH: usize = 43;
@@ -21,8 +21,26 @@ const BROWSER_BINDING_LENGTH: usize = 43;
 const APPROVAL_COOKIE_MAX_AGE_SECONDS: u64 = 5 * 60;
 const SECURE_APPROVAL_COOKIE_NAME: &str = "__Host-coral_oauth_approval";
 const LOOPBACK_APPROVAL_COOKIE_NAME: &str = "coral_oauth_approval";
-const CONTENT_SECURITY_POLICY: &str =
-    "default-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
+/// The approval page's policy, which deliberately omits `form-action`.
+///
+/// Submitting this page's form starts a sign-in that navigates through every
+/// origin the flow touches, and a browser applies `form-action` to all of them,
+/// redirects included. A single observed sign-in went here, to the provider, to
+/// two more provider URLs, back to this server's callback, and finally to the
+/// client's redirect URI — five origins, only some of them knowable when this
+/// page is rendered. An enumerated list is worse than none: a provider that
+/// federates to an enterprise identity provider, adds an MFA or bot-check hop,
+/// or simply changes its own redirect path silently breaks every login, and the browser
+/// blames this page's same-origin form action rather than the hop it blocked.
+/// The POST is delivered and the approval consumed before the block, so the
+/// user sees nothing happen and a retry reports the spent approval as expired.
+///
+/// What the directive would defend against is an injected form exfiltrating
+/// data. This page renders no script, takes no user input beyond a hidden
+/// ticket, escapes every interpolated value, and already denies every other
+/// fetch through `default-src 'none'`, so the exposure it leaves is small and
+/// bounded — where a wrong `form-action` breaks the feature outright.
+const CONTENT_SECURITY_POLICY: &str = "default-src 'none'; base-uri 'none'; frame-ancestors 'none'";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum ApprovalDecision {
@@ -114,7 +132,7 @@ pub(super) async fn parse_submission(
 /// `Cancel` comes before `Continue` in the form because the first submit button
 /// is the one a browser presses for a bare Enter key, and the safe decision is
 /// the better default for a keystroke nobody aimed at either button. Source
-/// order is display order here: the page has no stylesheet, and the policy in
+/// order is display order here: the page has no stylesheet, and
 /// [`CONTENT_SECURITY_POLICY`] has no `style-src`, so it inherits
 /// `default-src 'none'` and no styling could reverse the two.
 pub(super) fn response(
@@ -149,7 +167,7 @@ pub(super) fn response(
     );
     let mut response = (
         StatusCode::OK,
-        security_headers(),
+        approval_page_security_headers(),
         [
             (header::CONTENT_TYPE, "text/html; charset=utf-8"),
             (header::CONTENT_SECURITY_POLICY, CONTENT_SECURITY_POLICY),

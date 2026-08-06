@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 
-import { CodeBlock } from '@/components/code-block'
+import { CodeBlock, type CodeLanguage } from '@/components/code-block'
 import { Container as ScrollArea } from '@/wax/components/scroll-area'
 import { Typography } from '@/wax/components/typography'
 
@@ -16,6 +16,7 @@ export interface QueryDetailStat {
 export interface QueryDetailSummaryProps {
   actions?: ReactNode
   children?: ReactNode
+  codeLanguage?: CodeLanguage
   shortcuts?: ReactNode
   sql: string
   stats?: QueryDetailStat[]
@@ -27,6 +28,7 @@ export interface QueryDetailSummaryProps {
 export function QueryDetailSummary({
   actions,
   children,
+  codeLanguage = 'sql',
   shortcuts,
   sql,
   stats = [],
@@ -62,7 +64,7 @@ export function QueryDetailSummary({
       </header>
       <ScrollArea className={styles.scrollBody} constrainWidth fade="none" fillContent>
         <div className={styles.content}>
-          <CodeBlock code={sql} language="sql" />
+          <CodeBlock code={sql} language={codeLanguage} />
           {stats.length > 0 ? (
             <div className={styles.statGrid}>
               {stats.map((stat) => (

@@ -174,11 +174,24 @@ pub(crate) fn run(args: &Args) -> Result<bool> {
             eprintln!("skipping {schema_name}: not a DSL v4 manifest");
             continue;
         };
-        // An MCP surface enumerates its operations by calling a live,
-        // authenticated server, so it cannot be imported from a checkout.
-        if v4.surface.surface_type == SurfaceType::Mcp {
-            eprintln!("skipping {schema_name}: MCP surfaces need a live server to enumerate tools");
-            continue;
+        match v4.surface.surface_type {
+            SurfaceType::OpenApi => {}
+            // An MCP surface enumerates its operations by calling a live,
+            // authenticated server, so it cannot be imported from a checkout.
+            SurfaceType::Mcp => {
+                eprintln!(
+                    "skipping {schema_name}: MCP surfaces need a live server to enumerate tools"
+                );
+                continue;
+            }
+            // Database surfaces discover relations from a live database rather
+            // than importing operation metadata from an OpenAPI descriptor.
+            SurfaceType::Database => {
+                eprintln!(
+                    "skipping {schema_name}: database surfaces need a live database to enumerate relations"
+                );
+                continue;
+            }
         }
         eprintln!("importing {schema_name} ...");
         rows.extend(
@@ -331,6 +344,9 @@ fn load_descriptor(
         SurfaceDescriptor::Url { url } => fetch_descriptor(url)?,
         SurfaceDescriptor::McpServer { .. } => {
             bail!("MCP surfaces have no OpenAPI descriptor")
+        }
+        SurfaceDescriptor::Database { .. } => {
+            bail!("database surfaces have no OpenAPI descriptor")
         }
     };
     if bytes.len() as u64 > MAX_DESCRIPTOR_BYTES {

@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use coral_engine::{QuerySource, RuntimeSourceComponent, RuntimeSourcePackage};
+use coral_spec::backends::database::DatabaseSourceManifest;
 use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
 use coral_spec::backends::mcp::{
     McpSourceManifest, McpTableFilterBinding, McpTableFunctionSpec, McpTableSpec,
@@ -71,6 +72,7 @@ struct RuntimeContractFingerprintInput<'a> {
 #[derive(Serialize)]
 #[serde(tag = "backend", rename_all = "snake_case")]
 enum V4RuntimeContract<'a> {
+    Database(&'a coral_spec::backends::database::DatabaseSourceManifest),
     Http(&'a coral_spec::backends::http::HttpSourceManifest),
     Mcp(&'a coral_spec::backends::mcp::McpSourceManifest),
 }
@@ -84,18 +86,14 @@ pub(crate) fn runtime_contract_fingerprint(
     v4_component: Option<&RuntimeSourceComponent>,
 ) -> Result<RuntimeContractFingerprint, AppError> {
     let v4_runtime_contract = match v4_component {
+        Some(RuntimeSourceComponent::Database(database)) => {
+            Some(V4RuntimeContract::Database(database))
+        }
         Some(RuntimeSourceComponent::Http(http)) => Some(V4RuntimeContract::Http(http)),
         Some(RuntimeSourceComponent::Mcp(mcp)) => Some(V4RuntimeContract::Mcp(mcp)),
         Some(RuntimeSourceComponent::File(_)) => {
             return Err(AppError::Internal(
                 "DSL v4 runtime fingerprint received a file component".to_string(),
-            ));
-        }
-        // The engine models database components here, but no app path installs
-        // one until DSL v4 database sources are connected.
-        Some(RuntimeSourceComponent::Database(_)) => {
-            return Err(AppError::Internal(
-                "DSL v4 runtime fingerprint received a database component".to_string(),
             ));
         }
         None => None,
@@ -131,22 +129,25 @@ pub(crate) fn query_source_from_installed_manifest(
 ) -> Result<LoadedRuntimeSource, AppError> {
     let source_spec = &installed.source_spec;
     let (query_source, runtime_contract_fingerprint) = if let Some(v4) = source_spec.as_v4() {
-        let materialized = load_v4_materialization_with_reporter(
-            layout,
-            workspace_name,
-            &source.name,
-            &installed.manifest_yaml,
-            v4,
-            diagnostic_reporter,
-        )?;
-        let component =
+        let component = if v4.surface.surface_type == SurfaceType::Database {
+            Some(runtime_component_for_v4_database_source(v4)?)
+        } else {
+            let materialized = load_v4_materialization_with_reporter(
+                layout,
+                workspace_name,
+                &source.name,
+                &installed.manifest_yaml,
+                v4,
+                diagnostic_reporter,
+            )?;
             runtime_component_for_v4_source(v4, &materialized).map_err(|error| match error {
                 error @ AppError::UnsupportedV4IdentityRequirements { .. } => error,
                 error => incompatible_materialization_error(
                     &source.name,
                     format!("failed to assemble runtime package: {error}"),
                 ),
-            })?;
+            })?
+        };
         let runtime_contract_fingerprint = runtime_contract_fingerprint(
             &installed.manifest_yaml,
             &source.variables,
@@ -200,7 +201,27 @@ pub(crate) fn runtime_component_for_v4_source(
             manifest,
             materialized,
         )?))),
+        SurfaceType::Database => Ok(Some(runtime_component_for_v4_database_source(manifest)?)),
     }
+}
+
+pub(crate) fn runtime_component_for_v4_database_source(
+    manifest: &V4SourceManifest,
+) -> Result<RuntimeSourceComponent, AppError> {
+    let database_runtime = manifest.surface.database_runtime().ok_or_else(|| {
+        AppError::FailedPrecondition("DSL v4 surface is not a database surface".to_string())
+    })?;
+    Ok(RuntimeSourceComponent::Database(DatabaseSourceManifest {
+        common: SourceManifestCommon {
+            dsl_version: manifest.common.dsl_version,
+            name: manifest.common.name.clone(),
+            version: String::new(),
+            description: manifest.common.description.clone(),
+            test_queries: Vec::new(),
+        },
+        connection: database_runtime.connection.clone(),
+        declared_inputs: manifest.declared_inputs.clone(),
+    }))
 }
 
 fn has_published_projection(materialized: &V4MaterializedSource) -> bool {
@@ -537,6 +558,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::path::PathBuf;
 
+    use coral_engine::RuntimeSourceComponent;
     use coral_spec::backends::http::{AuthSpec, RateLimitSpec};
     use coral_spec::backends::mcp::{McpOffsetPaginationSpec, McpPaginationSpec, McpServerSpec};
     use coral_spec::v4::{
@@ -553,13 +575,16 @@ mod tests {
         V4MaterializedSource, V4SourceCommon, V4SourceManifest, V4Surface, ValidatedSurfacePlan,
     };
     use coral_spec::{
-        ManifestDataType, PageSizeSpec, PaginationMode, PaginationSpec, ResponseSpec,
-        SourceTableFunctionKind,
+        DatabaseConnectionSpec, ManifestDataType, ManifestInputKind, PageSizeSpec, PaginationMode,
+        PaginationSpec, ResponseSpec, SourceTableFunctionKind, parse_source_manifest_yaml,
     };
 
     use crate::bootstrap::AppError;
 
-    use super::{runtime_component_for_v4_source, runtime_contract_fingerprint, surface_base_url};
+    use super::{
+        runtime_component_for_v4_database_source, runtime_component_for_v4_source,
+        runtime_contract_fingerprint, surface_base_url,
+    };
 
     fn surface_without_authored_base_url() -> V4Surface {
         openapi_surface_with_base_url("")
@@ -1064,6 +1089,52 @@ mod tests {
             operation_metadata_generator_version: OPERATION_METADATA_GENERATOR_VERSION.to_string(),
             projection_generator_version: PROJECTION_GENERATOR_VERSION.to_string(),
         }
+    }
+
+    #[test]
+    fn database_runtime_component_preserves_connection_and_declared_inputs() {
+        let manifest = parse_source_manifest_yaml(
+            r#"
+name: coral_db
+dsl_version: 4
+description: Read-only reporting database.
+test_queries:
+  - SELECT 1
+inputs:
+  DB_PASSWORD:
+    kind: secret
+surface:
+  type: database
+  provider: postgres
+  connection:
+    host: localhost
+    port: "5432"
+    database: coral
+    user: coral_reader
+    password: "{{input.DB_PASSWORD}}"
+"#,
+        )
+        .expect("database manifest");
+        let v4 = manifest.as_v4().expect("v4 manifest");
+
+        let component =
+            runtime_component_for_v4_database_source(v4).expect("database runtime component");
+        let RuntimeSourceComponent::Database(database) = component else {
+            panic!("database component");
+        };
+
+        assert_eq!(database.common.name, "coral_db");
+        assert_eq!(database.common.description, "Read-only reporting database.");
+        assert!(database.common.test_queries.is_empty());
+        assert_eq!(database.declared_inputs.len(), 1);
+        let input = database.declared_inputs.first().expect("declared input");
+        assert_eq!(input.key, "DB_PASSWORD");
+        assert_eq!(input.kind, ManifestInputKind::Secret);
+        let DatabaseConnectionSpec::Postgres(connection) = database.connection else {
+            panic!("PostgreSQL connection");
+        };
+        assert_eq!(connection.database.raw(), "coral");
+        assert_eq!(connection.password.raw(), "{{input.DB_PASSWORD}}");
     }
 
     #[test]

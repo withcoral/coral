@@ -22,6 +22,7 @@ const OAUTH_ISSUER: &str = "http://localhost:9080";
 const OAUTH_RESOURCE: &str = "http://localhost:1457";
 const SESSION_ISSUER: &str = "https://auth.example";
 const SESSION_RESOURCE: &str = "https://coral.example/mcp";
+const REEF_RESOURCE: &str = "https://reef.example";
 
 fn write_config(temp: &TempDir, config: &str) {
     std::fs::write(temp.path().join("config.toml"), config).expect("write config");
@@ -107,6 +108,18 @@ async fn assert_unauthorized(base: &str, authorization: &str) {
         .await
         .expect("MCP response");
     assert_eq!(rejected.status(), reqwest::StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        rejected.headers().get_all(WWW_AUTHENTICATE).iter().count(),
+        1
+    );
+    assert!(
+        rejected
+            .headers()
+            .get(WWW_AUTHENTICATE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("Bearer ")),
+        "MCP rejection must include one bearer challenge"
+    );
 }
 
 /// Asserts the private gRPC data plane refuses a call carrying no credentials.
@@ -196,19 +209,37 @@ fn signed_session_token(
 }
 
 fn write_session_config(temp: &TempDir, signing_key: &[u8]) {
-    std::fs::write(temp.path().join("session.key"), signing_key).expect("session key");
-    // The uppercase host is deliberate: the advertised-resource assertion only
-    // proves canonicalization if the configured URL actually needs canonicalizing.
-    write_config(
+    write_session_config_with_mcp(
         temp,
+        signing_key,
         r"
-[trace_history]
-enabled = false
-
 [server.mcp_http]
 enabled = true
 bind = '127.0.0.1:0'
 public_url = 'https://CORAL.example/mcp'
+",
+    );
+}
+
+fn write_reef_only_session_config(temp: &TempDir, signing_key: &[u8]) {
+    write_session_config_with_mcp(temp, signing_key, "");
+}
+
+fn write_session_config_with_mcp(temp: &TempDir, signing_key: &[u8], mcp_http: &str) {
+    std::fs::write(temp.path().join("session.key"), signing_key).expect("session key");
+    // The uppercase hosts are deliberate: the assertions only prove
+    // canonicalization if the configured URLs actually need it.
+    write_config(
+        temp,
+        &format!(
+            r"
+[trace_history]
+enabled = false
+
+{mcp_http}
+
+[auth]
+allowed_audiences = ['https://REEF.example/']
 
 [auth.session]
 signing_key_file = 'session.key'
@@ -222,10 +253,11 @@ client_id = 'upstream-client'
 client_secret = 'test-secret'
 redirect_uri = 'https://auth.example/auth/oidc/callback'
 ",
+        ),
     );
 }
 
-async fn assert_authenticated_data(server: &RunningServer, mcp_endpoint: &str, token: &str) {
+async fn assert_grpc_authenticated(server: &RunningServer, token: &str) {
     let authenticated = connect_with_loopback_bearer(
         server.endpoint_uri(),
         BearerToken::new(token).expect("bearer token"),
@@ -237,6 +269,10 @@ async fn assert_authenticated_data(server: &RunningServer, mcp_endpoint: &str, t
         .list_catalog(Request::new(catalog_request()))
         .await
         .expect("authenticated catalog call");
+}
+
+async fn assert_authenticated_data(server: &RunningServer, mcp_endpoint: &str, token: &str) {
+    assert_grpc_authenticated(server, token).await;
     assert_catalog_tool(mcp_endpoint.to_string(), Some(token)).await;
 }
 
@@ -513,6 +549,10 @@ async fn session_authenticated_companion_gates_grpc_and_mcp() {
     let token = session_token(signing_key.as_ref(), &resource);
     assert_authenticated_data(&server, &format!("{base}/mcp"), &token).await;
 
+    let reef_token = session_token(signing_key.as_ref(), REEF_RESOURCE);
+    assert_grpc_authenticated(&server, &reef_token).await;
+    assert_unauthorized(&base, &format!("Bearer {reef_token}")).await;
+
     // Readiness observes the backend, not just the port: stopping gRPC while MCP
     // HTTP keeps serving must turn the authenticated probe unhealthy.
     let RunningServer {
@@ -540,6 +580,34 @@ async fn session_authenticated_companion_gates_grpc_and_mcp() {
         .shutdown()
         .await
         .expect("shutdown OAuth server");
+}
+
+#[tokio::test]
+async fn reef_only_audience_authenticates_private_grpc_without_mcp_http() {
+    let temp = TempDir::new().expect("temp dir");
+    let signing_key =
+        EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
+            .expect("P-256 signing key");
+    write_reef_only_session_config(&temp, signing_key.as_ref());
+
+    let server = start(
+        ServerBuilder::configured_standalone_grpc()
+            .with_config_dir(temp.path())
+            .with_noop_feedback_uploads(),
+        McpOptions::default(),
+    )
+    .await
+    .expect("start Reef-only authenticated server");
+
+    assert!(server.grpc_authentication_enabled());
+    assert!(server.mcp_http_addr().is_none());
+    assert!(server.oauth_addr().is_some());
+    assert_grpc_rejects_unauthenticated(server.endpoint_uri()).await;
+
+    let reef_token = session_token(signing_key.as_ref(), REEF_RESOURCE);
+    assert_grpc_authenticated(&server, &reef_token).await;
+
+    server.shutdown().await.expect("shutdown Reef-only server");
 }
 
 #[tokio::test]

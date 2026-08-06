@@ -1,5 +1,9 @@
 import { createMemoryRouter, Outlet, RouterProvider, useParams } from 'react-router'
-import { TraceStatus } from '@/generated/coral/v1/traces_pb'
+import {
+  TraceInvocationKind,
+  TraceOperationKind,
+  TraceStatus,
+} from '@/generated/coral/v1/traces_pb'
 import { describe, expect, it } from 'vitest'
 import { userEvent } from 'vitest/browser'
 import { render } from 'vitest-browser-react'
@@ -17,6 +21,9 @@ function detail(): TraceDetailData {
       durationNanos: '12000000',
       endTimeUnixNanos: '13000000',
       name: 'coral.query',
+      invocationKind: TraceInvocationKind.DIRECT,
+      operationKind: TraceOperationKind.QUERY,
+      operationName: 'sql',
       query: 'select * from github.pull_requests',
       rootSpanId: 'root',
       rowCount: '7',
@@ -64,6 +71,16 @@ function httpSpan(
     traceFlags: 1,
     traceId: 'trace-07',
     traceState: '',
+  }
+}
+
+function internalSpan(spanId: string, name: string): TraceSpanData {
+  return {
+    ...httpSpan(spanId, 'unused'),
+    attributesJson: '{}',
+    kind: 'internal',
+    name,
+    scopeName: 'coral-app',
   }
 }
 
@@ -145,6 +162,122 @@ describe('TraceDetail', () => {
       .element((await screen).getByText('select * from github.pull_requests'))
       .toBeVisible()
     await expect.element((await screen).getByText('7')).toBeVisible()
+  })
+
+  it('renders locally recorded Search text', async () => {
+    const searchDetail = detail()
+    searchDetail.spans = [internalSpan('search', 'coral.search')]
+    searchDetail.summary = {
+      ...searchDetail.summary!,
+      name: 'coral.search',
+      operationKind: TraceOperationKind.SEARCH,
+      operationName: 'search',
+      query: 'SELECT customers FROM Zurich',
+      rowCount: '0',
+      rowCountRecorded: false,
+    }
+    const { screen } = renderDetail(null, searchDetail)
+
+    const rendered = await screen
+    await expect.element(rendered.getByText('SELECT customers FROM Zurich')).toBeVisible()
+    await expect.element(rendered.getByText('Search details')).toBeVisible()
+    expect(rendered.container.querySelector('.token')).toBeNull()
+    expect(
+      rendered.container.querySelector('[data-span-row-id="search"] [data-tone="query"]'),
+    ).not.toBeNull()
+  })
+
+  it('renders locally recorded MCP Search text as plain text', async () => {
+    const searchDetail = detail()
+    searchDetail.summary = {
+      ...searchDetail.summary!,
+      name: 'coral.mcp.call_tool',
+      invocationKind: TraceInvocationKind.MCP,
+      operationKind: TraceOperationKind.SEARCH,
+      operationName: 'search',
+      query: 'SELECT accounts FROM Zurich',
+      rowCount: '0',
+      rowCountRecorded: false,
+    }
+    const { screen } = renderDetail(null, searchDetail)
+    const rendered = await screen
+
+    await expect.element(rendered.getByText('SELECT accounts FROM Zurich')).toBeVisible()
+    await expect.element(rendered.getByText('Search details')).toBeVisible()
+    expect(rendered.container.querySelector('.token')).toBeNull()
+  })
+
+  it('prefers a current typed detail operation over a stale typed list row', async () => {
+    const currentDetail = detail()
+    const staleSearchSummary = {
+      ...currentDetail.summary!,
+      name: 'coral.mcp.call_tool',
+      invocationKind: TraceInvocationKind.MCP,
+      operationKind: TraceOperationKind.SEARCH,
+      operationName: 'search',
+      query: 'stale Search text',
+    }
+    const { screen } = renderDetail(null, currentDetail, [staleSearchSummary])
+    const rendered = await screen
+
+    await expect.element(rendered.getByText('select * from github.pull_requests')).toBeVisible()
+    expect(rendered.getByText('stale Search text').query()).toBeNull()
+  })
+
+  it('explains when an MCP Search trace predates local text capture', async () => {
+    const searchDetail = detail()
+    searchDetail.summary = {
+      ...searchDetail.summary!,
+      name: 'coral.mcp.call_tool',
+      invocationKind: TraceInvocationKind.MCP,
+      operationKind: TraceOperationKind.SEARCH,
+      operationName: 'search',
+      query: '',
+      rowCount: '0',
+      rowCountRecorded: false,
+    }
+    const { screen } = renderDetail(null, searchDetail)
+
+    await expect
+      .element((await screen).getByText('No Search text was recorded for this operation.'))
+      .toBeVisible()
+  })
+
+  it('keeps a Query operation named search classified and highlighted as SQL', async () => {
+    const queryDetail = detail()
+    queryDetail.summary = {
+      ...queryDetail.summary!,
+      operationKind: TraceOperationKind.QUERY,
+      operationName: 'search',
+      query: 'SELECT * FROM searchable_items',
+    }
+    const { screen } = renderDetail(null, queryDetail)
+    const rendered = await screen
+
+    await expect.element(rendered.getByText('Query details')).toBeVisible()
+    expect(rendered.getByText('Search details').query()).toBeNull()
+    expect(rendered.container.querySelector('.token.keyword')).not.toBeNull()
+  })
+
+  it('labels future tools without exposing span implementation names', async () => {
+    const toolDetail = detail()
+    toolDetail.summary = {
+      ...toolDetail.summary!,
+      name: 'coral.mcp.call_tool',
+      invocationKind: TraceInvocationKind.MCP,
+      operationKind: TraceOperationKind.TOOL,
+      operationName: 'future_lookup',
+      query: '',
+    }
+    const { screen } = renderDetail(null, toolDetail)
+    const rendered = await screen
+
+    await expect
+      .element(rendered.getByText('Future lookup tool call. No SQL was recorded.'))
+      .toBeVisible()
+    await expect.element(rendered.getByText('Future lookup details')).toBeVisible()
+    expect(rendered.getByText('coral.mcp.call_tool').query()).toBeNull()
+    expect(rendered.container.querySelector('.token')).toBeNull()
   })
 
   it('keeps route loader failures closable', async () => {

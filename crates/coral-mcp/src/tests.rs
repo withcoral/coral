@@ -1519,7 +1519,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     let universal_search = universal_search
         .structured_content
         .expect("structured universal search");
-    assert_eq!(universal_search["results"][0]["kind"], "catalog_metadata");
+    assert_eq!(universal_search["results"][0]["kind"], "table");
     assert_matches_output_schema(search_tool, &universal_search);
 
     let described = describe_surface(client, &task_id, "local_messages", "messages").await;
@@ -1767,6 +1767,10 @@ async fn list_catalog_surfaces_table_functions() {
         "number"
     );
     assert_eq!(
+        catalog["items"][0]["table_function"]["arguments"][0]["data_type"],
+        "Utf8"
+    );
+    assert_eq!(
         catalog["items"][0]["table_function"]["result_columns"][0]["column_name"],
         "title"
     );
@@ -1832,10 +1836,12 @@ async fn list_catalog_surfaces_table_functions() {
         .as_array()
         .expect("search results")
         .iter()
-        .find(|result| result["catalog_metadata"]["item"]["name"] == "searchy.lookup_issue")
+        .find(|result| result["sql_reference"] == "searchy.lookup_issue")
         .expect("table function guide match");
+    assert_eq!(function["kind"], "function");
+    assert_eq!(function["arguments"]["number"], "Utf8");
     assert_eq!(
-        function["catalog_metadata"]["item"]["table_function"]["guide"],
+        function["guide"],
         "Use this function for exact issue lookup."
     );
     assert_matches_output_schema(search_tool, &search);

@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use coral_spec::v4::SurfaceDescriptor;
+use coral_spec::v4::{SurfaceDescriptor, SurfaceType};
 use serde_yaml::Value as YamlValue;
 
 use crate::bootstrap::AppError;
@@ -18,17 +18,17 @@ use crate::credentials::{
 };
 use crate::search::observed::SearchObservationHandle;
 use crate::search::sqlite_store::SqliteSearchStore;
-use crate::sources::SourceName;
 use crate::sources::catalog::{
     describe_manifest, list_bundled_sources, load_bundled_source, resolve_installed_manifest,
 };
 use crate::sources::materialization::{
     MaterializationBuild, MaterializationInputs, SourceDiagnosticReporter,
     build_v4_materialization_tmp, canonicalize_file_descriptor, cleanup_materialization_backup,
-    cleanup_materialization_tmp, new_materialization_suffix, replace_v4_materialization,
+    cleanup_materialization_tmp, new_materialization_suffix, replace_or_retire_v4_materialization,
     restore_materialization_backup,
 };
 use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
+use crate::sources::{SourceName, ensure_database_source_feature_enabled};
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::storage::fs;
 use crate::workspaces::{
@@ -50,6 +50,7 @@ pub(crate) struct SourceManager {
     diagnostic_reporter: SourceDiagnosticReporter,
     search_observations: Option<SearchObservationHandle>,
     pool_registry: Arc<WorkspacePoolRegistry>,
+    database_sources_enabled: bool,
 }
 
 pub(crate) struct CreateBundledSourceCommand {
@@ -220,6 +221,7 @@ impl SourceManager {
             lifecycle_lock,
             SourceDiagnosticReporter::default(),
         )
+        .with_database_sources_enabled(true)
     }
 
     pub(crate) fn with_diagnostic_reporter(
@@ -238,7 +240,13 @@ impl SourceManager {
             diagnostic_reporter,
             search_observations: None,
             pool_registry: Arc::new(WorkspacePoolRegistry::default()),
+            database_sources_enabled: false,
         }
+    }
+
+    pub(crate) fn with_database_sources_enabled(mut self, enabled: bool) -> Self {
+        self.database_sources_enabled = enabled;
+        self
     }
 
     pub(crate) fn with_pool_registry(mut self, pool_registry: Arc<WorkspacePoolRegistry>) -> Self {
@@ -465,6 +473,7 @@ impl SourceManager {
         materialization_manifest_yaml: &str,
         origin: SourceOrigin,
     ) -> Result<InstalledSource, AppError> {
+        self.validate_source_features(materialization_manifest_yaml)?;
         self.validate_runtime_schema_names_available(
             workspace_name,
             &candidate.name,
@@ -520,6 +529,7 @@ impl SourceManager {
         materialization_manifest_yaml: String,
         origin: SourceOrigin,
     ) -> Result<InstalledSource, AppError> {
+        self.validate_source_features(&materialization_manifest_yaml)?;
         self.validate_runtime_schema_names_available(
             &workspace_name,
             &candidate.name,
@@ -837,30 +847,25 @@ impl SourceManager {
                 (Vec::new(), None)
             };
 
-        let materialization_backup =
-            if let Some(materialization_tmp) = request.materialization_tmp.as_ref() {
-                match replace_v4_materialization(
-                    &self.layout,
+        let materialization_backup = match replace_or_retire_v4_materialization(
+            &self.layout,
+            workspace_name,
+            &source_name,
+            request.materialization_tmp.as_deref(),
+        ) {
+            Ok(backup) => backup,
+            Err(error) => {
+                cleanup_materialization_tmp(request.materialization_tmp.as_deref());
+                self.restore_source_rollback_state_with_state_lock_held(
                     workspace_name,
                     &source_name,
-                    materialization_tmp,
-                ) {
-                    Ok(backup) => backup,
-                    Err(error) => {
-                        cleanup_materialization_tmp(request.materialization_tmp.as_deref());
-                        self.restore_source_rollback_state_with_state_lock_held(
-                            workspace_name,
-                            &source_name,
-                            previous,
-                            credential_storage,
-                            &credential_guard,
-                        );
-                        return Err(error);
-                    }
-                }
-            } else {
-                None
-            };
+                    previous,
+                    credential_storage,
+                    &credential_guard,
+                );
+                return Err(error);
+            }
+        };
 
         let persisted_version = match request.origin {
             SourceOrigin::Bundled => None,
@@ -986,6 +991,9 @@ impl SourceManager {
         let Some(v4) = manifest.as_v4() else {
             return Ok(None);
         };
+        if v4.surface.surface_type == SurfaceType::Database {
+            return Ok(None);
+        }
         if matches!(origin, SourceOrigin::Bundled)
             && matches!(
                 v4.surface.descriptor,
@@ -1007,6 +1015,12 @@ impl SourceManager {
             &new_materialization_suffix(suffix_prefix),
         )
         .map(Some)
+    }
+
+    fn validate_source_features(&self, manifest_yaml: &str) -> Result<(), AppError> {
+        let manifest = parse_source_manifest_yaml(manifest_yaml)
+            .map_err(|error| AppError::InvalidInput(error.to_string()))?;
+        ensure_database_source_feature_enabled(&manifest, self.database_sources_enabled)
     }
 
     fn validate_runtime_schema_names_available(
@@ -1781,7 +1795,9 @@ mod tests {
     use crate::search::observed::{SearchObservationHandle, SqliteObservedValuesStore};
     use crate::sources::SourceName;
     use crate::sources::catalog::describe_manifest;
-    use crate::sources::materialization::{FINGERPRINT_FILENAME, PROJECTIONS_FILENAME};
+    use crate::sources::materialization::{
+        FINGERPRINT_FILENAME, MaterializationInputs, PROJECTIONS_FILENAME,
+    };
     use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::workspaces::{WorkspaceLifecycleRevision, WorkspaceName};
@@ -2505,6 +2521,62 @@ surface:
             inputs.secrets.get("OPTIONAL_TOKEN").map(String::as_str),
             Some("persisted-secret")
         );
+    }
+
+    #[test]
+    fn database_source_skips_v4_materialization() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(CredentialStore::new(layout.clone()));
+        let manager = SourceManager::new_for_tests(config_store, credential_manager, layout);
+        let candidate = CandidateSource {
+            name: SourceName::parse("coral_db").expect("source"),
+            description: String::new(),
+            version: None,
+            inputs: vec![ManifestInputSpec {
+                key: "DB_PASSWORD".to_string(),
+                kind: ManifestInputKind::Secret,
+                required: true,
+                default_value: String::new(),
+                hint: None,
+                credential: None,
+            }],
+            installed: false,
+            origin: SourceOrigin::Imported,
+            credential_storage: Some(CredentialStorageKind::File),
+        };
+        let manifest_yaml = r#"
+name: coral_db
+dsl_version: 4
+inputs:
+  DB_PASSWORD:
+    kind: secret
+surface:
+  type: database
+  provider: postgres
+  connection:
+    host: localhost
+    port: "5432"
+    database: coral
+    user: coral_reader
+    password: "{{input.DB_PASSWORD}}"
+"#;
+
+        let materialization = manager
+            .prepare_v4_materialization(
+                &default_workspace(),
+                &candidate,
+                manifest_yaml,
+                &MaterializationInputs::default(),
+                SourceOrigin::Imported,
+                "test",
+            )
+            .expect("database materialization decision");
+
+        assert!(materialization.is_none());
     }
 
     #[test]

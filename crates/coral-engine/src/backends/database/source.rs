@@ -19,9 +19,8 @@ use datafusion_table_providers::sql::db_connection_pool::postgrespool::PostgresC
 use datafusion_table_providers::sql::db_connection_pool::sqlitepool::SqliteConnectionPoolFactory;
 use datafusion_table_providers::util::secrets::to_secret_map;
 
-use super::catalog::{
-    DatabaseCatalog, DatabaseRelation, boxed_provider_error, build_database_catalog, provider_error,
-};
+use super::catalog::{DatabaseCatalog, DatabaseRelation, build_database_catalog, provider_error};
+use super::columns::{MYSQL_COLUMNS_SQL, POSTGRES_COLUMNS_SQL, SQLITE_COLUMNS_SQL};
 use super::registry::{DatabasePool, DatabasePoolRegistry};
 use crate::backends::shared::template::{RenderContext, render_template};
 use crate::backends::{
@@ -147,6 +146,7 @@ impl CompiledBackendSource for CompiledDatabaseSource {
             catalogs: vec![BackendCatalogRegistration {
                 catalog: database_catalog.provider,
                 source,
+                column_fetcher: database_catalog.column_fetcher,
             }],
         })
     }
@@ -183,7 +183,6 @@ impl DatabaseCatalogStrategy for PostgresConnectionSpec {
                     PostgresConnectionPool::new(to_secret_map(params))
                         .await
                         .map_err(provider_error)?
-                        // The MySQL adapter has no equivalent unsupported-type policy.
                         .with_unsupported_type_action(UnsupportedTypeAction::String),
                 )))
             })
@@ -193,7 +192,15 @@ impl DatabaseCatalogStrategy for PostgresConnectionSpec {
                 "database catalog '{catalog_name}' resolved to a non-Postgres pool"
             )));
         };
-        build_database_catalog(pool, POSTGRES_RELATIONS_SQL, Arc::new(PostgreSqlDialect {})).await
+        build_database_catalog(
+            catalog_name,
+            pool,
+            None,
+            POSTGRES_RELATIONS_SQL,
+            POSTGRES_COLUMNS_SQL,
+            Arc::new(PostgreSqlDialect {}),
+        )
+        .await
     }
 }
 
@@ -243,7 +250,16 @@ impl DatabaseCatalogStrategy for MySqlConnectionSpec {
                 "database catalog '{catalog_name}' resolved to a non-MySQL pool"
             )));
         };
-        build_database_catalog(pool, MYSQL_RELATIONS_SQL, Arc::new(MySqlDialect {})).await
+        let inventory_sql = mysql_relations_sql();
+        build_database_catalog(
+            catalog_name,
+            pool,
+            Some(MYSQL_INVENTORY_SESSION_SQL),
+            &inventory_sql,
+            MYSQL_COLUMNS_SQL,
+            Arc::new(MySqlDialect {}),
+        )
+        .await
     }
 }
 
@@ -269,7 +285,7 @@ impl DatabaseCatalogStrategy for SqliteConnectionSpec {
 
     async fn build_catalog(
         &self,
-        _catalog_name: &str,
+        catalog_name: &str,
         context: &RenderContext<'_>,
         _pool_registry: &DatabasePoolRegistry,
     ) -> DataFusionResult<DatabaseCatalog> {
@@ -277,10 +293,13 @@ impl DatabaseCatalogStrategy for SqliteConnectionSpec {
         let pool = SqliteConnectionPoolFactory::new(&path, Mode::File, SQLITE_BUSY_TIMEOUT)
             .build()
             .await
-            .map_err(boxed_provider_error)?;
+            .map_err(provider_error)?;
         build_database_catalog(
+            catalog_name,
             Arc::new(pool),
+            None,
             SQLITE_RELATIONS_SQL,
+            SQLITE_COLUMNS_SQL,
             Arc::new(SqliteDialect {}),
         )
         .await
@@ -288,24 +307,92 @@ impl DatabaseCatalogStrategy for SqliteConnectionSpec {
 }
 
 const POSTGRES_RELATIONS_SQL: &str = "
-SELECT table_schema AS schema_name,
-       table_name,
-       table_type AS relation_type
+SELECT CAST(table_schema AS TEXT) AS schema_name,
+       CAST(table_name AS TEXT) AS table_name,
+       CAST(table_type AS TEXT) AS relation_type,
+       CAST(NULL AS TEXT) AS unrecognized_columns
 FROM information_schema.tables
 WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
   AND table_type IN ('BASE TABLE', 'VIEW')";
 
-const MYSQL_RELATIONS_SQL: &str = "
-SELECT TABLE_SCHEMA AS schema_name,
-       TABLE_NAME AS table_name,
-       TABLE_TYPE AS relation_type
-FROM INFORMATION_SCHEMA.TABLES
-WHERE TABLE_SCHEMA NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys')";
+// Keep unrecognized-column diagnostics intact for the widest valid MySQL tables.
+const MYSQL_INVENTORY_SESSION_SQL: &str = "SET SESSION group_concat_max_len = 1048576";
+
+// `datafusion-table-providers-mysql` 0.13.0 keeps its MySQL type mapper private. This list is an
+// advisory approximation used only to diagnose unfamiliar information_schema DATA_TYPE values;
+// lazy provider schema discovery remains authoritative for queryability. Re-audit this list on
+// upgrades, but never use it to exclude a relation from the catalog.
+const MYSQL_INVENTORY_RECOGNIZED_DATA_TYPES: &[&str] = &[
+    "decimal",
+    "numeric",
+    "newdecimal",
+    "tinyint",
+    "smallint",
+    "int",
+    "integer",
+    "bigint",
+    "mediumint",
+    "float",
+    "double",
+    "null",
+    "timestamp",
+    "time",
+    "datetime",
+    "date",
+    "year",
+    "bit",
+    "json",
+    "enum",
+    "set",
+    "tinyblob",
+    "tinytext",
+    "mediumblob",
+    "mediumtext",
+    "longblob",
+    "longtext",
+    "blob",
+    "text",
+    "varchar",
+    "varbinary",
+    "char",
+    "binary",
+];
+
+fn mysql_relations_sql() -> String {
+    let recognized_types = MYSQL_INVENTORY_RECOGNIZED_DATA_TYPES
+        .iter()
+        .map(|data_type| format!("'{data_type}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "
+SELECT tables.TABLE_SCHEMA AS schema_name,
+       tables.TABLE_NAME AS table_name,
+       tables.TABLE_TYPE AS relation_type,
+       GROUP_CONCAT(
+           CASE
+               WHEN LOWER(columns.DATA_TYPE) NOT IN ({recognized_types})
+               THEN CONCAT(columns.COLUMN_NAME, ' (', columns.DATA_TYPE, ')')
+           END
+           ORDER BY columns.ORDINAL_POSITION
+           SEPARATOR ', '
+       ) AS unrecognized_columns
+FROM INFORMATION_SCHEMA.TABLES AS tables
+LEFT JOIN INFORMATION_SCHEMA.COLUMNS AS columns
+  ON columns.TABLE_SCHEMA = tables.TABLE_SCHEMA
+ AND columns.TABLE_NAME = tables.TABLE_NAME
+WHERE tables.TABLE_SCHEMA NOT IN (
+    'information_schema', 'mysql', 'performance_schema', 'sys'
+)
+GROUP BY tables.TABLE_SCHEMA, tables.TABLE_NAME, tables.TABLE_TYPE"
+    )
+}
 
 const SQLITE_RELATIONS_SQL: &str = "
 SELECT 'main' AS schema_name,
        name AS table_name,
-       CASE type WHEN 'view' THEN 'VIEW' ELSE 'BASE TABLE' END AS relation_type
+       CASE type WHEN 'view' THEN 'VIEW' ELSE 'BASE TABLE' END AS relation_type,
+       CAST(NULL AS TEXT) AS unrecognized_columns
 FROM sqlite_master
 WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%'";
 
@@ -355,7 +442,10 @@ mod tests {
         SourceManifestCommon, SqliteConnectionSpec,
     };
 
-    use super::DatabaseCatalogStrategy;
+    use super::{
+        DatabaseCatalogStrategy, MYSQL_INVENTORY_RECOGNIZED_DATA_TYPES,
+        MYSQL_INVENTORY_SESSION_SQL, mysql_relations_sql,
+    };
     use crate::backends::shared::template::RenderContext;
     use crate::{
         CoralQuery, QueryRuntimeConfig, QuerySource, RuntimeSourceComponent, RuntimeSourcePackage,
@@ -398,6 +488,34 @@ mod tests {
             user: template("root"),
             password: template("password"),
         }
+    }
+
+    #[test]
+    fn mysql_inventory_query_preserves_advisory_type_diagnostics() {
+        let recognized_types = MYSQL_INVENTORY_RECOGNIZED_DATA_TYPES
+            .iter()
+            .map(|data_type| format!("'{data_type}'"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = mysql_relations_sql();
+
+        assert!(sql.contains(&format!("NOT IN ({recognized_types})")));
+        assert!(sql.contains("GROUP_CONCAT("));
+        assert!(sql.contains("LEFT JOIN INFORMATION_SCHEMA.COLUMNS"));
+        assert!(sql.contains("AS unrecognized_columns"));
+        assert!(sql.contains("GROUP BY tables.TABLE_SCHEMA, tables.TABLE_NAME, tables.TABLE_TYPE"));
+        assert!(
+            !MYSQL_INVENTORY_RECOGNIZED_DATA_TYPES.contains(&"geometry"),
+            "geometry is recognized by the provider parser but lacks Arrow conversion"
+        );
+    }
+
+    #[test]
+    fn mysql_inventory_session_preserves_complete_type_diagnostics() {
+        assert_eq!(
+            MYSQL_INVENTORY_SESSION_SQL,
+            "SET SESSION group_concat_max_len = 1048576"
+        );
     }
 
     fn sqlite_source(path: String) -> QuerySource {
@@ -494,15 +612,15 @@ mod tests {
         assert_eq!(table.catalog_name.as_deref(), Some("coral_db"));
         assert_eq!(table.schema_name, "main");
         assert_eq!(table.table_name, "users");
-        assert_eq!(
-            table
-                .columns
-                .iter()
-                .map(|column| column.name.as_str())
-                .collect::<Vec<_>>(),
-            ["id", "name"],
-            "database columns flow through coral.columns"
-        );
+        let id = table.columns.first().expect("id column metadata");
+        assert_eq!(id.name, "id");
+        assert_eq!(id.data_type, "INTEGER");
+        assert_eq!(id.ordinal_position, 0);
+        let name = table.columns.get(1).expect("name column metadata");
+        assert_eq!(name.name, "name");
+        assert_eq!(name.data_type, "TEXT");
+        assert!(!name.nullable);
+        assert_eq!(name.ordinal_position, 1);
 
         let result = CoralQuery::execute_sql(
             &sources,

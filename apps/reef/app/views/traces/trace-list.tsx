@@ -11,6 +11,8 @@ import {
   durationClass,
   formatDurationFromNanos,
   formatTimestamp,
+  operationCodeLanguage,
+  operationPreview,
   startMs,
   statusTone,
   timeAgo,
@@ -51,8 +53,8 @@ function TraceRow({
       <div className={s.sqlPreview}>
         <HighlightedCode
           className={s.sqlInlineCode}
-          code={trace.query || trace.name || trace.traceId}
-          language="sql"
+          code={operationPreview(trace)}
+          language={operationCodeLanguage(trace)}
         />
       </div>
       <div

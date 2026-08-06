@@ -25,6 +25,8 @@ const DEFAULT_BIND_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCAL
 const DEFAULT_SIGNING_KEY_ENV: &str = "CORAL_SESSION_SIGNING_KEY";
 const DEFAULT_TOKEN_TTL: Duration = Duration::from_hours(720);
 const MAX_TOKEN_TTL: Duration = Duration::from_hours(24 * 365);
+const DEFAULT_DISCOVERY_CACHE_TTL: Duration = Duration::from_mins(5);
+const MAX_DISCOVERY_CACHE_TTL: Duration = Duration::from_hours(1);
 const CONFLICTING_KEY_SOURCES: &str = "configure only one of signing_key_env or signing_key_file";
 
 /// Validated settings for the top-level `[auth]` configuration section.
@@ -61,6 +63,10 @@ struct RawAuthSettings {
         deserialize_with = "deserialize_bind_addr"
     )]
     http_bind_addr: SocketAddr,
+    /// Additional public-surface resource identifiers accepted by the private
+    /// gRPC API and registered with the authorization server.
+    #[serde(default)]
+    allowed_audiences: Vec<String>,
     session: SessionTokenSettings,
     authorization_server: AuthorizationServerSettings,
     provider: OidcProviderSettings,
@@ -81,6 +87,14 @@ impl AuthSettings {
         };
         settings.validate()?;
         Ok(Some(Self(settings)))
+    }
+
+    /// Returns the additional public-surface audiences exactly as configured.
+    ///
+    /// Server bootstrap owns their URL canonicalization alongside the other
+    /// public-surface identifiers it composes.
+    pub(crate) fn allowed_audiences(&self) -> &[String] {
+        &self.0.allowed_audiences
     }
 
     /// Fetches the secrets the config only points at — the provider client
@@ -323,6 +337,12 @@ struct OidcProviderSettings {
     display_name_claim: String,
     auth_params: BTreeMap<String, String>,
     required_claims: BTreeMap<String, Value>,
+    /// How long a validated discovery document stays reusable.
+    ///
+    /// Unset means [`DEFAULT_DISCOVERY_CACHE_TTL`]. Zero keeps no document, at
+    /// the cost of an outbound discovery request per authorization request that
+    /// cannot join one already in flight.
+    discovery_cache_ttl_seconds: Option<u64>,
 }
 
 impl OidcProviderSettings {
@@ -433,6 +453,15 @@ impl OidcProviderSettings {
                 )));
             }
         }
+        if self
+            .discovery_cache_ttl_seconds
+            .is_some_and(|ttl| ttl > MAX_DISCOVERY_CACHE_TTL.as_secs())
+        {
+            return Err(invalid_provider(format!(
+                "discovery_cache_ttl_seconds must not exceed {}",
+                MAX_DISCOVERY_CACHE_TTL.as_secs()
+            )));
+        }
         Ok(())
     }
 
@@ -477,6 +506,9 @@ impl OidcProviderSettings {
             display_name_claim: self.display_name_claim,
             auth_params: self.auth_params,
             required_claims: self.required_claims,
+            discovery_cache_ttl: self
+                .discovery_cache_ttl_seconds
+                .map_or(DEFAULT_DISCOVERY_CACHE_TTL, Duration::from_secs),
             client_secret,
         })
     }
@@ -502,12 +534,22 @@ pub(super) struct ResolvedOidcProvider {
     pub(super) display_name_claim: String,
     pub(super) auth_params: BTreeMap<String, String>,
     pub(super) required_claims: BTreeMap<String, Value>,
+    discovery_cache_ttl: Duration,
     client_secret: ProviderSecret,
 }
 
 impl ResolvedOidcProvider {
     pub(super) fn client_secret(&self) -> &str {
         self.client_secret.as_str()
+    }
+
+    /// How long a validated discovery document may be reused.
+    ///
+    /// A zero duration keeps no document between requests, so an authorization
+    /// request then makes its own discovery call unless it can join one already
+    /// in flight.
+    pub(super) fn discovery_cache_ttl(&self) -> Duration {
+        self.discovery_cache_ttl
     }
 }
 
@@ -862,9 +904,24 @@ mod tests {
         assert_eq!(provider.scopes, ["openid", "email", "profile"]);
         assert_eq!(provider.principal_claim, "sub");
         assert_eq!(provider.display_name_claim, "email");
+        assert_eq!(provider.discovery_cache_ttl(), DEFAULT_DISCOVERY_CACHE_TTL);
         let debug = format!("{provider:?}");
         assert!(debug.contains("<redacted>"));
         assert!(!debug.contains("inline-secret"));
+    }
+
+    #[test]
+    fn honors_a_configured_discovery_cache_ttl() {
+        for seconds in [0, 30, MAX_DISCOVERY_CACHE_TTL.as_secs()] {
+            let raw = valid("").replace(
+                "client_id = 'upstream-client'",
+                &format!("client_id = 'upstream-client'\ndiscovery_cache_ttl_seconds = {seconds}"),
+            );
+            assert_eq!(
+                resolved(&raw).provider().discovery_cache_ttl(),
+                Duration::from_secs(seconds)
+            );
+        }
     }
 
     #[test]
@@ -1083,6 +1140,16 @@ mod tests {
                     "redirect_uri = 'http://localhost:9080/auth/oidc/callback'\nscopes = ['openid', 'two scopes']",
                 ),
                 "scopes must contain valid OAuth scope tokens",
+            ),
+            (
+                valid("").replace(
+                    "client_id = 'upstream-client'",
+                    &format!(
+                        "client_id = 'upstream-client'\ndiscovery_cache_ttl_seconds = {}",
+                        MAX_DISCOVERY_CACHE_TTL.as_secs() + 1
+                    ),
+                ),
+                "discovery_cache_ttl_seconds must not exceed",
             ),
             (
                 valid("").replace(

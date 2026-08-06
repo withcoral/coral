@@ -284,13 +284,21 @@ pub(crate) fn build_v4_materialization_tmp(
     }
 }
 
-pub(crate) fn replace_v4_materialization(
+/// Stages the desired materialization state and returns any previous state for rollback.
+///
+/// A missing replacement retires an existing materialization while the source
+/// update is committed.
+pub(crate) fn replace_or_retire_v4_materialization(
     layout: &AppStateLayout,
     workspace_name: &WorkspaceName,
     source_name: &SourceName,
-    temp_dir: &Path,
+    replacement: Option<&Path>,
 ) -> Result<Option<PathBuf>, AppError> {
     let target = layout.v4_materialized_dir(workspace_name, source_name);
+    let had_existing = target.exists();
+    if replacement.is_none() && !had_existing {
+        return Ok(None);
+    }
     let backup = layout.v4_materialized_tmp_dir(
         workspace_name,
         source_name,
@@ -302,11 +310,12 @@ pub(crate) fn replace_v4_materialization(
     if backup.exists() {
         std::fs::remove_dir_all(&backup)?;
     }
-    let had_existing = target.exists();
     if had_existing {
         std::fs::rename(&target, &backup)?;
     }
-    if let Err(error) = std::fs::rename(temp_dir, &target) {
+    if let Some(replacement) = replacement
+        && let Err(error) = std::fs::rename(replacement, &target)
+    {
         if had_existing
             && backup.exists()
             && let Err(rollback_error) = std::fs::rename(&backup, &target)
@@ -846,16 +855,17 @@ fn validate_semantic_ir(
     {
         return Err("semantic IR identity mismatch".to_string());
     }
-    if semantic_ir.importer_version != expected_importer_version(manifest.surface.surface_type) {
+    if semantic_ir.importer_version != expected_importer_version(manifest.surface.surface_type)? {
         return Err("semantic IR importer version mismatch".to_string());
     }
     Ok(())
 }
 
-fn expected_importer_version(surface_type: SurfaceType) -> &'static str {
+fn expected_importer_version(surface_type: SurfaceType) -> Result<&'static str, String> {
     match surface_type {
-        SurfaceType::OpenApi => OPENAPI_IMPORTER_VERSION,
-        SurfaceType::Mcp => MCP_IMPORTER_VERSION,
+        SurfaceType::OpenApi => Ok(OPENAPI_IMPORTER_VERSION),
+        SurfaceType::Mcp => Ok(MCP_IMPORTER_VERSION),
+        SurfaceType::Database => Err("database surfaces are not materialized".to_string()),
     }
 }
 
@@ -972,6 +982,10 @@ fn materialize_surface(
     match surface.surface_type {
         SurfaceType::OpenApi => materialize_openapi_surface(manifest, surface),
         SurfaceType::Mcp => materialize_mcp_surface(manifest, surface, inputs),
+        SurfaceType::Database => Err(AppError::FailedPrecondition(format!(
+            "database source '{}' must be registered directly, not materialized",
+            manifest.common.name
+        ))),
     }
 }
 
@@ -1122,6 +1136,9 @@ fn read_descriptor(surface: &coral_spec::v4::V4Surface) -> Result<Vec<u8>, AppEr
         coral_spec::v4::SurfaceDescriptor::Url { url } => read_url_descriptor(url),
         coral_spec::v4::SurfaceDescriptor::McpServer { .. } => Err(AppError::FailedPrecondition(
             "DSL v4 MCP surface does not have an OpenAPI descriptor".to_string(),
+        )),
+        coral_spec::v4::SurfaceDescriptor::Database { .. } => Err(AppError::FailedPrecondition(
+            "DSL v4 database surface does not have an OpenAPI descriptor".to_string(),
         )),
     }
 }
@@ -1450,6 +1467,14 @@ mod tests {
         SourceName::parse("github_v4_materialization_test").expect("source name")
     }
 
+    #[test]
+    fn database_surface_reports_that_it_cannot_be_materialized() {
+        let error = expected_importer_version(SurfaceType::Database)
+            .expect_err("database surfaces have no importer version");
+
+        assert_eq!(error, "database surfaces are not materialized");
+    }
+
     fn openapi_fixture() -> &'static str {
         r"
 openapi: 3.0.3
@@ -1619,8 +1644,13 @@ surface:
             "test",
         )
         .expect("build materialization");
-        replace_v4_materialization(&layout, &workspace_name(), &source_name(), &build.temp_dir)
-            .expect("install materialization");
+        replace_or_retire_v4_materialization(
+            &layout,
+            &workspace_name(),
+            &source_name(),
+            Some(&build.temp_dir),
+        )
+        .expect("install materialization");
         (state_temp, descriptor_temp, layout, manifest_yaml, manifest)
     }
 
@@ -1655,6 +1685,25 @@ surface:
             !materialized_dir.join("surfaces").exists(),
             "singular materializations must not create a surfaces directory"
         );
+    }
+
+    #[test]
+    fn retiring_materialization_preserves_rollback_state() {
+        let (_state, _descriptor, layout, _manifest_yaml, _manifest) = setup_materialization();
+        let materialized_dir = layout.v4_materialized_dir(&workspace_name(), &source_name());
+
+        let backup =
+            replace_or_retire_v4_materialization(&layout, &workspace_name(), &source_name(), None)
+                .expect("retire materialization")
+                .expect("existing materialization backup");
+
+        assert!(!materialized_dir.exists());
+        assert!(backup.exists());
+
+        restore_materialization_backup(&layout, &workspace_name(), &source_name(), Some(backup))
+            .expect("restore materialization");
+
+        assert!(materialized_dir.join(PROJECTIONS_FILENAME).exists());
     }
 
     #[test]

@@ -32,13 +32,13 @@ use crate::query::input_resolver::{
     CredentialRefreshingInputResolver, SourceCredentialSnapshot, StoredCredentialInputResolver,
 };
 use crate::search::observed::{SearchObservationHandle, SearchObservationSource};
-use crate::sources::SourceName;
 use crate::sources::catalog::resolve_installed_manifest;
 use crate::sources::materialization::{SourceDiagnosticReporter, SourceLoadDiagnosticStage};
 use crate::sources::model::InstalledSource;
 use crate::sources::runtime_package::{
     RuntimeContractFingerprint, query_source_from_installed_manifest,
 };
+use crate::sources::{SourceName, ensure_database_source_feature_enabled};
 use crate::state::{AppConfig, AppStateLayout, ConfigStore};
 use crate::task::id::TaskId;
 use crate::telemetry::app_error_type;
@@ -82,6 +82,12 @@ pub(crate) struct AddedUserFunction {
 enum CredentialResolutionMode {
     Refreshing,
     StoredOnly,
+}
+
+#[derive(Clone, Copy)]
+enum CatalogColumnLoading {
+    Skip,
+    Hydrate,
 }
 
 #[derive(Debug, Clone)]
@@ -181,6 +187,7 @@ pub(crate) struct QueryManager {
     diagnostic_reporter: SourceDiagnosticReporter,
     search_observations: Option<SearchObservationHandle>,
     pool_registry: Arc<WorkspacePoolRegistry>,
+    database_sources_enabled: bool,
 }
 
 impl QueryManager {
@@ -225,6 +232,7 @@ impl QueryManager {
             SourceDiagnosticReporter::default(),
             Arc::new(WorkspacePoolRegistry::default()),
         )
+        .with_database_sources_enabled(true)
     }
 
     #[expect(
@@ -256,7 +264,13 @@ impl QueryManager {
             diagnostic_reporter,
             search_observations: None,
             pool_registry,
+            database_sources_enabled: false,
         }
+    }
+
+    pub(crate) fn with_database_sources_enabled(mut self, enabled: bool) -> Self {
+        self.database_sources_enabled = enabled;
+        self
     }
 
     pub(crate) fn with_search_observation_handle(
@@ -314,7 +328,13 @@ impl QueryManager {
         attribution: &QueryAttribution,
     ) -> Result<CatalogInfo, QueryManagerError> {
         Ok(self
-            .resolve_catalog(workspace_name, catalog_filter, schema_filter, attribution)
+            .resolve_catalog_with_column_loading(
+                workspace_name,
+                catalog_filter,
+                schema_filter,
+                attribution,
+                CatalogColumnLoading::Skip,
+            )
             .await?
             .catalog)
     }
@@ -325,6 +345,24 @@ impl QueryManager {
         catalog_filter: Option<&str>,
         schema_filter: Option<&str>,
         attribution: &QueryAttribution,
+    ) -> Result<CatalogResolution, QueryManagerError> {
+        self.resolve_catalog_with_column_loading(
+            workspace_name,
+            catalog_filter,
+            schema_filter,
+            attribution,
+            CatalogColumnLoading::Hydrate,
+        )
+        .await
+    }
+
+    async fn resolve_catalog_with_column_loading(
+        &self,
+        workspace_name: &WorkspaceName,
+        catalog_filter: Option<&str>,
+        schema_filter: Option<&str>,
+        attribution: &QueryAttribution,
+        column_loading: CatalogColumnLoading,
     ) -> Result<CatalogResolution, QueryManagerError> {
         let trace_sql = list_catalog_trace_sql(catalog_filter, schema_filter);
         run_query_operation(
@@ -350,11 +388,18 @@ impl QueryManager {
                 failed_source_names.extend(failure_recorder.failed_source_names());
                 let runtime_schema_owners =
                     runtime_schema_owners(&source_load.loaded).map_err(QueryManagerError::App)?;
-                Ok(CatalogResolution {
-                    catalog: runtime
-                        .list_catalog(catalog_filter, schema_filter)
+                let mut catalog = runtime
+                    .list_catalog(catalog_filter, schema_filter)
+                    .await
+                    .map_err(QueryManagerError::Core)?;
+                if matches!(column_loading, CatalogColumnLoading::Hydrate) {
+                    catalog.tables = runtime
+                        .list_tables(catalog_filter, schema_filter, None)
                         .await
-                        .map_err(QueryManagerError::Core)?,
+                        .map_err(QueryManagerError::Core)?;
+                }
+                Ok(CatalogResolution {
+                    catalog,
                     failed_source_names,
                     runtime_schema_owners,
                 })
@@ -642,6 +687,7 @@ impl QueryManager {
     ) -> Result<(LoadedQuerySource, Option<String>), AppError> {
         let installed = resolve_installed_manifest(workspace_name, source, &self.layout)?;
         let source_spec = &installed.source_spec;
+        ensure_database_source_feature_enabled(source_spec, self.database_sources_enabled)?;
         validate_required_variables(source, source_spec.declared_inputs())?;
         let stored_secrets =
             if let Some(credential_storage) = source.credential_storage_for_material() {
@@ -3011,6 +3057,62 @@ tables:
         assert!(resolution.catalog.tables.iter().any(|table| {
             table.schema_name == "function_demo" && table.table_name == "messages"
         }));
+    }
+
+    #[tokio::test]
+    async fn catalog_summary_skips_columns_while_search_resolution_hydrates_them() {
+        let fake_home = tempfile::tempdir().expect("fake home");
+        let fixture = query_manager_with(
+            QueryRuntimeContext {
+                home_dir: Some(fake_home.path().to_path_buf()),
+                ..QueryRuntimeContext::default()
+            },
+            Vec::new(),
+        )
+        .await;
+        let workspace_name = WorkspaceName::default();
+        install_function_demo_source(&fixture.manager, &workspace_name, fake_home.path());
+
+        let summary = fixture
+            .manager
+            .list_catalog(
+                &workspace_name,
+                None,
+                Some("function_demo"),
+                &QueryAttribution::default(),
+            )
+            .await
+            .expect("catalog summary");
+        let summary_table = summary.tables.first().expect("summary table");
+        assert!(
+            summary_table.columns.is_empty(),
+            "catalog summaries must not hydrate provider-native columns"
+        );
+
+        let resolution = fixture
+            .manager
+            .resolve_catalog(
+                &workspace_name,
+                None,
+                Some("function_demo"),
+                &QueryAttribution::default(),
+            )
+            .await
+            .expect("search catalog resolution");
+        let search_table = resolution
+            .catalog
+            .tables
+            .first()
+            .expect("search catalog table");
+        assert_eq!(
+            search_table
+                .columns
+                .iter()
+                .map(|column| column.name.as_str())
+                .collect::<Vec<_>>(),
+            ["type", "text"],
+            "Universal Search resolution must retain the full table shape"
+        );
     }
 
     #[tokio::test]

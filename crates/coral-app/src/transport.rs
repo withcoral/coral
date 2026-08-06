@@ -456,6 +456,7 @@ pub(crate) fn table_function_to_proto(
                 name: argument.name,
                 required: argument.required,
                 values: argument.values,
+                data_type: argument.data_type,
             })
             .collect(),
         result_columns: function
@@ -982,6 +983,7 @@ mod tests {
             require_guide_read: true,
             arguments: vec![coral_engine::TableFunctionArgumentInfo {
                 name: "payload".to_string(),
+                data_type: "Utf8".to_string(),
                 required: true,
                 values: Vec::new(),
             }],
@@ -999,6 +1001,7 @@ mod tests {
         assert_eq!(proto.guide, "Prefer search for record lookup.");
         assert_eq!(proto.arguments.len(), 1);
         assert_eq!(proto.arguments[0].name, "payload");
+        assert_eq!(proto.arguments[0].data_type, "Utf8");
         assert!(proto.arguments[0].required);
         assert!(proto.arguments[0].values.is_empty());
     }

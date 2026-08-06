@@ -2,30 +2,29 @@
 
 use coral_api::v1::search_clear_target::Target as ProtoSearchClearTargetKind;
 use coral_api::v1::search_maintenance_result::Detail as ProtoMaintenanceDetail;
-use coral_api::v1::search_result::Payload;
+use coral_api::v1::search_result::Shape as ProtoShape;
 use coral_api::v1::search_service_server::SearchService as SearchServiceApi;
 use coral_api::v1::{
-    CatalogClearResult as ProtoCatalogClearResult, CatalogMetadata,
+    CatalogClearResult as ProtoCatalogClearResult,
     CatalogRebuildResult as ProtoCatalogRebuildResult,
     ClearSearchDataRequest as ProtoClearSearchDataRequest,
-    ClearSearchDataResponse as ProtoClearSearchDataResponse, ColumnHint,
+    ClearSearchDataResponse as ProtoClearSearchDataResponse,
     DrainSearchQueueRequest as ProtoDrainSearchQueueRequest,
     DrainSearchQueueResponse as ProtoDrainSearchQueueResponse,
     ObservedClearResult as ProtoObservedClearResult,
     ObservedDrainResult as ProtoObservedDrainResult,
-    ObservedRebuildResult as ProtoObservedRebuildResult, ObservedValue as ProtoObservedValue,
+    ObservedRebuildResult as ProtoObservedRebuildResult,
     RebuildSearchIndexRequest as ProtoRebuildSearchIndexRequest,
     RebuildSearchIndexResponse as ProtoRebuildSearchIndexResponse,
-    SearchDataScope as ProtoSearchDataScope, SearchFieldRole as ProtoSearchFieldRole,
+    SearchDataScope as ProtoSearchDataScope, SearchField, SearchFieldValues, SearchFunctionShape,
     SearchIndexProvider as ProtoSearchIndexProvider,
     SearchMaintenanceResult as ProtoSearchMaintenanceResult,
     SearchMaintenanceState as ProtoSearchMaintenanceState, SearchProvider as ProtoSearchProvider,
     SearchProviderCoverage, SearchProviderState, SearchProviderStatus,
     SearchRequest as ProtoSearchRequest, SearchResponse as ProtoSearchResponse,
     SearchResult as ProtoSearchResult, SearchResultTruncation,
-    SearchStorageCleanupResult as ProtoSearchStorageCleanupResult,
-    SearchSurfaceKind as ProtoSearchSurfaceKind, SearchTableColumnPreview,
-    SearchTableColumnPreviewColumn,
+    SearchStorageCleanupResult as ProtoSearchStorageCleanupResult, SearchSurfaceRef,
+    SearchTableShape,
 };
 use tonic::{Request, Response, Status};
 
@@ -45,17 +44,14 @@ use crate::search::maintenance::{
 };
 use crate::search::manager::SearchManager;
 use crate::search::result::{
-    CatalogMetadataResult, ColumnHintResult, ObservedValueResult, ProviderCoverage, ProviderStatus,
-    SearchFieldRole, SearchManagerError, SearchPayload, SearchProviderKind,
-    SearchProviderState as DomainProviderState, SearchRequest, SearchResponse, SearchSurfaceKind,
-    TableColumnPreview as DomainTableColumnPreview,
+    Field, FieldValues, ProviderCoverage, ProviderStatus, SearchManagerError, SearchProviderKind,
+    SearchProviderState as DomainProviderState, SearchRequest, SearchResponse,
+    SearchResult as DomainSearchResult, SearchSurfaceId, SurfaceShape,
 };
 use crate::sources::SourceName;
 use crate::task::manager::TaskManager;
 use crate::task::service::task_manager_status;
-use crate::transport::{
-    catalog_item_to_proto, grpc_span, instrument_grpc, request_context, workspace_name_from_proto,
-};
+use crate::transport::{grpc_span, instrument_grpc, request_context, workspace_name_from_proto};
 
 #[derive(Clone)]
 pub(crate) struct SearchService {
@@ -176,13 +172,7 @@ fn search_response_to_proto(response: SearchResponse) -> ProtoSearchResponse {
         results: response
             .results
             .into_iter()
-            .map(|result| ProtoSearchResult {
-                provider: provider_kind_to_proto(result.provider) as i32,
-                payload: Some(search_payload_to_proto(
-                    &response.workspace_name,
-                    result.payload,
-                )),
-            })
+            .map(search_result_to_proto)
             .collect(),
         provider_statuses: response
             .provider_statuses
@@ -396,76 +386,62 @@ fn clear_target_from_proto(
     }
 }
 
-fn search_payload_to_proto(
-    workspace_name: &crate::workspaces::WorkspaceName,
-    payload: SearchPayload,
-) -> Payload {
-    match payload {
-        SearchPayload::CatalogMetadata(result) => {
-            Payload::CatalogMetadata(catalog_metadata_to_proto(workspace_name, result))
-        }
-        SearchPayload::ColumnHint(result) => Payload::ColumnHint(column_hint_to_proto(result)),
-        SearchPayload::ObservedValue(result) => {
-            Payload::ObservedValue(observed_value_to_proto(result))
-        }
-    }
-}
-
-fn catalog_metadata_to_proto(
-    workspace_name: &crate::workspaces::WorkspaceName,
-    result: CatalogMetadataResult,
-) -> CatalogMetadata {
-    CatalogMetadata {
-        item: Some(catalog_item_to_proto(workspace_name, result.item)),
-        matched_fields: result.matched_fields,
-        table_column_preview: result
-            .table_column_preview
-            .map(table_column_preview_to_proto),
-    }
-}
-
-fn table_column_preview_to_proto(preview: DomainTableColumnPreview) -> SearchTableColumnPreview {
-    SearchTableColumnPreview {
-        column_count: preview.column_count,
-        columns: preview
-            .columns
+fn search_result_to_proto(result: DomainSearchResult) -> ProtoSearchResult {
+    let entry = result.surface;
+    ProtoSearchResult {
+        surface: Some(surface_ref_to_proto(&entry.id)),
+        description: entry.description,
+        guide: entry.guide,
+        shape: Some(shape_to_proto(entry.shape)),
+        matching_values: result
+            .matching_values
             .into_iter()
-            .map(|column| SearchTableColumnPreviewColumn {
-                name: column.column.name,
-                data_type: column.column.data_type,
-                is_required_filter: column.column.is_required_filter,
-                description: column.column.description,
-                matched_fields: column.matched_fields,
-            })
+            .map(field_values_to_proto)
             .collect(),
-        omitted_column_count: preview.omitted_column_count,
+        omitted_matching_field_count: result.omitted_matching_field_count,
+        providers: result
+            .providers
+            .into_iter()
+            .map(provider_kind_to_proto)
+            .map(|provider| provider as i32)
+            .collect(),
     }
 }
 
-fn column_hint_to_proto(result: ColumnHintResult) -> ColumnHint {
-    ColumnHint {
-        schema_name: result.schema_name,
-        surface_name: result.surface_name,
-        surface_kind: surface_kind_to_proto(result.surface_kind) as i32,
-        name: result.name,
-        data_type: result.data_type,
-        required: result.required,
-        description: result.description,
-        matched_fields: result.matched_fields,
-        field_role: field_role_to_proto(result.field_role) as i32,
+fn surface_ref_to_proto(id: &SearchSurfaceId) -> SearchSurfaceRef {
+    SearchSurfaceRef {
+        catalog_name: id.catalog_name.clone().unwrap_or_default(),
+        schema_name: id.schema_name.clone(),
+        name: id.name.clone(),
     }
 }
 
-fn observed_value_to_proto(result: ObservedValueResult) -> ProtoObservedValue {
-    ProtoObservedValue {
-        value: result.value,
-        schema_name: result.schema_name,
-        surface_name: result.surface_name,
-        column_name: result.column_name,
-        surface_kind: surface_kind_to_proto(result.surface_kind) as i32,
-        field_path: result.field_path,
-        observed_count: result.observed_count,
-        last_observed_at: result.last_observed_at,
+fn shape_to_proto(shape: SurfaceShape) -> ProtoShape {
+    match shape {
+        SurfaceShape::Table { fields } => ProtoShape::Table(SearchTableShape {
+            fields: fields.into_iter().map(field_to_proto).collect(),
+        }),
+        SurfaceShape::Function { arguments, returns } => {
+            ProtoShape::Function(SearchFunctionShape {
+                arguments: arguments.into_iter().map(field_to_proto).collect(),
+                returns: returns.into_iter().map(field_to_proto).collect(),
+            })
+        }
+    }
+}
+
+fn field_to_proto(field: Field) -> SearchField {
+    SearchField {
+        name: field.name,
+        data_type: field.data_type,
+        required: field.required,
+    }
+}
+
+fn field_values_to_proto(values: FieldValues) -> SearchFieldValues {
+    SearchFieldValues {
+        field: values.field,
+        values: values.values,
     }
 }
 
@@ -515,24 +491,6 @@ fn provider_coverage_to_proto(coverage: &ProviderCoverage) -> SearchProviderCove
         budget_exhausted: coverage.budget_exhausted,
         timed_out: coverage.timed_out,
         stale_index: coverage.stale_index,
-    }
-}
-
-fn surface_kind_to_proto(surface_kind: SearchSurfaceKind) -> ProtoSearchSurfaceKind {
-    match surface_kind {
-        SearchSurfaceKind::Table => ProtoSearchSurfaceKind::Table,
-        SearchSurfaceKind::TableFunction => ProtoSearchSurfaceKind::TableFunction,
-    }
-}
-
-fn field_role_to_proto(field_role: SearchFieldRole) -> ProtoSearchFieldRole {
-    match field_role {
-        SearchFieldRole::TableColumn => ProtoSearchFieldRole::TableColumn,
-        SearchFieldRole::TableFilter => ProtoSearchFieldRole::TableFilter,
-        SearchFieldRole::TableFunctionArgument => ProtoSearchFieldRole::TableFunctionArgument,
-        SearchFieldRole::TableFunctionResultColumn => {
-            ProtoSearchFieldRole::TableFunctionResultColumn
-        }
     }
 }
 

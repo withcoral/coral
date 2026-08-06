@@ -1,4 +1,9 @@
-import { TraceStatus, type TraceSpan, type TraceSummary } from '@/generated/coral/v1/traces_pb'
+import {
+  TraceOperationKind,
+  TraceStatus,
+  type TraceSpan,
+  type TraceSummary,
+} from '@/generated/coral/v1/traces_pb'
 
 export type JsonObject = Record<string, unknown>
 export type TraceSpanData = Omit<TraceSpan, '$typeName' | '$unknown'>
@@ -66,7 +71,7 @@ export function durationClass(nanos: string, warningClass: string, defaultClass:
 export function formatTraceError(message: string): string {
   const normalized = message.toLowerCase()
   if (normalized.includes('unimplemented') || normalized.includes('http 404')) {
-    return 'Trace storage is not enabled for this Coral server. Enable [local_traces].enabled = true, restart the Coral server, then run a query.'
+    return 'Trace storage is not enabled for this Coral server. Enable [local_traces].enabled = true, restart the Coral server, then run an operation.'
   }
   return message
 }
@@ -168,6 +173,7 @@ export function spanDisplayLabel(span: TraceSpanData): string {
   if (method && url) return `${method} ${endpointPath(url)}`
   if (target) return target
   if (span.name === 'coral.query') return 'Query'
+  if (span.name === 'coral.search') return 'Search'
   return span.name || span.scopeName || 'span'
 }
 
@@ -210,8 +216,72 @@ export function sortedSpans(spans: TraceSpanData[]): TraceSpanData[] {
   })
 }
 
-export function isQueryTrace(trace: TraceSummaryData): boolean {
-  return trace.name === 'coral.query' || trace.query.trim().length > 0
+export function hasTypedOperation(trace: TraceSummaryData): boolean {
+  return trace.operationKind !== TraceOperationKind.UNSPECIFIED
+}
+
+export function isSearchOperation(trace: TraceSummaryData): boolean {
+  if (hasTypedOperation(trace)) {
+    return trace.operationKind === TraceOperationKind.SEARCH
+  }
+  return trace.name === 'coral.search'
+}
+
+function fallbackOperationLabel(trace: TraceSummaryData): string {
+  if (trace.name === 'coral.query') return 'Query'
+  if (trace.name === 'coral.search') return 'Search'
+  return trace.name || trace.traceId
+}
+
+function humanizeOperationName(name: string): string {
+  const words = name.replace(/[_-]+/g, ' ').trim()
+  if (!words) return ''
+  if (words.toLowerCase() === 'sql') return 'SQL'
+  return `${words[0].toUpperCase()}${words.slice(1)}`
+}
+
+export function operationLabel(trace: TraceSummaryData): string {
+  if (!hasTypedOperation(trace)) return fallbackOperationLabel(trace)
+  const name = humanizeOperationName(trace.operationName)
+  if (name) return name
+  if (trace.operationKind === TraceOperationKind.QUERY) return 'Query'
+  if (trace.operationKind === TraceOperationKind.SEARCH) return 'Search'
+  if (trace.operationKind === TraceOperationKind.TOOL) return 'Tool'
+  return 'Operation'
+}
+
+export function operationPreview(trace: TraceSummaryData): string {
+  const query = trace.query.trim()
+  const label = operationLabel(trace)
+  if (!query) return label
+  if (hasTypedOperation(trace) && trace.operationKind !== TraceOperationKind.QUERY) {
+    return `${label} · ${query}`
+  }
+  return query
+}
+
+export function operationDetailText(trace: TraceSummaryData): string {
+  if (trace.query.trim()) return trace.query
+  if (isSearchOperation(trace)) return 'No Search text was recorded for this operation.'
+  if (hasTypedOperation(trace) && trace.operationKind === TraceOperationKind.TOOL) {
+    return `${operationLabel(trace)} tool call. No SQL was recorded.`
+  }
+  return 'No SQL recorded for this operation.'
+}
+
+export function operationDetailLabel(trace: TraceSummaryData): string {
+  if (isSearchOperation(trace)) return 'Search details'
+  if (
+    (hasTypedOperation(trace) && trace.operationKind === TraceOperationKind.QUERY) ||
+    (!hasTypedOperation(trace) && trace.name === 'coral.query')
+  ) {
+    return 'Query details'
+  }
+  return `${operationLabel(trace)} details`
+}
+
+export function operationCodeLanguage(trace: TraceSummaryData): 'plain' | 'sql' {
+  return isSearchOperation(trace) || !trace.query.trim() ? 'plain' : 'sql'
 }
 
 export function sourceNames(spans: TraceSpanData[]): string[] {

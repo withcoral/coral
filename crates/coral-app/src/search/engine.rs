@@ -4,14 +4,13 @@ use std::sync::Arc;
 
 use tracing::Instrument as _;
 
+use crate::search::catalog::provider::resolve_entry;
 use crate::search::fusion;
 use crate::search::provider::{
     ProviderSearchOutcome, SearchExecutionContext, SearchProviderRegistration,
-    SearchProviderRegistry, provider_error_outcome,
+    SearchProviderRegistry, provider_error_outcome, run_provider,
 };
-use crate::search::result::{
-    ProviderStatus, SearchProviderKind, SearchResponse, SearchResult, SearchTruncation,
-};
+use crate::search::result::{ProviderStatus, SearchProviderKind, SearchResponse, SearchTruncation};
 
 #[derive(Clone)]
 pub(crate) struct UniversalSearchEngine {
@@ -51,9 +50,7 @@ impl UniversalSearchEngine {
                     let kind = provider.kind();
                     let context = Arc::clone(&context);
                     let span = tracing::Span::current();
-                    let task = tokio::spawn(
-                        async move { provider.search(context).await }.instrument(span),
-                    );
+                    let task = tokio::spawn(run_provider(provider, context).instrument(span));
                     PendingProviderSearch::Provider { kind, task }
                 }
                 SearchProviderRegistration::StaticStatus(status) => {
@@ -76,7 +73,7 @@ impl UniversalSearchEngine {
                     }
                 },
                 PendingProviderSearch::StaticStatus(status) => ProviderSearchOutcome {
-                    candidates: Vec::new(),
+                    rankings: Vec::new(),
                     status,
                 },
             };
@@ -89,30 +86,66 @@ impl UniversalSearchEngine {
 
 fn assemble_response(
     context: &SearchExecutionContext,
-    mut outcomes: Vec<ProviderSearchOutcome>,
+    outcomes: Vec<ProviderSearchOutcome>,
 ) -> SearchResponse {
     let provider_has_more = providers_have_more(&outcomes);
-    let provider_statuses = outcomes
+    let mut provider_statuses = outcomes
         .iter()
         .map(|outcome| outcome.status.clone())
         .collect::<Vec<_>>();
-
-    let candidates = fusion::order_candidates(&mut outcomes);
-    let total_count = candidates.len();
-    let max_results = usize::try_from(context.request.limit).unwrap_or(usize::MAX);
-    let truncated = total_count > max_results || provider_has_more;
-    let results = candidates
-        .into_iter()
-        .take(max_results)
-        .map(|candidate| SearchResult {
-            provider: candidate.provider,
-            payload: candidate.payload,
+    let matched_providers = outcomes
+        .iter()
+        .filter(|outcome| {
+            outcome
+                .rankings
+                .iter()
+                .any(|ranking| !ranking.matches.is_empty())
         })
+        .map(|outcome| outcome.status.provider)
         .collect::<Vec<_>>();
+
+    // Every retriever from every provider fuses into one ordering. An entry
+    // found by several of them accumulates, which is the whole point of keying
+    // on identity rather than on who produced it.
+    let rankings = outcomes
+        .into_iter()
+        .flat_map(|outcome| outcome.rankings)
+        .collect::<Vec<_>>();
+    tracing::debug!(
+        workspace = %context.request.workspace_name,
+        retrievers = ?rankings
+            .iter()
+            .map(|ranking| (ranking.retriever.as_str(), ranking.matches.len()))
+            .collect::<Vec<_>>(),
+        "fusing Universal Search rankings"
+    );
+    let fused = fusion::fuse(rankings);
+    let max_results = usize::try_from(context.request.limit).unwrap_or(usize::MAX);
+
+    let catalog = context
+        .catalog_resolution
+        .as_ref()
+        .ok()
+        .map(|resolution| &resolution.catalog);
+    if catalog.is_none() {
+        mark_catalog_unresolved(&mut provider_statuses, &matched_providers);
+    }
+    // An entry the catalog can no longer resolve is dropped rather than
+    // returned half-formed; that is what keeps every result queryable.
+    let resolved = catalog.map_or_else(Vec::new, |catalog| {
+        fused
+            .iter()
+            .filter_map(|entry| {
+                resolve_entry(catalog, &entry.id, &entry.evidence, &entry.providers)
+            })
+            .collect::<Vec<_>>()
+    });
+    let total_count = resolved.len();
+    let truncated = total_count > max_results || provider_has_more;
+    let results = resolved.into_iter().take(max_results).collect::<Vec<_>>();
     let returned_count = u32::try_from(results.len()).unwrap_or(u32::MAX);
 
     SearchResponse {
-        workspace_name: context.request.workspace_name.clone(),
         results,
         provider_statuses,
         truncation: SearchTruncation {
@@ -121,6 +154,27 @@ fn assemble_response(
             max_results: context.request.limit,
             note: truncation_note(truncated, provider_has_more, total_count, max_results),
         },
+    }
+}
+
+fn mark_catalog_unresolved(
+    statuses: &mut [ProviderStatus],
+    unresolved_providers: &[SearchProviderKind],
+) {
+    for status in statuses {
+        if !unresolved_providers.contains(&status.provider) {
+            continue;
+        }
+        status.state = crate::search::result::SearchProviderState::Error;
+        if !status.note.is_empty() {
+            status.note.push(' ');
+        }
+        status
+            .note
+            .push_str("matches could not be resolved because catalog metadata is unavailable");
+        if let Some(coverage) = &mut status.coverage {
+            coverage.returned_count = 0;
+        }
     }
 }
 
@@ -156,20 +210,25 @@ mod tests {
     use std::sync::{Arc, Mutex, mpsc as std_mpsc};
     use std::time::{Duration, Instant};
 
-    use tokio::sync::{Barrier, oneshot};
+    use tokio::sync::oneshot;
     use tokio::time::timeout;
     use tracing::Instrument as _;
 
-    use super::{UniversalSearchEngine, providers_have_more, truncation_note};
-    use crate::bootstrap::AppError;
-    use crate::query::manager::QueryManagerError;
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use coral_engine::{CatalogInfo, TableInfo};
+
+    use super::{
+        UniversalSearchEngine, mark_catalog_unresolved, providers_have_more, truncation_note,
+    };
+    use crate::catalog::model::CatalogResolution;
     use crate::search::provider::{
-        ProviderSearchFuture, ProviderSearchOutcome, SearchExecutionContext, SearchProvider,
-        SearchProviderRegistration, SearchProviderRegistry, provider_error_outcome,
+        PreparedRetrievers, ProviderFailure, ProviderSearchOutcome, SearchExecutionContext,
+        SearchProvider, SearchProviderRegistration, SearchProviderRegistry, provider_error_outcome,
     };
     use crate::search::result::{
-        ObservedValueResult, ProviderCoverage, ProviderStatus, SearchCandidate, SearchPayload,
-        SearchProviderKind, SearchProviderState, SearchRequest, SearchSurfaceKind,
+        MatchEvidence, ProviderCoverage, ProviderStatus, Ranking, RetrieverId, SearchProviderKind,
+        SearchProviderState, SearchRequest, SearchSurfaceId, SearchSurfaceKind, SurfaceMatch,
     };
     use crate::workspaces::{WorkspaceLifecycleLock, WorkspaceLifecycleReadLease, WorkspaceName};
 
@@ -191,9 +250,35 @@ mod tests {
     }
 
     #[test]
+    fn unresolved_matches_do_not_report_returned_provider_results() {
+        let mut statuses = vec![ProviderStatus {
+            provider: SearchProviderKind::ObservedValues,
+            state: SearchProviderState::ResultsFound,
+            note: "found one match".to_string(),
+            coverage: Some(ProviderCoverage {
+                returned_count: 1,
+                ..ProviderCoverage::default()
+            }),
+        }];
+
+        mark_catalog_unresolved(&mut statuses, &[SearchProviderKind::ObservedValues]);
+
+        let status = statuses.first().expect("observed status");
+        assert_eq!(status.state, SearchProviderState::Error);
+        assert_eq!(
+            status
+                .coverage
+                .as_ref()
+                .map(|coverage| coverage.returned_count),
+            Some(0)
+        );
+        assert!(status.note.contains("catalog metadata is unavailable"));
+    }
+
+    #[test]
     fn stale_or_budget_exhausted_provider_does_not_imply_more_results() {
         let outcome = ProviderSearchOutcome {
-            candidates: Vec::new(),
+            rankings: Vec::new(),
             status: ProviderStatus {
                 provider: SearchProviderKind::ObservedValues,
                 state: SearchProviderState::Partial,
@@ -217,7 +302,7 @@ mod tests {
             })),
             SearchProviderRegistration::Provider(Arc::new(StaticProvider {
                 outcome: ProviderSearchOutcome {
-                    candidates: vec![observed_candidate("survivor")],
+                    rankings: vec![observed_ranking("survivor")],
                     status: ProviderStatus {
                         provider: SearchProviderKind::ObservedValues,
                         state: SearchProviderState::ResultsFound,
@@ -286,7 +371,9 @@ mod tests {
 
     #[tokio::test]
     async fn providers_start_concurrently_but_keep_registry_response_order() {
-        let start_barrier = Arc::new(Barrier::new(3));
+        // Only the two registered providers reach the barrier; the third
+        // registration is a static status and never runs.
+        let start_barrier = Arc::new(std::sync::Barrier::new(2));
         let registry = SearchProviderRegistry::from_ordered(vec![
             SearchProviderRegistration::Provider(Arc::new(BarrierProvider {
                 kind: SearchProviderKind::CatalogMetadata,
@@ -304,10 +391,12 @@ mod tests {
         let engine = UniversalSearchEngine::new(registry);
         let search = tokio::spawn(async move { engine.search(test_context().await).await });
 
-        timeout(Duration::from_secs(1), start_barrier.wait())
+        // Every provider must reach the barrier for any of them to return, so
+        // the search completing at all proves they started concurrently.
+        let response = timeout(Duration::from_secs(1), search)
             .await
-            .expect("all providers should start before any outcome is awaited");
-        let response = search.await.expect("search task");
+            .expect("all providers should start before any outcome is awaited")
+            .expect("search task");
 
         assert_eq!(
             response
@@ -399,6 +488,12 @@ mod tests {
         drop(guard);
     }
 
+    /// Providers under test override the provided `search` directly: these
+    /// exercise orchestration, not retrieval, so they never build retrievers.
+    fn no_retrievers() -> Result<PreparedRetrievers, ProviderFailure> {
+        unreachable!("orchestration tests override search")
+    }
+
     struct StaticProvider {
         outcome: ProviderSearchOutcome,
     }
@@ -408,9 +503,15 @@ mod tests {
             self.outcome.status.provider
         }
 
-        fn search(&self, _context: Arc<SearchExecutionContext>) -> ProviderSearchFuture {
-            let outcome = self.outcome.clone();
-            Box::pin(async move { outcome })
+        fn retrievers(
+            &self,
+            _context: &SearchExecutionContext,
+        ) -> Result<PreparedRetrievers, ProviderFailure> {
+            no_retrievers()
+        }
+
+        fn search(&self, _context: &SearchExecutionContext) -> ProviderSearchOutcome {
+            self.outcome.clone()
         }
     }
 
@@ -423,14 +524,41 @@ mod tests {
             self.kind
         }
 
-        fn search(&self, _context: Arc<SearchExecutionContext>) -> ProviderSearchFuture {
-            Box::pin(async move { panic!("provider panic") })
+        fn retrievers(
+            &self,
+            _context: &SearchExecutionContext,
+        ) -> Result<PreparedRetrievers, ProviderFailure> {
+            no_retrievers()
+        }
+
+        fn search(&self, _context: &SearchExecutionContext) -> ProviderSearchOutcome {
+            panic!("provider panic")
         }
     }
 
     struct BarrierProvider {
         kind: SearchProviderKind,
-        start_barrier: Arc<Barrier>,
+        start_barrier: Arc<std::sync::Barrier>,
+    }
+
+    impl SearchProvider for BarrierProvider {
+        fn kind(&self) -> SearchProviderKind {
+            self.kind
+        }
+
+        fn retrievers(
+            &self,
+            _context: &SearchExecutionContext,
+        ) -> Result<PreparedRetrievers, ProviderFailure> {
+            no_retrievers()
+        }
+
+        fn search(&self, _context: &SearchExecutionContext) -> ProviderSearchOutcome {
+            // Every provider runs on its own blocking thread, so a provider
+            // that never reaches the barrier proves work was serialised.
+            self.start_barrier.wait();
+            provider_error_outcome(self.kind)
+        }
     }
 
     struct PausingBlockingProvider {
@@ -439,31 +567,19 @@ mod tests {
         release: Mutex<Option<std_mpsc::Receiver<()>>>,
     }
 
-    struct SpanCapturingProvider {
-        observed_span: Arc<Mutex<Option<tracing::span::Id>>>,
-    }
-
-    impl SearchProvider for SpanCapturingProvider {
-        fn kind(&self) -> SearchProviderKind {
-            SearchProviderKind::CatalogMetadata
-        }
-
-        fn search(&self, _context: Arc<SearchExecutionContext>) -> ProviderSearchFuture {
-            let observed_span = Arc::clone(&self.observed_span);
-            Box::pin(async move {
-                *observed_span.lock().expect("observed span lock") = tracing::Span::current().id();
-                provider_error_outcome(SearchProviderKind::CatalogMetadata)
-            })
-        }
-    }
-
     impl SearchProvider for PausingBlockingProvider {
         fn kind(&self) -> SearchProviderKind {
             self.kind
         }
 
-        fn search(&self, context: Arc<SearchExecutionContext>) -> ProviderSearchFuture {
-            let kind = self.kind;
+        fn retrievers(
+            &self,
+            _context: &SearchExecutionContext,
+        ) -> Result<PreparedRetrievers, ProviderFailure> {
+            no_retrievers()
+        }
+
+        fn search(&self, _context: &SearchExecutionContext) -> ProviderSearchOutcome {
             let started = self
                 .started
                 .lock()
@@ -476,31 +592,31 @@ mod tests {
                 .expect("release receiver lock")
                 .take()
                 .expect("provider starts once");
-            Box::pin(async move {
-                tokio::task::spawn_blocking(move || {
-                    started.send(()).expect("signal provider start");
-                    release.recv().expect("wait for provider release");
-                    drop(context);
-                    provider_error_outcome(kind)
-                })
-                .await
-                .expect("blocking provider task")
-            })
+            started.send(()).expect("signal provider start");
+            release.recv().expect("wait for provider release");
+            provider_error_outcome(self.kind)
         }
     }
 
-    impl SearchProvider for BarrierProvider {
+    struct SpanCapturingProvider {
+        observed_span: Arc<Mutex<Option<tracing::span::Id>>>,
+    }
+
+    impl SearchProvider for SpanCapturingProvider {
         fn kind(&self) -> SearchProviderKind {
-            self.kind
+            SearchProviderKind::CatalogMetadata
         }
 
-        fn search(&self, _context: Arc<SearchExecutionContext>) -> ProviderSearchFuture {
-            let kind = self.kind;
-            let start_barrier = Arc::clone(&self.start_barrier);
-            Box::pin(async move {
-                start_barrier.wait().await;
-                provider_error_outcome(kind)
-            })
+        fn retrievers(
+            &self,
+            _context: &SearchExecutionContext,
+        ) -> Result<PreparedRetrievers, ProviderFailure> {
+            no_retrievers()
+        }
+
+        fn search(&self, _context: &SearchExecutionContext) -> ProviderSearchOutcome {
+            *self.observed_span.lock().expect("observed span lock") = tracing::Span::current().id();
+            provider_error_outcome(SearchProviderKind::CatalogMetadata)
         }
     }
 
@@ -525,11 +641,31 @@ mod tests {
             Instant::now(),
             lifecycle_lease,
             SearchRequest::new(WorkspaceName::default(), "issue", 10).expect("search request"),
-            Err(QueryManagerError::App(AppError::Internal(
-                "catalog resolution is unused by test providers".to_string(),
-            ))),
+            Ok(test_catalog_resolution()),
             None,
         )
+    }
+
+    /// A catalog holding just the entry the test providers return, so a
+    /// surviving ranking can actually resolve into a result.
+    fn test_catalog_resolution() -> CatalogResolution {
+        CatalogResolution {
+            catalog: CatalogInfo {
+                tables: vec![TableInfo {
+                    catalog_name: None,
+                    schema_name: "github".to_string(),
+                    table_name: "survivor".to_string(),
+                    description: "Surviving provider result".to_string(),
+                    guide: String::new(),
+                    require_guide_read: false,
+                    columns: Vec::new(),
+                    required_filters: Vec::new(),
+                }],
+                table_functions: Vec::new(),
+            },
+            failed_source_names: BTreeSet::new(),
+            runtime_schema_owners: BTreeMap::new(),
+        }
     }
 
     fn static_status_registration(
@@ -544,21 +680,18 @@ mod tests {
         })
     }
 
-    fn observed_candidate(key: &str) -> SearchCandidate {
-        SearchCandidate {
-            key: key.to_string(),
-            score: 1,
-            provider: SearchProviderKind::ObservedValues,
-            payload: SearchPayload::ObservedValue(ObservedValueResult {
-                value: key.to_string(),
-                schema_name: "github".to_string(),
-                surface_name: "issues".to_string(),
-                column_name: "title".to_string(),
-                surface_kind: SearchSurfaceKind::Table,
-                field_path: "title".to_string(),
-                observed_count: 1,
-                last_observed_at: "2026-07-16T00:00:00Z".to_string(),
-            }),
+    fn observed_ranking(name: &str) -> Ranking {
+        Ranking {
+            retriever: RetrieverId::ObservedValues,
+            matches: vec![SurfaceMatch {
+                id: SearchSurfaceId {
+                    catalog_name: None,
+                    schema_name: "github".to_string(),
+                    name: name.to_string(),
+                    kind: SearchSurfaceKind::Table,
+                },
+                evidence: MatchEvidence::default(),
+            }],
         }
     }
 }

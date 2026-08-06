@@ -55,12 +55,13 @@ pub(crate) fn call_tool_span(
     workspace: &str,
     trace_parent: Option<&str>,
 ) -> tracing::Span {
+    let operation_kind = query_stream_kind_for_tool(tool_name);
     let tool_name = tool_name.map_or(UNKNOWN_TOOL_NAME, ToolName::as_str);
     let span = tracing::info_span!(
         target: "coral_mcp::server",
         "coral.mcp.call_tool",
         coral.stream.entry = true,
-        coral.stream.kind = coral_telemetry::QUERY_STREAM_KIND_TOOL,
+        coral.stream.kind = operation_kind,
         coral.stream.name = tool_name,
         error.type = field::Empty,
         exception.message = field::Empty,
@@ -75,6 +76,23 @@ pub(crate) fn call_tool_span(
     span.record(coral_telemetry::WORKSPACE_SPAN_ATTRIBUTE, workspace);
     apply_trace_parent(&span, trace_parent);
     span
+}
+
+fn query_stream_kind_for_tool(tool_name: Option<ToolName>) -> &'static str {
+    match tool_name {
+        Some(ToolName::Sql) => coral_telemetry::QUERY_STREAM_KIND_QUERY,
+        Some(ToolName::Search) => coral_telemetry::QUERY_STREAM_KIND_SEARCH,
+        Some(
+            ToolName::AddFunction
+            | ToolName::ListCatalog
+            | ToolName::Describe
+            | ToolName::ListColumns
+            | ToolName::StartTask
+            | ToolName::EndTask
+            | ToolName::Feedback,
+        )
+        | None => coral_telemetry::QUERY_STREAM_KIND_TOOL,
+    }
 }
 
 pub(crate) fn list_resources_span(trace_parent: Option<&str>) -> tracing::Span {
@@ -174,8 +192,8 @@ mod tests {
     use tracing_subscriber::layer::SubscriberExt as _;
 
     use super::{
-        MCP_TOOL_ERROR_MESSAGE, call_tool_span, list_resources_span, list_tools_span,
-        read_resource_span, record_tonic_status,
+        MCP_TOOL_ERROR_MESSAGE, UNKNOWN_TOOL_NAME, call_tool_span, list_resources_span,
+        list_tools_span, read_resource_span, record_tonic_status,
     };
     use crate::surface::ToolName;
 
@@ -222,6 +240,54 @@ mod tests {
                 .iter()
                 .all(|attribute| !attribute.key.as_str().contains("argument"))
         );
+
+        provider.shutdown().expect("provider shutdown");
+    }
+
+    #[test]
+    fn tool_call_span_records_semantic_capability() {
+        let (exporter, provider, subscriber) = telemetry_fixture();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        for tool_name in [
+            Some(ToolName::Sql),
+            Some(ToolName::Search),
+            Some(ToolName::ListCatalog),
+            None,
+        ] {
+            let span = call_tool_span(tool_name, "alpha", None);
+            span.in_scope(|| {});
+        }
+
+        provider.force_flush().expect("flush spans");
+        let spans = exporter.get_finished_spans().expect("finished spans");
+        let expected = [
+            ("sql", coral_telemetry::QUERY_STREAM_KIND_QUERY),
+            ("search", coral_telemetry::QUERY_STREAM_KIND_SEARCH),
+            ("list_catalog", coral_telemetry::QUERY_STREAM_KIND_TOOL),
+            (UNKNOWN_TOOL_NAME, coral_telemetry::QUERY_STREAM_KIND_TOOL),
+        ];
+        for (tool_name, expected_kind) in expected {
+            let tool_call = spans
+                .iter()
+                .find(|span| {
+                    span.name == "coral.mcp.call_tool"
+                        && string_attribute(span, coral_telemetry::QUERY_STREAM_NAME_ATTRIBUTE)
+                            .as_deref()
+                            == Some(tool_name)
+                })
+                .unwrap_or_else(|| panic!("missing {tool_name} tool span"));
+            assert_eq!(
+                string_attribute(tool_call, coral_telemetry::QUERY_STREAM_KIND_ATTRIBUTE)
+                    .as_deref(),
+                Some(expected_kind),
+                "unexpected Query Stream capability for {tool_name}"
+            );
+            assert_eq!(
+                string_attribute(tool_call, "mcp.method").as_deref(),
+                Some("tools/call")
+            );
+        }
 
         provider.shutdown().expect("provider shutdown");
     }
