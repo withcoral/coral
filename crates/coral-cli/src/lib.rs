@@ -776,7 +776,8 @@ async fn run_server(
         wait_for_server_shutdown_signal(),
     )
     .await;
-    let shutdown = server.shutdown().await;
+    // The composite server's fields make this future large; box it so this frame stays small.
+    let shutdown = Box::pin(server.shutdown()).await;
     wait?;
     shutdown?;
     Ok(())

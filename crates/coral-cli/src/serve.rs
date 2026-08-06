@@ -168,7 +168,19 @@ impl RunningServer {
 /// The gRPC bootstrap resolves configuration and starts a gRPC server; deciding
 /// what else runs beside it, and wiring the session policies each surface
 /// enforces, happens here — where the transports' lifecycles are already owned.
+/// Starts the composite server.
+///
+/// The composition future carries every manager, listener, and resolved config
+/// in one frame, so it is boxed here: each caller — the CLI entry points, the UI
+/// command, and the tests — then holds a pointer rather than the whole frame.
 pub(crate) async fn start(
+    builder: ServerBuilder,
+    mcp_options: McpOptions,
+) -> Result<RunningServer, ServeError> {
+    Box::pin(start_composed(builder, mcp_options)).await
+}
+
+async fn start_composed(
     builder: ServerBuilder,
     mcp_options: McpOptions,
 ) -> Result<RunningServer, ServeError> {
