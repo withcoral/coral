@@ -743,7 +743,7 @@ mod tests {
         write_traces(&trace_store);
         ServiceFixture {
             service: TraceService::new(TraceManager::new(trace_store, Duration::from_mins(1)))
-                .with_authorizer(WorkspaceAuthorizer::new(db)),
+                .with_authorizer(WorkspaceAuthorizer::trusting_local_principal(db)),
             owner: Principal::parse(&owner_id, PrincipalKind::User).expect("owner"),
             member: Principal::parse(&member_id, PrincipalKind::User).expect("member"),
             outsider: Principal::parse(&outsider_id, PrincipalKind::User).expect("outsider"),

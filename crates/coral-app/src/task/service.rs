@@ -204,7 +204,8 @@ mod tests {
             .await
             .expect("import default workspace");
         let task = TaskManager::new(TaskStore::new(Arc::clone(&db)));
-        let service = TaskService::new(task).with_authorizer(WorkspaceAuthorizer::new(db));
+        let service = TaskService::new(task)
+            .with_authorizer(WorkspaceAuthorizer::trusting_local_principal(db));
         (dir, service)
     }
 
