@@ -27,6 +27,7 @@ export default defineConfig({
     projects: [
       {
         extends: true,
+        plugins: [browserServerBoundaryPlugin()],
         test: {
           exclude: [
             'app/**/*.server.test.{ts,tsx}',
@@ -57,3 +58,15 @@ export default defineConfig({
     ],
   },
 })
+
+function browserServerBoundaryPlugin() {
+  const stub = path.resolve(dirname, 'app/test-utils/coral-request.browser.ts')
+  return {
+    enforce: 'pre' as const,
+    name: 'reef-browser-server-boundary',
+    resolveId(id: string) {
+      if (/(^|\/)coral-request\.server$/.test(id)) return stub
+      return null
+    },
+  }
+}
