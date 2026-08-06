@@ -4,6 +4,7 @@ import type { Route } from './+types/app-shell'
 
 import { ContentContainer } from '@/components/content-container'
 import { Sidebar } from '@/components/sidebar'
+import type { WorkspaceMembership } from '@/generated/coral/v1/workspaces_pb'
 import { listWorkspacesForRequest } from '@/lib/workspaces.server'
 import { routePath } from '@/routing/routemap'
 import { ToastContainer } from '@/wax/components/toast'
@@ -14,17 +15,23 @@ interface RootLoaderData {
   sidebarIsMinimized: boolean
 }
 
-export async function loader({ request }: Route.LoaderArgs) {
-  if (isWorkspaceRedirectRoute(request)) return { workspaces: [] }
+interface AppShellLoaderData {
+  memberships: WorkspaceMembership[]
+}
+
+/**
+ * Loads the current user's memberships verbatim. The role travels with each workspace so
+ * policy-aware surfaces can read it; consumers derive `membership.workspace` at the point they
+ * navigate.
+ */
+export async function loader({ request }: Route.LoaderArgs): Promise<AppShellLoaderData> {
+  if (isWorkspaceRedirectRoute(request)) return { memberships: [] }
 
   try {
-    const memberships = await listWorkspacesForRequest(request)
-    return {
-      workspaces: memberships.flatMap(({ workspace }) => (workspace ? [workspace] : [])),
-    }
+    return { memberships: await listWorkspacesForRequest(request) }
   } catch (error) {
     console.error('Failed to load sidebar workspaces:', error)
-    return { workspaces: [] }
+    return { memberships: [] }
   }
 }
 
@@ -39,7 +46,9 @@ export default function AppShell({ loaderData }: Route.ComponentProps) {
     <div className={styles.layout}>
       <Sidebar
         initialIsMinimized={rootData?.sidebarIsMinimized ?? false}
-        workspaces={loaderData.workspaces}
+        workspaces={loaderData.memberships.flatMap(({ workspace }) =>
+          workspace ? [workspace] : [],
+        )}
       />
       <ContentContainer>
         <ToastContainer />

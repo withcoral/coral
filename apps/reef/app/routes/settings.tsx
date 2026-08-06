@@ -10,7 +10,10 @@ import * as styles from './settings.css'
 export default function SettingsRoute() {
   const desktop = isCoralDesktopBuild()
   const mcpClients = useDesktopMcpClients(desktop)
-  const workspaces = useRouteLoaderData<typeof appShellLoader>('routes/app-shell')?.workspaces ?? []
+  const memberships =
+    useRouteLoaderData<typeof appShellLoader>('routes/app-shell')?.memberships ?? []
+  // MCP clients are pointed at a workspace, so derive the workspace here and leave the role behind.
+  const workspaces = memberships.flatMap(({ workspace }) => (workspace ? [workspace] : []))
 
   return (
     <main className={styles.page}>
