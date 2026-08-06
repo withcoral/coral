@@ -14,10 +14,13 @@ use crate::telemetry::local_store::{
     TraceDetailRecord, TraceSpanRecord, TraceSummaryRecord,
 };
 use crate::telemetry::manager::{
-    GetTraceQuery, ListTracesQuery, TraceAccessScope, TraceListView, TraceManager, TraceManagerError,
+    GetTraceQuery, ListTracesQuery, TraceAccessScope, TraceListView, TraceManager,
+    TraceManagerError,
 };
 use crate::transport::{grpc_span, instrument_grpc, request_context};
-use crate::workspaces::{WorkspaceAction, WorkspaceAuthorizer, WorkspaceName};
+use crate::workspaces::{
+    LocalPrincipalPolicy, WorkspaceAction, WorkspaceAuthorizer, WorkspaceName,
+};
 
 const DEFAULT_TRACE_PAGE_SIZE: usize = 50;
 const MAX_TRACE_PAGE_SIZE: usize = 200;
@@ -144,7 +147,11 @@ async fn trace_access_scope(
                 .map_err(app_status)?;
             Ok(TraceAccessScope::Workspace(workspace_name))
         }
-        None if principal.is_local() => Ok(TraceAccessScope::Unrestricted),
+        None if authorizer.local_principal_policy() == LocalPrincipalPolicy::ImplicitOwner
+            && principal.is_local() =>
+        {
+            Ok(TraceAccessScope::Unrestricted)
+        }
         None => Ok(TraceAccessScope::Owned(
             owned_workspace_scope(authorizer, principal).await?,
         )),
@@ -454,7 +461,10 @@ mod tests {
         .into_inner();
         let summary = response.traces.first().expect("alpha trace");
         assert_eq!(summary.trace_id, "alpha-trace");
-        assert_eq!(summary.operation_kind, TraceOperationKind::Unspecified as i32);
+        assert_eq!(
+            summary.operation_kind,
+            TraceOperationKind::Unspecified as i32
+        );
         assert!(summary.operation_name.is_empty());
         assert_eq!(
             summary.invocation_kind,
@@ -501,7 +511,12 @@ mod tests {
 
         let detail = TraceServiceApi::get_trace(
             &fixture.service,
-            view_get_request(&fixture.owner, "shared-trace", Some("alpha"), TraceView::QueryStream),
+            view_get_request(
+                &fixture.owner,
+                "shared-trace",
+                Some("alpha"),
+                TraceView::QueryStream,
+            ),
         )
         .await
         .expect("get query stream trace")

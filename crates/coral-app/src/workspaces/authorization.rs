@@ -59,7 +59,6 @@ impl WorkspaceAuthorizer {
     }
 
     /// Reports the policy so sibling surfaces resolve local access identically.
-    #[cfg_attr(test, expect(dead_code, reason = "read by host trace scoping later"))]
     pub(crate) fn local_principal_policy(&self) -> LocalPrincipalPolicy {
         self.local_principal
     }

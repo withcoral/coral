@@ -112,15 +112,13 @@ impl TraceManager {
                     .await
             }
             (TraceListView::QueryStream, TraceAccessScope::Unrestricted) => {
-                self.traces.list_query_stream(fetch_limit, offset, None).await
+                self.traces
+                    .list_query_stream(fetch_limit, offset, None)
+                    .await
             }
             (TraceListView::QueryStream, TraceAccessScope::Workspace(workspace)) => {
                 self.traces
-                    .list_query_stream(
-                        fetch_limit,
-                        offset,
-                        Some(workspace.as_str().to_string()),
-                    )
+                    .list_query_stream(fetch_limit, offset, Some(workspace.as_str().to_string()))
                     .await
             }
             (TraceListView::QueryStream, TraceAccessScope::Owned(_owned)) => {
@@ -156,7 +154,9 @@ impl TraceManager {
                     .await
             }
             (TraceListView::All, TraceAccessScope::Owned(owned)) => {
-                self.traces.get_trace_for_owned_workspaces(trace_id, owned).await
+                self.traces
+                    .get_trace_for_owned_workspaces(trace_id, owned)
+                    .await
             }
             (TraceListView::QueryStream, TraceAccessScope::Unrestricted) => {
                 self.traces.get_query_stream_trace(trace_id, None).await
@@ -251,7 +251,9 @@ mod tests {
         let error = manager
             .get_trace(GetTraceQuery {
                 trace_id: "beta".to_string(),
-                scope: TraceAccessScope::Workspace(WorkspaceName::parse("alpha").expect("alpha workspace")),
+                scope: TraceAccessScope::Workspace(
+                    WorkspaceName::parse("alpha").expect("alpha workspace"),
+                ),
                 view: TraceListView::All,
             })
             .await
