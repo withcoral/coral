@@ -122,6 +122,37 @@ fn every_coral_rpc_has_exactly_one_frozen_authorization() {
     );
 }
 
+#[test]
+fn proto_parser_handles_comments_multiline_declarations_and_rpc_option_bodies() {
+    let proto = r#"
+        /* service Ignored { rpc Hidden(HiddenRequest) returns (HiddenResponse); } */
+        service
+          SplitService
+        {
+          // rpc CommentedOut(CommentedRequest) returns (CommentedResponse);
+          rpc
+            First
+          (
+            FirstRequest
+          )
+          returns
+          (
+            FirstResponse
+          ) {
+            option (google.api.http) = {
+              post: "/v1/{name}";
+            };
+          }
+          rpc Later(LaterRequest) returns (LaterResponse);
+        }
+    "#;
+
+    assert_eq!(
+        rpc_names_in_proto(proto),
+        ["coral.v1.SplitService/First", "coral.v1.SplitService/Later"]
+    );
+}
+
 fn coral_rpc_names() -> Vec<String> {
     let mut methods = Vec::new();
     let proto_dir = format!("{}/../coral-api/proto/coral/v1", env!("CARGO_MANIFEST_DIR"));
@@ -136,22 +167,99 @@ fn coral_rpc_names() -> Vec<String> {
     proto_paths.sort();
     for path in proto_paths {
         let proto = fs::read_to_string(path).expect("read Coral proto");
-        let mut service = None;
-        for raw_line in proto.lines() {
-            let line = raw_line.split("//").next().unwrap_or_default().trim();
-            if let Some(declaration) = line.strip_prefix("service ") {
-                service = declaration.split_whitespace().next();
-            } else if let (Some(service), Some(declaration)) = (service, line.strip_prefix("rpc "))
-            {
-                let method = declaration
-                    .split_once('(')
-                    .map(|(method, _arguments)| method.trim())
-                    .expect("RPC declaration must contain '('");
-                methods.push(format!("coral.v1.{service}/{method}"));
-            } else if service.is_some() && line == "}" {
-                service = None;
+        methods.extend(rpc_names_in_proto(&proto));
+    }
+    methods
+}
+
+fn rpc_names_in_proto(proto: &str) -> Vec<String> {
+    let tokens = proto_tokens(proto);
+    let mut methods = Vec::new();
+    let mut cursor = 0;
+    while cursor < tokens.len() {
+        if tokens.get(cursor).map(String::as_str) != Some("service") {
+            cursor += 1;
+            continue;
+        }
+        let service = tokens.get(cursor + 1).expect("service must have a name");
+        cursor += 2;
+        while tokens.get(cursor).map(String::as_str) != Some("{") {
+            cursor += 1;
+            assert!(cursor < tokens.len(), "service must have a body");
+        }
+        cursor += 1;
+        let mut depth = 1;
+        while depth > 0 {
+            let token = tokens
+                .get(cursor)
+                .map(String::as_str)
+                .expect("service body must close");
+            match token {
+                "{" => depth += 1,
+                "}" => depth -= 1,
+                "rpc" if depth == 1 => {
+                    let method = tokens.get(cursor + 1).expect("RPC must have a name");
+                    assert!(method != "{" && method != "}", "RPC must have a name");
+                    methods.push(format!("coral.v1.{service}/{method}"));
+                }
+                _ => {}
             }
+            cursor += 1;
         }
     }
     methods
+}
+
+fn proto_tokens(proto: &str) -> Vec<String> {
+    let bytes = proto.as_bytes();
+    let mut tokens = Vec::new();
+    let mut cursor = 0;
+    while cursor < bytes.len() {
+        let byte = *bytes.get(cursor).expect("cursor is in bounds");
+        match byte {
+            b'/' if bytes.get(cursor + 1) == Some(&b'/') => {
+                cursor += 2;
+                while bytes.get(cursor).is_some_and(|byte| *byte != b'\n') {
+                    cursor += 1;
+                }
+            }
+            b'/' if bytes.get(cursor + 1) == Some(&b'*') => {
+                cursor += 2;
+                while bytes.get(cursor..cursor + 2) != Some(b"*/") {
+                    cursor += 1;
+                    assert!(cursor + 1 < bytes.len(), "block comment must close");
+                }
+                cursor += 2;
+            }
+            quote @ (b'"' | b'\'') => {
+                cursor += 1;
+                while let Some(byte) = bytes.get(cursor).filter(|byte| **byte != quote) {
+                    cursor += usize::from(*byte == b'\\') + 1;
+                }
+                assert!(cursor < bytes.len(), "quoted string must close");
+                cursor += 1;
+            }
+            b'{' | b'}' => {
+                tokens.push(char::from(byte).to_string());
+                cursor += 1;
+            }
+            byte if byte.is_ascii_alphabetic() || byte == b'_' => {
+                let start = cursor;
+                cursor += 1;
+                while bytes
+                    .get(cursor)
+                    .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+                {
+                    cursor += 1;
+                }
+                let identifier = std::str::from_utf8(
+                    bytes.get(start..cursor).expect("identifier range is valid"),
+                )
+                .expect("protobuf identifiers are ASCII");
+                tokens.push(identifier.to_string());
+            }
+            _ => cursor += 1,
+        }
+    }
+    tokens
 }
