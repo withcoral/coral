@@ -65,7 +65,10 @@ use crate::search::service::SearchService;
 use crate::sources::manager::SourceManager;
 use crate::sources::materialization::SourceDiagnosticReporter;
 use crate::sources::service::SourceService;
-use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig, run_state_migrations};
+use crate::state::db::{
+    CoralDb, DatabaseConfig, OwnershipBootstrapPolicy, ResolvedDatabaseConfig,
+    bootstrap_workspace_ownership, run_state_migrations,
+};
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::task::manager::TaskManager;
 use crate::task::service::TaskService;
@@ -389,7 +392,7 @@ impl ServerBuilder {
     /// required directories cannot be created, the config or credential backends
     /// fail to initialize, or the gRPC server cannot be started.
     pub async fn start(self) -> Result<RunningServer, AppError> {
-        start_components(self, None)
+        start_components(self, None, StartKind::LowLevel)
             .await
             .map(|started| started.grpc)
     }
@@ -416,7 +419,13 @@ pub async fn start_for_serve(
         ),
         None => builder,
     };
-    start_components(builder, session_auth).await
+    start_components(builder, session_auth, StartKind::Serve).await
+}
+
+#[derive(Debug, Clone, Copy)]
+enum StartKind {
+    LowLevel,
+    Serve,
 }
 
 /// App-owned components initialized for `coral serve`.
@@ -440,6 +449,7 @@ impl StartedServe {
 async fn start_components(
     builder: ServerBuilder,
     session_auth: Option<SessionAuthSettings>,
+    start_kind: StartKind,
 ) -> Result<StartedServe, AppError> {
     let env = AppEnvironment::discover();
     let layout = env.app_state_layout(builder.config.config_dir.clone())?;
@@ -452,6 +462,14 @@ async fn start_components(
     let coral_db = init_database(&layout).await?;
     let config_store = ConfigStore::new(layout.clone());
     run_state_migrations(&coral_db, &config_store, &layout).await?;
+    let ownership_policy = match (start_kind, session_auth.is_some()) {
+        (StartKind::Serve, true) => OwnershipBootstrapPolicy::MultiUser,
+        (StartKind::LowLevel, _) if config_store.auth_is_configured()? => {
+            OwnershipBootstrapPolicy::Skip
+        }
+        _ => OwnershipBootstrapPolicy::Local,
+    };
+    bootstrap_workspace_ownership(&coral_db, &config_store, &layout, ownership_policy).await?;
     let coral_db = Arc::new(coral_db);
     let authorization_server = session_auth
         .map(|settings| build_authorization_server(settings, Arc::clone(&coral_db)))
@@ -1164,7 +1182,10 @@ mod tests {
         SqliteObservedValuesStore,
     };
     use crate::sources::manager::SourceManager;
-    use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig, run_state_migrations};
+    use crate::state::db::{
+        CoralDb, DatabaseConfig, DbRepos, ResolvedDatabaseConfig, now_unix_nanos_i64,
+        run_state_migrations,
+    };
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::task::manager::TaskManager;
     use crate::task::store::TaskStore;
@@ -1494,10 +1515,11 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
     /// The regression guard for the CLI: `bootstrap()` starts this server on a
     /// host whose config may well be a `coral server` config.
     #[tokio::test]
-    async fn ephemeral_grpc_starts_with_configured_auth() {
+    async fn ownership_bootstrap_skips_low_level_start_with_configured_auth() {
         let temp = TempDir::new().expect("temp dir");
         let config_dir = temp.path().join("coral-config");
         configure_session_auth(&config_dir);
+        let layout = AppStateLayout::discover(Some(config_dir.clone())).expect("layout");
 
         let server = ServerBuilder::new()
             .with_config_dir(config_dir)
@@ -1506,6 +1528,63 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
             .expect("configured auth must not block the local ephemeral server");
 
         server.shutdown().await.expect("shutdown server");
+        let config_store = ConfigStore::new(layout.clone());
+        let db = test_db(&layout, &config_store).await;
+        let mut session = db.as_ref();
+        assert!(
+            session
+                .users()
+                .get_by_user_id("coral:local")
+                .await
+                .expect("load local user")
+                .is_none()
+        );
+        assert_eq!(
+            session
+                .workspace_members()
+                .role_for_user_id("default", "coral:local")
+                .await
+                .expect("load local membership"),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn ownership_bootstrap_rejects_before_grpc_bind() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+        configure_serve_session_auth(&config_dir);
+        let layout = AppStateLayout::discover(Some(config_dir.clone())).expect("layout");
+        layout.ensure().expect("layout dirs");
+        let config_store = ConfigStore::new(layout.clone());
+        let db = test_db(&layout, &config_store).await;
+        let mut tx = db.begin().await.expect("begin task setup");
+        tx.tasks()
+            .insert(
+                "default",
+                "principal",
+                "bootstrap-task",
+                "content",
+                now_unix_nanos_i64().expect("system time"),
+            )
+            .await
+            .expect("insert task");
+        tx.commit().await.expect("commit task setup");
+
+        let blocker = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("reserve gRPC port");
+        let bind = blocker.local_addr().expect("reserved address");
+        let builder = ServerBuilder::standalone_grpc(bind).with_config_dir(config_dir);
+        let mut settings = builder.serve_settings().expect("resolve serve settings");
+        let session_auth = settings
+            .take_session_auth()
+            .expect("configured session auth");
+        let error = match start_for_serve(builder, Some(session_auth)).await {
+            Ok(_) => panic!("contentful ownerless workspace must block startup"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("ownerless workspaces"));
+        assert_eq!(blocker.local_addr().expect("blocker remains bound"), bind);
     }
 
     #[tokio::test]

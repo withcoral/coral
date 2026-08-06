@@ -7,6 +7,7 @@ mod coral_db;
 mod error;
 mod import;
 mod migrations;
+mod ownership_bootstrap;
 mod repositories;
 mod schema;
 mod session;
@@ -21,6 +22,7 @@ pub(crate) use config::{DatabaseConfig, ResolvedDatabaseConfig};
 pub(crate) use coral_db::CoralDb;
 pub(crate) use error::DbError;
 pub(crate) use import::run_state_migrations;
+pub(crate) use ownership_bootstrap::{OwnershipBootstrapPolicy, bootstrap_workspace_ownership};
 #[expect(
     unused_imports,
     reason = "identity persistence types are not yet wired to production consumers"

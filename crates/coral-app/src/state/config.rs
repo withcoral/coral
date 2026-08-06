@@ -47,6 +47,17 @@ impl AppConfig {
         self.catalog.workspace_sources(workspace_name)
     }
 
+    pub(crate) fn workspace_config_is_content_pristine(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> bool {
+        self.catalog.workspace_sources(workspace_name).is_empty()
+            && self
+                .functions
+                .workspace_functions(workspace_name)
+                .is_empty()
+    }
+
     pub(crate) fn get_source(
         &self,
         workspace_name: &WorkspaceName,
