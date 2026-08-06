@@ -33,5 +33,5 @@ ENV CORAL_CONFIG_DIR=/var/lib/coral/config \
     HOME=/var/lib/coral
 USER 65532:0
 EXPOSE 14555
-HEALTHCHECK CMD ["/usr/local/bin/grpc_health_probe", "-addr=127.0.0.1:14555"]
+HEALTHCHECK CMD /usr/local/bin/grpc_health_probe -addr="${CORAL_HEALTHCHECK_ADDR:-127.0.0.1:14555}"
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
