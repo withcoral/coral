@@ -5,6 +5,12 @@
 # is editing that file. See https://withcoral.com/docs/guides/self-host-with-docker
 set -eu
 
+# PID 1 ignores default-action signals on Linux. Install handlers before any
+# filesystem preparation so a stop during startup cannot strand the container.
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 CONFIG_FILE="$CORAL_CONFIG_DIR/config.toml"
 
 fatal() {
@@ -42,9 +48,6 @@ rm -f "$probe"
 if [ ! -e "$CONFIG_FILE" ] && [ ! -L "$CONFIG_FILE" ]; then
     seed="$(mktemp "$CORAL_CONFIG_DIR/.config.toml.seed.XXXXXX")"
     trap 'rm -f "$seed"' EXIT
-    trap 'exit 129' HUP
-    trap 'exit 130' INT
-    trap 'exit 143' TERM
     if [ -n "${CORAL_SEED_CONFIG:-}" ]; then
         # Whole-file seed supplied by the operator: written VERBATIM (no
         # templating, no parsing) through the same atomic path. Once-only:
@@ -63,9 +66,9 @@ EOF
         seed_source="starter"
     fi
 
-    if ln "$seed" "$CONFIG_FILE" 2>/dev/null; then
+    if ln -T "$seed" "$CONFIG_FILE" 2>/dev/null; then
         rm -f "$seed"
-        trap - EXIT HUP INT TERM
+        trap - EXIT
         if [ "$seed_source" = "CORAL_SEED_CONFIG" ]; then
             echo "coral-entrypoint: seeded $CONFIG_FILE from CORAL_SEED_CONFIG" >&2
         else
@@ -73,7 +76,7 @@ EOF
         fi
     elif [ -e "$CONFIG_FILE" ] || [ -L "$CONFIG_FILE" ]; then
         rm -f "$seed"
-        trap - EXIT HUP INT TERM
+        trap - EXIT
         if [ -n "${CORAL_SEED_CONFIG:-}" ]; then
             echo "coral-entrypoint: $CONFIG_FILE exists; CORAL_SEED_CONFIG ignored (seed applies only to first start)" >&2
         fi

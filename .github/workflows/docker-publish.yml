@@ -17,8 +17,10 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: docker-publish-${{ inputs.tag }}
-  cancel-in-progress: false
+  # Moving tags (latest and X.Y) are shared mutable state across releases, so
+  # every publish must finish before the next one evaluates and applies them.
+  group: docker-publish
+  queue: max
 
 env:
   IMAGE: ghcr.io/withcoral/coral
