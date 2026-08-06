@@ -10,12 +10,10 @@ use std::fs;
 
 use coral_client::local::ServerBuilder;
 use coral_engine::{
-    CoralQuery, QueryRuntimeConfig, QuerySource, RuntimeSourceComponent, RuntimeSourcePackage,
+    CoralQuery, DatabaseRuntimeBackend, QueryRuntimeConfig, QuerySource, RuntimeCatalog,
+    RuntimeSourcePackage,
 };
-use coral_spec::{
-    DatabaseConnectionSpec, DatabaseSourceManifest, ParsedTemplate, PostgresConnectionSpec,
-    SourceManifestCommon,
-};
+use coral_spec::{DatabaseConnectionSpec, ParsedTemplate, PostgresConnectionSpec};
 use sqlx::postgres::PgPoolOptions;
 use tempfile::TempDir;
 
@@ -120,15 +118,9 @@ fn postgres_source(database_url: &str) -> QuerySource {
             }
         });
     let template = |value: &str| ParsedTemplate::parse(value).expect("literal template");
-    let manifest = DatabaseSourceManifest {
-        common: SourceManifestCommon {
-            dsl_version: 4,
-            name: "postgres_inventory".to_string(),
-            version: String::new(),
-            description: "Postgres inventory integration fixture".to_string(),
-            test_queries: Vec::new(),
-        },
-        connection: DatabaseConnectionSpec::Postgres(PostgresConnectionSpec {
+    let backend = DatabaseRuntimeBackend::new(
+        4,
+        DatabaseConnectionSpec::Postgres(PostgresConnectionSpec {
             host: template(host),
             port: template(&port.to_string()),
             database: template(database),
@@ -136,8 +128,7 @@ fn postgres_source(database_url: &str) -> QuerySource {
             password: template(url.password().unwrap_or_default()),
             sslmode: Some(template(&sslmode)),
         }),
-        declared_inputs: Vec::new(),
-    };
+    );
     QuerySource::from_runtime_components(
         RuntimeSourcePackage {
             source_name: "postgres_inventory".to_string(),
@@ -146,7 +137,10 @@ fn postgres_source(database_url: &str) -> QuerySource {
             declared_inputs: Vec::new(),
             test_queries: Vec::new(),
             identity_requirements: None,
-            components: vec![RuntimeSourceComponent::Database(manifest)],
+            catalogs: vec![
+                RuntimeCatalog::try_database_provider_discovered("postgres_inventory", backend)
+                    .expect("database catalog"),
+            ],
         },
         BTreeMap::new(),
         BTreeMap::new(),

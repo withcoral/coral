@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use coral_engine::{QuerySource, RuntimeSourceComponent, RuntimeSourcePackage};
+use coral_engine::{DatabaseRuntimeBackend, QuerySource, RuntimeCatalog, RuntimeSourcePackage};
 use coral_spec::backends::database::DatabaseSourceManifest;
 use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
 use coral_spec::backends::mcp::{
@@ -77,25 +77,41 @@ enum V4RuntimeContract<'a> {
     Mcp(&'a coral_spec::backends::mcp::McpSourceManifest),
 }
 
+#[derive(Debug, Clone)]
+enum V4RuntimeComponent {
+    Database(DatabaseSourceManifest),
+    Http(HttpSourceManifest),
+    Mcp(McpSourceManifest),
+}
+
+impl V4RuntimeComponent {
+    fn into_runtime_catalog(self) -> Result<RuntimeCatalog, AppError> {
+        let result = match self {
+            Self::Database(manifest) => RuntimeCatalog::try_database_provider_discovered(
+                manifest.common.name,
+                DatabaseRuntimeBackend::new(manifest.common.dsl_version, manifest.connection),
+            ),
+            Self::Http(manifest) => {
+                RuntimeCatalog::try_from_default_catalog_http_manifest(manifest)
+            }
+            Self::Mcp(manifest) => RuntimeCatalog::try_from_default_catalog_mcp_manifest(manifest),
+        };
+        result.map_err(|error| AppError::FailedPrecondition(error.to_string()))
+    }
+}
+
 /// Fingerprints authored manifest content, deterministic non-secret variable
 /// bindings, and the materialised v4 runtime contract. Filesystem paths and
 /// resolved credential material are deliberately excluded.
-pub(crate) fn runtime_contract_fingerprint(
+fn runtime_contract_fingerprint(
     manifest_yaml: &str,
     variables: &BTreeMap<String, String>,
-    v4_component: Option<&RuntimeSourceComponent>,
+    v4_component: Option<&V4RuntimeComponent>,
 ) -> Result<RuntimeContractFingerprint, AppError> {
     let v4_runtime_contract = match v4_component {
-        Some(RuntimeSourceComponent::Database(database)) => {
-            Some(V4RuntimeContract::Database(database))
-        }
-        Some(RuntimeSourceComponent::Http(http)) => Some(V4RuntimeContract::Http(http)),
-        Some(RuntimeSourceComponent::Mcp(mcp)) => Some(V4RuntimeContract::Mcp(mcp)),
-        Some(RuntimeSourceComponent::File(_)) => {
-            return Err(AppError::Internal(
-                "DSL v4 runtime fingerprint received a file component".to_string(),
-            ));
-        }
+        Some(V4RuntimeComponent::Database(database)) => Some(V4RuntimeContract::Database(database)),
+        Some(V4RuntimeComponent::Http(http)) => Some(V4RuntimeContract::Http(http)),
+        Some(V4RuntimeComponent::Mcp(mcp)) => Some(V4RuntimeContract::Mcp(mcp)),
         None => None,
     };
     let input = RuntimeContractFingerprintInput {
@@ -161,7 +177,10 @@ pub(crate) fn query_source_from_installed_manifest(
                 declared_inputs: source_spec.declared_inputs().to_vec(),
                 test_queries: source_spec.test_queries().to_vec(),
                 identity_requirements: None,
-                components: component.into_iter().collect(),
+                catalogs: component
+                    .into_iter()
+                    .map(V4RuntimeComponent::into_runtime_catalog)
+                    .collect::<Result<Vec<_>, _>>()?,
             },
             source.variables.clone(),
             resolved_secrets,
@@ -181,10 +200,10 @@ pub(crate) fn query_source_from_installed_manifest(
     })
 }
 
-pub(crate) fn runtime_component_for_v4_source(
+fn runtime_component_for_v4_source(
     manifest: &V4SourceManifest,
     materialized: &V4MaterializedSource,
-) -> Result<Option<RuntimeSourceComponent>, AppError> {
+) -> Result<Option<V4RuntimeComponent>, AppError> {
     if manifest.identity_requirements.is_some() {
         return Err(AppError::UnsupportedV4IdentityRequirements {
             source_name: manifest.common.name.clone(),
@@ -194,10 +213,11 @@ pub(crate) fn runtime_component_for_v4_source(
         return Ok(None);
     }
     match manifest.surface.surface_type {
-        SurfaceType::OpenApi => Ok(Some(RuntimeSourceComponent::Http(
-            http_manifest_for_surface(manifest, materialized)?,
-        ))),
-        SurfaceType::Mcp => Ok(Some(RuntimeSourceComponent::Mcp(mcp_manifest_for_surface(
+        SurfaceType::OpenApi => Ok(Some(V4RuntimeComponent::Http(http_manifest_for_surface(
+            manifest,
+            materialized,
+        )?))),
+        SurfaceType::Mcp => Ok(Some(V4RuntimeComponent::Mcp(mcp_manifest_for_surface(
             manifest,
             materialized,
         )?))),
@@ -205,13 +225,13 @@ pub(crate) fn runtime_component_for_v4_source(
     }
 }
 
-pub(crate) fn runtime_component_for_v4_database_source(
+fn runtime_component_for_v4_database_source(
     manifest: &V4SourceManifest,
-) -> Result<RuntimeSourceComponent, AppError> {
+) -> Result<V4RuntimeComponent, AppError> {
     let database_runtime = manifest.surface.database_runtime().ok_or_else(|| {
         AppError::FailedPrecondition("DSL v4 surface is not a database surface".to_string())
     })?;
-    Ok(RuntimeSourceComponent::Database(DatabaseSourceManifest {
+    Ok(V4RuntimeComponent::Database(DatabaseSourceManifest {
         common: SourceManifestCommon {
             dsl_version: manifest.common.dsl_version,
             name: manifest.common.name.clone(),
@@ -558,7 +578,6 @@ mod tests {
     use std::collections::BTreeMap;
     use std::path::PathBuf;
 
-    use coral_engine::RuntimeSourceComponent;
     use coral_spec::backends::http::{AuthSpec, RateLimitSpec};
     use coral_spec::backends::mcp::{McpOffsetPaginationSpec, McpPaginationSpec, McpServerSpec};
     use coral_spec::v4::{
@@ -582,8 +601,8 @@ mod tests {
     use crate::bootstrap::AppError;
 
     use super::{
-        runtime_component_for_v4_database_source, runtime_component_for_v4_source,
-        runtime_contract_fingerprint, surface_base_url,
+        V4RuntimeComponent, runtime_component_for_v4_database_source,
+        runtime_component_for_v4_source, runtime_contract_fingerprint, surface_base_url,
     };
 
     fn surface_without_authored_base_url() -> V4Surface {
@@ -1121,7 +1140,7 @@ surface:
 
         let component =
             runtime_component_for_v4_database_source(v4).expect("database runtime component");
-        let RuntimeSourceComponent::Database(database) = component else {
+        let V4RuntimeComponent::Database(database) = component else {
             panic!("database component");
         };
 
@@ -1334,7 +1353,7 @@ surface:
         let component = runtime_component_for_v4_source(&manifest, &materialized)
             .expect("runtime component")
             .expect("published component");
-        let coral_engine::RuntimeSourceComponent::Http(http) = component else {
+        let V4RuntimeComponent::Http(http) = component else {
             panic!("expected HTTP component");
         };
         assert_eq!(http.common.name, "github_v4");
@@ -1385,7 +1404,7 @@ surface:
         let component = runtime_component_for_v4_source(&manifest, &materialized)
             .expect("runtime component")
             .expect("published component");
-        let coral_engine::RuntimeSourceComponent::Http(http) = component else {
+        let V4RuntimeComponent::Http(http) = component else {
             panic!("expected HTTP component");
         };
 
@@ -1456,7 +1475,7 @@ surface:
         let component = runtime_component_for_v4_source(&manifest, &materialized)
             .expect("runtime component")
             .expect("published component");
-        let coral_engine::RuntimeSourceComponent::Http(http) = component else {
+        let V4RuntimeComponent::Http(http) = component else {
             panic!("expected HTTP component");
         };
         let filters = &http.tables.first().expect("table").common.filters;
@@ -1505,7 +1524,7 @@ surface:
             let component = runtime_component_for_v4_source(&manifest, &materialized)
                 .expect("runtime component")
                 .expect("published component");
-            let coral_engine::RuntimeSourceComponent::Http(http) = component else {
+            let V4RuntimeComponent::Http(http) = component else {
                 panic!("expected HTTP component");
             };
             http
@@ -1553,7 +1572,7 @@ surface:
             let component = runtime_component_for_v4_source(&manifest, &materialized)
                 .expect("runtime component")
                 .expect("published component");
-            let coral_engine::RuntimeSourceComponent::Mcp(mcp) = component else {
+            let V4RuntimeComponent::Mcp(mcp) = component else {
                 panic!("expected MCP component");
             };
             mcp
@@ -1621,7 +1640,7 @@ surface:
         let component = runtime_component_for_v4_source(&manifest, &materialized)
             .expect("runtime component")
             .expect("published component");
-        let coral_engine::RuntimeSourceComponent::Mcp(mcp) = component else {
+        let V4RuntimeComponent::Mcp(mcp) = component else {
             panic!("expected MCP component");
         };
 
@@ -1660,7 +1679,7 @@ surface:
         let component = runtime_component_for_v4_source(&manifest, &materialized)
             .expect("runtime component")
             .expect("published component");
-        let coral_engine::RuntimeSourceComponent::Mcp(mcp) = component else {
+        let V4RuntimeComponent::Mcp(mcp) = component else {
             panic!("expected MCP component");
         };
 
@@ -1719,7 +1738,7 @@ surface:
         let component = runtime_component_for_v4_source(&manifest, &materialized)
             .expect("runtime component")
             .expect("published component");
-        let coral_engine::RuntimeSourceComponent::Mcp(mcp) = component else {
+        let V4RuntimeComponent::Mcp(mcp) = component else {
             panic!("expected MCP component");
         };
 

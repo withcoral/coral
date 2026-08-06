@@ -1,17 +1,18 @@
 //! Closed backend-specific runtime catalog contracts.
 
-#![allow(
-    dead_code,
-    reason = "The catalog contract lands before RuntimeSourcePackage switches to consuming it."
-)]
+use std::collections::BTreeMap;
 
-use coral_spec::backends::database::DatabaseConnectionSpec;
+use coral_spec::backends::database::{DatabaseConnectionSpec, DatabaseSourceManifest};
 use coral_spec::backends::file::{FileSourceManifest, FileTableSpec};
 use coral_spec::backends::http::{AuthSpec, HttpSourceManifest, HttpTableSpec, RateLimitSpec};
 use coral_spec::backends::mcp::{
     McpServerSpec, McpSourceManifest, McpTableFunctionSpec, McpTableSpec,
 };
-use coral_spec::{HeaderSpec, ParsedTemplate, SourceTableFunctionSpec, SqlObjectName};
+use coral_spec::{
+    HeaderSpec, ParsedTemplate, SourceManifestCommon, SourceTableFunctionSpec, SqlObjectName,
+};
+
+use super::QuerySource;
 
 /// Source-wide HTTP execution configuration without a relation inventory.
 #[derive(Debug, Clone)]
@@ -480,4 +481,265 @@ fn validate_declared_catalog<'a>(
         }
     }
     Ok(())
+}
+
+/// SQL-visible kind of one declared runtime relation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeRelationKind {
+    /// SQL table.
+    Table,
+    /// SQL table-valued function.
+    TableFunction,
+}
+
+/// Read-only view of one declared relation in a runtime package.
+#[derive(Debug, Clone, Copy)]
+pub struct RuntimeRelationRef<'a> {
+    sql_name: &'a SqlObjectName,
+    kind: RuntimeRelationKind,
+}
+
+impl RuntimeRelationRef<'_> {
+    /// Returns the relation's complete canonical SQL identity.
+    #[must_use]
+    pub fn sql_name(&self) -> &SqlObjectName {
+        self.sql_name
+    }
+
+    /// Returns whether this relation is a table or table function.
+    #[must_use]
+    pub fn kind(&self) -> RuntimeRelationKind {
+        self.kind
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum RuntimeBackendManifest {
+    Database(DatabaseSourceManifest),
+    Http(HttpSourceManifest),
+    File(FileSourceManifest),
+    Mcp(McpSourceManifest),
+}
+
+impl RuntimeCatalog {
+    pub(crate) fn catalog_name(&self) -> &str {
+        match self {
+            Self::Declared(DeclaredRuntimeCatalog::Http(catalog)) => &catalog.catalog_name,
+            Self::Declared(DeclaredRuntimeCatalog::Mcp(catalog)) => &catalog.catalog_name,
+            Self::Declared(DeclaredRuntimeCatalog::File(catalog)) => &catalog.catalog_name,
+            Self::ProviderDiscovered(ProviderDiscoveredRuntimeCatalog::Database(catalog)) => {
+                &catalog.catalog_name
+            }
+        }
+    }
+
+    pub(crate) fn sql_names(&self) -> Vec<&SqlObjectName> {
+        match self {
+            Self::Declared(DeclaredRuntimeCatalog::Http(catalog)) => catalog
+                .relations
+                .iter()
+                .map(HttpRuntimeRelation::sql_name)
+                .collect(),
+            Self::Declared(DeclaredRuntimeCatalog::Mcp(catalog)) => catalog
+                .relations
+                .iter()
+                .map(McpRuntimeRelation::sql_name)
+                .collect(),
+            Self::Declared(DeclaredRuntimeCatalog::File(catalog)) => catalog
+                .relations
+                .iter()
+                .map(FileRuntimeRelation::sql_name)
+                .collect(),
+            Self::ProviderDiscovered(_) => Vec::new(),
+        }
+    }
+
+    pub(crate) fn relations(&self) -> Vec<RuntimeRelationRef<'_>> {
+        match self {
+            Self::Declared(DeclaredRuntimeCatalog::Http(catalog)) => catalog
+                .relations
+                .iter()
+                .map(|relation| RuntimeRelationRef {
+                    sql_name: relation.sql_name(),
+                    kind: match relation {
+                        HttpRuntimeRelation::Table(_) => RuntimeRelationKind::Table,
+                        HttpRuntimeRelation::TableFunction(_) => RuntimeRelationKind::TableFunction,
+                    },
+                })
+                .collect(),
+            Self::Declared(DeclaredRuntimeCatalog::Mcp(catalog)) => catalog
+                .relations
+                .iter()
+                .map(|relation| RuntimeRelationRef {
+                    sql_name: relation.sql_name(),
+                    kind: match relation {
+                        McpRuntimeRelation::Table(_) => RuntimeRelationKind::Table,
+                        McpRuntimeRelation::TableFunction(_) => RuntimeRelationKind::TableFunction,
+                    },
+                })
+                .collect(),
+            Self::Declared(DeclaredRuntimeCatalog::File(catalog)) => catalog
+                .relations
+                .iter()
+                .map(|relation| RuntimeRelationRef {
+                    sql_name: relation.sql_name(),
+                    kind: RuntimeRelationKind::Table,
+                })
+                .collect(),
+            Self::ProviderDiscovered(_) => Vec::new(),
+        }
+    }
+
+    pub(crate) fn declared_http_metadata(&self) -> Option<(&str, u32)> {
+        match self {
+            Self::Declared(DeclaredRuntimeCatalog::Http(catalog)) => {
+                Some((&catalog.catalog_name, catalog.backend.dsl_version))
+            }
+            _ => None,
+        }
+    }
+
+    pub(crate) fn backend_manifests(
+        &self,
+        source: &QuerySource,
+    ) -> Result<Vec<RuntimeBackendManifest>, crate::CoreError> {
+        match self {
+            Self::Declared(DeclaredRuntimeCatalog::Http(catalog)) => {
+                require_default_catalog(&catalog.catalog_name)?;
+                let mut by_schema: BTreeMap<
+                    String,
+                    (Vec<HttpTableSpec>, Vec<SourceTableFunctionSpec>),
+                > = BTreeMap::new();
+                for relation in &catalog.relations {
+                    match relation {
+                        HttpRuntimeRelation::Table(relation) => by_schema
+                            .entry(relation.sql_name.schema_name().to_string())
+                            .or_default()
+                            .0
+                            .push(relation.definition.clone()),
+                        HttpRuntimeRelation::TableFunction(relation) => by_schema
+                            .entry(relation.sql_name.schema_name().to_string())
+                            .or_default()
+                            .1
+                            .push(relation.definition.clone()),
+                    }
+                }
+                Ok(by_schema
+                    .into_iter()
+                    .map(|(schema_name, (tables, functions))| {
+                        RuntimeBackendManifest::Http(HttpSourceManifest {
+                            common: runtime_manifest_common(
+                                source,
+                                catalog.backend.dsl_version,
+                                schema_name,
+                            ),
+                            base_url: catalog.backend.base_url.clone(),
+                            auth: catalog.backend.auth.clone(),
+                            request_headers: catalog.backend.request_headers.clone(),
+                            rate_limit: catalog.backend.rate_limit.clone(),
+                            tables,
+                            functions,
+                            declared_inputs: source.declared_inputs().to_vec(),
+                        })
+                    })
+                    .collect())
+            }
+            Self::Declared(DeclaredRuntimeCatalog::Mcp(catalog)) => {
+                require_default_catalog(&catalog.catalog_name)?;
+                let mut by_schema: BTreeMap<
+                    String,
+                    (Vec<McpTableSpec>, Vec<McpTableFunctionSpec>),
+                > = BTreeMap::new();
+                for relation in &catalog.relations {
+                    match relation {
+                        McpRuntimeRelation::Table(relation) => by_schema
+                            .entry(relation.sql_name.schema_name().to_string())
+                            .or_default()
+                            .0
+                            .push(relation.definition.clone()),
+                        McpRuntimeRelation::TableFunction(relation) => by_schema
+                            .entry(relation.sql_name.schema_name().to_string())
+                            .or_default()
+                            .1
+                            .push(relation.definition.clone()),
+                    }
+                }
+                Ok(by_schema
+                    .into_iter()
+                    .map(|(schema_name, (tables, functions))| {
+                        RuntimeBackendManifest::Mcp(McpSourceManifest {
+                            common: runtime_manifest_common(
+                                source,
+                                catalog.backend.dsl_version,
+                                schema_name,
+                            ),
+                            server: catalog.backend.server.clone(),
+                            functions,
+                            tables,
+                            declared_inputs: source.declared_inputs().to_vec(),
+                        })
+                    })
+                    .collect())
+            }
+            Self::Declared(DeclaredRuntimeCatalog::File(catalog)) => {
+                require_default_catalog(&catalog.catalog_name)?;
+                let mut by_schema: BTreeMap<String, Vec<FileTableSpec>> = BTreeMap::new();
+                for relation in &catalog.relations {
+                    let FileRuntimeRelation::Table(relation) = relation;
+                    by_schema
+                        .entry(relation.sql_name.schema_name().to_string())
+                        .or_default()
+                        .push(relation.definition.clone());
+                }
+                Ok(by_schema
+                    .into_iter()
+                    .map(|(schema_name, tables)| {
+                        RuntimeBackendManifest::File(FileSourceManifest {
+                            common: runtime_manifest_common(
+                                source,
+                                catalog.backend.dsl_version,
+                                schema_name,
+                            ),
+                            tables,
+                            declared_inputs: source.declared_inputs().to_vec(),
+                        })
+                    })
+                    .collect())
+            }
+            Self::ProviderDiscovered(ProviderDiscoveredRuntimeCatalog::Database(catalog)) => Ok(
+                vec![RuntimeBackendManifest::Database(DatabaseSourceManifest {
+                    common: runtime_manifest_common(
+                        source,
+                        catalog.backend.dsl_version,
+                        catalog.catalog_name.clone(),
+                    ),
+                    connection: catalog.backend.connection.clone(),
+                    declared_inputs: source.declared_inputs().to_vec(),
+                })],
+            ),
+        }
+    }
+}
+
+fn require_default_catalog(catalog_name: &str) -> Result<(), crate::CoreError> {
+    if catalog_name == "datafusion" {
+        return Ok(());
+    }
+    Err(crate::CoreError::FailedPrecondition(format!(
+        "declared runtime catalog '{catalog_name}' cannot be compiled before catalog registration is enabled"
+    )))
+}
+
+fn runtime_manifest_common(
+    source: &QuerySource,
+    dsl_version: u32,
+    name: String,
+) -> SourceManifestCommon {
+    SourceManifestCommon {
+        dsl_version,
+        name,
+        version: source.version().unwrap_or_default().to_string(),
+        description: source.description().to_string(),
+        test_queries: source.test_queries().to_vec(),
+    }
 }

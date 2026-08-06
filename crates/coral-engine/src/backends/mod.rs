@@ -70,9 +70,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::contracts::RuntimeBackendManifest;
 use crate::{
     BoundRequestIdentityHttpAuthenticator, CoreError, QuerySource, RequestAuthenticator,
-    RuntimeSourceComponent, SourceInputResolver, SourceObservationPublisher,
+    SourceInputResolver, SourceObservationPublisher,
 };
 #[cfg(test)]
 use coral_spec::ValidatedSourceManifest;
@@ -105,9 +106,9 @@ pub(crate) fn compile_query_source(
     source_observation_publishers: &[Arc<dyn SourceObservationPublisher>],
     request_identity_http_authenticators: &HashMap<String, BoundRequestIdentityHttpAuthenticator>,
 ) -> Result<Box<dyn CompiledBackendSource>, CoreError> {
-    if source.components().is_empty() {
+    if source.catalogs().is_empty() {
         return Err(CoreError::FailedPrecondition(format!(
-            "source '{}' has no runtime components",
+            "source '{}' has no runtime catalogs",
             source.source_name()
         )));
     }
@@ -122,10 +123,23 @@ pub(crate) fn compile_query_source(
         source_observation_publishers,
         request_identity_http_authenticators,
     };
-    let compiled_components = source
-        .components()
+    let manifests = source
+        .catalogs()
         .iter()
-        .map(|component| compile_component(component, &request))
+        .map(|catalog| catalog.backend_manifests(source))
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    if manifests.is_empty() {
+        return Err(CoreError::FailedPrecondition(format!(
+            "source '{}' has no runtime relations",
+            source.source_name()
+        )));
+    }
+    let compiled_components = manifests
+        .iter()
+        .map(|manifest| compile_component(manifest, &request))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(composite::compile_source(
         source.source_name().to_string(),
@@ -134,14 +148,14 @@ pub(crate) fn compile_query_source(
 }
 
 fn compile_component(
-    component: &RuntimeSourceComponent,
+    component: &RuntimeBackendManifest,
     request: &BackendCompileRequest<'_>,
 ) -> Result<Box<dyn CompiledBackendSource>, CoreError> {
     match component {
-        RuntimeSourceComponent::Database(manifest) => {
+        RuntimeBackendManifest::Database(manifest) => {
             Ok(database::compile_manifest(manifest, request))
         }
-        RuntimeSourceComponent::Http(manifest) => {
+        RuntimeBackendManifest::Http(manifest) => {
             let request_identity_http_authenticator = request
                 .source
                 .identity_requirements()
@@ -164,8 +178,8 @@ fn compile_component(
                 request_identity_http_authenticator,
             ))
         }
-        RuntimeSourceComponent::File(manifest) => Ok(file::compile_manifest(manifest, request)),
-        RuntimeSourceComponent::Mcp(manifest) => Ok(mcp::compile_manifest(manifest, request)),
+        RuntimeBackendManifest::File(manifest) => Ok(file::compile_manifest(manifest, request)),
+        RuntimeBackendManifest::Mcp(manifest) => Ok(mcp::compile_manifest(manifest, request)),
     }
 }
 

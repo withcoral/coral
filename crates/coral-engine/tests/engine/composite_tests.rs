@@ -7,8 +7,8 @@ use coral_engine::{
     BoundRequestIdentityHttpAuthenticator, CoralQuery, HttpRuntimeBackend, HttpRuntimeRelation,
     QueryRuntimeConfig, QuerySource, RequestIdentityHttpAuthenticatorError,
     RequestIdentityHttpAuthenticatorFactory, RequestIdentitySelectionContext,
-    RequestIdentitySelectionError, RequestIdentitySelector, RuntimeCatalog, RuntimeSourceComponent,
-    RuntimeSourcePackage, SelectedRequestIdentity,
+    RequestIdentitySelectionError, RequestIdentitySelector, RuntimeCatalog, RuntimeSourcePackage,
+    SelectedRequestIdentity,
 };
 use coral_spec::SqlObjectName;
 use coral_spec::parse_source_manifest_yaml;
@@ -122,9 +122,11 @@ async fn multi_component_source_executes_across_component_tables() {
             declared_inputs: Vec::new(),
             test_queries: Vec::new(),
             identity_requirements: None,
-            components: vec![
-                RuntimeSourceComponent::Http(issues),
-                RuntimeSourceComponent::Http(pulls),
+            catalogs: vec![
+                RuntimeCatalog::try_from_default_catalog_http_manifest(issues)
+                    .expect("issues catalog"),
+                RuntimeCatalog::try_from_default_catalog_http_manifest(pulls)
+                    .expect("pulls catalog"),
             ],
         },
         BTreeMap::new(),
@@ -152,7 +154,7 @@ async fn multi_component_source_executes_across_component_tables() {
 }
 
 #[tokio::test]
-async fn composite_source_rejects_unsupported_lookup_key_component_backend() {
+async fn composite_source_rejects_unsupported_lookup_key_catalog_backend() {
     let source = QuerySource::from_runtime_components(
         RuntimeSourcePackage {
             source_name: "demo".to_string(),
@@ -161,9 +163,12 @@ async fn composite_source_rejects_unsupported_lookup_key_component_backend() {
             declared_inputs: Vec::new(),
             test_queries: Vec::new(),
             identity_requirements: None,
-            components: vec![RuntimeSourceComponent::File(
-                file_component_with_lookup_key_filter(),
-            )],
+            catalogs: vec![
+                RuntimeCatalog::try_from_default_catalog_file_manifest(
+                    file_component_with_lookup_key_filter(),
+                )
+                .expect("file catalog"),
+            ],
         },
         BTreeMap::new(),
         BTreeMap::new(),
@@ -172,7 +177,7 @@ async fn composite_source_rejects_unsupported_lookup_key_component_backend() {
 
     let error = CoralQuery::validate_source(&source, test_runtime(), &[])
         .await
-        .expect_err("composite validation should reject unsupported lookup_key component backend");
+        .expect_err("composite validation should reject unsupported lookup_key catalog backend");
 
     assert!(
         error.to_string().contains(
@@ -210,9 +215,11 @@ async fn multi_component_source_can_register_multiple_schemas() {
             declared_inputs: Vec::new(),
             test_queries: Vec::new(),
             identity_requirements: None,
-            components: vec![
-                RuntimeSourceComponent::Http(issues),
-                RuntimeSourceComponent::Http(pulls),
+            catalogs: vec![
+                RuntimeCatalog::try_from_default_catalog_http_manifest(issues)
+                    .expect("issues catalog"),
+                RuntimeCatalog::try_from_default_catalog_http_manifest(pulls)
+                    .expect("pulls catalog"),
             ],
         },
         BTreeMap::new(),
@@ -250,12 +257,15 @@ async fn selected_sources_reject_runtime_schema_collisions() {
             declared_inputs: Vec::new(),
             test_queries: Vec::new(),
             identity_requirements: None,
-            components: vec![RuntimeSourceComponent::Http(http_component(
-                &server.uri(),
-                "github_v4_rest",
-                "issues",
-                "/issues",
-            ))],
+            catalogs: vec![
+                RuntimeCatalog::try_from_default_catalog_http_manifest(http_component(
+                    &server.uri(),
+                    "github_v4_rest",
+                    "issues",
+                    "/issues",
+                ))
+                .expect("first catalog"),
+            ],
         },
         BTreeMap::new(),
         BTreeMap::new(),
@@ -269,12 +279,15 @@ async fn selected_sources_reject_runtime_schema_collisions() {
             declared_inputs: Vec::new(),
             test_queries: Vec::new(),
             identity_requirements: None,
-            components: vec![RuntimeSourceComponent::Http(http_component(
-                &server.uri(),
-                "github_v4_rest",
-                "pulls",
-                "/pulls",
-            ))],
+            catalogs: vec![
+                RuntimeCatalog::try_from_default_catalog_http_manifest(http_component(
+                    &server.uri(),
+                    "github_v4_rest",
+                    "pulls",
+                    "/pulls",
+                ))
+                .expect("second catalog"),
+            ],
         },
         BTreeMap::new(),
         BTreeMap::new(),
@@ -306,9 +319,11 @@ async fn validate_source_reports_only_component_schemas_for_multi_schema_source(
             declared_inputs: Vec::new(),
             test_queries: Vec::new(),
             identity_requirements: None,
-            components: vec![
-                RuntimeSourceComponent::Http(issues),
-                RuntimeSourceComponent::Http(pulls),
+            catalogs: vec![
+                RuntimeCatalog::try_from_default_catalog_http_manifest(issues)
+                    .expect("issues catalog"),
+                RuntimeCatalog::try_from_default_catalog_http_manifest(pulls)
+                    .expect("pulls catalog"),
             ],
         },
         BTreeMap::new(),
@@ -547,9 +562,12 @@ fn identity_runtime_source_with_components(
             declared_inputs: Vec::new(),
             test_queries: Vec::new(),
             identity_requirements: Some(identity_requirements()),
-            components: components
+            catalogs: components
                 .into_iter()
-                .map(RuntimeSourceComponent::Http)
+                .map(|manifest| {
+                    RuntimeCatalog::try_from_default_catalog_http_manifest(manifest)
+                        .expect("HTTP catalog")
+                })
                 .collect(),
         },
         BTreeMap::new(),

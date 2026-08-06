@@ -438,8 +438,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use coral_spec::{
-        DatabaseConnectionSpec, DatabaseSourceManifest, MySqlConnectionSpec, ParsedTemplate,
-        SourceManifestCommon, SqliteConnectionSpec,
+        DatabaseConnectionSpec, MySqlConnectionSpec, ParsedTemplate, SqliteConnectionSpec,
     };
 
     use super::{
@@ -448,8 +447,9 @@ mod tests {
     };
     use crate::backends::shared::template::RenderContext;
     use crate::{
-        CoralQuery, QueryRuntimeConfig, QuerySource, RuntimeSourceComponent, RuntimeSourcePackage,
-        SourceDecorator, SourceDecoratorError, SourceFailurePolicy, SourceTables,
+        CoralQuery, DatabaseRuntimeBackend, QueryRuntimeConfig, QuerySource, RuntimeCatalog,
+        RuntimeSourcePackage, SourceDecorator, SourceDecoratorError, SourceFailurePolicy,
+        SourceTables,
     };
 
     struct AbortOnSourceFailureDecorator;
@@ -519,19 +519,12 @@ mod tests {
     }
 
     fn sqlite_source(path: String) -> QuerySource {
-        let database = DatabaseSourceManifest {
-            common: SourceManifestCommon {
-                dsl_version: 4,
-                name: "coral_db".to_string(),
-                version: String::new(),
-                description: "Coral test database".to_string(),
-                test_queries: Vec::new(),
-            },
-            connection: DatabaseConnectionSpec::Sqlite(SqliteConnectionSpec {
+        let backend = DatabaseRuntimeBackend::new(
+            4,
+            DatabaseConnectionSpec::Sqlite(SqliteConnectionSpec {
                 path: ParsedTemplate::parse(path).expect("sqlite path template"),
             }),
-            declared_inputs: Vec::new(),
-        };
+        );
         QuerySource::from_runtime_components(
             RuntimeSourcePackage {
                 source_name: "coral_db".to_string(),
@@ -540,7 +533,10 @@ mod tests {
                 declared_inputs: Vec::new(),
                 test_queries: Vec::new(),
                 identity_requirements: None,
-                components: vec![RuntimeSourceComponent::Database(database)],
+                catalogs: vec![
+                    RuntimeCatalog::try_database_provider_discovered("coral_db", backend)
+                        .expect("database catalog"),
+                ],
             },
             BTreeMap::new(),
             BTreeMap::new(),

@@ -566,7 +566,7 @@ mod tests {
                 declared_inputs: Vec::new(),
                 test_queries: Vec::new(),
                 identity_requirements: None,
-                components: Vec::new(),
+                catalogs: Vec::new(),
             },
             BTreeMap::new(),
             BTreeMap::new(),

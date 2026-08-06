@@ -17,16 +17,18 @@ pub use query::{
     QueryExecution, QueryExecutionProvenance, QueryMemoryConfig, QueryParameterValue,
     QueryParameters, QueryPlan, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,
     QueryTableFunctionUsage, QueryTableUsage, QueryTestFailure, QueryTestResult, QueryTestSuccess,
-    ResolvedQueryResources, RuntimeSourceComponent, RuntimeSourcePackage, SourceValidationReport,
+    ResolvedQueryResources, RuntimeSourcePackage, SourceValidationReport,
 };
 pub(crate) use query_error::{ColumnParts, TableRefParts};
+pub(crate) use runtime_catalog::RuntimeBackendManifest;
 pub use runtime_catalog::{
     DatabaseProviderDiscoveredRuntimeCatalog, DatabaseRuntimeBackend, DeclaredRuntimeCatalog,
     FileDeclaredRuntimeCatalog, FileRuntimeBackend, FileRuntimeRelation, FileRuntimeTableRelation,
     HttpDeclaredRuntimeCatalog, HttpRuntimeBackend, HttpRuntimeRelation,
     HttpRuntimeTableFunctionRelation, HttpRuntimeTableRelation, McpDeclaredRuntimeCatalog,
     McpRuntimeBackend, McpRuntimeRelation, McpRuntimeTableFunctionRelation,
-    McpRuntimeTableRelation, ProviderDiscoveredRuntimeCatalog, RuntimeCatalog,
+    McpRuntimeTableRelation, ProviderDiscoveredRuntimeCatalog, RuntimeCatalog, RuntimeRelationKind,
+    RuntimeRelationRef,
 };
 pub use udfs::{
     UdfRuntimeArgument, UdfRuntimeDefinition, UdfRuntimeImplementation, UdfRuntimePublish,

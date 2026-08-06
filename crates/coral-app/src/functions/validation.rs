@@ -1,6 +1,6 @@
 use std::collections::{BTreeSet, HashSet};
 
-use coral_engine::{QuerySource, RuntimeSourceComponent, UdfRuntimeDefinition};
+use coral_engine::{QuerySource, UdfRuntimeDefinition};
 
 use crate::bootstrap::AppError;
 
@@ -33,9 +33,13 @@ pub(crate) fn source_sql_publish_targets_for_schemas(
 ) -> SqlPublishTargets {
     let mut targets = HashSet::new();
     for source in selected_sources {
-        for component in source.components() {
-            if schemas.contains(component.source_name()) {
-                record_source_component_sql_targets(component, &mut targets);
+        for relation in source.declared_relations() {
+            let sql_name = relation.sql_name();
+            if schemas.contains(sql_name.schema_name()) {
+                targets.insert(SqlPublishTarget::new(
+                    sql_name.schema_name(),
+                    sql_name.name(),
+                ));
             }
         }
     }
@@ -57,49 +61,15 @@ pub(crate) fn unchecked_source_publish_schemas(
 fn source_sql_publish_targets(selected_sources: &[QuerySource]) -> SqlPublishTargets {
     let mut targets = HashSet::new();
     for source in selected_sources {
-        for component in source.components() {
-            record_source_component_sql_targets(component, &mut targets);
+        for relation in source.declared_relations() {
+            let sql_name = relation.sql_name();
+            targets.insert(SqlPublishTarget::new(
+                sql_name.schema_name(),
+                sql_name.name(),
+            ));
         }
     }
     targets
-}
-
-fn record_source_component_sql_targets(
-    component: &RuntimeSourceComponent,
-    targets: &mut SqlPublishTargets,
-) {
-    match component {
-        RuntimeSourceComponent::Database(_) => {
-            // Database tables are discovered at registration and have no static publish targets.
-        }
-        RuntimeSourceComponent::Http(manifest) => {
-            for table in &manifest.tables {
-                targets.insert(SqlPublishTarget::new(&manifest.common.name, table.name()));
-            }
-            for function in &manifest.functions {
-                targets.insert(SqlPublishTarget::new(&manifest.common.name, &function.name));
-            }
-        }
-        RuntimeSourceComponent::File(manifest) => {
-            for table in &manifest.tables {
-                targets.insert(SqlPublishTarget::new(&manifest.common.name, table.name()));
-            }
-        }
-        RuntimeSourceComponent::Mcp(manifest) => {
-            for table in &manifest.tables {
-                targets.insert(SqlPublishTarget::new(
-                    &manifest.common.name,
-                    &table.common.name,
-                ));
-            }
-            for function in &manifest.functions {
-                targets.insert(SqlPublishTarget::new(
-                    &manifest.common.name,
-                    &function.common.name,
-                ));
-            }
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -172,10 +142,10 @@ tables:
                 declared_inputs: Vec::new(),
                 test_queries: Vec::new(),
                 identity_requirements: None,
-                components: primary
-                    .components()
+                catalogs: primary
+                    .catalogs()
                     .iter()
-                    .chain(secondary.components())
+                    .chain(secondary.catalogs())
                     .cloned()
                     .collect(),
             },

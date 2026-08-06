@@ -8,15 +8,11 @@ use std::sync::Arc;
 
 use arrow::datatypes::Schema;
 use arrow::record_batch::RecordBatch;
-use coral_spec::backends::database::{DatabaseConnectionSpec, DatabaseSourceManifest};
-use coral_spec::backends::file::FileSourceManifest;
-use coral_spec::backends::http::HttpSourceManifest;
-use coral_spec::backends::mcp::McpSourceManifest;
 use coral_spec::v4::IdentityRequirements;
 use coral_spec::{ManifestInputSpec, ValidatedSourceManifest};
 use opentelemetry::Context as OtelContext;
 
-use super::ColumnInfo;
+use super::{ColumnInfo, RuntimeCatalog, RuntimeRelationRef};
 use crate::{
     EngineExtensions, RequestIdentityHttpAuthenticatorFactory, RequestIdentitySelectionContext,
     RequestIdentitySelector,
@@ -31,7 +27,7 @@ pub struct QuerySource {
     declared_inputs: Vec<ManifestInputSpec>,
     test_queries: Vec<String>,
     identity_requirements: Option<IdentityRequirements>,
-    components: Vec<RuntimeSourceComponent>,
+    catalogs: Vec<RuntimeCatalog>,
     variables: BTreeMap<String, String>,
     secrets: BTreeMap<String, String>,
 }
@@ -51,21 +47,8 @@ pub struct RuntimeSourcePackage {
     pub test_queries: Vec<String>,
     /// Source-level request identity requirements, when declared.
     pub identity_requirements: Option<IdentityRequirements>,
-    /// Backend-ready runtime components that make up the logical source.
-    pub components: Vec<RuntimeSourceComponent>,
-}
-
-/// One backend-ready component inside an app-assembled query source package.
-#[derive(Clone)]
-pub enum RuntimeSourceComponent {
-    /// Relational database-backed runtime component.
-    Database(DatabaseSourceManifest),
-    /// HTTP-backed runtime component.
-    Http(HttpSourceManifest),
-    /// File-backed runtime component.
-    File(FileSourceManifest),
-    /// MCP-backed runtime component.
-    Mcp(McpSourceManifest),
+    /// Backend-ready runtime catalogs that make up the logical source.
+    pub catalogs: Vec<RuntimeCatalog>,
 }
 
 impl fmt::Debug for QuerySource {
@@ -77,41 +60,10 @@ impl fmt::Debug for QuerySource {
             .field("description", &self.description)
             .field("declared_inputs", &self.declared_inputs)
             .field("test_queries", &self.test_queries)
-            .field("components", &self.components)
+            .field("catalogs", &self.catalogs)
             .field("variables", &self.variables)
             .field("secret_count", &self.secrets.len())
             .finish_non_exhaustive()
-    }
-}
-
-impl fmt::Debug for RuntimeSourceComponent {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Database(manifest) => {
-                let provider = match &manifest.connection {
-                    DatabaseConnectionSpec::Postgres(_) => "postgres",
-                    DatabaseConnectionSpec::MySql(_) => "mysql",
-                    DatabaseConnectionSpec::Sqlite(_) => "sqlite",
-                };
-                formatter
-                    .debug_struct("Database")
-                    .field("source_name", &manifest.common.name)
-                    .field("provider", &provider)
-                    .finish_non_exhaustive()
-            }
-            Self::Http(manifest) => formatter
-                .debug_struct("Http")
-                .field("source_name", &manifest.common.name)
-                .finish_non_exhaustive(),
-            Self::File(manifest) => formatter
-                .debug_struct("File")
-                .field("source_name", &manifest.common.name)
-                .finish_non_exhaustive(),
-            Self::Mcp(manifest) => formatter
-                .debug_struct("Mcp")
-                .field("source_name", &manifest.common.name)
-                .finish_non_exhaustive(),
-        }
     }
 }
 
@@ -138,7 +90,7 @@ impl QuerySource {
         variables: BTreeMap<String, String>,
         secrets: BTreeMap<String, String>,
     ) -> Self {
-        let components = components_from_manifest(source_spec);
+        let catalogs = catalogs_from_manifest(source_spec);
         Self {
             source_name: source_spec.schema_name().to_string(),
             authored_version: source_spec.source_version().map(ToString::to_string),
@@ -146,13 +98,13 @@ impl QuerySource {
             declared_inputs: source_spec.declared_inputs().to_vec(),
             test_queries: source_spec.test_queries().to_vec(),
             identity_requirements: None,
-            components,
+            catalogs,
             variables,
             secrets,
         }
     }
 
-    /// Builds one source selection from app-assembled runtime components.
+    /// Builds one source selection from app-assembled runtime catalogs.
     ///
     /// # Errors
     ///
@@ -167,15 +119,6 @@ impl QuerySource {
                 "runtime source package source_name must not be empty".to_string(),
             ));
         }
-        for component in &package.components {
-            let schema_name = component.source_name();
-            if schema_name.trim().is_empty() {
-                return Err(crate::CoreError::InvalidInput(format!(
-                    "runtime source package '{}' has a component with an empty schema name",
-                    package.source_name
-                )));
-            }
-        }
         validate_runtime_source_identity_requirements(&package)?;
         Ok(Self {
             source_name: package.source_name,
@@ -184,7 +127,7 @@ impl QuerySource {
             declared_inputs: package.declared_inputs,
             test_queries: package.test_queries,
             identity_requirements: package.identity_requirements,
-            components: package.components,
+            catalogs: package.catalogs,
             variables,
             secrets,
         })
@@ -235,45 +178,54 @@ impl QuerySource {
     }
 
     #[must_use]
-    /// Returns backend-ready runtime components supplied by the app.
-    pub fn components(&self) -> &[RuntimeSourceComponent] {
-        &self.components
+    /// Returns backend-ready runtime catalogs supplied by the app.
+    pub fn catalogs(&self) -> &[RuntimeCatalog] {
+        &self.catalogs
+    }
+
+    /// Returns read-only views of every app-declared table and table function.
+    #[must_use]
+    pub fn declared_relations(&self) -> Vec<RuntimeRelationRef<'_>> {
+        self.catalogs
+            .iter()
+            .flat_map(RuntimeCatalog::relations)
+            .collect()
     }
 
     #[must_use]
-    /// Returns the SQL schema names published by this source's two-part
-    /// components. Database components publish catalogs instead; see
-    /// [`Self::catalog_names`]. A source with no components claims its source
+    /// Returns the SQL schema names published by this source's declared
+    /// catalogs. Provider-discovered database catalogs publish catalogs instead;
+    /// see [`Self::catalog_names`]. A source with no catalogs claims its source
     /// name as a schema. Schema and catalog names of all selected sources
     /// share one flat namespace.
     pub fn schema_names(&self) -> Vec<&str> {
         let mut names = Vec::new();
-        for component in &self.components {
-            if matches!(component, RuntimeSourceComponent::Database(_)) {
-                continue;
-            }
-            let name = component.source_name();
-            if !names.contains(&name) {
-                names.push(name);
+        for catalog in &self.catalogs {
+            for sql_name in catalog.sql_names() {
+                if sql_name.catalog_name() == "datafusion"
+                    && !names.contains(&sql_name.schema_name())
+                {
+                    names.push(sql_name.schema_name());
+                }
             }
         }
-        if self.components.is_empty() {
+        if self.catalogs.is_empty() {
             names.push(self.source_name());
         }
         names
     }
 
     #[must_use]
-    /// Returns the SQL catalog names published by this source's database
-    /// components. Tables of these components resolve as
+    /// Returns the SQL catalog names published by this source's
+    /// provider-discovered database catalogs. Their tables resolve as
     /// `catalog.schema.table`, with schemas discovered at registration time.
     pub fn catalog_names(&self) -> Vec<&str> {
         let mut names = Vec::new();
-        for component in &self.components {
-            let RuntimeSourceComponent::Database(manifest) = component else {
+        for catalog in &self.catalogs {
+            let name = catalog.catalog_name();
+            if name == "datafusion" {
                 continue;
-            };
-            let name = manifest.common.name.as_str();
+            }
             if !names.contains(&name) {
                 names.push(name);
             }
@@ -294,20 +246,6 @@ impl QuerySource {
     }
 }
 
-impl RuntimeSourceComponent {
-    #[must_use]
-    /// Returns the name this component publishes at runtime: a schema name,
-    /// or a catalog name for database components.
-    pub fn source_name(&self) -> &str {
-        match self {
-            Self::Database(manifest) => &manifest.common.name,
-            Self::Http(manifest) => &manifest.common.name,
-            Self::File(manifest) => &manifest.common.name,
-            Self::Mcp(manifest) => &manifest.common.name,
-        }
-    }
-}
-
 fn validate_runtime_source_identity_requirements(
     package: &RuntimeSourcePackage,
 ) -> Result<(), crate::CoreError> {
@@ -315,32 +253,41 @@ fn validate_runtime_source_identity_requirements(
         return Ok(());
     }
 
-    for component in &package.components {
-        let RuntimeSourceComponent::Http(manifest) = component else {
+    for catalog in &package.catalogs {
+        let Some((catalog_name, dsl_version)) = catalog.declared_http_metadata() else {
             return Err(crate::CoreError::InvalidInput(format!(
-                "runtime source package '{}' declares identity_requirements, but identity_requirements require every runtime component to be a DSL v4 HTTP component",
+                "runtime source package '{}' declares identity_requirements, but identity_requirements require every runtime catalog to be a DSL v4 HTTP catalog",
                 package.source_name
             )));
         };
-        if manifest.common.dsl_version != 4 {
+        if dsl_version != 4 {
             return Err(crate::CoreError::InvalidInput(format!(
-                "runtime source package '{}' declares identity_requirements, but component '{}' uses DSL v{} HTTP instead of DSL v4 HTTP",
-                package.source_name, manifest.common.name, manifest.common.dsl_version
+                "runtime source package '{}' declares identity_requirements, but catalog '{}' uses DSL v{} HTTP instead of DSL v4 HTTP",
+                package.source_name, catalog_name, dsl_version
             )));
         }
     }
     Ok(())
 }
 
-fn components_from_manifest(source_spec: &ValidatedSourceManifest) -> Vec<RuntimeSourceComponent> {
+fn catalogs_from_manifest(source_spec: &ValidatedSourceManifest) -> Vec<RuntimeCatalog> {
     if let Some(http) = source_spec.as_http() {
-        return vec![RuntimeSourceComponent::Http(http.clone())];
+        return vec![
+            RuntimeCatalog::try_from_default_catalog_http_manifest(http.clone())
+                .expect("validated v3 HTTP manifest must produce a runtime catalog"),
+        ];
     }
     if let Some(file) = source_spec.as_file() {
-        return vec![RuntimeSourceComponent::File(file.clone())];
+        return vec![
+            RuntimeCatalog::try_from_default_catalog_file_manifest(file.clone())
+                .expect("validated v3 file manifest must produce a runtime catalog"),
+        ];
     }
     if let Some(mcp) = source_spec.as_mcp() {
-        return vec![RuntimeSourceComponent::Mcp(mcp.clone())];
+        return vec![
+            RuntimeCatalog::try_from_default_catalog_mcp_manifest(mcp.clone())
+                .expect("validated v3 MCP manifest must produce a runtime catalog"),
+        ];
     }
     Vec::new()
 }
@@ -1271,7 +1218,7 @@ mod tests {
     use coral_spec::v4::{AcceptedIdentityRequirement, IdentityRequirements};
     use serde_json::json;
 
-    use super::{MemorySize, QuerySource, RuntimeSourceComponent, RuntimeSourcePackage};
+    use super::{MemorySize, QuerySource, RuntimeCatalog, RuntimeSourcePackage};
 
     #[test]
     fn memory_size_parses_binary_units() {
@@ -1310,7 +1257,10 @@ mod tests {
                 declared_inputs: Vec::new(),
                 test_queries: Vec::new(),
                 identity_requirements: Some(identity_requirements()),
-                components: vec![RuntimeSourceComponent::Http(http_manifest())],
+                catalogs: vec![
+                    RuntimeCatalog::try_from_default_catalog_http_manifest(http_manifest())
+                        .expect("HTTP catalog"),
+                ],
             },
             BTreeMap::new(),
             BTreeMap::new(),
@@ -1339,7 +1289,10 @@ mod tests {
                 declared_inputs: Vec::new(),
                 test_queries: Vec::new(),
                 identity_requirements: Some(requirements.clone()),
-                components: vec![RuntimeSourceComponent::Http(manifest)],
+                catalogs: vec![
+                    RuntimeCatalog::try_from_default_catalog_http_manifest(manifest)
+                        .expect("HTTP catalog"),
+                ],
             },
             BTreeMap::new(),
             BTreeMap::new(),
@@ -1362,8 +1315,8 @@ mod tests {
         assert!(source.identity_requirements().is_none());
         assert!(source.identity_selection_context().is_none());
         assert!(matches!(
-            source.components(),
-            [RuntimeSourceComponent::Http(http)] if http.common.dsl_version == 3
+            source.catalogs(),
+            [catalog] if catalog.declared_http_metadata() == Some(("datafusion", 3))
         ));
     }
 

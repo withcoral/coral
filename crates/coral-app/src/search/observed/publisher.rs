@@ -294,7 +294,7 @@ mod tests {
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
     use coral_engine::{
-        QuerySource, RuntimeSourceComponent, RuntimeSourcePackage, SourceObservationSurfaceKind,
+        QuerySource, RuntimeCatalog, RuntimeSourcePackage, SourceObservationSurfaceKind,
         SourceScanObservation,
     };
     use coral_spec::{DO_NOT_INDEX_COLUMN_METADATA_KEY, parse_source_manifest_yaml};
@@ -656,7 +656,7 @@ tables:
                 declared_inputs: Vec::new(),
                 test_queries: Vec::new(),
                 identity_requirements: None,
-                components: vec![
+                catalogs: vec![
                     http_component("github_v4_rest"),
                     http_component("github_v4_mcp"),
                 ],
@@ -676,7 +676,7 @@ tables:
                 declared_inputs: Vec::new(),
                 test_queries: Vec::new(),
                 identity_requirements: None,
-                components: vec![http_component(source_name)],
+                catalogs: vec![http_component(source_name)],
             },
             BTreeMap::new(),
             BTreeMap::new(),
@@ -696,7 +696,7 @@ tables:
         .expect("batch")
     }
 
-    fn http_component(source_name: &str) -> RuntimeSourceComponent {
+    fn http_component(source_name: &str) -> RuntimeCatalog {
         let yaml = format!(
             r"
 dsl_version: 3
@@ -715,7 +715,10 @@ tables:
 "
         );
         let manifest = parse_source_manifest_yaml(&yaml).expect("component manifest");
-        RuntimeSourceComponent::Http(manifest.as_http().expect("HTTP component").clone())
+        RuntimeCatalog::try_from_default_catalog_http_manifest(
+            manifest.as_http().expect("HTTP component").clone(),
+        )
+        .expect("HTTP catalog")
     }
 
     fn wait_for_payloads(layout: &AppStateLayout, workspace: &WorkspaceName) -> Vec<String> {

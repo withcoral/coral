@@ -1,6 +1,6 @@
 //! Source-surface routing and opaque scope derivation for observed values.
 
-use coral_engine::{QuerySource, RuntimeSourceComponent};
+use coral_engine::{QuerySource, RuntimeRelationKind};
 use serde::Serialize;
 use uuid::Uuid;
 
@@ -48,17 +48,16 @@ impl<'a> SourceScopeSeed<'a> {
     }
 }
 
-/// A runtime component whose name diverges from its package's source name.
+/// A runtime SQL namespace whose name diverges from its package's source name.
 ///
 /// Since #1791 one source publishes exactly one surface and one SQL namespace,
-/// and the sources domain copies both names from the same `manifest.common.name`
-/// field, so this is unreachable on every production path. Search still refuses
-/// the source rather than writing rows under an identity that would select
-/// nothing back -- a tripwire at the single seam that derives identity from a
-/// runtime package, not an enforcement boundary.
+/// Default-catalog relations use their schema as the namespace. Catalog-backed
+/// relations use their catalog, leaving provider or projection schemas free to
+/// differ. Search refuses a source whose top-level namespace does not match its
+/// installed owner rather than writing rows under an incoherent identity.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error(
-    "source '{source_name}' exposes runtime component '{component_source_name}'; one installed source must publish exactly one runtime schema"
+    "source '{source_name}' exposes runtime namespace '{component_source_name}'; one installed source must publish exactly one top-level SQL namespace"
 )]
 pub(crate) struct ObservedSourceIdentityMismatch {
     source_name: String,
@@ -97,15 +96,12 @@ pub(super) fn source_surface_scopes(
 ) -> Result<Vec<ObservedSourceSurfaceScope>, ObservedSourceIdentityMismatch> {
     let source_name = source.source_name();
     let mut scopes = Vec::new();
-    for component in source.components() {
-        let component_source_name = match component {
-            // Database components declare no HTTP/MCP observation surfaces, so
-            // they never contribute a stored identity for the tripwire to
-            // protect; the arm below enumerates nothing for them.
-            RuntimeSourceComponent::Database(_) => source_name,
-            RuntimeSourceComponent::Http(manifest) => manifest.common.name.as_str(),
-            RuntimeSourceComponent::File(manifest) => manifest.common.name.as_str(),
-            RuntimeSourceComponent::Mcp(manifest) => manifest.common.name.as_str(),
+    for relation in source.declared_relations() {
+        let sql_name = relation.sql_name();
+        let component_source_name = if sql_name.catalog_name() == "datafusion" {
+            sql_name.schema_name()
+        } else {
+            sql_name.catalog_name()
         };
         if component_source_name != source_name {
             return Err(ObservedSourceIdentityMismatch {
@@ -113,63 +109,17 @@ pub(super) fn source_surface_scopes(
                 component_source_name: component_source_name.to_string(),
             });
         }
-
-        match component {
-            RuntimeSourceComponent::Database(_) => {
-                // Database tables do not declare HTTP/MCP observation surfaces.
-            }
-            RuntimeSourceComponent::Http(manifest) => {
-                scopes.extend(manifest.tables.iter().map(|table| {
-                    surface_scope(
-                        source,
-                        manifest.common.name.as_str(),
-                        ObservedValuesSurfaceKind::Table,
-                        table.name(),
-                        seed,
-                    )
-                }));
-                scopes.extend(manifest.functions.iter().map(|function| {
-                    surface_scope(
-                        source,
-                        manifest.common.name.as_str(),
-                        ObservedValuesSurfaceKind::Function,
-                        function.name.as_str(),
-                        seed,
-                    )
-                }));
-            }
-            RuntimeSourceComponent::File(manifest) => {
-                scopes.extend(manifest.tables.iter().map(|table| {
-                    surface_scope(
-                        source,
-                        manifest.common.name.as_str(),
-                        ObservedValuesSurfaceKind::Table,
-                        table.name(),
-                        seed,
-                    )
-                }));
-            }
-            RuntimeSourceComponent::Mcp(manifest) => {
-                scopes.extend(manifest.tables.iter().map(|table| {
-                    surface_scope(
-                        source,
-                        manifest.common.name.as_str(),
-                        ObservedValuesSurfaceKind::Table,
-                        table.name(),
-                        seed,
-                    )
-                }));
-                scopes.extend(manifest.functions.iter().map(|function| {
-                    surface_scope(
-                        source,
-                        manifest.common.name.as_str(),
-                        ObservedValuesSurfaceKind::Function,
-                        function.name(),
-                        seed,
-                    )
-                }));
-            }
-        }
+        let surface_kind = match relation.kind() {
+            RuntimeRelationKind::Table => ObservedValuesSurfaceKind::Table,
+            RuntimeRelationKind::TableFunction => ObservedValuesSurfaceKind::Function,
+        };
+        scopes.push(surface_scope(
+            source,
+            component_source_name,
+            surface_kind,
+            sql_name.name(),
+            seed,
+        ));
     }
     Ok(scopes)
 }
