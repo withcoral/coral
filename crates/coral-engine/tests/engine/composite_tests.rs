@@ -4,11 +4,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
 use coral_engine::{
-    BoundRequestIdentityHttpAuthenticator, CoralQuery, QueryRuntimeConfig, QuerySource,
-    RequestIdentityHttpAuthenticatorError, RequestIdentityHttpAuthenticatorFactory,
-    RequestIdentitySelectionContext, RequestIdentitySelectionError, RequestIdentitySelector,
-    RuntimeSourceComponent, RuntimeSourcePackage, SelectedRequestIdentity,
+    BoundRequestIdentityHttpAuthenticator, CoralQuery, HttpRuntimeBackend, HttpRuntimeRelation,
+    QueryRuntimeConfig, QuerySource, RequestIdentityHttpAuthenticatorError,
+    RequestIdentityHttpAuthenticatorFactory, RequestIdentitySelectionContext,
+    RequestIdentitySelectionError, RequestIdentitySelector, RuntimeCatalog, RuntimeSourceComponent,
+    RuntimeSourcePackage, SelectedRequestIdentity,
 };
+use coral_spec::SqlObjectName;
 use coral_spec::parse_source_manifest_yaml;
 use coral_spec::v4::{AcceptedIdentityRequirement, IdentityRequirements};
 use coral_spec::{FilterMode, FilterSpec, ManifestDataType};
@@ -18,6 +20,79 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::harness::{execution_to_rows, test_runtime};
+
+#[test]
+fn declared_http_catalog_rejects_relation_catalog_disagreement() {
+    let manifest = http_component("https://api.example.com", "github", "issues", "/issues");
+    let backend = HttpRuntimeBackend::new(
+        manifest.common.dsl_version,
+        manifest.base_url.clone(),
+        manifest.auth.clone(),
+        manifest.request_headers.clone(),
+        manifest.rate_limit.clone(),
+    );
+    let relation = HttpRuntimeRelation::try_table(
+        SqlObjectName::try_new("other", "github", "issues").expect("SQL name"),
+        manifest.tables[0].clone(),
+    )
+    .expect("relation");
+
+    let error = RuntimeCatalog::try_http_declared("datafusion", backend, vec![relation])
+        .expect_err("catalog disagreement must fail");
+
+    assert!(
+        error
+            .to_string()
+            .contains("contains relation 'other.github.issues' from catalog 'other'"),
+        "{error}"
+    );
+}
+
+#[test]
+fn declared_http_catalog_rejects_duplicate_sql_identity() {
+    let manifest = http_component("https://api.example.com", "github", "issues", "/issues");
+    let backend = HttpRuntimeBackend::new(
+        manifest.common.dsl_version,
+        manifest.base_url.clone(),
+        manifest.auth.clone(),
+        manifest.request_headers.clone(),
+        manifest.rate_limit.clone(),
+    );
+    let relation = HttpRuntimeRelation::try_table(
+        SqlObjectName::try_new("datafusion", "github", "issues").expect("SQL name"),
+        manifest.tables[0].clone(),
+    )
+    .expect("relation");
+
+    let error =
+        RuntimeCatalog::try_http_declared("datafusion", backend, vec![relation.clone(), relation])
+            .expect_err("duplicate relation must fail");
+
+    assert!(
+        error
+            .to_string()
+            .contains("contains duplicate relation 'datafusion.github.issues'"),
+        "{error}"
+    );
+}
+
+#[test]
+fn http_relation_rejects_definition_leaf_disagreement() {
+    let manifest = http_component("https://api.example.com", "github", "issues", "/issues");
+
+    let error = HttpRuntimeRelation::try_table(
+        SqlObjectName::try_new("datafusion", "github", "pulls").expect("SQL name"),
+        manifest.tables[0].clone(),
+    )
+    .expect_err("definition disagreement must fail");
+
+    assert!(
+        error
+            .to_string()
+            .contains("HTTP table definition name 'issues' does not match SQL name 'pulls'"),
+        "{error}"
+    );
+}
 
 #[tokio::test]
 async fn multi_component_source_executes_across_component_tables() {

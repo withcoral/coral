@@ -4,6 +4,7 @@ mod catalog;
 mod error;
 mod query;
 mod query_error;
+mod runtime_catalog;
 mod udfs;
 
 pub use catalog::{
@@ -19,6 +20,14 @@ pub use query::{
     ResolvedQueryResources, RuntimeSourceComponent, RuntimeSourcePackage, SourceValidationReport,
 };
 pub(crate) use query_error::{ColumnParts, TableRefParts};
+pub use runtime_catalog::{
+    DatabaseProviderDiscoveredRuntimeCatalog, DatabaseRuntimeBackend, DeclaredRuntimeCatalog,
+    FileDeclaredRuntimeCatalog, FileRuntimeBackend, FileRuntimeRelation, FileRuntimeTableRelation,
+    HttpDeclaredRuntimeCatalog, HttpRuntimeBackend, HttpRuntimeRelation,
+    HttpRuntimeTableFunctionRelation, HttpRuntimeTableRelation, McpDeclaredRuntimeCatalog,
+    McpRuntimeBackend, McpRuntimeRelation, McpRuntimeTableFunctionRelation,
+    McpRuntimeTableRelation, ProviderDiscoveredRuntimeCatalog, RuntimeCatalog,
+};
 pub use udfs::{
     UdfRuntimeArgument, UdfRuntimeDefinition, UdfRuntimeImplementation, UdfRuntimePublish,
     UdfRuntimeResultColumn, UdfRuntimeSignature, UdfRuntimeSqlDefinition,

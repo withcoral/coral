@@ -80,16 +80,22 @@ pub use composition::{
     SourceObservationPublisher, SourceObservationSurfaceKind, SourceScanObservation, SourceTables,
 };
 pub use contracts::{
-    CatalogInfo, ColumnInfo, CoreError, DependentJoinConfig, DependentJoinSourceConfig,
-    DescribeTableInfo, EffectiveDependentJoinConfig, MemorySize, QueryExecution,
-    QueryExecutionProvenance, QueryMemoryConfig, QueryParameterValue, QueryParameters, QueryPlan,
-    QueryRuntimeConfig, QueryRuntimeContext, QuerySource, QueryTableFunctionUsage, QueryTableUsage,
-    QueryTestFailure, QueryTestResult, QueryTestSuccess, ResolvedQueryResources,
-    RuntimeSourceComponent, RuntimeSourcePackage, SourceValidationReport, StatusCode,
-    StructuredQueryError, TableFunctionArgumentInfo, TableFunctionInfo,
-    TableFunctionResultColumnInfo, TableInfo, UdfRuntimeArgument, UdfRuntimeDefinition,
-    UdfRuntimeImplementation, UdfRuntimePublish, UdfRuntimeResultColumn, UdfRuntimeSignature,
-    UdfRuntimeSqlDefinition, UdfRuntimeTableFunctionPublish,
+    CatalogInfo, ColumnInfo, CoreError, DatabaseProviderDiscoveredRuntimeCatalog,
+    DatabaseRuntimeBackend, DeclaredRuntimeCatalog, DependentJoinConfig, DependentJoinSourceConfig,
+    DescribeTableInfo, EffectiveDependentJoinConfig, FileDeclaredRuntimeCatalog,
+    FileRuntimeBackend, FileRuntimeRelation, FileRuntimeTableRelation, HttpDeclaredRuntimeCatalog,
+    HttpRuntimeBackend, HttpRuntimeRelation, HttpRuntimeTableFunctionRelation,
+    HttpRuntimeTableRelation, McpDeclaredRuntimeCatalog, McpRuntimeBackend, McpRuntimeRelation,
+    McpRuntimeTableFunctionRelation, McpRuntimeTableRelation, MemorySize,
+    ProviderDiscoveredRuntimeCatalog, QueryExecution, QueryExecutionProvenance, QueryMemoryConfig,
+    QueryParameterValue, QueryParameters, QueryPlan, QueryRuntimeConfig, QueryRuntimeContext,
+    QuerySource, QueryTableFunctionUsage, QueryTableUsage, QueryTestFailure, QueryTestResult,
+    QueryTestSuccess, ResolvedQueryResources, RuntimeCatalog, RuntimeSourceComponent,
+    RuntimeSourcePackage, SourceValidationReport, StatusCode, StructuredQueryError,
+    TableFunctionArgumentInfo, TableFunctionInfo, TableFunctionResultColumnInfo, TableInfo,
+    UdfRuntimeArgument, UdfRuntimeDefinition, UdfRuntimeImplementation, UdfRuntimePublish,
+    UdfRuntimeResultColumn, UdfRuntimeSignature, UdfRuntimeSqlDefinition,
+    UdfRuntimeTableFunctionPublish,
 };
 pub use runtime::normalize_catalog_name;
 
