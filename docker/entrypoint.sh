@@ -5,8 +5,22 @@
 # is editing that file. See https://withcoral.com/docs/guides/self-host-with-docker
 set -eu
 
-# PID 1 ignores default-action signals on Linux. Install handlers before any
-# filesystem preparation so a stop during startup cannot strand the container.
+probe=
+seed=
+
+cleanup() {
+    if [ -n "$probe" ]; then
+        rm -f "$probe" 2>/dev/null || :
+    fi
+    if [ -n "$seed" ]; then
+        rm -f "$seed" 2>/dev/null || :
+    fi
+}
+
+# PID 1 ignores default-action signals on Linux. Install cleanup and signal
+# handlers before any filesystem preparation so a stop during startup cannot
+# strand the container or leave temporary files in its persistent state.
+trap cleanup EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
@@ -38,6 +52,7 @@ mkdir -p "$CORAL_CONFIG_DIR" 2>/dev/null || fatal "cannot create $CORAL_CONFIG_D
 probe="$(mktemp "$CORAL_CONFIG_DIR/.write-probe.XXXXXX" 2>/dev/null)" \
     || fatal "$CORAL_CONFIG_DIR is not writable"
 rm -f "$probe"
+probe=
 
 # 3. Seed only when NOTHING exists at the path — no file, no directory, no
 #    symlink (dangling included: a dangling symlink is user intent, e.g. a
@@ -47,7 +62,6 @@ rm -f "$probe"
 #    existing path, so concurrent starts preserve the first complete config.
 if [ ! -e "$CONFIG_FILE" ] && [ ! -L "$CONFIG_FILE" ]; then
     seed="$(mktemp "$CORAL_CONFIG_DIR/.config.toml.seed.XXXXXX")"
-    trap 'rm -f "$seed"' EXIT
     if [ -n "${CORAL_SEED_CONFIG:-}" ]; then
         # Whole-file seed supplied by the operator: written VERBATIM (no
         # templating, no parsing) through the same atomic path. Once-only:
@@ -68,7 +82,7 @@ EOF
 
     if ln -T "$seed" "$CONFIG_FILE" 2>/dev/null; then
         rm -f "$seed"
-        trap - EXIT
+        seed=
         if [ "$seed_source" = "CORAL_SEED_CONFIG" ]; then
             echo "coral-entrypoint: seeded $CONFIG_FILE from CORAL_SEED_CONFIG" >&2
         else
@@ -76,7 +90,7 @@ EOF
         fi
     elif [ -e "$CONFIG_FILE" ] || [ -L "$CONFIG_FILE" ]; then
         rm -f "$seed"
-        trap - EXIT
+        seed=
         if [ -n "${CORAL_SEED_CONFIG:-}" ]; then
             echo "coral-entrypoint: $CONFIG_FILE exists; CORAL_SEED_CONFIG ignored (seed applies only to first start)" >&2
         fi
