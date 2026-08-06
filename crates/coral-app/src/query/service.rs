@@ -5,14 +5,16 @@ use std::collections::HashSet;
 use arrow::datatypes::SchemaRef;
 use arrow::ipc::writer::StreamWriter;
 use arrow::record_batch::RecordBatch;
+use coral_api::CORAL_TASK_INTENT_MAX_CHARS;
 use coral_api::v1::query_service_server::QueryService as QueryServiceApi;
 use coral_api::v1::{
     ExecuteSqlRequest, ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse, QueryGuide,
     QueryGuideReadContext, QueryGuideRequired, QueryPlan as QueryPlanProto,
+    TaskAttribution as ProtoTaskAttribution,
 };
 use tonic::{Request, Response, Status};
 
-use crate::bootstrap::core_status;
+use crate::bootstrap::{app_status, core_status};
 use crate::query::QueryAttribution;
 use crate::query::manager::{ExecuteSqlOutcome, QueryManager, RequiredQueryGuide};
 use crate::task::manager::TaskManager;
@@ -50,13 +52,17 @@ impl QueryServiceApi for QueryService {
             let inner = request.into_inner();
             let workspace_name = workspace_name_from_proto(inner.workspace.as_ref())?;
             let shown_guide_ids = shown_guide_ids(inner.guide_read_context);
+            let (requested_task_id, tool_intent) = query_attribution_from_proto(
+                inner.task_attribution.as_ref(),
+                request_context.task_id(),
+            )?;
             let attribution = QueryAttribution::new(
                 tasks
-                    .validate_attribution(&workspace_name, request_context.task_id())
+                    .validate_attribution(&workspace_name, requested_task_id)
                     .await
                     .map_err(task_manager_status)?,
             )
-            .with_tool_intent(request_context.tool_intent());
+            .with_tool_intent(tool_intent);
             let outcome = Box::pin(queries.execute_sql(
                 &workspace_name,
                 &inner.sql,
@@ -121,6 +127,29 @@ impl QueryServiceApi for QueryService {
     }
 }
 
+fn query_attribution_from_proto(
+    attribution: Option<&ProtoTaskAttribution>,
+    metadata_task_id: Option<crate::task::id::TaskId>,
+) -> Result<(Option<crate::task::id::TaskId>, Option<&str>), Status> {
+    let Some(attribution) = attribution else {
+        return Ok((metadata_task_id, None));
+    };
+    let task_id = crate::task::id::TaskId::parse(&attribution.task_id).map_err(app_status)?;
+    if metadata_task_id.is_some_and(|metadata_task_id| metadata_task_id != task_id) {
+        return Err(Status::invalid_argument(
+            "task_attribution.task_id must match coral-task-id metadata",
+        ));
+    }
+    if attribution.intent.trim().is_empty()
+        || attribution.intent.chars().count() > CORAL_TASK_INTENT_MAX_CHARS
+    {
+        return Err(Status::invalid_argument(format!(
+            "task_attribution.intent must be non-empty and at most {CORAL_TASK_INTENT_MAX_CHARS} characters"
+        )));
+    }
+    Ok((Some(task_id), Some(&attribution.intent)))
+}
+
 fn shown_guide_ids(context: Option<QueryGuideReadContext>) -> Option<HashSet<String>> {
     context.map(|context| context.shown_guide_ids.into_iter().collect())
 }
@@ -155,4 +184,55 @@ fn encode_arrow_ipc_stream(
         writer.finish()?;
     }
     Ok(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use tonic::Code;
+
+    use super::*;
+    use crate::task::id::TaskId;
+
+    #[test]
+    fn request_body_supplies_task_id_and_intent() {
+        let task_id = TaskId::parse("550e8400-e29b-41d4-a716-446655440000").expect("task id");
+        let attribution = ProtoTaskAttribution {
+            task_id: task_id.to_string(),
+            intent: "Check renewal risk".to_string(),
+        };
+
+        let decoded = query_attribution_from_proto(Some(&attribution), None).expect("attribution");
+
+        assert_eq!(decoded, (Some(task_id), Some("Check renewal risk")));
+    }
+
+    #[test]
+    fn absent_request_body_preserves_task_id_metadata_compatibility() {
+        let task_id = TaskId::parse("550e8400-e29b-41d4-a716-446655440000").expect("task id");
+
+        let decoded = query_attribution_from_proto(None, Some(task_id)).expect("attribution");
+
+        assert_eq!(decoded, (Some(task_id), None));
+    }
+
+    #[test]
+    fn request_body_rejects_mismatched_metadata_and_invalid_intent() {
+        let attribution = ProtoTaskAttribution {
+            task_id: "550e8400-e29b-41d4-a716-446655440000".to_string(),
+            intent: "Check renewal risk".to_string(),
+        };
+        let other_task_id = TaskId::parse("650e8400-e29b-41d4-a716-446655440000").expect("task id");
+
+        let mismatch = query_attribution_from_proto(Some(&attribution), Some(other_task_id))
+            .expect_err("mismatched task ids");
+        assert_eq!(mismatch.code(), Code::InvalidArgument);
+
+        let blank = ProtoTaskAttribution {
+            intent: " ".to_string(),
+            ..attribution
+        };
+        let invalid_intent =
+            query_attribution_from_proto(Some(&blank), None).expect_err("blank intent");
+        assert_eq!(invalid_intent.code(), Code::InvalidArgument);
+    }
 }

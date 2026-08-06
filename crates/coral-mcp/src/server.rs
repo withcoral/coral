@@ -7,13 +7,13 @@ use coral_api::v1::{
     DescribeTableResponse, EndTaskRequest, ExecuteSqlRequest, FunctionWriteSurface,
     ListCatalogRequest, ListCatalogResponse, ListColumnsRequest, ListSourcesRequest,
     PaginationRequest, QueryGuideReadContext, SearchRequest, Source, StartTaskRequest,
-    SubmitFeedbackRequest, TableSummary as ProtoTableSummary, TaskStatus as ProtoTaskStatus,
-    catalog_item,
+    SubmitFeedbackRequest, TableSummary as ProtoTableSummary,
+    TaskAttribution as ProtoTaskAttribution, TaskStatus as ProtoTaskStatus, catalog_item,
 };
 use coral_client::{
     AppClient, CatalogClient, FeedbackClient, FunctionClient, QueryClient, SearchClient,
     SourceClient, TaskClient, batches_to_json_rows_json_safe_numbers, decode_execute_sql_response,
-    default_workspace, search_response_json_value, with_task_context,
+    default_workspace, search_response_json_value, with_task_metadata,
 };
 use rmcp::{
     ErrorData, ServerHandler,
@@ -28,7 +28,7 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 use tonic::{
     Request,
-    metadata::{Ascii, Binary, MetadataValue},
+    metadata::{Ascii, MetadataValue},
 };
 use tracing::Instrument as _;
 
@@ -138,25 +138,26 @@ impl ToolCallOutcome {
     }
 }
 
-#[derive(Clone, Debug, Default)]
-struct TaskMetadata {
-    task_id: Option<MetadataValue<Ascii>>,
-    tool_intent: Option<MetadataValue<Binary>>,
-}
+#[derive(Debug)]
+struct ToolIntent(String);
 
-impl TaskMetadata {
-    async fn scope<F>(self, future: F) -> F::Output
-    where
-        F: std::future::Future,
-    {
-        with_task_context(self.task_id, self.tool_intent, future).await
+impl ToolIntent {
+    fn from_tool_request(
+        arguments: Option<&Map<String, Value>>,
+        key: &str,
+    ) -> Result<Self, ErrorData> {
+        required_tool_intent_argument(arguments, key).map(Self)
+    }
+
+    fn as_str(&self) -> &str {
+        &self.0
     }
 }
 
 #[derive(Debug, Default)]
 struct TaskCallContext {
     task_id: Option<TaskId>,
-    metadata: TaskMetadata,
+    tool_intent: Option<ToolIntent>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -192,33 +193,15 @@ impl TaskCallContext {
         }
         let intent = requirement
             .requires_intent()
-            .then(|| required_tool_intent_argument(arguments, "intent"))
+            .then(|| ToolIntent::from_tool_request(arguments, "intent"))
             .transpose()?;
         let task_id = requirement
             .requires_task_id()
             .then(|| required_task_id_argument(arguments, "task_id"))
             .transpose()?;
-        let task_id_metadata = task_id
-            .as_ref()
-            .map(ToString::to_string)
-            .map(|task_id| {
-                task_id.parse().map_err(|error| {
-                    ErrorData::invalid_params(
-                        format!("argument 'task_id' is not valid metadata: {error}"),
-                        None,
-                    )
-                })
-            })
-            .transpose()?;
-        let tool_intent_metadata = intent
-            .as_deref()
-            .map(|intent| MetadataValue::<Binary>::from_bytes(intent.as_bytes()));
         Ok(Self {
             task_id,
-            metadata: TaskMetadata {
-                task_id: task_id_metadata,
-                tool_intent: tool_intent_metadata,
-            },
+            tool_intent: intent,
         })
     }
 
@@ -232,8 +215,20 @@ impl TaskCallContext {
         self.task_id
     }
 
-    fn metadata(&self) -> TaskMetadata {
-        self.metadata.clone()
+    fn task_id_metadata(&self) -> Option<MetadataValue<Ascii>> {
+        self.task_id.map(|task_id| {
+            task_id
+                .to_string()
+                .parse()
+                .expect("UUID task ids are valid ASCII metadata")
+        })
+    }
+
+    fn query_attribution_proto(&self) -> Option<ProtoTaskAttribution> {
+        Some(ProtoTaskAttribution {
+            task_id: self.task_id?.to_string(),
+            intent: self.tool_intent.as_ref()?.as_str().to_string(),
+        })
     }
 }
 
@@ -547,11 +542,13 @@ impl CoralMcpServer {
         index: usize,
         sql: String,
         shown_guide_ids: Vec<String>,
+        task_attribution: ProtoTaskAttribution,
     ) -> SqlQueryResultValue {
         let request = Request::new(ExecuteSqlRequest {
             workspace: Some(self.workspace()),
             sql,
             guide_read_context: Some(QueryGuideReadContext { shown_guide_ids }),
+            task_attribution: Some(task_attribution),
         });
         match self.query_rows(request).await {
             Ok(QueryRows::Rows(rows)) => SqlQueryResultValue::Success { index, rows },
@@ -568,21 +565,26 @@ impl CoralMcpServer {
     async fn execute_sql_batch(
         &self,
         queries: Vec<String>,
-        task_id: TaskId,
-        metadata: TaskMetadata,
+        task_context: TaskCallContext,
     ) -> Result<SqlBatchExecution, tonic::Status> {
+        let task_id = task_context
+            .task_id()
+            .ok_or_else(|| tonic::Status::internal("SQL call missing validated task id"))?;
+        let task_attribution = task_context
+            .query_attribution_proto()
+            .ok_or_else(|| tonic::Status::internal("SQL call missing validated task intent"))?;
         let task_gate = self.guide_block.lock_task(task_id).await?;
         let shown_guide_ids = self.guide_block.shown_guide_ids(task_id)?;
 
         let mut tasks = tokio::task::JoinSet::new();
         for (index, sql) in queries.into_iter().enumerate() {
             let server = self.clone();
-            let metadata = metadata.clone();
+            let task_attribution = task_attribution.clone();
             let shown_guide_ids = shown_guide_ids.clone();
             tasks.spawn(
                 async move {
-                    metadata
-                        .scope(server.execute_one_sql_query(index, sql, shown_guide_ids))
+                    server
+                        .execute_one_sql_query(index, sql, shown_guide_ids, task_attribution)
                         .await
                 }
                 .in_current_span(),
@@ -785,8 +787,7 @@ impl CoralMcpServer {
     async fn dispatch_tool(
         &self,
         request: CallToolRequestParams,
-        task_id: Option<TaskId>,
-        metadata: TaskMetadata,
+        task_context: TaskCallContext,
         tool_name: Option<ToolName>,
     ) -> Result<ToolCallOutcome, ErrorData> {
         let Some(tool) = tool_name.filter(|tool| self.tool_allowed(*tool)) else {
@@ -799,11 +800,8 @@ impl CoralMcpServer {
         match tool {
             ToolName::Sql => {
                 let arguments = sql_arguments(request.arguments.as_ref())?;
-                let task_id = task_id.ok_or_else(|| {
-                    ErrorData::internal_error("SQL call missing validated task id", None)
-                })?;
                 match self
-                    .execute_sql_batch(arguments.queries, task_id, metadata)
+                    .execute_sql_batch(arguments.queries, task_context)
                     .await
                 {
                     Ok(execution) => Ok(ToolCallOutcome::Sql(execution)),
@@ -996,8 +994,10 @@ impl ServerHandler for CoralMcpServer {
             &self.workspace().name,
             self.options.trace_parent.as_deref(),
         );
-        let inject_task_metadata =
-            !matches!(tool_name, Some(ToolName::StartTask | ToolName::EndTask));
+        let inject_task_metadata = !matches!(
+            tool_name,
+            Some(ToolName::StartTask | ToolName::EndTask | ToolName::Sql)
+        );
         let task_context = TaskCallContext::from_tool_request(
             &self.options,
             tool_name,
@@ -1006,22 +1006,18 @@ impl ServerHandler for CoralMcpServer {
         match task_context {
             Ok(task_context) => {
                 task_context.record_telemetry(&span);
-                let task_id = task_context.task_id();
-                let metadata = if inject_task_metadata {
-                    task_context.metadata()
+                let task_id_metadata = if inject_task_metadata {
+                    task_context.task_id_metadata()
                 } else {
-                    TaskMetadata::default()
+                    None
                 };
-                let dispatch_metadata = metadata.clone();
-                let outcome = Box::pin(telemetry::instrument(
+                let outcome = telemetry::instrument(
                     span.clone(),
-                    metadata.scope(self.dispatch_tool(
-                        request,
-                        task_id,
-                        dispatch_metadata,
-                        tool_name,
-                    )),
-                ))
+                    with_task_metadata(
+                        task_id_metadata,
+                        self.dispatch_tool(request, task_context, tool_name),
+                    ),
+                )
                 .await;
                 finish_tool_call(&span, outcome)
             }

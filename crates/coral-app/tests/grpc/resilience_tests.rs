@@ -68,6 +68,7 @@ async fn broken_source_does_not_block_healthy_sources() {
             workspace: Some(default_workspace()),
             sql: "SELECT COUNT(*) AS n FROM local_messages.messages".to_string(),
             guide_read_context: None,
+            task_attribution: None,
         }))
         .await
         .expect("healthy source query should succeed")
@@ -86,6 +87,7 @@ async fn broken_source_does_not_block_healthy_sources() {
             workspace: Some(default_workspace()),
             sql: "SELECT * FROM secured_messages.messages".to_string(),
             guide_read_context: None,
+            task_attribution: None,
         }))
         .await
         .expect_err("broken source query should fail");

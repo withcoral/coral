@@ -22,6 +22,7 @@
 //!     }),
 //!     sql: "select 1".to_string(),
 //!     guide_read_context: None,
+//!     task_attribution: None,
 //! };
 //! assert_eq!(request.sql, "select 1");
 //! ```
@@ -93,10 +94,6 @@ pub const DEFAULT_WORKSPACE_ID: &str = "default";
 /// `TaskService.StartTask`. This is the shared wire-contract constant for
 /// clients and servers that opt into task attribution.
 pub const CORAL_TASK_ID_METADATA_KEY: &str = "coral-task-id";
-
-/// Binary gRPC metadata key carrying the current ordinary tool call's intent.
-/// Binary metadata preserves the UTF-8 text accepted by MCP tool arguments.
-pub const CORAL_TOOL_INTENT_METADATA_KEY: &str = "coral-tool-intent-bin";
 
 /// Maximum length of a Coral task id, in bytes. Validated identically server-
 /// and client-side so the contract stays in one place.

@@ -8,7 +8,6 @@ use crate::task::id::TaskId;
 pub(crate) struct RequestContext {
     principal: Principal,
     task_id: Option<TaskId>,
-    tool_intent: Option<String>,
 }
 
 impl RequestContext {
@@ -16,17 +15,11 @@ impl RequestContext {
         Self {
             principal,
             task_id: None,
-            tool_intent: None,
         }
     }
 
     pub(crate) fn with_task_id(mut self, task_id: Option<TaskId>) -> Self {
         self.task_id = task_id;
-        self
-    }
-
-    pub(crate) fn with_tool_intent(mut self, tool_intent: Option<String>) -> Self {
-        self.tool_intent = tool_intent;
         self
     }
 
@@ -36,10 +29,6 @@ impl RequestContext {
 
     pub(crate) fn task_id(&self) -> Option<TaskId> {
         self.task_id
-    }
-
-    pub(crate) fn tool_intent(&self) -> Option<&str> {
-        self.tool_intent.as_deref()
     }
 }
 
@@ -68,15 +57,5 @@ mod tests {
         let context = RequestContext::new(principal).with_task_id(Some(task_id));
 
         assert_eq!(context.task_id(), Some(task_id));
-    }
-
-    #[test]
-    fn carries_tool_intent_with_task_metadata() {
-        let principal = Principal::parse("product:principal:saul", PrincipalKind::User)
-            .expect("valid principal");
-        let context =
-            RequestContext::new(principal).with_tool_intent(Some("Find renewal risk".to_string()));
-
-        assert_eq!(context.tool_intent(), Some("Find renewal risk"));
     }
 }

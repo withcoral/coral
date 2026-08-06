@@ -516,6 +516,7 @@ storage = "file"
             workspace: Some(default_workspace()),
             sql: sql.to_string(),
             guide_read_context: None,
+            task_attribution: None,
         }))
         .await?;
     shutdown_tracing();
@@ -1632,7 +1633,7 @@ async fn mcp_stdio_sql_batch_records_each_execute_sql_request()
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn mcp_stdio_sql_batch_propagates_task_id_to_each_query()
+async fn mcp_stdio_sql_batch_sends_task_attribution_in_each_query()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = MockServer::start().await;
     let client = start_mcp_client(&server).await?;
@@ -1655,13 +1656,19 @@ async fn mcp_stdio_sql_batch_propagates_task_id_to_each_query()
     assert_eq!(sql["total_count"], 2);
     assert_eq!(sql["success_count"], 2);
 
-    let task_ids = server.execute_sql_task_ids();
-    assert_eq!(task_ids.len(), 2);
+    let requests = server.execute_sql_requests();
+    assert_eq!(requests.len(), 2);
     assert!(
-        task_ids
-            .iter()
-            .all(|propagated_task_id| propagated_task_id.as_deref() == Some(task_id.as_str())),
-        "expected every batch query to carry coral-task-id, got {task_ids:?}"
+        requests.iter().all(|request| {
+            request
+                .task_attribution
+                .as_ref()
+                .is_some_and(|attribution| {
+                    attribution.task_id == task_id
+                        && attribution.intent == "Run a task-scoped SQL batch"
+                })
+        }),
+        "expected every batch query to carry task attribution, got {requests:?}"
     );
 
     client.cancel().await?;

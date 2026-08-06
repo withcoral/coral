@@ -40,7 +40,7 @@ use crate::sources::runtime_package::{
 };
 use crate::sources::{SourceName, ensure_database_source_feature_enabled};
 use crate::state::{AppConfig, AppStateLayout, ConfigStore};
-use crate::task::activity::{TaskActivityRecorder, TaskQueryRecord, TaskQueryStatus};
+use crate::task::activity::{PendingTaskQuery, TaskActivityRecorder, TaskQueryStatus};
 use crate::task::id::TaskId;
 use crate::telemetry::app_error_type;
 use crate::workspaces::{
@@ -190,15 +190,6 @@ pub(crate) struct QueryManager {
     pool_registry: Arc<WorkspacePoolRegistry>,
     database_sources_enabled: bool,
     task_activity: Option<TaskActivityRecorder>,
-}
-
-struct PendingTaskQuery<'a> {
-    recorder: TaskActivityRecorder,
-    workspace: &'a WorkspaceName,
-    id: uuid::Uuid,
-    task_id: TaskId,
-    intent: &'a str,
-    started_at_unix_nanos: i64,
 }
 
 impl QueryManager {
@@ -1093,15 +1084,8 @@ fn pending_task_query<'a>(
     ) else {
         return None;
     };
-    match crate::state::db::now_unix_nanos_i64() {
-        Ok(started_at_unix_nanos) => Some(PendingTaskQuery {
-            recorder: recorder.clone(),
-            workspace,
-            id: uuid::Uuid::new_v4(),
-            task_id,
-            intent,
-            started_at_unix_nanos,
-        }),
+    match recorder.begin_query(workspace, task_id, intent) {
+        Ok(pending) => Some(pending),
         Err(error) => {
             tracing::warn!(
                 task.id = %task_id,
@@ -1126,24 +1110,12 @@ async fn record_task_query(
         Ok(ExecuteSqlOutcome::Executed(_)) => TaskQueryStatus::Success,
         Err(_) => TaskQueryStatus::Error,
     };
-    if let Err(error) = pending
-        .recorder
-        .record_query(
-            pending.workspace,
-            TaskQueryRecord {
-                id: pending.id,
-                task_id: pending.task_id,
-                intent: pending.intent,
-                sql,
-                status,
-                started_at_unix_nanos: pending.started_at_unix_nanos,
-            },
-        )
-        .await
-    {
+    let task_id = pending.task_id();
+    let query_id = pending.id();
+    if let Err(error) = pending.finish(sql, status).await {
         tracing::warn!(
-            task.id = %pending.task_id,
-            task.query.id = %pending.id,
+            task.id = %task_id,
+            task.query.id = %query_id,
             error = %error,
             "could not record task query activity"
         );
@@ -1691,6 +1663,7 @@ mod tests {
             }),
             sql: "SELECT 1".to_string(),
             guide_read_context: None,
+            task_attribution: None,
         });
         request.extensions_mut().insert(request_context);
 
@@ -1722,6 +1695,47 @@ mod tests {
             span_attr(query_span, coral_telemetry::QUERY_STREAM_NAME_ATTRIBUTE),
             Some("execute_sql".to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn execute_sql_records_task_attribution_from_request_body() {
+        use coral_api::v1::query_service_server::QueryService as QueryServiceApi;
+        use coral_api::v1::{ExecuteSqlRequest, TaskAttribution, Workspace};
+        use tonic::Request;
+
+        use crate::query::service::QueryService;
+
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
+        let (tasks, request_context, task_id) = active_task_context(&fixture.db).await;
+        let service = QueryService::new(fixture.manager.clone(), tasks);
+        let mut request = Request::new(ExecuteSqlRequest {
+            workspace: Some(Workspace {
+                name: WorkspaceName::default().as_str().to_string(),
+            }),
+            sql: "SELECT 1".to_string(),
+            guide_read_context: None,
+            task_attribution: Some(TaskAttribution {
+                task_id: task_id.clone(),
+                intent: "Check renewal risk".to_string(),
+            }),
+        });
+        request
+            .extensions_mut()
+            .insert(RequestContext::new(request_context.principal().clone()));
+
+        service.execute_sql(request).await.expect("execute SQL");
+
+        let recorded = fixture
+            .db
+            .task_query_state()
+            .list_for_workspace(WorkspaceName::default().as_str())
+            .await
+            .expect("load task query activity");
+        let record = recorded.first().expect("recorded task query");
+        assert_eq!(record.task_id, task_id);
+        assert_eq!(record.intent, "Check renewal risk");
+        assert_eq!(record.sql, "SELECT 1");
+        assert_eq!(record.status, "success");
     }
 
     #[tokio::test]
