@@ -460,7 +460,9 @@ async fn auth_disabled_companion_serves_and_shuts_down() {
     let mcp_addr = server.mcp_http_addr().expect("MCP HTTP endpoint");
     assert!(server.oauth_addr().is_none());
     assert_catalog_tool(format!("http://{mcp_addr}/mcp"), None).await;
-    server.shutdown().await.expect("shutdown composite server");
+    Box::pin(server.shutdown())
+        .await
+        .expect("shutdown composite server");
     let grpc_rebound = TcpListener::bind(grpc_addr).expect("gRPC port must be released");
     let mcp_rebound = TcpListener::bind(mcp_addr).expect("MCP port must be released");
     drop((grpc_rebound, mcp_rebound));
@@ -486,7 +488,9 @@ async fn companion_uses_supplied_mcp_options() {
     .expect("start composite server");
     let mcp_addr = server.mcp_http_addr().expect("MCP HTTP endpoint");
     assert_feedback_tool(format!("http://{mcp_addr}/mcp")).await;
-    server.shutdown().await.expect("shutdown composite server");
+    Box::pin(server.shutdown())
+        .await
+        .expect("shutdown composite server");
 }
 
 /// The advertised protected-resource identifier and the minted token audience
@@ -522,7 +526,9 @@ async fn oauth_and_mcp_companions_serve_and_release_all_listeners() {
     let metadata = response.text().await.expect("OAuth metadata body");
     assert!(metadata.contains(&format!(r#""issuer":"{OAUTH_ISSUER}""#)));
 
-    server.shutdown().await.expect("shutdown composite server");
+    Box::pin(server.shutdown())
+        .await
+        .expect("shutdown composite server");
     let grpc_rebound = TcpListener::bind(grpc_addr).expect("gRPC port must be released");
     let oauth_rebound = TcpListener::bind(oauth_addr).expect("OAuth port must be released");
     let mcp_rebound = TcpListener::bind(mcp_addr).expect("MCP port must be released");
@@ -668,7 +674,9 @@ async fn reef_only_audience_authenticates_private_grpc_without_mcp_http() {
     let reef_token = session_token(signing_key.as_ref(), &user_id, REEF_RESOURCE);
     assert_grpc_authenticated(&server, &reef_token, &workspace).await;
 
-    server.shutdown().await.expect("shutdown Reef-only server");
+    Box::pin(server.shutdown())
+        .await
+        .expect("shutdown Reef-only server");
 }
 
 /// A shared deployment serves around a workspace nobody owns instead of
@@ -793,7 +801,7 @@ async fn session_failures_and_restart_are_fail_closed() {
     assert_eq!(expired_rejection, malformed_rejection);
     assert_eq!(expired_rejection, forged_rejection);
     assert_authenticated_data(&server, &mcp_endpoint, &valid, &workspace).await;
-    server.shutdown().await.expect("first shutdown");
+    Box::pin(server.shutdown()).await.expect("first shutdown");
 
     let restarted = start(
         ServerBuilder::configured_standalone_grpc()
@@ -808,7 +816,9 @@ async fn session_failures_and_restart_are_fail_closed() {
         restarted.mcp_http_addr().expect("restarted MCP endpoint")
     );
     assert_authenticated_data(&restarted, &restarted_mcp, &valid, &workspace).await;
-    restarted.shutdown().await.expect("restarted shutdown");
+    Box::pin(restarted.shutdown())
+        .await
+        .expect("restarted shutdown");
 }
 
 #[tokio::test]
