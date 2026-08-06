@@ -82,7 +82,7 @@ bind_addr = "127.0.0.1:14555"
 ```
 
 <Warning>
-  Without `[auth]`, the native gRPC server does not authenticate clients. A non-loopback bind exposes Coral and its configured sources to any client that can reach the port. Protect access with a trusted network boundary or authenticating proxy.
+  The native gRPC server does not authenticate clients. A non-loopback bind exposes Coral and its configured sources to any client that can reach the port. Protect access with a trusted network boundary or authenticating proxy.
 </Warning>
 
 MCP Streamable HTTP is disabled by default. Enable its companion listener under
@@ -95,24 +95,6 @@ bind = "127.0.0.1:14556"
 ```
 
 The unauthenticated MCP listener is restricted to loopback addresses.
-
-Add `allowed_audiences` to the top-level `[auth]` table of an otherwise complete
-auth configuration to register public surfaces that front the private gRPC API,
-such as a hosted Reef deployment. The required `[auth.session]`,
-`[auth.authorization_server]`, and `[auth.provider]` tables are omitted here:
-
-```toml
-[auth]
-allowed_audiences = ["https://reef.example.com"]
-```
-
-Each URL becomes both an OAuth resource clients may request a token for and an
-accepted audience on the private gRPC API, like
-`server.mcp_http.public_url`. MCP HTTP still accepts only tokens minted for its
-own `public_url`; a token for another allowed audience cannot be replayed there.
-Coral canonicalizes these URLs and rejects duplicates. When authentication is
-configured, provide at least one `allowed_audiences` entry or enable MCP HTTP
-with a `public_url`.
 
 ## Runtime features
 
