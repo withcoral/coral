@@ -11,9 +11,9 @@ use classification::{
 };
 
 use super::{
-    StoredTraceOperationKind, StoredTraceStatus, TraceListSpanRecord, TraceSpanRecord, TraceStore,
-    TraceStoreError, TraceSummaryRecord, attr_string, attr_u64, parse_attributes,
-    read_list_spans_file, status_from_attributes, usize_to_u32,
+    FederatedTraceScope, StoredTraceOperationKind, StoredTraceStatus, TraceListSpanRecord,
+    TraceSpanRecord, TraceStore, TraceStoreError, TraceSummaryRecord, attr_string, attr_u64,
+    parse_attributes, read_list_spans_file, status_from_attributes, usize_to_u32,
 };
 use coral_telemetry::WORKSPACE_SPAN_ATTRIBUTE;
 
@@ -23,7 +23,7 @@ pub(super) fn list(
     store: &TraceStore,
     limit: usize,
     offset: usize,
-    workspace_name: Option<&str>,
+    scope: Option<FederatedTraceScope<'_>>,
 ) -> Result<Vec<TraceSummaryRecord>, TraceStoreError> {
     if limit == 0 {
         return Ok(Vec::new());
@@ -32,7 +32,7 @@ pub(super) fn list(
     store.prune_expired()?;
     let files = store.jsonl_files_by_modified()?;
     let required_entry_count = offset.saturating_add(limit);
-    let mut projector = QueryStreamProjector::new(required_entry_count, workspace_name);
+    let mut projector = QueryStreamProjector::new(required_entry_count, scope);
     let mut scanned_all_files = true;
     let mut remaining_files = files.as_slice();
     while let Some(newest_bucket_file) = remaining_files.last() {
@@ -86,12 +86,15 @@ fn sort_and_deduplicate_query_stream_summaries(summaries: &mut Vec<TraceSummaryR
 
 pub(super) fn summary(
     spans: &[TraceSpanRecord],
-    workspace_name: Option<&str>,
+    scope: Option<FederatedTraceScope<'_>>,
 ) -> Option<TraceSummaryRecord> {
-    summaries(spans, workspace_name).into_iter().next()
+    summaries(spans, scope).into_iter().next()
 }
 
-fn summaries(spans: &[TraceSpanRecord], workspace_name: Option<&str>) -> Vec<TraceSummaryRecord> {
+fn summaries(
+    spans: &[TraceSpanRecord],
+    scope: Option<FederatedTraceScope<'_>>,
+) -> Vec<TraceSummaryRecord> {
     let records = spans
         .iter()
         .map(|span| TraceListSpanRecord {
@@ -107,7 +110,7 @@ fn summaries(spans: &[TraceSpanRecord], workspace_name: Option<&str>) -> Vec<Tra
         })
         .collect::<Vec<_>>();
     let required_entry_count = records.len();
-    let mut projector = QueryStreamProjector::new(required_entry_count, workspace_name);
+    let mut projector = QueryStreamProjector::new(required_entry_count, scope);
     projector.record_file(records);
     projector.finish();
     projector.into_page(0, required_entry_count)
@@ -304,10 +307,30 @@ impl StreamingQueryStreamAggregate {
             .or_else(|| self.workspace_evidence.unique())
     }
 
-    fn may_match_workspace(&self, workspace_name: Option<&str>) -> bool {
-        workspace_name.is_none_or(|workspace_name| {
+    /// Whether the caller may read this operation once it is finalized.
+    ///
+    /// An operation carrying no workspace attribution is a host-level row: it
+    /// belongs to no workspace, so no federated scope authorizes it and only
+    /// the local principal (`None`) sees it.
+    fn is_visible_to(&self, scope: Option<FederatedTraceScope<'_>>) -> bool {
+        scope.is_none_or(|scope| {
             self.workspace()
-                .is_none_or(|operation_workspace| operation_workspace == workspace_name)
+                .is_some_and(|workspace| scope.allows_workspace(workspace))
+        })
+    }
+
+    /// Whether this still-open operation could still finalize into the page.
+    ///
+    /// Attribution only accumulates as older files are scanned, so an
+    /// operation already attributed outside the scope can never become
+    /// visible, while one with no attribution yet may still be claimed by a
+    /// descendant in an older file. Answering `true` too often only keeps the
+    /// scan going; answering `false` too early would silently drop rows the
+    /// caller is entitled to.
+    fn may_still_match(&self, scope: Option<FederatedTraceScope<'_>>) -> bool {
+        scope.is_none_or(|scope| {
+            self.workspace()
+                .is_none_or(|workspace| scope.allows_workspace(workspace))
         })
     }
 
@@ -359,9 +382,9 @@ impl StreamingQueryStreamAggregate {
 /// be discarded. A completed child with an unresolved local parent remains
 /// hidden until that owning ancestry is exported, avoiding an incomplete row
 /// that would later need to be replaced by its outer operation.
-struct QueryStreamProjector {
+struct QueryStreamProjector<'a> {
     required_entry_count: usize,
-    workspace_name: Option<String>,
+    scope: Option<FederatedTraceScope<'a>>,
     nodes: HashMap<QueryStreamSpanKey, QueryStreamNodeState>,
     node_starts: BTreeMap<i64, Vec<QueryStreamSpanKey>>,
     aggregates: HashMap<u64, StreamingQueryStreamAggregate>,
@@ -370,11 +393,11 @@ struct QueryStreamProjector {
     next_operation_id: u64,
 }
 
-impl QueryStreamProjector {
-    fn new(required_entry_count: usize, workspace_name: Option<&str>) -> Self {
+impl<'a> QueryStreamProjector<'a> {
+    fn new(required_entry_count: usize, scope: Option<FederatedTraceScope<'a>>) -> Self {
         Self {
             required_entry_count,
-            workspace_name: workspace_name.map(str::to_string),
+            scope,
             nodes: HashMap::new(),
             node_starts: BTreeMap::new(),
             aggregates: HashMap::new(),
@@ -511,11 +534,7 @@ impl QueryStreamProjector {
         let Some(aggregate) = self.aggregates.remove(&operation_id) else {
             return;
         };
-        if self
-            .workspace_name
-            .as_deref()
-            .is_none_or(|workspace_name| aggregate.workspace() == Some(workspace_name))
-        {
+        if aggregate.is_visible_to(self.scope) {
             self.finalized.push(aggregate.into_summary());
         }
     }
@@ -536,7 +555,7 @@ impl QueryStreamProjector {
             && self
                 .aggregates
                 .values()
-                .filter(|aggregate| aggregate.may_match_workspace(self.workspace_name.as_deref()))
+                .filter(|aggregate| aggregate.may_still_match(self.scope))
                 .all(|aggregate| aggregate.entry.end_time_unix_nanos < boundary.end_time_unix_nanos)
     }
 

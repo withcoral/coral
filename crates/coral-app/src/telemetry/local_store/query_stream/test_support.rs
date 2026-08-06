@@ -8,7 +8,9 @@ use super::super::tests::{
     set_modified_time, timestamped_jsonl_path, trace_record, write_record_file,
     write_record_file_lines,
 };
-use super::super::{StoredTraceStatus, TraceSpanRecord, TraceStore, TraceSummaryRecord};
+use super::super::{
+    FederatedTraceScope, StoredTraceStatus, TraceSpanRecord, TraceStore, TraceSummaryRecord,
+};
 
 pub(super) fn span(trace_id: &str, span_id: &str) -> TestSpan {
     TestSpan {
@@ -83,7 +85,7 @@ pub(super) fn project(
     records: &[TraceSpanRecord],
     workspace_name: Option<&str>,
 ) -> Vec<TraceSummaryRecord> {
-    super::summaries(records, workspace_name)
+    super::summaries(records, workspace_name.map(FederatedTraceScope::Named))
 }
 
 pub(super) struct TraceFiles {
@@ -128,8 +130,21 @@ impl TraceFiles {
         offset: usize,
         workspace_name: Option<&str>,
     ) -> Vec<TraceSummaryRecord> {
+        self.list_scoped(
+            limit,
+            offset,
+            workspace_name.map(FederatedTraceScope::Named),
+        )
+    }
+
+    pub(super) fn list_scoped(
+        &self,
+        limit: usize,
+        offset: usize,
+        scope: Option<FederatedTraceScope<'_>>,
+    ) -> Vec<TraceSummaryRecord> {
         TraceStore::new(self.temp.path().to_path_buf())
-            .list_query_stream_sync(limit, offset, workspace_name)
+            .list_query_stream_sync(limit, offset, scope)
             .expect("list query stream")
     }
 }

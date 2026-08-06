@@ -5,8 +5,8 @@ use std::time::{Duration, SystemTime};
 use serde_json::json;
 
 use super::super::{
-    StoredTraceInvocationKind, StoredTraceOperationKind, StoredTraceStatus, TraceListSpanRecord,
-    unix_nanos,
+    FederatedTraceScope, OwnedWorkspaceScope, StoredTraceInvocationKind, StoredTraceOperationKind,
+    StoredTraceStatus, TraceListSpanRecord, unix_nanos,
 };
 use super::QueryStreamProjector;
 use super::test_support::{TraceFiles, span};
@@ -96,6 +96,52 @@ fn query_stream_filters_workspace_before_pagination() {
     assert_eq!(
         second.first().expect("second entry").root_span_id,
         "alpha-old"
+    );
+}
+
+#[test]
+fn query_stream_owned_scope_pages_across_owned_workspaces_only() {
+    let files = TraceFiles::new();
+    let mut records = vec![
+        span("host-trace", "host-entry")
+            .attrs(json!({"sql": "SELECT 'host'"}))
+            .times(5, 35)
+            .build(),
+    ];
+    for (trace_id, span_id, workspace, end_time) in [
+        ("alpha-trace", "alpha-entry", "alpha", 40),
+        ("beta-trace", "beta-entry", "beta", 30),
+        ("gamma-trace", "gamma-entry", "gamma", 20),
+    ] {
+        records.push(
+            span(trace_id, span_id)
+                .entry("query", "sql", workspace)
+                .attrs(json!({"sql": format!("SELECT '{workspace}'")}))
+                .times(end_time - 1, end_time)
+                .build(),
+        );
+    }
+    files.write("spans-owned-scope.jsonl", &records);
+
+    let owned = OwnedWorkspaceScope::new(["alpha".to_string(), "beta".to_string()]);
+    let scope = Some(FederatedTraceScope::Owned(&owned));
+    let first = files.list_scoped(1, 0, scope);
+    let second = files.list_scoped(1, 1, scope);
+    assert_eq!(
+        first.first().expect("first owned entry").root_span_id,
+        "alpha-entry"
+    );
+    assert_eq!(
+        second.first().expect("second owned entry").root_span_id,
+        "beta-entry"
+    );
+    assert!(files.list_scoped(10, 2, scope).is_empty());
+
+    let unowned = OwnedWorkspaceScope::default();
+    assert!(
+        files
+            .list_scoped(10, 0, Some(FederatedTraceScope::Owned(&unowned)))
+            .is_empty()
     );
 }
 
@@ -286,7 +332,7 @@ fn query_stream_completes_returned_operations_from_older_files() {
 
 #[test]
 fn query_stream_projector_releases_completed_discovery_trees() {
-    let mut projector = QueryStreamProjector::new(1, Some("alpha"));
+    let mut projector = QueryStreamProjector::new(1, Some(FederatedTraceScope::Named("alpha")));
 
     for index in (0..128_i64).rev() {
         let base = index * 10;

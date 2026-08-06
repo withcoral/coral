@@ -377,12 +377,40 @@ enum FederatedTraceScope<'a> {
     Owned(&'a OwnedWorkspaceScope),
 }
 
+/// Trace visibility handed to a blocking store read.
+///
+/// Owns its workspace names so the read can move onto a blocking worker.
+/// `Unrestricted` is the local principal, the only caller that sees host-level
+/// rows carrying no workspace attribution.
+#[derive(Debug, Clone)]
+pub(crate) enum TraceReadScope {
+    Unrestricted,
+    Workspace(String),
+    Owned(OwnedWorkspaceScope),
+}
+
+impl TraceReadScope {
+    fn federated(&self) -> Option<FederatedTraceScope<'_>> {
+        match self {
+            Self::Unrestricted => None,
+            Self::Workspace(workspace_name) => Some(FederatedTraceScope::Named(workspace_name)),
+            Self::Owned(scope) => Some(FederatedTraceScope::Owned(scope)),
+        }
+    }
+}
+
 impl FederatedTraceScope<'_> {
     fn allows_workspace(&self, workspace: &str) -> bool {
         match self {
             Self::Named(expected) => workspace == *expected,
             Self::Owned(scope) => scope.0.contains(workspace),
         }
+    }
+
+    /// Whether the scope can never authorize any trace, so a read may answer
+    /// without touching storage.
+    fn is_vacuous(&self) -> bool {
+        matches!(self, Self::Owned(scope) if scope.0.is_empty())
     }
 
     fn allows_aggregate(&self, aggregate: &TraceListAggregate) -> bool {
@@ -702,11 +730,11 @@ impl TraceStore {
         &self,
         limit: usize,
         offset: usize,
-        workspace_name: Option<String>,
+        scope: TraceReadScope,
     ) -> Result<Vec<TraceSummaryRecord>, TraceStoreError> {
         let traces = self.clone();
         task::spawn_blocking(move || {
-            traces.list_query_stream_sync(limit, offset, workspace_name.as_deref())
+            traces.list_query_stream_sync(limit, offset, scope.federated())
         })
         .await
         .map_err(|source| TraceStoreError::Worker { source })?
@@ -749,11 +777,11 @@ impl TraceStore {
     pub(crate) async fn get_query_stream_trace(
         &self,
         trace_id: String,
-        workspace_name: Option<String>,
+        scope: TraceReadScope,
     ) -> Result<TraceDetailRecord, TraceStoreError> {
         let traces = self.clone();
         task::spawn_blocking(move || {
-            traces.get_query_stream_trace_sync(&trace_id, workspace_name.as_deref())
+            traces.get_query_stream_trace_sync(&trace_id, scope.federated())
         })
         .await
         .map_err(|source| TraceStoreError::Worker { source })?
@@ -890,9 +918,12 @@ impl TraceStore {
         &self,
         limit: usize,
         offset: usize,
-        workspace_name: Option<&str>,
+        scope: Option<FederatedTraceScope<'_>>,
     ) -> Result<Vec<TraceSummaryRecord>, TraceStoreError> {
-        query_stream::list(self, limit, offset, workspace_name)
+        if scope.is_some_and(|scope| scope.is_vacuous()) {
+            return Ok(Vec::new());
+        }
+        query_stream::list(self, limit, offset, scope)
     }
 
     fn get_trace_sync(&self, trace_id: &str) -> Result<TraceDetailRecord, TraceStoreError> {
@@ -938,10 +969,20 @@ impl TraceStore {
     fn get_query_stream_trace_sync(
         &self,
         trace_id: &str,
-        workspace_name: Option<&str>,
+        scope: Option<FederatedTraceScope<'_>>,
     ) -> Result<TraceDetailRecord, TraceStoreError> {
+        if scope.is_some_and(|scope| scope.is_vacuous()) {
+            return Err(TraceStoreError::NotFound(trace_id.to_string()));
+        }
         let mut detail = self.get_trace_sync(trace_id)?;
-        let Some(summary) = query_stream::summary(&detail.spans, workspace_name) else {
+        // The projection only decides which operation the summary describes;
+        // the spans themselves leave the store unfiltered, so a federated
+        // caller must be authorized for every one of them exactly as the
+        // unprojected detail read requires.
+        if scope.is_some_and(|scope| !scope.allows_detail(&detail)) {
+            return Err(TraceStoreError::NotFound(trace_id.to_string()));
+        }
+        let Some(summary) = query_stream::summary(&detail.spans, scope) else {
             return Err(TraceStoreError::NotFound(trace_id.to_string()));
         };
         detail.summary = summary;

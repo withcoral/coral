@@ -224,10 +224,6 @@ fn trace_manager_status(error: TraceManagerError) -> Status {
         TraceManagerError::NotFound { trace_id } => {
             Status::new(Code::NotFound, format!("trace '{trace_id}' not found"))
         }
-        TraceManagerError::OwnedScopeUnsupported => Status::new(
-            Code::PermissionDenied,
-            "query-stream traces require an explicit workspace",
-        ),
         TraceManagerError::Store(error) => Status::new(Code::Internal, error.to_string()),
     }
 }
@@ -497,7 +493,13 @@ mod tests {
         let fixture = fixture_with_traces(write_query_stream_trace_fixture).await;
         let response = TraceServiceApi::list_traces(
             &fixture.service,
-            view_list_request(&fixture.owner, Some("alpha"), TraceView::QueryStream),
+            view_list_request(
+                &fixture.owner,
+                Some("alpha"),
+                TraceView::QueryStream,
+                10,
+                "",
+            ),
         )
         .await
         .expect("list query stream")
@@ -546,15 +548,144 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn owner_scoped_query_stream_listing_requires_a_workspace() {
-        let fixture = fixture_with_traces(write_query_stream_trace_fixture).await;
-        let status = TraceServiceApi::list_traces(
+    async fn federated_owner_pages_global_query_stream_across_owned_workspaces() {
+        let fixture = fixture_with_traces(write_owned_query_stream_records).await;
+        let first = query_stream_page(&fixture, None, 2, "").await;
+        assert_eq!(trace_ids(&first), vec!["beta-stream", "mixed-stream"]);
+        assert_eq!(first.next_page_token, "2");
+        let mixed = first.traces.get(1).expect("mixed trace summary");
+        assert_eq!(mixed.root_span_id, "mixed-alpha-span");
+        assert_eq!(mixed.query, "SELECT alpha");
+
+        let second = query_stream_page(&fixture, None, 2, &first.next_page_token).await;
+        assert_eq!(trace_ids(&second), vec!["alpha-stream"]);
+        assert!(second.next_page_token.is_empty());
+    }
+
+    #[tokio::test]
+    async fn federated_owner_query_stream_detail_conceals_unowned_spans() {
+        let fixture = fixture_with_traces(write_owned_query_stream_records).await;
+        // `mixed-stream` carries an owned alpha span and an unowned gamma span,
+        // so the owned scope justifies nothing: the projected summary must not
+        // hand the caller a span list they cannot read.
+        for concealed_trace_id in ["gamma-stream", "host-stream", "mixed-stream"] {
+            let status = TraceServiceApi::get_trace(
+                &fixture.service,
+                view_get_request(
+                    &fixture.owner,
+                    concealed_trace_id,
+                    None,
+                    TraceView::QueryStream,
+                ),
+            )
+            .await
+            .expect_err("unowned query-stream trace must be concealed");
+            assert_eq!(status.code(), Code::NotFound);
+        }
+
+        let owned = TraceServiceApi::get_trace(
             &fixture.service,
-            view_list_request(&fixture.owner, None, TraceView::QueryStream),
+            view_get_request(&fixture.owner, "alpha-stream", None, TraceView::QueryStream),
         )
         .await
-        .expect_err("owner-scoped query-stream listing has no scoped read yet");
-        assert_eq!(status.code(), Code::PermissionDenied);
+        .expect("owned query-stream trace")
+        .into_inner();
+        assert_eq!(owned.spans.len(), 1);
+        assert_eq!(owned.summary.expect("owned summary").query, "SELECT alpha");
+
+        let local = TraceServiceApi::get_trace(
+            &fixture.service,
+            view_get_request(
+                &Principal::local(),
+                "mixed-stream",
+                None,
+                TraceView::QueryStream,
+            ),
+        )
+        .await
+        .expect("local principal reads the mixed trace")
+        .into_inner();
+        assert_eq!(
+            local
+                .spans
+                .iter()
+                .map(|span| span.span_id.as_str())
+                .collect::<Vec<_>>(),
+            ["mixed-alpha-span", "mixed-gamma-span"]
+        );
+    }
+
+    #[tokio::test]
+    async fn non_owner_global_query_stream_listing_is_empty() {
+        let fixture = fixture_with_traces(write_owned_query_stream_records).await;
+        let response = TraceServiceApi::list_traces(
+            &fixture.service,
+            view_list_request(&fixture.outsider, None, TraceView::QueryStream, 10, ""),
+        )
+        .await
+        .expect("a caller owning no workspace still gets an answer")
+        .into_inner();
+        assert!(trace_ids(&response).is_empty());
+        assert!(response.next_page_token.is_empty());
+    }
+
+    #[tokio::test]
+    async fn query_stream_keeps_unattributed_host_rows_local() {
+        let fixture = fixture_with_traces(write_owned_query_stream_records).await;
+        let named = query_stream_page(&fixture, Some("alpha"), 10, "").await;
+        assert_eq!(trace_ids(&named), vec!["mixed-stream", "alpha-stream"]);
+
+        let host = TraceServiceApi::get_trace(
+            &fixture.service,
+            view_get_request(
+                &fixture.owner,
+                "host-stream",
+                Some("alpha"),
+                TraceView::QueryStream,
+            ),
+        )
+        .await
+        .expect_err("a host-level operation belongs to no workspace");
+        assert_eq!(host.code(), Code::NotFound);
+
+        let local = TraceServiceApi::list_traces(
+            &fixture.service,
+            view_list_request(&Principal::local(), None, TraceView::QueryStream, 10, ""),
+        )
+        .await
+        .expect("local principal query stream")
+        .into_inner();
+        assert_eq!(
+            trace_ids(&local),
+            vec![
+                "gamma-stream",
+                "beta-stream",
+                "mixed-stream",
+                "alpha-stream",
+                "host-stream"
+            ]
+        );
+    }
+
+    async fn query_stream_page(
+        fixture: &ServiceFixture,
+        workspace_name: Option<&str>,
+        page_size: i32,
+        page_token: &str,
+    ) -> coral_api::v1::ListTracesResponse {
+        TraceServiceApi::list_traces(
+            &fixture.service,
+            view_list_request(
+                &fixture.owner,
+                workspace_name,
+                TraceView::QueryStream,
+                page_size,
+                page_token,
+            ),
+        )
+        .await
+        .expect("query stream page")
+        .into_inner()
     }
 
     struct ServiceFixture {
@@ -562,6 +693,7 @@ mod tests {
         service: TraceService,
         owner: Principal,
         member: Principal,
+        outsider: Principal,
     }
 
     async fn fixture_with_traces(write_traces: impl FnOnce(&Path)) -> ServiceFixture {
@@ -578,6 +710,7 @@ mod tests {
         db.migrate().await.expect("migrate sqlite");
         let owner_id = provision_user(&db, "trace-owner").await;
         let member_id = provision_user(&db, "trace-member").await;
+        let outsider_id = provision_user(&db, "trace-outsider").await;
 
         let mut tx = db.begin().await.expect("begin workspace setup");
         for workspace in ["alpha", "beta", "gamma"] {
@@ -613,6 +746,7 @@ mod tests {
                 .with_authorizer(WorkspaceAuthorizer::new(db)),
             owner: Principal::parse(&owner_id, PrincipalKind::User).expect("owner"),
             member: Principal::parse(&member_id, PrincipalKind::User).expect("member"),
+            outsider: Principal::parse(&outsider_id, PrincipalKind::User).expect("outsider"),
             _temp: temp,
         }
     }
@@ -633,6 +767,29 @@ mod tests {
                 trace_record_json("beta-trace", "beta-span", "beta", 40, 60),
                 trace_record_json("gamma-trace", "gamma-span", "gamma", 30, 50),
                 host_trace,
+            ],
+        );
+    }
+
+    /// Query-stream entries across owned, unowned, mixed, and host-level rows.
+    ///
+    /// Every record is a legacy `coral.query` entry, so each root span projects
+    /// as one query-stream operation; `mixed-stream` holds one span in an owned
+    /// workspace and one in an unowned workspace, and `host-stream` carries no
+    /// workspace attribution at all.
+    fn write_owned_query_stream_records(trace_store: &Path) {
+        let mut host = trace_record_json("host-stream", "host-span", "host", 15, 20);
+        *host.get_mut("attributes_json").expect("trace attributes") =
+            json!(r#"{"sql":"SELECT host","status":"ok"}"#);
+        write_trace_records(
+            trace_store,
+            &[
+                trace_record_json("alpha-stream", "alpha-span", "alpha", 10, 30),
+                trace_record_json("beta-stream", "beta-span", "beta", 40, 60),
+                trace_record_json("gamma-stream", "gamma-span", "gamma", 50, 70),
+                trace_record_json("mixed-stream", "mixed-alpha-span", "alpha", 30, 45),
+                trace_record_json("mixed-stream", "mixed-gamma-span", "gamma", 31, 40),
+                host,
             ],
         );
     }
@@ -677,11 +834,13 @@ mod tests {
         principal: &Principal,
         workspace_name: Option<&str>,
         view: TraceView,
+        page_size: i32,
+        page_token: &str,
     ) -> Request<ListTracesRequest> {
         authenticated_request(
             ListTracesRequest {
-                page_size: 10,
-                page_token: String::new(),
+                page_size,
+                page_token: page_token.to_string(),
                 workspace: workspace_name.map(workspace),
                 view: view as i32,
             },
