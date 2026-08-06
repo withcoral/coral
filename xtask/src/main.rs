@@ -18,6 +18,8 @@
 //!   - `openapi-hydrate` produces a self-contained JSON `OpenAPI` descriptor.
 //!   - `v4-metadata-report` reports inferred row paths and pagination contracts
 //!     for the v4 source catalog, for diffing across inference changes.
+//!   - `workspace-admin` repairs workspace ownership directly in a deployment's
+//!     state database, behind the off-by-default `admin` feature.
 
 #![allow(
     clippy::print_stderr,
@@ -34,6 +36,8 @@ use clap::{Parser, Subcommand};
 #[cfg(test)]
 use assert_cmd as _;
 
+#[cfg(feature = "admin")]
+mod admin;
 mod benchmarks;
 mod detect;
 mod docs;
@@ -78,6 +82,9 @@ enum Command {
     OpenapiHydrate(openapi::HydrateArgs),
     /// Report inferred row paths and pagination contracts for v4 sources.
     V4MetadataReport(metadata_report::Args),
+    /// Repair workspace ownership directly in a deployment's state database.
+    #[cfg(feature = "admin")]
+    WorkspaceAdmin(admin::Args),
 }
 
 #[derive(Debug, clap::Args)]
@@ -131,5 +138,7 @@ fn run(command: &Command) -> Result<bool> {
         Command::ReleaseDesktopMacosPackage(args) => release::desktop_macos_package(args),
         Command::OpenapiHydrate(args) => openapi::hydrate(args),
         Command::V4MetadataReport(args) => metadata_report::run(args),
+        #[cfg(feature = "admin")]
+        Command::WorkspaceAdmin(args) => admin::run(args),
     }
 }

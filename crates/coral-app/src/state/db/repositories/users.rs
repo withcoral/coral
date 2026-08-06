@@ -101,6 +101,24 @@ where
         self.session.fetch_all(statement).await
     }
 
+    /// Moves every identity bound to `from_issuer` onto `to_issuer`.
+    ///
+    /// Subjects are unique across issuers, so no rebind can collide. Returns
+    /// the number of rows the update touched.
+    #[cfg(feature = "admin")]
+    pub(crate) async fn rebind_issuer(
+        &mut self,
+        from_issuer: &str,
+        to_issuer: &str,
+    ) -> Result<u64, DbError> {
+        let statement = Query::update()
+            .table(Users::Table)
+            .value(Users::Issuer, to_issuer.to_string())
+            .and_where(Expr::col(Users::Issuer).eq(from_issuer))
+            .to_owned();
+        self.session.execute_rows_affected(statement).await
+    }
+
     async fn get_by_subject(&mut self, subject: &str) -> Result<Option<UserRecord>, DbError> {
         let statement = Query::select()
             .columns(user_columns())

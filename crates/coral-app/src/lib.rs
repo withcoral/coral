@@ -41,6 +41,8 @@
     )
 )]
 
+#[cfg(feature = "admin")]
+pub mod admin;
 mod auth;
 /// Bootstrap entrypoints and local server assembly.
 pub mod bootstrap;
