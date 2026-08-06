@@ -1,18 +1,22 @@
 use std::net::TcpListener;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use coral_api::CORAL_ERROR_REASON_WORKSPACE_NOT_FOUND;
 use coral_api::v1::{
-    CatalogItemKind, ListCatalogRequest, PaginationRequest, StartTaskRequest, Workspace,
+    AddFunctionRequest, AddWorkspaceMemberRequest, CatalogItemKind, CreateWorkspaceRequest,
+    FunctionWriteSurface, ListCatalogRequest, ListWorkspaceMembersRequest, PaginationRequest,
+    RemoveWorkspaceMemberRequest, StartTaskRequest, Workspace, WorkspaceMember, WorkspaceRole,
 };
 use jsonwebtoken::jwk::{Jwk, ThumbprintHash};
 use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use reqwest::header::WWW_AUTHENTICATE;
 use ring::rand::SystemRandom;
 use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair};
-use rmcp::ServiceExt as _;
-use rmcp::model::CallToolRequestParams;
+use rmcp::model::{CallToolRequestParams, CallToolResult};
+use rmcp::service::RunningService;
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
+use rmcp::{RoleClient, ServiceExt as _};
 use tempfile::TempDir;
 use tonic::Request;
 
@@ -55,8 +59,6 @@ fn grpc_addr(server: &RunningServer) -> SocketAddr {
 }
 
 async fn assert_catalog_tool(endpoint: String, bearer: Option<&str>) {
-    const INTENT: &str = "Exercise the composite server";
-
     let mut config = StreamableHttpClientTransportConfig::with_uri(endpoint);
     if let Some(bearer) = bearer {
         config = config.auth_header(bearer);
@@ -65,18 +67,42 @@ async fn assert_catalog_tool(endpoint: String, bearer: Option<&str>) {
         ().serve(StreamableHttpClientTransport::from_config(config))
             .await
             .expect("initialize MCP client");
-    let task = client
+    assert_eq!(session_catalog_result(&client).await.is_error, Some(false));
+    client.cancel().await.expect("stop MCP client");
+}
+
+async fn mcp_session(endpoint: &str, bearer: &str) -> RunningService<RoleClient, ()> {
+    ().serve(StreamableHttpClientTransport::from_config(
+        StreamableHttpClientTransportConfig::with_uri(endpoint.to_string()).auth_header(bearer),
+    ))
+    .await
+    .expect("initialize MCP session")
+}
+
+/// Drives one established MCP session through `start_task` and `list_catalog`.
+///
+/// Returns the tool result that ends the exchange: the catalog listing of the
+/// session's resolved workspace, or the failing `start_task` result when that
+/// workspace already refuses the caller.
+async fn session_catalog_result(client: &RunningService<RoleClient, ()>) -> CallToolResult {
+    const INTENT: &str = "Exercise the composite server";
+
+    let started = client
         .call_tool(CallToolRequestParams::new("start_task").with_arguments(
             serde_json::Map::from_iter([("intent".to_string(), serde_json::json!(INTENT))]),
         ))
         .await
         .expect("start task");
-    let task = task.structured_content.expect("structured task");
-    let task_id = task
-        .get("task_id")
+    let task_id = started
+        .structured_content
+        .as_ref()
+        .and_then(|task| task.get("task_id"))
         .and_then(serde_json::Value::as_str)
-        .expect("task ID");
-    let result = client
+        .map(str::to_string);
+    let Some(task_id) = task_id else {
+        return started;
+    };
+    client
         .call_tool(CallToolRequestParams::new("list_catalog").with_arguments(
             serde_json::Map::from_iter([
                 ("task_id".to_string(), serde_json::json!(task_id)),
@@ -84,9 +110,15 @@ async fn assert_catalog_tool(endpoint: String, bearer: Option<&str>) {
             ]),
         ))
         .await
-        .expect("call list_catalog");
-    assert_eq!(result.is_error, Some(false));
-    client.cancel().await.expect("stop MCP client");
+        .expect("call list_catalog")
+}
+
+fn tool_result_json(result: &CallToolResult) -> String {
+    result
+        .structured_content
+        .as_ref()
+        .expect("structured tool result")
+        .to_string()
 }
 
 async fn assert_feedback_tool(endpoint: String) {
@@ -262,12 +294,25 @@ redirect_uri = 'https://auth.example/auth/oidc/callback'
 }
 
 async fn provision_session_identity(temp: &TempDir) -> (String, Workspace) {
+    provision_session_identity_for(temp, SESSION_PROVIDER_SUBJECT, "Alice").await
+}
+
+/// Provisions one verified provider identity through the production login path.
+///
+/// Returns the internal user ID a session token carries as its subject and the
+/// personal default workspace login derived for it. Separate subjects are
+/// separate users, which is what lets one server serve two callers.
+async fn provision_session_identity_for(
+    temp: &TempDir,
+    provider_subject: &str,
+    display_name: &str,
+) -> (String, Workspace) {
     let user_id = coral_app::test_session_tokens::provision_test_login(
         temp.path(),
         SESSION_PROVIDER_ISSUER,
-        SESSION_PROVIDER_SUBJECT,
-        Some("Alice"),
-        "test-session-pre-v1-attribution",
+        provider_subject,
+        Some(display_name),
+        &format!("test-session-pre-v1-attribution-{provider_subject}"),
     )
     .await
     .expect("provision verified session identity");
@@ -275,6 +320,32 @@ async fn provision_session_identity(temp: &TempDir) -> (String, Workspace) {
         name: format!("default-{user_id}"),
     };
     (user_id, workspace)
+}
+
+async fn authenticated_client(server: &RunningServer, token: &str) -> AppClient {
+    connect_with_loopback_bearer(
+        server.endpoint_uri(),
+        BearerToken::new(token).expect("bearer token"),
+    )
+    .await
+    .expect("authenticated gRPC client")
+}
+
+/// Installs a table function whose name identifies `workspace` in any catalog
+/// listing a session resolved to it can read.
+async fn install_workspace_probe(client: &AppClient, workspace: &Workspace, function: &str) {
+    client
+        .function_client()
+        .add_function(Request::new(AddFunctionRequest {
+            workspace: Some(workspace.clone()),
+            sql: format!(
+                "/*\nname: {function}\nschema: functions\ndescription: Session workspace probe\nguide: Names the workspace a session resolved.\n*/\n\nselect 1 as value\n"
+            ),
+            fail_if_exists: true,
+            write_surface: FunctionWriteSurface::Mcp as i32,
+        }))
+        .await
+        .expect("install probe function");
 }
 
 fn session_mcp_options(workspace: &Workspace) -> McpOptions {
@@ -285,13 +356,8 @@ fn session_mcp_options(workspace: &Workspace) -> McpOptions {
 }
 
 async fn assert_grpc_authenticated(server: &RunningServer, token: &str, workspace: &Workspace) {
-    let authenticated = connect_with_loopback_bearer(
-        server.endpoint_uri(),
-        BearerToken::new(token).expect("bearer token"),
-    )
-    .await
-    .expect("authenticated gRPC client");
-    authenticated
+    authenticated_client(server, token)
+        .await
         .catalog_client()
         .list_catalog(Request::new(catalog_request(workspace)))
         .await
@@ -819,6 +885,164 @@ async fn session_failures_and_restart_are_fail_closed() {
     Box::pin(restarted.shutdown())
         .await
         .expect("restarted shutdown");
+}
+
+/// Two bearer-bound MCP sessions on one server must serve two workspaces.
+///
+/// MCP is pinned to Alice's personal workspace, which Bob may not use: his
+/// session must land in his own workspace, and nothing he receives may reveal
+/// that the pinned workspace exists. The same run proves MCP stays
+/// single-audience for a caller the server otherwise authenticates.
+#[tokio::test]
+async fn authenticated_mcp_workspace_isolation_conceals_an_unauthorized_pin() {
+    let temp = TempDir::new().expect("temp dir");
+    let signing_key =
+        EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
+            .expect("P-256 signing key");
+    write_session_config(&temp, signing_key.as_ref());
+    let (alice_id, alice_workspace) = provision_session_identity(&temp).await;
+    let (bob_id, bob_workspace) = provision_session_identity_for(&temp, "bob", "Bob").await;
+
+    let server = Box::pin(start(
+        ServerBuilder::configured_standalone_grpc()
+            .with_config_dir(temp.path())
+            .with_noop_feedback_uploads(),
+        session_mcp_options(&alice_workspace),
+    ))
+    .await
+    .expect("start authenticated composite server");
+    let base = format!(
+        "http://{}",
+        server.mcp_http_addr().expect("MCP HTTP endpoint")
+    );
+    let alice_token = session_token(signing_key.as_ref(), &alice_id, SESSION_RESOURCE);
+    let bob_token = session_token(signing_key.as_ref(), &bob_id, SESSION_RESOURCE);
+
+    let alice = authenticated_client(&server, &alice_token).await;
+    let bob = authenticated_client(&server, &bob_token).await;
+    install_workspace_probe(&alice, &alice_workspace, "alice_only_probe").await;
+    install_workspace_probe(&bob, &bob_workspace, "bob_only_probe").await;
+
+    let alice_session = mcp_session(&format!("{base}/mcp"), &alice_token).await;
+    let bob_session = mcp_session(&format!("{base}/mcp"), &bob_token).await;
+    let alice_catalog = tool_result_json(&session_catalog_result(&alice_session).await);
+    let bob_catalog = tool_result_json(&session_catalog_result(&bob_session).await);
+
+    assert!(
+        alice_catalog.contains("alice_only_probe") && !alice_catalog.contains("bob_only_probe"),
+        "the pinned workspace's member must see only that workspace: {alice_catalog}"
+    );
+    assert!(
+        bob_catalog.contains("bob_only_probe") && !bob_catalog.contains("alice_only_probe"),
+        "an unauthorized pin must fall back to the caller's own workspace: {bob_catalog}"
+    );
+    assert!(
+        !bob_catalog.contains(&alice_workspace.name),
+        "the fallback must not disclose that the pinned workspace exists: {bob_catalog}"
+    );
+
+    // Bob's Reef-audience token authenticates the private gRPC data plane, so
+    // its MCP rejection is audience validation rather than an unknown caller.
+    let reef_token = session_token(signing_key.as_ref(), &bob_id, REEF_RESOURCE);
+    assert_grpc_authenticated(&server, &reef_token, &bob_workspace).await;
+    assert_unauthorized(&base, &format!("Bearer {reef_token}")).await;
+
+    alice_session.cancel().await.expect("stop Alice's session");
+    bob_session.cancel().await.expect("stop Bob's session");
+    Box::pin(server.shutdown())
+        .await
+        .expect("shutdown composite server");
+}
+
+/// Revoked membership must be enforced on the next request an already
+/// established MCP session makes, and must conceal the workspace instead of
+/// confirming it to the caller who just lost access to it.
+#[tokio::test]
+async fn authenticated_mcp_workspace_revocation_denies_an_established_session() {
+    let temp = TempDir::new().expect("temp dir");
+    let signing_key =
+        EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
+            .expect("P-256 signing key");
+    write_session_config(&temp, signing_key.as_ref());
+    let (alice_id, _alice_workspace) = provision_session_identity(&temp).await;
+    let (bob_id, _bob_workspace) = provision_session_identity_for(&temp, "bob", "Bob").await;
+    let shared = Workspace {
+        name: "shared".to_string(),
+    };
+
+    let server = Box::pin(start(
+        ServerBuilder::configured_standalone_grpc()
+            .with_config_dir(temp.path())
+            .with_noop_feedback_uploads(),
+        session_mcp_options(&shared),
+    ))
+    .await
+    .expect("start authenticated composite server");
+    let mcp_endpoint = format!(
+        "http://{}/mcp",
+        server.mcp_http_addr().expect("MCP HTTP endpoint")
+    );
+    let alice_token = session_token(signing_key.as_ref(), &alice_id, SESSION_RESOURCE);
+    let bob_token = session_token(signing_key.as_ref(), &bob_id, SESSION_RESOURCE);
+
+    let alice = authenticated_client(&server, &alice_token).await;
+    alice
+        .workspace_client()
+        .create_workspace(Request::new(CreateWorkspaceRequest {
+            workspace: Some(shared.clone()),
+        }))
+        .await
+        .expect("create the shared workspace");
+    install_workspace_probe(&alice, &shared, "shared_only_probe").await;
+    alice
+        .workspace_client()
+        .add_workspace_member(Request::new(AddWorkspaceMemberRequest {
+            workspace: Some(shared.clone()),
+            member: Some(WorkspaceMember {
+                user_id: bob_id.clone(),
+                role: WorkspaceRole::Member as i32,
+                display_name: String::new(),
+            }),
+        }))
+        .await
+        .expect("grant Bob membership");
+
+    let bob_session = mcp_session(&mcp_endpoint, &bob_token).await;
+    let admitted = tool_result_json(&session_catalog_result(&bob_session).await);
+    assert!(
+        admitted.contains("shared_only_probe"),
+        "a member's session must resolve the configured pin: {admitted}"
+    );
+
+    alice
+        .workspace_client()
+        .remove_workspace_member(Request::new(RemoveWorkspaceMemberRequest {
+            workspace: Some(shared.clone()),
+            user_id: bob_id.clone(),
+        }))
+        .await
+        .expect("revoke Bob's membership");
+
+    let revoked = session_catalog_result(&bob_session).await;
+    assert_eq!(
+        revoked.is_error,
+        Some(true),
+        "an established session must not outlive the membership that admitted it"
+    );
+    let revoked = tool_result_json(&revoked);
+    assert!(
+        revoked.contains(CORAL_ERROR_REASON_WORKSPACE_NOT_FOUND),
+        "revocation must conceal the workspace: {revoked}"
+    );
+    assert!(
+        !revoked.to_lowercase().contains("permission"),
+        "concealment must not confirm the workspace to a revoked caller: {revoked}"
+    );
+
+    bob_session.cancel().await.expect("stop Bob's session");
+    Box::pin(server.shutdown())
+        .await
+        .expect("shutdown composite server");
 }
 
 #[tokio::test]

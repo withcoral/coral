@@ -7,10 +7,11 @@ use std::time::Duration;
 use axum::body::{Body, to_bytes};
 use axum::http::{HeaderValue, Method, Request, StatusCode, header};
 use axum::{Router, response::Response};
+use coral_api::v1::{AddFunctionRequest, CreateWorkspaceRequest, FunctionWriteSurface, Workspace};
 use coral_client::{AppClient, local::ServerBuilder};
 use futures::poll;
-use rmcp::ServiceExt as _;
 use rmcp::model::{CallToolRequestParams, ClientJsonRpcMessage};
+use rmcp::service::RunningService;
 use rmcp::transport::{
     StreamableHttpClientTransport,
     streamable_http_client::StreamableHttpClientTransportConfig,
@@ -19,6 +20,7 @@ use rmcp::transport::{
         local::{SessionConfig, create_local_session},
     },
 };
+use rmcp::{RoleClient, ServiceExt as _};
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::TcpStream;
@@ -37,6 +39,13 @@ use super::{
 
 const INITIALIZE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#;
 const PING: &str = r#"{"jsonrpc":"2.0","id":2,"method":"ping"}"#;
+/// Configured MCP workspace for the per-session resolution test.
+const PINNED_WORKSPACE: &str = "pinned";
+/// Personal default workspace `coral-app` derives for the local principal.
+///
+/// It is never created, so a session that resolved it fails closed and names it
+/// instead of naming a workspace the caller's own client cannot reach.
+const LOCAL_DEFAULT_WORKSPACE: &str = "default-coral:local";
 
 fn raw_mcp_request(body: impl Into<Body>) -> Request<Body> {
     Request::builder()
@@ -142,6 +151,73 @@ async fn local_app() -> (TempDir, coral_client::local::RunningServer, AppClient)
         .await
         .expect("connect app client");
     (temp, server, app)
+}
+
+/// Creates `workspace` on one app server and installs a table function whose
+/// name identifies that workspace in any catalog listing.
+async fn install_workspace_probe(app: &AppClient, workspace: &str, function: &str) {
+    let workspace = Workspace {
+        name: workspace.to_string(),
+    };
+    app.workspace_client()
+        .create_workspace(tonic::Request::new(CreateWorkspaceRequest {
+            workspace: Some(workspace.clone()),
+        }))
+        .await
+        .expect("create probe workspace");
+    app.function_client()
+        .add_function(tonic::Request::new(AddFunctionRequest {
+            workspace: Some(workspace),
+            sql: format!(
+                "/*\nname: {function}\nschema: functions\ndescription: Session workspace probe\nguide: Names the workspace a session resolved.\n*/\n\nselect 1 as value\n"
+            ),
+            fail_if_exists: true,
+            write_surface: FunctionWriteSurface::Mcp as i32,
+        }))
+        .await
+        .expect("install probe function");
+}
+
+async fn authenticated_session(endpoint: &str, token: &str) -> RunningService<RoleClient, ()> {
+    ().serve(StreamableHttpClientTransport::from_config(
+        StreamableHttpClientTransportConfig::with_uri(endpoint.to_string()).auth_header(token),
+    ))
+    .await
+    .expect("initialize authenticated MCP session")
+}
+
+/// Reports which workspace one established session is talking to.
+///
+/// The resolved workspace is never echoed back over MCP, so the evidence is
+/// what the session's own gRPC calls reach: the probe function installed in the
+/// resolved workspace, or the workspace named by the fail-closed error when the
+/// session's client cannot reach it.
+async fn session_workspace_evidence(client: &RunningService<RoleClient, ()>) -> String {
+    const INTENT: &str = "Identify the resolved session workspace";
+
+    let started = client
+        .call_tool(CallToolRequestParams::new("start_task").with_arguments(
+            serde_json::Map::from_iter([("intent".to_string(), serde_json::json!(INTENT))]),
+        ))
+        .await
+        .expect("start task");
+    let started = started.structured_content.expect("structured task result");
+    let Some(task_id) = started.get("task_id").and_then(serde_json::Value::as_str) else {
+        return started.to_string();
+    };
+    let catalog = client
+        .call_tool(CallToolRequestParams::new("list_catalog").with_arguments(
+            serde_json::Map::from_iter([
+                ("task_id".to_string(), serde_json::json!(task_id)),
+                ("intent".to_string(), serde_json::json!(INTENT)),
+            ]),
+        ))
+        .await
+        .expect("list catalog");
+    catalog
+        .structured_content
+        .expect("structured catalog result")
+        .to_string()
 }
 
 async fn open_stalled_request(server: &RunningMcpHttpServer) -> TcpStream {
@@ -1007,6 +1083,86 @@ async fn authenticated_discovery_and_challenge_do_not_advertise_scopes() {
         &serde_json::json!(["https://login.example.com"])
     );
     assert!(document.get("scopes_supported").is_none());
+}
+
+/// Two bearer tokens resolve two different app clients, so one configured pin
+/// may only survive in the session whose client holds the pinned workspace.
+///
+/// The two clients address separate app servers, which is what makes the
+/// property observable: a pin that leaked into the second session would be
+/// resolved against a server that has no such workspace, and a workspace
+/// resolved once per session cannot move when the second client is granted the
+/// pinned workspace afterward.
+#[tokio::test]
+async fn authenticated_workspace_isolation_resolves_one_workspace_per_session() {
+    let (_member_temp, member_server, member_app) = local_app().await;
+    let (_outsider_temp, outsider_server, outsider_app) = local_app().await;
+    install_workspace_probe(&member_app, PINNED_WORKSPACE, "pinned_workspace_probe").await;
+    let session_outsider_app = outsider_app.clone();
+
+    let runtime = AuthenticatedMcpHttpRuntime::new(
+        |_| async { Ok::<_, ()>(()) },
+        move |token: String| {
+            let app = if token == "member-token" {
+                member_app.clone()
+            } else {
+                session_outsider_app.clone()
+            };
+            std::future::ready(Ok::<_, ()>(app))
+        },
+        McpOptions {
+            workspace: Some(Workspace {
+                name: PINNED_WORKSPACE.to_string(),
+            }),
+            ..McpOptions::default()
+        },
+        || async { Ok::<_, tonic::Code>(()) },
+    );
+    let server = start_authenticated(
+        authenticated_config_at("127.0.0.1:0".parse().unwrap()),
+        runtime,
+    )
+    .await
+    .expect("start authenticated MCP HTTP server");
+    let endpoint = format!("http://{}/mcp", server.local_addr());
+
+    let member = authenticated_session(&endpoint, "member-token").await;
+    let outsider = authenticated_session(&endpoint, "outsider-token").await;
+
+    let member_evidence = session_workspace_evidence(&member).await;
+    assert!(
+        member_evidence.contains("pinned_workspace_probe"),
+        "the configured pin must be retained for the session whose client holds it: {member_evidence}"
+    );
+
+    let outsider_evidence = session_workspace_evidence(&outsider).await;
+    assert!(
+        outsider_evidence.contains(LOCAL_DEFAULT_WORKSPACE),
+        "a session whose client lacks the pin must resolve that client's own default workspace: {outsider_evidence}"
+    );
+    assert!(
+        !outsider_evidence.contains(PINNED_WORKSPACE),
+        "the configured pin must not reach a session whose client does not hold it: {outsider_evidence}"
+    );
+
+    // The workspace is resolved once per session: granting the pinned workspace
+    // to the outsider's client after its session exists must not move it.
+    install_workspace_probe(&outsider_app, PINNED_WORKSPACE, "late_membership_probe").await;
+    let after_grant = session_workspace_evidence(&outsider).await;
+    assert!(
+        !after_grant.contains("late_membership_probe"),
+        "an established session must not re-resolve its workspace per tool call: {after_grant}"
+    );
+    assert!(
+        after_grant.contains(LOCAL_DEFAULT_WORKSPACE),
+        "an established session must keep the workspace it resolved: {after_grant}"
+    );
+
+    let _member_cancel = member.cancel().await;
+    let _outsider_cancel = outsider.cancel().await;
+    server.shutdown().await.expect("shutdown MCP HTTP server");
+    member_server.shutdown().await.unwrap();
+    outsider_server.shutdown().await.unwrap();
 }
 
 #[tokio::test]
