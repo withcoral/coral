@@ -384,15 +384,6 @@ pub(crate) async fn delete_workspace_traces(
         .map_err(|error| error.to_string())
 }
 
-pub(crate) fn has_retained_workspace_trace_attribution(
-    trace_store_dir: PathBuf,
-    retention: Duration,
-    workspace_name: &WorkspaceName,
-) -> Result<bool, TraceStoreError> {
-    local_store::TraceStore::with_retention(trace_store_dir, retention)
-        .has_retained_workspace_attribution(workspace_name.as_str())
-}
-
 fn telemetry_resource(service_name: &str) -> Resource {
     Resource::builder()
         .with_attribute(opentelemetry::KeyValue::new(

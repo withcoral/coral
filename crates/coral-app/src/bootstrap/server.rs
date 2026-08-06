@@ -66,8 +66,8 @@ use crate::sources::manager::SourceManager;
 use crate::sources::materialization::SourceDiagnosticReporter;
 use crate::sources::service::SourceService;
 use crate::state::db::{
-    CoralDb, DatabaseConfig, OwnershipBootstrapPolicy, ResolvedDatabaseConfig,
-    bootstrap_workspace_ownership, run_state_migrations,
+    CoralDb, DatabaseConfig, ResolvedDatabaseConfig, ownerless_workspaces, run_state_migrations,
+    stamp_local_ownership,
 };
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::task::manager::TaskManager;
@@ -392,7 +392,7 @@ impl ServerBuilder {
     /// required directories cannot be created, the config or credential backends
     /// fail to initialize, or the gRPC server cannot be started.
     pub async fn start(self) -> Result<RunningServer, AppError> {
-        start_components(self, None, StartKind::LowLevel)
+        start_components(self, None)
             .await
             .map(|started| started.grpc)
     }
@@ -419,13 +419,7 @@ pub async fn start_for_serve(
         ),
         None => builder,
     };
-    start_components(builder, session_auth, StartKind::Serve).await
-}
-
-#[derive(Debug, Clone, Copy)]
-enum StartKind {
-    LowLevel,
-    Serve,
+    start_components(builder, session_auth).await
 }
 
 /// App-owned components initialized for `coral serve`.
@@ -449,7 +443,6 @@ impl StartedServe {
 async fn start_components(
     builder: ServerBuilder,
     session_auth: Option<SessionAuthSettings>,
-    start_kind: StartKind,
 ) -> Result<StartedServe, AppError> {
     let env = AppEnvironment::discover();
     let layout = env.app_state_layout(builder.config.config_dir.clone())?;
@@ -462,14 +455,30 @@ async fn start_components(
     let coral_db = init_database(&layout).await?;
     let config_store = ConfigStore::new(layout.clone());
     run_state_migrations(&coral_db, &config_store, &layout).await?;
-    let ownership_policy = match (start_kind, session_auth.is_some()) {
-        (StartKind::Serve, true) => OwnershipBootstrapPolicy::MultiUser,
-        (StartKind::LowLevel, _) if config_store.auth_is_configured()? => {
-            OwnershipBootstrapPolicy::Skip
-        }
-        _ => OwnershipBootstrapPolicy::Local,
+    // An `[auth]` section makes the state directory shared, and a shared
+    // deployment has no superuser: the local principal is authorized from its
+    // membership like anyone else, and a lockout is repaired out of band.
+    let local_principal = if config_store.auth_is_configured()? {
+        LocalPrincipalPolicy::Ordinary
+    } else {
+        LocalPrincipalPolicy::ImplicitOwner
     };
-    bootstrap_workspace_ownership(&coral_db, &config_store, &layout, ownership_policy).await?;
+    match local_principal {
+        LocalPrincipalPolicy::ImplicitOwner => stamp_local_ownership(&coral_db).await?,
+        LocalPrincipalPolicy::Ordinary => {
+            // Serving these is safe — no members means every caller is concealed
+            // from them — but leaving them unmentioned is not. Repair is the
+            // admin tool's job: a shared deployment has no privileged request
+            // path that could appoint an owner.
+            let ownerless = ownerless_workspaces(&coral_db).await?;
+            if !ownerless.is_empty() {
+                tracing::warn!(
+                    workspaces = ownerless.join(", "),
+                    "workspaces have no owner and stay unreachable until one is appointed"
+                );
+            }
+        }
+    }
     let coral_db = Arc::new(coral_db);
     let authorization_server = session_auth
         .map(|settings| build_authorization_server(settings, Arc::clone(&coral_db)))
@@ -494,14 +503,6 @@ async fn start_components(
     )
     .with_pool_registry(Arc::clone(&workspace_pool_registry))
     .with_database_sources_enabled(database_sources_enabled);
-    // An `[auth]` section makes the state directory shared, and a shared
-    // deployment has no superuser: the local principal is authorized from its
-    // membership like anyone else, and a lockout is repaired out of band.
-    let local_principal = if config_store.auth_is_configured()? {
-        LocalPrincipalPolicy::Ordinary
-    } else {
-        LocalPrincipalPolicy::ImplicitOwner
-    };
     let workspace_manager = WorkspaceManager::new(
         config_store.clone(),
         credential_manager.clone(),
@@ -1549,8 +1550,12 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
         );
     }
 
+    /// A shared deployment serves an ownerless workspace rather than refusing
+    /// to start: with no members, every caller is concealed from it exactly as
+    /// from a workspace that does not exist. Nothing about it is stamped either
+    /// — appointing an owner is the admin tool's job.
     #[tokio::test]
-    async fn ownership_bootstrap_rejects_before_grpc_bind() {
+    async fn ownerless_workspaces_neither_block_startup_nor_gain_an_owner() {
         let temp = TempDir::new().expect("temp dir");
         let config_dir = temp.path().join("coral-config");
         configure_serve_session_auth(&config_dir);
@@ -1571,20 +1576,38 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
             .expect("insert task");
         tx.commit().await.expect("commit task setup");
 
-        let blocker = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("reserve gRPC port");
-        let bind = blocker.local_addr().expect("reserved address");
-        let builder = ServerBuilder::standalone_grpc(bind).with_config_dir(config_dir);
+        let builder = ServerBuilder::ephemeral_grpc().with_config_dir(config_dir);
         let mut settings = builder.serve_settings().expect("resolve serve settings");
         let session_auth = settings
             .take_session_auth()
             .expect("configured session auth");
-        let error = match start_for_serve(builder, Some(session_auth)).await {
-            Ok(_) => panic!("contentful ownerless workspace must block startup"),
-            Err(error) => error,
-        };
+        let started = start_for_serve(builder, Some(session_auth))
+            .await
+            .expect("a shared deployment serves what nobody owns");
 
-        assert!(error.to_string().contains("ownerless workspaces"));
-        assert_eq!(blocker.local_addr().expect("blocker remains bound"), bind);
+        let db = test_db(&layout, &config_store).await;
+        assert_eq!(
+            crate::state::db::ownerless_workspaces(db.as_ref())
+                .await
+                .expect("read ownerless workspaces"),
+            vec!["default".to_string()],
+            "startup must leave the ownerless workspace exactly as it found it"
+        );
+        let mut session = db.as_ref();
+        assert!(
+            session
+                .users()
+                .get_by_user_id("coral:local")
+                .await
+                .expect("load local user")
+                .is_none(),
+            "a shared deployment records no host owner"
+        );
+        started
+            .grpc
+            .shutdown()
+            .await
+            .expect("stop the started server");
     }
 
     #[tokio::test]

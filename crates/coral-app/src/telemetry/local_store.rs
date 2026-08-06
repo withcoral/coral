@@ -722,29 +722,6 @@ impl TraceStore {
             .map_err(|source| TraceStoreError::Worker { source })?
     }
 
-    pub(crate) fn has_retained_workspace_attribution(
-        &self,
-        workspace_name: &str,
-    ) -> Result<bool, TraceStoreError> {
-        self.prune_expired()?;
-        for file in self.jsonl_files_by_modified()? {
-            for span in read_workspace_trace_records_file(&file.path, true)? {
-                let attributes = serde_json::from_str(&span.attributes_json).map_err(|source| {
-                    TraceStoreError::ReadFile {
-                        path: file.path.clone(),
-                        source: std::io::Error::new(std::io::ErrorKind::InvalidData, source),
-                    }
-                })?;
-                if attr_string(&attributes, WORKSPACE_SPAN_ATTRIBUTE).as_deref()
-                    == Some(workspace_name)
-                {
-                    return Ok(true);
-                }
-            }
-        }
-        Ok(false)
-    }
-
     pub(crate) async fn get_trace_for_owned_workspaces(
         &self,
         trace_id: String,
