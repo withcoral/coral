@@ -36,6 +36,12 @@ where
         self.session.execute(statement).await
     }
 
+    /// Inserts a workspace row with no membership.
+    ///
+    /// Production creation goes through `create_workspace_for_user`, which
+    /// records the creator as owner in the same transaction; a row with no
+    /// owner is unreachable. Tests use this to build pre-access-control state.
+    #[cfg(test)]
     pub(crate) async fn create(
         &mut self,
         id: &str,

@@ -93,16 +93,14 @@ impl WorkspaceServiceApi for WorkspaceService {
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            let creation = workspaces
+            // A creator with no directory row cannot be recorded as owner, and a
+            // workspace nobody owns is unreachable by everyone. Refuse instead
+            // of creating one — on a shared deployment that is a host process,
+            // which has no business creating workspaces nobody can open.
+            let workspace = workspaces
                 .create_workspace_for_user(&workspace_name, &principal)
-                .await;
-            let workspace = match creation {
-                Err(AppError::UserNotFound(_)) if principal.is_local() => {
-                    workspaces.create_workspace(&workspace_name).await
-                }
-                result => result,
-            }
-            .map_err(app_status)?;
+                .await
+                .map_err(app_status)?;
             Ok(Response::new(CreateWorkspaceResponse {
                 workspace: Some(workspace_record_to_proto(&workspace)),
             }))

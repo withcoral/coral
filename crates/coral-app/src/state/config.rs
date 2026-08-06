@@ -559,6 +559,16 @@ impl ConfigStore {
         self.load_config_unlocked()
     }
 
+    /// Reports whether this state directory is configured for shared use.
+    ///
+    /// An `[auth]` section is what makes a deployment multi-user, and it is the
+    /// signal that no principal — including the built-in local one — may reach
+    /// a workspace without a membership.
+    pub(crate) fn auth_is_configured(&self) -> Result<bool, AppError> {
+        let _lock = self.state_lock_shared()?;
+        Ok(read_config_document(&self.layout)?.get("auth").is_some())
+    }
+
     /// Loads the source catalog without taking the app state lock.
     ///
     /// Callers must already hold the state lock in shared or exclusive mode

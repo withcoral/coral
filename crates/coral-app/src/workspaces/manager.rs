@@ -80,6 +80,15 @@ impl WorkspaceManager {
         self
     }
 
+    /// Treats the local principal as owner of every workspace.
+    ///
+    /// Only a state directory without `[auth]` may be served this way; the
+    /// default conceals workspaces the caller holds no membership in.
+    pub(crate) fn trusting_local_principal(mut self) -> Self {
+        self.local_principal = LocalPrincipalPolicy::ImplicitOwner;
+        self
+    }
+
     pub(crate) async fn list_workspaces(&self) -> Result<Vec<WorkspaceRecord>, AppError> {
         let mut session = self.db.as_ref();
         session
@@ -162,6 +171,12 @@ impl WorkspaceManager {
         self.lifecycle_lock.clone()
     }
 
+    /// Creates a workspace with no membership rows.
+    ///
+    /// Every production path records a creator as owner, because a workspace
+    /// nobody owns is unreachable. Tests use this to build the state an
+    /// upgraded deployment starts from.
+    #[cfg(test)]
     pub(crate) async fn create_workspace(
         &self,
         workspace_name: &WorkspaceName,

@@ -75,8 +75,8 @@ use crate::telemetry::{TelemetryConfig, TraceManager};
 use crate::transport::GrpcRequestContextLayer;
 use crate::users::{UserManager, UserService};
 use crate::workspaces::{
-    WorkspaceAuthorizer, WorkspaceLifecycleLock, WorkspaceManager, WorkspacePoolRegistry,
-    WorkspaceService,
+    LocalPrincipalPolicy, WorkspaceAuthorizer, WorkspaceLifecycleLock, WorkspaceManager,
+    WorkspacePoolRegistry, WorkspaceService,
 };
 
 /// A static asset (e.g., a built SPA file) served on the same port as
@@ -476,6 +476,14 @@ async fn start_components(
     )
     .with_pool_registry(Arc::clone(&workspace_pool_registry))
     .with_database_sources_enabled(database_sources_enabled);
+    // An `[auth]` section makes the state directory shared, and a shared
+    // deployment has no superuser: the local principal is authorized from its
+    // membership like anyone else, and a lockout is repaired out of band.
+    let local_principal = if config_store.auth_is_configured()? {
+        LocalPrincipalPolicy::Ordinary
+    } else {
+        LocalPrincipalPolicy::ImplicitOwner
+    };
     let workspace_manager = WorkspaceManager::new(
         config_store.clone(),
         credential_manager.clone(),
@@ -486,6 +494,10 @@ async fn start_components(
         diagnostic_reporter.clone(),
     )
     .with_pool_registry(Arc::clone(&workspace_pool_registry));
+    let workspace_manager = match local_principal {
+        LocalPrincipalPolicy::ImplicitOwner => workspace_manager.trusting_local_principal(),
+        LocalPrincipalPolicy::Ordinary => workspace_manager,
+    };
     let feedback_manager =
         FeedbackManager::with_publisher(layout.clone(), builder.config.feedback_publisher);
     let task_manager = TaskManager::new(TaskStore::new(Arc::clone(&coral_db)));
@@ -524,6 +536,7 @@ async fn start_components(
     let grpc = start_server(
         ServerDependencies {
             db: Arc::clone(&coral_db),
+            local_principal,
             source: source_manager,
             workspace: workspace_manager,
             query: query_manager,
@@ -756,6 +769,9 @@ struct TraceServerComponents {
 
 struct ServerDependencies {
     db: Arc<CoralDb>,
+    /// Whether this state directory grants the built-in local principal
+    /// ownership of every workspace. Shared deployments grant it to no one.
+    local_principal: LocalPrincipalPolicy,
     source: SourceManager,
     workspace: WorkspaceManager,
     query: QueryManager,
@@ -778,6 +794,7 @@ async fn start_server(
     } = trace_components;
     let ServerDependencies {
         db,
+        local_principal,
         source,
         workspace,
         query,
@@ -786,7 +803,12 @@ async fn start_server(
         feedback,
         task,
     } = dependencies;
-    let authorizer = WorkspaceAuthorizer::new(Arc::clone(&db));
+    let authorizer = match local_principal {
+        LocalPrincipalPolicy::ImplicitOwner => {
+            WorkspaceAuthorizer::trusting_local_principal(Arc::clone(&db))
+        }
+        LocalPrincipalPolicy::Ordinary => WorkspaceAuthorizer::new(Arc::clone(&db)),
+    };
     let (source, query) = match search_observations.as_ref() {
         Some(search_observations) => (
             source.with_search_observation_handle(search_observations.clone()),
@@ -798,7 +820,11 @@ async fn start_server(
     let source_service = SourceService::new(source, query.clone(), workspace.clone())
         .with_authorizer(authorizer.clone());
     let workspace_service = WorkspaceService::new(workspace).with_authorizer(authorizer.clone());
-    let user_service = UserService::new(UserManager::new(db));
+    let users = match local_principal {
+        LocalPrincipalPolicy::ImplicitOwner => UserManager::new(db).trusting_local_principal(),
+        LocalPrincipalPolicy::Ordinary => UserManager::new(db),
+    };
+    let user_service = UserService::new(users);
     let catalog_service =
         CatalogService::new(query.clone(), task.clone()).with_authorizer(authorizer.clone());
     let function_service = FunctionService::new(query.clone()).with_authorizer(authorizer.clone());
@@ -1140,7 +1166,7 @@ mod tests {
     use crate::task::store::TaskStore;
     use crate::telemetry::{TraceManager, service::TraceService};
     use crate::transport::workspace_to_proto;
-    use crate::workspaces::{WorkspaceManager, WorkspaceName};
+    use crate::workspaces::{LocalPrincipalPolicy, WorkspaceManager, WorkspaceName};
     use crate::{
         AwsEngineExtensionsProvider, LocalPrincipalProvider, NoopEngineExtensionsProvider,
         Principal, PrincipalProvider, PrincipalProviderError,
@@ -1933,6 +1959,7 @@ backend = "unsupported"
         ));
         let server = start_server(
             ServerDependencies {
+                local_principal: LocalPrincipalPolicy::ImplicitOwner,
                 db: Arc::clone(&db),
                 source: source_manager,
                 workspace: workspace_manager,
@@ -2386,6 +2413,7 @@ tables:
         );
         let running = start_server(
             ServerDependencies {
+                local_principal: LocalPrincipalPolicy::ImplicitOwner,
                 db: Arc::clone(&db),
                 source: source_manager,
                 workspace: workspace_manager,
@@ -2515,6 +2543,7 @@ tables:
         );
         let running = start_server(
             ServerDependencies {
+                local_principal: LocalPrincipalPolicy::ImplicitOwner,
                 db: Arc::clone(&db),
                 source: source_manager,
                 workspace: workspace_manager,
@@ -2644,6 +2673,7 @@ tables:
         );
         let running = start_server(
             ServerDependencies {
+                local_principal: LocalPrincipalPolicy::ImplicitOwner,
                 db: Arc::clone(&db),
                 source: source_manager,
                 workspace: workspace_manager,
