@@ -463,28 +463,31 @@ async fn start_components(
     } else {
         LocalPrincipalPolicy::ImplicitOwner
     };
-    match local_principal {
-        LocalPrincipalPolicy::ImplicitOwner => stamp_local_ownership(&coral_db).await?,
-        LocalPrincipalPolicy::Ordinary => {
-            // Serving these is safe — no members means every caller is concealed
-            // from them — but leaving them unmentioned is not. Repair is the
-            // admin tool's job: a shared deployment has no privileged request
-            // path that could appoint an owner.
-            let ownerless = ownerless_workspaces(&coral_db).await?;
-            if !ownerless.is_empty() {
-                tracing::warn!(
-                    workspaces = ownerless.join(", "),
-                    "workspaces have no owner and stay unreachable until one is appointed"
-                );
-            }
+    // Serving a workspace nobody owns is safe — with no members every caller is
+    // concealed from it — but leaving it unmentioned is not. The report waits
+    // for the telemetry subscriber below, since a warning emitted before it is
+    // installed reaches no one.
+    let ownerless = match local_principal {
+        LocalPrincipalPolicy::ImplicitOwner => {
+            stamp_local_ownership(&coral_db).await?;
+            Vec::new()
         }
-    }
+        LocalPrincipalPolicy::Ordinary => ownerless_workspaces(&coral_db).await?,
+    };
     let coral_db = Arc::new(coral_db);
     let authorization_server = session_auth
         .map(|settings| build_authorization_server(settings, Arc::clone(&coral_db)))
         .transpose()?;
     let (telemetry_config, active_trace_store) =
         init_server_telemetry(&layout, builder.config.enable_stderr_logs)?;
+    if !ownerless.is_empty() {
+        // Repair is the admin tool's job: a shared deployment has no privileged
+        // request path that could appoint an owner.
+        tracing::warn!(
+            workspaces = ownerless.join(", "),
+            "workspaces have no owner and stay unreachable until one is appointed"
+        );
+    }
     let active_trace_store_dir = active_trace_store.as_ref().map(|store| store.dir.clone());
     let credential_config = CredentialStorageConfig::load(&layout)?;
     let credential_store =
