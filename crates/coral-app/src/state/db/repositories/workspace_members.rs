@@ -65,7 +65,7 @@ where
             statement.and_where(Expr::col(WorkspaceMembers::WorkspaceId).gt(after_workspace_id));
         }
 
-        let rows: Vec<(String,)> = self.session.fetch_all(statement.to_owned()).await?;
+        let rows: Vec<(String,)> = self.session.fetch_all(statement.clone()).await?;
         Ok(rows
             .into_iter()
             .map(|(workspace_id,)| workspace_id)
