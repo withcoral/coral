@@ -16,14 +16,52 @@ pub(crate) enum WorkspaceAction {
     Manage,
 }
 
+/// Whether the built-in local principal owns every workspace.
+///
+/// A state directory with no `[auth]` section is a single-user deployment: the
+/// host user is the deployment, and `coral:local` reaches everything, exactly as
+/// it did before access control existed. Once `[auth]` is configured the
+/// deployment is shared and has no superuser — a lockout is repaired out of band
+/// with the admin tool, not through a privileged request path.
+///
+/// [`Ordinary`](Self::Ordinary) is the default so that forgetting to state the
+/// policy denies rather than grants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum LocalPrincipalPolicy {
+    #[default]
+    Ordinary,
+    ImplicitOwner,
+}
+
 #[derive(Clone)]
 pub(crate) struct WorkspaceAuthorizer {
     db: Arc<CoralDb>,
+    local_principal: LocalPrincipalPolicy,
 }
 
 impl WorkspaceAuthorizer {
+    /// Authorizes every principal from its membership, with no exceptions.
     pub(crate) fn new(db: Arc<CoralDb>) -> Self {
-        Self { db }
+        Self {
+            db,
+            local_principal: LocalPrincipalPolicy::Ordinary,
+        }
+    }
+
+    /// Treats the local principal as owner of every workspace.
+    ///
+    /// Only a state directory without `[auth]` may be served this way.
+    pub(crate) fn trusting_local_principal(db: Arc<CoralDb>) -> Self {
+        Self {
+            db,
+            local_principal: LocalPrincipalPolicy::ImplicitOwner,
+        }
+    }
+
+    /// Reports the policy so sibling surfaces resolve local access identically.
+    #[cfg_attr(test, expect(dead_code, reason = "read by host trace scoping later"))]
+    pub(crate) fn local_principal_policy(&self) -> LocalPrincipalPolicy {
+        self.local_principal
     }
 
     pub(crate) async fn authorize(
@@ -32,7 +70,7 @@ impl WorkspaceAuthorizer {
         workspace: &WorkspaceName,
         action: WorkspaceAction,
     ) -> Result<(), AppError> {
-        if principal.is_local() {
+        if principal.is_local() && self.local_principal == LocalPrincipalPolicy::ImplicitOwner {
             return Ok(());
         }
         if principal.kind() == PrincipalKind::Agent && action == WorkspaceAction::Manage {
@@ -73,9 +111,9 @@ mod tests {
     use crate::workspaces::{MemberRole, WorkspaceName};
 
     #[tokio::test]
-    async fn local_principal_returns_without_database_work() {
+    async fn trusted_local_principal_returns_without_database_work() {
         let (_temp, db) = database(false).await;
-        let authorizer = WorkspaceAuthorizer::new(db);
+        let authorizer = WorkspaceAuthorizer::trusting_local_principal(db);
 
         authorizer
             .authorize(
@@ -84,7 +122,31 @@ mod tests {
                 WorkspaceAction::Manage,
             )
             .await
-            .expect("local principal bypasses membership storage");
+            .expect("a single-user deployment reaches every workspace");
+    }
+
+    /// The deployments this covers are the shared ones, where a host process
+    /// holds no membership and so must be concealed like any other stranger.
+    /// Repairing that is the admin tool's job, not a privileged request path.
+    #[tokio::test]
+    async fn untrusted_local_principal_is_concealed_like_any_non_member() {
+        let (_temp, db) = database(true).await;
+        let owner_id = provision_user(&db, "owner").await;
+        let workspace =
+            WorkspaceName::parse(&format!("default-{owner_id}")).expect("owner default workspace");
+        let authorizer = WorkspaceAuthorizer::new(db);
+
+        for action in [WorkspaceAction::Read, WorkspaceAction::Manage] {
+            assert!(
+                matches!(
+                    authorizer
+                        .authorize(&Principal::local(), &workspace, action)
+                        .await,
+                    Err(AppError::WorkspaceNotFound(_))
+                ),
+                "the local principal must not see a workspace it does not belong to"
+            );
+        }
     }
 
     #[tokio::test]

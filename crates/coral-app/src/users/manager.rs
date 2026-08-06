@@ -4,17 +4,29 @@ use crate::bootstrap::AppError;
 use crate::identity::{Principal, PrincipalKind};
 use crate::state::db::{CoralDb, DbRepos};
 use crate::users::{CurrentUser, UserView};
-use crate::workspaces::{MemberRole, WorkspaceName};
+use crate::workspaces::{LocalPrincipalPolicy, MemberRole, WorkspaceName};
 
 /// App-domain user directory and current-user behavior.
 #[derive(Clone)]
 pub(crate) struct UserManager {
     db: Arc<CoralDb>,
+    local_principal: LocalPrincipalPolicy,
 }
 
 impl UserManager {
     pub(crate) fn new(db: Arc<CoralDb>) -> Self {
-        Self { db }
+        Self {
+            db,
+            local_principal: LocalPrincipalPolicy::default(),
+        }
+    }
+
+    /// Lets the local principal read the directory without owning a workspace.
+    ///
+    /// Only a state directory without `[auth]` may be served this way.
+    pub(crate) fn trusting_local_principal(mut self) -> Self {
+        self.local_principal = LocalPrincipalPolicy::ImplicitOwner;
+        self
     }
 
     pub(crate) async fn get_current_user(
@@ -50,7 +62,9 @@ impl UserManager {
     ) -> Result<Vec<UserView>, AppError> {
         require_human(principal)?;
         let mut session = self.db.as_ref();
-        if !principal.is_local()
+        let trusted_local =
+            principal.is_local() && self.local_principal == LocalPrincipalPolicy::ImplicitOwner;
+        if !trusted_local
             && !session
                 .workspace_members()
                 .workspaces_for_user_id(principal.id().as_str())

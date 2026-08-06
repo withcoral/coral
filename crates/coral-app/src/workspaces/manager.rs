@@ -14,8 +14,9 @@ use crate::state::db::{
 };
 use crate::storage::fs::DirectoryBackup;
 use crate::workspaces::{
-    DeletedWorkspace, MemberRole, WorkspaceLifecycleLock, WorkspaceLifecycleRevision,
-    WorkspaceName, WorkspacePaths, WorkspacePoolRegistry, WorkspaceRecord,
+    DeletedWorkspace, LocalPrincipalPolicy, MemberRole, WorkspaceLifecycleLock,
+    WorkspaceLifecycleRevision, WorkspaceName, WorkspacePaths, WorkspacePoolRegistry,
+    WorkspaceRecord,
 };
 
 /// App-owned workspace lifecycle behavior.
@@ -29,6 +30,7 @@ pub(crate) struct WorkspaceManager {
     db: Arc<CoralDb>,
     diagnostic_reporter: SourceDiagnosticReporter,
     pool_registry: Arc<WorkspacePoolRegistry>,
+    local_principal: LocalPrincipalPolicy,
 }
 
 impl WorkspaceManager {
@@ -69,6 +71,7 @@ impl WorkspaceManager {
             db,
             diagnostic_reporter,
             pool_registry: Arc::new(WorkspacePoolRegistry::default()),
+            local_principal: LocalPrincipalPolicy::default(),
         }
     }
 
@@ -97,7 +100,7 @@ impl WorkspaceManager {
         &self,
         principal: &Principal,
     ) -> Result<Vec<(WorkspaceRecord, MemberRole)>, AppError> {
-        if principal.is_local() {
+        if principal.is_local() && self.local_principal == LocalPrincipalPolicy::ImplicitOwner {
             return Ok(self
                 .list_workspaces()
                 .await?

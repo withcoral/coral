@@ -11,7 +11,7 @@ pub(crate) mod service;
     unused_imports,
     reason = "wired to service handlers in later milestones"
 )]
-pub(crate) use authorization::{WorkspaceAction, WorkspaceAuthorizer};
+pub(crate) use authorization::{LocalPrincipalPolicy, WorkspaceAction, WorkspaceAuthorizer};
 pub(crate) use manager::WorkspaceManager;
 pub(crate) use member::MemberRole;
 pub(crate) use model::{
