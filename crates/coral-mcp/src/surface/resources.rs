@@ -71,7 +71,7 @@ pub(crate) fn tables_resource(visible_table_count: usize) -> Resource {
 pub(crate) fn guide_resource_content(
     sources: &[Source],
     tables: &[TableSummary],
-    table_function_schema_names: &[String],
+    table_function_schemas: &[(String, String)],
     observed_values_search_enabled: bool,
 ) -> String {
     let mut sources_section = String::from("## Available Schemas\n\n");
@@ -87,10 +87,12 @@ pub(crate) fn guide_resource_content(
     // as path segments, so a schema publishing table functions could otherwise
     // carry a newline and break out of its `Visible schemas:` bullet.
     schemas.extend(
-        table_function_schema_names
+        table_function_schemas
             .iter()
-            .filter(|schema| *schema != "coral")
-            .map(|schema| prompt_safe_text(schema)),
+            .filter(|(_, schema_name)| schema_name != "coral")
+            .map(|(catalog_name, schema_name)| {
+                visible_schema_coordinates(catalog_name, schema_name)
+            }),
     );
     if schemas.is_empty() {
         if sources.is_empty() {
@@ -213,13 +215,17 @@ fn is_coral_system_schema(table: &TableSummary) -> bool {
 /// is `warehouse`. Keeping them apart is also what the `coral.*` metadata
 /// tables expect, since they filter on `catalog_name` and `schema_name`.
 fn visible_schema_entry(table: &TableSummary) -> String {
-    let schema_name = prompt_safe_text(&table.schema_name);
-    if table.catalog_name.is_empty() {
+    visible_schema_coordinates(&table.catalog_name, &table.schema_name)
+}
+
+fn visible_schema_coordinates(catalog_name: &str, schema_name: &str) -> String {
+    let schema_name = prompt_safe_text(schema_name);
+    if catalog_name.is_empty() {
         schema_name
     } else {
         format!(
             "{schema_name} (catalog: {})",
-            prompt_safe_text(&table.catalog_name)
+            prompt_safe_text(catalog_name)
         )
     }
 }
@@ -591,13 +597,22 @@ WHERE title LIKE '%bug%'",
 
     #[test]
     fn guide_content_includes_function_only_schemas() {
-        let function_schemas = vec!["searchy".to_string()];
+        let function_schemas = vec![(String::new(), "searchy".to_string())];
 
         let content = guide_resource_content(&[source("searchy")], &[], &function_schemas, false);
 
         assert!(content.contains("Visible schemas:"));
         assert!(content.contains("- searchy"));
         assert!(!content.contains("No user-visible schemas are currently available."));
+    }
+
+    #[test]
+    fn guide_content_qualifies_catalog_backed_function_schema() {
+        let function_schemas = vec![("github_v4".to_string(), "issues".to_string())];
+
+        let content = guide_resource_content(&[source("github_v4")], &[], &function_schemas, false);
+
+        assert!(content.contains("Visible schemas:\n- issues (catalog: github_v4)"));
     }
 
     #[test]

@@ -424,7 +424,11 @@ fn provider_status_text(status: &coral_api::v1::SearchProviderStatus) -> String 
 /// Formats the shortest SQL call example for a table function.
 #[must_use]
 pub fn minimal_table_function_call_example(function: &TableFunction) -> String {
-    let reference = format_schema_table_equivalent(None, &function.schema_name, &function.name);
+    let reference = format_schema_table_equivalent(
+        optional_catalog_name(&function.catalog_name),
+        &function.schema_name,
+        &function.name,
+    );
     let required_arguments = function
         .arguments
         .iter()
@@ -449,8 +453,7 @@ pub fn format_table_name(
 }
 
 /// Formats a SQL table or table-function reference, qualified by schema and, when
-/// `catalog_name` is `Some`, by catalog. Pass `None` for a two-part reference —
-/// table functions and the surfaces whose protos carry no catalog field.
+/// `catalog_name` is `Some`, by catalog. Pass `None` for a two-part reference.
 #[must_use]
 pub fn format_schema_table_equivalent(
     catalog_name: Option<&str>,
@@ -772,6 +775,53 @@ mod tests {
                 .get("sql_reference")
                 .and_then(Value::as_str),
             Some("warehouse.analytics.events")
+        );
+    }
+
+    #[test]
+    fn catalog_qualified_function_search_result_preserves_all_three_parts() {
+        let mut result = function_result();
+        result.surface = Some(SearchSurfaceRef {
+            catalog_name: "github_v4".to_string(),
+            schema_name: "issues".to_string(),
+            name: "list_for_repo".to_string(),
+        });
+
+        let response = response(vec![result]);
+        let value = search_response_json_value(&response);
+        assert_eq!(
+            first_result(&value)
+                .get("sql_reference")
+                .and_then(Value::as_str),
+            Some("github_v4.issues.list_for_repo")
+        );
+        assert!(
+            format_search_response_text(&response)
+                .contains("[function] github_v4.issues.list_for_repo")
+        );
+    }
+
+    #[test]
+    fn table_function_call_examples_render_two_or_three_part_identity() {
+        let legacy = TableFunction {
+            schema_name: "github".to_string(),
+            name: "search_issues".to_string(),
+            ..Default::default()
+        };
+        let catalog_qualified = TableFunction {
+            catalog_name: "github_v4".to_string(),
+            schema_name: "issues".to_string(),
+            name: "list_for_repo".to_string(),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            minimal_table_function_call_example(&legacy),
+            "github.search_issues()"
+        );
+        assert_eq!(
+            minimal_table_function_call_example(&catalog_qualified),
+            "github_v4.issues.list_for_repo()"
         );
     }
 }

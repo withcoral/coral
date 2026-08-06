@@ -325,10 +325,23 @@ fn resolve_table_function<'a>(
         return None;
     }
 
+    if let [catalog_name, schema_name, function_name] = parts
+        && let Some(function) = table_functions.iter().find(|function| {
+            function
+                .catalog_name
+                .as_deref()
+                .is_some_and(|catalog| catalog.eq_ignore_ascii_case(catalog_name))
+                && function.schema_name.eq_ignore_ascii_case(schema_name)
+                && function.function_name.eq_ignore_ascii_case(function_name)
+        })
+    {
+        return Some(function);
+    }
+
     for candidate in SchemaQualifiedName::candidates(parts) {
         if let Some(function) = table_functions
             .iter()
-            .find(|function| candidate.matches(function))
+            .find(|function| function.catalog_name.is_none() && candidate.matches(function))
         {
             return Some(function);
         }
@@ -395,6 +408,13 @@ mod tests {
         }
     }
 
+    fn catalog_table_function(catalog: &str, schema: &str, name: &str) -> TableFunctionInfo {
+        TableFunctionInfo {
+            catalog_name: Some(catalog.to_string()),
+            ..table_function(schema, name)
+        }
+    }
+
     fn table_ref(parts: &[&str]) -> TableRefParts {
         TableRefParts::new(parts.iter().map(ToString::to_string).collect())
     }
@@ -456,6 +476,19 @@ mod tests {
 
         assert_eq!(function.schema_name, "datadog");
         assert_eq!(function.function_name, "metrics");
+    }
+
+    #[test]
+    fn table_function_ref_matches_all_three_coordinates() {
+        let functions = vec![
+            catalog_table_function("gitlab_v4", "issues", "list"),
+            catalog_table_function("github_v4", "issues", "list"),
+        ];
+        let function =
+            table_function_for_ref(&table_ref(&["github_v4", "issues", "list"]), &functions)
+                .expect("catalog-qualified table function should match");
+
+        assert_eq!(function.catalog_name.as_deref(), Some("github_v4"));
     }
 
     #[test]

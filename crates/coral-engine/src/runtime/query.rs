@@ -604,12 +604,18 @@ impl QueryRuntimeAdapter {
 
     fn list_table_functions(
         &self,
-        source_filter: Option<&str>,
+        catalog_filter: Option<&str>,
+        schema_filter: Option<&str>,
         function_filter: Option<&str>,
     ) -> Vec<TableFunctionInfo> {
+        let normalized_catalog_filter = normalize_catalog_name(catalog_filter);
         self.table_functions
             .iter()
-            .filter(|function| source_filter.is_none_or(|value| function.schema_name == value))
+            .filter(|function| {
+                catalog_filter.is_none()
+                    || function.catalog_name.as_deref() == normalized_catalog_filter
+            })
+            .filter(|function| schema_filter.is_none_or(|value| function.schema_name == value))
             .filter(|function| function_filter.is_none_or(|value| function.function_name == value))
             .cloned()
             .collect()
@@ -620,8 +626,6 @@ impl QueryRuntimeAdapter {
         catalog_filter: Option<&str>,
         schema_filter: Option<&str>,
     ) -> Result<CatalogInfo, CoreError> {
-        let includes_schema_sources =
-            catalog_filter.is_none_or(|value| normalize_catalog_name(Some(value)).is_none());
         // Catalog summaries never surface columns, so skip the coral.columns
         // expansion (and the remote database inventory fetches behind it).
         let tables =
@@ -630,11 +634,7 @@ impl QueryRuntimeAdapter {
                 .map_err(|err| datafusion_to_core(&err, &self.tables))?;
         Ok(CatalogInfo {
             tables,
-            table_functions: if includes_schema_sources {
-                self.list_table_functions(schema_filter, None)
-            } else {
-                Vec::new()
-            },
+            table_functions: self.list_table_functions(catalog_filter, schema_filter, None),
         })
     }
 
@@ -670,7 +670,10 @@ impl QueryRuntimeAdapter {
             table_functions: self
                 .table_functions
                 .iter()
-                .filter(|function| schema_names.contains(&function.schema_name.as_str()))
+                .filter(|function| match function.catalog_name.as_deref() {
+                    Some(catalog_name) => catalog_names.contains(&catalog_name),
+                    None => schema_names.contains(&function.schema_name.as_str()),
+                })
                 .cloned()
                 .collect(),
         })
@@ -1759,6 +1762,58 @@ mod tests {
             .expect("catalog info");
         assert_eq!(catalog.tables.len(), 1);
         assert_eq!(catalog.table_functions.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn catalog_qualified_table_function_respects_catalog_and_schema_filters() {
+        let mut adapter = adapter_with_sources(Vec::new());
+        adapter.table_functions.extend([
+            TableFunctionInfo {
+                catalog_name: Some("github_v4".to_string()),
+                schema_name: "issues".to_string(),
+                function_name: "list_for_repo".to_string(),
+                description: String::new(),
+                guide: String::new(),
+                require_guide_read: false,
+                arguments: Vec::new(),
+                result_columns: Vec::new(),
+                kind: coral_spec::SourceTableFunctionKind::Table,
+                search_limits: None,
+            },
+            TableFunctionInfo {
+                catalog_name: None,
+                schema_name: "github".to_string(),
+                function_name: "search_issues".to_string(),
+                description: String::new(),
+                guide: String::new(),
+                require_guide_read: false,
+                arguments: Vec::new(),
+                result_columns: Vec::new(),
+                kind: coral_spec::SourceTableFunctionKind::Search,
+                search_limits: None,
+            },
+        ]);
+
+        let catalog = adapter
+            .catalog_info(Some("github_v4"), Some("issues"))
+            .await
+            .expect("catalog-qualified function");
+        assert_eq!(catalog.table_functions.len(), 1);
+        let function = catalog.table_functions.first().expect("table function");
+        assert_eq!(function.catalog_name.as_deref(), Some("github_v4"));
+        assert_eq!(function.schema_name, "issues");
+        assert_eq!(function.function_name, "list_for_repo");
+
+        let legacy = adapter
+            .catalog_info(
+                Some(crate::runtime::DATAFUSION_DEFAULT_CATALOG),
+                Some("github"),
+            )
+            .await
+            .expect("legacy function");
+        assert_eq!(legacy.table_functions.len(), 1);
+        assert!(legacy.table_functions[0].catalog_name.is_none());
+        assert_eq!(legacy.table_functions[0].function_name, "search_issues");
     }
 
     #[tokio::test]

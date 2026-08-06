@@ -416,7 +416,7 @@ impl CoralMcpServer {
 
     async fn load_guide_catalog(
         &self,
-    ) -> Result<(Vec<ProtoTableSummary>, Vec<String>), tonic::Status> {
+    ) -> Result<(Vec<ProtoTableSummary>, Vec<(String, String)>), tonic::Status> {
         self.load_catalog(
             None,
             None,
@@ -480,7 +480,7 @@ impl CoralMcpServer {
 
     async fn load_sources_and_guide_catalog(
         &self,
-    ) -> Result<(Vec<Source>, Vec<ProtoTableSummary>, Vec<String>), tonic::Status> {
+    ) -> Result<(Vec<Source>, Vec<ProtoTableSummary>, Vec<(String, String)>), tonic::Status> {
         let (sources, (tables, table_function_schema_names)) =
             tokio::try_join!(self.load_sources(), self.load_guide_catalog())?;
         Ok((sources, tables, table_function_schema_names))
@@ -1150,14 +1150,14 @@ fn catalog_item_kind_from_tool(kind: Option<CatalogToolKind>) -> ProtoCatalogIte
 
 fn guide_catalog_from_response(
     response: ListCatalogResponse,
-) -> (Vec<ProtoTableSummary>, Vec<String>) {
+) -> (Vec<ProtoTableSummary>, Vec<(String, String)>) {
     let mut tables = Vec::new();
     let mut table_function_schema_names = Vec::new();
     for item in response.items {
         match item.item {
             Some(catalog_item::Item::Table(table)) => tables.push(table),
             Some(catalog_item::Item::TableFunction(function)) => {
-                table_function_schema_names.push(function.schema_name);
+                table_function_schema_names.push((function.catalog_name, function.schema_name));
             }
             None => {}
         }

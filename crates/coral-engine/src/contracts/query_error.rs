@@ -244,9 +244,18 @@ impl StructuredQueryError {
         metadata.insert("object_kind".to_string(), "table_function".to_string());
         metadata.insert("schema".to_string(), function.schema_name.clone());
         metadata.insert("function".to_string(), function.function_name.clone());
+        if let Some(catalog_name) = function.catalog_name.as_ref() {
+            metadata.insert("catalog".to_string(), catalog_name.clone());
+        }
 
         let schema_sql = sql_string_literal(&function.schema_name);
         let function_sql = sql_string_literal(&function.function_name);
+        let catalog_filter = function
+            .catalog_name
+            .as_deref()
+            .map_or_else(String::new, |name| {
+                format!("catalog_name = {} AND ", sql_string_literal(name))
+            });
 
         Self::new(
             TABLE_FUNCTION_NOT_TABLE_REASON,
@@ -255,7 +264,7 @@ impl StructuredQueryError {
                 "`{display_ref}` is registered as a table function. Query it as `FROM {display_ref}(...)`; inspect arguments and result columns in `coral.table_functions`, or run `DESCRIBE SELECT * FROM {display_ref}(...)` after filling any required arguments."
             ),
             Some(format!(
-                "Inspect table functions with `SELECT schema_name, function_name, arguments_json, result_columns_json FROM coral.table_functions WHERE schema_name = {schema_sql} AND function_name = {function_sql}`."
+                "Inspect table functions with `SELECT catalog_name, schema_name, function_name, arguments_json, result_columns_json FROM coral.table_functions WHERE {catalog_filter}schema_name = {schema_sql} AND function_name = {function_sql}`."
             )),
             false,
             StatusCode::InvalidArgument,
@@ -583,10 +592,22 @@ fn format_schema_table_fully_quoted(info: &TableInfo) -> String {
 }
 
 fn format_schema_function(info: &TableFunctionInfo) -> String {
-    format!(
-        "{}.{}",
-        quote_dotted_identifier(&info.schema_name),
-        quote_identifier(&info.function_name)
+    info.catalog_name.as_deref().map_or_else(
+        || {
+            format!(
+                "{}.{}",
+                quote_dotted_identifier(&info.schema_name),
+                quote_identifier(&info.function_name)
+            )
+        },
+        |catalog_name| {
+            format!(
+                "{}.{}.{}",
+                quote_identifier(catalog_name),
+                quote_identifier(&info.schema_name),
+                quote_identifier(&info.function_name)
+            )
+        },
     )
 }
 
@@ -855,6 +876,13 @@ mod tests {
         }
     }
 
+    fn catalog_table_function(catalog: &str, schema: &str, name: &str) -> TableFunctionInfo {
+        TableFunctionInfo {
+            catalog_name: Some(catalog.to_string()),
+            ..table_function(schema, name)
+        }
+    }
+
     fn cp(relation: &[&str], name: &str) -> ColumnParts {
         ColumnParts {
             relation: relation.iter().map(ToString::to_string).collect(),
@@ -999,6 +1027,35 @@ mod tests {
                 .contains("DESCRIBE SELECT * FROM datadog.metrics(...)"),
             "got: {}",
             err.detail()
+        );
+    }
+
+    #[test]
+    fn catalog_table_function_error_uses_complete_identity_and_hint_filter() {
+        let err = StructuredQueryError::table_function_not_table(&catalog_table_function(
+            "github_v4",
+            "issues",
+            "list_for_repo",
+        ));
+
+        assert_eq!(
+            err.summary(),
+            "`github_v4.issues.list_for_repo` is a table function, not a table"
+        );
+        assert!(
+            err.detail()
+                .contains("FROM github_v4.issues.list_for_repo(...)")
+        );
+        let hint = err.hint().expect("catalog-qualified hint");
+        assert!(hint.contains("catalog_name = 'github_v4'"), "got: {hint}");
+        assert!(hint.contains("schema_name = 'issues'"), "got: {hint}");
+        assert!(
+            hint.contains("function_name = 'list_for_repo'"),
+            "got: {hint}"
+        );
+        assert_eq!(
+            err.metadata().get("catalog").map(String::as_str),
+            Some("github_v4")
         );
     }
 

@@ -420,7 +420,7 @@ fn catalog_item_sort_key(item: &CatalogItem) -> (&str, &str, &str, &'static str)
             "table",
         ),
         CatalogItem::TableFunction(function) => (
-            "",
+            function.catalog_name.as_deref().unwrap_or_default(),
             &function.schema_name,
             &function.function_name,
             "table_function",
@@ -534,27 +534,42 @@ fn table_function_matched_fields(
     function: &TableFunctionInfo,
     regex: &Regex,
 ) -> Vec<CatalogMetadataField> {
-    let name = format!("{}.{}", function.schema_name, function.function_name);
-    let candidates = [
-        (
-            CatalogMetadataField::SchemaName,
-            function.schema_name.as_str(),
-        ),
-        (
-            CatalogMetadataField::FunctionName,
-            function.function_name.as_str(),
-        ),
-        (CatalogMetadataField::Name, name.as_str()),
-        (
-            CatalogMetadataField::Description,
-            function.description.as_str(),
-        ),
-        (CatalogMetadataField::Guide, function.guide.as_str()),
-    ];
-    let mut matches = candidates
-        .into_iter()
-        .filter_map(|(field, value)| regex.is_match(value).then_some(field))
-        .collect::<Vec<_>>();
+    let addressable_schema = function.catalog_name.as_deref().map_or_else(
+        || function.schema_name.clone(),
+        |catalog_name| format!("{catalog_name}.{}", function.schema_name),
+    );
+    let name = format!("{addressable_schema}.{}", function.function_name);
+    let mut matches = Vec::new();
+    let catalog_matched = function
+        .catalog_name
+        .as_deref()
+        .is_some_and(|catalog_name| regex.is_match(catalog_name));
+    let schema_matched = regex.is_match(&function.schema_name);
+    if catalog_matched {
+        matches.push(CatalogMetadataField::CatalogName);
+    }
+    if schema_matched {
+        matches.push(CatalogMetadataField::SchemaName);
+    }
+    if !catalog_matched
+        && !schema_matched
+        && addressable_schema != function.schema_name
+        && regex.is_match(&addressable_schema)
+    {
+        matches.push(CatalogMetadataField::QualifiedSchema);
+    }
+    if regex.is_match(&function.function_name) {
+        matches.push(CatalogMetadataField::FunctionName);
+    }
+    if regex.is_match(&name) {
+        matches.push(CatalogMetadataField::Name);
+    }
+    if regex.is_match(&function.description) {
+        matches.push(CatalogMetadataField::Description);
+    }
+    if regex.is_match(&function.guide) {
+        matches.push(CatalogMetadataField::Guide);
+    }
     if function.arguments.iter().any(|argument| {
         regex.is_match(&argument.name) || argument.values.iter().any(|value| regex.is_match(value))
     }) {
@@ -723,10 +738,10 @@ pub(crate) fn page_items<T>(items: Vec<T>, pagination: Pagination) -> Page<T> {
 mod tests {
     use super::{
         CatalogMetadataField, CatalogTableRef, available_table_schemas, compile_metadata_regex,
-        missing_table_suggestions, same_schema_tables, table_matched_fields, table_matches_ref,
-        table_metadata_contains_literal,
+        missing_table_suggestions, same_schema_tables, table_function_matched_fields,
+        table_matched_fields, table_matches_ref, table_metadata_contains_literal,
     };
-    use coral_engine::TableInfo;
+    use coral_engine::{TableFunctionInfo, TableInfo};
 
     fn table(required_filters: Vec<String>) -> TableInfo {
         TableInfo {
@@ -859,5 +874,36 @@ mod tests {
             same_schema_table,
             "coral_db.main.users"
         ));
+    }
+
+    #[test]
+    fn catalog_qualified_function_matches_complete_identity() {
+        let function = TableFunctionInfo {
+            catalog_name: Some("github_v4".to_string()),
+            schema_name: "issues".to_string(),
+            function_name: "list_for_repo".to_string(),
+            description: String::new(),
+            guide: String::new(),
+            require_guide_read: false,
+            arguments: Vec::new(),
+            result_columns: Vec::new(),
+            kind: coral_spec::SourceTableFunctionKind::Table,
+            search_limits: None,
+        };
+
+        assert_eq!(
+            table_function_matched_fields(
+                &function,
+                &regex::Regex::new("^github_v4\\.issues\\.list_for_repo$").expect("regex")
+            ),
+            vec![CatalogMetadataField::Name]
+        );
+        assert_eq!(
+            table_function_matched_fields(
+                &function,
+                &regex::Regex::new("^github_v4$").expect("regex")
+            ),
+            vec![CatalogMetadataField::CatalogName]
+        );
     }
 }

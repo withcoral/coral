@@ -1065,21 +1065,32 @@ fn required_query_guides(
     let mut guides = Vec::new();
     for usage in resources.tables() {
         if let Some(table) = catalog.tables.iter().find(|table| {
-            table.schema_name == usage.schema_name() && table.table_name == usage.table_name()
+            table.catalog_name.as_deref() == usage.catalog_name()
+                && table.schema_name == usage.schema_name()
+                && table.table_name == usage.table_name()
         }) && table.require_guide_read
         {
             let guide = table.guide.clone();
             guides.push(RequiredQueryGuide {
                 schema_name: table.schema_name.clone(),
                 resource_name: table.table_name.clone(),
-                guide_id: required_guide_id(&table.schema_name, &table.table_name, &guide),
+                guide_id: required_guide_id(
+                    table.catalog_name.as_deref(),
+                    &table.schema_name,
+                    &table.table_name,
+                    &guide,
+                ),
                 guide,
             });
         }
     }
     for usage in resources.table_functions() {
         if let Some(function) = catalog.table_functions.iter().find(|function| {
-            function.schema_name == usage.schema_name()
+            function
+                .catalog_name
+                .as_deref()
+                .is_none_or(|catalog_name| catalog_name == usage.source_name())
+                && function.schema_name == usage.schema_name()
                 && function.function_name == usage.function_name()
         }) && function.require_guide_read
         {
@@ -1087,7 +1098,12 @@ fn required_query_guides(
             guides.push(RequiredQueryGuide {
                 schema_name: function.schema_name.clone(),
                 resource_name: function.function_name.clone(),
-                guide_id: required_guide_id(&function.schema_name, &function.function_name, &guide),
+                guide_id: required_guide_id(
+                    function.catalog_name.as_deref(),
+                    &function.schema_name,
+                    &function.function_name,
+                    &guide,
+                ),
                 guide,
             });
         }
@@ -1095,8 +1111,17 @@ fn required_query_guides(
     guides
 }
 
-fn required_guide_id(schema_name: &str, resource_name: &str, guide: &str) -> String {
-    sha256_hex(format!("{schema_name}\0{resource_name}\0{guide}").as_bytes())
+fn required_guide_id(
+    catalog_name: Option<&str>,
+    schema_name: &str,
+    resource_name: &str,
+    guide: &str,
+) -> String {
+    let identity = catalog_name.map_or_else(
+        || format!("{schema_name}\0{resource_name}\0{guide}"),
+        |catalog_name| format!("{catalog_name}\0{schema_name}\0{resource_name}\0{guide}"),
+    );
+    sha256_hex(identity.as_bytes())
 }
 
 fn query_sources_from_loaded(loaded_sources: &[LoadedQuerySource]) -> Vec<QuerySource> {
@@ -1383,6 +1408,7 @@ mod tests {
         EngineExtensions, QueryExecutionProvenance, QueryTableFunctionUsage, QueryTableUsage,
         ResolvedQueryResources, SourceDecorator, SourceDecoratorError,
         SourceInputResolutionContext, SourceInputResolver, SourceInputResolverError, SourceTables,
+        TableFunctionInfo,
     };
     use coral_spec::parse_source_manifest_yaml;
     use coral_spec::v4::ProjectionCatalog;
@@ -1438,6 +1464,53 @@ mod tests {
             manager,
             db,
         }
+    }
+
+    #[test]
+    fn required_guide_identity_includes_catalog_coordinate() {
+        let legacy = required_guide_id(None, "issues", "list", "Read this guide.");
+        let github = required_guide_id(Some("github_v4"), "issues", "list", "Read this guide.");
+        let gitlab = required_guide_id(Some("gitlab_v4"), "issues", "list", "Read this guide.");
+
+        assert_ne!(legacy, github);
+        assert_ne!(github, gitlab);
+    }
+
+    #[test]
+    fn required_function_guide_matches_catalog_owner() {
+        let function = |catalog_name: &str, guide: &str| TableFunctionInfo {
+            catalog_name: Some(catalog_name.to_string()),
+            schema_name: "issues".to_string(),
+            function_name: "list".to_string(),
+            description: String::new(),
+            guide: guide.to_string(),
+            require_guide_read: true,
+            arguments: Vec::new(),
+            result_columns: Vec::new(),
+            kind: coral_spec::SourceTableFunctionKind::Table,
+            search_limits: None,
+        };
+        let catalog = CatalogInfo {
+            tables: Vec::new(),
+            table_functions: vec![
+                function("gitlab_v4", "Use GitLab guidance."),
+                function("github_v4", "Use GitHub guidance."),
+            ],
+        };
+        let resources = ResolvedQueryResources::new(
+            vec!["github_v4".to_string()],
+            Vec::new(),
+            vec![QueryTableFunctionUsage::new("github_v4", "issues", "list")],
+        );
+
+        let guides = required_query_guides(&catalog, &resources);
+
+        assert_eq!(guides.len(), 1);
+        assert_eq!(guides[0].guide, "Use GitHub guidance.");
+        assert_eq!(
+            guides[0].guide_id,
+            required_guide_id(Some("github_v4"), "issues", "list", "Use GitHub guidance.")
+        );
     }
 
     async fn query_manager_with_unavailable_keychain() -> QueryManagerFixture {
