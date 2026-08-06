@@ -1,7 +1,10 @@
 use std::net::TcpListener;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use coral_api::v1::{CatalogItemKind, ListCatalogRequest, PaginationRequest, Workspace};
+use coral_api::v1::{
+    AddWorkspaceMemberRequest, CatalogItemKind, ListCatalogRequest, ListWorkspaceMembersRequest,
+    PaginationRequest, StartTaskRequest, Workspace, WorkspaceMember, WorkspaceRole,
+};
 use jsonwebtoken::jwk::{Jwk, ThumbprintHash};
 use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use reqwest::header::WWW_AUTHENTICATE;
@@ -641,6 +644,118 @@ async fn reef_only_audience_authenticates_private_grpc_without_mcp_http() {
     assert_grpc_authenticated(&server, &reef_token, &workspace).await;
 
     server.shutdown().await.expect("shutdown Reef-only server");
+}
+
+#[tokio::test]
+async fn ownerless_multi_user_refusal_preserves_break_glass_recovery() {
+    let temp = TempDir::new().expect("temp dir");
+    let signing_key =
+        EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
+            .expect("P-256 signing key");
+    write_session_config(&temp, signing_key.as_ref());
+    let (user_id, personal_workspace) = provision_session_identity(&temp).await;
+    let default_workspace = Workspace {
+        name: "default".to_string(),
+    };
+
+    // Low-level startup against auth-configured state is the local-principal
+    // recovery surface. Make the seeded ownerless workspace non-pristine using
+    // that real surface so multi-user startup may not discard it as empty.
+    let local = ServerBuilder::ephemeral_grpc()
+        .with_config_dir(temp.path())
+        .with_noop_feedback_uploads()
+        .start()
+        .await
+        .expect("start local-principal server against auth-configured state");
+    let local_client = AppClient::connect(local.endpoint_uri())
+        .await
+        .expect("connect local principal");
+    local_client
+        .task_client()
+        .start_task(Request::new(StartTaskRequest {
+            workspace: Some(default_workspace.clone()),
+            intent: "preserve ownerless workspace".to_string(),
+        }))
+        .await
+        .expect("make ownerless workspace non-pristine");
+    local.shutdown().await.expect("stop local-principal server");
+
+    let grpc_listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("reserve gRPC port");
+    let grpc_addr = grpc_listener.local_addr().expect("gRPC address");
+    let result = start(
+        ServerBuilder::standalone_grpc(grpc_addr)
+            .with_config_dir(temp.path())
+            .with_noop_feedback_uploads()
+            .with_prebound_grpc_listener(grpc_listener),
+        session_mcp_options(&personal_workspace),
+    )
+    .await;
+    let error = match result {
+        Err(ServeError(ServeErrorKind::GrpcStart(error))) => error,
+        Err(error) => panic!("ownerless refusal must be a gRPC startup error: {error}"),
+        Ok(server) => {
+            server
+                .shutdown()
+                .await
+                .expect("stop unexpectedly started server");
+            panic!("ownerless multi-user startup must fail");
+        }
+    };
+    assert!(error.to_string().contains("ownerless workspaces"));
+    let rebound = TcpListener::bind(grpc_addr).expect("failed startup must release gRPC listener");
+    drop(rebound);
+
+    // Reopen the same auth-configured state locally and repair it through the
+    // public membership RPC; the local principal deliberately has no stored
+    // membership prerequisite for this break-glass path.
+    let local = ServerBuilder::ephemeral_grpc()
+        .with_config_dir(temp.path())
+        .with_noop_feedback_uploads()
+        .start()
+        .await
+        .expect("restart local-principal recovery server");
+    let local_client = AppClient::connect(local.endpoint_uri())
+        .await
+        .expect("reconnect local principal");
+    let added = local_client
+        .workspace_client()
+        .add_workspace_member(Request::new(AddWorkspaceMemberRequest {
+            workspace: Some(default_workspace.clone()),
+            member: Some(WorkspaceMember {
+                user_id: user_id.clone(),
+                role: WorkspaceRole::Owner as i32,
+                display_name: String::new(),
+            }),
+        }))
+        .await
+        .expect("restore an owner through the membership API")
+        .into_inner()
+        .member
+        .expect("restored membership");
+    assert_eq!(added.user_id, user_id);
+    assert_eq!(added.role, WorkspaceRole::Owner as i32);
+    let members = local_client
+        .workspace_client()
+        .list_workspace_members(Request::new(ListWorkspaceMembersRequest {
+            workspace: Some(default_workspace),
+        }))
+        .await
+        .expect("list repaired workspace memberships")
+        .into_inner()
+        .members;
+    assert!(members.contains(&added));
+    local.shutdown().await.expect("stop recovery server");
+
+    let repaired = start(
+        ServerBuilder::configured_standalone_grpc()
+            .with_config_dir(temp.path())
+            .with_noop_feedback_uploads(),
+        session_mcp_options(&personal_workspace),
+    )
+    .await
+    .expect("repaired state permits multi-user startup");
+    assert!(repaired.grpc_authentication_enabled());
+    repaired.shutdown().await.expect("reverse-ordered shutdown");
 }
 
 #[tokio::test]
