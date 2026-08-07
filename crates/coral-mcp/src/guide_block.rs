@@ -126,6 +126,7 @@ mod tests {
 
     fn guide(text: &str, id: &str) -> SqlGuideValue {
         SqlGuideValue::new(
+            None,
             "slack".to_string(),
             "channels".to_string(),
             text.to_string(),

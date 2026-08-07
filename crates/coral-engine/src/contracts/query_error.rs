@@ -239,14 +239,22 @@ impl StructuredQueryError {
 
     /// Builds a structured error for a table function used where SQL expects a table.
     pub(crate) fn table_function_not_table(function: &TableFunctionInfo) -> Self {
-        let display_ref = format_schema_function(function);
+        let display_ref = format_schema_relation(
+            function.catalog_name.as_deref(),
+            &function.schema_name,
+            &function.function_name,
+        );
         let mut metadata = HashMap::new();
         metadata.insert("object_kind".to_string(), "table_function".to_string());
+        if let Some(catalog_name) = &function.catalog_name {
+            metadata.insert("catalog".to_string(), catalog_name.clone());
+        }
         metadata.insert("schema".to_string(), function.schema_name.clone());
         metadata.insert("function".to_string(), function.function_name.clone());
 
         let schema_sql = sql_string_literal(&function.schema_name);
         let function_sql = sql_string_literal(&function.function_name);
+        let catalog_sql = sql_string_literal(function.catalog_name.as_deref().unwrap_or_default());
 
         Self::new(
             TABLE_FUNCTION_NOT_TABLE_REASON,
@@ -255,7 +263,7 @@ impl StructuredQueryError {
                 "`{display_ref}` is registered as a table function. Query it as `FROM {display_ref}(...)`; inspect arguments and result columns in `coral.table_functions`, or run `DESCRIBE SELECT * FROM {display_ref}(...)` after filling any required arguments."
             ),
             Some(format!(
-                "Inspect table functions with `SELECT schema_name, function_name, arguments_json, result_columns_json FROM coral.table_functions WHERE schema_name = {schema_sql} AND function_name = {function_sql}`."
+                "Inspect table functions with `SELECT catalog_name, schema_name, function_name, arguments_json, result_columns_json FROM coral.table_functions WHERE catalog_name = {catalog_sql} AND schema_name = {schema_sql} AND function_name = {function_sql}`."
             )),
             false,
             StatusCode::InvalidArgument,
@@ -425,7 +433,11 @@ fn table_not_found_hint(
                     .unwrap_or(std::cmp::Ordering::Equal)
             });
         if let Some((winner, _score)) = best {
-            return Some(did_you_mean_hint(&format_schema_table(winner)));
+            return Some(did_you_mean_hint(&format_schema_relation(
+                winner.catalog_name.as_deref(),
+                &winner.schema_name,
+                &winner.table_name,
+            )));
         }
         return Some(format!(
             "List available tables with `{LIST_AVAILABLE_TABLES_SQL}`."
@@ -457,7 +469,11 @@ fn table_not_found_hint(
         .iter()
         .find(|info| info.table_name.to_lowercase() == table_lower)
     {
-        return Some(case_sensitive_hint(&format_schema_table(hit)));
+        return Some(case_sensitive_hint(&format_schema_relation(
+            hit.catalog_name.as_deref(),
+            &hit.schema_name,
+            &hit.table_name,
+        )));
     }
 
     let (best, _score) = tables_in_schema
@@ -472,7 +488,11 @@ fn table_not_found_hint(
                 .partial_cmp(&right.1)
                 .unwrap_or(std::cmp::Ordering::Equal)
         })?;
-    Some(did_you_mean_hint(&format_schema_table(best)))
+    Some(did_you_mean_hint(&format_schema_relation(
+        best.catalog_name.as_deref(),
+        &best.schema_name,
+        &best.table_name,
+    )))
 }
 
 fn quoted_qualified_table_match<'a>(
@@ -494,7 +514,11 @@ fn quoted_qualified_table_match<'a>(
 }
 
 fn quoted_qualified_table_hint(missing: &str, info: &TableInfo) -> String {
-    let reference = format_schema_table(info);
+    let reference = format_schema_relation(
+        info.catalog_name.as_deref(),
+        &info.schema_name,
+        &info.table_name,
+    );
     let fully_quoted_reference = format_schema_table_fully_quoted(info);
     let suggestions = if reference == fully_quoted_reference {
         format!("`{reference}`")
@@ -545,26 +569,6 @@ fn raw_schema_table_matches(info: &TableInfo, reference: &str) -> bool {
     }
 }
 
-/// Renders `schema.table` with per-component SQL quoting (dotted source
-/// names stay one quoted identifier; case-preserving names are quoted
-/// only when they would otherwise round-trip wrong).
-fn format_schema_table(info: &TableInfo) -> String {
-    if let Some(catalog_name) = info.catalog_name.as_deref() {
-        format!(
-            "{}.{}.{}",
-            quote_dotted_identifier(catalog_name),
-            quote_identifier(&info.schema_name),
-            quote_identifier(&info.table_name)
-        )
-    } else {
-        format!(
-            "{}.{}",
-            quote_dotted_identifier(&info.schema_name),
-            quote_identifier(&info.table_name)
-        )
-    }
-}
-
 fn format_schema_table_fully_quoted(info: &TableInfo) -> String {
     if let Some(catalog_name) = info.catalog_name.as_deref() {
         format!(
@@ -582,12 +586,26 @@ fn format_schema_table_fully_quoted(info: &TableInfo) -> String {
     }
 }
 
-fn format_schema_function(info: &TableFunctionInfo) -> String {
-    format!(
-        "{}.{}",
-        quote_dotted_identifier(&info.schema_name),
-        quote_identifier(&info.function_name)
-    )
+/// Renders a two- or three-part SQL relation with per-component quoting.
+fn format_schema_relation(
+    catalog_name: Option<&str>,
+    schema_name: &str,
+    relation_name: &str,
+) -> String {
+    if let Some(catalog_name) = catalog_name {
+        format!(
+            "{}.{}.{}",
+            quote_dotted_identifier(catalog_name),
+            quote_dotted_identifier(schema_name),
+            quote_identifier(relation_name)
+        )
+    } else {
+        format!(
+            "{}.{}",
+            quote_dotted_identifier(schema_name),
+            quote_identifier(relation_name)
+        )
+    }
 }
 
 fn sql_string_literal(value: &str) -> String {
@@ -855,6 +873,13 @@ mod tests {
         }
     }
 
+    fn catalog_table_function(catalog: &str, schema: &str, name: &str) -> TableFunctionInfo {
+        TableFunctionInfo {
+            catalog_name: Some(catalog.to_string()),
+            ..table_function(schema, name)
+        }
+    }
+
     fn cp(relation: &[&str], name: &str) -> ColumnParts {
         ColumnParts {
             relation: relation.iter().map(ToString::to_string).collect(),
@@ -997,6 +1022,33 @@ mod tests {
         assert!(
             err.detail()
                 .contains("DESCRIBE SELECT * FROM datadog.metrics(...)"),
+            "got: {}",
+            err.detail()
+        );
+    }
+
+    #[test]
+    fn catalog_table_function_error_uses_the_three_part_identity() {
+        let err = StructuredQueryError::table_function_not_table(&catalog_table_function(
+            "github_v4",
+            "issues",
+            "list_for_repo",
+        ));
+
+        assert_eq!(
+            err.summary(),
+            "`github_v4.issues.list_for_repo` is a table function, not a table"
+        );
+        assert_eq!(
+            err.metadata().get("catalog").map(String::as_str),
+            Some("github_v4")
+        );
+        let hint = err.hint().expect("hint should be present");
+        assert!(hint.contains("catalog_name = 'github_v4'"), "got: {hint}");
+        assert!(hint.contains("schema_name = 'issues'"), "got: {hint}");
+        assert!(
+            err.detail()
+                .contains("FROM github_v4.issues.list_for_repo(...)"),
             "got: {}",
             err.detail()
         );
