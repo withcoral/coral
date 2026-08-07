@@ -6,15 +6,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   commitOAuthTransaction,
   commitReefSession,
+  oauthCookieName,
   readOAuthTransaction,
   readReefSession,
 } from './session.server'
 import type { RequiredAuthConfig } from './types'
 
-// Mirrors CLOCK_SKEW_SECONDS in session.server.ts, which is deliberately not
-// exported — the tests below assert the behaviour at its edges, so the number
-// has to be stated somewhere they can see it.
+// Mirrors CLOCK_SKEW_SECONDS and OAUTH_MAX_AGE_SECONDS in session.server.ts,
+// which are deliberately not exported — the tests below assert the behaviour at
+// their edges, so the numbers have to be stated somewhere they can see them.
 const CLOCK_SKEW_SECONDS = 30
+const OAUTH_MAX_AGE_SECONDS = 10 * 60
 
 const config: RequiredAuthConfig = {
   cookieName: 'reef_session',
@@ -23,6 +25,14 @@ const config: RequiredAuthConfig = {
   publicUrl: 'https://reef.example.test',
   sessionMaxAgeSeconds: 3600,
   sessionSecret: '0123456789abcdef0123456789abcdef',
+}
+
+// The one topology that serves Reef over HTTP: loopback throughout, so neither
+// cookie can carry `Secure` and the transaction cookie cannot carry `__Host-`.
+const loopbackConfig: RequiredAuthConfig = {
+  ...config,
+  issuer: 'http://127.0.0.1:3000',
+  publicUrl: 'http://localhost:5173',
 }
 
 describe('Reef auth sessions', () => {
@@ -67,6 +77,9 @@ describe('Reef auth sessions', () => {
     })
   })
 
+  // `toEqual` and not `toMatchObject`: the reader is also expected to strip the
+  // `issuedAt` it stamps on the way in, so a caller sees the three fields it
+  // committed and nothing else.
   it('stores only PKCE, return path, and state in an OAuth transaction', async () => {
     const transaction = {
       codeVerifier: 'verifier',
@@ -75,18 +88,89 @@ describe('Reef auth sessions', () => {
     }
     const cookie = await commitOAuthTransaction(transaction, config)
 
-    expect(cookie).toContain('reef_oauth=')
+    expect(cookie).toContain('__Host-reef_oauth=')
     expect(cookie).toContain('Secure')
     await expect(readOAuthTransaction(requestWith(cookie), config)).resolves.toEqual(transaction)
   })
 
-  it('omits Secure only for the accepted all-loopback HTTP topology', async () => {
-    const loopbackConfig = {
-      ...config,
-      issuer: 'http://127.0.0.1:3000',
-      publicUrl: 'http://localhost:5173',
-    }
+  // The prefix is only meaningful alongside the `Path=/` and absent `Domain`
+  // that this cookie already had, so all three are pinned together.
+  it('names the OAuth transaction cookie so a sibling host cannot toss one', async () => {
+    const cookie = await commitOAuthTransaction(validTransaction(), config)
 
+    expect(cookie).toContain('__Host-reef_oauth=')
+    expect(cookie).toContain('Path=/')
+    expect(cookie).not.toContain('Domain=')
+  })
+
+  // `__Host-` requires `Secure`, and a browser discards a cookie carrying the
+  // prefix without it — so over loopback HTTP the prefix would cost every login
+  // rather than protect it.
+  it('drops the __Host- prefix where the browser would refuse it', async () => {
+    const cookie = await commitOAuthTransaction(validTransaction(), loopbackConfig)
+
+    expect(cookie).toContain('reef_oauth=')
+    expect(cookie).not.toContain('__Host-')
+    await expect(readOAuthTransaction(requestWith(cookie), loopbackConfig)).resolves.toEqual(
+      validTransaction(),
+    )
+  })
+
+  // `Max-Age` bounds the cookie in a browser and nowhere else. These two pin the
+  // server-side bound that makes a captured transaction stop working.
+  it('ignores an OAuth transaction issued outside its lifetime', async () => {
+    const cookie = await commitOAuthTransaction(validTransaction(), config)
+    await expect(readOAuthTransaction(requestWith(cookie), config)).resolves.not.toBeNull()
+
+    advanceSeconds(OAUTH_MAX_AGE_SECONDS + CLOCK_SKEW_SECONDS + 1)
+    await expect(readOAuthTransaction(requestWith(cookie), config)).resolves.toBeNull()
+  })
+
+  it('still reads an OAuth transaction inside the skew slack', async () => {
+    const cookie = await commitOAuthTransaction(validTransaction(), config)
+
+    advanceSeconds(OAUTH_MAX_AGE_SECONDS + CLOCK_SKEW_SECONDS)
+    await expect(readOAuthTransaction(requestWith(cookie), config)).resolves.toEqual(
+      validTransaction(),
+    )
+  })
+
+  // A clock that runs ahead of the one that wrote the cookie is the only thing
+  // that produces this, since the value cannot be forged. Rejecting it would
+  // break those logins and stop no attack.
+  it('reads an OAuth transaction dated in the future', async () => {
+    const cookie = await commitOAuthTransaction(validTransaction(), config)
+
+    advanceSeconds(-300)
+    await expect(readOAuthTransaction(requestWith(cookie), config)).resolves.toEqual(
+      validTransaction(),
+    )
+  })
+
+  // Correctly signed and correct in every field the callback reads, so only the
+  // missing timestamp turns it away. This is also the shape written by any
+  // version of this module before `issuedAt` existed: an in-flight login across
+  // the deploy fails once and works on retry.
+  it('ignores an OAuth transaction carrying no issue time', async () => {
+    const cookie = await signedOAuthCookie(validTransaction())
+
+    await expect(readOAuthTransaction(requestWith(cookie), config)).resolves.toBeNull()
+  })
+
+  // `Number.isFinite` in the guard is deliberately not among these: JSON has no
+  // infinity, so no signed cookie can carry one. It is redundancy of the same
+  // kind as the three-part check in `decryptSession`, and no test reaches it.
+  it.each([
+    ['a non-numeric issue time', { ...validTransaction(), issuedAt: 'recently' }],
+    ['no state', { codeVerifier: 'verifier', issuedAt: 0, returnTo: '/' }],
+    ['no transaction at all', 'a string'],
+  ])('ignores an OAuth transaction with %s', async (_label, payload) => {
+    const cookie = await signedOAuthCookie(payload)
+
+    await expect(readOAuthTransaction(requestWith(cookie), config)).resolves.toBeNull()
+  })
+
+  it('omits Secure only for the accepted all-loopback HTTP topology', async () => {
     const sessionCookie = await commitReefSession(
       { accessToken: 'token', expiresAt: unixTimestamp() + 1800, tokenType: 'Bearer' },
       loopbackConfig,
@@ -242,6 +326,20 @@ function validSession() {
     expiresAt: unixTimestamp() + 1800,
     tokenType: 'Bearer',
   }
+}
+
+function validTransaction() {
+  return { codeVerifier: 'verifier', returnTo: '/workspaces/analytics', state: 'state' }
+}
+
+// Signs an arbitrary payload under the transaction cookie's name and secret, so
+// a hand-built value reaches the shape and age checks instead of being turned
+// away by the cookie layer. The name is asked for rather than written out
+// because it moves with `REEF_PUBLIC_URL`.
+async function signedOAuthCookie(payload: unknown): Promise<string> {
+  return createCookie(oauthCookieName(config), { secrets: [config.sessionSecret] }).serialize(
+    payload,
+  )
 }
 
 function cookieValue(setCookie: string): string {
