@@ -55,6 +55,8 @@ message QueryGuide {
   string guide = 3;
   // Opaque identity for this resource and its current guide contents.
   string guide_id = 4;
+  // SQL catalog containing the schema. Empty for two-part resources.
+  string catalog_name = 5;
 }
 
 // Optional caller context enabling required-guide enforcement.

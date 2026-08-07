@@ -55,6 +55,7 @@ pub(crate) enum QueryManagerError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RequiredQueryGuide {
+    pub(crate) catalog_name: Option<String>,
     pub(crate) schema_name: String,
     pub(crate) resource_name: String,
     pub(crate) guide: String,
@@ -1065,14 +1066,22 @@ fn required_query_guides(
     let mut guides = Vec::new();
     for usage in resources.tables() {
         if let Some(table) = catalog.tables.iter().find(|table| {
-            table.schema_name == usage.schema_name() && table.table_name == usage.table_name()
+            table.catalog_name.as_deref() == usage.catalog_name()
+                && table.schema_name == usage.schema_name()
+                && table.table_name == usage.table_name()
         }) && table.require_guide_read
         {
             let guide = table.guide.clone();
             guides.push(RequiredQueryGuide {
+                catalog_name: table.catalog_name.clone(),
                 schema_name: table.schema_name.clone(),
                 resource_name: table.table_name.clone(),
-                guide_id: required_guide_id(&table.schema_name, &table.table_name, &guide),
+                guide_id: required_guide_id(
+                    table.catalog_name.as_deref(),
+                    &table.schema_name,
+                    &table.table_name,
+                    &guide,
+                ),
                 guide,
             });
         }
@@ -1085,9 +1094,15 @@ fn required_query_guides(
         {
             let guide = function.guide.clone();
             guides.push(RequiredQueryGuide {
+                catalog_name: function.catalog_name.clone(),
                 schema_name: function.schema_name.clone(),
                 resource_name: function.function_name.clone(),
-                guide_id: required_guide_id(&function.schema_name, &function.function_name, &guide),
+                guide_id: required_guide_id(
+                    function.catalog_name.as_deref(),
+                    &function.schema_name,
+                    &function.function_name,
+                    &guide,
+                ),
                 guide,
             });
         }
@@ -1095,8 +1110,19 @@ fn required_query_guides(
     guides
 }
 
-fn required_guide_id(schema_name: &str, resource_name: &str, guide: &str) -> String {
-    sha256_hex(format!("{schema_name}\0{resource_name}\0{guide}").as_bytes())
+fn required_guide_id(
+    catalog_name: Option<&str>,
+    schema_name: &str,
+    resource_name: &str,
+    guide: &str,
+) -> String {
+    sha256_hex(
+        format!(
+            "{}\0{schema_name}\0{resource_name}\0{guide}",
+            catalog_name.unwrap_or_default()
+        )
+        .as_bytes(),
+    )
 }
 
 fn query_sources_from_loaded(loaded_sources: &[LoadedQuerySource]) -> Vec<QuerySource> {
@@ -1405,6 +1431,14 @@ mod tests {
         _temp: TempDir,
         manager: QueryManager,
         db: Arc<CoralDb>,
+    }
+
+    #[test]
+    fn required_guide_id_distinguishes_catalogs() {
+        let first = required_guide_id(Some("primary"), "public", "events", "Filter by event id.");
+        let second = required_guide_id(Some("archive"), "public", "events", "Filter by event id.");
+
+        assert_ne!(first, second);
     }
 
     async fn query_manager_with(

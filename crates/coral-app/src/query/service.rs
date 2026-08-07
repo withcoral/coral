@@ -134,6 +134,7 @@ fn query_plan_to_proto(plan: &coral_engine::QueryPlan) -> QueryPlanProto {
 
 fn required_query_guide_to_proto(guide: RequiredQueryGuide) -> QueryGuide {
     QueryGuide {
+        catalog_name: guide.catalog_name.unwrap_or_default(),
         schema_name: guide.schema_name,
         resource_name: guide.resource_name,
         guide: guide.guide,

@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
-use coral_api::v1::{Source, TableSummary};
+use coral_api::v1::{Source, TableFunction, TableSummary};
 use rmcp::model::{AnnotateAble, RawResource, Resource};
 use serde::Serialize;
 use serde_json::Value;
@@ -71,7 +71,7 @@ pub(crate) fn tables_resource(visible_table_count: usize) -> Resource {
 pub(crate) fn guide_resource_content(
     sources: &[Source],
     tables: &[TableSummary],
-    table_function_schema_names: &[String],
+    table_functions: &[TableFunction],
     observed_values_search_enabled: bool,
 ) -> String {
     let mut sources_section = String::from("## Available Schemas\n\n");
@@ -87,10 +87,12 @@ pub(crate) fn guide_resource_content(
     // as path segments, so a schema publishing table functions could otherwise
     // carry a newline and break out of its `Visible schemas:` bullet.
     schemas.extend(
-        table_function_schema_names
+        table_functions
             .iter()
-            .filter(|schema| *schema != "coral")
-            .map(|schema| prompt_safe_text(schema)),
+            .filter(|function| {
+                !(function.catalog_name.is_empty() && function.schema_name == "coral")
+            })
+            .map(|function| visible_schema_name(&function.catalog_name, &function.schema_name)),
     );
     if schemas.is_empty() {
         if sources.is_empty() {
@@ -213,13 +215,17 @@ fn is_coral_system_schema(table: &TableSummary) -> bool {
 /// is `warehouse`. Keeping them apart is also what the `coral.*` metadata
 /// tables expect, since they filter on `catalog_name` and `schema_name`.
 fn visible_schema_entry(table: &TableSummary) -> String {
-    let schema_name = prompt_safe_text(&table.schema_name);
-    if table.catalog_name.is_empty() {
+    visible_schema_name(&table.catalog_name, &table.schema_name)
+}
+
+fn visible_schema_name(catalog_name: &str, schema_name: &str) -> String {
+    let schema_name = prompt_safe_text(schema_name);
+    if catalog_name.is_empty() {
         schema_name
     } else {
         format!(
             "{schema_name} (catalog: {})",
-            prompt_safe_text(&table.catalog_name)
+            prompt_safe_text(catalog_name)
         )
     }
 }
@@ -301,7 +307,7 @@ fn markdown_code_fence(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use coral_api::v1::{Source, SourceCredentialStorage, TableSummary, Workspace};
+    use coral_api::v1::{Source, SourceCredentialStorage, TableFunction, TableSummary, Workspace};
 
     use super::{guide_resource_content, initial_instructions};
     use crate::McpQueryExample;
@@ -591,13 +597,29 @@ WHERE title LIKE '%bug%'",
 
     #[test]
     fn guide_content_includes_function_only_schemas() {
-        let function_schemas = vec!["searchy".to_string()];
+        let functions = vec![TableFunction {
+            schema_name: "searchy".to_string(),
+            ..TableFunction::default()
+        }];
 
-        let content = guide_resource_content(&[source("searchy")], &[], &function_schemas, false);
+        let content = guide_resource_content(&[source("searchy")], &[], &functions, false);
 
         assert!(content.contains("Visible schemas:"));
         assert!(content.contains("- searchy"));
         assert!(!content.contains("No user-visible schemas are currently available."));
+    }
+
+    #[test]
+    fn guide_content_qualifies_function_only_catalog_schemas() {
+        let functions = vec![TableFunction {
+            catalog_name: "github_v4".to_string(),
+            schema_name: "issues".to_string(),
+            ..TableFunction::default()
+        }];
+
+        let content = guide_resource_content(&[source("github_v4")], &[], &functions, false);
+
+        assert!(content.contains("Visible schemas:\n- issues (catalog: github_v4)"));
     }
 
     #[test]
