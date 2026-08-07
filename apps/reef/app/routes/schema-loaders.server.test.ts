@@ -12,6 +12,7 @@ vi.mock('@/lib/coral-request.server', () => ({ catalogClientForRequest }))
 vi.mock('@/lib/schema-explorer', () => ({ fetchSchemaFromCoral, fetchTableColumnsFromCoral }))
 
 import { loader as schemaLoader } from './schema'
+import { loader as schemaCatalogTableLoader } from './schema-catalog-table'
 import { loader as schemaTableLoader } from './schema-table'
 
 describe('schema loaders', () => {
@@ -56,7 +57,35 @@ describe('schema loaders', () => {
     expect(fetchTableColumnsFromCoral).toHaveBeenCalledWith(
       catalogClient,
       expect.objectContaining({ name: 'analytics' }),
+      undefined,
       'github',
+      'issues',
+      request.signal,
+    )
+  })
+
+  it('lists catalog-qualified table columns', async () => {
+    const request = new Request(
+      'http://reef.test/workspaces/analytics/schema/catalogs/github_v4/api/issues',
+    )
+    fetchTableColumnsFromCoral.mockResolvedValue([])
+
+    await expect(
+      schemaCatalogTableLoader({
+        params: {
+          catalogName: 'github_v4',
+          schemaName: 'api',
+          tableName: 'issues',
+          workspaceId: 'analytics',
+        },
+        request,
+      } as Parameters<typeof schemaCatalogTableLoader>[0]),
+    ).resolves.toEqual({ columns: [] })
+    expect(fetchTableColumnsFromCoral).toHaveBeenCalledWith(
+      catalogClient,
+      expect.objectContaining({ name: 'analytics' }),
+      'github_v4',
+      'api',
       'issues',
       request.signal,
     )

@@ -9,6 +9,10 @@ const CANONICAL_PATTERNS = {
   settings: '/settings',
   workspaces: '/workspaces',
   workspaceFunctions: '/workspaces/:workspaceId/functions',
+  workspaceCatalogSchemaTable:
+    '/workspaces/:workspaceId/schema/catalogs/:catalogName/:schemaName/:tableName',
+  workspaceCatalogSchemaTableFunction:
+    '/workspaces/:workspaceId/schema/catalogs/:catalogName/:schemaName/functions/:functionName',
   workspaceSchema: '/workspaces/:workspaceId/schema',
   workspaceSchemaTable: '/workspaces/:workspaceId/schema/:schemaName/:tableName',
   workspaceSchemaTableFunction:
@@ -42,6 +46,18 @@ describe('route map', () => {
       settings: routePath('settings'),
       workspaces: routePath('workspaces'),
       workspaceFunctions: routePath('workspaceFunctions', { workspaceId: 'analytics' }),
+      workspaceCatalogSchemaTable: routePath('workspaceCatalogSchemaTable', {
+        catalogName: 'github_v4',
+        schemaName: 'issues',
+        tableName: 'list_for_repo',
+        workspaceId: 'analytics',
+      }),
+      workspaceCatalogSchemaTableFunction: routePath('workspaceCatalogSchemaTableFunction', {
+        catalogName: 'github_v4',
+        functionName: 'search',
+        schemaName: 'issues',
+        workspaceId: 'analytics',
+      }),
       workspaceSchema: routePath('workspaceSchema', { workspaceId: 'analytics' }),
       workspaceSchemaTable: routePath('workspaceSchemaTable', {
         schemaName: 'github',
@@ -75,6 +91,10 @@ describe('route map', () => {
       settings: '/settings',
       workspaces: '/workspaces',
       workspaceFunctions: '/workspaces/analytics/functions',
+      workspaceCatalogSchemaTable:
+        '/workspaces/analytics/schema/catalogs/github_v4/issues/list_for_repo',
+      workspaceCatalogSchemaTableFunction:
+        '/workspaces/analytics/schema/catalogs/github_v4/issues/functions/search',
       workspaceSchema: '/workspaces/analytics/schema',
       workspaceSchemaTable: '/workspaces/analytics/schema/github/issues',
       workspaceSchemaTableFunction: '/workspaces/analytics/schema/github/functions/search_issues',

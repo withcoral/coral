@@ -12,9 +12,10 @@ import { SchemaColumnsTable } from './schema-table'
 export function SchemaTableFunctionView() {
   const schema = useOutletContext<SchemaResponse>()
   const params = useParams()
+  const catalogName = params.catalogName
   const schemaName = params.schemaName ?? ''
   const functionName = params.functionName ?? ''
-  const tableFunction = findSchemaTableFunction(schema, schemaName, functionName)
+  const tableFunction = findSchemaTableFunction(schema, catalogName, schemaName, functionName)
 
   if (!tableFunction) {
     return (
@@ -29,6 +30,7 @@ export function SchemaTableFunctionView() {
       <div className={styles.detailHeader}>
         <div>
           <Typography.HeadingSmall as="h2">
+            {catalogName ? `${catalogName}.` : ''}
             {schemaName}.{tableFunction.name}
             <Typography.Body>{tableFunctionTreeArguments(tableFunction)}</Typography.Body>
           </Typography.HeadingSmall>
