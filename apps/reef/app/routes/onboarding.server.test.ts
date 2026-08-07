@@ -3,17 +3,24 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const {
   firstWorkspaceForRequest,
+  listWorkspacesForRequest,
   loadOnboardingSampleQuery,
   loadSourcesRouteData,
   runSourcesAction,
 } = vi.hoisted(() => ({
   firstWorkspaceForRequest: vi.fn(),
+  listWorkspacesForRequest: vi.fn(),
   loadOnboardingSampleQuery: vi.fn(),
   loadSourcesRouteData: vi.fn(),
   runSourcesAction: vi.fn(),
 }))
 
-vi.mock('@/lib/workspaces.server', () => ({ firstWorkspaceForRequest }))
+// The loader lists workspaces (it renders a switcher and 404s when there are
+// none); the action still resolves just the first one.
+vi.mock('@/lib/workspaces.server', () => ({
+  firstWorkspaceForRequest,
+  listWorkspacesForRequest,
+}))
 vi.mock('@/lib/onboarding-query.server', () => ({ loadOnboardingSampleQuery }))
 vi.mock('./sources-loader', () => ({ loadSourcesRouteData }))
 vi.mock('./sources-action', () => ({ runSourcesAction }))
@@ -28,10 +35,12 @@ const workspace = create(WorkspaceSchema, { name: 'analytics' })
 describe('onboarding route authentication', () => {
   beforeEach(() => {
     firstWorkspaceForRequest.mockReset()
+    listWorkspacesForRequest.mockReset()
     loadOnboardingSampleQuery.mockReset()
     loadSourcesRouteData.mockReset()
     runSourcesAction.mockReset()
     firstWorkspaceForRequest.mockResolvedValue(workspace)
+    listWorkspacesForRequest.mockResolvedValue([workspace])
     loadSourcesRouteData.mockResolvedValue({
       entries: [{ installed: true, name: 'github' }],
       loadError: null,
@@ -44,7 +53,7 @@ describe('onboarding route authentication', () => {
 
     await loader(authRouteTestArgs(request, {}, 'coral-access-token'))
 
-    expect(firstWorkspaceForRequest).toHaveBeenCalledWith(request, 'coral-access-token')
+    expect(listWorkspacesForRequest).toHaveBeenCalledWith(request, 'coral-access-token')
     expect(loadSourcesRouteData).toHaveBeenCalledWith(request, workspace, 'coral-access-token')
     expect(loadOnboardingSampleQuery).toHaveBeenCalledWith(
       request,
@@ -58,7 +67,7 @@ describe('onboarding route authentication', () => {
 
     await loader(authRouteTestArgs(request, {}, null))
 
-    expect(firstWorkspaceForRequest).toHaveBeenCalledWith(request, null)
+    expect(listWorkspacesForRequest).toHaveBeenCalledWith(request, null)
     expect(loadSourcesRouteData).toHaveBeenCalledWith(request, workspace, null)
     // Not evidence about token threading: the loader only reaches the query
     // loader on `step=query`, so this holds on `step=sources` however the token
