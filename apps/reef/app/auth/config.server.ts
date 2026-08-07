@@ -1,5 +1,6 @@
 import { isIP } from 'node:net'
 
+import { isCoralDesktopBuild } from '@/lib/coral-desktop'
 import type { AuthConfig, RequiredAuthConfig } from './types'
 
 const DEFAULT_COOKIE_NAME = 'reef_session'
@@ -13,7 +14,7 @@ interface AuthConfigInput {
 export function reefAuthConfig(): AuthConfig {
   return resolveAuthConfig({
     env: process.env,
-    isDesktopBuild: import.meta.env.VITE_CORAL_DESKTOP_APP === '1',
+    isDesktopBuild: isCoralDesktopBuild(),
   })
 }
 

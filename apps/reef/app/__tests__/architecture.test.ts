@@ -651,7 +651,18 @@ describe('Architectural Tests', () => {
         path.join(desktopRoot, 'scripts', 'stage-coral.mjs'),
         'utf-8',
       )
-      const desktopBuildSources = [viteConfig, desktopHelper, devScript, stageScript]
+      const authConfig = fs.readFileSync(path.join(APP_SRC, 'auth', 'config.server.ts'), 'utf-8')
+      const desktopBuildSources = [
+        viteConfig,
+        desktopHelper,
+        devScript,
+        stageScript,
+        // Every consumer of the marker belongs here, not only the files that
+        // define it: the auth config once read a `VITE_`-prefixed variable that
+        // nothing sets, so its Desktop branch was dead while this guard stayed
+        // green — the marker was never wrong where the guard was looking.
+        authConfig,
+      ]
 
       for (const source of desktopBuildSources) {
         expect(source).not.toContain('VITE_CORAL_DESKTOP_APP')
@@ -662,6 +673,11 @@ describe('Architectural Tests', () => {
       expect(desktopHelper).toMatch(/return import\.meta\.env\.CORAL_DESKTOP_APP/)
       expect(devScript.match(/CORAL_DESKTOP_APP:\s*'1'/g)).toHaveLength(1)
       expect(stageScript.match(/CORAL_DESKTOP_APP:\s*'1'/g)).toHaveLength(1)
+      // Delegation, not a second reading of the marker: `define` compiles it to
+      // a boolean, so any comparison against a string is false however it is
+      // spelled. Consumers ask the helper instead of re-deriving the value.
+      expect(authConfig).toContain('isDesktopBuild: isCoralDesktopBuild(),')
+      expect(authConfig).not.toMatch(/import\.meta\.env\.\w*CORAL_DESKTOP_APP/)
     })
 
     it('does not expose Coral transport through the renderer or Desktop preload', () => {
