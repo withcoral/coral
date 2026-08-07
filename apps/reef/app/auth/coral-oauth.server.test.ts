@@ -139,14 +139,26 @@ describe('Coral OAuth adapter', () => {
     expect(setCookies(response)[0]).not.toContain('Secure')
   })
 
-  it('falls back to home for an external return target', async () => {
+  // The absolute form is the one an external target is usually written as. The
+  // traversal forms are the ones that reach `Location` if the destination is
+  // normalized rather than validated — `URL` turns `/..//evil.example` into the
+  // scheme-relative path `//evil.example`, and a browser follows that off-origin
+  // exactly as it would an absolute URL. Both are checked through the whole
+  // round trip, because the value is only dangerous once it comes back out of
+  // the transaction cookie as a header.
+  it.each([
+    'https://evil.example/phish',
+    '/..//evil.example',
+    '/..//evil.example/phish',
+    '/./..//evil.example',
+  ])('falls back to home for an external return target: %s', async (returnTo) => {
     mockFetch(
       jsonResponse(metadata),
       jsonResponse(metadata),
       jsonResponse({ access_token: 'token', expires_in: 3600 }),
     )
     const login = await startCoralOAuthLogin(
-      new Request('https://reef.example.test/login?returnTo=https://evil.example/phish'),
+      new Request(`https://reef.example.test/login?returnTo=${encodeURIComponent(returnTo)}`),
       config,
     )
     const state = new URL(login.headers.get('location') ?? '').searchParams.get('state')

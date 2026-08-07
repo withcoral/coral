@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import { redirect } from 'react-router'
 
 import { authClientId, authRedirectUri, authResource } from './config.server'
+import { safeInternalPath } from './safe-path.server'
 import {
   clearOAuthTransaction,
   commitOAuthTransaction,
@@ -35,7 +36,7 @@ export async function startCoralOAuthLogin(
 ): Promise<Response> {
   const metadata = await authorizationServerMetadata(config)
   const url = new URL(request.url)
-  const returnTo = safeReturnTo(url.searchParams.get('returnTo'))
+  const returnTo = safeInternalPath(url.searchParams.get('returnTo'))
   const redirectUri = authRedirectUri(config)
   const clientId = authClientId(config)
   const resource = authResource(config)
@@ -198,17 +199,6 @@ function sessionFromToken(token: TokenResponse, config: RequiredAuthConfig): Aut
     expiresAt: unixTimestamp() + Math.min(token.expires_in, config.sessionMaxAgeSeconds),
     tokenType:
       typeof token.token_type === 'string' && token.token_type ? token.token_type : 'Bearer',
-  }
-}
-
-function safeReturnTo(value: string | null): string {
-  if (!value) return '/'
-  try {
-    const parsed = new URL(value, 'http://reef.local')
-    if (parsed.origin !== 'http://reef.local') return '/'
-    return `${parsed.pathname}${parsed.search}${parsed.hash}`
-  } catch {
-    return '/'
   }
 }
 
