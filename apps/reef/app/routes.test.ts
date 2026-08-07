@@ -46,4 +46,25 @@ describe('route authentication boundary', () => {
     expect(new Set(publicRoutesOutsideBoundary)).toEqual(publicRouteFiles)
     expect(publicRoutesOutsideBoundary).toHaveLength(publicRouteFiles.size)
   })
+
+  it('registers catalog-qualified schema routes', async () => {
+    const routeConfig = await routes
+    const registeredRoutes = new Map<string | undefined, string>()
+
+    function visit(entries: RouteConfigEntry[]): void {
+      for (const entry of entries) {
+        registeredRoutes.set(entry.path, entry.file)
+        if (entry.children) visit(entry.children)
+      }
+    }
+
+    visit(routeConfig)
+
+    expect(registeredRoutes.get('catalogs/:catalogName/:schemaName/:tableName')).toBe(
+      'routes/schema-catalog-table.tsx',
+    )
+    expect(
+      registeredRoutes.get('catalogs/:catalogName/:schemaName/functions/:functionName'),
+    ).toBe('routes/schema-catalog-table-function.tsx')
+  })
 })
