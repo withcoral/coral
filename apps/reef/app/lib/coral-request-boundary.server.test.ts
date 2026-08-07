@@ -3,10 +3,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const transportMocks = vi.hoisted(() => ({
   createGrpcTransport: vi.fn(),
+  // The transport shares one session per Coral origin, so the module imports
+  // this by value. A mock factory that omits an export makes vitest throw on
+  // first access rather than return undefined.
+  Http2SessionManager: vi.fn(),
 }))
 
 vi.mock('@connectrpc/connect-node', () => ({
   createGrpcTransport: transportMocks.createGrpcTransport,
+  Http2SessionManager: transportMocks.Http2SessionManager,
 }))
 
 import { sourceClientForRequest, workspaceClientForRequest } from './coral-request.server'
