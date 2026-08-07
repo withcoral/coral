@@ -130,6 +130,39 @@ describe('action', () => {
     expect(response.status).toBe(500)
     expect(await response.text()).toContain('provider unavailable')
   })
+
+  // The session-expiry redirect is what this PR exists for, and it only works if
+  // it survives the whole path — `action`'s catch has to let a `Response` through
+  // rather than turning it into the 500 the ordinary-error case above produces.
+  // Asserting at the helper alone leaves that rethrow untested.
+  it('surfaces an expired-session redirect through the action, not as a stream error', async () => {
+    getSourceInfo.mockResolvedValue({ sourceInfo: oauthSourceInfo })
+    const redirect = new Response(null, {
+      headers: { location: '/login?returnTo=%2Fworkspaces%2Fanalytics%2Fsources' },
+      status: 302,
+    })
+    createBundledSourceWithOAuth.mockReturnValue(rejectedResponses(redirect))
+    const request = new Request(
+      'http://localhost/workspaces/analytics/sources/github/oauth-install',
+      {
+        body: new URLSearchParams({
+          'method:GITHUB_TOKEN': '0',
+          name: 'github',
+        }),
+        method: 'POST',
+      },
+    )
+
+    const thrown = await action(
+      authRouteTestArgs(request, { sourceName: 'github', workspaceId: 'analytics' }),
+    ).catch((error: unknown) => error)
+
+    expect(thrown).toBe(redirect)
+    expect((thrown as Response).status).toBe(302)
+    expect((thrown as Response).headers.get('location')).toBe(
+      '/login?returnTo=%2Fworkspaces%2Fanalytics%2Fsources',
+    )
+  })
 })
 
 describe('relayOAuthSourceStreamEvents', () => {
