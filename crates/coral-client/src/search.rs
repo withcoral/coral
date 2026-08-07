@@ -438,7 +438,11 @@ fn provider_status_text(status: &coral_api::v1::SearchProviderStatus) -> String 
 /// Formats the shortest SQL call example for a table function.
 #[must_use]
 pub fn minimal_table_function_call_example(function: &TableFunction) -> String {
-    let reference = format_schema_table_equivalent(None, &function.schema_name, &function.name);
+    let reference = format_schema_table_equivalent(
+        optional_catalog_name(&function.catalog_name),
+        &function.schema_name,
+        &function.name,
+    );
     let required_arguments = function
         .arguments
         .iter()
@@ -463,8 +467,7 @@ pub fn format_table_name(
 }
 
 /// Formats a SQL table or table-function reference, qualified by schema and, when
-/// `catalog_name` is `Some`, by catalog. Pass `None` for a two-part reference —
-/// table functions and the surfaces whose protos carry no catalog field.
+/// `catalog_name` is `Some`, by catalog. Pass `None` for a two-part reference.
 #[must_use]
 pub fn format_schema_table_equivalent(
     catalog_name: Option<&str>,
@@ -538,7 +541,7 @@ fn provider_state_name(state: i32) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use coral_api::v1::{SearchFieldValues, SearchSurfaceRef};
+    use coral_api::v1::{SearchFieldValues, SearchSurfaceRef, TableFunctionArgument};
 
     fn table_result() -> SearchResult {
         SearchResult {
@@ -802,6 +805,45 @@ mod tests {
         assert_eq!(
             first_result(&value).get("catalog").and_then(Value::as_str),
             Some("warehouse")
+        );
+    }
+
+    #[test]
+    fn catalog_qualified_function_search_result_preserves_all_three_parts() {
+        let mut result = function_result();
+        result.surface = Some(SearchSurfaceRef {
+            catalog_name: "github_v4".to_string(),
+            schema_name: "issues".to_string(),
+            name: "list_for_repo".to_string(),
+        });
+
+        let value = search_response_json_value(&response(vec![result]));
+
+        assert_eq!(
+            first_result(&value)
+                .get("sql_reference")
+                .and_then(Value::as_str),
+            Some("github_v4.issues.list_for_repo")
+        );
+    }
+
+    #[test]
+    fn catalog_qualified_function_call_preserves_all_three_parts() {
+        let function = TableFunction {
+            catalog_name: "github_v4".to_string(),
+            schema_name: "issues".to_string(),
+            name: "list_for_repo".to_string(),
+            arguments: vec![TableFunctionArgument {
+                name: "owner".to_string(),
+                required: true,
+                ..TableFunctionArgument::default()
+            }],
+            ..TableFunction::default()
+        };
+
+        assert_eq!(
+            minimal_table_function_call_example(&function),
+            "github_v4.issues.list_for_repo(owner => '<value>')"
         );
     }
 }
