@@ -17,7 +17,7 @@
       "interface": {
         "displayName": "Coral",
         "shortDescription": "Query anything with SQL",
-        "longDescription": "Use Coral query connected data sources such as GitHub, Jira, Slack, Datadog, Linear, Sentry, and local files from Codex. Run SQL over installed sources, join results across systems, and bring issue, PR, alert, incident, chat, and file context into coding tasks.",
+        "longDescription": "Use Coral to query connected data sources such as GitHub, Jira, Slack, Datadog, Linear, Sentry, and local files from Codex. Run SQL over installed sources, join results across systems, and bring issue, PR, alert, incident, chat, and file context into coding tasks.",
         "developerName": "Coral",
         "category": "Engineering",
         "capabilities": ["Interactive", "Read"],
