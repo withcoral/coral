@@ -180,14 +180,29 @@ describe('optional auth boundary', () => {
     expect((thrown as Response).headers.get('Set-Cookie')).toContain('Max-Age=0')
   })
 
+  // "Only" is the half that matters and the half a placement assertion cannot
+  // reach: a descendant runs, reads the token the way a real loader does, and
+  // the response it produces is then searched for the token in every part a
+  // browser would see.
   it('keeps the token only in server request context', async () => {
     authMocks.reefAuthConfig.mockReturnValue(requiredConfig)
     authMocks.readReefSession.mockResolvedValue(session)
     const context = new RouterContextProvider()
 
-    await runMiddleware(
+    const response = await runMiddleware(
       new Request('https://reef.example.test/workspaces/analytics/sources'),
-      async () => new Response('hosted app'),
+      async () => {
+        // Stands in for a descendant loader: it reads the token, uses it, and
+        // renders from the result — without echoing it.
+        const { accessToken } = context.get(requestAuthContext)
+        expect(accessToken).toBe('server-only-token')
+        return new Response(
+          `<main>hosted app for ${accessToken ? 'a signed-in user' : 'nobody'}</main>`,
+          {
+            headers: { 'Content-Type': 'text/html', 'X-Rendered-By': 'descendant' },
+          },
+        )
+      },
       context,
     )
 
@@ -196,6 +211,15 @@ describe('optional auth boundary', () => {
       mode: 'required',
       session,
     })
+
+    const body = await response.clone().text()
+    const headers = [...response.headers.entries()].map(([name, value]) => `${name}: ${value}`)
+
+    expect(body).toContain('hosted app for a signed-in user')
+    expect(body).not.toContain('server-only-token')
+    for (const header of headers) {
+      expect(header).not.toContain('server-only-token')
+    }
   })
 
   it('marks normal and thrown hosted responses private and non-cacheable', async () => {
