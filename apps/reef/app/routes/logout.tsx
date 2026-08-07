@@ -6,6 +6,7 @@ import { reefAuthConfig } from '@/auth/config.server'
 import { clearCsrfToken, validateCsrfToken } from '@/auth/csrf.server'
 import { markAuthResponsePrivate } from '@/auth/response.server'
 import { clearOAuthTransaction, clearReefSession, readReefSession } from '@/auth/session.server'
+import { routePath } from '@/routing/routemap'
 
 export async function loader() {
   return markAuthResponsePrivate(redirect('/'))
@@ -31,7 +32,7 @@ export async function action({ request }: Route.ActionArgs) {
   // Coral Cloud does not currently advertise a provider-neutral browser logout
   // or revocation endpoint. Keep logout local and stop automatic SSO bounce by
   // landing on the signed-out login screen.
-  return markAuthResponsePrivate(redirect('/login?signedOut=1', { headers }))
+  return markAuthResponsePrivate(redirect(`${routePath('login')}?signedOut=1`, { headers }))
 }
 
 export default function Logout() {
