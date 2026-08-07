@@ -90,6 +90,11 @@ describe('expiredSessionRedirect', () => {
   it.each([
     'https://attacker.example/return',
     '//attacker.example/return',
+    // Every case above is off-origin as written. These become off-origin only
+    // once `URL` normalizes them, which is the class this guard used to miss.
+    '/..//attacker.example/return',
+    '/./..//attacker.example',
+    '/workspaces/../..//attacker.example',
     '',
     `/${'a'.repeat(2048)}`,
   ])('rejects an unsafe auth stream return location: %s', (returnTo) => {

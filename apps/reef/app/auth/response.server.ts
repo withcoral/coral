@@ -1,4 +1,5 @@
 import { AUTH_STREAM_REQUEST_HEADER, AUTH_STREAM_RETURN_TO_HEADER } from './response'
+import { safeInternalPath } from './safe-path.server'
 
 export const EXPIRED_SESSION_RESPONSE_HEADER = 'X-Reef-Expired-Session'
 
@@ -30,23 +31,15 @@ export function loginLocationForRequest(request: Request): string {
 }
 
 function returnToForRequest(request: Request): string {
+  // A stream fetch carries the page the visitor is actually looking at, which
+  // the request URL does not name — so this one is caller-supplied, and gets
+  // the same treatment as the destination on `/login?returnTo=`.
   if (request.headers.get(AUTH_STREAM_REQUEST_HEADER) === '1') {
-    return safeRelativeLocation(request.headers.get(AUTH_STREAM_RETURN_TO_HEADER))
+    return safeInternalPath(request.headers.get(AUTH_STREAM_RETURN_TO_HEADER))
   }
 
   const url = new URL(request.url)
   return `${url.pathname}${url.search}`
-}
-
-function safeRelativeLocation(value: string | null): string {
-  if (!value || value.length > 2048 || !value.startsWith('/') || value.startsWith('//')) return '/'
-  try {
-    const parsed = new URL(value, 'https://reef.invalid')
-    if (parsed.origin !== 'https://reef.invalid') return '/'
-    return `${parsed.pathname}${parsed.search}${parsed.hash}`
-  } catch {
-    return '/'
-  }
 }
 
 export function markAuthResponsePrivate(response: Response): Response {
