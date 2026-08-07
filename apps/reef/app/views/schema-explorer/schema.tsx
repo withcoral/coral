@@ -22,21 +22,23 @@ import { formatError, useRouteRetry } from './shared'
 
 export function findSchemaTable(
   schema: SchemaResponse,
+  catalogName: string | undefined,
   schemaName: string,
   tableName: string,
 ): TableDef | undefined {
   return schema.connectors
-    .find((connector) => connector.name === schemaName)
+    .find((connector) => connector.catalogName === catalogName && connector.name === schemaName)
     ?.items.find((item): item is TableDef => item.kind === 'table' && item.name === tableName)
 }
 
 export function findSchemaTableFunction(
   schema: SchemaResponse,
+  catalogName: string | undefined,
   schemaName: string,
   functionName: string,
 ): TableFunctionDef | undefined {
   return schema.connectors
-    .find((connector) => connector.name === schemaName)
+    .find((connector) => connector.catalogName === catalogName && connector.name === schemaName)
     ?.items.find(
       (item): item is TableFunctionDef =>
         item.kind === 'tableFunction' && item.name === functionName,
@@ -52,7 +54,10 @@ function schemaMatchesSearch(schema: SchemaGroup, search: string) {
 }
 
 function schemaNameMatchesSearch(schema: SchemaGroup, search: string) {
-  return schema.name.toLowerCase().includes(search)
+  return (
+    schema.name.toLowerCase().includes(search) ||
+    schema.catalogName?.toLowerCase().includes(search) === true
+  )
 }
 
 function catalogItemMatchesSearch(item: SchemaItemDef, search: string) {
@@ -73,18 +78,36 @@ function visibleItemsForSchema(schema: SchemaGroup, search: string) {
   return schema.items.filter((item) => catalogItemMatchesSearch(item, search))
 }
 
-function tablePath(workspaceId: string, schemaName: string, tableName: string) {
-  return routePath('workspaceSchemaTable', { schemaName, tableName, workspaceId })
+function tablePath(workspaceId: string, schema: SchemaGroup, tableName: string) {
+  return schema.catalogName
+    ? routePath('workspaceCatalogSchemaTable', {
+        catalogName: schema.catalogName,
+        schemaName: schema.name,
+        tableName,
+        workspaceId,
+      })
+    : routePath('workspaceSchemaTable', { schemaName: schema.name, tableName, workspaceId })
 }
 
-function tableFunctionPath(workspaceId: string, schemaName: string, functionName: string) {
-  return routePath('workspaceSchemaTableFunction', { functionName, schemaName, workspaceId })
+function tableFunctionPath(workspaceId: string, schema: SchemaGroup, functionName: string) {
+  return schema.catalogName
+    ? routePath('workspaceCatalogSchemaTableFunction', {
+        catalogName: schema.catalogName,
+        functionName,
+        schemaName: schema.name,
+        workspaceId,
+      })
+    : routePath('workspaceSchemaTableFunction', {
+        functionName,
+        schemaName: schema.name,
+        workspaceId,
+      })
 }
 
-function catalogItemPath(workspaceId: string, schemaName: string, item: SchemaItemDef) {
+function catalogItemPath(workspaceId: string, schema: SchemaGroup, item: SchemaItemDef) {
   return item.kind === 'table'
-    ? tablePath(workspaceId, schemaName, item.name)
-    : tableFunctionPath(workspaceId, schemaName, item.name)
+    ? tablePath(workspaceId, schema, item.name)
+    : tableFunctionPath(workspaceId, schema, item.name)
 }
 
 export function tableFunctionTreeArguments(tableFunction: TableFunctionDef) {
@@ -154,11 +177,11 @@ export function SchemaExplorer({
     [normalizedSearch, schema],
   )
 
-  const toggleSchema = (name: string) => {
+  const toggleSchema = (key: string) => {
     setExpandedSchemas((previous) => {
       const next = new Set(previous)
-      if (next.has(name)) next.delete(name)
-      else next.add(name)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
       return next
     })
   }
@@ -196,18 +219,22 @@ export function SchemaExplorer({
               ) : (
                 <div className={styles.treeList}>
                   {filteredSchemas.map((connector) => {
+                    const connectorKey = `${connector.catalogName ?? ''}\0${connector.name}`
+                    const connectorLabel = connector.catalogName
+                      ? `${connector.catalogName}.${connector.name}`
+                      : connector.name
                     // A search forces matching schemas open so results are visible.
-                    const expanded = normalizedSearch !== '' || expandedSchemas.has(connector.name)
-                    const connectorChildrenId = `schema-${connector.name}-items`
+                    const expanded = normalizedSearch !== '' || expandedSchemas.has(connectorKey)
+                    const connectorChildrenId = `schema-${encodeURIComponent(connectorKey)}-items`
                     const visibleItems = visibleItemsForSchema(connector, normalizedSearch)
                     return (
-                      <div key={connector.name}>
+                      <div key={connectorKey}>
                         <ButtonContainer
                           aria-controls={expanded ? connectorChildrenId : undefined}
                           aria-expanded={expanded}
                           className={styles.treeRow}
                           fullWidth
-                          onClick={() => toggleSchema(connector.name)}
+                          onClick={() => toggleSchema(connectorKey)}
                           size="22"
                           variant="bare"
                         >
@@ -217,7 +244,7 @@ export function SchemaExplorer({
                             size="14"
                           />
                           <Typography.BodyStrong className={styles.connectorName}>
-                            {connector.name}
+                            {connectorLabel}
                           </Typography.BodyStrong>
                           <Typography.BodySmall
                             className={styles.connectorItemCount}
@@ -230,8 +257,9 @@ export function SchemaExplorer({
                         {expanded ? (
                           <div className={styles.connectorChildren} id={connectorChildrenId}>
                             {visibleItems.map((item) => {
-                              const path = catalogItemPath(workspaceId, connector.name, item)
+                              const path = catalogItemPath(workspaceId, connector, item)
                               const active =
+                                activeItem.catalogName === connector.catalogName &&
                                 activeItem.schemaName === connector.name &&
                                 (item.kind === 'table'
                                   ? activeItem.tableName === item.name

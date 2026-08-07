@@ -1,25 +1,18 @@
-import { fetchTableColumnsFromCoral } from '@/lib/schema-explorer'
 import { requestAuthContext } from '@/auth/server-context'
 import { catalogClientForRequest } from '@/lib/coral-request.server'
+import { fetchTableColumnsFromCoral } from '@/lib/schema-explorer'
 import { workspaceFromParams } from '@/lib/workspace-routing'
 import { SchemaTableError, SchemaTableView } from '@/views/schema-explorer/schema-table'
 
-import type { Route } from './+types/schema-table'
+import type { Route } from './+types/schema-catalog-table'
 
-// Columns are this panel's critical data: await them so the global navigation
-// progress bar is the pending UI (deferring them doesn't work here — table
-// switches re-suspend an already-revealed Suspense boundary inside the router
-// transition, so React keeps the old columns instead of showing a fallback).
-// The abort signal matters: large tables fan out concurrent paginated
-// ListColumns calls, so switching tables quickly would otherwise pile up
-// orphaned requests.
 export async function loader({ context, params, request }: Route.LoaderArgs) {
   const workspace = workspaceFromParams(params)
   return {
     columns: await fetchTableColumnsFromCoral(
       catalogClientForRequest(request, context.get(requestAuthContext).accessToken),
       workspace,
-      undefined,
+      params.catalogName,
       params.schemaName,
       params.tableName,
       request.signal,
@@ -27,7 +20,7 @@ export async function loader({ context, params, request }: Route.LoaderArgs) {
   }
 }
 
-export default function SchemaTableRoute({ loaderData }: Route.ComponentProps) {
+export default function SchemaCatalogTableRoute({ loaderData }: Route.ComponentProps) {
   return <SchemaTableView columns={loaderData.columns} />
 }
 
