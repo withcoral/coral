@@ -211,9 +211,9 @@
   export checks and distribution syncs.
 - Keep `plugins/coral` conformant with Agent Plugins 1.0: portable metadata
   belongs in root `plugin.json`, skills are discovered from `skills/`, and MCP
-  servers are declared in root `mcp.json`. Keep shared metadata and MCP launch
-  configuration aligned with the Codex-specific files under `.codex-plugin/`
-  and `.mcp.json`.
+  servers are declared in root `mcp.json`. Put Codex-only manifest metadata
+  under `extensions.com.openai`; do not duplicate portable components in legacy
+  `.codex-plugin` or `.mcp.json` files.
 - Coral skills must include `agents/openai.yaml`. Keep
   `interface.display_name` in the form `Coral` or `Coral <Title Case Suffix>`,
   keep the top-level `SKILL.md` heading equal to that display name, and set
