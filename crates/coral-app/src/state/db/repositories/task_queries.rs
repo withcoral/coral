@@ -2,9 +2,9 @@ use sea_query::{Expr, Query};
 #[cfg(test)]
 use sea_query::{ExprTrait, JoinType, Order};
 
-use crate::state::db::schema::TaskQueries;
 #[cfg(test)]
 use crate::state::db::schema::Tasks;
+use crate::state::db::schema::{TaskQueries, TaskQueryRelations};
 use crate::state::db::{CoralTx, DbError, DbSession};
 
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
@@ -15,6 +15,15 @@ pub(in crate::state::db) struct TaskQueryRow {
     pub(in crate::state::db) sql: String,
     pub(in crate::state::db) status: String,
     pub(in crate::state::db) started_at_unix_nanos: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+pub(in crate::state::db) struct TaskQueryRelationRow {
+    pub(in crate::state::db) query_id: String,
+    pub(in crate::state::db) relation_kind: String,
+    pub(in crate::state::db) catalog_name: String,
+    pub(in crate::state::db) schema_name: String,
+    pub(in crate::state::db) relation_name: String,
 }
 
 pub(crate) struct TaskQueriesRepo<'a, S> {
@@ -74,6 +83,29 @@ where
         let row: Option<(String,)> = self.session.fetch_optional(statement).await?;
         Ok(row.is_some())
     }
+
+    #[cfg(test)]
+    pub(in crate::state::db) async fn list_relations_for_query(
+        &mut self,
+        query_id: &str,
+    ) -> Result<Vec<TaskQueryRelationRow>, DbError> {
+        let statement = Query::select()
+            .columns([
+                TaskQueryRelations::QueryId,
+                TaskQueryRelations::RelationKind,
+                TaskQueryRelations::CatalogName,
+                TaskQueryRelations::SchemaName,
+                TaskQueryRelations::RelationName,
+            ])
+            .from(TaskQueryRelations::Table)
+            .and_where(Expr::col(TaskQueryRelations::QueryId).eq(query_id))
+            .order_by(TaskQueryRelations::RelationKind, Order::Asc)
+            .order_by(TaskQueryRelations::CatalogName, Order::Asc)
+            .order_by(TaskQueryRelations::SchemaName, Order::Asc)
+            .order_by(TaskQueryRelations::RelationName, Order::Asc)
+            .to_owned();
+        self.session.fetch_all(statement).await
+    }
 }
 
 impl TaskQueriesRepo<'_, CoralTx<'_>> {
@@ -99,6 +131,34 @@ impl TaskQueriesRepo<'_, CoralTx<'_>> {
             .to_owned();
         self.session.execute(statement).await
     }
+
+    pub(in crate::state::db) async fn insert_relations(
+        &mut self,
+        rows: &[TaskQueryRelationRow],
+    ) -> Result<(), DbError> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+
+        let mut statement = Query::insert();
+        statement.into_table(TaskQueryRelations::Table).columns([
+            TaskQueryRelations::QueryId,
+            TaskQueryRelations::RelationKind,
+            TaskQueryRelations::CatalogName,
+            TaskQueryRelations::SchemaName,
+            TaskQueryRelations::RelationName,
+        ]);
+        for row in rows {
+            statement.values_panic([
+                Expr::val(row.query_id.clone()),
+                Expr::val(row.relation_kind.clone()),
+                Expr::val(row.catalog_name.clone()),
+                Expr::val(row.schema_name.clone()),
+                Expr::val(row.relation_name.clone()),
+            ]);
+        }
+        self.session.execute(statement).await
+    }
 }
 
 #[cfg(test)]
@@ -110,8 +170,30 @@ mod tests {
     use crate::state::AppStateLayout;
     use crate::state::db::{
         CoralDb, DatabaseConfig, DbRepos, ResolvedDatabaseConfig, TaskCompletionUpdate,
-        TaskCreation, TaskCreationResult, TaskQueryWrite, TaskQueryWriteResult,
+        TaskCreation, TaskCreationResult, TaskQueryRelationRecord, TaskQueryRelationWrite,
+        TaskQueryWrite, TaskQueryWriteResult,
     };
+
+    const FIRST_QUERY_RELATIONS: &[TaskQueryRelationWrite<'static>] = &[
+        TaskQueryRelationWrite {
+            relation_kind: "table",
+            catalog_name: Some("github"),
+            schema_name: "actions",
+            relation_name: "runs",
+        },
+        TaskQueryRelationWrite {
+            relation_kind: "table_function",
+            catalog_name: None,
+            schema_name: "github",
+            relation_name: "search_runs",
+        },
+    ];
+    const OTHER_QUERY_RELATIONS: &[TaskQueryRelationWrite<'static>] = &[TaskQueryRelationWrite {
+        relation_kind: "table",
+        catalog_name: None,
+        schema_name: "linear",
+        relation_name: "issues",
+    }];
 
     #[tokio::test]
     async fn task_query_repository_round_trips_against_sqlite() {
@@ -258,6 +340,7 @@ mod tests {
                         sql: &row.sql,
                         status: &row.status,
                         started_at_unix_nanos: row.started_at_unix_nanos,
+                        relations: query_relations(&row.id, &first.id, &other.id),
                     })
                     .await
                     .expect("record task query"),
@@ -275,6 +358,7 @@ mod tests {
                     sql: "SELECT 4",
                     status: "success",
                     started_at_unix_nanos: 11,
+                    relations: &[],
                 })
                 .await
                 .expect("reject cross-workspace task query"),
@@ -285,7 +369,7 @@ mod tests {
             task_queries_for_workspace(db, workspace_id)
                 .await
                 .expect("list task queries"),
-            vec![first.clone(), second]
+            vec![first.clone(), second.clone()]
         );
         assert_eq!(
             task_queries_for_workspace(db, other_workspace_id)
@@ -293,6 +377,7 @@ mod tests {
                 .expect("list other workspace task queries"),
             vec![other]
         );
+        assert_recorded_relations(db, &first.id, &second.id).await;
 
         let mut tx = db.begin().await.expect("begin delete tx");
         tx.tasks()
@@ -305,10 +390,61 @@ mod tests {
                 .await
                 .expect("check cascaded task queries")
         );
+        assert_no_relations(db, &first.id, "list cascaded task query relations").await;
         assert!(
             task_queries_for_workspace(db, workspace_id)
                 .await
                 .expect("list cascaded task queries")
+                .is_empty()
+        );
+    }
+
+    fn query_relations(
+        query_id: &str,
+        first_query_id: &str,
+        other_query_id: &str,
+    ) -> &'static [TaskQueryRelationWrite<'static>] {
+        if query_id == first_query_id {
+            FIRST_QUERY_RELATIONS
+        } else if query_id == other_query_id {
+            OTHER_QUERY_RELATIONS
+        } else {
+            &[]
+        }
+    }
+
+    async fn assert_recorded_relations(db: &CoralDb, first_query_id: &str, error_query_id: &str) {
+        assert_eq!(
+            db.task_query_state()
+                .list_relations_for_query(first_query_id)
+                .await
+                .expect("list task query relations"),
+            vec![
+                TaskQueryRelationRecord {
+                    query_id: first_query_id.to_string(),
+                    relation_kind: "table".to_string(),
+                    catalog_name: Some("github".to_string()),
+                    schema_name: "actions".to_string(),
+                    relation_name: "runs".to_string(),
+                },
+                TaskQueryRelationRecord {
+                    query_id: first_query_id.to_string(),
+                    relation_kind: "table_function".to_string(),
+                    catalog_name: None,
+                    schema_name: "github".to_string(),
+                    relation_name: "search_runs".to_string(),
+                },
+            ]
+        );
+        assert_no_relations(db, error_query_id, "list error query relations").await;
+    }
+
+    async fn assert_no_relations(db: &CoralDb, query_id: &str, context: &str) {
+        assert!(
+            db.task_query_state()
+                .list_relations_for_query(query_id)
+                .await
+                .unwrap_or_else(|error| panic!("{context}: {error}"))
                 .is_empty()
         );
     }

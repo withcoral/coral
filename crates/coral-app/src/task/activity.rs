@@ -3,7 +3,9 @@
 use std::sync::Arc;
 
 use crate::bootstrap::AppError;
-use crate::state::db::{CoralDb, DbError, TaskQueryWrite, TaskQueryWriteResult};
+use crate::state::db::{
+    CoralDb, DbError, TaskQueryRelationWrite, TaskQueryWrite, TaskQueryWriteResult,
+};
 use crate::task::id::TaskId;
 use crate::workspaces::WorkspaceName;
 
@@ -22,6 +24,69 @@ impl TaskQueryStatus {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TaskQueryRelationKind {
+    Table,
+    TableFunction,
+}
+
+impl TaskQueryRelationKind {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Table => "table",
+            Self::TableFunction => "table_function",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TaskQueryRelation<'a> {
+    kind: TaskQueryRelationKind,
+    catalog_name: Option<&'a str>,
+    schema_name: &'a str,
+    relation_name: &'a str,
+}
+
+impl<'a> TaskQueryRelation<'a> {
+    pub(crate) const fn table(
+        catalog_name: Option<&'a str>,
+        schema_name: &'a str,
+        relation_name: &'a str,
+    ) -> Self {
+        Self {
+            kind: TaskQueryRelationKind::Table,
+            catalog_name,
+            schema_name,
+            relation_name,
+        }
+    }
+
+    pub(crate) const fn table_function(schema_name: &'a str, relation_name: &'a str) -> Self {
+        Self {
+            kind: TaskQueryRelationKind::TableFunction,
+            catalog_name: None,
+            schema_name,
+            relation_name,
+        }
+    }
+
+    pub(crate) const fn relation_kind(self) -> &'static str {
+        self.kind.as_str()
+    }
+
+    pub(crate) const fn catalog_name(self) -> Option<&'a str> {
+        self.catalog_name
+    }
+
+    pub(crate) const fn schema_name(self) -> &'a str {
+        self.schema_name
+    }
+
+    pub(crate) const fn relation_name(self) -> &'a str {
+        self.relation_name
+    }
+}
+
 struct TaskQueryRecord<'a> {
     id: uuid::Uuid,
     task_id: TaskId,
@@ -29,6 +94,7 @@ struct TaskQueryRecord<'a> {
     sql: &'a str,
     status: TaskQueryStatus,
     started_at_unix_nanos: i64,
+    relations: &'a [TaskQueryRelation<'a>],
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -83,6 +149,16 @@ impl TaskActivityRecorder {
     ) -> Result<(), TaskActivityError> {
         let id = record.id.to_string();
         let task_id = record.task_id.to_string();
+        let relations = record
+            .relations
+            .iter()
+            .map(|relation| TaskQueryRelationWrite {
+                relation_kind: relation.relation_kind(),
+                catalog_name: relation.catalog_name(),
+                schema_name: relation.schema_name(),
+                relation_name: relation.relation_name(),
+            })
+            .collect::<Vec<_>>();
         match self
             .db
             .task_query_state()
@@ -94,6 +170,7 @@ impl TaskActivityRecorder {
                 sql: record.sql,
                 status: record.status.as_str(),
                 started_at_unix_nanos: record.started_at_unix_nanos,
+                relations: &relations,
             })
             .await?
         {
@@ -119,6 +196,7 @@ impl PendingTaskQuery<'_> {
         self,
         sql: &str,
         status: TaskQueryStatus,
+        relations: &[TaskQueryRelation<'_>],
     ) -> Result<(), TaskActivityError> {
         self.recorder
             .record_query(
@@ -130,6 +208,7 @@ impl PendingTaskQuery<'_> {
                     sql,
                     status,
                     started_at_unix_nanos: self.started_at_unix_nanos,
+                    relations,
                 },
             )
             .await

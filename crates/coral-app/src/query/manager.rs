@@ -40,7 +40,9 @@ use crate::sources::runtime_package::{
 };
 use crate::sources::{SourceName, ensure_database_source_feature_enabled};
 use crate::state::{AppConfig, AppStateLayout, ConfigStore};
-use crate::task::activity::{PendingTaskQuery, TaskActivityRecorder, TaskQueryStatus};
+use crate::task::activity::{
+    PendingTaskQuery, TaskActivityRecorder, TaskQueryRelation, TaskQueryStatus,
+};
 use crate::task::id::TaskId;
 use crate::telemetry::app_error_type;
 use crate::workspaces::{
@@ -1105,14 +1107,17 @@ async fn record_task_query(
     let Some(pending) = pending else {
         return;
     };
-    let status = match result {
+    let (status, relations) = match result {
         Ok(ExecuteSqlOutcome::GuideRequired(_)) => return,
-        Ok(ExecuteSqlOutcome::Executed(_)) => TaskQueryStatus::Success,
-        Err(_) => TaskQueryStatus::Error,
+        Ok(ExecuteSqlOutcome::Executed(execution)) => (
+            TaskQueryStatus::Success,
+            task_query_relations(execution.provenance()),
+        ),
+        Err(_) => (TaskQueryStatus::Error, Vec::new()),
     };
     let task_id = pending.task_id();
     let query_id = pending.id();
-    if let Err(error) = pending.finish(sql, status).await {
+    if let Err(error) = pending.finish(sql, status, &relations).await {
         tracing::warn!(
             task.id = %task_id,
             task.query.id = %query_id,
@@ -1120,6 +1125,23 @@ async fn record_task_query(
             "could not record task query activity"
         );
     }
+}
+
+fn task_query_relations(provenance: &QueryExecutionProvenance) -> Vec<TaskQueryRelation<'_>> {
+    provenance
+        .tables()
+        .iter()
+        .map(|table| {
+            TaskQueryRelation::table(
+                table.catalog_name(),
+                table.schema_name(),
+                table.table_name(),
+            )
+        })
+        .chain(provenance.table_functions().iter().map(|function| {
+            TaskQueryRelation::table_function(function.schema_name(), function.function_name())
+        }))
+        .collect()
 }
 
 fn required_query_guides(
@@ -1789,6 +1811,81 @@ mod tests {
             assert_eq!(record.intent, "Check renewal risk");
             assert_eq!(record.status, status);
         }
+    }
+
+    #[tokio::test]
+    async fn successful_task_activity_records_resolved_relations() {
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
+        let (tasks, request_context, _) = active_task_context(&fixture.db).await;
+        let workspace = WorkspaceName::default();
+        let attribution = QueryAttribution::new(
+            tasks
+                .validate_attribution(&workspace, request_context.task_id())
+                .await
+                .expect("active task"),
+        )
+        .with_tool_intent(Some("Compare workflow sources"));
+        let pending = pending_task_query(
+            &workspace,
+            &attribution,
+            fixture.manager.task_activity.as_ref(),
+        )
+        .expect("pending task query");
+        let resources = ResolvedQueryResources::new(
+            vec!["github".to_string()],
+            vec![QueryTableUsage::new(
+                "github",
+                Some("github"),
+                "actions",
+                "runs",
+            )],
+            vec![QueryTableFunctionUsage::new(
+                "github",
+                "github",
+                "search_runs",
+            )],
+        );
+        let execution = QueryExecution::new(
+            Arc::new(arrow::datatypes::Schema::empty()),
+            Vec::new(),
+            "SELECT * FROM github.actions.runs",
+            resources,
+        );
+        let result = Ok(ExecuteSqlOutcome::Executed(execution));
+
+        record_task_query(Some(pending), "SELECT * FROM github.actions.runs", &result).await;
+
+        let queries = fixture
+            .db
+            .task_query_state()
+            .list_for_workspace(workspace.as_str())
+            .await
+            .expect("list task queries");
+        let query = queries.first().expect("recorded task query");
+        assert_eq!(
+            fixture
+                .db
+                .task_query_state()
+                .list_relations_for_query(&query.id)
+                .await
+                .expect("list task query relations"),
+            vec![
+                crate::state::db::TaskQueryRelationRecord {
+                    query_id: query.id.clone(),
+                    relation_kind: "table".to_string(),
+                    catalog_name: Some("github".to_string()),
+                    schema_name: "actions".to_string(),
+                    relation_name: "runs".to_string(),
+                },
+                crate::state::db::TaskQueryRelationRecord {
+                    query_id: query.id.clone(),
+                    relation_kind: "table_function".to_string(),
+                    catalog_name: None,
+                    schema_name: "github".to_string(),
+                    relation_name: "search_runs".to_string(),
+                },
+            ]
+        );
     }
 
     #[tokio::test]
