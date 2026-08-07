@@ -1,15 +1,19 @@
 import { readFileSync } from 'node:fs'
 
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { isCoralDesktopBuild } from '@/lib/coral-desktop'
 import {
   authClientId,
   authCookieSecure,
   authRedirectUri,
   authResource,
+  reefAuthConfig,
   resolveAuthConfig,
 } from './config.server'
 import type { RequiredAuthConfig } from './types'
+
+vi.mock('@/lib/coral-desktop', () => ({ isCoralDesktopBuild: vi.fn(() => false) }))
 
 const SESSION_SECRET = '0123456789abcdef0123456789abcdef'
 
@@ -208,5 +212,40 @@ describe('Reef auth config', () => {
     ]) {
       expect(example).not.toContain(removedName)
     }
+  })
+})
+
+// Every case above hands `resolveAuthConfig` an explicit `isDesktopBuild`, which
+// is exactly the wiring that let a Desktop branch reading a variable nothing
+// sets pass for as long as it did. These exercise `reefAuthConfig` itself.
+//
+// Both cases run under the same hosted environment on purpose. Without it the
+// pair is vacuous: with no REEF_AUTH_MODE, `resolveAuthConfig` returns disabled
+// down either branch, so a permanently-false marker would still look correct.
+describe('reefAuthConfig', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs()
+    vi.mocked(isCoralDesktopBuild).mockReturnValue(false)
+  })
+
+  function stubHostedEnv(): void {
+    vi.stubEnv('REEF_AUTH_ISSUER', 'https://coral.example.test')
+    vi.stubEnv('REEF_AUTH_MODE', 'required')
+    vi.stubEnv('REEF_PUBLIC_URL', 'https://reef.example.test')
+    vi.stubEnv('REEF_SESSION_SECRET', SESSION_SECRET)
+  }
+
+  it('disables auth for a Desktop build even under a hosted environment', () => {
+    stubHostedEnv()
+    vi.mocked(isCoralDesktopBuild).mockReturnValue(true)
+
+    expect(reefAuthConfig()).toEqual({ mode: 'disabled' })
+  })
+
+  it('keeps that same environment authenticated when the build is not Desktop', () => {
+    stubHostedEnv()
+    vi.mocked(isCoralDesktopBuild).mockReturnValue(false)
+
+    expect(reefAuthConfig().mode).toBe('required')
   })
 })

@@ -31,7 +31,7 @@ export default defineConfig({
           exclude: [
             'app/**/*.server.test.{ts,tsx}',
             'app/**/*.stories.tsx',
-            'app/__tests__/architecture.test.ts',
+            'app/__tests__/*architecture.test.ts',
           ],
           environment: 'node',
           include: ['app/**/*.test.{ts,tsx}'],
@@ -50,7 +50,7 @@ export default defineConfig({
         extends: true,
         test: {
           environment: 'node',
-          include: ['app/__tests__/architecture.test.ts'],
+          include: ['app/__tests__/*architecture.test.ts'],
           name: 'architecture',
         },
       },
