@@ -4,7 +4,10 @@ import { requestAuthContext } from './server-context'
 
 export function authTestContext(accessToken: string | null = 'test-coral-token') {
   const context = new RouterContextProvider()
-  if (!accessToken) {
+  // `null` is the only value that means disabled auth. Treating every falsy one
+  // that way would quietly turn a test that passes `''` — an empty token is a
+  // threading bug worth catching — into one that proves nothing.
+  if (accessToken === null) {
     context.set(requestAuthContext, { accessToken: null, mode: 'disabled' })
     return context
   }

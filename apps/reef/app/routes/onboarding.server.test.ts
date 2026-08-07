@@ -60,7 +60,18 @@ describe('onboarding route authentication', () => {
 
     expect(firstWorkspaceForRequest).toHaveBeenCalledWith(request, null)
     expect(loadSourcesRouteData).toHaveBeenCalledWith(request, workspace, null)
+    // Not evidence about token threading: the loader only reaches the query
+    // loader on `step=query`, so this holds on `step=sources` however the token
+    // is threaded. The case below is the one that watches it.
     expect(loadOnboardingSampleQuery).not.toHaveBeenCalled()
+  })
+
+  it('threads the absent token into the query loader on the step that uses it', async () => {
+    const request = new Request('http://reef.test/onboarding?step=query')
+
+    await loader(authRouteTestArgs(request, {}, null))
+
+    expect(loadOnboardingSampleQuery).toHaveBeenCalledWith(request, null, 'analytics')
   })
 
   it('passes the hosted token through source actions', async () => {
