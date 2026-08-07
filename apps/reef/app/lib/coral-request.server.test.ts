@@ -7,6 +7,9 @@ const transportMocks = vi.hoisted(() => ({
   createClient: vi.fn((_service, transport) => transport),
   createGrpcTransport: vi.fn((options) => options),
   createGrpcWebTransport: vi.fn((options) => options),
+  Http2SessionManager: vi.fn(function (this: { authority: string }, authority: string) {
+    this.authority = authority
+  }),
 }))
 
 vi.mock('@connectrpc/connect', async (importOriginal) => ({
@@ -15,6 +18,7 @@ vi.mock('@connectrpc/connect', async (importOriginal) => ({
 }))
 vi.mock('@connectrpc/connect-node', () => ({
   createGrpcTransport: transportMocks.createGrpcTransport,
+  Http2SessionManager: transportMocks.Http2SessionManager,
 }))
 vi.mock('@connectrpc/connect-web', () => ({
   createGrpcWebTransport: transportMocks.createGrpcWebTransport,
@@ -45,6 +49,7 @@ describe('request-scoped Coral transport authentication', () => {
     transportMocks.createClient.mockClear()
     transportMocks.createGrpcTransport.mockClear()
     transportMocks.createGrpcWebTransport.mockClear()
+    transportMocks.Http2SessionManager.mockClear()
   })
 
   afterEach(() => {
@@ -68,6 +73,9 @@ describe('request-scoped Coral transport authentication', () => {
   })
 
   it('keeps local and desktop calls on the existing unauthenticated gRPC-Web transport', () => {
+    // Pinned rather than inherited: this case passes on an empty environment by
+    // luck, and would flip on any machine that exports REEF_AUTH_MODE=required.
+    vi.stubEnv('REEF_AUTH_MODE', 'disabled')
     vi.stubEnv('CORAL_ENDPOINT', 'http://127.0.0.1:50051')
 
     for (const clientFactory of clientFactories) {
@@ -95,6 +103,79 @@ describe('request-scoped Coral transport authentication', () => {
     expect(transport.baseUrl).toBe(endpoint)
     expect(transportMocks.createGrpcTransport).toHaveBeenCalledOnce()
     expect(transportMocks.createGrpcWebTransport).not.toHaveBeenCalled()
+  })
+
+  // The transport follows the deployment topology, not whether a token reached
+  // this call. In hosted mode `_protected` has already proven a session, so a
+  // null token is a caller that dropped it — and the old code answered that by
+  // quietly building an unauthenticated transport and letting Coral reject the
+  // RPC, which reads as a transport fault rather than the threading bug it is.
+  it('refuses to build an unauthenticated transport when auth is required', () => {
+    vi.stubEnv('REEF_AUTH_MODE', 'required')
+    vi.stubEnv('REEF_AUTH_ISSUER', 'https://coral.example.test')
+    vi.stubEnv('REEF_PUBLIC_URL', 'https://reef.example.test')
+    vi.stubEnv('REEF_SESSION_SECRET', '0123456789abcdef0123456789abcdef')
+
+    for (const clientFactory of clientFactories) {
+      expect(() => clientFactory(request, null)).toThrow(
+        'Coral authentication is required but this request carried no access token',
+      )
+    }
+    expect(transportMocks.createGrpcWebTransport).not.toHaveBeenCalled()
+    expect(transportMocks.createGrpcTransport).not.toHaveBeenCalled()
+  })
+
+  // A transport is built per client per request, so without this every loader on
+  // a page opened its own HTTP/2 connection to the same Coral.
+  //
+  // Each of these uses an origin no other case touches: the cache lives for the
+  // process, which is the point of it, so a shared origin would already be warm.
+  it('shares one HTTP/2 session across every client for a Coral origin', () => {
+    vi.stubEnv('CORAL_ENDPOINT', 'https://shared-session.example.test')
+
+    const sessions = clientFactories.map(
+      (clientFactory) =>
+        (clientFactory(request, 'coral-access-token') as unknown as GrpcTransportOptions)
+          .sessionManager,
+    )
+
+    expect(transportMocks.Http2SessionManager).toHaveBeenCalledOnce()
+    expect(transportMocks.Http2SessionManager).toHaveBeenCalledWith(
+      'https://shared-session.example.test',
+    )
+    expect(sessions[0]).toBeDefined()
+    expect(new Set(sessions).size).toBe(1)
+  })
+
+  it('reuses that session across separate requests', () => {
+    vi.stubEnv('CORAL_ENDPOINT', 'https://reused-session.example.test')
+
+    const first = (
+      sourceClientForRequest(request, 'coral-access-token') as unknown as GrpcTransportOptions
+    ).sessionManager
+    const second = (
+      sourceClientForRequest(
+        new Request('http://localhost:5173/workspaces/other'),
+        'coral-access-token',
+      ) as unknown as GrpcTransportOptions
+    ).sessionManager
+
+    expect(second).toBe(first)
+    expect(transportMocks.Http2SessionManager).toHaveBeenCalledOnce()
+  })
+
+  it('keeps a separate session per Coral origin', () => {
+    vi.stubEnv('CORAL_ENDPOINT', 'https://origin-a.example.test')
+    const first = (
+      sourceClientForRequest(request, 'coral-access-token') as unknown as GrpcTransportOptions
+    ).sessionManager
+    vi.stubEnv('CORAL_ENDPOINT', 'https://origin-b.example.test')
+    const second = (
+      sourceClientForRequest(request, 'coral-access-token') as unknown as GrpcTransportOptions
+    ).sessionManager
+
+    expect(first).not.toBe(second)
+    expect(transportMocks.Http2SessionManager).toHaveBeenCalledTimes(2)
   })
 
   it.each([

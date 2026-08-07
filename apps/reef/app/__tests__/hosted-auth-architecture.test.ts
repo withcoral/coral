@@ -92,4 +92,22 @@ describe('hosted auth architecture', () => {
       ),
     ).toEqual([])
   })
+
+  // Two regressions, one function.
+  //
+  // The transport used to be chosen by whether a token happened to be threaded
+  // to the call, so a hosted request that lost one silently got an
+  // unauthenticated transport and reported an opaque transport error instead of
+  // an auth error. It follows the deployment topology now, and a missing token
+  // under `required` fails closed.
+  //
+  // And every transport built its own `Http2SessionManager`, so a page whose
+  // loaders ran in parallel opened one HTTP/2 connection per client per request,
+  // each lingering for the manager's fifteen-minute idle timeout.
+  it('chooses the Coral transport by topology and shares one session per origin', () => {
+    const requestClient = read(appDir, 'lib', 'coral-request.server.ts')
+
+    expect(requestClient).toContain("if (reefAuthConfig().mode !== 'disabled') {")
+    expect(requestClient).toContain('sessionManager: coralSessionManager(endpoint)')
+  })
 })
