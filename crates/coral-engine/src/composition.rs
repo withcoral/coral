@@ -1,9 +1,10 @@
 //! Advanced composition seams for engine extension points.
 
 use std::collections::{BTreeMap, HashMap};
+use std::future::Future;
 use std::sync::Arc;
 
-use arrow::datatypes::Schema;
+use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
 use datafusion::datasource::TableProvider;
@@ -34,6 +35,143 @@ pub struct EngineExtensions {
     pub request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
     /// Request-time resolver for app-managed source inputs.
     pub source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
+}
+
+/// One column in an app-owned runtime system table.
+#[derive(Debug, Clone)]
+pub struct RuntimeSystemTableColumn {
+    pub(crate) name: String,
+    pub(crate) data_type: DataType,
+    pub(crate) nullable: bool,
+    pub(crate) description: String,
+}
+
+impl RuntimeSystemTableColumn {
+    /// Defines a query-visible system-table column and its catalog description.
+    #[must_use]
+    pub fn new(
+        name: impl Into<String>,
+        data_type: DataType,
+        nullable: bool,
+        description: impl Into<String>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            data_type,
+            nullable,
+            description: description.into(),
+        }
+    }
+
+    /// Returns this definition as an Arrow field.
+    #[must_use]
+    pub fn field(&self) -> Field {
+        Field::new(&self.name, self.data_type.clone(), self.nullable)
+    }
+}
+
+/// Database constraints that a runtime system-table loader must apply.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RuntimeSystemTableScan {
+    pub(crate) exact_filters: BTreeMap<String, String>,
+    pub(crate) limit_after_exact_filters: Option<usize>,
+}
+
+impl RuntimeSystemTableScan {
+    /// Returns an exact equality constraint for `column`.
+    ///
+    /// Loaders must apply every returned constraint exactly. `DataFusion` may remove
+    /// these predicates from the residual plan after the provider advertises them.
+    #[must_use]
+    pub fn exact_filter(&self, column: &str) -> Option<&str> {
+        self.exact_filters.get(column).map(String::as_str)
+    }
+
+    /// Returns a row limit that is safe only after every exact filter is applied.
+    ///
+    /// A loader that applies this limit must first apply all constraints returned
+    /// by [`Self::exact_filter`]. Applying the limit to an unfiltered row set can
+    /// change SQL results.
+    #[must_use]
+    pub fn limit_after_exact_filters(&self) -> Option<usize> {
+        self.limit_after_exact_filters
+    }
+}
+
+type RuntimeSystemTableLoader = dyn Fn(RuntimeSystemTableScan) -> BoxFuture<'static, Result<Vec<RecordBatch>, CoreError>>
+    + Send
+    + Sync;
+
+/// One app-owned, query-visible table in the `coral` system schema.
+#[derive(Clone)]
+pub struct RuntimeSystemTable {
+    pub(crate) name: String,
+    pub(crate) description: String,
+    pub(crate) guide: String,
+    pub(crate) columns: Arc<[RuntimeSystemTableColumn]>,
+    pub(crate) schema: Arc<Schema>,
+    pub(crate) exact_filter_columns: Arc<[String]>,
+    loader: Arc<RuntimeSystemTableLoader>,
+}
+
+impl RuntimeSystemTable {
+    /// Builds a lazy system table. The loader runs only when the table is scanned.
+    ///
+    /// The loader must apply every exact filter in its [`RuntimeSystemTableScan`].
+    /// If it applies [`RuntimeSystemTableScan::limit_after_exact_filters`], it must
+    /// do so only after those filters. The runtime reapplies pushed predicates as
+    /// a defensive check, but cannot repair a limit applied before a filter.
+    #[must_use]
+    pub fn new<F, Fut>(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        guide: impl Into<String>,
+        columns: Vec<RuntimeSystemTableColumn>,
+        exact_filter_columns: impl IntoIterator<Item = impl Into<String>>,
+        loader: F,
+    ) -> Self
+    where
+        F: Fn(RuntimeSystemTableScan) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<Vec<RecordBatch>, CoreError>> + Send + 'static,
+    {
+        let schema = Arc::new(Schema::new(
+            columns
+                .iter()
+                .map(RuntimeSystemTableColumn::field)
+                .collect::<Vec<_>>(),
+        ));
+        Self {
+            name: name.into(),
+            description: description.into(),
+            guide: guide.into(),
+            columns: columns.into(),
+            schema,
+            exact_filter_columns: exact_filter_columns
+                .into_iter()
+                .map(Into::into)
+                .collect::<Vec<_>>()
+                .into(),
+            loader: Arc::new(move |scan| Box::pin(loader(scan))),
+        }
+    }
+
+    pub(crate) async fn load(
+        &self,
+        scan: RuntimeSystemTableScan,
+    ) -> Result<Vec<RecordBatch>, CoreError> {
+        (self.loader)(scan).await
+    }
+}
+
+impl std::fmt::Debug for RuntimeSystemTable {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RuntimeSystemTable")
+            .field("name", &self.name)
+            .field("schema", &self.schema)
+            .field("exact_filter_columns", &self.exact_filter_columns)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Neutral policy decision for one source registration failure.

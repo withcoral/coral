@@ -1,7 +1,17 @@
-use sea_query::{Expr, ExprTrait, Func, Order, Query};
+use sea_query::{Alias, Expr, ExprTrait, Func, JoinType, Order, Query};
 
-use crate::state::db::schema::Tasks;
+use crate::state::db::schema::{TaskQueries, Tasks};
 use crate::state::db::{CoralTx, DbError, DbSession};
+
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+pub(in crate::state::db) struct TaskHistoryRow {
+    pub(in crate::state::db) task_id: String,
+    pub(in crate::state::db) intent: String,
+    pub(in crate::state::db) outcome: Option<String>,
+    pub(in crate::state::db) started_at_unix_nanos: i64,
+    pub(in crate::state::db) completed_at_unix_nanos: Option<i64>,
+    pub(in crate::state::db) query_count: i64,
+}
 
 #[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
@@ -58,6 +68,50 @@ where
                 TaskLifecycleState::Active
             }
         }))
+    }
+
+    pub(in crate::state::db) async fn list_history(
+        &mut self,
+        workspace_id: &str,
+        task_id: Option<&str>,
+        limit: Option<u64>,
+    ) -> Result<Vec<TaskHistoryRow>, DbError> {
+        let mut statement = Query::select();
+        statement
+            .expr_as(Expr::col((Tasks::Table, Tasks::Id)), Alias::new("task_id"))
+            .column((Tasks::Table, Tasks::Intent))
+            .column((Tasks::Table, Tasks::Outcome))
+            .expr_as(
+                Expr::col((Tasks::Table, Tasks::CreatedAtUnixNanos)),
+                Alias::new("started_at_unix_nanos"),
+            )
+            .column((Tasks::Table, Tasks::CompletedAtUnixNanos))
+            .expr_as(
+                Func::count(Expr::col((TaskQueries::Table, TaskQueries::Id))),
+                Alias::new("query_count"),
+            )
+            .from(Tasks::Table)
+            .join(
+                JoinType::LeftJoin,
+                TaskQueries::Table,
+                Expr::col((TaskQueries::Table, TaskQueries::TaskId))
+                    .equals((Tasks::Table, Tasks::Id)),
+            )
+            .and_where(Expr::col((Tasks::Table, Tasks::WorkspaceId)).eq(workspace_id))
+            .group_by_columns([
+                (Tasks::Table, Tasks::Id),
+                (Tasks::Table, Tasks::Intent),
+                (Tasks::Table, Tasks::Outcome),
+                (Tasks::Table, Tasks::CreatedAtUnixNanos),
+                (Tasks::Table, Tasks::CompletedAtUnixNanos),
+            ]);
+        if let Some(task_id) = task_id {
+            statement.and_where(Expr::col((Tasks::Table, Tasks::Id)).eq(task_id));
+        }
+        if let Some(limit) = limit {
+            statement.limit(limit);
+        }
+        self.session.fetch_all(statement.clone()).await
     }
 
     pub(in crate::state::db) async fn count(&mut self, workspace_id: &str) -> Result<u64, DbError> {

@@ -538,7 +538,42 @@ for one MCP server process with
 Discovery helpers include the `coral` system schema, so `search`,
 `list_catalog`, `describe_table`, `list_columns`, and `coral://tables` can
 discover `coral.tables`, `coral.columns`, `coral.filters`,
-`coral.table_functions`, and `coral.inputs`.
+`coral.table_functions`, `coral.inputs`, `coral.tasks`, `coral.task_queries`,
+and `coral.task_query_relations`.
+
+### Query retained task history
+
+The three task-history tables show retained SQL activity for the active
+workspace. This activity is recorded best effort and is not a complete audit
+log. Completed Tasks have a `success` or `failure` outcome; active Tasks have a
+NULL outcome. Query status is `success` or `error`, and errored queries have no
+relation rows.
+
+Use an explicit order when displaying query history. `started_at, query_id` is
+a stable display order, not an authored batch order. Relation `catalog_name` is
+an empty string when the relation has no catalog.
+
+```sql
+SELECT
+  q.started_at,
+  q.intent,
+  q.sql,
+  q.status,
+  r.relation_kind,
+  r.catalog_name,
+  r.schema_name,
+  r.relation_name
+FROM coral.task_queries q
+LEFT JOIN coral.task_query_relations r
+  USING (task_id, query_id)
+WHERE q.task_id = '<task-id>'
+ORDER BY
+  q.started_at,
+  q.query_id,
+  r.catalog_name,
+  r.schema_name,
+  r.relation_name;
+```
 
 For client setup, see [Use Coral over MCP](/guides/use-coral-over-mcp).
 

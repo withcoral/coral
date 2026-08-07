@@ -52,8 +52,9 @@ use crate::{
     RequestAuthenticator, RequestIdentityHttpAuthenticatorError,
     RequestIdentityHttpAuthenticatorFactory, RequestIdentitySelectionContext,
     RequestIdentitySelectionError, RequestIdentitySelector, ResolvedQueryResources,
-    SelectedRequestIdentity, SourceDecorator, SourceInputResolver, SourceObservationPublisher,
-    TableFunctionInfo, TableInfo, UdfRuntimeDefinition, normalize_catalog_name,
+    RuntimeSystemTable, SelectedRequestIdentity, SourceDecorator, SourceInputResolver,
+    SourceObservationPublisher, TableFunctionInfo, TableInfo, UdfRuntimeDefinition,
+    normalize_catalog_name,
 };
 
 pub(crate) struct QueryRuntimeAdapter {
@@ -72,6 +73,7 @@ pub(crate) struct QueryRuntimeAdapter {
     /// catalog for database sources).
     name_to_source: HashMap<String, String>,
     query_result_observers: Vec<Arc<dyn QueryResultObserver>>,
+    system_tables: Vec<RuntimeSystemTable>,
 }
 
 pub(crate) struct InferredSqlSignature {
@@ -117,6 +119,7 @@ struct FallbackRuntimeConfig {
     dependent_join: DependentJoinConfig,
     memory: QueryMemoryConfig,
     udfs: Vec<UdfRuntimeDefinition>,
+    system_tables: Vec<RuntimeSystemTable>,
     extension_hooks: RuntimeExtensionHooks,
     request_identity_http_authenticators: BoundRequestIdentityHttpAuthenticators,
 }
@@ -142,6 +145,7 @@ struct RuntimeBuildInputs<'a> {
     dependent_join: &'a DependentJoinConfig,
     memory: &'a QueryMemoryConfig,
     udfs: &'a [UdfRuntimeDefinition],
+    system_tables: &'a [RuntimeSystemTable],
 }
 
 enum SqlExecutionFailure {
@@ -168,6 +172,7 @@ async fn build_runtime_inner(
         memory,
         dependent_join,
         mut extensions,
+        system_tables,
         udfs,
         request_identity_selector,
         request_identity_http_authenticator_factory,
@@ -199,6 +204,7 @@ async fn build_runtime_inner(
             dependent_join: dependent_join.clone(),
             memory: memory.clone(),
             udfs: udfs.clone(),
+            system_tables: system_tables.clone(),
             extension_hooks: extension_hooks.clone(),
             request_identity_http_authenticators: request_identity_http_authenticators.clone(),
         })
@@ -214,6 +220,7 @@ async fn build_runtime_inner(
         dependent_join: &dependent_join,
         memory: &memory,
         udfs: &udfs,
+        system_tables: &system_tables,
     })
     .await?;
 
@@ -231,6 +238,7 @@ async fn build_runtime_inner(
         column_fetch_failures: primary.column_fetch_failures,
         name_to_source: name_to_source_names(sources),
         query_result_observers: extensions.query_result_observers,
+        system_tables,
     })
 }
 
@@ -361,10 +369,11 @@ async fn build_registered_runtime(
         &registration.active_sources,
         &registration.column_fetchers,
         &udf_table_functions,
+        config.system_tables,
         column_fetch_failures.clone(),
     )
     .map_err(|err| datafusion_to_core(&err, &[]))?;
-    let tables = catalog::collect_static_tables(&registration.active_sources);
+    let tables = catalog::collect_static_tables(&registration.active_sources, config.system_tables);
     let table_functions =
         catalog::collect_table_functions(&registration.active_sources, &udf_table_functions);
     install_table_function_call_planners(
@@ -563,6 +572,7 @@ impl QueryRuntimeAdapter {
             &self.active_sources,
             &self.column_fetchers,
             &udf_table_functions,
+            &self.system_tables,
             self.column_fetch_failures.clone(),
         )
         .map_err(|err| datafusion_to_core(&err, &self.tables))?;
@@ -1474,6 +1484,7 @@ impl FallbackRuntimeConfig {
             dependent_join: &dependent_join,
             memory: &self.memory,
             udfs: &self.udfs,
+            system_tables: &self.system_tables,
         })
         .await
     }
@@ -1601,10 +1612,11 @@ mod tests {
             &active_sources,
             &[],
             &[],
+            &[],
             column_fetch_failures.clone(),
         )
         .expect("catalog should register");
-        let tables = catalog::collect_static_tables(&active_sources);
+        let tables = catalog::collect_static_tables(&active_sources, &[]);
         QueryRuntimeAdapter {
             ctx,
             fallback_runtime: None,
@@ -1619,6 +1631,7 @@ mod tests {
             column_fetch_failures,
             name_to_source: HashMap::new(),
             query_result_observers: Vec::new(),
+            system_tables: Vec::new(),
         }
     }
 
@@ -1884,6 +1897,7 @@ mod tests {
                 limit: Some(MemorySize::from_str("1Ki").unwrap()),
             },
             udfs: Vec::new(),
+            system_tables: Vec::new(),
             extension_hooks: RuntimeExtensionHooks {
                 request_authenticators: HashMap::new(),
                 source_input_resolver: None,

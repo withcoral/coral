@@ -88,8 +88,12 @@ impl TaskQueryState<'_> {
                 started_at_unix_nanos: query.started_at_unix_nanos,
             })
             .await?;
-        let relations = query
-            .relations
+        let relations = if query.status == "success" {
+            query.relations
+        } else {
+            &[]
+        };
+        let relations = relations
             .iter()
             .map(|relation| TaskQueryRelationRow {
                 query_id: query.id.to_string(),

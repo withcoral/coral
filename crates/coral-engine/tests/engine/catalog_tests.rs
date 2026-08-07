@@ -5,8 +5,15 @@
 )]
 
 use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
 
-use coral_engine::{CoralQuery, CoreError, QuerySource, TableInfo};
+use arrow::array::StringArray;
+use arrow::datatypes::{DataType, Schema};
+use arrow::record_batch::RecordBatch;
+use coral_engine::{
+    CoralQuery, CoreError, QuerySource, RuntimeSystemTable, RuntimeSystemTableColumn,
+    RuntimeSystemTableScan, TableInfo,
+};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -237,6 +244,186 @@ async fn list_tables_returns_system_catalog_when_no_sources() {
             .iter()
             .map(|table| ("coral", *table))
             .collect::<Vec<_>>()
+    );
+}
+
+fn runtime_activity_table(scans: Arc<Mutex<Vec<RuntimeSystemTableScan>>>) -> RuntimeSystemTable {
+    let columns = vec![
+        RuntimeSystemTableColumn::new(
+            "query_id",
+            DataType::Utf8,
+            false,
+            "Stable query identifier.",
+        ),
+        RuntimeSystemTableColumn::new(
+            "task_id",
+            DataType::Utf8,
+            false,
+            "Task attribution identifier.",
+        ),
+    ];
+    let schema = Arc::new(Schema::new(
+        columns
+            .iter()
+            .map(RuntimeSystemTableColumn::field)
+            .collect::<Vec<_>>(),
+    ));
+    RuntimeSystemTable::new(
+        "activity",
+        "Synthetic app-owned activity.",
+        "Filter by task_id and query_id.",
+        columns,
+        ["task_id", "query_id"],
+        move |scan| {
+            let schema = Arc::clone(&schema);
+            let scans = Arc::clone(&scans);
+            async move {
+                scans.lock().expect("scan lock").push(scan.clone());
+                let mut rows = [
+                    ("query-1", "task-a"),
+                    ("query-2", "task-a"),
+                    ("query-3", "task-b"),
+                ]
+                .into_iter()
+                .filter(|(query_id, task_id)| {
+                    scan.exact_filter("query_id")
+                        .is_none_or(|value| value == *query_id)
+                        && scan
+                            .exact_filter("task_id")
+                            .is_none_or(|value| value == *task_id)
+                })
+                .collect::<Vec<_>>();
+                if let Some(limit) = scan.limit_after_exact_filters() {
+                    rows.truncate(limit);
+                }
+                Ok(vec![RecordBatch::try_new(
+                    schema,
+                    vec![
+                        Arc::new(StringArray::from_iter_values(
+                            rows.iter().map(|(query_id, _)| *query_id),
+                        )),
+                        Arc::new(StringArray::from_iter_values(
+                            rows.iter().map(|(_, task_id)| *task_id),
+                        )),
+                    ],
+                )?])
+            }
+        },
+    )
+}
+
+#[tokio::test]
+async fn runtime_system_table_pushes_exact_filters_and_limit() {
+    let scans = Arc::new(Mutex::new(Vec::new()));
+    let runtime =
+        test_runtime().with_system_tables(vec![runtime_activity_table(Arc::clone(&scans))]);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[],
+            runtime,
+            "SELECT query_id FROM coral.activity \
+             WHERE task_id = 'task-a' AND query_id = 'query-2' LIMIT 1",
+        )
+        .await
+        .expect("query runtime system table"),
+    );
+
+    assert_eq!(rows, vec![json!({"query_id": "query-2"})]);
+    let recorded_scan = scans
+        .lock()
+        .expect("scan lock")
+        .first()
+        .cloned()
+        .expect("runtime table scan");
+    assert_eq!(recorded_scan.exact_filter("query_id"), Some("query-2"));
+    assert_eq!(recorded_scan.exact_filter("task_id"), Some("task-a"));
+    assert_eq!(recorded_scan.limit_after_exact_filters(), Some(1));
+}
+
+#[tokio::test]
+async fn runtime_system_table_does_not_push_limit_past_a_residual_filter() {
+    let scans = Arc::new(Mutex::new(Vec::new()));
+    let runtime =
+        test_runtime().with_system_tables(vec![runtime_activity_table(Arc::clone(&scans))]);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[],
+            runtime,
+            "SELECT query_id FROM coral.activity \
+             WHERE task_id = 'task-a' AND query_id LIKE '%-2' LIMIT 1",
+        )
+        .await
+        .expect("query runtime system table with residual filter"),
+    );
+
+    assert_eq!(rows, vec![json!({"query_id": "query-2"})]);
+    let recorded_scan = scans
+        .lock()
+        .expect("scan lock")
+        .first()
+        .cloned()
+        .expect("runtime table scan");
+    assert_eq!(recorded_scan.exact_filter("task_id"), Some("task-a"));
+    assert_eq!(recorded_scan.limit_after_exact_filters(), None);
+}
+
+#[tokio::test]
+async fn runtime_system_table_registers_describe_and_catalog_metadata() {
+    let table = runtime_activity_table(Arc::new(Mutex::new(Vec::new())));
+    let described = CoralQuery::execute_sql(
+        &[],
+        test_runtime().with_system_tables(vec![table.clone()]),
+        "DESCRIBE coral.activity",
+    )
+    .await
+    .expect("describe runtime system table");
+
+    assert_eq!(described.row_count(), 2);
+    assert_eq!(
+        described
+            .schema()
+            .iter()
+            .map(|column| column.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["column_name", "data_type", "is_nullable"]
+    );
+
+    let metadata = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[],
+            test_runtime().with_system_tables(vec![table]),
+            "SELECT c.column_name, c.data_type, c.is_nullable, c.description, \
+                    t.description AS table_description, t.guide \
+             FROM coral.columns c \
+             JOIN coral.tables t USING (catalog_name, schema_name, table_name) \
+             WHERE c.schema_name = 'coral' AND c.table_name = 'activity' \
+             ORDER BY c.ordinal_position",
+        )
+        .await
+        .expect("query runtime system-table metadata"),
+    );
+    assert_eq!(
+        metadata,
+        vec![
+            json!({
+                "column_name": "query_id",
+                "data_type": "Utf8",
+                "is_nullable": false,
+                "description": "Stable query identifier.",
+                "table_description": "Synthetic app-owned activity.",
+                "guide": "Filter by task_id and query_id."
+            }),
+            json!({
+                "column_name": "task_id",
+                "data_type": "Utf8",
+                "is_nullable": false,
+                "description": "Task attribution identifier.",
+                "table_description": "Synthetic app-owned activity.",
+                "guide": "Filter by task_id and query_id."
+            }),
+        ]
     );
 }
 

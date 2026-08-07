@@ -19,7 +19,7 @@ use opentelemetry::Context as OtelContext;
 use super::ColumnInfo;
 use crate::{
     EngineExtensions, RequestIdentityHttpAuthenticatorFactory, RequestIdentitySelectionContext,
-    RequestIdentitySelector,
+    RequestIdentitySelector, RuntimeSystemTable,
 };
 
 /// One managed source selected into the current query runtime.
@@ -655,6 +655,8 @@ pub struct QueryRuntimeConfig {
     pub database_pool_registry: Arc<crate::DatabasePoolRegistry>,
     /// Optional engine extensions for this runtime build.
     pub extensions: EngineExtensions,
+    /// App-owned tables registered in the `coral` system schema for this runtime.
+    pub system_tables: Vec<RuntimeSystemTable>,
     /// Engine-wide query memory policy.
     pub memory: QueryMemoryConfig,
     /// Runtime-build selector for app-owned request identities.
@@ -676,12 +678,20 @@ impl QueryRuntimeConfig {
             context,
             database_pool_registry: Arc::new(crate::DatabasePoolRegistry::new()),
             extensions,
+            system_tables: Vec::new(),
             memory: QueryMemoryConfig::default(),
             request_identity_selector: None,
             request_identity_http_authenticator_factory: None,
             dependent_join: DependentJoinConfig::default(),
             udfs: Vec::new(),
         }
+    }
+
+    /// Attaches app-owned runtime system tables to this runtime config.
+    #[must_use]
+    pub fn with_system_tables(mut self, system_tables: Vec<RuntimeSystemTable>) -> Self {
+        self.system_tables = system_tables;
+        self
     }
 
     /// Attaches validated UDFs to this runtime config.

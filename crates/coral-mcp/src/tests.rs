@@ -1145,7 +1145,16 @@ async fn mcp_catalog_helpers_expose_coral_system_tables_from_sql_catalog() {
     let session = start_session(&temp).await;
     let client = &session.client;
     let task_id = start_test_task(client).await;
-    let expected_tables = ["columns", "filters", "inputs", "table_functions", "tables"];
+    let expected_tables = [
+        "columns",
+        "filters",
+        "inputs",
+        "table_functions",
+        "tables",
+        "task_queries",
+        "task_query_relations",
+        "tasks",
+    ];
 
     let sql = client
         .call_tool(
@@ -1271,7 +1280,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
             .description
             .as_deref()
             .expect("sql description")
-            .contains("5 table(s) are currently visible")
+            .contains("8 table(s) are currently visible")
     );
     assert!(
         initial_sql_tool
@@ -1307,7 +1316,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
             .description
             .as_deref()
             .expect("guide description")
-            .contains("5 visible table")
+            .contains("8 visible table")
     );
 
     let initial_guide = client
@@ -1316,7 +1325,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
         .expect("initial guide");
     let initial_guide_text = text_content(&initial_guide);
     assert!(initial_guide_text.contains("## Available Schemas"));
-    assert!(initial_guide_text.contains("- coral: System catalog schema."));
+    assert!(initial_guide_text.contains("- coral: System schema."));
     assert!(initial_guide_text.contains("No user schemas are currently configured."));
     assert!(initial_guide_text.contains("read-only SQL database"));
     assert!(initial_guide_text.contains("CROSS JOIN"));
@@ -1335,7 +1344,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
             .description
             .as_deref()
             .expect("sql description")
-            .contains("8 table(s) are currently visible")
+            .contains("11 table(s) are currently visible")
     );
     assert!(
         sql_tool
@@ -1349,7 +1358,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
             .description
             .as_deref()
             .expect("catalog description")
-            .contains("8 table(s) and 0 table function(s) are currently visible")
+            .contains("11 table(s) and 0 table function(s) are currently visible")
     );
     assert!(
         search_tool
@@ -1363,7 +1372,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
             .description
             .as_deref()
             .expect("catalog search description")
-            .contains("8 table(s) and 0 table function(s) are currently visible")
+            .contains("11 table(s) and 0 table function(s) are currently visible")
     );
     assert!(
         list_catalog_tool
@@ -1408,7 +1417,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
         .expect("updated guide");
     let updated_guide_text = text_content(&updated_guide);
     assert!(updated_guide_text.contains("## Available Schemas"));
-    assert!(updated_guide_text.contains("- coral: System catalog schema."));
+    assert!(updated_guide_text.contains("- coral: System schema."));
     assert!(updated_guide_text.contains("- local_messages"));
     assert!(updated_guide_text.contains("Prefer one SQL statement with `JOIN`, `CROSS JOIN`"));
     assert!(!updated_guide_text.contains("## Visible SQL Schemas"));
@@ -1424,7 +1433,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
         .await
         .expect("list catalog");
     let catalog = catalog.structured_content.expect("structured catalog");
-    assert_eq!(catalog["total"], 8);
+    assert_eq!(catalog["total"], 11);
     assert_eq!(catalog["items"][0]["kind"], "table");
     assert_eq!(catalog["items"][0]["name"], "coral.columns");
     assert_eq!(catalog["items"][0]["sql_reference"], "coral.columns");
@@ -1809,7 +1818,7 @@ async fn list_catalog_surfaces_table_functions() {
             .description
             .as_deref()
             .expect("catalog description")
-            .contains("6 table(s) and 2 table function(s) are currently visible")
+            .contains("9 table(s) and 2 table function(s) are currently visible")
     );
     assert!(tools.iter().all(|tool| tool.name != "list_tables"));
     assert!(tools.iter().all(|tool| tool.name != "search_tables"));

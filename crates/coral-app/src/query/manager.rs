@@ -43,6 +43,7 @@ use crate::state::{AppConfig, AppStateLayout, ConfigStore};
 use crate::task::activity::{
     PendingTaskQuery, TaskActivityRecorder, TaskQueryRelation, TaskQueryStatus,
 };
+use crate::task::history::TaskHistory;
 use crate::task::id::TaskId;
 use crate::telemetry::app_error_type;
 use crate::workspaces::{
@@ -192,6 +193,7 @@ pub(crate) struct QueryManager {
     pool_registry: Arc<WorkspacePoolRegistry>,
     database_sources_enabled: bool,
     task_activity: Option<TaskActivityRecorder>,
+    task_history: Option<TaskHistory>,
 }
 
 impl QueryManager {
@@ -270,6 +272,7 @@ impl QueryManager {
             pool_registry,
             database_sources_enabled: false,
             task_activity: None,
+            task_history: None,
         }
     }
 
@@ -280,6 +283,11 @@ impl QueryManager {
 
     pub(crate) fn with_task_activity_recorder(mut self, recorder: TaskActivityRecorder) -> Self {
         self.task_activity = Some(recorder);
+        self
+    }
+
+    pub(crate) fn with_task_history(mut self, history: TaskHistory) -> Self {
+        self.task_history = Some(history);
         self
     }
 
@@ -845,6 +853,9 @@ impl QueryManager {
         let mut runtime_context = self.runtime_context.clone();
         runtime_context.trace_context = Some(tracing::Span::current().context());
         let mut runtime = QueryRuntimeConfig::new(runtime_context, extensions);
+        if let Some(task_history) = &self.task_history {
+            runtime.system_tables = task_history.system_tables(workspace_name);
+        }
         runtime.database_pool_registry = self.pool_registry.for_workspace(workspace_name);
         let selected_source_names = selected_sources
             .iter()
@@ -1483,7 +1494,10 @@ mod tests {
     use crate::request_context::RequestContext;
     use crate::sources::manager::{ImportSourceCommand, SourceBindings, SourceManager};
     use crate::sources::model::SourceOrigin;
-    use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig, run_state_migrations};
+    use crate::state::db::{
+        CoralDb, DatabaseConfig, DbRepos, ResolvedDatabaseConfig, TaskCreation,
+        TaskQueryRelationWrite, TaskQueryWrite, run_state_migrations,
+    };
     use crate::task::activity::TaskActivityRecorder;
     use crate::task::manager::TaskManager;
     use crate::task::store::TaskStore;
@@ -1520,7 +1534,8 @@ mod tests {
             layout,
             providers,
         )
-        .with_task_activity_recorder(TaskActivityRecorder::new(Arc::clone(&db)));
+        .with_task_activity_recorder(TaskActivityRecorder::new(Arc::clone(&db)))
+        .with_task_history(TaskHistory::new(Arc::clone(&db)));
         QueryManagerFixture {
             _temp: temp,
             manager,
@@ -1717,6 +1732,394 @@ mod tests {
             span_attr(query_span, coral_telemetry::QUERY_STREAM_NAME_ATTRIBUTE),
             Some("execute_sql".to_string())
         );
+    }
+
+    #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one end-to-end scenario verifies the three SQL surfaces, workspace scope, joins, and metadata together"
+    )]
+    async fn task_history_system_tables_are_workspace_scoped_and_match_their_sql_contracts() {
+        use arrow::array::{Array, Int64Array, StringArray};
+        use arrow::datatypes::{DataType, TimeUnit};
+
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
+        let workspace = WorkspaceName::default();
+        let other_workspace = "other-task-history-workspace";
+        let completed_task_id = "task-history-completed";
+        let active_task_id = "task-history-active";
+        let other_task_id = "task-history-other";
+        let success_query_id = "query-history-success";
+        let error_query_id = "query-history-error";
+        let other_query_id = "query-history-other";
+
+        let mut tx = fixture.db.begin().await.expect("begin other workspace");
+        tx.workspaces()
+            .ensure(other_workspace, 90)
+            .await
+            .expect("other workspace");
+        tx.commit().await.expect("commit other workspace");
+        for (workspace_id, task_id, intent, started_at) in [
+            (
+                workspace.as_str(),
+                completed_task_id,
+                "Investigate renewals",
+                100,
+            ),
+            (
+                workspace.as_str(),
+                active_task_id,
+                "Monitor active work",
+                200,
+            ),
+            (
+                other_workspace,
+                other_task_id,
+                "Private other workspace",
+                300,
+            ),
+        ] {
+            fixture
+                .db
+                .task_state()
+                .create(
+                    TaskCreation {
+                        id: task_id,
+                        workspace_id,
+                        created_by_principal_id: "product:principal:test",
+                        intent,
+                        created_at_unix_nanos: started_at,
+                    },
+                    10,
+                )
+                .await
+                .expect("create history task");
+        }
+        fixture
+            .db
+            .task_state()
+            .complete(workspace.as_str(), completed_task_id, "success", 150)
+            .await
+            .expect("complete history task");
+
+        let other_relations = [TaskQueryRelationWrite {
+            relation_kind: "table",
+            catalog_name: Some("private"),
+            schema_name: "secret",
+            relation_name: "other_workspace_only",
+        }];
+        let success_relations = [
+            TaskQueryRelationWrite {
+                relation_kind: "table",
+                catalog_name: Some("warehouse"),
+                schema_name: "sales",
+                relation_name: "renewals",
+            },
+            TaskQueryRelationWrite {
+                relation_kind: "table_function",
+                catalog_name: None,
+                schema_name: "github",
+                relation_name: "search_issues",
+            },
+        ];
+        for query in [
+            TaskQueryWrite {
+                workspace_id: workspace.as_str(),
+                id: success_query_id,
+                task_id: completed_task_id,
+                intent: "Find risky accounts",
+                sql: "SELECT * FROM warehouse.sales.renewals",
+                status: "success",
+                started_at_unix_nanos: 110,
+                relations: &success_relations,
+            },
+            TaskQueryWrite {
+                workspace_id: workspace.as_str(),
+                id: error_query_id,
+                task_id: completed_task_id,
+                intent: "Try a fallback query",
+                sql: "SELECT broken",
+                status: "error",
+                started_at_unix_nanos: 120,
+                relations: &[],
+            },
+            TaskQueryWrite {
+                workspace_id: other_workspace,
+                id: other_query_id,
+                task_id: other_task_id,
+                intent: "Private query intent",
+                sql: "SELECT 42",
+                status: "success",
+                started_at_unix_nanos: 310,
+                relations: &other_relations,
+            },
+        ] {
+            fixture
+                .db
+                .task_query_state()
+                .record(query)
+                .await
+                .expect("record history query");
+        }
+
+        let ExecuteSqlOutcome::Executed(tasks) = fixture
+            .manager
+            .execute_sql(
+                &workspace,
+                "SELECT * FROM coral.tasks ORDER BY task_id",
+                None,
+                &QueryAttribution::default(),
+            )
+            .await
+            .expect("query coral.tasks")
+        else {
+            panic!("task history query should execute");
+        };
+        assert_eq!(
+            tasks
+                .arrow_schema()
+                .fields()
+                .iter()
+                .map(|field| (
+                    field.name().as_str(),
+                    field.data_type().clone(),
+                    field.is_nullable()
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                ("task_id", DataType::Utf8, false),
+                ("intent", DataType::Utf8, false),
+                ("outcome", DataType::Utf8, true),
+                (
+                    "started_at",
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
+                    false,
+                ),
+                (
+                    "completed_at",
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
+                    true,
+                ),
+                ("query_count", DataType::Int64, false),
+            ]
+        );
+        assert_eq!(tasks.row_count(), 2, "other workspace task stays private");
+        let tasks_batch = tasks.batches().first().expect("tasks batch");
+        let task_ids = tasks_batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let outcomes = tasks_batch
+            .column(2)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let query_counts = tasks_batch
+            .column(5)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let completed_row = (0..tasks_batch.num_rows())
+            .find(|row| task_ids.value(*row) == completed_task_id)
+            .expect("completed task row");
+        assert_eq!(outcomes.value(completed_row), "success");
+        assert_eq!(query_counts.value(completed_row), 2);
+        let active_row = (0..tasks_batch.num_rows())
+            .find(|row| task_ids.value(*row) == active_task_id)
+            .expect("active task row");
+        assert!(outcomes.is_null(active_row));
+
+        let sql = format!(
+            "SELECT q.started_at, q.intent, q.sql, q.status,              r.relation_kind, r.catalog_name, r.schema_name, r.relation_name              FROM coral.task_queries q              LEFT JOIN coral.task_query_relations r USING (task_id, query_id)              WHERE q.task_id = '{completed_task_id}'              ORDER BY q.started_at, q.query_id, r.catalog_name, r.schema_name, r.relation_name"
+        );
+        let ExecuteSqlOutcome::Executed(activity) = fixture
+            .manager
+            .execute_sql(&workspace, &sql, None, &QueryAttribution::default())
+            .await
+            .expect("query joined task activity")
+        else {
+            panic!("joined task history query should execute");
+        };
+        assert_eq!(activity.row_count(), 3);
+        let activity_batch = activity.batches().first().expect("activity batch");
+        let intents = activity_batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert!(
+            (0..activity_batch.num_rows()).all(|row| intents.value(row) != "Investigate renewals"),
+            "query intent stays distinct from task intent"
+        );
+        let statuses = activity_batch
+            .column(3)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let relation_kinds = activity_batch
+            .column(4)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let catalogs = activity_batch
+            .column(5)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let error_row = (0..activity_batch.num_rows())
+            .find(|row| statuses.value(*row) == "error")
+            .expect("error activity row");
+        assert!(
+            relation_kinds.is_null(error_row),
+            "failed query has no relation rows"
+        );
+        assert!((0..activity_batch.num_rows()).any(|row| {
+            !relation_kinds.is_null(row)
+                && relation_kinds.value(row) == "table_function"
+                && catalogs.value(row).is_empty()
+        }));
+
+        let ExecuteSqlOutcome::Executed(grouping) = fixture
+            .manager
+            .execute_sql(
+                &workspace,
+                "SELECT DISTINCT task_id, catalog_name, schema_name, relation_name                  FROM coral.task_query_relations                  ORDER BY task_id, catalog_name, schema_name, relation_name",
+                None,
+                &QueryAttribution::default(),
+            )
+            .await
+            .expect("query relation grouping input")
+        else {
+            panic!("relation grouping query should execute");
+        };
+        assert_eq!(grouping.row_count(), 2);
+
+        let ExecuteSqlOutcome::Executed(foreign_relations) = fixture
+            .manager
+            .execute_sql(
+                &workspace,
+                &format!(
+                    "SELECT * FROM coral.task_query_relations WHERE query_id = '{other_query_id}'"
+                ),
+                None,
+                &QueryAttribution::default(),
+            )
+            .await
+            .expect("query exact foreign relation id")
+        else {
+            panic!("foreign relation isolation query should execute");
+        };
+        assert_eq!(
+            foreign_relations.row_count(),
+            0,
+            "an exact query id cannot bypass workspace scope"
+        );
+
+        let ExecuteSqlOutcome::Executed(queries) = fixture
+            .manager
+            .execute_sql(
+                &workspace,
+                "SELECT * FROM coral.task_queries LIMIT 0",
+                None,
+                &QueryAttribution::default(),
+            )
+            .await
+            .expect("query task query schema")
+        else {
+            panic!("task query schema query should execute");
+        };
+        assert_eq!(
+            queries
+                .arrow_schema()
+                .fields()
+                .iter()
+                .map(|field| (
+                    field.name().as_str(),
+                    field.data_type().clone(),
+                    field.is_nullable()
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                ("query_id", DataType::Utf8, false),
+                ("task_id", DataType::Utf8, false),
+                ("intent", DataType::Utf8, false),
+                (
+                    "started_at",
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
+                    false,
+                ),
+                ("sql", DataType::Utf8, false),
+                ("status", DataType::Utf8, false),
+            ]
+        );
+
+        let ExecuteSqlOutcome::Executed(relations) = fixture
+            .manager
+            .execute_sql(
+                &workspace,
+                "SELECT * FROM coral.task_query_relations LIMIT 0",
+                None,
+                &QueryAttribution::default(),
+            )
+            .await
+            .expect("query task relation schema")
+        else {
+            panic!("task relation schema query should execute");
+        };
+        assert_eq!(
+            relations
+                .arrow_schema()
+                .fields()
+                .iter()
+                .map(|field| (
+                    field.name().as_str(),
+                    field.data_type().clone(),
+                    field.is_nullable()
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                ("query_id", DataType::Utf8, false),
+                ("task_id", DataType::Utf8, false),
+                ("relation_kind", DataType::Utf8, false),
+                ("catalog_name", DataType::Utf8, false),
+                ("schema_name", DataType::Utf8, false),
+                ("relation_name", DataType::Utf8, false),
+            ]
+        );
+
+        for (table_name, execution) in [
+            ("tasks", &tasks),
+            ("task_queries", &queries),
+            ("task_query_relations", &relations),
+        ] {
+            let described = fixture
+                .manager
+                .describe_table(
+                    &workspace,
+                    None,
+                    "coral",
+                    table_name,
+                    &QueryAttribution::default(),
+                )
+                .await
+                .unwrap_or_else(|error| panic!("describe coral.{table_name}: {error:?}"))
+                .table
+                .unwrap_or_else(|| panic!("coral.{table_name} metadata"));
+            assert_eq!(
+                described
+                    .columns
+                    .iter()
+                    .map(|column| (&column.name, &column.data_type, column.nullable))
+                    .collect::<Vec<_>>(),
+                execution
+                    .schema()
+                    .iter()
+                    .map(|column| (&column.name, &column.data_type, column.nullable))
+                    .collect::<Vec<_>>(),
+                "coral.{table_name} metadata must match SELECT *"
+            );
+        }
     }
 
     #[tokio::test]

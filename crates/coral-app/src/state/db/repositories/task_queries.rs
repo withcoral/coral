@@ -1,10 +1,8 @@
-use sea_query::{Expr, Query};
 #[cfg(test)]
-use sea_query::{ExprTrait, JoinType, Order};
+use sea_query::Order;
+use sea_query::{Expr, ExprTrait, JoinType, Query};
 
-#[cfg(test)]
-use crate::state::db::schema::Tasks;
-use crate::state::db::schema::{TaskQueries, TaskQueryRelations};
+use crate::state::db::schema::{TaskQueries, TaskQueryRelations, Tasks};
 use crate::state::db::{CoralTx, DbError, DbSession};
 
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
@@ -26,6 +24,16 @@ pub(in crate::state::db) struct TaskQueryRelationRow {
     pub(in crate::state::db) relation_name: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+pub(in crate::state::db) struct TaskQueryRelationHistoryRow {
+    pub(in crate::state::db) query_id: String,
+    pub(in crate::state::db) task_id: String,
+    pub(in crate::state::db) relation_kind: String,
+    pub(in crate::state::db) catalog_name: String,
+    pub(in crate::state::db) schema_name: String,
+    pub(in crate::state::db) relation_name: String,
+}
+
 pub(crate) struct TaskQueriesRepo<'a, S> {
     session: &'a mut S,
 }
@@ -36,6 +44,87 @@ where
 {
     pub(crate) fn new(session: &'a mut S) -> Self {
         Self { session }
+    }
+
+    pub(in crate::state::db) async fn list_history(
+        &mut self,
+        workspace_id: &str,
+        task_id: Option<&str>,
+        query_id: Option<&str>,
+        limit: Option<u64>,
+    ) -> Result<Vec<TaskQueryRow>, DbError> {
+        let mut statement = Query::select();
+        statement
+            .columns([
+                (TaskQueries::Table, TaskQueries::Id),
+                (TaskQueries::Table, TaskQueries::TaskId),
+                (TaskQueries::Table, TaskQueries::Intent),
+                (TaskQueries::Table, TaskQueries::Sql),
+                (TaskQueries::Table, TaskQueries::Status),
+                (TaskQueries::Table, TaskQueries::StartedAtUnixNanos),
+            ])
+            .from(TaskQueries::Table)
+            .join(
+                JoinType::InnerJoin,
+                Tasks::Table,
+                Expr::col((TaskQueries::Table, TaskQueries::TaskId))
+                    .equals((Tasks::Table, Tasks::Id)),
+            )
+            .and_where(Expr::col((Tasks::Table, Tasks::WorkspaceId)).eq(workspace_id));
+        if let Some(task_id) = task_id {
+            statement.and_where(Expr::col((TaskQueries::Table, TaskQueries::TaskId)).eq(task_id));
+        }
+        if let Some(query_id) = query_id {
+            statement.and_where(Expr::col((TaskQueries::Table, TaskQueries::Id)).eq(query_id));
+        }
+        if let Some(limit) = limit {
+            statement.limit(limit);
+        }
+        self.session.fetch_all(statement.clone()).await
+    }
+
+    pub(in crate::state::db) async fn list_relation_history(
+        &mut self,
+        workspace_id: &str,
+        task_id: Option<&str>,
+        query_id: Option<&str>,
+        limit: Option<u64>,
+    ) -> Result<Vec<TaskQueryRelationHistoryRow>, DbError> {
+        let mut statement = Query::select();
+        statement
+            .column((TaskQueryRelations::Table, TaskQueryRelations::QueryId))
+            .column((TaskQueries::Table, TaskQueries::TaskId))
+            .column((TaskQueryRelations::Table, TaskQueryRelations::RelationKind))
+            .column((TaskQueryRelations::Table, TaskQueryRelations::CatalogName))
+            .column((TaskQueryRelations::Table, TaskQueryRelations::SchemaName))
+            .column((TaskQueryRelations::Table, TaskQueryRelations::RelationName))
+            .from(TaskQueryRelations::Table)
+            .join(
+                JoinType::InnerJoin,
+                TaskQueries::Table,
+                Expr::col((TaskQueryRelations::Table, TaskQueryRelations::QueryId))
+                    .equals((TaskQueries::Table, TaskQueries::Id)),
+            )
+            .join(
+                JoinType::InnerJoin,
+                Tasks::Table,
+                Expr::col((TaskQueries::Table, TaskQueries::TaskId))
+                    .equals((Tasks::Table, Tasks::Id)),
+            )
+            .and_where(Expr::col((Tasks::Table, Tasks::WorkspaceId)).eq(workspace_id))
+            .and_where(Expr::col((TaskQueries::Table, TaskQueries::Status)).eq("success"));
+        if let Some(task_id) = task_id {
+            statement.and_where(Expr::col((TaskQueries::Table, TaskQueries::TaskId)).eq(task_id));
+        }
+        if let Some(query_id) = query_id {
+            statement.and_where(
+                Expr::col((TaskQueryRelations::Table, TaskQueryRelations::QueryId)).eq(query_id),
+            );
+        }
+        if let Some(limit) = limit {
+            statement.limit(limit);
+        }
+        self.session.fetch_all(statement.clone()).await
     }
 
     #[cfg(test)]
@@ -170,8 +259,8 @@ mod tests {
     use crate::state::AppStateLayout;
     use crate::state::db::{
         CoralDb, DatabaseConfig, DbRepos, ResolvedDatabaseConfig, TaskCompletionUpdate,
-        TaskCreation, TaskCreationResult, TaskQueryRelationRecord, TaskQueryRelationWrite,
-        TaskQueryWrite, TaskQueryWriteResult,
+        TaskCreation, TaskCreationResult, TaskHistoryQueryScan, TaskHistoryTaskScan,
+        TaskQueryRelationRecord, TaskQueryRelationWrite, TaskQueryWrite, TaskQueryWriteResult,
     };
 
     const FIRST_QUERY_RELATIONS: &[TaskQueryRelationWrite<'static>] = &[
@@ -188,6 +277,7 @@ mod tests {
             relation_name: "search_runs",
         },
     ];
+    const ERROR_QUERY_ID: &str = "00000000-0000-0000-0000-000000000002";
     const OTHER_QUERY_RELATIONS: &[TaskQueryRelationWrite<'static>] = &[TaskQueryRelationWrite {
         relation_kind: "table",
         catalog_name: None,
@@ -293,6 +383,10 @@ mod tests {
         (task_id, other_task_id)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the shared backend scenario verifies writes, scoped reads, relation projection, and cascades together"
+    )]
     async fn assert_task_query_records(
         db: &CoralDb,
         workspace_id: &str,
@@ -309,7 +403,7 @@ mod tests {
             started_at_unix_nanos: 10,
         };
         let second = TaskQueryRow {
-            id: "00000000-0000-0000-0000-000000000002".to_string(),
+            id: ERROR_QUERY_ID.to_string(),
             task_id: task_id.to_string(),
             intent: "Second query".to_string(),
             sql: "SELECT broken".to_string(),
@@ -378,6 +472,16 @@ mod tests {
             vec![other]
         );
         assert_recorded_relations(db, &first.id, &second.id).await;
+        assert_task_history_reads(
+            db,
+            workspace_id,
+            other_workspace_id,
+            task_id,
+            other_task_id,
+            &first.id,
+            &second.id,
+        )
+        .await;
 
         let mut tx = db.begin().await.expect("begin delete tx");
         tx.tasks()
@@ -399,12 +503,138 @@ mod tests {
         );
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the shared SQLite/Postgres assertion covers every workspace-scoped history projection"
+    )]
+    async fn assert_task_history_reads(
+        db: &CoralDb,
+        workspace_id: &str,
+        other_workspace_id: &str,
+        task_id: &str,
+        other_task_id: &str,
+        success_query_id: &str,
+        error_query_id: &str,
+    ) {
+        let history = db.task_history_state();
+        let tasks = history
+            .tasks(workspace_id, TaskHistoryTaskScan::default())
+            .await
+            .expect("list task history");
+        assert_eq!(tasks.len(), 1);
+        let task = tasks.first().expect("workspace task");
+        assert_eq!(task.task_id, task_id);
+        assert_eq!(task.intent, "Test task");
+        assert_eq!(task.outcome.as_deref(), Some("success"));
+        assert_eq!(task.started_at_unix_nanos, 3);
+        assert_eq!(task.completed_at_unix_nanos, Some(4));
+        assert_eq!(task.query_count, 2, "success and error rows both count");
+
+        let other_tasks = history
+            .tasks(
+                other_workspace_id,
+                TaskHistoryTaskScan {
+                    task_id: Some(other_task_id),
+                    limit: Some(1),
+                },
+            )
+            .await
+            .expect("list active task history");
+        assert_eq!(other_tasks.len(), 1);
+        let other_task = other_tasks.first().expect("active other-workspace task");
+        assert_eq!(other_task.outcome, None);
+        assert_eq!(other_task.completed_at_unix_nanos, None);
+        assert_eq!(other_task.query_count, 1);
+        assert!(
+            history
+                .tasks(
+                    workspace_id,
+                    TaskHistoryTaskScan {
+                        task_id: Some(other_task_id),
+                        ..TaskHistoryTaskScan::default()
+                    },
+                )
+                .await
+                .expect("scope exact other-workspace task")
+                .is_empty()
+        );
+
+        let success = history
+            .queries(
+                workspace_id,
+                TaskHistoryQueryScan {
+                    task_id: Some(task_id),
+                    query_id: Some(success_query_id),
+                    limit: Some(1),
+                },
+            )
+            .await
+            .expect("load exact retained query");
+        assert_eq!(success.len(), 1);
+        let success = success.first().expect("exact successful query");
+        assert_eq!(success.intent, "First query");
+        assert_eq!(success.status, "success");
+        assert_eq!(success.sql, "SELECT 1");
+        assert!(
+            history
+                .queries(
+                    other_workspace_id,
+                    TaskHistoryQueryScan {
+                        query_id: Some(success_query_id),
+                        ..TaskHistoryQueryScan::default()
+                    },
+                )
+                .await
+                .expect("scope exact other-workspace query")
+                .is_empty()
+        );
+
+        let relations = history
+            .relations(
+                workspace_id,
+                TaskHistoryQueryScan {
+                    task_id: Some(task_id),
+                    query_id: Some(success_query_id),
+                    limit: Some(2),
+                },
+            )
+            .await
+            .expect("load exact query relations");
+        assert_eq!(relations.len(), 2);
+        assert!(relations.iter().all(|relation| relation.task_id == task_id));
+        assert!(relations.iter().any(|relation| {
+            relation.relation_kind == "table"
+                && relation.catalog_name == "github"
+                && relation.schema_name == "actions"
+                && relation.relation_name == "runs"
+        }));
+        assert!(relations.iter().any(|relation| {
+            relation.relation_kind == "table_function"
+                && relation.catalog_name.is_empty()
+                && relation.schema_name == "github"
+                && relation.relation_name == "search_runs"
+        }));
+        assert!(
+            history
+                .relations(
+                    workspace_id,
+                    TaskHistoryQueryScan {
+                        query_id: Some(error_query_id),
+                        ..TaskHistoryQueryScan::default()
+                    },
+                )
+                .await
+                .expect("error query relations")
+                .is_empty()
+        );
+    }
+
     fn query_relations(
         query_id: &str,
         first_query_id: &str,
         other_query_id: &str,
     ) -> &'static [TaskQueryRelationWrite<'static>] {
-        if query_id == first_query_id {
+        if query_id == first_query_id || query_id == ERROR_QUERY_ID {
             FIRST_QUERY_RELATIONS
         } else if query_id == other_query_id {
             OTHER_QUERY_RELATIONS

@@ -431,6 +431,7 @@ impl ServerBuilder {
             FeedbackManager::with_publisher(layout.clone(), self.config.feedback_publisher);
         let task_manager = TaskManager::new(TaskStore::new(Arc::clone(&coral_db)));
         let task_activity = crate::task::activity::TaskActivityRecorder::new(Arc::clone(&coral_db));
+        let task_history = crate::task::history::TaskHistory::new(Arc::clone(&coral_db));
         let body_capture_max_bytes = telemetry_config
             .trace_history
             .http_body_recording_max_bytes();
@@ -450,7 +451,8 @@ impl ServerBuilder {
             workspace_pool_registry,
         )
         .with_database_sources_enabled(database_sources_enabled)
-        .with_task_activity_recorder(task_activity);
+        .with_task_activity_recorder(task_activity)
+        .with_task_history(task_history);
         let observed_values_search_enabled = features.enabled(Feature::ObservedValuesSearch);
         let search_observations =
             observed_values_search_enabled.then(|| SearchObservationHandle::new(layout.clone()));

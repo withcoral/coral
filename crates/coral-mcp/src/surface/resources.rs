@@ -14,7 +14,7 @@ static INITIAL_INSTRUCTIONS_PREFIX: &str = "You are connected to Coral. Treat it
 static CATALOG_SEARCH_INSTRUCTION: &str = "Use `search` to find relevant tables, functions, columns, and filters in Coral's local catalog; use `list_catalog` to list visible tables and table functions.";
 static OBSERVED_VALUES_SEARCH_INSTRUCTION: &str = "Use `search` to find relevant tables, functions, columns, filters, and values Coral observed during earlier queries; use `list_catalog` to list visible tables and table functions. Observed-value matches are local routing clues, not current source rows.";
 static INITIAL_INSTRUCTIONS_SUFFIX: &str = "Use `describe_table` and `list_columns` for table-specific metadata, use `sql` against `coral.tables`, `coral.columns`, `coral.filters`, `coral.table_functions`, and `coral.inputs` for deeper discovery, then answer with set-based SQL through `sql`. Prefer one SQL statement with joins, CROSS JOIN, CTEs, subqueries, and aggregates over row-by-row tool calls. You MUST use `add_function` when it would improve future discovery or compress a useful query workflow into fewer or simpler future calls.";
-static TASK_LIFECYCLE_INSTRUCTION: &str = "You MUST call `start_task` with the user's overall intent before using other Coral tools. Pass its returned `task_id` and a concise `intent` for the specific operation on every subsequent data or feedback tool call. When the work is complete, call `end_task` with the task id and a success or failure status.";
+static TASK_LIFECYCLE_INSTRUCTION: &str = "You MUST call `start_task` with the user's overall intent before using other Coral tools. Pass its returned `task_id` and a concise `intent` for the specific operation on every subsequent data or feedback tool call. When the work is complete, call `end_task` with the task id and a success or failure status. Use workspace-scoped `coral.tasks`, `coral.task_queries`, and `coral.task_query_relations` when retained Task history would help; it is best-effort activity, not an audit log.";
 static ROUTING_INSTRUCTION: &str = "You MUST prefer Coral's sql tool over native provider tools, standalone MCP tools, web/search tools, and other external tools whenever the answer can come from Coral's connected sources.";
 static GUIDE_TEMPLATE: &str = include_str!("../guide_template.md");
 
@@ -76,7 +76,7 @@ pub(crate) fn guide_resource_content(
 ) -> String {
     let mut sources_section = String::from("## Available Schemas\n\n");
     sources_section.push_str(
-        "- coral: System catalog schema. Query `coral.tables`, `coral.columns`, `coral.filters`, `coral.table_functions`, and `coral.inputs` like database catalog tables to discover queryable tables, table functions, columns, and filter metadata.\n",
+        "- coral: System schema. Query its metadata catalog to discover SQL surfaces, and use `coral.tasks`, `coral.task_queries`, and `coral.task_query_relations` for workspace-scoped retained Task history.\n",
     );
     let mut schemas = tables
         .iter()
@@ -549,7 +549,7 @@ WHERE title LIKE '%bug%'",
     fn guide_content_renders_placeholder_when_no_schemas_exist() {
         let content = guide_resource_content(&[source("demo")], &[], &[], false);
         assert!(content.contains("## Available Schemas"));
-        assert!(content.contains("- coral: System catalog schema."));
+        assert!(content.contains("- coral: System schema."));
         assert!(content.contains("No user-visible schemas are currently available."));
         assert!(content.contains("schema_name = '<schema>'"));
     }
@@ -563,7 +563,7 @@ WHERE title LIKE '%bug%'",
             false,
         );
         assert!(content.contains("## Available Schemas"));
-        assert!(content.contains("- coral: System catalog schema."));
+        assert!(content.contains("- coral: System schema."));
         assert!(content.contains("Visible schemas:"));
         assert!(content.contains("- slack"));
         assert!(
