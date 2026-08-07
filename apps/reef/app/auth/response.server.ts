@@ -1,3 +1,4 @@
+import { routePath } from '@/routing/routemap'
 import { AUTH_STREAM_REQUEST_HEADER, AUTH_STREAM_RETURN_TO_HEADER } from './response'
 import { safeInternalPath } from './safe-path.server'
 
@@ -27,7 +28,7 @@ export function expiredSessionRedirect(request: Request): Response {
 }
 
 export function loginLocationForRequest(request: Request): string {
-  return `/login?returnTo=${encodeURIComponent(returnToForRequest(request))}`
+  return `${routePath('login')}?returnTo=${encodeURIComponent(returnToForRequest(request))}`
 }
 
 function returnToForRequest(request: Request): string {

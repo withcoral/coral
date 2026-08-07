@@ -13,6 +13,7 @@ import {
 import { requestAuthContext } from '@/auth/server-context'
 import { clearReefSession, readReefSession } from '@/auth/session.server'
 import type { RequiredAuthConfig } from '@/auth/types'
+import { routePath } from '@/routing/routemap'
 
 export const middleware: Route.MiddlewareFunction[] = [
   async ({ context, request }, next) => {
@@ -91,7 +92,7 @@ function authStreamExpiredResponse(request: Request, redirectResponse: Response)
   if (request.headers.get(AUTH_STREAM_REQUEST_HEADER) !== '1') return redirectResponse
 
   const headers = new Headers(redirectResponse.headers)
-  const loginLocation = headers.get('Location') ?? '/login'
+  const loginLocation = headers.get('Location') ?? routePath('login')
   headers.delete('Location')
   headers.set(EXPIRED_SESSION_LOGIN_HEADER, loginLocation)
   return new Response(null, { headers, status: 401 })
