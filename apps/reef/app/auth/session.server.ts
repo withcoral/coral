@@ -15,19 +15,55 @@ export interface OAuthTransaction {
   state: string
 }
 
+/**
+ * What actually goes in the cookie: the transaction plus the moment it was
+ * issued.
+ *
+ * `issuedAt` is stamped here rather than accepted from the caller, and stripped
+ * again on the way out, so a transaction stays the three fields a login flow
+ * cares about at both ends.
+ */
+interface StoredOAuthTransaction extends OAuthTransaction {
+  issuedAt: number
+}
+
 export async function commitOAuthTransaction(
   transaction: OAuthTransaction,
   config: RequiredAuthConfig,
 ): Promise<string> {
-  return oauthCookie(config).serialize(transaction)
+  const stored: StoredOAuthTransaction = { ...transaction, issuedAt: unixTimestamp() }
+
+  return oauthCookie(config).serialize(stored)
 }
 
+/**
+ * Reads a transaction, treating one issued too long ago as absent.
+ *
+ * The signature proves the payload came from this server; it says nothing about
+ * when. Without `issuedAt` the blob verifies forever, because it carries no
+ * timestamp and nothing else in the value varies — `Max-Age` is the only bound,
+ * and that one is the browser's to enforce. Anything replaying the cookie
+ * outside a browser is not bound by it, so a captured `codeVerifier` would stay
+ * usable for as long as its authorization code did. PKCE assumes the verifier
+ * is short-lived as well as secret, so the server checks the age itself.
+ *
+ * A cookie dated in the future is *not* rejected. It cannot be forged without
+ * the secret, so the only thing that produces one is a clock that disagrees
+ * between the instance that wrote it and the instance reading it — which is why
+ * the past side carries [`CLOCK_SKEW_SECONDS`] of slack too. Rejecting a
+ * future-dated cookie would fail those logins and prevent no attack.
+ */
 export async function readOAuthTransaction(
   request: Request,
   config: RequiredAuthConfig,
 ): Promise<OAuthTransaction | null> {
   const value = await oauthCookie(config).parse(request.headers.get('cookie'))
-  return isOAuthTransaction(value) ? value : null
+  if (!isStoredOAuthTransaction(value)) return null
+  if (unixTimestamp() - value.issuedAt > OAUTH_MAX_AGE_SECONDS + CLOCK_SKEW_SECONDS) return null
+
+  const { codeVerifier, returnTo, state } = value
+
+  return { codeVerifier, returnTo, state }
 }
 
 export async function clearOAuthTransaction(config: RequiredAuthConfig): Promise<string> {
@@ -79,8 +115,33 @@ export function randomToken(byteCount: number): string {
   return randomBytes(byteCount).toString('base64url')
 }
 
+/**
+ * The OAuth transaction cookie's name, which carries a `__Host-` prefix wherever
+ * the browser will accept one.
+ *
+ * A signature keeps the value from being forged; it does nothing about a cookie
+ * of the same name arriving from somewhere else. `Domain` is what makes that
+ * possible: this cookie is host-only, so a sibling host never *receives* it, but
+ * any host under the same registrable domain can *set* a domain-scoped
+ * `reef_oauth` that the browser will then send here. Both arrive, and
+ * `parse` keeps whichever the browser listed first — which is the more specific
+ * `Path`, and that is the attacker's to choose. The transaction the callback
+ * validates its `state` against would be one the attacker started.
+ *
+ * `__Host-` forbids `Domain` at the browser, so the tossed cookie is refused at
+ * the source rather than disambiguated here. It also requires `Secure`, hence
+ * the fallback: the accepted all-loopback HTTP topology cannot carry the prefix,
+ * and a cookie named with one there is silently discarded on every response.
+ * `REEF_SESSION_COOKIE_NAME` is validated against the same rule in
+ * `config.server.ts` — this is that reasoning applied to the cookie whose name
+ * is not configurable.
+ */
+export function oauthCookieName(config: RequiredAuthConfig): string {
+  return authCookieSecure(config) ? `__Host-${OAUTH_COOKIE_NAME}` : OAUTH_COOKIE_NAME
+}
+
 function oauthCookie(config: RequiredAuthConfig) {
-  return createCookie(OAUTH_COOKIE_NAME, {
+  return createCookie(oauthCookieName(config), {
     httpOnly: true,
     maxAge: OAUTH_MAX_AGE_SECONDS,
     path: '/',
@@ -137,14 +198,16 @@ function encryptionKey(secret: string): Buffer {
   return createHash('sha256').update(secret).digest()
 }
 
-function isOAuthTransaction(value: unknown): value is OAuthTransaction {
+function isStoredOAuthTransaction(value: unknown): value is StoredOAuthTransaction {
   if (!value || typeof value !== 'object') return false
-  const candidate = value as Partial<OAuthTransaction>
+  const candidate = value as Partial<StoredOAuthTransaction>
 
   return (
     typeof candidate.codeVerifier === 'string' &&
     typeof candidate.returnTo === 'string' &&
-    typeof candidate.state === 'string'
+    typeof candidate.state === 'string' &&
+    typeof candidate.issuedAt === 'number' &&
+    Number.isFinite(candidate.issuedAt)
   )
 }
 
