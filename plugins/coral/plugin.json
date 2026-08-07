@@ -2,7 +2,7 @@
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "coral",
   "version": "0.3.0",
-  "description": "Query GitHub, Jira, Slack, Datadog, Linear, and other sources with Coral SQL.",
+  "description": "Query APIs, databases, files, and internal systems through one read-only SQL interface for AI agents.",
   "author": {
     "name": "Coral",
     "email": "legal@withcoral.com",
@@ -16,15 +16,15 @@
     "com.openai": {
       "interface": {
         "displayName": "Coral",
-        "shortDescription": "Query anything with SQL",
-        "longDescription": "Use Coral to query connected data sources such as GitHub, Jira, Slack, Datadog, Linear, Sentry, and local files from Codex. Run SQL over installed sources, join results across systems, and bring issue, PR, alert, incident, chat, and file context into coding tasks.",
+        "shortDescription": "Query connected data with SQL",
+        "longDescription": "Give Codex accurate, token-efficient access to APIs, databases, files, and internal systems through one read-only SQL interface. Query and join sources across code, issues, incidents, observability, and team communication while Coral handles authentication, pagination, rate limits, schema mapping, and caching.",
         "developerName": "Coral",
         "category": "Engineering",
         "capabilities": ["Interactive", "Read"],
         "websiteURL": "https://withcoral.com/",
         "privacyPolicyURL": "https://withcoral.com/privacy",
         "termsOfServiceURL": "https://withcoral.com/terms",
-        "defaultPrompt": ["Check related issues, PRs, alerts, and Slack context"],
+        "defaultPrompt": ["Use Coral to check related issues, pull requests, alerts, incidents, and team discussions before making this change."],
         "brandColor": "#398125",
         "composerIcon": "./assets/icon.png",
         "logo": "./assets/icon.png",
