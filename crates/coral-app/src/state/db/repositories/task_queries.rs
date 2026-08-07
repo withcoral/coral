@@ -59,6 +59,21 @@ where
             .to_owned();
         self.session.fetch_all(statement).await
     }
+
+    #[cfg(test)]
+    pub(in crate::state::db) async fn exists_for_task(
+        &mut self,
+        task_id: &str,
+    ) -> Result<bool, DbError> {
+        let statement = Query::select()
+            .column(TaskQueries::Id)
+            .from(TaskQueries::Table)
+            .and_where(Expr::col(TaskQueries::TaskId).eq(task_id))
+            .limit(1)
+            .to_owned();
+        let row: Option<(String,)> = self.session.fetch_optional(statement).await?;
+        Ok(row.is_some())
+    }
 }
 
 impl TaskQueriesRepo<'_, CoralTx<'_>> {
@@ -286,6 +301,11 @@ mod tests {
             .expect("delete task");
         tx.commit().await.expect("commit task delete");
         assert!(
+            !task_query_exists_for_task(db, task_id)
+                .await
+                .expect("check cascaded task queries")
+        );
+        assert!(
             task_queries_for_workspace(db, workspace_id)
                 .await
                 .expect("list cascaded task queries")
@@ -302,5 +322,13 @@ mod tests {
             .task_queries()
             .list_for_workspace(workspace_id)
             .await
+    }
+
+    async fn task_query_exists_for_task(
+        db: &CoralDb,
+        task_id: &str,
+    ) -> Result<bool, crate::state::db::DbError> {
+        let mut session = db;
+        session.task_queries().exists_for_task(task_id).await
     }
 }
