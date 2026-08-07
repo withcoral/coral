@@ -20,6 +20,11 @@ export default [
     route(routePattern('workspaceFunctions'), 'routes/functions.tsx'),
     route(routePattern('workspaceSchema'), 'routes/schema.tsx', [
       index('routes/schema-empty.tsx'),
+      route('catalogs/:catalogName/:schemaName/:tableName', 'routes/schema-catalog-table.tsx'),
+      route(
+        'catalogs/:catalogName/:schemaName/functions/:functionName',
+        'routes/schema-catalog-table-function.tsx',
+      ),
       route(':schemaName/:tableName', 'routes/schema-table.tsx'),
       route(':schemaName/functions/:functionName', 'routes/schema-table-function.tsx'),
     ]),

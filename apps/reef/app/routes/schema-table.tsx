@@ -18,6 +18,7 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     columns: await fetchTableColumnsFromCoral(
       catalogClientForRequest(request),
       workspace,
+      undefined,
       params.schemaName,
       params.tableName,
       request.signal,

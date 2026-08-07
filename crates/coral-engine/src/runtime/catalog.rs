@@ -75,6 +75,7 @@ impl CatalogColumnFetchFailures {
 /// Catalog-only metadata for one SQL table-function surface.
 #[derive(Debug, Clone)]
 pub(crate) struct CatalogTableFunction {
+    pub(crate) catalog_name: Option<String>,
     pub(crate) schema_name: String,
     pub(crate) function_name: String,
     pub(crate) description: String,
@@ -162,6 +163,7 @@ fn build_table_functions_table(
         Field::new("kind", DataType::Utf8, false),
         Field::new("search_limits_json", DataType::Utf8, true),
         Field::new("guide", DataType::Utf8, false),
+        Field::new("catalog_name", DataType::Utf8, false),
     ]));
 
     let rows = catalog_table_functions(active_sources, catalog_only_table_functions);
@@ -190,6 +192,10 @@ fn build_table_functions_table(
             utf8_column(rows.iter().map(|row| Some(row.kind.as_str()))),
             utf8_column(search_limits_json.iter().map(|value| value.as_deref())),
             utf8_column(rows.iter().map(|row| Some(row.guide.as_str()))),
+            utf8_column(
+                rows.iter()
+                    .map(|row| Some(row.catalog_name.as_deref().unwrap_or_default())),
+            ),
         ],
     )
     .map_err(|error| DataFusionError::ArrowError(Box::new(error), None))?;
@@ -559,6 +565,12 @@ const TABLE_FUNCTIONS_COLUMNS: &[SystemColumnDefinition] = &[
         nullable: false,
         description: "User-facing query guidance for the table function.",
     },
+    SystemColumnDefinition {
+        name: "catalog_name",
+        data_type: "Utf8",
+        nullable: false,
+        description: "SQL catalog containing the table function. Empty for functions queried as schema_name.function_name.",
+    },
 ];
 
 const SYSTEM_TABLE_DEFINITIONS: &[SystemTableDefinition] = &[
@@ -900,6 +912,7 @@ pub(crate) fn collect_table_functions(
     catalog_table_functions(active_sources, catalog_only_table_functions)
         .into_iter()
         .map(|function| TableFunctionInfo {
+            catalog_name: function.catalog_name,
             schema_name: function.schema_name,
             function_name: function.function_name,
             description: function.description,
@@ -942,6 +955,10 @@ fn catalog_table_functions(
                 .table_functions
                 .iter()
                 .map(|function| CatalogTableFunction {
+                    catalog_name: match &source.qualified_name {
+                        SourceQualifiedName::Schema(_) => None,
+                        SourceQualifiedName::Catalog(catalog_name) => Some(catalog_name.clone()),
+                    },
                     schema_name: function.schema_name.clone(),
                     function_name: function.function_name.clone(),
                     description: function.description.clone(),
@@ -974,7 +991,11 @@ fn catalog_table_functions(
         .chain(catalog_only_table_functions.iter().cloned())
         .collect::<Vec<_>>();
     functions.sort_by(|left, right| {
-        (&left.schema_name, &left.function_name).cmp(&(&right.schema_name, &right.function_name))
+        (&left.catalog_name, &left.schema_name, &left.function_name).cmp(&(
+            &right.catalog_name,
+            &right.schema_name,
+            &right.function_name,
+        ))
     });
     functions
 }
@@ -2108,10 +2129,10 @@ mod tests {
     }
 
     #[test]
-    fn collect_table_functions_preserves_registered_function_schema() {
+    fn collect_table_functions_preserves_registered_function_catalog_and_schema() {
         let functions = collect_table_functions(
             &[RegisteredSource {
-                qualified_name: SourceQualifiedName::Schema("source_schema".to_string()),
+                qualified_name: SourceQualifiedName::Catalog("source_catalog".to_string()),
                 tables: Vec::new(),
                 table_functions: vec![RegisteredTableFunction {
                     schema_name: "function_schema".to_string(),
@@ -2131,6 +2152,12 @@ mod tests {
         );
 
         assert_eq!(functions.len(), 1);
+        assert_eq!(
+            functions
+                .first()
+                .and_then(|function| function.catalog_name.as_deref()),
+            Some("source_catalog")
+        );
         assert_eq!(
             functions
                 .first()

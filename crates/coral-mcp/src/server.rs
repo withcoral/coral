@@ -7,8 +7,8 @@ use coral_api::v1::{
     DescribeTableResponse, EndTaskRequest, ExecuteSqlRequest, FunctionWriteSurface,
     ListCatalogRequest, ListCatalogResponse, ListColumnsRequest, ListSourcesRequest,
     PaginationRequest, QueryGuideReadContext, SearchRequest, Source, StartTaskRequest,
-    SubmitFeedbackRequest, TableSummary as ProtoTableSummary, TaskStatus as ProtoTaskStatus,
-    catalog_item,
+    SubmitFeedbackRequest, TableFunction as ProtoTableFunction, TableSummary as ProtoTableSummary,
+    TaskStatus as ProtoTaskStatus, catalog_item,
 };
 use coral_client::{
     AppClient, CatalogClient, FeedbackClient, FunctionClient, QueryClient, SearchClient,
@@ -416,7 +416,7 @@ impl CoralMcpServer {
 
     async fn load_guide_catalog(
         &self,
-    ) -> Result<(Vec<ProtoTableSummary>, Vec<String>), tonic::Status> {
+    ) -> Result<(Vec<ProtoTableSummary>, Vec<ProtoTableFunction>), tonic::Status> {
         self.load_catalog(
             None,
             None,
@@ -480,10 +480,10 @@ impl CoralMcpServer {
 
     async fn load_sources_and_guide_catalog(
         &self,
-    ) -> Result<(Vec<Source>, Vec<ProtoTableSummary>, Vec<String>), tonic::Status> {
-        let (sources, (tables, table_function_schema_names)) =
+    ) -> Result<(Vec<Source>, Vec<ProtoTableSummary>, Vec<ProtoTableFunction>), tonic::Status> {
+        let (sources, (tables, table_functions)) =
             tokio::try_join!(self.load_sources(), self.load_guide_catalog())?;
-        Ok((sources, tables, table_function_schema_names))
+        Ok((sources, tables, table_functions))
     }
 
     async fn query_rows(
@@ -503,7 +503,10 @@ impl CoralMcpServer {
                     .guides
                     .into_iter()
                     .map(|guide| {
+                        let catalog =
+                            (!guide.catalog_name.is_empty()).then_some(guide.catalog_name);
                         SqlGuideValue::new(
+                            catalog,
                             guide.schema_name,
                             guide.resource_name,
                             guide.guide,
@@ -1036,7 +1039,7 @@ impl ServerHandler for CoralMcpServer {
         telemetry::instrument_protocol(span, async {
             match request.uri.as_str() {
                 "coral://guide" => {
-                    let (sources, tables, table_function_schema_names) = self
+                    let (sources, tables, table_functions) = self
                         .load_sources_and_guide_catalog()
                         .await
                         .map_err(|status| status_to_error_data(&status))?;
@@ -1045,7 +1048,7 @@ impl ServerHandler for CoralMcpServer {
                             guide_resource_content(
                                 &sources,
                                 &tables,
-                                &table_function_schema_names,
+                                &table_functions,
                                 self.options.observed_values_search_enabled,
                             ),
                             request.uri,
@@ -1150,19 +1153,19 @@ fn catalog_item_kind_from_tool(kind: Option<CatalogToolKind>) -> ProtoCatalogIte
 
 fn guide_catalog_from_response(
     response: ListCatalogResponse,
-) -> (Vec<ProtoTableSummary>, Vec<String>) {
+) -> (Vec<ProtoTableSummary>, Vec<ProtoTableFunction>) {
     let mut tables = Vec::new();
-    let mut table_function_schema_names = Vec::new();
+    let mut table_functions = Vec::new();
     for item in response.items {
         match item.item {
             Some(catalog_item::Item::Table(table)) => tables.push(table),
             Some(catalog_item::Item::TableFunction(function)) => {
-                table_function_schema_names.push(function.schema_name);
+                table_functions.push(function);
             }
             None => {}
         }
     }
-    (tables, table_function_schema_names)
+    (tables, table_functions)
 }
 
 fn normalize_query_examples(

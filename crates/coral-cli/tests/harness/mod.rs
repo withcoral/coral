@@ -366,6 +366,7 @@ fn mock_validate_response() -> ValidateSourceResponse {
         ],
         table_functions: vec![TableFunction {
             workspace: Some(workspace()),
+            catalog_name: String::new(),
             schema_name: "github".to_string(),
             name: "search_issues".to_string(),
             description: "Search issues".to_string(),

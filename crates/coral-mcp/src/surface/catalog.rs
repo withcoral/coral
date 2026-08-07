@@ -621,6 +621,7 @@ struct CatalogTableValue<'a> {
 #[schemars(deny_unknown_fields)]
 struct CatalogTableFunctionItemValue<'a> {
     kind: CatalogTableFunctionKind,
+    catalog_name: &'a str,
     schema_name: &'a str,
     name: String,
     sql_reference: String,
@@ -633,10 +634,15 @@ impl<'a> From<&'a ProtoTableFunction> for CatalogTableFunctionItemValue<'a> {
     fn from(function: &'a ProtoTableFunction) -> Self {
         Self {
             kind: CatalogTableFunctionKind::TableFunction,
+            catalog_name: &function.catalog_name,
             schema_name: &function.schema_name,
-            name: format!("{}.{}", function.schema_name, function.name),
+            name: format_table_name(
+                optional_catalog_name(&function.catalog_name),
+                &function.schema_name,
+                &function.name,
+            ),
             sql_reference: format_schema_table_equivalent(
-                None,
+                optional_catalog_name(&function.catalog_name),
                 &function.schema_name,
                 &function.name,
             ),
@@ -729,12 +735,15 @@ struct ColumnSearchRowValue<'a>(
 
 #[cfg(test)]
 mod tests {
-    use coral_api::v1::{Column, ColumnSearchResult, ListColumnsResponse, PaginationResponse};
+    use coral_api::v1::{
+        CatalogItem, Column, ColumnSearchResult, ListCatalogResponse, ListColumnsResponse,
+        PaginationResponse, TableFunction, TableFunctionArgument, catalog_item,
+    };
     use serde_json::{Map, Value, json};
 
     use super::{
-        DEFAULT_IGNORE_CASE, DEFAULT_REQUIRED_ONLY, list_catalog_arguments, list_columns_arguments,
-        list_columns_value,
+        DEFAULT_IGNORE_CASE, DEFAULT_REQUIRED_ONLY, list_catalog_arguments, list_catalog_value,
+        list_columns_arguments, list_columns_value,
     };
     use crate::surface::discovery::{DEFAULT_PAGINATION_LIMIT, DEFAULT_PAGINATION_OFFSET};
 
@@ -834,6 +843,39 @@ mod tests {
                 7,
                 ["column_name"]
             ])
+        );
+    }
+
+    #[test]
+    fn list_catalog_renders_catalog_qualified_table_functions() {
+        let response = ListCatalogResponse {
+            items: vec![CatalogItem {
+                item: Some(catalog_item::Item::TableFunction(TableFunction {
+                    catalog_name: "github_v4".to_string(),
+                    schema_name: "issues".to_string(),
+                    name: "list_for_repo".to_string(),
+                    arguments: vec![TableFunctionArgument {
+                        name: "owner".to_string(),
+                        required: true,
+                        ..TableFunctionArgument::default()
+                    }],
+                    ..TableFunction::default()
+                })),
+            }],
+            ..ListCatalogResponse::default()
+        };
+
+        let value = list_catalog_value(&response);
+
+        assert_eq!(value["items"][0]["catalog_name"], "github_v4");
+        assert_eq!(value["items"][0]["name"], "github_v4.issues.list_for_repo");
+        assert_eq!(
+            value["items"][0]["sql_reference"],
+            "github_v4.issues.list_for_repo"
+        );
+        assert_eq!(
+            value["items"][0]["sql_call_example"],
+            "github_v4.issues.list_for_repo(owner => '<value>')"
         );
     }
 }

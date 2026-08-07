@@ -117,6 +117,7 @@ async fn list_catalog_returns_tables_and_table_functions_with_filters_and_pagina
         catalog_item::Item::TableFunction(function) => function,
         catalog_item::Item::Table(_) => panic!("expected table function"),
     };
+    assert_eq!(function.catalog_name, "");
     assert_eq!(function.schema_name, "searchy");
     assert_eq!(function.name, "lookup_issue");
     assert_eq!(function.guide, "Use this function for exact issue lookup.");
@@ -160,6 +161,28 @@ async fn list_catalog_returns_tables_and_table_functions_with_filters_and_pagina
             catalog_item::Item::TableFunction(_)
         )
     }));
+}
+
+#[tokio::test]
+async fn catalog_discovery_table_functions_sql_exposes_empty_v3_catalog_name() {
+    let harness = GrpcHarness::new().await;
+    harness
+        .import_source(
+            fixture_manifest_with_functions_yaml(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await;
+
+    let rows = harness
+        .execute_sql_rows(
+            "SELECT catalog_name FROM coral.table_functions \
+             WHERE schema_name = 'searchy' ORDER BY function_name",
+        )
+        .await;
+
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().all(|row| row["catalog_name"] == ""));
 }
 
 #[tokio::test]

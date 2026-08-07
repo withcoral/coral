@@ -68,3 +68,44 @@ it('shows table-function arguments and result columns from the parent schema res
   await expect.element(screen.getByRole('cell', { name: 'general, random' })).toBeVisible()
   await expect.element(screen.getByRole('cell', { name: 'Message text.' })).toBeVisible()
 })
+
+it('shows the catalog in a catalog-qualified table-function heading', async () => {
+  const schema = {
+    connectors: [
+      {
+        catalogName: 'slack_v4',
+        items: SCHEMA.connectors[0].items,
+        name: 'api',
+      },
+    ],
+  } satisfies SchemaResponse
+  const router = createMemoryRouter(
+    [
+      {
+        children: [
+          {
+            element: <SchemaTableFunctionView />,
+            path: 'catalogs/:catalogName/:schemaName/functions/:functionName',
+          },
+        ],
+        element: <Outlet context={schema} />,
+        path: routePattern('workspaceSchema'),
+      },
+    ],
+    {
+      initialEntries: [
+        routePath('workspaceCatalogSchemaTableFunction', {
+          catalogName: 'slack_v4',
+          functionName: 'messages',
+          schemaName: 'api',
+          workspaceId: 'analytics',
+        }),
+      ],
+    },
+  )
+  const screen = await render(<RouterProvider router={router} />)
+
+  await expect
+    .element(screen.getByRole('heading', { name: 'slack_v4.api.messages(channel, ...)' }))
+    .toBeVisible()
+})
