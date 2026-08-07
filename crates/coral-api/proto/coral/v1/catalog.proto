@@ -151,6 +151,9 @@ message TableFunction {
   SearchLimits search_limits = 8;
   // User-facing query guidance.
   string guide = 9;
+  // SQL catalog containing the schema. Empty for two-part functions;
+  // otherwise the function is addressed as catalog_name.schema_name.name.
+  string catalog_name = 10;
 }
 
 // Catalog item kind filter for unified discovery.
