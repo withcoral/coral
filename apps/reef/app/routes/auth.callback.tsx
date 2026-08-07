@@ -3,6 +3,7 @@ import type { Route } from './+types/auth.callback'
 import { reefAuthConfig } from '@/auth/config.server'
 import { completeCoralOAuthLogin } from '@/auth/coral-oauth.server'
 import { markAuthResponsePrivate } from '@/auth/response.server'
+import { routePath } from '@/routing/routemap'
 import * as Button from '@/wax/components/button'
 import { Typography } from '@/wax/components/typography'
 
@@ -35,7 +36,7 @@ export function ErrorBoundary() {
           Try signing in again. If the problem continues, contact your administrator.
         </Typography.Body>
         <div className={styles.actions}>
-          <Button.InternalLink to="/login">Try again</Button.InternalLink>
+          <Button.InternalLink to={routePath('login')}>Try again</Button.InternalLink>
         </div>
       </section>
     </main>

@@ -70,8 +70,34 @@ describe('login route', () => {
     authMocks.reefAuthConfig.mockReturnValue(requiredConfig)
     authMocks.readReefSession.mockResolvedValue(null)
 
-    await expect(runLoaderValue('https://reef.example.test/login?signedOut=1')).resolves.toBeNull()
+    await expect(runLoaderValue('https://reef.example.test/login?signedOut=1')).resolves.toEqual({
+      returnTo: '/',
+    })
     expect(authMocks.startCoralOAuthLogin).not.toHaveBeenCalled()
+  })
+
+  // The interstitial renders instead of redirecting, so unlike every other
+  // branch it has to carry the destination across the pause itself.
+  it('carries a destination through the interstitial', async () => {
+    authMocks.reefAuthConfig.mockReturnValue(requiredConfig)
+    authMocks.readReefSession.mockResolvedValue(null)
+
+    await expect(
+      runLoaderValue(
+        'https://reef.example.test/login?signedOut=1&returnTo=%2Fworkspaces%2Fanalytics%3Ftab%3Dmine',
+      ),
+    ).resolves.toEqual({ returnTo: '/workspaces/analytics?tab=mine' })
+  })
+
+  it('drops a destination the interstitial should not send anyone to', async () => {
+    authMocks.reefAuthConfig.mockReturnValue(requiredConfig)
+    authMocks.readReefSession.mockResolvedValue(null)
+
+    await expect(
+      runLoaderValue(
+        'https://reef.example.test/login?signedOut=1&returnTo=%2F..%2F%2Fevil.example',
+      ),
+    ).resolves.toEqual({ returnTo: '/' })
   })
 
   it('starts hosted OAuth and preserves its redirect and transaction cookie', async () => {

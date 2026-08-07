@@ -7,7 +7,7 @@ export const page = style({
   backgroundColor: theme.surface.mainContent,
   boxSizing: 'border-box',
   display: 'flex',
-  minHeight: '100vh',
+  minHeight: '100dvh',
   padding: '24px',
 })
 
