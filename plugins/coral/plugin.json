@@ -1,0 +1,15 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "coral",
+  "version": "0.3.0",
+  "description": "Query GitHub, Jira, Slack, Datadog, Linear, and other sources with Coral SQL.",
+  "author": {
+    "name": "Coral",
+    "email": "legal@withcoral.com",
+    "url": "https://withcoral.com/"
+  },
+  "homepage": "https://withcoral.com",
+  "repository": "https://github.com/withcoral/coral",
+  "license": "Apache-2.0",
+  "keywords": ["coral", "sql"]
+}
