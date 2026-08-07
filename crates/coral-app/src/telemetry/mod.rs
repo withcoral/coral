@@ -66,7 +66,6 @@ pub(crate) fn app_error_type(error: &AppError) -> &'static str {
         AppError::FunctionAlreadyExists(_) => "FUNCTION_ALREADY_EXISTS",
         AppError::WorkspaceNotFound(_) => "WORKSPACE_NOT_FOUND",
         AppError::WorkspaceAlreadyExists(_) => "WORKSPACE_ALREADY_EXISTS",
-        AppError::WorkspaceMemberRoleConflict { .. } => "WORKSPACE_MEMBER_ROLE_CONFLICT",
         AppError::LastWorkspaceOwner(_) => "LAST_WORKSPACE_OWNER",
         AppError::InvalidInput(_) => "INVALID_INPUT",
         AppError::FailedPrecondition(_) => "FAILED_PRECONDITION",
@@ -769,13 +768,6 @@ mod tests {
             ),
             (AppError::UserNotFound(String::new()), "USER_NOT_FOUND"),
             (AppError::IssuerMismatch, "ISSUER_MISMATCH"),
-            (
-                AppError::WorkspaceMemberRoleConflict {
-                    workspace: String::new(),
-                    user_id: String::new(),
-                },
-                "WORKSPACE_MEMBER_ROLE_CONFLICT",
-            ),
             (
                 AppError::LastWorkspaceOwner(String::new()),
                 "LAST_WORKSPACE_OWNER",

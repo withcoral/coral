@@ -18,7 +18,11 @@ pub(crate) struct WorkspaceMemberView {
 pub(crate) enum AddMemberOutcome {
     Added(WorkspaceMemberView),
     ExistingSameRole(WorkspaceMemberView),
-    RoleConflict,
+    /// The membership existed with a different role and now holds the
+    /// requested one.
+    RoleUpdated(WorkspaceMemberView),
+    /// Demoting this member would leave the workspace with no owner.
+    LastOwnerProtected,
     WorkspaceNotFound,
     UserNotFound,
 }
@@ -98,8 +102,29 @@ impl CoralDb {
             .role_for_user_id(workspace_id, user_id)
             .await?
         {
-            tx.rollback().await?;
-            return Ok(existing_add_outcome(user, existing_role, role));
+            if existing_role == role {
+                tx.rollback().await?;
+                return Ok(AddMemberOutcome::ExistingSameRole(member_view(user, role)));
+            }
+            // Adding someone who is already a member states the role they
+            // should hold, so it moves them to it. The one move that cannot be
+            // honored is the one that would leave nobody in charge.
+            if existing_role == MemberRole::Owner
+                && tx.workspace_members().owner_count(workspace_id).await? <= 1
+            {
+                tx.rollback().await?;
+                return Ok(AddMemberOutcome::LastOwnerProtected);
+            }
+            if !tx
+                .workspace_members()
+                .update_role(workspace_id, user_id, role)
+                .await?
+            {
+                tx.rollback().await?;
+                return Ok(AddMemberOutcome::WorkspaceNotFound);
+            }
+            tx.commit().await?;
+            return Ok(AddMemberOutcome::RoleUpdated(member_view(user, role)));
         }
         match tx
             .workspace_members()
@@ -111,6 +136,11 @@ impl CoralDb {
                 Ok(AddMemberOutcome::Added(member_view(user, role)))
             }
             Err(error) if error.is_unique_violation() => {
+                // `hold_for_child_mutation` serializes membership writes, so a
+                // membership appearing between the read above and this insert
+                // means the lock did not hold. Report what is true now rather
+                // than guessing: the role this caller asked for is applied on
+                // their next attempt.
                 tx.rollback().await?;
                 let mut session = self;
                 let Some(existing_role) = session
@@ -120,7 +150,10 @@ impl CoralDb {
                 else {
                     return Err(error);
                 };
-                Ok(existing_add_outcome(user, existing_role, role))
+                Ok(AddMemberOutcome::ExistingSameRole(member_view(
+                    user,
+                    existing_role,
+                )))
             }
             Err(error) => Err(error),
         }
@@ -161,18 +194,6 @@ impl CoralDb {
             tx.rollback().await?;
             Ok(RemoveMemberOutcome::MemberNotFound)
         }
-    }
-}
-
-fn existing_add_outcome(
-    user: UserRecord,
-    existing_role: MemberRole,
-    requested_role: MemberRole,
-) -> AddMemberOutcome {
-    if existing_role == requested_role {
-        AddMemberOutcome::ExistingSameRole(member_view(user, existing_role))
-    } else {
-        AddMemberOutcome::RoleConflict
     }
 }
 
@@ -292,29 +313,27 @@ mod tests {
             member_add.expect("member-role add"),
             owner_add.expect("owner-role add"),
         ];
-        let added_role = outcomes
+        // One add creates the membership and the other moves it, in whichever
+        // order the lock granted. Both succeed, and the role that survives is
+        // the one the second add asked for.
+        let settled_role = outcomes
             .iter()
             .find_map(|outcome| match outcome {
-                AddMemberOutcome::Added(member) => Some(member.role),
-                AddMemberOutcome::ExistingSameRole(_)
-                | AddMemberOutcome::RoleConflict
+                AddMemberOutcome::RoleUpdated(member) => Some(member.role),
+                AddMemberOutcome::Added(_)
+                | AddMemberOutcome::ExistingSameRole(_)
+                | AddMemberOutcome::LastOwnerProtected
                 | AddMemberOutcome::WorkspaceNotFound
                 | AddMemberOutcome::UserNotFound => None,
             })
-            .expect("one conflicting add must win");
+            .expect("the second concurrent add must move the role");
         assert_eq!(
             outcomes
                 .iter()
                 .filter(|outcome| matches!(outcome, AddMemberOutcome::Added(_)))
                 .count(),
-            1
-        );
-        assert_eq!(
-            outcomes
-                .iter()
-                .filter(|outcome| matches!(outcome, AddMemberOutcome::RoleConflict))
-                .count(),
-            1
+            1,
+            "exactly one add may create the membership"
         );
         let mut session = db;
         assert_eq!(
@@ -322,9 +341,9 @@ mod tests {
                 .workspace_members()
                 .role_for_user_id(&conflicting_add_workspace_id, &conflicting_member_id)
                 .await
-                .expect("read role after conflicting adds"),
-            Some(added_role),
-            "the losing conflicting add must not mutate the winning role"
+                .expect("read role after concurrent adds"),
+            Some(settled_role),
+            "the stored role must be the one the moving add asked for"
         );
 
         let owner_removal_workspace_id = format!("owner-removal-{suffix}");

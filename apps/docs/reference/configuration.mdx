@@ -294,11 +294,12 @@ workspace an earlier single-user run left it owning, once a person owns it too:
 `ListWorkspaceMembers` takes `{"workspace": {"name": "analytics"}}` and is how
 an owner verifies either change.
 
-Repeating an identical add succeeds and returns the existing membership. Asking
-for a different role never overwrites the current one; it answers
-`user '<user-id>' already has a different role in workspace 'analytics'`, so
-remove the membership and add it again. Removing the only owner is refused with
-`workspace 'analytics' must retain at least one owner` — which is also why a
+Repeating an identical add succeeds and returns the existing membership. Adding
+someone who already belongs states the role they should hold, so asking for a
+different one moves them to it — that is how you promote a member to owner or
+step an owner back down. The one move Coral refuses is the one that would leave
+the workspace with nobody in charge: demoting or removing the only owner answers
+`workspace 'analytics' must retain at least one owner`, which is also why a
 workspace never becomes ownerless on its own.
 
 ### Rebind the identity-provider issuer

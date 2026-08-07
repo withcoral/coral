@@ -321,7 +321,7 @@ mod tests {
         )
         .await
         .expect("identical add remains idempotent");
-        let conflict = WorkspaceServiceApi::add_workspace_member(
+        let promoted = WorkspaceServiceApi::add_workspace_member(
             &fixture.service,
             add_request(
                 &fixture,
@@ -331,8 +331,26 @@ mod tests {
             ),
         )
         .await
-        .expect_err("different-role add conflicts");
-        assert_eq!(conflict.code(), Code::AlreadyExists);
+        .expect("adding an existing member with a new role moves them to it")
+        .into_inner()
+        .member
+        .expect("promoted membership");
+        assert_eq!(promoted.role, WorkspaceRole::Owner as i32);
+        let demoted = WorkspaceServiceApi::add_workspace_member(
+            &fixture.service,
+            add_request(
+                &fixture,
+                fixture.owner.clone(),
+                &fixture.member_id,
+                WorkspaceRole::Member as i32,
+            ),
+        )
+        .await
+        .expect("and moves them back, since the workspace keeps another owner")
+        .into_inner()
+        .member
+        .expect("demoted membership");
+        assert_eq!(demoted.role, WorkspaceRole::Member as i32);
 
         let member = Principal::parse(&fixture.member_id, PrincipalKind::User).expect("member");
         let denied = WorkspaceServiceApi::add_workspace_member(

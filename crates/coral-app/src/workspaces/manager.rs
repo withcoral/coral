@@ -267,13 +267,12 @@ impl WorkspaceManager {
             )
             .await?
         {
-            AddMemberOutcome::Added(member) | AddMemberOutcome::ExistingSameRole(member) => {
-                Ok(member)
+            AddMemberOutcome::Added(member)
+            | AddMemberOutcome::ExistingSameRole(member)
+            | AddMemberOutcome::RoleUpdated(member) => Ok(member),
+            AddMemberOutcome::LastOwnerProtected => {
+                Err(AppError::LastWorkspaceOwner(workspace_name.to_string()))
             }
-            AddMemberOutcome::RoleConflict => Err(AppError::WorkspaceMemberRoleConflict {
-                workspace: workspace_name.to_string(),
-                user_id: user_id.to_string(),
-            }),
             AddMemberOutcome::WorkspaceNotFound => {
                 Err(AppError::WorkspaceNotFound(workspace_name.to_string()))
             }
@@ -607,11 +606,26 @@ mod tests {
             .await
             .expect("repeat identical add");
         assert_eq!(first, repeated);
+
+        // Adding someone who is already a member states the role they should
+        // hold, so it moves them to it.
+        let promoted = manager
+            .add_workspace_member(&workspace, &member_id, MemberRole::Owner)
+            .await
+            .expect("adding an existing member with a new role promotes them");
+        assert_eq!(promoted.role, MemberRole::Owner);
+        let demoted = manager
+            .add_workspace_member(&workspace, &member_id, MemberRole::Member)
+            .await
+            .expect("and moves them back");
+        assert_eq!(demoted.role, MemberRole::Member);
+
+        // The one move that cannot be honored leaves nobody in charge.
         assert!(matches!(
             manager
-                .add_workspace_member(&workspace, &member_id, MemberRole::Owner)
+                .add_workspace_member(&workspace, &owner_id, MemberRole::Member)
                 .await,
-            Err(AppError::WorkspaceMemberRoleConflict { .. })
+            Err(AppError::LastWorkspaceOwner(_))
         ));
 
         let members = manager
