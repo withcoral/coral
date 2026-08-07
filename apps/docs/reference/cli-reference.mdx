@@ -531,7 +531,7 @@ By default, this server exposes:
 `describe` accepts `schema` and a bare `surface` name. Add `catalog` for a
 three-part table. Coral resolves whether the surface is a table or table
 function. An exact result returns the surface kind and metadata without
-repeating the requested target. A missing result returns `reason: missing`.
+repeating the requested target. A missing result returns `kind: missing`.
 
 When the `feedback` feature is enabled, the server also exposes a non-read-only `feedback` tool for blocked-agent reports. Feedback reports are stored locally and anonymous copies may be uploaded to Coral.
 

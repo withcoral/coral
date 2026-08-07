@@ -240,7 +240,7 @@ fn describe_output(
             DescribeTableFunctionValue::from(table_function),
         )),
         Some(Result::Missing(_)) => Ok(DescribeOutput::Missing(MissingSurfaceValue {
-            reason: MissingSurfaceReason::Missing,
+            kind: MissingSurfaceKind::Missing,
         })),
         None => Err(tonic::Status::internal(
             "describe catalog surface response missing result",
@@ -430,12 +430,12 @@ impl<'a> From<&'a ProtoTable> for DescribeTableValue<'a> {
 #[derive(Serialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 struct MissingSurfaceValue {
-    reason: MissingSurfaceReason,
+    kind: MissingSurfaceKind,
 }
 
 #[derive(Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
-enum MissingSurfaceReason {
+enum MissingSurfaceKind {
     Missing,
 }
 
@@ -771,7 +771,7 @@ mod tests {
         assert_absent(&function_only, &["name", "sql_reference", "schema_name"]);
 
         let missing = render(Some(Result::Missing(MissingCatalogSurface {})));
-        assert_eq!(missing, json!({"reason": "missing"}));
+        assert_eq!(missing, json!({"kind": "missing"}));
 
         for (case, output) in [
             ("table", table_only),

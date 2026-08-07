@@ -1530,7 +1530,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     assert_matches_output_schema(describe_tool, &described);
 
     let missing_table = describe_surface(client, &task_id, "local_messages", "missing").await;
-    assert_eq!(missing_table, json!({"reason": "missing"}));
+    assert_eq!(missing_table, json!({"kind": "missing"}));
     assert_matches_output_schema(describe_tool, &missing_table);
 
     client
