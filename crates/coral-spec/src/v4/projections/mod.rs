@@ -7,6 +7,7 @@ mod validation;
 
 pub use derive::generate_projection_catalog;
 pub use model::*;
+pub use names::operation_sql_schema_name;
 pub(super) use pagination::pagination_query_param_names;
 pub use runtime::{
     mcp_projection_arg_specs, projection_arg_specs, projection_column_specs,

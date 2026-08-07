@@ -2409,7 +2409,9 @@ surface:
                 "projection_override={projection_override}, metadata_override={metadata_override}: {message}"
             );
             assert!(
-                message.contains("Re-add the source or reconcile the selected artifact files"),
+                message.contains(
+                    "Reinstall the source or explicitly regenerate its materialized artifacts"
+                ),
                 "projection_override={projection_override}, metadata_override={metadata_override}: {message}"
             );
             assert!(
@@ -2452,7 +2454,7 @@ surface:
             "unexpected error: {message}"
         );
         assert!(
-            !message.contains("Re-add the source"),
+            !message.contains("Reinstall the source"),
             "unexpected error: {message}"
         );
     }
@@ -2694,7 +2696,7 @@ surface:
             ),
             "unexpected error: {error:#}"
         );
-        assert!(error.to_string().contains("Re-add the source"));
+        assert!(error.to_string().contains("Reinstall the source"));
     }
 
     #[test]

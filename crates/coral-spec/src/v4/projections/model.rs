@@ -154,6 +154,7 @@ mod tests {
             yaml.contains("require_guide_read: true"),
             "required guide-read policy should serialize: {yaml}"
         );
+        assert!(!yaml.contains("sql_name:"), "SQL placement leaked: {yaml}");
         assert!(!yaml.contains("surface_id:"), "surface ID leaked: {yaml}");
 
         let decoded = serde_yaml::from_str::<ProjectionCatalog>(&yaml)

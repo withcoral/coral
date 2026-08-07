@@ -2409,8 +2409,8 @@ surface:
         let issues = projections
             .projections
             .iter_mut()
-            .find(|projection| projection.name == "issues")
-            .expect("issues projection");
+            .find(|projection| projection.name == "list")
+            .expect("list projection");
         issues.guide = "Use issue_search for lookups.".to_string();
         issues.require_guide_read = true;
         let override_path = fixture
@@ -2426,7 +2426,7 @@ surface:
         )
         .expect("write projection override");
 
-        let sql = "SELECT id, title FROM github_v4_query.issues";
+        let sql = "SELECT id, title FROM github_v4_query.list";
         let required = fixture
             .manager
             .execute_sql(
@@ -2441,7 +2441,7 @@ surface:
             panic!("overridden projection guide should be required");
         };
         let required = required.first().expect("required projection guide");
-        assert_eq!(required.resource_name, "issues");
+        assert_eq!(required.resource_name, "list");
         assert_eq!(required.guide, "Use issue_search for lookups.");
         assert!(
             server
