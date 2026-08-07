@@ -196,9 +196,64 @@ describe('Reef auth config', () => {
       { REEF_SESSION_MAX_AGE_SECONDS: '0' },
       'REEF_SESSION_MAX_AGE_SECONDS must be a positive integer',
     ],
+    // Each of these serializes into `Set-Cookie` without complaint and is then
+    // dropped by the browser, so the only symptom is a session that never
+    // persists. A separator, whitespace, and a control character cover the three
+    // ways a name leaves the token grammar.
+    [
+      { REEF_SESSION_COOKIE_NAME: 'reef session' },
+      'REEF_SESSION_COOKIE_NAME must be an RFC 6265 cookie name',
+    ],
+    [
+      { REEF_SESSION_COOKIE_NAME: 'reef=session' },
+      'REEF_SESSION_COOKIE_NAME must be an RFC 6265 cookie name',
+    ],
+    [
+      { REEF_SESSION_COOKIE_NAME: 'reef;session' },
+      'REEF_SESSION_COOKIE_NAME must be an RFC 6265 cookie name',
+    ],
+    [
+      { REEF_SESSION_COOKIE_NAME: 'reef\tsession' },
+      'REEF_SESSION_COOKIE_NAME must be an RFC 6265 cookie name',
+    ],
+    [
+      { REEF_SESSION_COOKIE_NAME: 'reef,session' },
+      'REEF_SESSION_COOKIE_NAME must be an RFC 6265 cookie name',
+    ],
+    [
+      { REEF_SESSION_COOKIE_NAME: 'reef"session"' },
+      'REEF_SESSION_COOKIE_NAME must be an RFC 6265 cookie name',
+    ],
   ])('rejects invalid required config %#', (overrides, message) => {
     expect(() => requiredConfig(overrides)).toThrow(message)
   })
+
+  it('accepts every character the cookie-name grammar allows', () => {
+    const name = "reef_session-0.9!#$%&'*+^`|~"
+    expect(requiredConfig({ REEF_SESSION_COOKIE_NAME: name }).cookieName).toBe(name)
+  })
+
+  // A `__Host-`/`__Secure-` name is well-formed but browser-enforced: without
+  // `Secure` the cookie is discarded, and Reef derives `Secure` from the public
+  // URL rather than from a switch. So the same name is correct on HTTPS and
+  // unusable on loopback HTTP, and only the config knows which it is.
+  it.each(['__Host-reef_session', '__Secure-reef_session'])(
+    'accepts %s over HTTPS and rejects it over loopback HTTP',
+    (name) => {
+      expect(requiredConfig({ REEF_SESSION_COOKIE_NAME: name }).cookieName).toBe(name)
+
+      expect(() =>
+        resolveAuthConfig({
+          env: requiredEnv({
+            REEF_AUTH_ISSUER: 'http://127.0.0.1:9080',
+            REEF_PUBLIC_URL: 'http://127.0.0.1:5173',
+            REEF_SESSION_COOKIE_NAME: name,
+          }),
+          isDesktopBuild: false,
+        }),
+      ).toThrow('REEF_SESSION_COOKIE_NAME may use a __Host- or __Secure- prefix only')
+    },
+  )
 
   it('keeps redundant auth settings out of the documented environment contract', () => {
     const example = readFileSync(new URL('../../.env.example', import.meta.url), 'utf8')

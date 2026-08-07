@@ -6,6 +6,12 @@ import type { AuthConfig, RequiredAuthConfig } from './types'
 const DEFAULT_COOKIE_NAME = 'reef_session'
 const DEFAULT_SESSION_MAX_AGE_SECONDS = 60 * 60
 
+// RFC 6265 gives a cookie name the RFC 9110 `token` grammar: letters, digits,
+// and `!#$%&'*+-.^_`|~`. Serialization does not enforce it — a name outside the
+// grammar is written into `Set-Cookie` faithfully and rejected by the browser,
+// so the only symptom is a session that never persists.
+const COOKIE_NAME_TOKEN = /^[\w!#$%&'*+.^`|~-]+$/
+
 interface AuthConfigInput {
   env: NodeJS.ProcessEnv
   isDesktopBuild: boolean
@@ -63,7 +69,7 @@ function requiredAuthConfig(env: NodeJS.ProcessEnv): RequiredAuthConfig {
   }
 
   return {
-    cookieName: optionalString(env.REEF_SESSION_COOKIE_NAME) ?? DEFAULT_COOKIE_NAME,
+    cookieName: cookieNameEnv(env.REEF_SESSION_COOKIE_NAME, publicUrl),
     issuer,
     mode: 'required',
     publicUrl,
@@ -89,7 +95,11 @@ export function authRedirectUri(config: RequiredAuthConfig): string {
 }
 
 export function authCookieSecure(config: RequiredAuthConfig): boolean {
-  return new URL(config.publicUrl).protocol === 'https:'
+  return isSecureOrigin(config.publicUrl)
+}
+
+function isSecureOrigin(publicUrl: string): boolean {
+  return new URL(publicUrl).protocol === 'https:'
 }
 
 function requiredString(value: string | undefined, name: string): string {
@@ -161,6 +171,34 @@ function unbracketedHostname(hostname: string): string {
 
 function isLocalhostSubdomain(hostname: string): boolean {
   return unbracketedHostname(hostname).toLowerCase().replace(/\.$/, '').endsWith('.localhost')
+}
+
+// Validated here rather than left to `Set-Cookie`, because every way this value
+// can be wrong fails silently and late. The name reaches serialization unchecked,
+// the browser drops the cookie without telling anyone, and the first symptom is a
+// callback that authenticated successfully and then landed on a page with no
+// session — a login loop with nothing in any log to explain it. A configuration
+// error belongs at boot.
+function cookieNameEnv(value: string | undefined, publicUrl: string): string {
+  const configured = optionalString(value)
+  if (!configured) return DEFAULT_COOKIE_NAME
+
+  if (!COOKIE_NAME_TOKEN.test(configured)) {
+    throw new Error(
+      "REEF_SESSION_COOKIE_NAME must be an RFC 6265 cookie name: letters, digits, or !#$%&'*+-.^_`|~",
+    )
+  }
+  // `__Host-` and `__Secure-` are enforced prefixes, not decoration: a browser
+  // discards a cookie carrying either unless it was set with `Secure`. Reef
+  // derives `Secure` from REEF_PUBLIC_URL, so over loopback HTTP such a name is
+  // accepted by the grammar above and then silently discarded on every response.
+  if (/^__(?:Host|Secure)-/.test(configured) && !isSecureOrigin(publicUrl)) {
+    throw new Error(
+      'REEF_SESSION_COOKIE_NAME may use a __Host- or __Secure- prefix only when REEF_PUBLIC_URL is HTTPS',
+    )
+  }
+
+  return configured
 }
 
 function positiveIntegerEnv(value: string | undefined, name: string, fallback: number): number {
