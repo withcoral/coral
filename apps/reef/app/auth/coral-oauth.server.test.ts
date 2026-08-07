@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { authClientId, authRedirectUri, authResource } from './config.server'
 import { completeCoralOAuthLogin, startCoralOAuthLogin } from './coral-oauth.server'
-import { readOAuthTransaction, readReefSession } from './session.server'
+import { oauthCookieName, readOAuthTransaction, readReefSession } from './session.server'
 import type { RequiredAuthConfig } from './types'
 
 const AUTH_ISSUER = 'https://coral.example.test'
@@ -40,7 +40,7 @@ describe('Coral OAuth adapter', () => {
     const location = new URL(response.headers.get('location') ?? '')
     const transaction = await readOAuthTransaction(
       new Request('https://reef.example.test/', {
-        headers: { cookie: cookieHeader(response, 'reef_oauth') },
+        headers: { cookie: cookieHeader(response, oauthCookieName(config)) },
       }),
       config,
     )
@@ -77,7 +77,7 @@ describe('Coral OAuth adapter', () => {
     const state = new URL(login.headers.get('location') ?? '').searchParams.get('state')
     const callback = await completeCoralOAuthLogin(
       new Request(`https://internal-proxy/auth/callback?code=abc123&state=${state}`, {
-        headers: { cookie: cookieHeader(login, 'reef_oauth') },
+        headers: { cookie: cookieHeader(login, oauthCookieName(config)) },
       }),
       config,
     )
@@ -90,7 +90,7 @@ describe('Coral OAuth adapter', () => {
     )
 
     expect(callback.headers.get('location')).toBe('/workspaces/analytics?tab=mine')
-    expect(cookies[0]).toContain('reef_oauth=')
+    expect(cookies[0]).toContain(`${oauthCookieName(config)}=`)
     expect(cookies[0]).toContain('Max-Age=0')
     expect(cookies[1]).toContain('reef_session=')
     expect(cookies[1]).not.toContain('opaque-coral-token')
@@ -164,7 +164,7 @@ describe('Coral OAuth adapter', () => {
     const state = new URL(login.headers.get('location') ?? '').searchParams.get('state')
     const callback = await completeCoralOAuthLogin(
       new Request(`https://reef.example.test/auth/callback?code=abc123&state=${state}`, {
-        headers: { cookie: cookieHeader(login, 'reef_oauth') },
+        headers: { cookie: cookieHeader(login, oauthCookieName(config)) },
       }),
       config,
     )
@@ -175,7 +175,7 @@ describe('Coral OAuth adapter', () => {
   it('clears OAuth state only after a callback matches the active transaction', async () => {
     const fetch = mockFetch(jsonResponse(metadata))
     const login = await startCoralOAuthLogin(new Request('https://reef.example.test/login'), config)
-    const cookie = cookieHeader(login, 'reef_oauth')
+    const cookie = cookieHeader(login, oauthCookieName(config))
     const state = new URL(login.headers.get('location') ?? '').searchParams.get('state')
 
     const providerError = await completeCoralOAuthLogin(
@@ -212,7 +212,7 @@ describe('Coral OAuth adapter', () => {
 
     const error = await completeCoralOAuthLogin(
       new Request(`https://reef.example.test/auth/callback?code=abc&state=${state}`, {
-        headers: { cookie: cookieHeader(login, 'reef_oauth') },
+        headers: { cookie: cookieHeader(login, oauthCookieName(config)) },
       }),
       config,
     ).catch((caught: unknown) => caught)
@@ -278,7 +278,7 @@ describe('Coral OAuth adapter', () => {
     await expect(
       completeCoralOAuthLogin(
         new Request(`https://reef.example.test/auth/callback?code=abc&state=${state}`, {
-          headers: { cookie: cookieHeader(login, 'reef_oauth') },
+          headers: { cookie: cookieHeader(login, oauthCookieName(config)) },
         }),
         config,
       ),
