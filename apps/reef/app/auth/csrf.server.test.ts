@@ -41,6 +41,11 @@ describe('Reef CSRF tokens', () => {
     expect(created.setCookie).toContain('reef_session_csrf=')
     expect(created.setCookie).not.toContain(session.accessToken)
     expect(created.setCookie).toContain('Secure')
+    // The two attributes the name of this test promises and its body did not
+    // check. `SameSite` comes along because it is the attribute a CSRF cookie
+    // most depends on, and it was asserted nowhere in this file either.
+    expect(created.setCookie).toContain('HttpOnly')
+    expect(created.setCookie).toContain('SameSite=Lax')
 
     const reused = await csrfTokenForRequest(requestWithCookie(created.setCookie!), config, session)
     expect(reused).toEqual({ setCookie: null, token: created.token })
