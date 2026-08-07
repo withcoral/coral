@@ -283,11 +283,13 @@ describe('reefAuthConfig', () => {
     vi.mocked(isCoralDesktopBuild).mockReturnValue(false)
   })
 
+  // Derived from the same fixture the rest of the file uses. Spelling the keys
+  // out again would be a second definition of "a hosted environment", free to
+  // drift from the first the moment either gains a variable.
   function stubHostedEnv(): void {
-    vi.stubEnv('REEF_AUTH_ISSUER', 'https://coral.example.test')
-    vi.stubEnv('REEF_AUTH_MODE', 'required')
-    vi.stubEnv('REEF_PUBLIC_URL', 'https://reef.example.test')
-    vi.stubEnv('REEF_SESSION_SECRET', SESSION_SECRET)
+    for (const [key, value] of Object.entries(requiredEnv())) {
+      if (value !== undefined) vi.stubEnv(key, value)
+    }
   }
 
   it('disables auth for a Desktop build even under a hosted environment', () => {
