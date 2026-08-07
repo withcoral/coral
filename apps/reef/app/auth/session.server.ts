@@ -34,10 +34,28 @@ export async function clearOAuthTransaction(config: RequiredAuthConfig): Promise
   return oauthCookie(config).serialize('', { maxAge: 0 })
 }
 
+/**
+ * Writes a session cookie, refusing to write one that cannot be read back.
+ *
+ * `readReefSession` treats a session expiring within [`CLOCK_SKEW_SECONDS`] as
+ * already gone, so a shorter-lived one is unreadable from the moment it is
+ * committed. Left to itself that is not an error anywhere: the callback
+ * succeeds, redirects to a protected route, the route finds no session and
+ * sends the visitor back to `/login` — a loop with no failure in it. Two
+ * unrelated settings can cause it, a Coral token with a tiny `expires_in` and a
+ * small `REEF_SESSION_MAX_AGE_SECONDS`, so the message names both rather than
+ * guessing.
+ */
 export async function commitReefSession(
   session: AuthSession,
   config: RequiredAuthConfig,
 ): Promise<string> {
+  if (session.expiresAt <= unixTimestamp() + CLOCK_SKEW_SECONDS) {
+    throw new Error(
+      `Refusing to establish a Reef session that expires within ${CLOCK_SKEW_SECONDS}s: check the Coral access token lifetime and REEF_SESSION_MAX_AGE_SECONDS`,
+    )
+  }
+
   return sessionCookie(config).serialize(encryptSession(session, config.sessionSecret))
 }
 
