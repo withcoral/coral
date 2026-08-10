@@ -1,7 +1,18 @@
+import { create } from '@bufbuild/protobuf'
 import { createRequestHandler, RouterContextProvider, type ServerBuild } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { RequiredAuthConfig } from '@/auth/types'
+import {
+  OAuthCredentialMethodSchema,
+  SourceCredentialMethodSchema,
+  SourceCredentialSchema,
+  SourceInfoSchema,
+  SourceInputSpecSchema,
+  SourceOrigin,
+  SourceSecretInputSchema,
+  type CreateBundledSourceWithOAuthResponse,
+} from '@/generated/coral/v1/sources_pb'
 import { EXPIRED_SESSION_RESPONSE_HEADER } from '@/auth/response.server'
 import { expiredSessionRedirect } from '@/auth/response.server'
 import {
@@ -16,6 +27,19 @@ const authMocks = vi.hoisted(() => ({
   readReefSession: vi.fn(),
   reefAuthConfig: vi.fn(),
 }))
+const appShellMocks = vi.hoisted(() => ({ listWorkspacesForRequest: vi.fn() }))
+const coralMocks = vi.hoisted(() => {
+  const getSource = vi.fn()
+  const getSourceInfo = vi.fn()
+  return {
+    getSource,
+    getSourceInfo,
+    sourceClientForRequest: vi.fn((_request: Request, _accessToken: string | null) => ({
+      getSource,
+      getSourceInfo,
+    })),
+  }
+})
 
 vi.mock('@/auth/config.server', () => ({ reefAuthConfig: authMocks.reefAuthConfig }))
 vi.mock('@/auth/csrf.server', () => ({ csrfTokenForRequest: authMocks.csrfTokenForRequest }))
@@ -23,10 +47,20 @@ vi.mock('@/auth/session.server', () => ({
   clearReefSession: authMocks.clearReefSession,
   readReefSession: authMocks.readReefSession,
 }))
+vi.mock('@/lib/coral-request.server', () => ({
+  sourceClientForRequest: coralMocks.sourceClientForRequest,
+}))
+vi.mock('@/lib/workspaces.server', () => ({
+  listWorkspacesForRequest: appShellMocks.listWorkspacesForRequest,
+}))
 
 import { requestAuthContext } from '@/auth/server-context'
+import { runOAuthInstallFlow } from '@/lib/source-oauth-install-flow'
 
 import { middleware } from './_protected'
+import { loader as appShellLoader } from './app-shell'
+import { loader as sourceDetailLoader } from './source-detail'
+import { action as oauthInstallAction } from './source-oauth-install'
 
 const requiredConfig: RequiredAuthConfig = {
   cookieName: 'reef_session',
@@ -41,6 +75,28 @@ const session = {
   expiresAt: 4_102_444_800,
   tokenType: 'Bearer',
 }
+const oauthSourceInfo = create(SourceInfoSchema, {
+  inputs: [
+    create(SourceInputSpecSchema, {
+      input: {
+        case: 'secret',
+        value: create(SourceSecretInputSchema, {
+          credential: create(SourceCredentialSchema, {
+            methods: [
+              create(SourceCredentialMethodSchema, {
+                method: { case: 'oauth', value: create(OAuthCredentialMethodSchema) },
+              }),
+            ],
+          }),
+        }),
+      },
+      key: 'GITHUB_TOKEN',
+      required: true,
+    }),
+  ],
+  name: 'github',
+  origin: SourceOrigin.BUNDLED,
+})
 const descendantLoader = vi.fn((_args: { request: Request }) => ({ ok: true }))
 const descendantAction = vi.fn((_args: { request: Request }) => ({ ok: true }))
 const routeComponent = () => null
@@ -89,6 +145,23 @@ const handlerBuild = {
       parentId: 'routes/_protected',
       path: 'protected',
     },
+    'routes/app-shell': {
+      id: 'routes/app-shell',
+      module: { default: routeComponent, loader: appShellLoader },
+      parentId: 'routes/_protected',
+    },
+    'routes/source-detail': {
+      id: 'routes/source-detail',
+      module: { default: routeComponent, loader: sourceDetailLoader },
+      parentId: 'routes/app-shell',
+      path: 'workspaces/:workspaceId/sources/:sourceName',
+    },
+    'routes/source-oauth-install': {
+      id: 'routes/source-oauth-install',
+      module: { action: oauthInstallAction },
+      parentId: 'routes/_protected',
+      path: 'workspaces/:workspaceId/sources/:sourceName/oauth-install',
+    },
   },
   ssr: true,
 } as unknown as ServerBuild
@@ -100,8 +173,25 @@ describe('optional auth boundary', () => {
     authMocks.csrfTokenForRequest.mockResolvedValue({ setCookie: null, token: 'csrf-token' })
     authMocks.readReefSession.mockReset()
     authMocks.reefAuthConfig.mockReset()
+    appShellMocks.listWorkspacesForRequest.mockReset()
+    appShellMocks.listWorkspacesForRequest.mockResolvedValue([])
     descendantAction.mockClear()
     descendantLoader.mockClear()
+    coralMocks.getSource.mockReset()
+    coralMocks.getSource.mockResolvedValue({ source: undefined })
+    coralMocks.getSourceInfo.mockReset()
+    coralMocks.getSourceInfo.mockResolvedValue({
+      sourceInfo: create(SourceInfoSchema, {
+        installed: false,
+        name: 'github',
+        origin: SourceOrigin.BUNDLED,
+      }),
+    })
+    coralMocks.sourceClientForRequest.mockReset()
+    coralMocks.sourceClientForRequest.mockImplementation(() => ({
+      getSource: coralMocks.getSource,
+      getSourceInfo: coralMocks.getSourceInfo,
+    }))
   })
 
   it('is a true no-op for disabled local and desktop requests', async () => {
@@ -195,6 +285,62 @@ describe('optional auth boundary', () => {
     expectPrivate(response)
   })
 
+  it('navigates when the OAuth action expires inside the protected route pipeline', async () => {
+    authMocks.reefAuthConfig.mockReturnValue(requiredConfig)
+    authMocks.readReefSession.mockResolvedValue(session)
+    coralMocks.getSourceInfo.mockResolvedValue({ sourceInfo: oauthSourceInfo })
+    coralMocks.sourceClientForRequest.mockImplementation(
+      (request: Request, _accessToken: string | null) => ({
+        createBundledSourceWithOAuth: () => rejectedResponses(expiredSessionRedirect(request)),
+        getSource: coralMocks.getSource,
+        getSourceInfo: coralMocks.getSourceInfo,
+      }),
+    )
+    const handleRequest = createRequestHandler(handlerBuild, 'test')
+    let serverResponse: Response | undefined
+    const fetchOAuthInstall = vi.fn<typeof fetch>(async (input, init) => {
+      const inputUrl =
+        typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+      serverResponse = await handleRequest(
+        new Request(new URL(inputUrl, 'https://reef.example.test'), init),
+      )
+      return serverResponse
+    })
+    const navigateToLogin = vi.fn()
+    const formData = new FormData()
+    formData.set('method:GITHUB_TOKEN', '0')
+    formData.set('name', 'github')
+
+    await runOAuthInstallFlow({
+      endpoint: '/workspaces/analytics/sources/github/oauth-install',
+      fetchOAuthInstall,
+      formData,
+      navigateToLogin,
+      onComplete: vi.fn(),
+      openAuthorization: vi.fn(),
+      setError: vi.fn(),
+      setProgress: vi.fn(),
+      signal: new AbortController().signal,
+      visibleLocation: '/workspaces/analytics/sources/new?step=oauth',
+    })
+
+    expect(coralMocks.sourceClientForRequest).toHaveBeenCalledWith(
+      expect.any(Request),
+      session.accessToken,
+    )
+    expect(authMocks.clearReefSession).toHaveBeenCalledOnce()
+    expect(serverResponse?.status).toBe(401)
+    expect(serverResponse?.headers.get(EXPIRED_SESSION_LOGIN_HEADER)).toBe(
+      '/login?returnTo=%2Fworkspaces%2Fanalytics%2Fsources%2Fnew%3Fstep%3Doauth',
+    )
+    expect(serverResponse?.headers.has('Location')).toBe(false)
+    expect(serverResponse?.headers.get('Set-Cookie')).toContain('Max-Age=0')
+    expect(serverResponse?.bodyUsed).toBe(false)
+    expect(navigateToLogin).toHaveBeenCalledWith(
+      '/login?returnTo=%2Fworkspaces%2Fanalytics%2Fsources%2Fnew%3Fstep%3Doauth',
+    )
+  })
+
   it.each([
     ['document', 'GET', '/protected'],
     ['data loader', 'GET', '/protected.data'],
@@ -237,6 +383,32 @@ describe('optional auth boundary', () => {
 
     expect(authMocks.clearReefSession).toHaveBeenCalledWith(requiredConfig)
     expect((thrown as Response).headers.get('Set-Cookie')).toContain('Max-Age=0')
+  })
+
+  it('keeps the server-held access token out of the serialized route response', async () => {
+    authMocks.reefAuthConfig.mockReturnValue(requiredConfig)
+    authMocks.readReefSession.mockResolvedValue(session)
+    const handleRequest = createRequestHandler(handlerBuild, 'test')
+
+    const response = await handleRequest(
+      new Request('https://reef.example.test/workspaces/analytics/sources/github.data'),
+    )
+
+    expect(response.status).toBe(200)
+    expect(coralMocks.sourceClientForRequest).toHaveBeenCalledWith(
+      expect.any(Request),
+      session.accessToken,
+    )
+    expect(appShellMocks.listWorkspacesForRequest).toHaveBeenCalledWith(
+      expect.any(Request),
+      session.accessToken,
+    )
+    const serializedResponse = [
+      await response.text(),
+      ...Array.from(response.headers.entries(), ([name, value]) => `${name}: ${value}`),
+    ].join('\n')
+    expect(serializedResponse).toContain('github')
+    expect(serializedResponse).not.toContain(session.accessToken)
   })
 
   it('commits a fresh CSRF cookie on the protected response', async () => {
@@ -317,4 +489,10 @@ async function runMiddleware(
 function expectPrivate(response: Response): void {
   expect(response.headers.get('Cache-Control')).toBe('private, no-store')
   expect(response.headers.get('Vary')).toContain('Cookie')
+}
+
+function rejectedResponses(error: unknown): AsyncIterable<CreateBundledSourceWithOAuthResponse> {
+  return {
+    [Symbol.asyncIterator]: () => ({ next: () => Promise.reject(error) }),
+  }
 }

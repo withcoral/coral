@@ -24,6 +24,17 @@ describe('markAuthResponsePrivate', () => {
     expect(response.headers.get('Vary')).toBe('Cookie')
   })
 
+  it.each([
+    ['Accept-Encoding', ['accept-encoding', 'cookie']],
+    ['Cookie', ['cookie']],
+    ['cookie', ['cookie']],
+    ['Accept-Encoding, Cookie', ['accept-encoding', 'cookie']],
+  ])('adds the session cookie to Vary exactly once: %s', (vary, expectedFields) => {
+    const response = markAuthResponsePrivate(new Response('body', { headers: { Vary: vary } }))
+
+    expect(varyFields(response)).toEqual(expectedFields)
+  })
+
   // `*` is not a field name the list can be extended with: it already says the
   // response is unique to its request, which subsumes `Cookie`. Appending would
   // emit `*, Cookie`, which is not a valid `Vary` value.
@@ -34,6 +45,15 @@ describe('markAuthResponsePrivate', () => {
     expect(response.headers.get('Cache-Control')).toBe('private, no-store')
   })
 })
+
+function varyFields(response: Response): string[] {
+  return (
+    response.headers
+      .get('Vary')
+      ?.split(',')
+      .map((field) => field.trim().toLowerCase()) ?? []
+  )
+}
 
 describe('expiredSessionRedirect', () => {
   it('uses a validated visible-page return location for auth stream fetches', () => {
