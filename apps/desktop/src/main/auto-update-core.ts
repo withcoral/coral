@@ -75,12 +75,9 @@ export function createDesktopUpdater(deps: DesktopUpdaterDeps): DesktopUpdater {
   // Explicit quitAndInstall() starts the subsequent Squirrel hand-off.
   let readyVersion: string | null = null
   let activeDownload: Promise<DownloadOutcome> | null = null
-  let activeCheck:
-    | {
-        result: Promise<CheckOutcome>
-        completion: Promise<void>
-      }
-    | null = null
+  // One check carries one observer, which owes the user one dialog. `request`
+  // stays mutable so a manual check can upgrade a silent background one.
+  let activeCheck: { completion: Promise<void>; request: CheckRequest } | null = null
 
   function updateStateVersion(state: DesktopUpdateState): string | null {
     return 'version' in state ? state.version : null
@@ -289,9 +286,12 @@ export function createDesktopUpdater(deps: DesktopUpdaterDeps): DesktopUpdater {
 
   async function observeCheck(
     resultPromise: Promise<CheckOutcome>,
-    { interactive }: { interactive: boolean },
+    request: CheckRequest,
   ): Promise<void> {
     const result = await resultPromise
+    // Read after the feed answers, not before: a manual check may have upgraded
+    // this one while the request was in flight.
+    const { interactive } = request
     if (!result.ok) {
       if (interactive) {
         await deps.showErrorDialog('Update check failed', errorMessage(result.error))
@@ -321,12 +321,21 @@ export function createDesktopUpdater(deps: DesktopUpdaterDeps): DesktopUpdater {
   }
 
   function check({ interactive }: { interactive: boolean }): Promise<void> {
-    // MacUpdater owns one local proxy for the staged ZIP. Checks share a single
-    // in-flight request, defer to a download rather than hitting the feed
-    // alongside it, and stop entirely once an archive is staged, so nothing
-    // replaces that proxy while Squirrel fetches it. A download requested
-    // mid-check does not wait — it wins, and performCheck() drops the result it
-    // would otherwise have written.
+    // MacUpdater owns one local proxy for the staged ZIP, so the guards below
+    // keep a single operation on it: checks share one in-flight request, they
+    // defer to a download rather than hit the feed alongside it, and they stop
+    // once an archive is staged. A download requested mid-check does not wait —
+    // it wins, and performCheck() drops the result it would have written.
+
+    // Join the request already running, and promote it if this caller wants an
+    // answer. Announcing here as well would queue a duplicate modal, because
+    // its observer reports the same thing once the feed lands, and Electron
+    // stacks modals rather than collapsing them.
+    if (activeCheck) {
+      if (interactive) activeCheck.request.interactive = true
+      return activeCheck.completion
+    }
+
     if (readyVersion) {
       return interactive ? announceReady(readyVersion) : Promise.resolve()
     }
@@ -338,17 +347,11 @@ export function createDesktopUpdater(deps: DesktopUpdaterDeps): DesktopUpdater {
         : activeDownload.then(() => undefined)
     }
 
-    if (activeCheck) {
-      return interactive
-        ? observeCheck(activeCheck.result, { interactive: true })
-        : activeCheck.completion
-    }
-
-    const result = performCheck()
-    const completion = observeCheck(result, { interactive }).finally(() => {
-      if (activeCheck?.completion === completion) activeCheck = null
+    const request: CheckRequest = { interactive }
+    const completion = observeCheck(performCheck(), request).finally(() => {
+      if (activeCheck?.request === request) activeCheck = null
     })
-    activeCheck = { result, completion }
+    activeCheck = { completion, request }
     return completion
   }
 
@@ -376,6 +379,12 @@ export function createDesktopUpdater(deps: DesktopUpdaterDeps): DesktopUpdater {
   }
 
   return { check, download, getUpdateState, install, onUpdateStateChange, quitAndInstall }
+}
+
+// Mutable so a manual check can promote a background one that is already
+// waiting on the feed, instead of starting a second request or a second dialog.
+interface CheckRequest {
+  interactive: boolean
 }
 
 export type DownloadOutcome = { ok: true } | { ok: false; error: unknown }

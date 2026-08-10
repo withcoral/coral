@@ -623,6 +623,84 @@ describe('interactive checks', () => {
     expect(updater.downloadUpdate).toHaveBeenCalledOnce()
   })
 
+  it('announces once when a second manual check arrives during a download', async () => {
+    const updater = createFakeUpdater()
+    const feed = deferredPromise()
+    const download = deferredPromise()
+    vi.mocked(updater.checkForUpdates)
+      .mockResolvedValueOnce(availableUpdate('1.2.4'))
+      .mockImplementationOnce(async () => {
+        await feed.promise
+        return availableUpdate('1.2.5')
+      })
+    vi.mocked(updater.downloadUpdate).mockReturnValue(download.promise)
+    const deps = createDeps(updater)
+    const desktopUpdater = createDesktopUpdater(deps)
+    await desktopUpdater.check({ interactive: false })
+
+    // The first manual check already owes the user a dialog. The second must
+    // wait for it rather than queue an identical modal behind it.
+    const first = desktopUpdater.check({ interactive: true })
+    const started = desktopUpdater.download()
+    const second = desktopUpdater.check({ interactive: true })
+    feed.resolve()
+    await Promise.all([first, second])
+
+    expect(deps.infoDialogs).toEqual([
+      { message: 'Coral 1.2.4 is downloading', detail: DOWNLOADING_DETAIL },
+    ])
+    expect(deps.confirmDialogs).toHaveLength(0)
+
+    download.resolve()
+    await started
+  })
+
+  it('announces once when a second manual check arrives after staging', async () => {
+    const updater = createFakeUpdater()
+    const feed = deferredPromise()
+    vi.mocked(updater.checkForUpdates)
+      .mockResolvedValueOnce(availableUpdate('1.2.4'))
+      .mockImplementationOnce(async () => {
+        await feed.promise
+        return availableUpdate('1.2.5')
+      })
+    const deps = createDeps(updater)
+    const desktopUpdater = createDesktopUpdater(deps)
+    await desktopUpdater.check({ interactive: false })
+
+    const first = desktopUpdater.check({ interactive: true })
+    await desktopUpdater.download()
+    const second = desktopUpdater.check({ interactive: true })
+    feed.resolve()
+    await Promise.all([first, second])
+
+    expect(deps.infoDialogs).toEqual([
+      {
+        message: 'Coral 1.2.4 is ready',
+        detail: 'The update will install when you quit Coral.',
+      },
+    ])
+  })
+
+  it('offers the update once when two manual checks overlap', async () => {
+    const updater = createFakeUpdater()
+    const feed = deferredPromise()
+    vi.mocked(updater.checkForUpdates).mockImplementationOnce(async () => {
+      await feed.promise
+      return availableUpdate('1.2.4')
+    })
+    const deps = createDeps(updater)
+    const desktopUpdater = createDesktopUpdater(deps)
+
+    const first = desktopUpdater.check({ interactive: true })
+    const second = desktopUpdater.check({ interactive: true })
+    feed.resolve()
+    await Promise.all([first, second])
+
+    expect(updater.checkForUpdates).toHaveBeenCalledOnce()
+    expect(deps.confirmDialogs).toHaveLength(1)
+  })
+
   it('surfaces a failure of the download it just started', async () => {
     const updater = createFakeUpdater()
     vi.mocked(updater.checkForUpdates).mockResolvedValue(availableUpdate('1.2.4'))
