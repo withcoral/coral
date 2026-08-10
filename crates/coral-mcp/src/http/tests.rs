@@ -41,11 +41,9 @@ const INITIALIZE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","param
 const PING: &str = r#"{"jsonrpc":"2.0","id":2,"method":"ping"}"#;
 /// Configured MCP workspace for the per-session resolution test.
 const PINNED_WORKSPACE: &str = "pinned";
-/// Personal default workspace `coral-app` derives for the local principal.
-///
-/// It is never created, so a session that resolved it fails closed and names it
-/// instead of naming a workspace the caller's own client cannot reach.
-const LOCAL_DEFAULT_WORKSPACE: &str = "default-coral:local";
+/// Existing default workspace visible to a local app client.
+const LOCAL_DEFAULT_WORKSPACE: &str = "default";
+const LOCAL_DEFAULT_WORKSPACE_PROBE: &str = "default_workspace_probe";
 
 fn raw_mcp_request(body: impl Into<Body>) -> Request<Body> {
     Request::builder()
@@ -165,6 +163,12 @@ async fn install_workspace_probe(app: &AppClient, workspace: &str, function: &st
         }))
         .await
         .expect("create probe workspace");
+    install_probe_function(app, workspace, function).await;
+}
+
+/// Installs a table function whose name identifies an existing workspace in a
+/// catalog listing.
+async fn install_probe_function(app: &AppClient, workspace: Workspace, function: &str) {
     app.function_client()
         .add_function(tonic::Request::new(AddFunctionRequest {
             workspace: Some(workspace),
@@ -1098,6 +1102,14 @@ async fn authenticated_workspace_isolation_resolves_one_workspace_per_session() 
     let (_member_temp, member_server, member_app) = local_app().await;
     let (_outsider_temp, outsider_server, outsider_app) = local_app().await;
     install_workspace_probe(&member_app, PINNED_WORKSPACE, "pinned_workspace_probe").await;
+    install_probe_function(
+        &outsider_app,
+        Workspace {
+            name: LOCAL_DEFAULT_WORKSPACE.to_string(),
+        },
+        LOCAL_DEFAULT_WORKSPACE_PROBE,
+    )
+    .await;
     let session_outsider_app = outsider_app.clone();
 
     let runtime = AuthenticatedMcpHttpRuntime::new(
@@ -1137,7 +1149,7 @@ async fn authenticated_workspace_isolation_resolves_one_workspace_per_session() 
 
     let outsider_evidence = session_workspace_evidence(&outsider).await;
     assert!(
-        outsider_evidence.contains(LOCAL_DEFAULT_WORKSPACE),
+        outsider_evidence.contains(LOCAL_DEFAULT_WORKSPACE_PROBE),
         "a session whose client lacks the pin must resolve that client's own default workspace: {outsider_evidence}"
     );
     assert!(
@@ -1154,7 +1166,7 @@ async fn authenticated_workspace_isolation_resolves_one_workspace_per_session() 
         "an established session must not re-resolve its workspace per tool call: {after_grant}"
     );
     assert!(
-        after_grant.contains(LOCAL_DEFAULT_WORKSPACE),
+        after_grant.contains(LOCAL_DEFAULT_WORKSPACE_PROBE),
         "an established session must keep the workspace it resolved: {after_grant}"
     );
 
