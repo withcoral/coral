@@ -262,6 +262,11 @@ export function createDesktopUpdater(deps: DesktopUpdaterDeps): DesktopUpdater {
       return { ok: false, error }
     }
 
+    // A download started while this check was in flight owns the state from
+    // here on: rolling it back to `available` or `idle` would blank the pill
+    // mid-transfer and then jump it to `ready`.
+    if (activeDownload || readyVersion) return { ok: true, result }
+
     if (result?.isUpdateAvailable) {
       setUpdateState({ status: 'available', version: result.updateInfo.version })
     } else {
@@ -293,9 +298,12 @@ export function createDesktopUpdater(deps: DesktopUpdaterDeps): DesktopUpdater {
   }
 
   function check({ interactive }: { interactive: boolean }): Promise<void> {
-    // MacUpdater owns one local proxy for the staged ZIP. Serialize checks
-    // against each other and against a download, then stop checking once ready,
-    // so no later operation can replace that proxy while Squirrel fetches it.
+    // MacUpdater owns one local proxy for the staged ZIP. Checks share a single
+    // in-flight request, defer to a download rather than hitting the feed
+    // alongside it, and stop entirely once an archive is staged, so nothing
+    // replaces that proxy while Squirrel fetches it. A download requested
+    // mid-check does not wait — it wins, and performCheck() drops the result it
+    // would otherwise have written.
     if (readyVersion) {
       return interactive
         ? deps.showInfoDialog(

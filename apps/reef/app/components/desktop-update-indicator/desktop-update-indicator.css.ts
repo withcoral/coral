@@ -55,11 +55,6 @@ export const indicator = recipe({
           '&:focus-visible': {
             outline: `1px solid ${theme.button.primary.focus}`,
           },
-          // currentColor is the pill's own foreground, so the affordance holds
-          // in both themes and for both pill colors.
-          '&:hover:not(:disabled)': {
-            borderColor: 'currentColor',
-          },
         },
       },
     },
@@ -72,6 +67,15 @@ export const indicator = recipe({
         background: theme.pill.blue.background,
         borderColor: theme.pill.blue.stroke,
         color: theme.pill.blue.color,
+        selectors: {
+          // Scoped to the tag rather than `isInteractive` so it cannot drift:
+          // `downloading` renders a plain div, which has no `:disabled` to fail
+          // against and would otherwise hover like a button.
+          'button&:hover:not(:disabled)': {
+            background: theme.pill.blue.backgroundHover,
+            color: theme.pill.blue.colorHover,
+          },
+        },
       },
       downloading: {
         background: theme.pill.blue.background,
@@ -82,6 +86,12 @@ export const indicator = recipe({
         background: theme.pill.green.background,
         borderColor: theme.pill.green.stroke,
         color: theme.pill.green.color,
+        selectors: {
+          'button&:hover:not(:disabled)': {
+            background: theme.pill.green.backgroundHover,
+            color: theme.pill.green.colorHover,
+          },
+        },
       },
     },
   },

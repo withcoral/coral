@@ -295,6 +295,38 @@ describe('user-initiated downloads', () => {
     expect(updater.checkForUpdates).toHaveBeenCalledOnce()
   })
 
+  it('keeps its state when a check started before the click finds nothing', async () => {
+    const updater = createFakeUpdater()
+    const feed = deferredPromise()
+    const download = deferredPromise()
+    vi.mocked(updater.checkForUpdates)
+      .mockResolvedValueOnce(availableUpdate('1.2.4'))
+      .mockImplementationOnce(async () => {
+        await feed.promise
+        return { isUpdateAvailable: false, updateInfo: { version: '1.2.3' } }
+      })
+    vi.mocked(updater.downloadUpdate).mockReturnValue(download.promise)
+    const desktopUpdater = createDesktopUpdater(createDeps(updater))
+    const states: ReturnType<typeof desktopUpdater.getUpdateState>[] = []
+    await desktopUpdater.check({ interactive: false })
+    desktopUpdater.onUpdateStateChange((state) => states.push(state))
+
+    // The release is pulled from the feed between the periodic check and the
+    // click: its stale result must not blank the pill mid-transfer.
+    const backgroundCheck = desktopUpdater.check({ interactive: false })
+    const started = desktopUpdater.download()
+    feed.resolve()
+    await backgroundCheck
+    expect(desktopUpdater.getUpdateState()).toEqual({ status: 'downloading', version: '1.2.4' })
+
+    download.resolve()
+    await started
+    expect(states).toEqual([
+      { status: 'downloading', version: '1.2.4' },
+      { status: 'ready', version: '1.2.4' },
+    ])
+  })
+
   it('logs a failure without dialogs or a ready notification', async () => {
     const updater = createFakeUpdater()
     vi.mocked(updater.checkForUpdates).mockResolvedValue(availableUpdate())

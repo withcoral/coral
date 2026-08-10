@@ -56,6 +56,7 @@ export function useDesktopUpdateState(enabled: boolean): DesktopUpdateStateResul
     (
       operation: (desktop: NonNullable<ReturnType<typeof coralDesktopApi>>) => Promise<void>,
       errorTitle: string,
+      { resetOnSuccess = true }: { resetOnSuccess?: boolean } = {},
     ) => {
       const desktop = coralDesktopApi()
       if (!desktop || pendingRef.current) return
@@ -63,10 +64,15 @@ export function useDesktopUpdateState(enabled: boolean): DesktopUpdateStateResul
       pendingRef.current = true
       setIsPending(true)
       operation(desktop)
-        .catch((reason: unknown) => {
-          addToast('error', { description: desktopErrorMessage(reason), title: errorTitle })
-        })
-        .finally(() => {
+        .then<boolean, boolean>(
+          () => resetOnSuccess,
+          (reason: unknown) => {
+            addToast('error', { description: desktopErrorMessage(reason), title: errorTitle })
+            return true
+          },
+        )
+        .then((reset) => {
+          if (!reset) return
           pendingRef.current = false
           setIsPending(false)
         })
@@ -79,9 +85,13 @@ export function useDesktopUpdateState(enabled: boolean): DesktopUpdateStateResul
   }, [request])
 
   // Installing quits Coral, so the toast only ever reaches the user when the
-  // hand-off refuses to start.
+  // hand-off refuses to start. A resolved request means the quit was accepted
+  // and teardown is under way, which the window outlives — stay disabled rather
+  // than inviting a second click at a button that is about to disappear.
   const onInstall = useCallback(() => {
-    request((desktop) => desktop.installUpdate(), 'Couldn’t install the update')
+    request((desktop) => desktop.installUpdate(), 'Couldn’t install the update', {
+      resetOnSuccess: false,
+    })
   }, [request])
 
   return { isPending, onDownload, onInstall, state }
