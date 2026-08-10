@@ -6,10 +6,16 @@ import {
   isCoralDesktopBuild,
   type McpClientDescriptor,
 } from '@/lib/coral-desktop'
+import { mcpClientInstallPath, webMcpClients } from '@/lib/mcp-clients'
 import { addToast } from '@/wax/components/toast'
 
 interface WebSettingsLoaderData {
   readonly runtime: 'web'
+  readonly mcpClients: ReadonlyArray<{
+    readonly id: string
+    readonly installCommand: string
+    readonly name: string
+  }>
 }
 
 export interface DesktopSettingsLoaderData {
@@ -24,8 +30,15 @@ export interface DesktopMcpClientData {
   readonly error?: string
 }
 
-export function loader(_args: Route.LoaderArgs): WebSettingsLoaderData {
-  return { runtime: 'web' }
+export function loader({ request }: Route.LoaderArgs): WebSettingsLoaderData {
+  const origin = new URL(request.url).origin
+  return {
+    runtime: 'web',
+    mcpClients: webMcpClients.map((client) => ({
+      ...client,
+      installCommand: `curl -fsSL ${origin}${mcpClientInstallPath(client.id)} | sh`,
+    })),
+  }
 }
 
 export async function clientLoader({
