@@ -234,7 +234,7 @@ impl AdminDb {
 
         let outcome = match tx
             .workspace_members()
-            .role_for_user_id(workspace, user_id)
+            .role_for_user_id_for_recovery(workspace, user_id)
             .await
             .map_err(describe)?
         {

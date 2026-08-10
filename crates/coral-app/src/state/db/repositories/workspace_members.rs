@@ -32,6 +32,24 @@ where
         row.map(|(role,)| parse_role(&role)).transpose()
     }
 
+    /// Reads a membership even when its workspace has no owner so the admin
+    /// recovery path can repair that otherwise concealed state.
+    #[cfg(feature = "admin")]
+    pub(crate) async fn role_for_user_id_for_recovery(
+        &mut self,
+        workspace_id: &str,
+        user_id: &str,
+    ) -> Result<Option<MemberRole>, DbError> {
+        let statement = Query::select()
+            .column(WorkspaceMembers::Role)
+            .from(WorkspaceMembers::Table)
+            .and_where(Expr::col(WorkspaceMembers::WorkspaceId).eq(workspace_id))
+            .and_where(Expr::col(WorkspaceMembers::UserId).eq(user_id))
+            .to_owned();
+        let row: Option<(String,)> = self.session.fetch_optional(statement).await?;
+        row.map(|(role,)| parse_role(&role)).transpose()
+    }
+
     pub(crate) async fn workspaces_for_user_id(
         &mut self,
         user_id: &str,
