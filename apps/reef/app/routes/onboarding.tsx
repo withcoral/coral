@@ -1,4 +1,5 @@
 import type { Route } from './+types/onboarding'
+import { useFetcher } from 'react-router'
 import type { SourcesActionData } from './sources-action'
 
 import { requestAuthContext } from '@/auth/server-context'
@@ -10,6 +11,11 @@ import { OnboardingView } from '@/views/onboarding/onboarding'
 
 import { runSourcesAction } from './sources-action'
 import { loadSourcesRouteData } from './sources-loader'
+import {
+  loadDesktopMcpClients,
+  updateDesktopMcpClient,
+  type DesktopMcpClientData,
+} from './settings-loader'
 
 export async function loader({ context, request }: Route.LoaderArgs) {
   const accessToken = context.get(requestAuthContext).accessToken
@@ -50,6 +56,53 @@ export async function action({ context, request }: Route.ActionArgs): Promise<So
   )
 }
 
+export async function clientLoader({ serverLoader }: Route.ClientLoaderArgs) {
+  const loaderData = await serverLoader()
+  if (loaderData.runtime !== 'desktop') return loaderData
+
+  return {
+    ...loaderData,
+    mcpClients: await loadDesktopMcpClients(),
+  }
+}
+
+clientLoader.hydrate = true as const
+
+export async function clientAction({ request, serverAction }: Route.ClientActionArgs) {
+  const formData = await request.clone().formData()
+  if (formData.get('_intent') !== 'update-mcp-client') return serverAction()
+
+  await updateDesktopMcpClient(formData)
+  return null
+}
+
 export default function OnboardingRoute({ actionData, loaderData }: Route.ComponentProps) {
-  return <OnboardingView actionData={actionData} loaderData={loaderData} />
+  const fetcher = useFetcher()
+  const pendingClientId = fetcher.formData?.get('clientId')
+  const mcpClients: DesktopMcpClientData =
+    loaderData.runtime === 'desktop' && 'mcpClients' in loaderData
+      ? loaderData.mcpClients
+      : { clients: [] }
+
+  return (
+    <OnboardingView
+      actionData={actionData ?? undefined}
+      loaderData={loaderData}
+      mcpClients={{
+        ...mcpClients,
+        loading: false,
+        onWorkspaceChange: (clientId, workspace) => {
+          fetcher.submit(
+            { _intent: 'update-mcp-client', clientId, workspace: workspace ?? '' },
+            { method: 'post' },
+          )
+        },
+        pendingClientIds: typeof pendingClientId === 'string' ? [pendingClientId] : [],
+      }}
+    />
+  )
+}
+
+export function HydrateFallback() {
+  return null
 }
