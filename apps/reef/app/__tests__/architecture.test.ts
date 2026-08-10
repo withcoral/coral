@@ -366,6 +366,9 @@ describe('Architectural Tests', () => {
       // Schema is a layout with nested table-detail routes.
       expect(routeConfig).toContain("route(routePattern('workspaceSchema'), 'routes/schema.tsx', [")
       expect(routeConfig).toContain("index('routes/schema-empty.tsx')")
+      expect(routeConfig).toMatch(
+        /route\(\s*'catalogs\/:catalogName\/:schemaName\/:tableName',\s*'routes\/schema-catalog-table\.tsx'\s*\)/,
+      )
       expect(routeConfig).toContain("route(':schemaName/:tableName', 'routes/schema-table.tsx')")
       expect(routeConfig).toContain(
         "route(':schemaName/functions/:functionName', 'routes/schema-table-function.tsx')",

@@ -12,6 +12,7 @@ vi.mock('@/lib/coral-request.server', () => ({ catalogClientForRequest }))
 vi.mock('@/lib/schema-explorer', () => ({ fetchSchemaFromCoral, fetchTableColumnsFromCoral }))
 
 import { loader as schemaLoader } from './schema'
+import { loader as schemaCatalogTableLoader } from './schema-catalog-table'
 import { loader as schemaTableLoader } from './schema-table'
 
 describe('schema loaders', () => {
@@ -24,7 +25,7 @@ describe('schema loaders', () => {
 
   it('lists catalog tables for the workspace route parameter', async () => {
     const request = new Request('http://reef.test/workspaces/analytics/schema')
-    const schema = { connectors: [] }
+    const schema = { catalogs: [], schemas: [] }
     fetchSchemaFromCoral.mockResolvedValue(schema)
 
     await expect(
@@ -56,8 +57,40 @@ describe('schema loaders', () => {
     expect(fetchTableColumnsFromCoral).toHaveBeenCalledWith(
       catalogClient,
       expect.objectContaining({ name: 'analytics' }),
-      'github',
-      'issues',
+      {
+        catalogName: '',
+        schemaName: 'github',
+        tableName: 'issues',
+      },
+      request.signal,
+    )
+  })
+
+  it('lists database table columns with the complete catalog identity', async () => {
+    const request = new Request(
+      'http://reef.test/workspaces/analytics/schema/catalogs/commerce/public/products',
+    )
+    fetchTableColumnsFromCoral.mockResolvedValue([])
+
+    await expect(
+      schemaCatalogTableLoader({
+        params: {
+          catalogName: 'commerce',
+          schemaName: 'public',
+          tableName: 'products',
+          workspaceId: 'analytics',
+        },
+        request,
+      } as Parameters<typeof schemaCatalogTableLoader>[0]),
+    ).resolves.toEqual({ columns: [] })
+    expect(fetchTableColumnsFromCoral).toHaveBeenCalledWith(
+      catalogClient,
+      expect.objectContaining({ name: 'analytics' }),
+      {
+        catalogName: 'commerce',
+        schemaName: 'public',
+        tableName: 'products',
+      },
       request.signal,
     )
   })
