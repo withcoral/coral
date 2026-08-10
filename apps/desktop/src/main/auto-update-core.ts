@@ -160,6 +160,20 @@ export function createDesktopUpdater(deps: DesktopUpdaterDeps): DesktopUpdater {
     })
   }
 
+  function announceReady(version: string): Promise<void> {
+    return deps.showInfoDialog(
+      `Coral ${version} is ready`,
+      'The update will install when you quit Coral.',
+    )
+  }
+
+  function announceDownloading(version: string): Promise<void> {
+    return deps.showInfoDialog(
+      `Coral ${version} is downloading`,
+      'You will be notified when the update is ready. It will install after Coral quits.',
+    )
+  }
+
   // Resolves to whether the user asked for the download to start now.
   async function showManualResult(result: UpdateCheckResultLike | null): Promise<boolean> {
     if (!result) {
@@ -182,10 +196,7 @@ export function createDesktopUpdater(deps: DesktopUpdaterDeps): DesktopUpdater {
     // notification has already fired and will not fire again (dedupe), so
     // promising a future notification here would be a lie.
     if (readyVersion === result.updateInfo.version) {
-      await deps.showInfoDialog(
-        `Coral ${result.updateInfo.version} is ready`,
-        'The update will install when you quit Coral.',
-      )
+      await announceReady(result.updateInfo.version)
       return false
     }
 
@@ -289,6 +300,18 @@ export function createDesktopUpdater(deps: DesktopUpdaterDeps): DesktopUpdater {
     }
 
     if (!interactive) return
+
+    // A download that started while this check was in flight now holds the
+    // updater, so this result is no longer actionable: download() would join
+    // the transfer already running, or find an archive staged and do nothing.
+    // Offering it would confirm a version that never arrives. Report the holder.
+    if (readyVersion) return announceReady(readyVersion)
+    if (activeDownload) {
+      const downloadingVersion = updateStateVersion(updateState)
+      if (downloadingVersion) await announceDownloading(downloadingVersion)
+      return
+    }
+
     if (!(await showManualResult(result.result))) return
 
     const outcome = await download()
@@ -305,21 +328,13 @@ export function createDesktopUpdater(deps: DesktopUpdaterDeps): DesktopUpdater {
     // mid-check does not wait — it wins, and performCheck() drops the result it
     // would otherwise have written.
     if (readyVersion) {
-      return interactive
-        ? deps.showInfoDialog(
-            `Coral ${readyVersion} is ready`,
-            'The update will install when you quit Coral.',
-          )
-        : Promise.resolve()
+      return interactive ? announceReady(readyVersion) : Promise.resolve()
     }
 
     if (activeDownload) {
       const downloadingVersion = updateStateVersion(updateState)
       return interactive && downloadingVersion
-        ? deps.showInfoDialog(
-            `Coral ${downloadingVersion} is downloading`,
-            'You will be notified when the update is ready. It will install after Coral quits.',
-          )
+        ? announceDownloading(downloadingVersion)
         : activeDownload.then(() => undefined)
     }
 

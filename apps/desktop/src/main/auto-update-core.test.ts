@@ -559,6 +559,70 @@ describe('interactive checks', () => {
     expect(deps.notifications).toHaveLength(1)
   })
 
+  it('reports the transfer that started mid-check instead of offering its own result', async () => {
+    const updater = createFakeUpdater()
+    const feed = deferredPromise()
+    const download = deferredPromise()
+    vi.mocked(updater.checkForUpdates)
+      .mockResolvedValueOnce(availableUpdate('1.2.4'))
+      .mockImplementationOnce(async () => {
+        await feed.promise
+        return availableUpdate('1.2.5')
+      })
+    vi.mocked(updater.downloadUpdate).mockReturnValue(download.promise)
+    const deps = createDeps(updater)
+    deps.confirmAnswer.value = true
+    const desktopUpdater = createDesktopUpdater(deps)
+    await desktopUpdater.check({ interactive: false })
+
+    // 1.2.5 lands while 1.2.4 is already transferring. Confirming it would be a
+    // promise the updater cannot keep: download() joins the 1.2.4 transfer.
+    const interactive = desktopUpdater.check({ interactive: true })
+    const started = desktopUpdater.download()
+    feed.resolve()
+    await interactive
+
+    expect(deps.confirmDialogs).toHaveLength(0)
+    expect(deps.infoDialogs).toEqual([
+      { message: 'Coral 1.2.4 is downloading', detail: DOWNLOADING_DETAIL },
+    ])
+    expect(updater.downloadUpdate).toHaveBeenCalledOnce()
+
+    download.resolve()
+    await started
+  })
+
+  it('reports the staged archive when a download finishes mid-check', async () => {
+    const updater = createFakeUpdater()
+    const feed = deferredPromise()
+    vi.mocked(updater.checkForUpdates)
+      .mockResolvedValueOnce(availableUpdate('1.2.4'))
+      .mockImplementationOnce(async () => {
+        await feed.promise
+        return availableUpdate('1.2.5')
+      })
+    const deps = createDeps(updater)
+    deps.confirmAnswer.value = true
+    const desktopUpdater = createDesktopUpdater(deps)
+    await desktopUpdater.check({ interactive: false })
+
+    // 1.2.4 reaches `ready` before the check returns 1.2.5. download() would
+    // find nothing to do, so confirming 1.2.5 would silently do nothing at all.
+    const interactive = desktopUpdater.check({ interactive: true })
+    await desktopUpdater.download()
+    feed.resolve()
+    await interactive
+
+    expect(deps.confirmDialogs).toHaveLength(0)
+    expect(deps.infoDialogs).toEqual([
+      {
+        message: 'Coral 1.2.4 is ready',
+        detail: 'The update will install when you quit Coral.',
+      },
+    ])
+    expect(updater.downloadUpdate).toHaveBeenCalledOnce()
+  })
+
   it('surfaces a failure of the download it just started', async () => {
     const updater = createFakeUpdater()
     vi.mocked(updater.checkForUpdates).mockResolvedValue(availableUpdate('1.2.4'))

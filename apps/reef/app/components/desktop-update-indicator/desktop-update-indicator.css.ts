@@ -14,6 +14,19 @@ const collapsedGeometry = {
   width: '34px',
 } as const
 
+// The pill contract carries a hover pair for every colour. Read both from the
+// same token group so a status cannot mix one colour with another's hover.
+function pillHover(pill: { backgroundHover: string; colorHover: string }) {
+  return {
+    selectors: {
+      '&:hover:not(:disabled)': {
+        background: pill.backgroundHover,
+        color: pill.colorHover,
+      },
+    },
+  }
+}
+
 export const indicator = recipe({
   base: {
     '@media': {
@@ -67,15 +80,6 @@ export const indicator = recipe({
         background: theme.pill.blue.background,
         borderColor: theme.pill.blue.stroke,
         color: theme.pill.blue.color,
-        selectors: {
-          // Scoped to the tag rather than `isInteractive` so it cannot drift:
-          // `downloading` renders a plain div, which has no `:disabled` to fail
-          // against and would otherwise hover like a button.
-          'button&:hover:not(:disabled)': {
-            background: theme.pill.blue.backgroundHover,
-            color: theme.pill.blue.colorHover,
-          },
-        },
       },
       downloading: {
         background: theme.pill.blue.background,
@@ -86,15 +90,19 @@ export const indicator = recipe({
         background: theme.pill.green.background,
         borderColor: theme.pill.green.stroke,
         color: theme.pill.green.color,
-        selectors: {
-          'button&:hover:not(:disabled)': {
-            background: theme.pill.green.backgroundHover,
-            color: theme.pill.green.colorHover,
-          },
-        },
       },
     },
   },
+  compoundVariants: [
+    {
+      style: pillHover(theme.pill.blue),
+      variants: { isInteractive: true, status: 'available' },
+    },
+    {
+      style: pillHover(theme.pill.green),
+      variants: { isInteractive: true, status: 'ready' },
+    },
+  ],
 })
 
 export const icon = style({
