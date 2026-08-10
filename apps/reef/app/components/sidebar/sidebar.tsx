@@ -46,7 +46,12 @@ export function Sidebar({
   const { workspaceId } = useParams()
   const { isMinimized, toggleSidebar } = useSidebarState(initialIsMinimized)
   const desktop = isCoralDesktopBuild()
-  const updateState = useDesktopUpdateState(desktop)
+  const {
+    isPending: isUpdatePending,
+    onDownload: onUpdateDownload,
+    onInstall: onUpdateInstall,
+    state: updateState,
+  } = useDesktopUpdateState(desktop)
   const [createWorkspaceDialogOpen, setCreateWorkspaceDialogOpen] = useState(false)
   const createWorkspaceDialogSession = useRef(0)
   const logoutForm = useRef<HTMLFormElement>(null)
@@ -321,7 +326,13 @@ export function Sidebar({
         onboardingButton
       )}
       {updateState.status !== 'idle' && updateState.status !== 'unsupported' && (
-        <DesktopUpdateIndicator isMinimized={isMinimized} state={updateState} />
+        <DesktopUpdateIndicator
+          isMinimized={isMinimized}
+          isPending={isUpdatePending}
+          onDownload={onUpdateDownload}
+          onInstall={onUpdateInstall}
+          state={updateState}
+        />
       )}
     </nav>
   )

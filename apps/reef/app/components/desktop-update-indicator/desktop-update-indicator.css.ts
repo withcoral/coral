@@ -32,14 +32,37 @@ export const indicator = recipe({
     overflow: 'hidden',
     paddingBlock: '7px',
     paddingInline: '8px',
+    // The button variant would otherwise center its two unequal copy lines.
+    textAlign: 'start',
     transition: animation.colorTransition,
     width: '100%',
   },
   defaultVariants: {
+    isInteractive: false,
     isMinimized: false,
     status: 'available',
   },
   variants: {
+    isInteractive: {
+      false: {},
+      true: {
+        cursor: 'pointer',
+        selectors: {
+          '&:disabled': {
+            cursor: 'default',
+            opacity: 0.6,
+          },
+          '&:focus-visible': {
+            outline: `1px solid ${theme.button.primary.focus}`,
+          },
+          // currentColor is the pill's own foreground, so the affordance holds
+          // in both themes and for both pill colors.
+          '&:hover:not(:disabled)': {
+            borderColor: 'currentColor',
+          },
+        },
+      },
+    },
     isMinimized: {
       false: {},
       true: collapsedGeometry,

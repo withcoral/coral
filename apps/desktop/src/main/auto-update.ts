@@ -51,6 +51,18 @@ function desktopUpdater(): DesktopUpdater {
       showErrorDialog: async (message, detail) => {
         await dialog.showMessageBox({ type: 'error', message, detail })
       },
+      showConfirmDialog: async (message, detail, confirmLabel) => {
+        // Confirm is index 0 so Return accepts it; Escape maps to cancelId.
+        const { response } = await dialog.showMessageBox({
+          type: 'info',
+          message,
+          detail,
+          buttons: [confirmLabel, 'Later'],
+          defaultId: 0,
+          cancelId: 1,
+        })
+        return response === 0
+      },
       showNotification: (title, body) => {
         new Notification({ title, body }).show()
       },
@@ -96,6 +108,16 @@ export function installAutoUpdater({
 export function quitAndInstallDesktopUpdate(): boolean {
   if (!desktopUpdatesSupported()) return false
   return desktopUpdater().quitAndInstall()
+}
+
+// Rejects on a failed transfer so the renderer can report it; the core has
+// already rolled the state back to `available` for a retry.
+export async function downloadDesktopUpdate(): Promise<void> {
+  if (!desktopUpdatesSupported()) return
+
+  const outcome = await desktopUpdater().download()
+  if (outcome.ok) return
+  throw outcome.error instanceof Error ? outcome.error : new Error(String(outcome.error))
 }
 
 export function getDesktopUpdateState(): DesktopUpdateState {

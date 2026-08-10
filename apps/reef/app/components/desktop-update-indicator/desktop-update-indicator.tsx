@@ -13,9 +13,12 @@ export type DesktopUpdateIndicatorState =
   | { status: 'downloading'; version: string }
   | { status: 'ready'; version: string }
 
-interface DesktopUpdateIndicatorProps {
-  isMinimized: boolean
-  state: DesktopUpdateIndicatorState
+export interface DesktopUpdateIndicatorProps {
+  readonly isMinimized: boolean
+  readonly isPending?: boolean
+  readonly onDownload: () => void
+  readonly onInstall: () => void
+  readonly state: DesktopUpdateIndicatorState
 }
 
 const PRESENTATION: Record<
@@ -36,17 +39,22 @@ const PRESENTATION: Record<
   },
 }
 
-export function DesktopUpdateIndicator({ isMinimized, state }: DesktopUpdateIndicatorProps) {
+export function DesktopUpdateIndicator({
+  isMinimized,
+  isPending = false,
+  onDownload,
+  onInstall,
+  state,
+}: DesktopUpdateIndicatorProps) {
   const presentation = PRESENTATION[state.status]
   const accessibleLabel = updateAccessibleLabel(state)
-  const indicator = (
-    <div
-      aria-atomic="true"
-      aria-label={accessibleLabel}
-      className={styles.indicator({ isMinimized, status: state.status })}
-      role="status"
-      tabIndex={isMinimized ? 0 : undefined}
-    >
+  const className = styles.indicator({
+    isInteractive: state.status !== 'downloading',
+    isMinimized,
+    status: state.status,
+  })
+  const content = (
+    <>
       <Icon
         className={classNames(styles.icon, {
           [animations.spinAnimation]: state.status === 'downloading',
@@ -63,8 +71,35 @@ export function DesktopUpdateIndicator({ isMinimized, state }: DesktopUpdateIndi
           </Typography.BodySmall>
         </div>
       )}
-    </div>
+    </>
   )
+
+  // The button cannot also be a role="status" region, so aria-live stands in to
+  // keep it announcing transitions.
+  const indicator =
+    state.status === 'downloading' ? (
+      <div
+        aria-atomic="true"
+        aria-label={accessibleLabel}
+        className={className}
+        role="status"
+        tabIndex={isMinimized ? 0 : undefined}
+      >
+        {content}
+      </div>
+    ) : (
+      <button
+        aria-atomic="true"
+        aria-label={accessibleLabel}
+        aria-live="polite"
+        className={className}
+        disabled={isPending}
+        onClick={state.status === 'available' ? onDownload : onInstall}
+        type="button"
+      >
+        {content}
+      </button>
+    )
 
   if (!isMinimized) return indicator
 
@@ -78,10 +113,10 @@ export function DesktopUpdateIndicator({ isMinimized, state }: DesktopUpdateIndi
 function updateAccessibleLabel(state: DesktopUpdateIndicatorState): string {
   switch (state.status) {
     case 'available':
-      return `Coral ${state.version} is available and will download automatically.`
+      return `Download Coral ${state.version}`
     case 'downloading':
       return `Coral ${state.version} is downloading.`
     case 'ready':
-      return `Coral ${state.version} is ready. Restart to install.`
+      return `Restart to install Coral ${state.version}`
   }
 }

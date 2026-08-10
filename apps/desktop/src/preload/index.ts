@@ -9,8 +9,10 @@ import type {
 const api: CoralDesktopApi = {
   configureMcp: (clientId: McpClientId, workspaceName: string) =>
     ipcRenderer.invoke('coral:configure-mcp', clientId, workspaceName),
+  downloadUpdate: () => ipcRenderer.invoke('coral:download-update'),
   getMcpLaunchConfig: () => ipcRenderer.invoke('coral:get-mcp-launch-config'),
   getUpdateState: () => ipcRenderer.invoke('coral:get-update-state'),
+  installUpdate: () => ipcRenderer.invoke('coral:install-update'),
   listMcpClients: () => ipcRenderer.invoke('coral:list-mcp-clients'),
   onUpdateStateChange: (listener: DesktopUpdateStateListener) => {
     const handler = (_event: Electron.IpcRendererEvent, state: DesktopUpdateState) => {

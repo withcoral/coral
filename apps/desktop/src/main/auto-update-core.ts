@@ -18,7 +18,6 @@ interface UpdateInfoLike {
 export interface UpdateCheckResultLike {
   isUpdateAvailable: boolean
   updateInfo: UpdateInfoLike
-  downloadPromise?: Promise<unknown> | null
 }
 
 interface DownloadProgressLike {
@@ -35,6 +34,7 @@ export interface UpdaterLike {
   on(event: 'update-downloaded', listener: (info: UpdateInfoLike) => void): unknown
   on(event: 'error', listener: (error: Error) => void): unknown
   checkForUpdates(): Promise<UpdateCheckResultLike | null>
+  downloadUpdate(): Promise<unknown>
   quitAndInstall(): void
 }
 
@@ -43,6 +43,7 @@ export interface DesktopUpdaterDeps {
   appVersion: () => string
   showInfoDialog: (message: string, detail: string) => Promise<void>
   showErrorDialog: (message: string, detail: string) => Promise<void>
+  showConfirmDialog: (message: string, detail: string, confirmLabel: string) => Promise<boolean>
   showNotification: (title: string, body: string) => void
   recordUpdateIntent: (targetVersion: string) => void
   clearUpdateIntent: () => void
@@ -52,6 +53,7 @@ export interface DesktopUpdaterDeps {
 export interface DesktopUpdater {
   install: () => void
   check: (options: { interactive: boolean }) => Promise<void>
+  download: () => Promise<DownloadOutcome>
   getUpdateState: () => DesktopUpdateState
   onUpdateStateChange: (listener: DesktopUpdateStateListener) => () => void
   quitAndInstall: () => boolean
@@ -72,6 +74,7 @@ export function createDesktopUpdater(deps: DesktopUpdaterDeps): DesktopUpdater {
   // complete archive is available through electron-updater's local proxy.
   // Explicit quitAndInstall() starts the subsequent Squirrel hand-off.
   let readyVersion: string | null = null
+  let activeDownload: Promise<DownloadOutcome> | null = null
   let activeCheck:
     | {
         result: Promise<CheckOutcome>
@@ -157,13 +160,14 @@ export function createDesktopUpdater(deps: DesktopUpdaterDeps): DesktopUpdater {
     })
   }
 
-  async function showManualResult(result: UpdateCheckResultLike | null): Promise<void> {
+  // Resolves to whether the user asked for the download to start now.
+  async function showManualResult(result: UpdateCheckResultLike | null): Promise<boolean> {
     if (!result) {
       await deps.showInfoDialog(
         'Update checks are unavailable for this build',
         'Coral can check for desktop updates only from a packaged macOS release build.',
       )
-      return
+      return false
     }
 
     if (!result.isUpdateAvailable) {
@@ -171,7 +175,7 @@ export function createDesktopUpdater(deps: DesktopUpdaterDeps): DesktopUpdater {
         'Coral is up to date',
         `You are running Coral ${deps.appVersion()}.`,
       )
-      return
+      return false
     }
 
     // If this version already finished downloading in a prior check, its ready
@@ -182,22 +186,19 @@ export function createDesktopUpdater(deps: DesktopUpdaterDeps): DesktopUpdater {
         `Coral ${result.updateInfo.version} is ready`,
         'The update will install when you quit Coral.',
       )
-      return
+      return false
     }
 
-    await deps.showInfoDialog(
-      `Coral ${result.updateInfo.version} is downloading`,
-      'You will be notified when the update is ready. It will install after Coral quits.',
+    return deps.showConfirmDialog(
+      `Coral ${result.updateInfo.version} is available`,
+      'Download it now? The update installs after Coral quits.',
+      'Download',
     )
   }
 
-  function trackDownload(result: UpdateCheckResultLike): Promise<DownloadOutcome> | null {
-    const downloadPromise = result.downloadPromise
-    if (!downloadPromise) return null
-
-    const version = result.updateInfo.version
+  function startDownload(version: string): Promise<DownloadOutcome> {
     setUpdateState({ status: 'downloading', version })
-    return downloadPromise.then<DownloadOutcome, DownloadOutcome>(
+    return updater.downloadUpdate().then<DownloadOutcome, DownloadOutcome>(
       () => {
         if (readyVersion !== version) {
           readyVersion = version
@@ -221,11 +222,26 @@ export function createDesktopUpdater(deps: DesktopUpdaterDeps): DesktopUpdater {
     )
   }
 
+  function download(): Promise<DownloadOutcome> {
+    if (activeDownload) return activeDownload
+
+    // Anything other than `available` — already staged, nothing found, or a
+    // click against state the renderer has not caught up with — is a no-op
+    // rather than a failure worth surfacing.
+    if (updateState.status !== 'available') return Promise.resolve(NOTHING_TO_DOWNLOAD)
+
+    const started = startDownload(updateState.version).finally(() => {
+      if (activeDownload === started) activeDownload = null
+    })
+    activeDownload = started
+    return started
+  }
+
   function install(): void {
     if (installed) return
 
     installed = true
-    updater.autoDownload = true
+    updater.autoDownload = false
     updater.autoInstallOnAppQuit = false
     installListeners()
 
@@ -252,11 +268,7 @@ export function createDesktopUpdater(deps: DesktopUpdaterDeps): DesktopUpdater {
       setUpdateState({ status: 'idle' })
     }
 
-    // Attach before exposing the result. The download starts inside
-    // checkForUpdates() and can fail while an interactive dialog is open;
-    // attaching now prevents an unhandled rejection.
-    const download = result?.isUpdateAvailable ? trackDownload(result) : null
-    return { ok: true, result, download }
+    return { ok: true, result }
   }
 
   async function observeCheck(
@@ -271,19 +283,19 @@ export function createDesktopUpdater(deps: DesktopUpdaterDeps): DesktopUpdater {
       return
     }
 
-    if (interactive) await showManualResult(result.result)
-    if (!result.download) return
+    if (!interactive) return
+    if (!(await showManualResult(result.result))) return
 
-    const download = await result.download
-    if (!download.ok && interactive) {
-      await deps.showErrorDialog('Update download failed', errorMessage(download.error))
+    const outcome = await download()
+    if (!outcome.ok) {
+      await deps.showErrorDialog('Update download failed', errorMessage(outcome.error))
     }
   }
 
   function check({ interactive }: { interactive: boolean }): Promise<void> {
-    // MacUpdater owns one local proxy for the staged ZIP. Serialize the whole
-    // check and download, then stop checking once ready, so no later operation
-    // can replace that proxy while Squirrel fetches from it.
+    // MacUpdater owns one local proxy for the staged ZIP. Serialize checks
+    // against each other and against a download, then stop checking once ready,
+    // so no later operation can replace that proxy while Squirrel fetches it.
     if (readyVersion) {
       return interactive
         ? deps.showInfoDialog(
@@ -291,6 +303,16 @@ export function createDesktopUpdater(deps: DesktopUpdaterDeps): DesktopUpdater {
             'The update will install when you quit Coral.',
           )
         : Promise.resolve()
+    }
+
+    if (activeDownload) {
+      const downloadingVersion = updateStateVersion(updateState)
+      return interactive && downloadingVersion
+        ? deps.showInfoDialog(
+            `Coral ${downloadingVersion} is downloading`,
+            'You will be notified when the update is ready. It will install after Coral quits.',
+          )
+        : activeDownload.then(() => undefined)
     }
 
     if (activeCheck) {
@@ -330,14 +352,11 @@ export function createDesktopUpdater(deps: DesktopUpdaterDeps): DesktopUpdater {
     }
   }
 
-  return { check, getUpdateState, install, onUpdateStateChange, quitAndInstall }
+  return { check, download, getUpdateState, install, onUpdateStateChange, quitAndInstall }
 }
 
-type DownloadOutcome = { ok: true } | { ok: false; error: unknown }
+export type DownloadOutcome = { ok: true } | { ok: false; error: unknown }
+const NOTHING_TO_DOWNLOAD: DownloadOutcome = { ok: true }
 type CheckOutcome =
   | { ok: false; error: unknown }
-  | {
-      ok: true
-      result: UpdateCheckResultLike | null
-      download: Promise<DownloadOutcome> | null
-    }
+  | { ok: true; result: UpdateCheckResultLike | null }
