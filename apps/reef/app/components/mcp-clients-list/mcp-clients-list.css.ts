@@ -1,4 +1,4 @@
-import { style } from '@vanilla-extract/css'
+import { globalStyle, style } from '@vanilla-extract/css'
 
 import { breakpoints } from '@/styles/theme.css'
 import { theme } from '@/wax/theme/theme.css'
@@ -38,4 +38,22 @@ export const workspaceTrigger = style({
 export const workspaceMenu = style({
   maxWidth: 'calc(100vw - 32px)',
   width: '228px',
+})
+
+export const installColumn = style({
+  width: '70%',
+})
+
+export const installCommand = style({
+  alignItems: 'center',
+  display: 'flex',
+  gap: '12px',
+  justifyContent: 'space-between',
+  minWidth: 0,
+})
+
+globalStyle(`${installCommand} code`, {
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
 })
