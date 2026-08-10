@@ -9,6 +9,8 @@ use crate::state::db::{
 use crate::task::id::TaskId;
 use crate::workspaces::WorkspaceName;
 
+const MAX_RECORDED_SQL_BYTES: usize = 64 * 1024;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TaskQueryStatus {
     Success,
@@ -105,6 +107,19 @@ pub(crate) enum TaskActivityError {
     Database(#[from] DbError),
     #[error("task '{task_id}' was not found in workspace '{workspace}'")]
     TaskNotFound { task_id: String, workspace: String },
+    #[error("task query SQL is {bytes} bytes; the recording limit is {max_bytes} bytes")]
+    SqlTooLarge { bytes: usize, max_bytes: usize },
+}
+
+impl TaskActivityError {
+    pub(crate) const fn error_type(&self) -> &'static str {
+        match self {
+            Self::Timestamp(_) => "timestamp",
+            Self::Database(_) => "database",
+            Self::TaskNotFound { .. } => "task_not_found",
+            Self::SqlTooLarge { .. } => "sql_too_large",
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -198,6 +213,12 @@ impl PendingTaskQuery<'_> {
         status: TaskQueryStatus,
         relations: &[TaskQueryRelation<'_>],
     ) -> Result<(), TaskActivityError> {
+        if sql.len() > MAX_RECORDED_SQL_BYTES {
+            return Err(TaskActivityError::SqlTooLarge {
+                bytes: sql.len(),
+                max_bytes: MAX_RECORDED_SQL_BYTES,
+            });
+        }
         self.recorder
             .record_query(
                 self.workspace,

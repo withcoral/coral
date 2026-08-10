@@ -64,30 +64,24 @@ impl TaskQueryState<'_> {
         query: TaskQueryWrite<'_>,
     ) -> Result<TaskQueryWriteResult, DbError> {
         let mut tx = self.db.begin().await?;
-        if !tx
-            .workspaces()
-            .hold_for_child_mutation(query.workspace_id)
-            .await?
-            || tx
-                .tasks()
-                .find_state(query.workspace_id, query.task_id)
-                .await?
-                .is_none()
-        {
+        let inserted = tx
+            .task_queries()
+            .insert_for_workspace(
+                query.workspace_id,
+                &TaskQueryRow {
+                    id: query.id.to_string(),
+                    task_id: query.task_id.to_string(),
+                    intent: query.intent.to_string(),
+                    sql: query.sql.to_string(),
+                    status: query.status.to_string(),
+                    started_at_unix_nanos: query.started_at_unix_nanos,
+                },
+            )
+            .await?;
+        if !inserted {
             tx.rollback().await?;
             return Ok(TaskQueryWriteResult::TaskNotFound);
         }
-
-        tx.task_queries()
-            .insert(&TaskQueryRow {
-                id: query.id.to_string(),
-                task_id: query.task_id.to_string(),
-                intent: query.intent.to_string(),
-                sql: query.sql.to_string(),
-                status: query.status.to_string(),
-                started_at_unix_nanos: query.started_at_unix_nanos,
-            })
-            .await?;
         let relations = query
             .relations
             .iter()

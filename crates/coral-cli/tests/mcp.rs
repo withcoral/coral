@@ -35,6 +35,7 @@ use tokio::{
     time::timeout,
 };
 use tonic::Request;
+use tonic::metadata::MetadataValue;
 
 const RAW_JSONRPC_RESPONSE_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -188,6 +189,34 @@ async fn start_mcp_client_with_args(
     )?;
     let client = ().serve(transport).await?;
     Ok(client)
+}
+
+#[tokio::test]
+async fn coral_client_task_id_metadata_reaches_execute_sql()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    let app = AppClient::connect(server.endpoint_uri()).await?;
+    let task_id = "550e8400-e29b-41d4-a716-446655440000";
+    let task_id_metadata = MetadataValue::try_from(task_id)?;
+
+    coral_client::with_task_metadata(Some(task_id_metadata), async {
+        app.query_client()
+            .execute_sql(Request::new(ExecuteSqlRequest {
+                workspace: Some(default_workspace()),
+                sql: "SELECT 1".to_string(),
+                guide_read_context: None,
+                task_attribution: None,
+            }))
+            .await
+    })
+    .await?;
+
+    assert_eq!(
+        server.execute_sql_task_ids(),
+        vec![Some(task_id.to_string())]
+    );
+    server.shutdown().await;
+    Ok(())
 }
 
 fn write_real_fixture_manifest(root: &Path) -> Result<String, Box<dyn std::error::Error>> {

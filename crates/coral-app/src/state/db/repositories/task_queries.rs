@@ -1,10 +1,8 @@
-use sea_query::{Expr, Query};
+use sea_query::{Expr, ExprTrait, OnConflict, Query};
 #[cfg(test)]
-use sea_query::{ExprTrait, JoinType, Order};
+use sea_query::{JoinType, Order};
 
-#[cfg(test)]
-use crate::state::db::schema::Tasks;
-use crate::state::db::schema::{TaskQueries, TaskQueryRelations};
+use crate::state::db::schema::{TaskQueries, TaskQueryRelations, Tasks};
 use crate::state::db::{CoralTx, DbError, DbSession};
 
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
@@ -109,8 +107,24 @@ where
 }
 
 impl TaskQueriesRepo<'_, CoralTx<'_>> {
-    pub(in crate::state::db) async fn insert(&mut self, row: &TaskQueryRow) -> Result<(), DbError> {
-        let statement = Query::insert()
+    pub(in crate::state::db) async fn insert_for_workspace(
+        &mut self,
+        workspace_id: &str,
+        row: &TaskQueryRow,
+    ) -> Result<bool, DbError> {
+        let selected_values = Query::select()
+            .expr(Expr::val(row.id.clone()))
+            .expr(Expr::val(row.task_id.clone()))
+            .expr(Expr::val(row.intent.clone()))
+            .expr(Expr::val(row.sql.clone()))
+            .expr(Expr::val(row.status.clone()))
+            .expr(Expr::val(row.started_at_unix_nanos))
+            .from(Tasks::Table)
+            .and_where(Expr::col((Tasks::Table, Tasks::Id)).eq(row.task_id.clone()))
+            .and_where(Expr::col((Tasks::Table, Tasks::WorkspaceId)).eq(workspace_id))
+            .to_owned();
+        let mut statement = Query::insert();
+        statement
             .into_table(TaskQueries::Table)
             .columns([
                 TaskQueries::Id,
@@ -120,16 +134,9 @@ impl TaskQueriesRepo<'_, CoralTx<'_>> {
                 TaskQueries::Status,
                 TaskQueries::StartedAtUnixNanos,
             ])
-            .values_panic([
-                Expr::val(row.id.clone()),
-                Expr::val(row.task_id.clone()),
-                Expr::val(row.intent.clone()),
-                Expr::val(row.sql.clone()),
-                Expr::val(row.status.clone()),
-                Expr::val(row.started_at_unix_nanos),
-            ])
-            .to_owned();
-        self.session.execute(statement).await
+            .select_from(selected_values)
+            .expect("task query insert columns match selected values");
+        Ok(self.session.execute_rows_affected(statement).await? == 1)
     }
 
     pub(in crate::state::db) async fn insert_relations(
@@ -157,6 +164,17 @@ impl TaskQueriesRepo<'_, CoralTx<'_>> {
                 Expr::val(row.relation_name.clone()),
             ]);
         }
+        statement.on_conflict(
+            OnConflict::columns([
+                TaskQueryRelations::QueryId,
+                TaskQueryRelations::RelationKind,
+                TaskQueryRelations::CatalogName,
+                TaskQueryRelations::SchemaName,
+                TaskQueryRelations::RelationName,
+            ])
+            .do_nothing()
+            .to_owned(),
+        );
         self.session.execute(statement).await
     }
 }
@@ -186,6 +204,12 @@ mod tests {
             catalog_name: None,
             schema_name: "github",
             relation_name: "search_runs",
+        },
+        TaskQueryRelationWrite {
+            relation_kind: "table",
+            catalog_name: Some("github"),
+            schema_name: "actions",
+            relation_name: "runs",
         },
     ];
     const OTHER_QUERY_RELATIONS: &[TaskQueryRelationWrite<'static>] = &[TaskQueryRelationWrite {
@@ -300,8 +324,12 @@ mod tests {
         task_id: &str,
         other_task_id: &str,
     ) {
+        let id_base = uuid::Uuid::new_v4().as_u128() & !0xff;
+        let first_id = uuid::Uuid::from_u128(id_base + 1).to_string();
+        let second_id = uuid::Uuid::from_u128(id_base + 2).to_string();
+        let other_id = uuid::Uuid::from_u128(id_base + 3).to_string();
         let first = TaskQueryRow {
-            id: "00000000-0000-0000-0000-000000000001".to_string(),
+            id: first_id,
             task_id: task_id.to_string(),
             intent: "First query".to_string(),
             sql: "SELECT 1".to_string(),
@@ -309,7 +337,7 @@ mod tests {
             started_at_unix_nanos: 10,
         };
         let second = TaskQueryRow {
-            id: "00000000-0000-0000-0000-000000000002".to_string(),
+            id: second_id,
             task_id: task_id.to_string(),
             intent: "Second query".to_string(),
             sql: "SELECT broken".to_string(),
@@ -317,7 +345,7 @@ mod tests {
             started_at_unix_nanos: 10,
         };
         let other = TaskQueryRow {
-            id: "00000000-0000-0000-0000-000000000003".to_string(),
+            id: other_id,
             task_id: other_task_id.to_string(),
             intent: "Other workspace".to_string(),
             sql: "SELECT 3".to_string(),
@@ -348,22 +376,8 @@ mod tests {
             );
         }
 
-        assert_eq!(
-            db.task_query_state()
-                .record(TaskQueryWrite {
-                    workspace_id: other_workspace_id,
-                    id: "00000000-0000-0000-0000-000000000004",
-                    task_id,
-                    intent: "Wrong workspace",
-                    sql: "SELECT 4",
-                    status: "success",
-                    started_at_unix_nanos: 11,
-                    relations: &[],
-                })
-                .await
-                .expect("reject cross-workspace task query"),
-            TaskQueryWriteResult::TaskNotFound
-        );
+        assert_wrong_workspace_rejected(db, other_workspace_id, task_id).await;
+        assert_invalid_values_roll_back(db, workspace_id, task_id).await;
 
         assert_eq!(
             task_queries_for_workspace(db, workspace_id)
@@ -396,6 +410,82 @@ mod tests {
                 .await
                 .expect("list cascaded task queries")
                 .is_empty()
+        );
+    }
+
+    async fn assert_wrong_workspace_rejected(
+        db: &CoralDb,
+        other_workspace_id: &str,
+        task_id: &str,
+    ) {
+        assert_eq!(
+            db.task_query_state()
+                .record(TaskQueryWrite {
+                    workspace_id: other_workspace_id,
+                    id: &uuid::Uuid::new_v4().to_string(),
+                    task_id,
+                    intent: "Wrong workspace",
+                    sql: "SELECT 4",
+                    status: "success",
+                    started_at_unix_nanos: 11,
+                    relations: &[],
+                })
+                .await
+                .expect("reject cross-workspace task query"),
+            TaskQueryWriteResult::TaskNotFound
+        );
+    }
+
+    async fn assert_invalid_values_roll_back(db: &CoralDb, workspace_id: &str, task_id: &str) {
+        let invalid_status_id = uuid::Uuid::new_v4().to_string();
+        assert!(
+            db.task_query_state()
+                .record(TaskQueryWrite {
+                    workspace_id,
+                    id: &invalid_status_id,
+                    task_id,
+                    intent: "Invalid status",
+                    sql: "SELECT 5",
+                    status: "pending",
+                    started_at_unix_nanos: 12,
+                    relations: &[],
+                })
+                .await
+                .is_err(),
+            "task query status constraint should reject unknown values"
+        );
+
+        let invalid_relation_id = uuid::Uuid::new_v4().to_string();
+        let invalid_relations = [TaskQueryRelationWrite {
+            relation_kind: "view",
+            catalog_name: None,
+            schema_name: "github",
+            relation_name: "issues",
+        }];
+        assert!(
+            db.task_query_state()
+                .record(TaskQueryWrite {
+                    workspace_id,
+                    id: &invalid_relation_id,
+                    task_id,
+                    intent: "Invalid relation",
+                    sql: "SELECT 6",
+                    status: "success",
+                    started_at_unix_nanos: 13,
+                    relations: &invalid_relations,
+                })
+                .await
+                .is_err(),
+            "task query relation kind constraint should reject unknown values"
+        );
+
+        let rows = task_queries_for_workspace(db, workspace_id)
+            .await
+            .expect("list task queries after rejected writes");
+        assert!(
+            rows.iter()
+                .all(|row| row.id != invalid_status_id && row.id != invalid_relation_id),
+            "failed task query writes should roll back their parent row"
         );
     }
 

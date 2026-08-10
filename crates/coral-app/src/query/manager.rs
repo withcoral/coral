@@ -1079,11 +1079,17 @@ fn pending_task_query<'a>(
     attribution: &'a QueryAttribution,
     recorder: Option<&TaskActivityRecorder>,
 ) -> Option<PendingTaskQuery<'a>> {
-    let (Some(task_id), Some(intent), Some(recorder)) = (
-        attribution.task_id,
-        attribution.tool_intent.as_deref(),
-        recorder,
-    ) else {
+    let Some(recorder) = recorder else {
+        tracing::debug!("task query activity recorder is not configured");
+        return None;
+    };
+    let (Some(task_id), Some(intent)) = (attribution.task_id, attribution.tool_intent.as_deref())
+    else {
+        tracing::debug!(
+            task.id.present = attribution.task_id.is_some(),
+            task.intent.present = attribution.tool_intent.is_some(),
+            "task query activity requires a task ID and tool intent"
+        );
         return None;
     };
     match recorder.begin_query(workspace, task_id, intent) {
@@ -1117,13 +1123,18 @@ async fn record_task_query(
     };
     let task_id = pending.task_id();
     let query_id = pending.id();
-    if let Err(error) = pending.finish(sql, status, &relations).await {
-        tracing::warn!(
-            task.id = %task_id,
-            task.query.id = %query_id,
-            error = %error,
-            "could not record task query activity"
-        );
+    match pending.finish(sql, status, &relations).await {
+        Ok(()) => crate::telemetry::metrics::metrics().record_task_query_recording(None),
+        Err(error) => {
+            crate::telemetry::metrics::metrics()
+                .record_task_query_recording(Some(error.error_type()));
+            tracing::warn!(
+                task.id = %task_id,
+                task.query.id = %query_id,
+                error = %error,
+                "could not record task query activity"
+            );
+        }
     }
 }
 
@@ -1903,6 +1914,39 @@ mod tests {
             .expect("activity persistence must not change SQL success");
 
         assert!(matches!(outcome, ExecuteSqlOutcome::Executed(_)));
+    }
+
+    #[tokio::test]
+    async fn oversized_sql_executes_without_task_activity_record() {
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
+        let (tasks, request_context, _) = active_task_context(&fixture.db).await;
+        let workspace = WorkspaceName::default();
+        let attribution = QueryAttribution::new(
+            tasks
+                .validate_attribution(&workspace, request_context.task_id())
+                .await
+                .expect("active task"),
+        )
+        .with_tool_intent(Some("Exercise SQL recording limit"));
+        let sql = format!("SELECT 1 /*{}*/", "x".repeat(64 * 1024));
+
+        let outcome = fixture
+            .manager
+            .execute_sql(&workspace, &sql, None, &attribution)
+            .await
+            .expect("SQL size limit must not change query success");
+
+        assert!(matches!(outcome, ExecuteSqlOutcome::Executed(_)));
+        assert!(
+            fixture
+                .db
+                .task_query_state()
+                .list_for_workspace(workspace.as_str())
+                .await
+                .expect("list task activity")
+                .is_empty(),
+            "oversized SQL should not be stored"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

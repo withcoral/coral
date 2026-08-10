@@ -134,6 +134,9 @@ fn query_attribution_from_proto(
     let Some(attribution) = attribution else {
         return Ok((metadata_task_id, None));
     };
+    if attribution.task_id.is_empty() && attribution.intent.is_empty() {
+        return Ok((metadata_task_id, None));
+    }
     let task_id = crate::task::id::TaskId::parse(&attribution.task_id).map_err(app_status)?;
     if metadata_task_id.is_some_and(|metadata_task_id| metadata_task_id != task_id) {
         return Err(Status::invalid_argument(
@@ -213,6 +216,46 @@ mod tests {
         let decoded = query_attribution_from_proto(None, Some(task_id)).expect("attribution");
 
         assert_eq!(decoded, (Some(task_id), None));
+    }
+
+    #[test]
+    fn empty_request_body_is_absent_and_preserves_task_id_metadata() {
+        let task_id = TaskId::parse("550e8400-e29b-41d4-a716-446655440000").expect("task id");
+        let empty = ProtoTaskAttribution::default();
+
+        assert_eq!(
+            query_attribution_from_proto(Some(&empty), None).expect("empty attribution"),
+            (None, None)
+        );
+        assert_eq!(
+            query_attribution_from_proto(Some(&empty), Some(task_id)).expect("metadata task id"),
+            (Some(task_id), None)
+        );
+    }
+
+    #[test]
+    fn partial_request_body_is_invalid() {
+        let task_only = ProtoTaskAttribution {
+            task_id: "550e8400-e29b-41d4-a716-446655440000".to_string(),
+            intent: String::new(),
+        };
+        let intent_only = ProtoTaskAttribution {
+            task_id: String::new(),
+            intent: "Check renewal risk".to_string(),
+        };
+
+        assert_eq!(
+            query_attribution_from_proto(Some(&task_only), None)
+                .expect_err("task-only attribution")
+                .code(),
+            Code::InvalidArgument
+        );
+        assert_eq!(
+            query_attribution_from_proto(Some(&intent_only), None)
+                .expect_err("intent-only attribution")
+                .code(),
+            Code::InvalidArgument
+        );
     }
 
     #[test]

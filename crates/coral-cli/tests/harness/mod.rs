@@ -47,7 +47,9 @@ use coral_api::v1::{
     import_source_response, search_maintenance_result, search_result,
     source_input_spec::Input as ProtoSourceInput,
 };
-use coral_api::{CORAL_ERROR_DOMAIN, CORAL_ERROR_REASON_SOURCE_NOT_FOUND};
+use coral_api::{
+    CORAL_ERROR_DOMAIN, CORAL_ERROR_REASON_SOURCE_NOT_FOUND, CORAL_TASK_ID_METADATA_KEY,
+};
 use tempfile::TempDir;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
@@ -852,6 +854,7 @@ fn list_catalog_response(request: &ListCatalogRequest) -> ListCatalogResponse {
 #[derive(Default)]
 struct Captured {
     execute_sql: Mutex<Vec<ExecuteSqlRequest>>,
+    execute_sql_task_ids: Mutex<Vec<Option<String>>>,
     search: Mutex<Vec<SearchRequest>>,
     rebuild_search_index: Mutex<Vec<RebuildSearchIndexRequest>>,
     drain_search_queue: Mutex<Vec<DrainSearchQueueRequest>>,
@@ -974,6 +977,16 @@ impl QueryService for MockQueryService {
         &self,
         request: Request<ExecuteSqlRequest>,
     ) -> Result<Response<ExecuteSqlResponse>, Status> {
+        let task_id = request
+            .metadata()
+            .get(CORAL_TASK_ID_METADATA_KEY)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        self.captured
+            .execute_sql_task_ids
+            .lock()
+            .expect("execute_sql task ID capture")
+            .push(task_id);
         let request = request.into_inner();
         self.captured
             .execute_sql
@@ -1621,6 +1634,14 @@ impl MockServer {
             .execute_sql
             .lock()
             .expect("execute_sql capture")
+            .clone()
+    }
+
+    pub(crate) fn execute_sql_task_ids(&self) -> Vec<Option<String>> {
+        self.captured
+            .execute_sql_task_ids
+            .lock()
+            .expect("execute_sql task ID capture")
             .clone()
     }
 
