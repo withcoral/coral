@@ -27,7 +27,6 @@ export interface DesktopMcpClientData {
 export function loader(_args: Route.LoaderArgs): WebSettingsLoaderData {
   return { runtime: 'web' }
 }
-}
 
 export async function clientLoader({
   serverLoader,

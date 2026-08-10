@@ -104,5 +104,9 @@ export default function OnboardingRoute({ actionData, loaderData }: Route.Compon
 }
 
 export function HydrateFallback() {
-  return null
+  return (
+    <main>
+      <p role="status">Loading onboarding…</p>
+    </main>
+  )
 }
