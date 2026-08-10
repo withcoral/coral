@@ -276,23 +276,13 @@ export const sqlBlock = style({
   overflow: 'hidden',
   position: 'relative',
 })
-export const statGrid = style({ display: 'flex', flexWrap: 'wrap', gap: 12 })
-export const statCard = style({
-  backgroundColor: theme.surface.onMainContent,
-  border: `1px solid ${theme.stroke.secondary}`,
-  borderRadius: 12,
-  display: 'flex',
-  flexDirection: 'column',
-  flexShrink: 0,
-  minWidth: 100,
-  paddingBlock: 12,
-  paddingInline: 16,
-})
 export const tabList = style({
+  alignItems: 'center',
   borderBlockEnd: `1px solid ${theme.stroke.primary}`,
   display: 'flex',
   gap: 4,
 })
+export const tabItem = style({ alignItems: 'center', display: 'flex' })
 export const tabTrigger = style({
   background: 'none',
   border: 'none',
@@ -307,12 +297,21 @@ export const tabTrigger = style({
   paddingInline: 12,
   selectors: {
     '&:focus': { outline: 'none' },
-    '&:focus-visible': { outline: 'none' },
+    '&:focus-visible': {
+      outline: `1px solid ${theme.stroke.focused}`,
+      outlineOffset: -2,
+    },
   },
 })
 export const tabTriggerActive = style({
   borderBlockEndColor: theme.pill.green.color,
   color: theme.content.primary,
+})
+export const tabInfo = style({
+  alignItems: 'center',
+  color: theme.content.tertiary,
+  display: 'inline-flex',
+  marginInlineStart: -6,
 })
 export const tabContent = style({
   display: 'flex',
@@ -321,6 +320,18 @@ export const tabContent = style({
   minHeight: 280,
   overflow: 'hidden',
   paddingBlockStart: 16,
+  selectors: { '&[hidden]': { display: 'none' } },
+})
+export const visuallyHidden = style({
+  border: 0,
+  clip: 'rect(0 0 0 0)',
+  height: 1,
+  margin: -1,
+  overflow: 'hidden',
+  padding: 0,
+  position: 'absolute',
+  whiteSpace: 'nowrap',
+  width: 1,
 })
 
 export const waterfallRoot = style({
