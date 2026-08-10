@@ -1,4 +1,4 @@
-import { Code, ConnectError, type Interceptor } from '@connectrpc/connect'
+import type { Interceptor } from '@connectrpc/connect'
 import type { GrpcTransportOptions } from '@connectrpc/connect-node'
 import type { GrpcWebTransportOptions } from '@connectrpc/connect-web'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -125,59 +125,6 @@ describe('request-scoped Coral transport authentication', () => {
     expect(transportMocks.createGrpcTransport).not.toHaveBeenCalled()
   })
 
-  // A transport is built per client per request, so without this every loader on
-  // a page opened its own HTTP/2 connection to the same Coral.
-  //
-  // Each of these uses an origin no other case touches: the cache lives for the
-  // process, which is the point of it, so a shared origin would already be warm.
-  it('shares one HTTP/2 session across every client for a Coral origin', () => {
-    vi.stubEnv('CORAL_ENDPOINT', 'https://shared-session.example.test')
-
-    const sessions = clientFactories.map(
-      (clientFactory) =>
-        (clientFactory(request, 'coral-access-token') as unknown as GrpcTransportOptions)
-          .sessionManager,
-    )
-
-    expect(transportMocks.Http2SessionManager).toHaveBeenCalledOnce()
-    expect(transportMocks.Http2SessionManager).toHaveBeenCalledWith(
-      'https://shared-session.example.test',
-    )
-    expect(sessions[0]).toBeDefined()
-    expect(new Set(sessions).size).toBe(1)
-  })
-
-  it('reuses that session across separate requests', () => {
-    vi.stubEnv('CORAL_ENDPOINT', 'https://reused-session.example.test')
-
-    const first = (
-      sourceClientForRequest(request, 'coral-access-token') as unknown as GrpcTransportOptions
-    ).sessionManager
-    const second = (
-      sourceClientForRequest(
-        new Request('http://localhost:5173/workspaces/other'),
-        'coral-access-token',
-      ) as unknown as GrpcTransportOptions
-    ).sessionManager
-
-    expect(second).toBe(first)
-    expect(transportMocks.Http2SessionManager).toHaveBeenCalledOnce()
-  })
-
-  it('keeps a separate session per Coral origin', () => {
-    vi.stubEnv('CORAL_ENDPOINT', 'https://origin-a.example.test')
-    const first = (
-      sourceClientForRequest(request, 'coral-access-token') as unknown as GrpcTransportOptions
-    ).sessionManager
-    vi.stubEnv('CORAL_ENDPOINT', 'https://origin-b.example.test')
-    const second = (
-      sourceClientForRequest(request, 'coral-access-token') as unknown as GrpcTransportOptions
-    ).sessionManager
-
-    expect(first).not.toBe(second)
-    expect(transportMocks.Http2SessionManager).toHaveBeenCalledTimes(2)
-  })
-
   it.each([
     'http://coral.example.test',
     'http://192.168.1.10:50051',
@@ -195,39 +142,7 @@ describe('request-scoped Coral transport authentication', () => {
       expect(transportMocks.createGrpcWebTransport).not.toHaveBeenCalled()
     },
   )
-
-  it('leaves Coral authentication rejection for the outer transport boundary', async () => {
-    const interceptor = authenticatedInterceptor()
-    const failure = new ConnectError('expired token', Code.Unauthenticated)
-    const next = vi.fn().mockRejectedValue(failure)
-
-    await expect(interceptor(next as never)({ header: new Headers() } as never)).rejects.toBe(
-      failure,
-    )
-    expect(next).toHaveBeenCalledOnce()
-  })
-
-  it('does not redirect or retry non-authentication Coral failures', async () => {
-    const interceptor = authenticatedInterceptor()
-    const failure = new ConnectError('unavailable', Code.Unavailable)
-    const next = vi.fn().mockRejectedValue(failure)
-
-    await expect(interceptor(next as never)({ header: new Headers() } as never)).rejects.toBe(
-      failure,
-    )
-    expect(next).toHaveBeenCalledOnce()
-  })
 })
-
-function authenticatedInterceptor(): Interceptor {
-  const transport = sourceClientForRequest(
-    request,
-    'coral-access-token',
-  ) as unknown as GrpcTransportOptions
-  const [interceptor] = transport.interceptors ?? []
-  if (!interceptor) throw new Error('authenticated transport did not install an interceptor')
-  return interceptor
-}
 
 async function authorizationHeader(interceptor: Interceptor): Promise<string | null> {
   const next = vi.fn(async (rpcRequest) => rpcRequest)

@@ -1,9 +1,13 @@
 import { renderToString } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 
-import { EXPIRED_SESSION_LOGIN_HEADER } from '@/auth/response'
+import {
+  AUTH_STREAM_REQUEST_HEADER,
+  AUTH_STREAM_RETURN_TO_HEADER,
+  EXPIRED_SESSION_LOGIN_HEADER,
+} from '@/auth/response'
 
-import { expiredSessionLoginLocation, useOAuthInstallFlow } from './source-oauth-install-flow'
+import { runOAuthInstallFlow, useOAuthInstallFlow } from './source-oauth-install-flow'
 
 function OAuthFlowHarness() {
   useOAuthInstallFlow({
@@ -20,25 +24,65 @@ describe('useOAuthInstallFlow server rendering', () => {
   })
 })
 
-// Regression: a stream fetch whose session expired must send the visitor to the
-// login location the server named, rather than surfacing as an install error.
-// Reef's Vitest coverage is Node-only, so this asserts the decision the hook
-// makes rather than driving a render.
-describe('expiredSessionLoginLocation', () => {
-  it('reads the login location an expired-session response carries', () => {
-    const loginLocation = '/login?returnTo=%2Fworkspaces%2Fanalytics%2Fsources%2Foauth-import'
-    const response = new Response(null, {
-      headers: { [EXPIRED_SESSION_LOGIN_HEADER]: loginLocation },
-      status: 401,
+describe('runOAuthInstallFlow', () => {
+  it('navigates to login without consuming an expired-session stream', async () => {
+    const response = new Response(
+      new ReadableStream({
+        pull(controller) {
+          controller.error(new Error('expired-session response body must not be read'))
+        },
+      }),
+      {
+        headers: {
+          [EXPIRED_SESSION_LOGIN_HEADER]:
+            '/login?returnTo=%2Fworkspaces%2Fanalytics%2Fsources%2Fnew',
+        },
+        status: 401,
+      },
+    )
+    const fetchOAuthInstall = vi.fn<typeof fetch>().mockResolvedValue(response)
+    const navigateToLogin = vi.fn()
+    const onComplete = vi.fn()
+    const openAuthorization = vi.fn()
+    const errors: Array<string | null> = []
+    const progress: Array<{ kind: string }> = []
+    const formData = new FormData()
+    const abortController = new AbortController()
+
+    await runOAuthInstallFlow({
+      endpoint: '/sources/github/oauth-install',
+      fetchOAuthInstall,
+      formData,
+      navigateToLogin,
+      onComplete,
+      openAuthorization,
+      setError: (error) => errors.push(error),
+      setProgress: (nextProgress) => progress.push(nextProgress),
+      signal: abortController.signal,
+      visibleLocation: '/workspaces/analytics/sources/new?step=oauth',
     })
 
-    expect(expiredSessionLoginLocation(response)).toBe(loginLocation)
-  })
-
-  it.each([
-    ['an ordinary success', new Response(null, { status: 200 })],
-    ['an ordinary failure', new Response(null, { status: 500 })],
-  ])('returns null for %s', (_label, response) => {
-    expect(expiredSessionLoginLocation(response)).toBeNull()
+    expect(fetchOAuthInstall).toHaveBeenCalledOnce()
+    expect(fetchOAuthInstall).toHaveBeenCalledWith(
+      '/sources/github/oauth-install',
+      expect.objectContaining({
+        body: formData,
+        headers: {
+          [AUTH_STREAM_REQUEST_HEADER]: '1',
+          [AUTH_STREAM_RETURN_TO_HEADER]: '/workspaces/analytics/sources/new?step=oauth',
+        },
+        method: 'POST',
+        signal: abortController.signal,
+      }),
+    )
+    expect(navigateToLogin).toHaveBeenCalledOnce()
+    expect(navigateToLogin).toHaveBeenCalledWith(
+      '/login?returnTo=%2Fworkspaces%2Fanalytics%2Fsources%2Fnew',
+    )
+    expect(progress).toEqual([{ kind: 'busy' }, { kind: 'idle' }])
+    expect(errors).toEqual([null])
+    expect(response.bodyUsed).toBe(false)
+    expect(openAuthorization).not.toHaveBeenCalled()
+    expect(onComplete).not.toHaveBeenCalled()
   })
 })

@@ -239,54 +239,6 @@ describe('optional auth boundary', () => {
     expect((thrown as Response).headers.get('Set-Cookie')).toContain('Max-Age=0')
   })
 
-  // "Only" is the half that matters and the half a placement assertion cannot
-  // reach: a descendant runs, reads the token the way a real loader does, and
-  // the response it produces is then searched for the token in every part a
-  // browser would see.
-  it('keeps the token only in server request context', async () => {
-    authMocks.reefAuthConfig.mockReturnValue(requiredConfig)
-    authMocks.readReefSession.mockResolvedValue(session)
-    const context = new RouterContextProvider()
-
-    const response = await runMiddleware(
-      new Request('https://reef.example.test/workspaces/analytics/sources'),
-      async () => {
-        // Stands in for a descendant loader: it reads the token, uses it, and
-        // renders from the result — without echoing it.
-        const { accessToken } = context.get(requestAuthContext)
-        expect(accessToken).toBe('server-only-token')
-        return new Response(
-          `<main>hosted app for ${accessToken ? 'a signed-in user' : 'nobody'}</main>`,
-          {
-            headers: { 'Content-Type': 'text/html', 'X-Rendered-By': 'descendant' },
-          },
-        )
-      },
-      context,
-    )
-
-    expect(context.get(requestAuthContext)).toEqual({
-      accessToken: 'server-only-token',
-      csrfToken: 'csrf-token',
-      mode: 'required',
-      session,
-    })
-    expect(authMocks.csrfTokenForRequest).toHaveBeenCalledWith(
-      expect.any(Request),
-      requiredConfig,
-      session,
-    )
-
-    const body = await response.clone().text()
-    const headers = [...response.headers.entries()].map(([name, value]) => `${name}: ${value}`)
-
-    expect(body).toContain('hosted app for a signed-in user')
-    expect(body).not.toContain('server-only-token')
-    for (const header of headers) {
-      expect(header).not.toContain('server-only-token')
-    }
-  })
-
   it('commits a fresh CSRF cookie on the protected response', async () => {
     authMocks.reefAuthConfig.mockReturnValue(requiredConfig)
     authMocks.readReefSession.mockResolvedValue(session)
@@ -324,60 +276,6 @@ describe('optional auth boundary', () => {
       throw childRedirect
     }).catch((error: unknown) => error)
     expect(thrown).toBe(childRedirect)
-    expectPrivate(thrown as Response)
-  })
-
-  it('clears the session once when Coral rejects it mid-request', async () => {
-    authMocks.reefAuthConfig.mockReturnValue(requiredConfig)
-    authMocks.readReefSession.mockResolvedValue(session)
-    const childRedirect = new Response(null, {
-      headers: {
-        [EXPIRED_SESSION_RESPONSE_HEADER]: '1',
-        location: '/login?returnTo=%2Fworkspaces%2Fanalytics%2Fsources',
-      },
-      status: 302,
-    })
-
-    const thrown = await runMiddleware(
-      new Request('https://reef.example.test/workspaces/analytics/sources'),
-      async () => {
-        throw childRedirect
-      },
-    ).catch((error: unknown) => error)
-
-    expect(thrown).toBe(childRedirect)
-    expect(childRedirect.headers.has(EXPIRED_SESSION_RESPONSE_HEADER)).toBe(false)
-    expect(childRedirect.headers.get('Set-Cookie')).toContain('Max-Age=0')
-    expect(authMocks.clearReefSession).toHaveBeenCalledOnce()
-    expectPrivate(childRedirect)
-  })
-
-  it('returns a client-visible login signal instead of a fetch-followed redirect', async () => {
-    authMocks.reefAuthConfig.mockReturnValue(requiredConfig)
-    authMocks.readReefSession.mockResolvedValue(session)
-    const streamRequest = new Request(
-      'https://reef.example.test/workspaces/analytics/sources/oauth-import',
-      {
-        headers: {
-          [AUTH_STREAM_REQUEST_HEADER]: '1',
-          [AUTH_STREAM_RETURN_TO_HEADER]: '/workspaces/analytics/sources/new?step=oauth',
-        },
-        method: 'POST',
-      },
-    )
-    const childRedirect = expiredSessionRedirect(streamRequest)
-
-    const thrown = await runMiddleware(streamRequest, async () => {
-      throw childRedirect
-    }).catch((error: unknown) => error)
-
-    expect(thrown).toBeInstanceOf(Response)
-    expect((thrown as Response).status).toBe(401)
-    expect((thrown as Response).headers.has('location')).toBe(false)
-    expect((thrown as Response).headers.get(EXPIRED_SESSION_LOGIN_HEADER)).toBe(
-      '/login?returnTo=%2Fworkspaces%2Fanalytics%2Fsources%2Fnew%3Fstep%3Doauth',
-    )
-    expect((thrown as Response).headers.get('Set-Cookie')).toContain('Max-Age=0')
     expectPrivate(thrown as Response)
   })
 

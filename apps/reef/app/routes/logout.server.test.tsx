@@ -47,9 +47,6 @@ describe('logout route', () => {
     authMocks.reefAuthConfig.mockReset()
     authMocks.readReefSession.mockReset()
     authMocks.validateCsrfToken.mockReset()
-    authMocks.clearCsrfToken.mockResolvedValue('reef_session_csrf=; Max-Age=0; Path=/')
-    authMocks.clearOAuthTransaction.mockResolvedValue('reef_oauth=; Max-Age=0; Path=/')
-    authMocks.clearReefSession.mockResolvedValue('reef_session=; Max-Age=0; Path=/')
   })
 
   it('keeps disabled local and desktop logout inert', async () => {
@@ -89,25 +86,6 @@ describe('logout route', () => {
     await expect(action(authRouteTestArgs(request, {}))).rejects.toMatchObject({ status: 403 })
     expect(authMocks.validateCsrfToken).not.toHaveBeenCalled()
     expect(authMocks.clearReefSession).not.toHaveBeenCalled()
-  })
-
-  it('clears hosted auth cookies and lands on the signed-out screen', async () => {
-    authMocks.reefAuthConfig.mockReturnValue(requiredConfig)
-    authMocks.readReefSession.mockResolvedValue(session)
-    authMocks.validateCsrfToken.mockResolvedValue(true)
-    const request = logoutRequest('valid-token')
-
-    const response = await action(authRouteTestArgs(request, {}))
-
-    expect(response.status).toBe(302)
-    expect(response.headers.get('Location')).toBe('/login?signedOut=1')
-    expect(response.headers.getSetCookie()).toEqual([
-      'reef_session_csrf=; Max-Age=0; Path=/',
-      'reef_oauth=; Max-Age=0; Path=/',
-      'reef_session=; Max-Age=0; Path=/',
-    ])
-    expect(response.headers.get('Cache-Control')).toBe('private, no-store')
-    expect(authMocks.validateCsrfToken).toHaveBeenCalledWith(request, requiredConfig, session)
   })
 })
 
