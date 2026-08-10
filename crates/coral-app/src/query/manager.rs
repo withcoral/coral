@@ -1095,6 +1095,8 @@ fn pending_task_query<'a>(
     match recorder.begin_query(workspace, task_id, intent) {
         Ok(pending) => Some(pending),
         Err(error) => {
+            crate::telemetry::metrics::metrics()
+                .record_task_query_recording(Some(error.error_type()));
             tracing::warn!(
                 task.id = %task_id,
                 error = %error,
