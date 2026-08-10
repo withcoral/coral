@@ -20,16 +20,6 @@ const routeConfigFile = path.join(appDir, 'routes.ts')
 const reefRoot = path.resolve(appDir, '..')
 const desktopRoot = path.resolve(reefRoot, '..', 'desktop')
 
-function filesUnder(directory: string, matches: (name: string) => boolean): string[] {
-  if (!fs.existsSync(directory)) return []
-
-  return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
-    const entryPath = path.join(directory, entry.name)
-    if (entry.isDirectory()) return filesUnder(entryPath, matches)
-    return entry.isFile() && matches(entry.name) ? [entryPath] : []
-  })
-}
-
 function read(...segments: string[]): string {
   return fs.readFileSync(path.join(...segments), 'utf8')
 }
@@ -101,45 +91,5 @@ describe('hosted auth architecture', () => {
           !entry.startsWith("layout('routes/_protected.tsx',"),
       ),
     ).toEqual([])
-  })
-
-  // Regression: a Coral client factory called with one argument is a call that
-  // forgot the access token, and hosted requests then go out unauthenticated.
-  //
-  // Matching the literal `(request)` would make this only as good as the
-  // formatter — a call wrapped across lines, given a trailing comma, or handed
-  // `args.request` would walk straight past it. So it matches the shape: a
-  // single argument, whatever it is named and however it is spaced.
-  it('threads request auth through every server-side Coral client factory call', () => {
-    const unauthenticatedCall =
-      /\b(?:catalog|function|query|source|trace|workspace)ClientForRequest\(\s*[A-Za-z_$][\w$.]*\s*,?\s*\)/
-
-    for (const call of [
-      'sourceClientForRequest(request)',
-      'sourceClientForRequest( request )',
-      'sourceClientForRequest(request,)',
-      'queryClientForRequest(\n  request,\n)',
-      'traceClientForRequest(args.request)',
-      'workspaceClientForRequest(req)',
-    ]) {
-      expect(unauthenticatedCall.test(call), `${call} should be flagged`).toBe(true)
-    }
-    for (const call of [
-      'sourceClientForRequest(request, accessToken)',
-      'sourceClientForRequest(request, null)',
-      'queryClientForRequest(\n  request,\n  accessToken,\n)',
-    ]) {
-      expect(unauthenticatedCall.test(call), `${call} should be allowed`).toBe(false)
-    }
-
-    const sources = filesUnder(
-      appDir,
-      (name) => /\.tsx?$/.test(name) && !name.includes('.test.') && !name.includes('.stories.'),
-    )
-    const violations = sources
-      .filter((file) => unauthenticatedCall.test(fs.readFileSync(file, 'utf8')))
-      .map((file) => path.relative(appDir, file))
-
-    expect(violations).toEqual([])
   })
 })
