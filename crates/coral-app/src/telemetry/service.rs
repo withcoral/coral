@@ -440,7 +440,7 @@ mod tests {
         }
 
         let local = TraceServiceApi::list_traces(
-            &fixture.service,
+            &fixture.local_service,
             list_request(&Principal::local(), None, 10, ""),
         )
         .await
@@ -481,7 +481,7 @@ mod tests {
         .await
         .expect("get alpha trace")
         .into_inner();
-        assert_eq!(detail.spans.len(), 1);
+        assert_eq!(detail.spans.len(), 2);
 
         let status = TraceServiceApi::get_trace(
             &fixture.service,
@@ -560,6 +560,7 @@ mod tests {
     struct ServiceFixture {
         _temp: TempDir,
         service: TraceService,
+        local_service: TraceService,
         owner: Principal,
         member: Principal,
     }
@@ -608,9 +609,12 @@ mod tests {
         let trace_store = temp.path().join("trace-store");
         std::fs::create_dir_all(&trace_store).expect("trace store dir");
         write_traces(&trace_store);
+        let traces = TraceManager::new(trace_store, Duration::from_mins(1));
         ServiceFixture {
-            service: TraceService::new(TraceManager::new(trace_store, Duration::from_mins(1)))
-                .with_authorizer(WorkspaceAuthorizer::new(db)),
+            service: TraceService::new(traces.clone())
+                .with_authorizer(WorkspaceAuthorizer::new(Arc::clone(&db))),
+            local_service: TraceService::new(traces)
+                .with_authorizer(WorkspaceAuthorizer::trusting_local_principal(db)),
             owner: Principal::parse(&owner_id, PrincipalKind::User).expect("owner"),
             member: Principal::parse(&member_id, PrincipalKind::User).expect("member"),
             _temp: temp,
@@ -626,10 +630,20 @@ mod tests {
         *host_trace
             .get_mut("attributes_json")
             .expect("trace attributes") = json!(r#"{"sql":"SELECT host","status":"ok"}"#);
+        let mut alpha_grpc = trace_record_json("alpha-trace", "alpha-grpc", "alpha", 5, 35);
+        let alpha_grpc_object = alpha_grpc.as_object_mut().expect("gRPC record object");
+        alpha_grpc_object.insert("name".to_string(), json!("grpc.request"));
+        alpha_grpc_object.insert("attributes_json".to_string(), json!("{}"));
+        let mut alpha_query = trace_record_json("alpha-trace", "alpha-span", "alpha", 10, 30);
+        alpha_query
+            .as_object_mut()
+            .expect("query record object")
+            .insert("parent_span_id".to_string(), json!("alpha-grpc"));
         write_trace_records(
             trace_store,
             &[
-                trace_record_json("alpha-trace", "alpha-span", "alpha", 10, 30),
+                alpha_grpc,
+                alpha_query,
                 trace_record_json("beta-trace", "beta-span", "beta", 40, 60),
                 trace_record_json("gamma-trace", "gamma-span", "gamma", 30, 50),
                 host_trace,

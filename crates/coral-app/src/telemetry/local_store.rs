@@ -30,6 +30,7 @@ const JSONL_MAX_FILE_ROWS: usize = 50_000;
 const JSONL_MAX_FILE_AGE: Duration = Duration::from_hours(24);
 const JSONL_PRUNE_INTERVAL: Duration = Duration::from_hours(1);
 const JSONL_FILE_MTIME_SPAN_END_TOLERANCE: Duration = Duration::from_secs(2);
+const FEDERATED_TRACE_CANDIDATE_BATCH_SIZE: usize = 64;
 type ActiveTraceWriter = Arc<Mutex<RollingJsonlWriter>>;
 type WeakActiveTraceWriter = Weak<Mutex<RollingJsonlWriter>>;
 type ActiveTraceWriterRegistry = Mutex<HashMap<PathBuf, Vec<WeakActiveTraceWriter>>>;
@@ -385,20 +386,45 @@ impl FederatedTraceScope<'_> {
         }
     }
 
-    fn allows_aggregate(&self, aggregate: &TraceListAggregate) -> bool {
-        !aggregate.has_unattributed_workspace
-            && !aggregate.workspace_names.is_empty()
-            && aggregate
-                .workspace_names
-                .iter()
-                .all(|workspace| self.allows_workspace(workspace))
-    }
-
     fn allows_detail(&self, detail: &TraceDetailRecord) -> bool {
-        detail.spans.iter().all(|span| {
-            workspace_attribute(&span.attributes_json)
-                .is_some_and(|workspace| self.allows_workspace(&workspace))
-        })
+        let parents = detail
+            .spans
+            .iter()
+            .map(|span| (span.span_id.as_str(), span.parent_span_id.as_deref()))
+            .collect::<HashMap<_, _>>();
+        let mut attributed_spans = Vec::new();
+        for span in &detail.spans {
+            let Some(workspace) = workspace_attribute(&span.attributes_json) else {
+                continue;
+            };
+            if !self.allows_workspace(&workspace) {
+                return false;
+            }
+            attributed_spans.push(span.span_id.as_str());
+        }
+        if attributed_spans.is_empty() {
+            return false;
+        }
+
+        // Transport spans are created before a handler can resolve its
+        // workspace, so a normal authenticated trace has an unattributed gRPC
+        // ancestor. Only ancestors of an authorized, attributed span are safe:
+        // an unattributed descendant or sibling could carry data from a scope
+        // the caller does not own.
+        let mut allowed_span_ids = HashSet::new();
+        for span_id in attributed_spans {
+            let mut current = Some(span_id);
+            while let Some(span_id) = current {
+                if !allowed_span_ids.insert(span_id) {
+                    break;
+                }
+                current = parents.get(span_id).copied().flatten();
+            }
+        }
+        detail
+            .spans
+            .iter()
+            .all(|span| allowed_span_ids.contains(span.span_id.as_str()))
     }
 }
 
@@ -617,9 +643,13 @@ struct TraceListAggregate {
     error_count: u32,
     found_root_span: bool,
     matches_workspace: bool,
-    workspace_names: HashSet<String>,
-    has_unattributed_workspace: bool,
     primary: Option<TracePrimaryCandidate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TracePageCursor {
+    trace_id: String,
+    end_time_unix_nanos: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -813,20 +843,49 @@ impl TraceStore {
         }
         self.prune_expired()?;
         let files = self.jsonl_files_by_modified()?;
-        let mut spans_by_id = HashMap::new();
-        let mut traces = HashMap::new();
-        for file in files.iter().rev() {
-            for span in read_list_spans_file(&file.path)? {
-                record_list_span(span, None, &mut spans_by_id, &mut traces);
+        let candidate_limit = limit.max(FEDERATED_TRACE_CANDIDATE_BATCH_SIZE);
+        let mut cursor = None;
+        let mut allowed_before_page = 0;
+        let mut summaries = Vec::with_capacity(limit);
+
+        while summaries.len() < limit {
+            let candidates = newest_trace_candidates(&files, candidate_limit, cursor.as_ref())?;
+            let Some(next_cursor) = candidates.last().cloned() else {
+                break;
+            };
+            let candidate_ids = candidates
+                .iter()
+                .map(|candidate| candidate.trace_id.clone())
+                .collect::<HashSet<_>>();
+            let mut details = trace_details_from_files(&files, &candidate_ids)?;
+
+            for candidate in candidates {
+                let Some(detail) = details.remove(&candidate.trace_id) else {
+                    continue;
+                };
+                // Candidate discovery pages span records. A trace whose newest
+                // span was on an earlier candidate page can appear again via an
+                // older span; its completed end time identifies that duplicate
+                // without retaining an unbounded set of visited trace IDs.
+                if detail.summary.end_time_unix_nanos != candidate.end_time_unix_nanos {
+                    continue;
+                }
+                if !scope.allows_detail(&detail) {
+                    continue;
+                }
+                if allowed_before_page < offset {
+                    allowed_before_page = allowed_before_page.saturating_add(1);
+                    continue;
+                }
+                summaries.push(detail.summary);
+                if summaries.len() == limit {
+                    break;
+                }
             }
+            cursor = Some(next_cursor);
         }
-        let mut summaries = traces
-            .into_values()
-            .filter(|aggregate| scope.allows_aggregate(aggregate))
-            .map(TraceListAggregate::into_summary)
-            .collect::<Vec<_>>();
-        sort_summaries(&mut summaries);
-        Ok(summaries.into_iter().skip(offset).take(limit).collect())
+
+        Ok(summaries)
     }
 
     fn list_traces_filtered_sync(
@@ -896,30 +955,12 @@ impl TraceStore {
     }
 
     fn get_trace_sync(&self, trace_id: &str) -> Result<TraceDetailRecord, TraceStoreError> {
-        let mut spans_by_id = HashMap::new();
         self.prune_expired()?;
         let files = self.jsonl_files_by_modified()?;
-        for file in files.iter().rev() {
-            for span in read_trace_spans_file(&file.path, trace_id)? {
-                spans_by_id
-                    .entry((span.trace_id.clone(), span.span_id.clone()))
-                    .or_insert(span);
-            }
-        }
-        let mut spans = spans_by_id.into_values().collect::<Vec<_>>();
-
-        if spans.is_empty() {
-            return Err(TraceStoreError::NotFound(trace_id.to_string()));
-        }
-
-        spans.sort_by(|left, right| {
-            left.start_time_unix_nanos
-                .cmp(&right.start_time_unix_nanos)
-                .then_with(|| left.span_id.cmp(&right.span_id))
-        });
-
-        let summary = summary_from_spans(trace_id, &spans);
-        Ok(TraceDetailRecord { summary, spans })
+        let trace_ids = HashSet::from([trace_id.to_string()]);
+        trace_details_from_files(&files, &trace_ids)?
+            .remove(trace_id)
+            .ok_or_else(|| TraceStoreError::NotFound(trace_id.to_string()))
     }
 
     fn get_trace_for_workspace_sync(
@@ -1156,8 +1197,6 @@ impl TraceListAggregate {
             error_count: 0,
             found_root_span: false,
             matches_workspace: false,
-            workspace_names: HashSet::new(),
-            has_unattributed_workspace: false,
             primary: None,
         };
         aggregate.record_span(span, workspace_name);
@@ -1175,12 +1214,6 @@ impl TraceListAggregate {
         let span_workspace = workspace_attribute(&span.attributes_json);
         self.matches_workspace |= workspace_name
             .is_some_and(|workspace_name| span_workspace.as_deref() == Some(workspace_name));
-        match span_workspace {
-            Some(workspace) => {
-                self.workspace_names.insert(workspace);
-            }
-            None => self.has_unattributed_workspace = true,
-        }
 
         let primary = TracePrimaryCandidate::from_span(span);
         if self
@@ -1361,6 +1394,90 @@ fn trace_is_complete_before_unscanned_files(
         && newest_unscanned_span_end_upper_bound_unix_nanos < aggregate.start_time_unix_nanos
 }
 
+fn newest_trace_candidates(
+    files: &[TraceStoreFile],
+    limit: usize,
+    cursor: Option<&TracePageCursor>,
+) -> Result<Vec<TracePageCursor>, TraceStoreError> {
+    let mut candidates = HashMap::<String, i64>::with_capacity(limit);
+
+    for (file_index, file) in files.iter().enumerate().rev() {
+        for span in read_list_spans_file(&file.path)? {
+            let candidate = TracePageCursor {
+                trace_id: span.trace_id,
+                end_time_unix_nanos: span.end_time_unix_nanos,
+            };
+            if cursor.is_some_and(|cursor| trace_candidate_order(&candidate, cursor).is_le()) {
+                continue;
+            }
+            retain_newest_trace_candidate(&mut candidates, limit, candidate);
+        }
+
+        let Some(newest_unscanned_file) =
+            file_index.checked_sub(1).and_then(|index| files.get(index))
+        else {
+            break;
+        };
+        if candidates.len() == limit
+            && candidates.values().copied().min().is_some_and(|oldest| {
+                newest_unscanned_file.span_end_upper_bound_unix_nanos < oldest
+            })
+        {
+            break;
+        }
+    }
+
+    let mut candidates = candidates
+        .into_iter()
+        .map(|(trace_id, end_time_unix_nanos)| TracePageCursor {
+            trace_id,
+            end_time_unix_nanos,
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(trace_candidate_order);
+    Ok(candidates)
+}
+
+fn retain_newest_trace_candidate(
+    candidates: &mut HashMap<String, i64>,
+    limit: usize,
+    candidate: TracePageCursor,
+) {
+    if limit == 0 {
+        return;
+    }
+    if let Some(end_time) = candidates.get_mut(&candidate.trace_id) {
+        *end_time = (*end_time).max(candidate.end_time_unix_nanos);
+        return;
+    }
+    if candidates.len() < limit {
+        candidates.insert(candidate.trace_id, candidate.end_time_unix_nanos);
+        return;
+    }
+
+    let Some(oldest) = candidates
+        .iter()
+        .map(|(trace_id, end_time_unix_nanos)| TracePageCursor {
+            trace_id: trace_id.clone(),
+            end_time_unix_nanos: *end_time_unix_nanos,
+        })
+        .max_by(trace_candidate_order)
+    else {
+        return;
+    };
+    if trace_candidate_order(&candidate, &oldest).is_lt() {
+        candidates.remove(&oldest.trace_id);
+        candidates.insert(candidate.trace_id, candidate.end_time_unix_nanos);
+    }
+}
+
+fn trace_candidate_order(left: &TracePageCursor, right: &TracePageCursor) -> std::cmp::Ordering {
+    right
+        .end_time_unix_nanos
+        .cmp(&left.end_time_unix_nanos)
+        .then_with(|| left.trace_id.cmp(&right.trace_id))
+}
+
 fn sort_trace_aggregates(aggregates: &mut [&TraceListAggregate]) {
     aggregates.sort_by(|left, right| {
         right
@@ -1460,9 +1577,44 @@ fn read_list_spans_file_filtered(
     Ok(spans_by_id.into_values().collect())
 }
 
-fn read_trace_spans_file(
+fn trace_details_from_files(
+    files: &[TraceStoreFile],
+    trace_ids: &HashSet<String>,
+) -> Result<HashMap<String, TraceDetailRecord>, TraceStoreError> {
+    let mut spans_by_id = HashMap::new();
+    for file in files.iter().rev() {
+        for span in read_trace_spans_file_for_trace_ids(&file.path, trace_ids)? {
+            spans_by_id
+                .entry((span.trace_id.clone(), span.span_id.clone()))
+                .or_insert(span);
+        }
+    }
+
+    let mut spans_by_trace = HashMap::<String, Vec<TraceSpanRecord>>::new();
+    for ((_trace_id, _span_id), span) in spans_by_id {
+        spans_by_trace
+            .entry(span.trace_id.clone())
+            .or_default()
+            .push(span);
+    }
+
+    Ok(spans_by_trace
+        .into_iter()
+        .map(|(trace_id, mut spans)| {
+            spans.sort_by(|left, right| {
+                left.start_time_unix_nanos
+                    .cmp(&right.start_time_unix_nanos)
+                    .then_with(|| left.span_id.cmp(&right.span_id))
+            });
+            let summary = summary_from_spans(&trace_id, &spans);
+            (trace_id, TraceDetailRecord { summary, spans })
+        })
+        .collect())
+}
+
+fn read_trace_spans_file_for_trace_ids(
     path: &Path,
-    trace_id: &str,
+    trace_ids: &HashSet<String>,
 ) -> Result<Vec<TraceSpanRecord>, TraceStoreError> {
     let file = File::open(path).map_err(|source| TraceStoreError::OpenFile {
         path: path.to_path_buf(),
@@ -1490,21 +1642,15 @@ fn read_trace_spans_file(
         if trimmed.trim().is_empty() {
             continue;
         }
-        if !trimmed.contains(trace_id) {
+        if !line_trace_id(trimmed).is_some_and(|trace_id| trace_ids.contains(trace_id)) {
             continue;
         }
 
-        match serde_json::from_str::<TraceSpanIdentityRecord>(trimmed) {
-            Ok(identity) if identity.trace_id == trace_id => {
-                match serde_json::from_str::<TraceSpanRecord>(trimmed) {
-                    Ok(span) => {
-                        spans_by_id.insert((span.trace_id.clone(), span.span_id.clone()), span);
-                    }
-                    Err(_) if !complete_line => break,
-                    Err(_source) => {}
-                }
+        match serde_json::from_str::<TraceSpanRecord>(trimmed) {
+            Ok(span) if trace_ids.contains(&span.trace_id) => {
+                spans_by_id.insert((span.trace_id.clone(), span.span_id.clone()), span);
             }
-            Ok(_identity) => {}
+            Ok(_span) => {}
             Err(_) if !complete_line => break,
             Err(_source) => {}
         }
@@ -2189,8 +2335,9 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        JSONL_MAX_FILE_AGE, JsonlSpanExporter, OwnedWorkspaceScope, RollingJsonlWriter,
-        StoredTraceStatus, TraceSpanRecord, TraceStore, unix_nanos,
+        FEDERATED_TRACE_CANDIDATE_BATCH_SIZE, JSONL_MAX_FILE_AGE, JsonlSpanExporter,
+        OwnedWorkspaceScope, RollingJsonlWriter, StoredTraceStatus, TraceSpanRecord, TraceStore,
+        newest_trace_candidates, unix_nanos,
     };
     use coral_telemetry::WORKSPACE_SPAN_ATTRIBUTE;
 
@@ -2782,6 +2929,106 @@ mod tests {
                 .map(|span| span.span_id.as_str())
                 .collect::<Vec<_>>(),
             ["foreign-span", "owned-span"]
+        );
+    }
+
+    #[test]
+    fn federated_scope_allows_only_unattributed_ancestors() {
+        let temp = TempDir::new().expect("temp dir");
+        let dir = temp.path().join("telemetry").join("traces");
+        fs::create_dir_all(&dir).expect("trace dir");
+
+        let mut grpc = trace_record("normal-trace", "grpc-span");
+        grpc.name = "grpc.request".to_string();
+        grpc.attributes_json = "{}".to_string();
+        grpc.start_time_unix_nanos = 10;
+        grpc.end_time_unix_nanos = 40;
+        let mut query = trace_record("normal-trace", "query-span");
+        query.parent_span_id = Some("grpc-span".to_string());
+        query.attributes_json = r#"{"workspace":"alpha","sql":"SELECT 1"}"#.to_string();
+        query.start_time_unix_nanos = 20;
+        query.end_time_unix_nanos = 30;
+
+        let mut unsafe_query = trace_record("unsafe-trace", "unsafe-query");
+        unsafe_query.attributes_json = r#"{"workspace":"alpha"}"#.to_string();
+        unsafe_query.start_time_unix_nanos = 50;
+        unsafe_query.end_time_unix_nanos = 60;
+        let mut unsafe_child = trace_record("unsafe-trace", "unsafe-child");
+        unsafe_child.parent_span_id = Some("unsafe-query".to_string());
+        unsafe_child.attributes_json = "{}".to_string();
+        unsafe_child.start_time_unix_nanos = 55;
+        unsafe_child.end_time_unix_nanos = 65;
+
+        write_record_file_lines(
+            &dir.join(timestamped_jsonl_path(SystemTime::now())),
+            &[grpc, query, unsafe_query, unsafe_child],
+        );
+        let store = TraceStore::new(dir);
+
+        let summaries = store
+            .list_traces_for_workspace_sync(10, 0, "alpha")
+            .expect("list authorized traces");
+        assert_eq!(
+            summaries
+                .iter()
+                .map(|summary| summary.trace_id.as_str())
+                .collect::<Vec<_>>(),
+            ["normal-trace"]
+        );
+        assert_eq!(
+            store
+                .get_trace_for_workspace_sync("normal-trace", "alpha")
+                .expect("gRPC ancestor is safe")
+                .spans
+                .len(),
+            2
+        );
+        assert!(matches!(
+            store.get_trace_for_workspace_sync("unsafe-trace", "alpha"),
+            Err(super::TraceStoreError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn federated_trace_pages_bound_candidate_materialization() {
+        let temp = TempDir::new().expect("temp dir");
+        let dir = temp.path().join("telemetry").join("traces");
+        fs::create_dir_all(&dir).expect("trace dir");
+        let mut records = (0..FEDERATED_TRACE_CANDIDATE_BATCH_SIZE + 6)
+            .map(|index| {
+                let mut record = trace_record(&format!("foreign-{index:03}"), "span");
+                record.attributes_json = r#"{"workspace":"gamma"}"#.to_string();
+                record.start_time_unix_nanos = i64::try_from(index).expect("test timestamp") + 10;
+                record.end_time_unix_nanos = record.start_time_unix_nanos + 1;
+                record
+            })
+            .collect::<Vec<_>>();
+        let mut visible = trace_record("visible", "span");
+        visible.attributes_json = r#"{"workspace":"alpha"}"#.to_string();
+        visible.start_time_unix_nanos = 1;
+        visible.end_time_unix_nanos = 2;
+        records.push(visible);
+        write_record_file_lines(
+            &dir.join(timestamped_jsonl_path(SystemTime::now())),
+            &records,
+        );
+        let store = TraceStore::new(dir);
+        let files = store.jsonl_files_by_modified().expect("trace files");
+
+        assert_eq!(
+            newest_trace_candidates(&files, FEDERATED_TRACE_CANDIDATE_BATCH_SIZE, None)
+                .expect("candidate page")
+                .len(),
+            FEDERATED_TRACE_CANDIDATE_BATCH_SIZE
+        );
+        assert_eq!(
+            store
+                .list_traces_for_workspace_sync(1, 0, "alpha")
+                .expect("scan another bounded candidate page")
+                .first()
+                .expect("visible trace")
+                .trace_id,
+            "visible"
         );
     }
 
