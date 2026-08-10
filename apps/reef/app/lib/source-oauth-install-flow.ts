@@ -8,6 +8,18 @@ import {
 
 import { readOAuthInstallStream } from './source-oauth-install-stream'
 
+/**
+ * The login location an expired-session response carries, or `null` for any
+ * other response.
+ *
+ * Split out of the hook so it can be tested without rendering: Reef's Vitest
+ * coverage is Node-only, and the branch it guards — a stream fetch answered with
+ * an expired session — is otherwise reachable only through a React render.
+ */
+export function expiredSessionLoginLocation(response: Response): string | null {
+  return response.headers.get(EXPIRED_SESSION_LOGIN_HEADER)
+}
+
 export type OAuthInstallProgress =
   | { kind: 'idle' }
   | { kind: 'busy' }
@@ -69,7 +81,7 @@ export function useOAuthInstallFlow({
         method: 'POST',
         signal: abortController.signal,
       })
-      const loginLocation = response.headers.get(EXPIRED_SESSION_LOGIN_HEADER)
+      const loginLocation = expiredSessionLoginLocation(response)
       if (loginLocation) {
         setProgress({ kind: 'idle' })
         navigateToLogin(loginLocation)
