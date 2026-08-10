@@ -1,8 +1,14 @@
+/**
+ * The same headers [`markAuthResponsePrivate`] applies, for a route that
+ * declares them rather than being handed a response to mark.
+ *
+ * Derived from that function rather than restating it. Spelling the policy out
+ * twice is how the two drift: a header added to one would silently not apply to
+ * routes using the other, and nothing would fail. Running the real thing over a
+ * throwaway response costs an allocation on a path that already builds one.
+ */
 export function authPrivateHeaders(): Headers {
-  return new Headers({
-    'Cache-Control': 'private, no-store',
-    Vary: 'Cookie',
-  })
+  return markAuthResponsePrivate(new Response(null)).headers
 }
 
 export function markAuthResponsePrivate(response: Response): Response {
