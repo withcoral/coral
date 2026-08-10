@@ -8,6 +8,7 @@ import {
 } from '@/lib/coral-desktop'
 import { remoteMcpClientInstructions, webMcpClients } from '@/lib/mcp-clients'
 import { mcpConnectionFromEnv } from '@/lib/mcp-connection'
+import { isWindowsRequest } from '@/lib/mcp-platform'
 import type { McpClientInstallListItem } from '@/components/mcp-clients-list'
 import { addToast } from '@/wax/components/toast'
 
@@ -29,8 +30,9 @@ export interface DesktopMcpClientData {
   readonly error?: string
 }
 
-export function loader(): WebSettingsLoaderData {
+export function loader({ request }: Route.LoaderArgs): WebSettingsLoaderData {
   const connection = mcpConnectionFromEnv()
+  const windows = isWindowsRequest(request)
   return {
     runtime: 'web',
     usesRemoteMcp: connection.mode === 'remote',
@@ -46,10 +48,15 @@ export function loader(): WebSettingsLoaderData {
             installCommand:
               connection.mode === 'remote'
                 ? `npx -y add-mcp@1.11.0 ${connection.url} --global --agent ${client.id} --name coral --transport http --yes`
-                : `npx --yes add-mcp@1.11.0 "$(command -v coral)" --global --agent ${client.id} --name coral --args mcp-stdio --yes`,
+                : windows
+                  ? `npx --yes add-mcp@1.11.0 (Get-Command coral).Source --global --agent ${client.id} --name coral --args mcp-stdio --yes`
+                  : `npx --yes add-mcp@1.11.0 "$(command -v coral)" --global --agent ${client.id} --name coral --args mcp-stdio --yes`,
             ...(connection.mode === 'local'
               ? {
-                  workspaceInstallCommand: `npx --yes add-mcp@1.11.0 "$(command -v coral)" --global --agent ${client.id} --name coral --args mcp-stdio --yes`,
+                  workspaceInstallCommand: windows
+                    ? `npx --yes add-mcp@1.11.0 (Get-Command coral).Source --global --agent ${client.id} --name coral --args mcp-stdio --yes`
+                    : `npx --yes add-mcp@1.11.0 "$(command -v coral)" --global --agent ${client.id} --name coral --args mcp-stdio --yes`,
+                  workspaceInstallShell: windows ? 'powershell' : 'posix',
                 }
               : {}),
           }
