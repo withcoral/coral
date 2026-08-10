@@ -243,10 +243,15 @@ impl QueryStreamWorkspaceEvidence {
         }
     }
 
-    pub(super) fn unique(&self) -> Option<&str> {
+    pub(super) fn resolve<'a>(&'a self, entry_workspace: Option<&'a str>) -> Option<&'a str> {
         match self {
-            Self::One(workspace) => Some(workspace),
-            Self::None | Self::Conflict => None,
+            Self::None => entry_workspace,
+            Self::One(workspace)
+                if entry_workspace.is_none_or(|entry| entry == workspace.as_str()) =>
+            {
+                Some(workspace)
+            }
+            Self::One(_) | Self::Conflict => None,
         }
     }
 }
