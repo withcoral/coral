@@ -213,6 +213,11 @@ impl WorkspaceManager {
         workspace_name: &WorkspaceName,
         principal: &Principal,
     ) -> Result<WorkspaceRecord, AppError> {
+        if principal.is_local() && self.local_principal == LocalPrincipalPolicy::Ordinary {
+            return Err(AppError::PermissionDenied(
+                "the local principal cannot create workspaces in a shared deployment".to_string(),
+            ));
+        }
         reject_reserved_personal_default(workspace_name)?;
         if principal.kind() != PrincipalKind::User {
             return Err(AppError::PermissionDenied(
