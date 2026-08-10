@@ -122,6 +122,13 @@
   resource routes using `apps/reef/app/lib/coral-request.server.ts`. Do not
   expose a generic renderer-to-Coral transport or Desktop sidecar proxy; add an
   explicit server route when browser-triggered Coral behavior is needed.
+- Keep Reef data access in React Router loaders and actions. Presentation
+  (`app/components`, `app/views`, `app/wax/components`) renders loader data and
+  submits through fetchers: it must not import `*.server` modules, open a network
+  connection, reach `window.coralDesktop`, or await inside `useEffect`. The
+  architecture test enforces all four at zero violations. An effect that awaits
+  is the specific mistake to watch for — it rebuilds the router's caching,
+  pending state, and revalidation in component state, worse each time.
 - The packaged Reef server resolves its external runtime packages from the
   Electron app. Keep every `apps/reef` production dependency represented in
   `apps/desktop` production dependencies; the desktop config tests enforce this
