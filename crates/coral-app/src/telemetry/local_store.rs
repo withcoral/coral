@@ -864,12 +864,27 @@ impl TraceStore {
         offset: usize,
         scope: FederatedTraceScope<'_>,
     ) -> Result<Vec<TraceSummaryRecord>, TraceStoreError> {
+        self.list_traces_for_federated_scope_sync_with_observer(
+            limit,
+            offset,
+            scope,
+            &mut |_path| {},
+        )
+    }
+
+    fn list_traces_for_federated_scope_sync_with_observer(
+        &self,
+        limit: usize,
+        offset: usize,
+        scope: FederatedTraceScope<'_>,
+        file_opened: &mut impl FnMut(&Path),
+    ) -> Result<Vec<TraceSummaryRecord>, TraceStoreError> {
         if limit == 0 {
             return Ok(Vec::new());
         }
         self.prune_expired()?;
         let files = self.jsonl_files_by_modified()?;
-        let index = build_federated_trace_index(&files)?;
+        let index = build_federated_trace_index(&files, file_opened)?;
         let mut candidate_statement = index
             .prepare(
                 "SELECT trace_id FROM trace_ends \
@@ -1424,7 +1439,10 @@ fn trace_is_complete_before_unscanned_files(
         && newest_unscanned_span_end_upper_bound_unix_nanos < aggregate.start_time_unix_nanos
 }
 
-fn build_federated_trace_index(files: &[TraceStoreFile]) -> Result<Connection, TraceStoreError> {
+fn build_federated_trace_index(
+    files: &[TraceStoreFile],
+    file_opened: &mut impl FnMut(&Path),
+) -> Result<Connection, TraceStoreError> {
     // An empty SQLite filename creates a private temporary database that is
     // deleted when the connection closes. Keeping the effective span set on
     // disk bounds process memory while each retained JSONL record is scanned
@@ -1462,7 +1480,7 @@ fn build_federated_trace_index(files: &[TraceStoreFile]) -> Result<Connection, T
         // duplicate while scanning forward preserves the store's existing
         // later-line and newer-file precedence.
         for file in files {
-            index_trace_spans_file(&file.path, &mut insert)?;
+            index_trace_spans_file(&file.path, &mut insert, file_opened)?;
         }
     }
     transaction.commit().map_err(scoped_index_error)?;
@@ -1478,11 +1496,16 @@ fn build_federated_trace_index(files: &[TraceStoreFile]) -> Result<Connection, T
     Ok(index)
 }
 
-fn index_trace_spans_file(path: &Path, insert: &mut Statement<'_>) -> Result<(), TraceStoreError> {
+fn index_trace_spans_file(
+    path: &Path,
+    insert: &mut Statement<'_>,
+    file_opened: &mut impl FnMut(&Path),
+) -> Result<(), TraceStoreError> {
     let file = File::open(path).map_err(|source| TraceStoreError::OpenFile {
         path: path.to_path_buf(),
         source,
     })?;
+    file_opened(path);
     let mut reader = BufReader::new(file);
     let mut line = String::new();
 
@@ -3066,7 +3089,7 @@ mod tests {
         let temp = TempDir::new().expect("temp dir");
         let dir = temp.path().join("telemetry").join("traces");
         fs::create_dir_all(&dir).expect("trace dir");
-        let mut records = (0..135)
+        let mut records = (0..134)
             .map(|index| {
                 let mut record = trace_record(&format!("foreign-{index:03}"), "span");
                 record.attributes_json = r#"{"workspace":"gamma"}"#.to_string();
@@ -3080,20 +3103,33 @@ mod tests {
         visible.start_time_unix_nanos = 1;
         visible.end_time_unix_nanos = 2;
         records.push(visible);
-        write_record_file_lines(
-            &dir.join(timestamped_jsonl_path(SystemTime::now())),
-            &records,
-        );
+        let base_time = SystemTime::now() - Duration::from_secs(3);
+        let mut expected_open_order = Vec::new();
+        for (chunk, modified) in records.chunks(45).zip([
+            base_time,
+            base_time + Duration::from_secs(1),
+            base_time + Duration::from_secs(2),
+        ]) {
+            let path = dir.join(timestamped_jsonl_path(modified));
+            write_record_file_lines(&path, chunk);
+            set_modified_time(&path, modified);
+            expected_open_order.push(path);
+        }
         let store = TraceStore::new(dir);
+        let mut opened = Vec::new();
+        let summaries = store
+            .list_traces_for_federated_scope_sync_with_observer(
+                1,
+                0,
+                super::FederatedTraceScope::Named("alpha"),
+                &mut |path| opened.push(path.to_path_buf()),
+            )
+            .expect("scan retained records once through the spill index");
         assert_eq!(
-            store
-                .list_traces_for_workspace_sync(1, 0, "alpha")
-                .expect("scan retained records once through the spill index")
-                .first()
-                .expect("visible trace")
-                .trace_id,
+            summaries.first().expect("visible trace").trace_id,
             "visible"
         );
+        assert_eq!(opened, expected_open_order);
     }
 
     #[test]
