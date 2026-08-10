@@ -6,6 +6,9 @@ use crate::bootstrap::AppError;
 use crate::workspaces::MemberRole;
 
 const LOCAL_IDENTITY: &str = "coral:local";
+// OIDC requires a non-empty `sub`, so this synthetic subject cannot collide
+// with any identity accepted by the authentication boundary.
+const LOCAL_SUBJECT: &str = "";
 const LOCAL_DISPLAY_NAME: &str = "Local";
 
 /// Records the host as owner of every workspace that has none.
@@ -29,7 +32,7 @@ pub(crate) async fn stamp_local_ownership(db: &CoralDb) -> Result<(), AppError> 
         .values_panic([
             Expr::val(LOCAL_IDENTITY),
             Expr::val(LOCAL_IDENTITY),
-            Expr::val(LOCAL_IDENTITY),
+            Expr::val(LOCAL_SUBJECT),
             Expr::val(LOCAL_DISPLAY_NAME),
             Expr::val(now),
             Expr::val(now),
@@ -70,11 +73,11 @@ pub(crate) async fn stamp_local_ownership(db: &CoralDb) -> Result<(), AppError> 
 
 /// Names the workspaces that no one owns.
 ///
-/// A workspace with no owner is not a hazard to serve: it has no members, so
-/// every caller is concealed from it exactly as from a workspace that does not
-/// exist. It is a hazard to leave *unnoticed*, which is why startup says so.
-/// Repair is out of band — the admin tool appoints an owner — because a shared
-/// deployment has no privileged request path that could do it.
+/// A workspace with no owner is not a hazard to serve: membership lookups
+/// conceal it even if stale non-owner rows remain. It is a hazard to leave
+/// *unnoticed*, which is why startup says so. Repair is out of band — the admin
+/// tool appoints an owner — because a shared deployment has no privileged
+/// request path that could do it.
 pub(crate) async fn ownerless_workspaces(db: &CoralDb) -> Result<Vec<String>, AppError> {
     let mut tx = db.begin().await?;
     let mut ownerless = Vec::new();
@@ -91,14 +94,20 @@ pub(crate) async fn ownerless_workspaces(db: &CoralDb) -> Result<Vec<String>, Ap
 mod tests {
     use tempfile::tempdir;
 
-    use super::{LOCAL_DISPLAY_NAME, LOCAL_IDENTITY, ownerless_workspaces, stamp_local_ownership};
+    use super::{
+        LOCAL_DISPLAY_NAME, LOCAL_IDENTITY, LOCAL_SUBJECT, ownerless_workspaces,
+        stamp_local_ownership,
+    };
     use crate::bootstrap;
+    use crate::credentials::{CredentialManager, CredentialStore};
+    use crate::identity::Principal;
     use crate::state::AppStateLayout;
+    use crate::state::ConfigStore;
     use crate::state::db::{
         CoralDb, DatabaseConfig, DbRepos, ResolvedDatabaseConfig, UpsertLoginOutcome,
         now_unix_nanos_i64,
     };
-    use crate::workspaces::MemberRole;
+    use crate::workspaces::{MemberRole, WorkspaceManager, WorkspaceName};
 
     #[tokio::test]
     async fn ownership_bootstrap_contract_against_sqlite() {
@@ -109,12 +118,15 @@ mod tests {
         else {
             panic!("default test database must be sqlite");
         };
-        let db = CoralDb::open(ResolvedDatabaseConfig::Sqlite { path })
-            .await
-            .expect("open sqlite");
+        let db = std::sync::Arc::new(
+            CoralDb::open(ResolvedDatabaseConfig::Sqlite { path })
+                .await
+                .expect("open sqlite"),
+        );
         db.migrate().await.expect("migrate sqlite");
 
         assert_ownership_bootstrap_contract(&db).await;
+        assert_shared_transition_blocks_local_creation(&layout, db).await;
     }
 
     #[tokio::test]
@@ -133,9 +145,11 @@ mod tests {
             .expect("create isolated schema");
         let separator = if url.contains('?') { '&' } else { '?' };
         let url = format!("{url}{separator}options=-csearch_path%3Downership_bootstrap");
-        let db = CoralDb::open(ResolvedDatabaseConfig::Postgres { url })
-            .await
-            .expect("open postgres");
+        let db = std::sync::Arc::new(
+            CoralDb::open(ResolvedDatabaseConfig::Postgres { url })
+                .await
+                .expect("open postgres"),
+        );
         db.migrate().await.expect("migrate postgres");
         assert_ownership_bootstrap_contract(&db).await;
     }
@@ -166,6 +180,20 @@ mod tests {
             UpsertLoginOutcome::Upserted(owner) => owner,
             UpsertLoginOutcome::IssuerMismatch { .. } => panic!("test issuer must match"),
         };
+        let oidc_collision = match tx
+            .users()
+            .upsert_login(
+                "https://issuer.example.test",
+                LOCAL_IDENTITY,
+                Some("OIDC User"),
+                now,
+            )
+            .await
+            .expect("create OIDC subject matching the synthetic local ID")
+        {
+            UpsertLoginOutcome::Upserted(user) => user,
+            UpsertLoginOutcome::IssuerMismatch { .. } => panic!("test issuer must match"),
+        };
         tx.workspace_members()
             .insert("already_owned", &owner.user_id, MemberRole::Owner, now)
             .await
@@ -186,6 +214,22 @@ mod tests {
             .expect("load local user")
             .expect("local user row");
         assert_eq!(local.display_name.as_deref(), Some(LOCAL_DISPLAY_NAME));
+        assert_eq!(local.subject, LOCAL_SUBJECT);
+        assert_ne!(local.user_id, oidc_collision.user_id);
+        let refreshed_collision = session
+            .users()
+            .upsert_login(
+                "https://issuer.example.test",
+                LOCAL_IDENTITY,
+                Some("OIDC User Again"),
+                now + 1,
+            )
+            .await
+            .expect("refresh OIDC collision subject after local bootstrap");
+        assert!(matches!(
+            refreshed_collision,
+            UpsertLoginOutcome::Upserted(ref user) if user.user_id == oidc_collision.user_id
+        ));
         for workspace_id in ["default", "ownerless"] {
             assert_eq!(
                 session
@@ -211,6 +255,35 @@ mod tests {
                 .await
                 .expect("ownerless after")
                 .is_empty()
+        );
+    }
+
+    async fn assert_shared_transition_blocks_local_creation(
+        layout: &AppStateLayout,
+        db: std::sync::Arc<CoralDb>,
+    ) {
+        let manager = WorkspaceManager::new_for_tests(
+            ConfigStore::new(layout.clone()),
+            CredentialManager::new(CredentialStore::new(layout.clone())),
+            layout.clone(),
+            None,
+            db,
+        );
+        let workspace = WorkspaceName::parse("shared-created").expect("workspace");
+
+        assert!(matches!(
+            manager
+                .create_workspace_for_user(&workspace, &Principal::local())
+                .await,
+            Err(crate::bootstrap::AppError::PermissionDenied(_))
+        ));
+        assert!(
+            manager
+                .list_workspaces()
+                .await
+                .expect("list workspaces")
+                .iter()
+                .all(|record| record.name != workspace)
         );
     }
 }

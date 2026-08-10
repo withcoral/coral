@@ -941,16 +941,26 @@ where
     CurrentUserFuture: Future<Output = Result<GetCurrentUserResponse, tonic::Status>>,
 {
     let memberships = list_memberships().await?;
+    let visible_workspaces = memberships
+        .into_iter()
+        .filter_map(|membership| membership.workspace)
+        .collect::<Vec<_>>();
     if let Some(configured_workspace) = configured_workspace
-        && memberships
+        && visible_workspaces
             .iter()
-            .any(|membership| membership.workspace.as_ref() == Some(configured_workspace))
+            .any(|workspace| workspace == configured_workspace)
     {
         return Ok(configured_workspace.clone());
     }
-    get_current_user().await?.default_workspace.ok_or_else(|| {
-        tonic::Status::failed_precondition("current user response omitted the default workspace")
-    })
+    let default_workspace = get_current_user().await?.default_workspace;
+    default_workspace
+        .filter(|default| {
+            visible_workspaces
+                .iter()
+                .any(|workspace| workspace == default)
+        })
+        .or_else(|| visible_workspaces.into_iter().next())
+        .ok_or_else(|| tonic::Status::failed_precondition("current user has no visible workspace"))
 }
 
 async fn authorize_bound_session(
@@ -1155,7 +1165,7 @@ mod authenticated_session_workspace_tests {
     }
 
     #[tokio::test]
-    async fn authenticated_session_workspace_falls_back_to_the_app_derived_default() {
+    async fn authenticated_session_workspace_rejects_an_invisible_app_default() {
         let configured = named_workspace("concealed-or-missing");
         let visible = named_workspace("visible");
         let personal = named_workspace("app-derived-personal");
@@ -1178,9 +1188,25 @@ mod authenticated_session_workspace_tests {
         .await
         .expect("fall back without probing the configured workspace");
 
-        assert_eq!(selected.name, "app-derived-personal");
+        assert_eq!(selected.name, "visible");
         assert_eq!(membership_calls.load(Ordering::Relaxed), 1);
         assert_eq!(fallback_calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn authenticated_session_workspace_accepts_a_visible_app_default() {
+        let visible = named_workspace("visible");
+        let personal = named_workspace("app-derived-personal");
+
+        let selected = resolve_authenticated_session_workspace(
+            None,
+            || std::future::ready(Ok(vec![membership(&visible), membership(&personal)])),
+            || std::future::ready(Ok(current_user(personal.clone()))),
+        )
+        .await
+        .expect("select visible app-derived default");
+
+        assert_eq!(selected.name, "app-derived-personal");
     }
 
     #[tokio::test]
@@ -1196,7 +1222,7 @@ mod authenticated_session_workspace_tests {
             },
         )
         .await
-        .expect_err("missing app-derived default must fail session initialization");
+        .expect_err("a user without visible workspaces must fail session initialization");
 
         assert_eq!(error.code(), tonic::Code::FailedPrecondition);
     }

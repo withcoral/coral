@@ -301,10 +301,8 @@ impl StreamingQueryStreamAggregate {
     }
 
     fn workspace(&self) -> Option<&str> {
-        self.entry
-            .workspace
-            .as_deref()
-            .or_else(|| self.workspace_evidence.unique())
+        self.workspace_evidence
+            .resolve(self.entry.workspace.as_deref())
     }
 
     /// Whether the caller may read this operation once it is finalized.
