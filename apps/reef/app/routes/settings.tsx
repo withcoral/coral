@@ -1,44 +1,31 @@
-import { useRouteLoaderData } from 'react-router'
+import type { Route } from './+types/settings'
+import { useFetcher, useRouteLoaderData } from 'react-router'
 import type { loader as appShellLoader } from './app-shell'
 
-import { McpClientsList, useDesktopMcpClients } from '@/components/mcp-clients-list'
 import { isCoralDesktopBuild } from '@/lib/coral-desktop'
-import { Banner, Button, Typography } from '@/wax/components'
+import { Settings, SettingsHydrateFallback } from '@/views/settings/settings'
 
-import * as styles from './settings.css'
+export { clientAction, clientLoader, loader } from './settings-loader'
 
-export default function SettingsRoute() {
-  const desktop = isCoralDesktopBuild()
-  const mcpClients = useDesktopMcpClients(desktop)
+export default function SettingsRoute({ loaderData }: Route.ComponentProps) {
+  if (loaderData.runtime !== 'desktop') return null
+
+  const fetcher = useFetcher()
   const workspaces = useRouteLoaderData<typeof appShellLoader>('routes/app-shell')?.workspaces ?? []
+  const pendingClientId = fetcher.formData?.get('clientId')
 
   return (
-    <main className={styles.page}>
-      <div className={styles.container}>
-        {desktop && (
-          <section className={styles.section}>
-            <header className={styles.sectionHeader}>
-              <Typography.HeadingLarge as="h1">MCP Clients</Typography.HeadingLarge>
-              <Typography.Body variant="secondary">
-                Choose the Coral workspace each MCP client can access.{' '}
-                <Button.ExternalLink
-                  href="https://withcoral.com/docs/guides/use-coral-over-mcp"
-                  size="small"
-                >
-                  Learn more
-                </Button.ExternalLink>
-              </Typography.Body>
-            </header>
-
-            <Banner>
-              This page shows only global MCP configurations. Project-specific and other connections
-              will not appear here.
-            </Banner>
-
-            <McpClientsList {...mcpClients} workspaces={workspaces} />
-          </section>
-        )}
-      </div>
-    </main>
+    <Settings
+      loaderData={loaderData}
+      pendingClientIds={typeof pendingClientId === 'string' ? [pendingClientId] : []}
+      workspaces={workspaces}
+      onWorkspaceChange={(clientId, workspace) => {
+        fetcher.submit({ clientId, workspace: workspace ?? '' }, { method: 'post' })
+      }}
+    />
   )
+}
+
+export function HydrateFallback() {
+  return isCoralDesktopBuild() ? <SettingsHydrateFallback /> : null
 }
