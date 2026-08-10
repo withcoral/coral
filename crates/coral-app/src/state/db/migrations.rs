@@ -247,4 +247,21 @@ mod tests {
             .expect("count memberships");
         assert_eq!(member_count.0, 0, "workspace deletion must cascade");
     }
+
+    #[tokio::test]
+    async fn task_attribution_migration_adds_the_login_rekey_index() {
+        let pool = migrated_sqlite_pool().await;
+
+        let index_columns: (String,) = sqlx::query_as(
+            "SELECT group_concat(name, ',') FROM (
+                SELECT name FROM pragma_index_info('idx_tasks_created_by_principal')
+                ORDER BY seqno
+             )",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("task attribution index columns");
+
+        assert_eq!(index_columns.0, "created_by_principal_id");
+    }
 }
