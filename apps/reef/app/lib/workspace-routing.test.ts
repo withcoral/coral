@@ -1,8 +1,22 @@
 import { describe, expect, it } from 'vitest'
 
-import { workspacePathForCurrentSection } from './workspace-routing'
+import { workspaceFromParams, workspacePathForCurrentSection } from './workspace-routing'
 
 describe('workspace routing', () => {
+  it('creates the route workspace and rejects a missing workspace parameter', () => {
+    expect(workspaceFromParams({ workspaceId: 'analytics' }).name).toBe('analytics')
+
+    let thrown: unknown
+    try {
+      workspaceFromParams({})
+    } catch (error) {
+      thrown = error
+    }
+
+    expect(thrown).toBeInstanceOf(Response)
+    expect(thrown).toMatchObject({ status: 400, statusText: 'Invalid Workspace' })
+  })
+
   it.each([
     ['/workspaces/default/sources/github', '/workspaces/team%20alpha/sources'],
     ['/workspaces/default/schema', '/workspaces/team%20alpha/schema'],

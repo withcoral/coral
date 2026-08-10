@@ -53,8 +53,8 @@
   functions and policies or explicit architectural invariants. Do not add broad
   browser, router, or framework-plumbing tests without a named contract or
   regression they protect.
-- Use Storybook and Chromatic for Reef component visual states. Reef styling
-  uses vanilla-extract; do not introduce Tailwind.
+- Use Storybook and Chromatic for Reef component visual states.
+- Reef styling uses vanilla-extract; do not introduce Tailwind.
 - Run `make perf-check` before submitting PRs that could affect CLI startup,
   local server bootstrap, source registration, or `coral.tables` catalog query
   latency. CI installs the bundled `github` source with fake credentials and
