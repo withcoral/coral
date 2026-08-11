@@ -31,7 +31,8 @@ impl CoralDb {
             return Ok(outcome);
         };
         let workspace_id = default_workspace_id(&user.user_id);
-        try_create_workspace_with_owner(&mut tx, &workspace_id, &user.user_id, now_unix_nanos)
+        tx.workspaces()
+            .try_create_with_owner(&workspace_id, &user.user_id, now_unix_nanos)
             .await?;
         tx.tasks()
             .reattribute_pre_v1_tasks_to_user(pre_v1_task_attribution_id, &user.user_id)
