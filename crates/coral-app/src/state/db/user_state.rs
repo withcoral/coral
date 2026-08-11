@@ -43,7 +43,7 @@ impl CoralDb {
     }
 
     #[cfg(test)]
-    pub(crate) async fn provision_login(
+    pub(crate) async fn upsert_user_and_ensure_default_workspace(
         &self,
         issuer: &str,
         subject: &str,
@@ -129,7 +129,7 @@ mod tests {
         let temp = tempdir().expect("temp dir");
         let db = open_sqlite(&temp).await;
         let UpsertLoginOutcome::Upserted(user) = db
-            .provision_login("issuer", "subject", Some("Name"), 10)
+            .upsert_user_and_ensure_default_workspace("issuer", "subject", Some("Name"), 10)
             .await
             .expect("provision login")
         else {
