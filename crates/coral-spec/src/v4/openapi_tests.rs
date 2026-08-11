@@ -4694,6 +4694,74 @@ components:
 }
 
 #[test]
+fn a_property_redeclared_only_to_change_its_example_is_not_a_conflict() {
+    // Composed types routinely re-declare an inherited property to narrow an
+    // annotation, and `example` is 3.0's spelling of the one 3.1 calls
+    // `examples`. Reading the singular form as a constraint made those
+    // re-declarations look like genuine disagreements, and a conflict discards
+    // the whole type — so the composed object collapsed to opaque JSON and took
+    // every nested type it owned with it.
+    let imported = import_document(
+        r"
+openapi: 3.0.3
+paths:
+  /invoices:
+    get:
+      operationId: invoices/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/base'
+                  - type: object
+                    properties:
+                      reference:
+                        type: string
+                        example: INV-2026-004
+                      total: {type: integer}
+components:
+  schemas:
+    base:
+      type: object
+      properties:
+        reference:
+          type: string
+          example: INV-0001
+        issued_at: {type: string, format: date-time}
+",
+    )
+    .expect("import");
+
+    let operation = imported.operations.first().expect("operation");
+    assert!(
+        !operation
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("conflicts")),
+        "differing examples are not a disagreement about validation: {:?}",
+        operation.diagnostics
+    );
+
+    let IrTypeShape::Object { fields } = &imported
+        .types
+        .iter()
+        .find(|ty| ty.id == operation.output.type_ref)
+        .expect("row type")
+        .shape
+    else {
+        panic!("the composed type should survive rather than collapse to opaque JSON");
+    };
+    let names: Vec<&str> = fields.iter().map(|field| field.name.as_str()).collect();
+    assert_eq!(
+        names,
+        ["issued_at", "reference", "total"],
+        "every branch's columns have to survive the fold"
+    );
+}
+
+#[test]
 fn a_const_narrows_the_enum_it_is_declared_beside() {
     // How a 2020-12 document pins one branch of a union: the branch re-declares
     // the discriminator it shares with the rest of the family — `enum` listing

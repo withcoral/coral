@@ -4,7 +4,22 @@ use serde_json::Value;
 
 use crate::v4::ir::IrScalarType;
 
-const ANNOTATION_KEYS: &[&str] = &["$comment", "default", "description", "examples", "title"];
+/// Keywords that describe a schema without constraining what validates against
+/// it, and so cannot make two declarations of one property disagree.
+///
+/// `example` and `examples` are the same annotation under two spellings:
+/// `examples` is JSON Schema's, which 3.1 adopted, and `example` is the
+/// singular one 3.0 defined on its own schema object. Both have to be here, or
+/// a property re-declared only to carry a different `example` reads as a
+/// genuine conflict.
+const ANNOTATION_KEYS: &[&str] = &[
+    "$comment",
+    "default",
+    "description",
+    "example",
+    "examples",
+    "title",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RefError<'a> {
