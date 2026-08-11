@@ -105,7 +105,7 @@ where
 }
 
 impl TasksRepo<'_, CoralTx<'_>> {
-    pub(crate) async fn reattribute_pre_v1_task_attribution(
+    pub(crate) async fn reattribute_pre_v1_tasks_to_user(
         &mut self,
         pre_v1_task_attribution_id: &str,
         user_id: &str,
