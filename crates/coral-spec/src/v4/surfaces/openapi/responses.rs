@@ -99,6 +99,15 @@ impl OpenApiImporter<'_> {
                 },
             );
         };
+        // Classified through the same unwrapping `import_schema` does. A
+        // nullable response — `anyOf: [{type: 'null'}, {$ref: ...}]` — otherwise
+        // has its cardinality read off the union, which declares no type and so
+        // looks like a singleton, while the row type is built from the branch.
+        // For a collection that published one row holding the whole list.
+        let resolved = self
+            .schema_through_null_unions(&resolved, operation_id, diagnostics)
+            .and_then(|site| self.resolve_ref(&site, operation_id, diagnostics))
+            .unwrap_or(resolved);
         let (cardinality, row_schema, schema_entity_name) =
             classify_response_schema(path, &resolved);
         // Only when the classification set this schema aside. A singleton hands

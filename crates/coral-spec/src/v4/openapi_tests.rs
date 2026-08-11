@@ -4909,6 +4909,230 @@ components:
         serde_json::to_value(&probe_field_type(imported, "buyer").shape).expect("shape")
     };
     assert_eq!(shape_of(&as_30), shape_of(&as_31));
+
+    // Where the two stop agreeing, stated rather than left for someone to
+    // discover. `IrType.nullable` is a property of the type, and the versions
+    // put nullability in different places: 3.0 writes it on the shared schema,
+    // 3.1 writes it at each use site. A type here is interned by the name it is
+    // referenced under, so a use-site fact has nowhere to live on it that the
+    // next reference would not overwrite — the same reason a `$ref` sibling
+    // description stays off the type.
+    //
+    // Nothing downstream reads it: `IrField.nullable` is set for every field
+    // regardless, and every projected column is nullable. Were that to change,
+    // this assertion is what will fail and say why.
+    assert!(probe_field_type(&as_30, "buyer").nullable);
+    assert!(
+        !probe_field_type(&as_31, "buyer").nullable,
+        "3.1 puts nullability at the use site, which a shared type cannot carry"
+    );
+}
+
+#[test]
+fn a_union_that_refers_back_to_itself_terminates() {
+    // `resolve_ref` follows one hop and tracks nothing, so a union whose branch
+    // resolves to the same union has no natural end. The interning check is what
+    // stops every other `$ref` cycle here, and it only engages if the type keeps
+    // the identity of the reference it was reached by.
+    let imported = import_document(
+        r"
+openapi: 3.1.0
+paths:
+  /nodes:
+    get:
+      operationId: nodes/get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  node: {$ref: '#/components/schemas/node'}
+components:
+  schemas:
+    node:
+      anyOf:
+        - type: 'null'
+        - $ref: '#/components/schemas/node'
+",
+    )
+    .expect("a self-referential union must import rather than hang");
+
+    assert!(
+        matches!(probe_field_type(&imported, "node").shape, IrTypeShape::Json),
+        "a union with nowhere to unwrap to keeps its own reading"
+    );
+}
+
+#[test]
+fn a_union_reached_through_itself_terminates() {
+    // The inline variant, which has no second `$ref` to notice repeating: the
+    // branch is an object whose own field points back at the union. Each pass
+    // would otherwise be handed a fresh suggested id — `node_row_child`,
+    // `node_row_child_child` — and never meet a type it had already interned.
+    let imported = import_document(
+        r"
+openapi: 3.1.0
+paths:
+  /nodes:
+    get:
+      operationId: nodes/get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  node: {$ref: '#/components/schemas/node'}
+components:
+  schemas:
+    node:
+      anyOf:
+        - type: 'null'
+        - type: object
+          properties:
+            name: {type: string}
+            child: {$ref: '#/components/schemas/node'}
+",
+    )
+    .expect("a recursive nullable type must import rather than hang");
+
+    let IrTypeShape::Object { fields } = &probe_field_type(&imported, "node").shape else {
+        panic!("the branch's shape should still be read");
+    };
+    let names: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, ["name", "child"]);
+}
+
+#[test]
+fn a_nullable_collection_response_is_still_a_collection() {
+    // The union declares no type of its own, so classifying the wrapper reads it
+    // as a singleton while the row type is built from the branch — publishing
+    // one row that holds the entire list.
+    let imported = import_document(
+        r"
+openapi: 3.1.0
+paths:
+  /issues:
+    get:
+      operationId: issues/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - type: 'null'
+                  - type: array
+                    items: {$ref: '#/components/schemas/issue'}
+components:
+  schemas:
+    issue:
+      type: object
+      properties:
+        id: {type: string}
+        title: {type: string}
+",
+    )
+    .expect("import");
+
+    let operation = imported.operations.first().expect("operation");
+    assert_eq!(operation.output.cardinality, OutputCardinality::List);
+    let IrTypeShape::Object { fields } = &imported
+        .types
+        .iter()
+        .find(|ty| ty.id == operation.output.type_ref)
+        .expect("row type")
+        .shape
+    else {
+        panic!("the rows are the items of the branch, not the union");
+    };
+    let names: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, ["id", "title"]);
+}
+
+#[test]
+fn a_nullable_reference_keeps_the_referenced_description() {
+    // The wrapper carries no description of its own, so reading only the wrapper
+    // left the column without the one the referenced schema declares — metadata
+    // the same field written as a bare `$ref` keeps.
+    let imported = import_document(
+        r"
+openapi: 3.1.0
+paths:
+  /invoices:
+    get:
+      operationId: invoices/get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  buyer:
+                    anyOf:
+                      - type: 'null'
+                      - $ref: '#/components/schemas/party'
+components:
+  schemas:
+    party:
+      type: object
+      description: A party in the system.
+      properties:
+        id: {type: string}
+",
+    )
+    .expect("import");
+
+    assert_eq!(
+        probe_row_type(&imported, "buyer").description,
+        "A party in the system."
+    );
+}
+
+#[test]
+fn a_null_branch_written_as_a_constant_is_still_a_null_branch() {
+    // 2020-12 spells "only null" three ways. Missing the constant forms would
+    // leave the union looking like a choice between two real shapes and send the
+    // reference back to opaque JSON.
+    for null_branch in ["type: 'null'", "const: null", "enum: [null]"] {
+        let imported = import_document(&format!(
+            r"
+openapi: 3.1.0
+paths:
+  /invoices:
+    get:
+      operationId: invoices/get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  buyer:
+                    anyOf:
+                      - {null_branch}
+                      - $ref: '#/components/schemas/party'
+components:
+  schemas:
+    party:
+      type: object
+      properties:
+        id: {{type: string}}
+"
+        ))
+        .unwrap_or_else(|error| panic!("`{null_branch}`: {error}"));
+
+        let IrTypeShape::Object { fields } = &probe_field_type(&imported, "buyer").shape else {
+            panic!("`{null_branch}` should be recognised as the null branch");
+        };
+        let names: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["id"], "`{null_branch}`");
+    }
 }
 
 #[test]
