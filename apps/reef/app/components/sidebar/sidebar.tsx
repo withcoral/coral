@@ -75,6 +75,9 @@ export function Sidebar({
   ] satisfies NavItem[]
   const settingsPath = routePath('settings')
   const isSettingsRoute = Boolean(useMatch({ end: false, path: settingsPath }))
+  // MCP client configuration exists only in the Desktop shell. The section index
+  // redirects to it, so the link stays on the section root and follows wherever
+  // the landing page moves.
   const settingsNavItems: NavItem[] = desktop
     ? [{ icon: 'Settings', label: 'MCP Clients', paths: [settingsPath], to: settingsPath }]
     : []
