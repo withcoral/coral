@@ -4761,6 +4761,156 @@ components:
     );
 }
 
+const NULL_UNION_PROBE: &str = r"
+paths:
+  /invoices:
+    get:
+      operationId: invoices/get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  buyer:
+                    anyOf:
+                      - type: 'null'
+                      - $ref: '#/components/schemas/party'
+                  seller:
+                    oneOf:
+                      - $ref: '#/components/schemas/party'
+                      - type: 'null'
+                  status:
+                    anyOf:
+                      - type: 'null'
+                      - type: string
+components:
+  schemas:
+    party:
+      type: object
+      properties:
+        id: {type: string}
+        name: {type: string}
+";
+
+#[test]
+fn a_union_of_a_ref_and_null_imports_as_the_referenced_type() {
+    // Once `nullable` is gone a `$ref` has no type of its own to list `null` in,
+    // so this is how 3.1 documents spell a nullable reference — 217 times in
+    // GitHub's own 3.1 publication. Matching no arm of the shape dispatch, it
+    // imported as opaque JSON and took every field of the target with it.
+    let imported = import_document(&format!("openapi: 3.1.0{NULL_UNION_PROBE}")).expect("import");
+
+    for field in ["buyer", "seller"] {
+        let IrTypeShape::Object { fields } = &probe_field_type(&imported, field).shape else {
+            panic!("{field}: a union of a $ref and null has to keep the target's fields");
+        };
+        let names: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["id", "name"], "{field}");
+    }
+
+    // Both sides of the union land on the shared type rather than a copy under
+    // the field's own name. Expanding the target per site would duplicate it,
+    // and every inline schema beneath it, once for each nullable reference.
+    assert_eq!(
+        probe_row_type(&imported, "buyer").type_ref,
+        probe_row_type(&imported, "seller").type_ref,
+        "anyOf and oneOf spell the same thing and must resolve alike"
+    );
+    assert_eq!(probe_row_type(&imported, "buyer").type_ref, "party");
+
+    assert!(
+        matches!(
+            probe_field_type(&imported, "status").shape,
+            IrTypeShape::Scalar(IrScalarType::String)
+        ),
+        "an inline branch keeps its scalar type too"
+    );
+}
+
+#[test]
+fn a_union_of_two_real_branches_stays_opaque() {
+    // A genuine choice between shapes is not a nullable schema. Coral has no
+    // union type, and reading the first branch while discarding the rest would
+    // describe columns the response does not always carry.
+    let imported = import_document(
+        r"
+openapi: 3.1.0
+paths:
+  /events:
+    get:
+      operationId: events/get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  payload:
+                    anyOf:
+                      - $ref: '#/components/schemas/push'
+                      - $ref: '#/components/schemas/release'
+                      - type: 'null'
+components:
+  schemas:
+    push: {type: object, properties: {ref: {type: string}}}
+    release: {type: object, properties: {tag: {type: string}}}
+",
+    )
+    .expect("import");
+
+    assert!(
+        matches!(
+            probe_field_type(&imported, "payload").shape,
+            IrTypeShape::Json
+        ),
+        "two real branches remain a choice this IR cannot express"
+    );
+}
+
+#[test]
+fn both_spellings_of_a_nullable_reference_import_alike() {
+    // The 3.0 document says `allOf` plus `nullable`; the 3.1 one says `anyOf`
+    // with a null branch. They describe the same field, so they have to import
+    // to the same shape — that equivalence is the whole reason for reading the
+    // union at all.
+    let as_31 = import_document(&format!("openapi: 3.1.0{NULL_UNION_PROBE}")).expect("3.1");
+    let as_30 = import_document(
+        r"
+openapi: 3.0.3
+paths:
+  /invoices:
+    get:
+      operationId: invoices/get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  buyer:
+                    $ref: '#/components/schemas/party'
+components:
+  schemas:
+    party:
+      type: object
+      nullable: true
+      properties:
+        id: {type: string}
+        name: {type: string}
+",
+    )
+    .expect("3.0");
+
+    let shape_of = |imported: &ImportedSurface| {
+        serde_json::to_value(&probe_field_type(imported, "buyer").shape).expect("shape")
+    };
+    assert_eq!(shape_of(&as_30), shape_of(&as_31));
+}
+
 #[test]
 fn a_const_narrows_the_enum_it_is_declared_beside() {
     // How a 2020-12 document pins one branch of a union: the branch re-declares

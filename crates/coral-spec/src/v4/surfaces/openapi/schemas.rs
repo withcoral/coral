@@ -94,6 +94,23 @@ impl OpenApiImporter<'_> {
             return self.import_schema(&composed, suggested_id, operation_id, diagnostics);
         }
         let resolved = self.resolve_ref(schema, operation_id, diagnostics)?;
+        // A union of one real branch and `null` is imported as that branch.
+        //
+        // It is how a nullable reference has to be written once `nullable` is
+        // gone: a `$ref` carries no type of its own to list `null` in, so 3.1
+        // documents spell it `anyOf: [{type: 'null'}, {$ref: ...}]`. Left alone
+        // it matches no arm of the shape dispatch below and imports as opaque
+        // JSON, taking every field of the referenced type with it.
+        //
+        // Handing the branch back to this function rather than inlining its
+        // shape here is what keeps a `$ref` branch on the type id it already
+        // has. Expanding it under this site's name instead would copy the whole
+        // target — and every inline schema beneath it — once per site that
+        // references it nullably, which on GitHub's 3.1 descriptor is the
+        // difference between 15k imported types and 25k.
+        if let Some(branch) = null_union_branch(&resolved).cloned() {
+            return self.import_schema(&branch, suggested_id, operation_id, diagnostics);
+        }
         let type_id = schema.get("$ref").and_then(Value::as_str).map_or_else(
             || normalize_identifier(suggested_id, "type"),
             type_id_from_ref,
@@ -532,6 +549,43 @@ impl OpenApiImporter<'_> {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string()
+    }
+}
+
+/// The single real branch of a union between a schema and `null`.
+///
+/// Only a union that reduces to exactly one real branch is unwrapped. Two or
+/// more is a genuine choice between shapes, which Coral has no type for and
+/// which has to keep importing as opaque JSON — reading the first branch and
+/// discarding the rest would describe a column the response does not have.
+fn null_union_branch(schema: &Value) -> Option<&Value> {
+    for keyword in ["anyOf", "oneOf"] {
+        let Some(branches) = schema.get(keyword).and_then(Value::as_array) else {
+            continue;
+        };
+        // A union has to have lost something to `null` to be one of these; a
+        // single-branch `anyOf` is just a wrapper and keeps its own reading.
+        if branches.len() < 2 {
+            continue;
+        }
+        let mut real = branches.iter().filter(|branch| !declares_only_null(branch));
+        let only = real.next()?;
+        if real.next().is_some() {
+            return None;
+        }
+        return Some(only);
+    }
+    None
+}
+
+/// Whether a branch admits nothing but `null`.
+fn declares_only_null(schema: &Value) -> bool {
+    match schema.get("type") {
+        Some(Value::String(value)) => value == "null",
+        Some(Value::Array(values)) => {
+            !values.is_empty() && values.iter().all(|value| value.as_str() == Some("null"))
+        }
+        _ => false,
     }
 }
 
