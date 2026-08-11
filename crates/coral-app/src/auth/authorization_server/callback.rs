@@ -10,6 +10,7 @@ use super::AuthorizationServerHttpState;
 use super::query;
 use super::response::{TrustedRedirect, direct_error};
 use crate::identity::pre_v1_task_attribution_id_for_principal_claim;
+use crate::state::db::UpsertLoginOutcome;
 
 pub(super) async fn oidc_callback(
     State(state): State<AuthorizationServerHttpState>,
@@ -81,9 +82,13 @@ pub(super) async fn oidc_callback(
         )
         .await
     {
-        Ok(user_id) => user_id,
-        Err(_error) => {
-            tracing::warn!("OIDC callback could not provision the authenticated user");
+        Ok(UpsertLoginOutcome::Upserted(user)) => user.user_id,
+        Ok(UpsertLoginOutcome::IssuerMismatch { .. }) => {
+            tracing::warn!("OIDC callback identity issuer did not match the stored issuer");
+            return trusted.error("server_error", "authorization failed");
+        }
+        Err(error) => {
+            tracing::warn!(%error, "OIDC callback could not provision the authenticated user");
             return trusted.error("server_error", "authorization failed");
         }
     };
@@ -187,9 +192,7 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::super::client_metadata::HttpClientMetadataResolver;
-    use super::super::{
-        AuthorizationServerHttpState, DbBackedLoginCodeStore, LoginCodeStore, LoginProvisionError,
-    };
+    use super::super::{AuthorizationServerHttpState, DbBackedLoginCodeStore, LoginCodeStore};
     use super::*;
     use crate::auth::config::{AuthSettings, ResolvedAuthSettings};
     use crate::auth::id_token::tests::{
@@ -198,10 +201,11 @@ mod tests {
     use crate::auth::provider_client::OidcProviderClient;
     use crate::auth::session::SessionTokenIssuer;
     use crate::auth::state_store::{CodeStore, InMemoryStateStore, SessionStore, StateStoreError};
+    use crate::bootstrap::AppError;
     use crate::state::AppStateLayout;
     use crate::state::db::{
         CoralDb, DatabaseConfig, DbRepos, DbSession, ResolvedDatabaseConfig, TaskCreation,
-        TaskCreationResult, UpsertLoginOutcome,
+        TaskCreationResult,
     };
     use crate::workspaces::MemberRole;
 
@@ -732,8 +736,8 @@ mod tests {
             _subject: &str,
             _display_name: Option<&str>,
             _pre_v1_task_attribution_id: &str,
-        ) -> Result<String, LoginProvisionError> {
-            Err(LoginProvisionError::Database)
+        ) -> Result<UpsertLoginOutcome, AppError> {
+            Err(AppError::Database("test provisioning failure".to_string()))
         }
     }
 
