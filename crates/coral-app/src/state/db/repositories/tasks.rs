@@ -105,15 +105,15 @@ where
 }
 
 impl TasksRepo<'_, CoralTx<'_>> {
-    pub(crate) async fn reattribute_pre_v1_principal_digest(
+    pub(crate) async fn reattribute_pre_v1_tasks_to_user(
         &mut self,
-        pre_v1_principal_digest: &str,
+        pre_v1_task_attribution_id: &str,
         user_id: &str,
     ) -> Result<u64, DbError> {
         let statement = Query::update()
             .table(Tasks::Table)
             .value(Tasks::CreatedByPrincipalId, Expr::val(user_id.to_string()))
-            .and_where(Expr::col(Tasks::CreatedByPrincipalId).eq(pre_v1_principal_digest))
+            .and_where(Expr::col(Tasks::CreatedByPrincipalId).eq(pre_v1_task_attribution_id))
             .to_owned();
         self.session.execute_rows_affected(statement).await
     }
