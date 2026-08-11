@@ -291,9 +291,10 @@ impl WorkspaceManager {
         workspace_name: &WorkspaceName,
         user_id: &str,
     ) -> Result<(), AppError> {
-        match self
-            .db
-            .remove_workspace_member(workspace_name.as_str(), user_id)
+        let mut session = self.db.as_ref();
+        match session
+            .workspaces()
+            .remove_member(workspace_name.as_str(), user_id)
             .await?
         {
             RemoveMemberOutcome::Removed => Ok(()),

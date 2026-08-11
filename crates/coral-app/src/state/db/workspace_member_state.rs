@@ -75,45 +75,7 @@ impl CoralDb {
             .collect::<Result<Vec<_>, _>>()
             .map(Some)
     }
-
-    pub(crate) async fn remove_workspace_member(
-        &self,
-        workspace_id: &str,
-        user_id: &str,
-    ) -> Result<RemoveMemberOutcome, DbError> {
-        let mut tx = self.begin().await?;
-        if !tx
-            .workspaces()
-            .hold_for_child_mutation(workspace_id)
-            .await?
-        {
-            tx.rollback().await?;
-            return Ok(RemoveMemberOutcome::WorkspaceNotFound);
-        }
-        let Some(role) = tx
-            .workspace_members()
-            .role_for_user_id(workspace_id, user_id)
-            .await?
-        else {
-            tx.rollback().await?;
-            return Ok(RemoveMemberOutcome::MemberNotFound);
-        };
-        if role == MemberRole::Owner && tx.workspace_members().owner_count(workspace_id).await? <= 1
-        {
-            tx.rollback().await?;
-            return Ok(RemoveMemberOutcome::LastOwnerProtected);
-        }
-        let removed = tx.workspace_members().delete(workspace_id, user_id).await?;
-        if removed {
-            tx.commit().await?;
-            Ok(RemoveMemberOutcome::Removed)
-        } else {
-            tx.rollback().await?;
-            Ok(RemoveMemberOutcome::MemberNotFound)
-        }
-    }
 }
-
 #[cfg(test)]
 mod tests {
     use tempfile::tempdir;
@@ -285,9 +247,13 @@ mod tests {
             AddMemberOutcome::Added(_)
         ));
 
+        let mut first_remove_session = db;
+        let mut second_remove_session = db;
+        let mut first_remove_workspaces = first_remove_session.workspaces();
+        let mut second_remove_workspaces = second_remove_session.workspaces();
         let (first, second) = tokio::join!(
-            db.remove_workspace_member(&owner_removal_workspace_id, &owner_id),
-            db.remove_workspace_member(&owner_removal_workspace_id, &other_owner_id),
+            first_remove_workspaces.remove_member(&owner_removal_workspace_id, &owner_id),
+            second_remove_workspaces.remove_member(&owner_removal_workspace_id, &other_owner_id),
         );
         let outcomes = [
             first.expect("remove first owner"),

@@ -3,7 +3,9 @@ use sea_query::{Expr, ExprTrait, OnConflict, Query};
 use super::users::UserRecord;
 use crate::state::db::schema::Workspaces;
 use crate::state::db::session::DbSession;
-use crate::state::db::workspace_member_state::{AddMemberOutcome, WorkspaceMemberView};
+use crate::state::db::workspace_member_state::{
+    AddMemberOutcome, RemoveMemberOutcome, WorkspaceMemberView,
+};
 use crate::state::db::{CoralDb, CoralTx, DbError, DbRepos};
 use crate::workspaces::MemberRole;
 
@@ -171,6 +173,44 @@ impl WorkspacesRepo<'_, &CoralDb> {
                 )))
             }
             Err(error) => Err(error),
+        }
+    }
+
+    pub(crate) async fn remove_member(
+        &mut self,
+        workspace_id: &str,
+        user_id: &str,
+    ) -> Result<RemoveMemberOutcome, DbError> {
+        let db = *self.session;
+        let mut tx = db.begin().await?;
+        if !tx
+            .workspaces()
+            .hold_for_child_mutation(workspace_id)
+            .await?
+        {
+            tx.rollback().await?;
+            return Ok(RemoveMemberOutcome::WorkspaceNotFound);
+        }
+        let Some(role) = tx
+            .workspace_members()
+            .role_for_user_id(workspace_id, user_id)
+            .await?
+        else {
+            tx.rollback().await?;
+            return Ok(RemoveMemberOutcome::MemberNotFound);
+        };
+        if role == MemberRole::Owner && tx.workspace_members().owner_count(workspace_id).await? <= 1
+        {
+            tx.rollback().await?;
+            return Ok(RemoveMemberOutcome::LastOwnerProtected);
+        }
+        let removed = tx.workspace_members().delete(workspace_id, user_id).await?;
+        if removed {
+            tx.commit().await?;
+            Ok(RemoveMemberOutcome::Removed)
+        } else {
+            tx.rollback().await?;
+            Ok(RemoveMemberOutcome::MemberNotFound)
         }
     }
 }
