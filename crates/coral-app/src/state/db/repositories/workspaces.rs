@@ -91,7 +91,6 @@ where
 }
 
 impl WorkspacesRepo<'_, &CoralDb> {
-    #[cfg_attr(not(test), expect(dead_code, reason = "used higher in the PR stack"))]
     pub(crate) async fn add_member(
         &mut self,
         workspace_id: &str,
@@ -194,7 +193,6 @@ impl WorkspacesRepo<'_, CoralTx<'_>> {
     }
 }
 
-#[cfg_attr(not(test), expect(dead_code, reason = "used higher in the PR stack"))]
 fn member_view(user: UserRecord, role: MemberRole) -> WorkspaceMemberView {
     WorkspaceMemberView {
         user_id: user.user_id,
