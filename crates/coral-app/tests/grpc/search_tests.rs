@@ -23,6 +23,8 @@ use coral_engine::{
 };
 use rusqlite::OptionalExtension as _;
 use serde_json::json;
+use sqlx::Connection as _;
+use sqlx::sqlite::{SqliteConnectOptions, SqliteConnection};
 use tonic::{Code, Request};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -218,6 +220,39 @@ fn field_names(result: &ProtoSearchResult) -> Vec<&str> {
             .collect(),
         None => Vec::new(),
     }
+}
+
+#[tokio::test]
+async fn search_does_not_wait_for_response_history_database_contention() {
+    let harness = GrpcHarness::new().await;
+    let database_path = harness.config_dir().join("coral.db");
+    let mut blocker =
+        SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(&database_path))
+            .await
+            .expect("open Coral database blocker");
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut blocker)
+        .await
+        .expect("hold Coral database writer");
+
+    let response = tokio::time::timeout(
+        Duration::from_secs(3),
+        harness.search_client().search(Request::new(SearchRequest {
+            workspace: Some(default_workspace()),
+            query: "response history contention".to_string(),
+            limit: 10,
+        })),
+    )
+    .await
+    .expect("Search must not wait for response-history database work")
+    .expect("Search success must not depend on response-history capture")
+    .into_inner();
+    assert!(response.truncation.is_some());
+
+    sqlx::query("COMMIT")
+        .execute(&mut blocker)
+        .await
+        .expect("release Coral database writer");
 }
 
 fn catalog_item_matches(item: &CatalogItem, schema_name: &str, item_name: &str) -> bool {

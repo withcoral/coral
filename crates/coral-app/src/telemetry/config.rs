@@ -11,7 +11,7 @@ pub(super) const DEFAULT_TRACE_FILTER: &str = "coral_app=trace,coral_client=trac
 pub(super) const DEFAULT_LOCAL_TRACE_FILTER: &str = "coral_app=trace,coral_client=trace,coral_mcp=trace,coral_engine=trace,coral_engine::datafusion=trace,coral.http.body=trace,coral.mcp.body=trace";
 pub(super) const DEFAULT_LOG_FILTER: &str = "coral_app=info,coral_engine=info";
 const DEFAULT_SERVICE_NAME: &str = "coral";
-const DEFAULT_TRACE_HISTORY_RETENTION_DAYS: u64 = 7;
+const DEFAULT_TRACE_HISTORY_RETENTION_DAYS: u64 = 30;
 const DEFAULT_TRACE_HISTORY_HTTP_BODY_MAX_BYTES: usize = 64 * 1024;
 const HOURS_PER_DAY: u64 = 24;
 const SECONDS_PER_HOUR: u64 = 60 * 60;
@@ -134,6 +134,11 @@ mod tests {
 
         assert_eq!(config, TelemetryConfig::default());
         assert!(config.trace_history.enabled);
+        assert_eq!(config.trace_history.retention_days, 30);
+        assert_eq!(
+            config.trace_history.retention(),
+            Duration::from_hours(30 * 24)
+        );
         assert!(!config.trace_history.record_http_bodies);
         assert_eq!(config.trace_history.http_body_recording_max_bytes(), None);
     }

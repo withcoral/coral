@@ -311,7 +311,9 @@ Trace history settings are configured under `[trace_history]`.
 ```toml
 [trace_history]
 enabled = true
-retention_days = 7
+retention_days = 30
 ```
+
+When you enable trace history, Coral retains local trace spans and the credential-scrubbed Search responses shown in Query Stream. Search responses are stored best-effort in your configured Coral database; credential scrubbing is not general PII redaction.
 
 See [Observe with OpenTelemetry](/guides/observe-with-opentelemetry) for the full telemetry setup guide.

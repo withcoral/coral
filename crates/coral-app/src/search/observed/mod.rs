@@ -19,6 +19,9 @@ pub(crate) use policy::{
     ObservedValuesLiveScope, ObservedValuesLiveScopeLoadFailure, ObservedValuesRetrievalPolicy,
 };
 pub(crate) use publisher::{SearchObservationHandle, SearchObservationSource};
+pub(in crate::search) use sensitive::{
+    DEFAULT_OBSERVED_VALUE_BYTES_LIMIT, is_sensitive_column, sanitize_observed_value,
+};
 pub(crate) use sqlite_projection::ObservedValuesDrainBudget;
 pub(crate) use sqlite_store::{
     ObservedValuesClearResult, clear_observed_source_in_transaction,

@@ -20,9 +20,11 @@ The `endpoint` is the OTLP/HTTP base URL. Coral automatically appends `/v1/trace
 
 ## Trace History
 
-Coral keeps a local trace history for the UI by default. Local traces include query, source-loading, HTTP, and DataFusion spans. They also include DataFusion optimizer-rule spans so the trace view can show the planning work that happened for a query. This local filter is separate from `trace_filter`, which only controls OTLP span export.
+Coral keeps trace history for the UI by default. Local trace files include query, source-loading, HTTP, and DataFusion spans. They also include DataFusion optimizer-rule spans so the trace view can show the planning work that happened for a query. This local filter is separate from `trace_filter`, which only controls OTLP span export.
 
-By default, Coral retains seven days of local spans. To change that window:
+For Search operations, Coral also retains the same response it returns to the caller after credential scrubbing its matching-value evidence. Up to 1 MiB per Search response is stored in the operator-configured Coral database; larger responses retain only an unavailable marker. Scrubbing suppresses obvious credentials using the observed-values safety policy, but it is not general PII redaction. Search-response retention is best-effort and never waits for database persistence in the Search request path.
+
+By default, Coral retains 30 days of local spans and Search responses. To change that window:
 
 ```toml
 [trace_history]
@@ -63,8 +65,8 @@ External OpenTelemetry export settings live under `[otel]` in `config.toml`. Cor
 
 | Key                   | Type    | Default | Description                                                                       |
 | --------------------- | ------- | ------- | --------------------------------------------------------------------------------- |
-| `enabled`             | boolean | `true`  | Enables trace history without requiring an OTLP collector.                        |
-| `retention_days`      | integer | `7`     | Number of days of local trace spans to retain.                                    |
+| `enabled`             | boolean | `true`  | Enables local trace spans and Search-response history without requiring an OTLP collector. |
+| `retention_days`      | integer | `30`    | Number of days of local trace spans and Search responses to retain.                |
 | `record_http_bodies`  | boolean | `false` | Records HTTP request and response bodies, and MCP tool-call argument and result payloads, in local traces when local tracing is enabled. |
 | `http_body_max_bytes` | integer | `65536` | Maximum request or response body bytes recorded in a local trace. Applies to both HTTP body previews and MCP tool-call payload previews. |
 

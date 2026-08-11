@@ -20,12 +20,15 @@ use tonic::Request;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request as WiremockRequest, ResponseTemplate};
 
-use coral_api::v1::{ExecuteSqlRequest, SearchRequest};
+use coral_api::v1::{
+    ExecuteSqlRequest, ImportSourceRequest, SearchRequest, import_source_response,
+};
 use coral_app::{ServerBuilder, shutdown_tracing};
 use coral_client::{AppClient, decode_execute_sql_response, default_workspace};
 
 const LOCAL_ONLY_SENTINEL: &str = "LOCAL_ONLY_FUTURE_TOOL_SENTINEL";
 const SEARCH_QUERY_SENTINEL: &str = "LOCAL_ONLY_SEARCH_QUERY_SENTINEL";
+const SEARCH_RESPONSE_SENTINEL: &str = "LOCAL_ONLY_SEARCH_RESPONSE_SENTINEL";
 
 #[tokio::test]
 async fn otlp_export_loopback_covers_traces_logs_and_metrics() {
@@ -118,14 +121,63 @@ async fn emit_test_telemetry(endpoint_uri: &str) {
     let result = decode_execute_sql_response(&response).expect("decode loopback query");
     assert_eq!(result.row_count(), 1);
 
-    app.search_client()
+    let manifest_yaml = serde_json::json!({
+        "name": "telemetry_search_response_fixture",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": "https://example.test",
+        "tables": [{
+            "name": "local_only_search_query_sentinel",
+            "description": SEARCH_RESPONSE_SENTINEL,
+            "request": { "method": "GET", "path": "/sentinel" },
+            "response": {},
+            "pagination": { "mode": "none" },
+            "columns": [{ "name": "id", "type": "Utf8" }]
+        }]
+    })
+    .to_string();
+    let mut import = app
+        .source_client()
+        .import_source(Request::new(ImportSourceRequest {
+            workspace: Some(default_workspace()),
+            manifest_yaml,
+            variables: Vec::new(),
+            secrets: Vec::new(),
+            oauth_credential_retrievals: Vec::new(),
+        }))
+        .await
+        .expect("import Search response sentinel fixture")
+        .into_inner();
+    let imported = import
+        .message()
+        .await
+        .expect("read source import response")
+        .is_some_and(|response| {
+            matches!(
+                response.event,
+                Some(import_source_response::Event::Source(_))
+            )
+        });
+    assert!(imported, "source fixture should finish importing");
+
+    let search_response = app
+        .search_client()
         .search(Request::new(SearchRequest {
             workspace: Some(default_workspace()),
             query: SEARCH_QUERY_SENTINEL.to_string(),
             limit: 0,
         }))
         .await
-        .expect("search empty catalog");
+        .expect("search sentinel catalog entry")
+        .into_inner();
+    assert!(
+        search_response
+            .results
+            .iter()
+            .any(|result| result.description == SEARCH_RESPONSE_SENTINEL),
+        "the Search response must contain the privacy sentinel"
+    );
 
     let query = tracing::info_span!(
         target: "coral_app",
@@ -246,6 +298,10 @@ fn assert_exported_trace_contract(trace_exports: &[ExportTraceServiceRequest], s
         trace_exports,
         SEARCH_QUERY_SENTINEL
     ));
+    assert!(!trace_exports_contain_string(
+        trace_exports,
+        SEARCH_RESPONSE_SENTINEL
+    ));
     assert!(spans.iter().all(|span| {
         span.attributes.iter().all(|attribute| {
             !attribute
@@ -276,6 +332,11 @@ fn assert_exported_log_contract(logs: &[LogRecord]) {
         logs.iter()
             .all(|log| !log_contains_string(log, SEARCH_QUERY_SENTINEL)),
         "OTLP logs must not contain local-only Search text: {logs:?}"
+    );
+    assert!(
+        logs.iter()
+            .all(|log| !log_contains_string(log, SEARCH_RESPONSE_SENTINEL)),
+        "OTLP logs must not contain Search response content: {logs:?}"
     );
 }
 
@@ -372,6 +433,10 @@ fn assert_local_trace_history_contract(local_trace_history: &str) {
             "local trace history should contain {expected}: {local_trace_history}"
         );
     }
+    assert!(
+        !local_trace_history.contains(SEARCH_RESPONSE_SENTINEL),
+        "local span history must not contain retained Search response content"
+    );
 }
 
 fn span_named<'a>(spans: &'a [Span], name: &str) -> &'a Span {

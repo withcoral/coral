@@ -52,6 +52,7 @@ use crate::query::manager::QueryManager;
 use crate::query::service::QueryService;
 use crate::search::manager::SearchManager;
 use crate::search::observed::SearchObservationHandle;
+use crate::search::response_history::{SearchResponseHistory, SearchResponseHistoryWorker};
 use crate::search::service::SearchService;
 use crate::sources::manager::SourceManager;
 use crate::sources::materialization::SourceDiagnosticReporter;
@@ -342,8 +343,8 @@ impl ServerBuilder {
         let env = AppEnvironment::discover();
         let layout = env.app_state_layout(self.config.config_dir.clone())?;
         let mode = self.config.resolved_mode(&layout)?;
-        let principal_provider = self.config.principal_provider.clone();
-        let grpc_listener = self.config.grpc_listener.clone();
+        let principal = self.config.principal_provider.clone();
+        let listener = self.config.grpc_listener.clone();
         layout.ensure()?;
         let feature_store = FeatureStore::from_layout(layout.clone());
         let features = feature_store.load_with_overrides(&self.config.feature_overrides)?;
@@ -385,13 +386,11 @@ impl ServerBuilder {
             FeedbackManager::with_publisher(layout.clone(), self.config.feedback_publisher);
         let task_manager = TaskManager::new(TaskStore::new(Arc::clone(&coral_db)));
         let task_activity = crate::task::activity::TaskActivityRecorder::new(Arc::clone(&coral_db));
-        let body_capture_max_bytes = telemetry_config
-            .trace_history
-            .http_body_recording_max_bytes();
-        let query_runtime_context = env
-            .query_runtime_context()
-            .with_body_capture_max_bytes(body_capture_max_bytes);
-
+        let query_runtime_context = env.query_runtime_context().with_body_capture_max_bytes(
+            telemetry_config
+                .trace_history
+                .http_body_recording_max_bytes(),
+        );
         let query_manager = QueryManager::with_diagnostic_reporter(
             config_store.clone(),
             workspace_manager.clone(),
@@ -415,28 +414,27 @@ impl ServerBuilder {
             observed_values_search_enabled,
             diagnostic_reporter,
             CatalogDiscovery::new(query_manager.clone()),
-            workspace_lifecycle_lock,
+            workspace_lifecycle_lock.clone(),
         );
-        let trace_components = trace_components_for_store(active_trace_store);
-        start_server(
-            ServerDependencies {
-                gui_onboarding: GuiOnboardingManager::new(Arc::clone(&coral_db)),
-                source: source_manager,
-                workspace: workspace_manager,
-                query: query_manager,
-                search: search_manager,
-                search_observations,
-                feedback: feedback_manager,
-                task: task_manager,
-                feature_store,
-                active_features: features,
-            },
-            trace_components,
-            principal_provider,
-            mode,
-            grpc_listener,
-        )
-        .await
+        let trace_components = init_trace_components(
+            active_trace_store,
+            Arc::clone(&coral_db),
+            workspace_lifecycle_lock,
+            &telemetry_config,
+        );
+        let dependencies = ServerDependencies {
+            gui_onboarding: GuiOnboardingManager::new(Arc::clone(&coral_db)),
+            source: source_manager,
+            workspace: workspace_manager,
+            query: query_manager,
+            search: search_manager,
+            search_observations,
+            feedback: feedback_manager,
+            task: task_manager,
+            feature_store,
+            active_features: features,
+        };
+        start_server(dependencies, trace_components, principal, mode, listener).await
     }
 }
 
@@ -467,16 +465,41 @@ fn init_server_telemetry(
 
 fn trace_components_for_store(
     active_trace_store: Option<crate::telemetry::InstalledLocalTraceStore>,
+    search_response_history: SearchResponseHistory,
+    search_response_history_worker: SearchResponseHistoryWorker,
 ) -> TraceServerComponents {
-    active_trace_store.map_or_else(TraceServerComponents::default, |store| {
-        TraceServerComponents {
+    match active_trace_store {
+        None => TraceServerComponents {
+            search_response_history: Some(search_response_history.clone()),
+            search_response_history_worker: Some(search_response_history_worker),
+            ..TraceServerComponents::default()
+        },
+        Some(store) => TraceServerComponents {
             local_trace_store_dir: Some(store.dir.clone()),
             service: Some(TraceService::new(TraceManager::new(
                 store.dir,
                 store.retention,
             ))),
-        }
-    })
+            search_response_history: Some(search_response_history),
+            search_response_history_worker: Some(search_response_history_worker),
+        },
+    }
+}
+
+fn init_trace_components(
+    active_trace_store: Option<crate::telemetry::InstalledLocalTraceStore>,
+    coral_db: Arc<CoralDb>,
+    workspace_lifecycle_lock: WorkspaceLifecycleLock,
+    telemetry_config: &TelemetryConfig,
+) -> TraceServerComponents {
+    let trace_history = &telemetry_config.trace_history;
+    let (history, worker) = SearchResponseHistory::start(
+        coral_db,
+        workspace_lifecycle_lock,
+        trace_history.enabled,
+        trace_history.retention(),
+    );
+    trace_components_for_store(active_trace_store, history, worker)
 }
 
 async fn init_database(layout: &AppStateLayout) -> Result<CoralDb, AppError> {
@@ -517,6 +540,7 @@ pub struct RunningServer {
     local_trace_store_dir: Option<PathBuf>,
     search: SearchManager,
     search_observations: Mutex<Option<SearchObservationHandle>>,
+    search_response_history_worker: Mutex<Option<SearchResponseHistoryWorker>>,
     shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
     task_finished: watch::Receiver<bool>,
     task: Mutex<Option<JoinHandle<Result<(), tonic::transport::Error>>>>,
@@ -590,9 +614,21 @@ impl RunningServer {
             None => Ok(()),
         };
         let search_observations_result = self.shutdown_search_observations().await;
+        self.shutdown_search_response_history().await;
         task_result?;
         search_observations_result?;
         Ok(())
+    }
+
+    async fn shutdown_search_response_history(&self) {
+        let worker = self
+            .search_response_history_worker
+            .lock()
+            .expect("Search response history worker mutex poisoned")
+            .take();
+        if let Some(worker) = worker {
+            worker.shutdown().await;
+        }
     }
 
     async fn shutdown_search_observations(&self) -> Result<(), AppError> {
@@ -632,6 +668,8 @@ impl Drop for RunningServer {
 struct TraceServerComponents {
     service: Option<TraceService>,
     local_trace_store_dir: Option<PathBuf>,
+    search_response_history: Option<SearchResponseHistory>,
+    search_response_history_worker: Option<SearchResponseHistoryWorker>,
 }
 
 struct ServerDependencies {
@@ -654,6 +692,7 @@ struct ServerDependencies {
 fn application_routes(
     dependencies: ServerDependencies,
     trace_service: Option<TraceService>,
+    search_response_history: Option<SearchResponseHistory>,
 ) -> (Routes, QueryManager) {
     let ServerDependencies {
         gui_onboarding,
@@ -680,7 +719,7 @@ fn application_routes(
     let catalog_service = CatalogService::new(query.clone(), task.clone());
     let function_service = FunctionService::new(query.clone());
     let query_service = QueryService::new(query, task.clone());
-    let search_service = SearchService::new(search, task.clone());
+    let search_service = configured_search_service(search, task.clone(), search_response_history);
     let feedback_service = FeedbackService::new(feedback, task.clone());
     let feature_service = FeatureService::new(feature_store, active_features);
     let task_service = TaskService::new(task);
@@ -727,11 +766,14 @@ async fn start_server(
     let TraceServerComponents {
         service: trace_service,
         local_trace_store_dir,
+        search_response_history,
+        search_response_history_worker,
     } = trace_components;
     // `RunningServer` owns both for shutdown; the routes only borrow them.
     let search = dependencies.search.clone();
     let search_observations = dependencies.search_observations.clone();
-    let (application_routes, health_queries) = application_routes(dependencies, trace_service);
+    let (application_routes, health_queries) =
+        application_routes(dependencies, trace_service, search_response_history);
     let routes = Routes::from(
         application_routes
             .into_axum_router()
@@ -770,10 +812,23 @@ async fn start_server(
         local_trace_store_dir,
         search,
         search_observations: Mutex::new(search_observations),
+        search_response_history_worker: Mutex::new(search_response_history_worker),
         shutdown_tx: Mutex::new(Some(shutdown_tx)),
         task_finished,
         task: Mutex::new(Some(task)),
     })
+}
+
+fn configured_search_service(
+    search: SearchManager,
+    task: TaskManager,
+    response_history: Option<SearchResponseHistory>,
+) -> SearchService {
+    let service = SearchService::new(search, task);
+    match response_history {
+        Some(history) => service.with_response_history(history),
+        None => service,
+    }
 }
 
 fn start_grpc_server(
@@ -1012,6 +1067,7 @@ enabled = false
             local_trace_store_dir: None,
             search,
             search_observations: Mutex::new(Some(search_observations)),
+            search_response_history_worker: Mutex::new(None),
             shutdown_tx: Mutex::new(None),
             task_finished,
             task: Mutex::new(Some(task)),
@@ -1587,6 +1643,8 @@ backend = "unsupported"
             TraceServerComponents {
                 service: Some(trace_service),
                 local_trace_store_dir: None,
+                search_response_history: None,
+                search_response_history_worker: None,
             },
             Arc::new(LocalPrincipalProvider),
             ServerMode::EphemeralGrpc,
