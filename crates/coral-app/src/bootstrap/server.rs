@@ -1567,7 +1567,9 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
         let session_auth = settings
             .take_session_auth()
             .expect("configured session auth");
-        let started = start_for_serve(builder, Some(session_auth))
+        let grpc = builder
+            .with_session_auth(session_auth)
+            .start()
             .await
             .expect("a shared deployment serves what nobody owns");
 
@@ -1589,11 +1591,7 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
                 .is_none(),
             "a shared deployment records no host owner"
         );
-        started
-            .grpc
-            .shutdown()
-            .await
-            .expect("stop the started server");
+        grpc.shutdown().await.expect("stop the started server");
     }
 
     #[tokio::test]
