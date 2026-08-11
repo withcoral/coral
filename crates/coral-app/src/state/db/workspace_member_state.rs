@@ -1,6 +1,6 @@
 //! Transactional workspace-membership mutations.
 
-#![cfg_attr(not(test), expect(dead_code, reason = "wired in M3"))]
+#![cfg_attr(not(test), expect(dead_code, reason = "used higher in the PR stack"))]
 
 use super::repositories::users::UserRecord;
 use super::{CoralDb, DbError, DbRepos};
