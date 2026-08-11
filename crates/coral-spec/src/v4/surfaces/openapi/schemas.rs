@@ -72,6 +72,12 @@ impl OpenApiImporter<'_> {
             .unwrap_or_default()
             .to_string();
         let nullable = self.dialect.schema_nullable(&resolved);
+        if let Some(warning) = self.dialect.removed_keyword_warning(&resolved) {
+            diagnostics.push(Diagnostic::new(
+                format!("type '{type_id}' in operation '{operation_id}': {warning}"),
+                Some(operation_id.to_string()),
+            ));
+        }
         self.types.insert(
             type_id.clone(),
             IrType {
@@ -150,6 +156,8 @@ impl OpenApiImporter<'_> {
             IrTypeShape::Enum {
                 values: values.iter().map(enum_value).collect(),
             }
+        } else if let Some(values) = self.dialect.const_enum_values(&resolved) {
+            IrTypeShape::Enum { values }
         } else if let Some(scalar) = json_schema_scalar_type(&resolved) {
             IrTypeShape::Scalar(scalar)
         // `type` is matched through the array-aware helpers rather than read as
@@ -412,7 +420,7 @@ impl OpenApiImporter<'_> {
     }
 }
 
-fn enum_value(value: &Value) -> String {
+pub(super) fn enum_value(value: &Value) -> String {
     value
         .as_str()
         .map_or_else(|| value.to_string(), ToString::to_string)

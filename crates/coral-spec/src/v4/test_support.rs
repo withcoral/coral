@@ -1,6 +1,18 @@
-pub(super) fn github_openapi() -> &'static str {
-    r"
-openapi: 3.0.3
+pub(super) fn github_openapi() -> String {
+    github_openapi_at_version("3.0.3")
+}
+
+/// The same fixture under a different specification version.
+///
+/// Nothing below is spelled differently across 3.0 and 3.1 — no `nullable`, no
+/// `const`, no type arrays — so holding the document fixed and varying only the
+/// version isolates the claim that the shared traversal reads both alike, and a
+/// difference in the imported result is a difference the dialects introduced.
+pub(super) fn github_openapi_at_version(version: &str) -> String {
+    format!("openapi: {version}{GITHUB_OPENAPI_BODY}")
+}
+
+const GITHUB_OPENAPI_BODY: &str = r"
 paths:
   /repos/{owner}/{repo}/issues:
     get:
@@ -74,5 +86,4 @@ components:
         updated_at: {type: string, format: date-time}
         body: {type: string}
         user: {type: object}
-"
-}
+";

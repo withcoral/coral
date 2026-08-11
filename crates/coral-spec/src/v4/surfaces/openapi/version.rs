@@ -8,12 +8,13 @@ use crate::{ManifestError, Result};
 /// separates editorial revisions of one specification — 3.0.0 through 3.0.4 —
 /// and nothing the importer does varies across them.
 ///
-/// 3.1 joins this as its dialect lands. Recognising a version here is the same
-/// statement as supporting it, so an unsupported version is rejected by the
-/// parse rather than admitted and turned away later.
+/// Recognising a version here is the same statement as supporting it, so an
+/// unsupported version is rejected by the parse rather than admitted and turned
+/// away later.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum OpenApiVersion {
     V3_0,
+    V3_1,
 }
 
 /// Reads a document's declared `openapi` version.
@@ -28,7 +29,7 @@ pub(super) fn parse_openapi_version(document: &Value) -> Result<OpenApiVersion> 
         // than report as a missing field.
         if let Some(swagger) = document.get("swagger").and_then(Value::as_str) {
             return Err(ManifestError::validation(format!(
-                "document declares Swagger version '{swagger}'; Coral requires OpenAPI 3.0"
+                "document declares Swagger version '{swagger}'; Coral requires OpenAPI 3.0 or 3.1"
             )));
         }
         return Err(ManifestError::validation(
@@ -43,12 +44,13 @@ pub(super) fn parse_openapi_version(document: &Value) -> Result<OpenApiVersion> 
     let mut components = declared.trim().split('.');
     let version = match (components.next(), components.next()) {
         (Some("3"), Some("0")) => OpenApiVersion::V3_0,
+        (Some("3"), Some("1")) => OpenApiVersion::V3_1,
         _ => return Err(unsupported()),
     };
     // The patch component is optional, but a present one has to be a number and
     // has to be the last thing in the string. Matching only the first two
-    // components would take `3.0.banana`, `3.0.` and `3.0.1.2` for well-formed
-    // 3.0 and import them, and this is the one place left that reads the
+    // components would take `3.1.banana`, `3.1.` and `3.1.1.2` for well-formed
+    // 3.1 and import them, and this is the one place left that reads the
     // version — so it is the place to say what the field may hold.
     //
     // Both remaining components are taken up front, mirroring the match above:

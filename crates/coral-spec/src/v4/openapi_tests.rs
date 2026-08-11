@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use super::*;
+use crate::v4::test_support::github_openapi_at_version;
 use crate::{
     ManifestDataType, PaginationMode, PaginationSpec, SourceTableFunctionKind,
     parse_source_manifest_yaml,
@@ -3289,7 +3290,7 @@ surface:
 fn importer_accepts_every_spelling_of_a_supported_version() {
     // `3.0` carries no patch component, which the field's grammar allows and a
     // `"3.0."` prefix test rejected.
-    for version in ["3.0.0", "3.0.3", "3.0.4", "3.0"] {
+    for version in ["3.0.0", "3.0.3", "3.0.4", "3.0", "3.1.0", "3.1.1", "3.1"] {
         let imported = import_version_probe(&format!("openapi: '{version}'"))
             .unwrap_or_else(|error| panic!("version {version} should import: {error}"));
         assert_eq!(
@@ -3302,18 +3303,21 @@ fn importer_accepts_every_spelling_of_a_supported_version() {
 
 #[test]
 fn importer_rejects_unsupported_versions_by_name() {
+    // 3.2 was ratified in April 2026 but is not yet widely adopted, so it stays
+    // out until there is something to import that uses it.
     for version in [
         "2.0",
-        "3.1.0",
         "3.2.0",
         "4.0.0",
         "3",
         // Well-formed prefix, malformed remainder. The version field holds one
-        // optional numeric patch component and nothing else.
+        // optional numeric patch component and nothing else, under either
+        // supported version.
         "3.0.",
         "3.0.banana",
         "3.0.1.2",
-        "3.0.1-rc1",
+        "3.1.1-rc1",
+        "3.1.x",
     ] {
         let error = import_version_probe(&format!("openapi: '{version}'"))
             .expect_err(&format!("version {version} should be rejected"));
@@ -3352,12 +3356,22 @@ fn document_metadata_applies_the_same_version_gate_as_import() {
         .expect("3.0 metadata");
     assert_eq!(metadata.description.as_deref(), Some("Query demo data."));
 
-    // Both entry points read the version, so they have to agree on the answer:
-    // describing a document the importer would refuse is the confusing outcome.
-    let error = openapi_document_metadata(version_probe_document("openapi: '3.1.0'").as_bytes())
-        .expect_err("3.1 metadata should be rejected while import rejects it");
+    // Nothing read here is spelled differently in 3.1, so metadata extraction
+    // needs no dialect — but it does have to accept exactly what import accepts.
+    // Describing a document the importer would refuse, or refusing one it would
+    // take, is the confusing outcome either way.
+    let metadata = openapi_document_metadata(version_probe_document("openapi: '3.1.0'").as_bytes())
+        .expect("3.1 metadata");
+    assert_eq!(metadata.description.as_deref(), Some("Query demo data."));
+    assert_eq!(
+        metadata.server_url.as_deref(),
+        Some("https://api.example.com/v1")
+    );
+
+    let error = openapi_document_metadata(version_probe_document("openapi: '3.2.0'").as_bytes())
+        .expect_err("3.2 metadata should be rejected while import rejects it");
     assert!(
-        error.to_string().contains("unsupported version '3.1.0'"),
+        error.to_string().contains("unsupported version '3.2.0'"),
         "{error}"
     );
 }
@@ -3646,5 +3660,308 @@ fn importer_reads_a_nullable_array_property_as_a_list() {
             IrTypeShape::Scalar(IrScalarType::String)
         ),
         "the element type has to survive, or the list is untyped"
+    );
+}
+
+/// Imports a document at `version` whose one operation returns
+/// `response_schema`, so a test can hold the schema fixed and vary the dialect.
+#[expect(
+    clippy::unwrap_in_result,
+    reason = "Only the import's own result is under test; a manifest that will not parse is a bug in this file, not an outcome to return."
+)]
+fn import_versioned_response_schema(
+    version: &str,
+    response_schema: &str,
+) -> crate::Result<ImportedSurface> {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: dialect_probe
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    import_openapi_surface(
+        v4,
+        &v4.surface,
+        format!(
+            r"
+openapi: {version}
+paths:
+  /items:
+    get:
+      operationId: items/get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+{response_schema}
+"
+        )
+        .as_bytes(),
+    )
+}
+
+fn probe_row_type<'a>(imported: &'a ImportedSurface, field: &str) -> &'a IrField {
+    let operation = imported.operations.first().expect("operation");
+    let IrTypeShape::Object { fields } = &imported
+        .types
+        .iter()
+        .find(|ty| ty.id == operation.output.type_ref)
+        .expect("row type")
+        .shape
+    else {
+        panic!("expected an object row");
+    };
+    fields
+        .iter()
+        .find(|candidate| candidate.name == field)
+        .unwrap_or_else(|| panic!("field {field}"))
+}
+
+fn probe_field_type<'a>(imported: &'a ImportedSurface, field: &str) -> &'a IrType {
+    let type_ref = &probe_row_type(imported, field).type_ref;
+    imported
+        .types
+        .iter()
+        .find(|ty| &ty.id == type_ref)
+        .expect("field type")
+}
+
+const NULLABILITY_PROBE_SCHEMA: &str = r"                type: object
+                properties:
+                  by_type_array:
+                    type: [string, 'null']
+                  by_keyword:
+                    type: string
+                    nullable: true";
+
+#[test]
+fn openapi_31_reads_nullability_out_of_the_type_array() {
+    let imported = import_versioned_response_schema("3.1.0", NULLABILITY_PROBE_SCHEMA)
+        .expect("3.1 should import");
+
+    assert!(
+        probe_field_type(&imported, "by_type_array").nullable,
+        "3.1 spells nullability by listing 'null' in the type"
+    );
+    // The scalar still has to survive the extra type: a nullable string is a
+    // string column, not an untyped one.
+    assert!(
+        matches!(
+            probe_field_type(&imported, "by_type_array").shape,
+            IrTypeShape::Scalar(IrScalarType::String)
+        ),
+        "a nullable string is still a string"
+    );
+    assert!(
+        !probe_field_type(&imported, "by_keyword").nullable,
+        "3.1 gives the 'nullable' keyword no meaning, so it must not confer nullability"
+    );
+}
+
+#[test]
+fn openapi_30_reads_nullability_out_of_the_nullable_keyword() {
+    // The same schema under the other dialect, to pin that the two disagree in
+    // exactly the way the specifications do rather than one being a superset.
+    let imported = import_versioned_response_schema("3.0.3", NULLABILITY_PROBE_SCHEMA)
+        .expect("3.0 should import");
+
+    assert!(
+        probe_field_type(&imported, "by_keyword").nullable,
+        "3.0 spells nullability with its own keyword"
+    );
+    assert!(
+        !probe_field_type(&imported, "by_type_array").nullable,
+        "3.0 has no 'null' type to read"
+    );
+}
+
+#[test]
+fn openapi_31_warns_when_a_document_still_carries_nullable() {
+    let imported = import_versioned_response_schema("3.1.0", NULLABILITY_PROBE_SCHEMA)
+        .expect("3.1 should import");
+
+    let operation = imported.operations.first().expect("operation");
+    let warning = operation
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.message.contains("'nullable'"))
+        .expect("a 3.1 document carrying 'nullable' should say so");
+    assert!(
+        warning.message.contains("removed in OpenAPI 3.1"),
+        "the warning should name the version that removed it: {}",
+        warning.message
+    );
+    assert_eq!(warning.operation_id.as_deref(), Some("items_get"));
+}
+
+#[test]
+fn openapi_30_does_not_warn_about_nullable() {
+    let imported = import_versioned_response_schema("3.0.3", NULLABILITY_PROBE_SCHEMA)
+        .expect("3.0 should import");
+
+    let operation = imported.operations.first().expect("operation");
+    assert!(
+        !operation
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("'nullable'")),
+        "'nullable' is how 3.0 spells this: {:?}",
+        operation.diagnostics
+    );
+}
+
+#[test]
+fn openapi_31_reads_const_as_a_single_value_enum() {
+    // 3.1 documents pin a discriminator with `const` where a 3.0 one wrote a
+    // one-element `enum`.
+    let imported = import_versioned_response_schema(
+        "3.1.0",
+        r"                type: object
+                properties:
+                  kind:
+                    const: invoice
+                  status:
+                    enum: [open, paid]",
+    )
+    .expect("3.1 should import");
+
+    let IrTypeShape::Enum { values } = &probe_field_type(&imported, "kind").shape else {
+        panic!("a const should import as the enum it is equivalent to");
+    };
+    assert_eq!(values, &["invoice"]);
+
+    let IrTypeShape::Enum { values } = &probe_field_type(&imported, "status").shape else {
+        panic!("enum should still import as an enum");
+    };
+    assert_eq!(values, &["open", "paid"]);
+}
+
+#[test]
+fn openapi_30_leaves_const_alone() {
+    // `const` is not a 3.0 keyword, so a 3.0 document using it gets no special
+    // reading — the schema is typeless and stays opaque.
+    let imported = import_versioned_response_schema(
+        "3.0.3",
+        r"                type: object
+                properties:
+                  kind:
+                    const: invoice",
+    )
+    .expect("3.0 should import");
+
+    assert!(
+        matches!(probe_field_type(&imported, "kind").shape, IrTypeShape::Json),
+        "3.0 has no const, so nothing should read one"
+    );
+}
+
+#[test]
+fn openapi_31_imports_a_realistic_document_exactly_as_30_does() {
+    // The point of the dialect split is that only the keywords the versions
+    // disagree about are version-specific. Everything else — `$ref` resolution,
+    // response selection, wrapped-list row paths, pagination detection,
+    // `format: date-time` — is one traversal, so a document using none of the
+    // contested keywords has to import identically under both.
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: github
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.github.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+
+    let as_30 = import_openapi_surface(
+        v4,
+        &v4.surface,
+        github_openapi_at_version("3.0.3").as_bytes(),
+    )
+    .expect("3.0 import");
+    let as_31 = import_openapi_surface(
+        v4,
+        &v4.surface,
+        github_openapi_at_version("3.1.0").as_bytes(),
+    )
+    .expect("3.1 import");
+
+    let operation_ids = |imported: &ImportedSurface| {
+        imported
+            .operations
+            .iter()
+            .map(|operation| operation.id.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(operation_ids(&as_30), operation_ids(&as_31));
+    assert!(
+        !operation_ids(&as_31).is_empty(),
+        "a fixture importing nothing would make this vacuous"
+    );
+
+    let type_ids = |imported: &ImportedSurface| {
+        imported
+            .types
+            .iter()
+            .map(|ty| ty.id.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(type_ids(&as_30), type_ids(&as_31));
+
+    // Serializing the metadata catalog compares row paths, pagination, and
+    // lookup keys in one assertion, so an inference that quietly changed under
+    // 3.1 shows up here rather than needing its own case.
+    assert_eq!(
+        serde_json::to_value(&as_30.operation_metadata).expect("3.0 metadata"),
+        serde_json::to_value(&as_31.operation_metadata).expect("3.1 metadata"),
+    );
+
+    // Pinned rather than merely compared: an inference that silently stopped
+    // firing under both versions would satisfy every equality above.
+    assert_eq!(
+        imported_row_path(&as_31, "search_issues_and_pull_requests"),
+        ["items"],
+        "the wrapped-list row path has to survive under 3.1"
+    );
+    assert_eq!(
+        imported_rest_pagination(&as_31, "issues_list_for_repo").mode,
+        PaginationMode::Page,
+        "page pagination has to be detected under 3.1"
+    );
+}
+
+#[test]
+fn openapi_31_stays_quiet_about_a_leftover_nullable_false() {
+    // `nullable: false` asked for the default under 3.0 too, so ignoring it
+    // changes nothing and the author has lost nothing. Worth pinning because
+    // real documents carry these: GitHub's own 3.1 publication has five, and
+    // warning on each would be noise on every import of it.
+    let imported = import_versioned_response_schema(
+        "3.1.0",
+        r"                type: object
+                properties:
+                  html_url:
+                    type: string
+                    nullable: false",
+    )
+    .expect("3.1 should import");
+
+    let operation = imported.operations.first().expect("operation");
+    assert!(
+        !operation
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("'nullable'")),
+        "a no-op keyword is not worth a diagnostic: {:?}",
+        operation.diagnostics
     );
 }

@@ -5,6 +5,7 @@ mod operations;
 mod responses;
 mod schemas;
 mod v3_0;
+mod v3_1;
 mod version;
 
 pub use document::{OpenApiDocumentMetadata, normalize_source_document, openapi_document_metadata};

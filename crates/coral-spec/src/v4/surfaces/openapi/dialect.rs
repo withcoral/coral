@@ -10,4 +10,15 @@ use serde_json::Value;
 pub(super) trait OpenApiDialect {
     /// Whether a schema admits `null`.
     fn schema_nullable(&self, schema: &Value) -> bool;
+
+    /// The values a schema's `const` constrains it to, if this version has that
+    /// keyword and the schema uses it.
+    fn const_enum_values(&self, schema: &Value) -> Option<Vec<String>>;
+
+    /// What to warn about a schema reaching for a keyword this version removed.
+    ///
+    /// Such a keyword is not an error — it is ignored, exactly as an unknown
+    /// annotation would be — but ignoring it silently changes what the schema
+    /// means, and the author is unlikely to have intended that.
+    fn removed_keyword_warning(&self, schema: &Value) -> Option<String>;
 }
