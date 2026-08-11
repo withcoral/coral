@@ -476,7 +476,12 @@ mod tests {
         let provider_issuer = server.uri();
         let (_temp, database) = open_sqlite().await;
         let UpsertLoginOutcome::Upserted(existing_user) = database
-            .provision_login(&provider_issuer, "raw-principal", Some("Existing User"), 1)
+            .upsert_user_and_ensure_default_workspace(
+                &provider_issuer,
+                "raw-principal",
+                Some("Existing User"),
+                1,
+            )
             .await
             .expect("seed existing user")
         else {
@@ -755,7 +760,12 @@ mod tests {
         let provider_issuer = server.uri();
         let (_temp, database) = open_sqlite().await;
         database
-            .provision_login("https://different-issuer.example", "raw-principal", None, 1)
+            .upsert_user_and_ensure_default_workspace(
+                "https://different-issuer.example",
+                "raw-principal",
+                None,
+                1,
+            )
             .await
             .expect("seed mismatched issuer");
 
