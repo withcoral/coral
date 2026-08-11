@@ -643,6 +643,29 @@ impl QueryParameterValue {
     }
 }
 
+/// Callback invoked when one query memory observation is finalized.
+pub type QueryMemoryObserver = Arc<dyn Fn(QueryMemoryObservation) + Send + Sync + 'static>;
+
+/// Final outcome of one observed query execution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueryMemoryOutcome {
+    /// The query completed successfully.
+    Success,
+    /// The query completed with an error.
+    Error,
+    /// The query execution was cancelled.
+    Cancelled,
+}
+
+/// Bounded, identity-free memory observation for one query execution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QueryMemoryObservation {
+    /// Peak bytes reserved through DataFusion's memory pool.
+    pub datafusion_reserved_peak_bytes: usize,
+    /// Final query execution outcome.
+    pub outcome: QueryMemoryOutcome,
+}
+
 /// Owned runtime-build inputs needed while compiling and registering sources.
 #[derive(Default)]
 pub struct QueryRuntimeConfig {
@@ -657,6 +680,8 @@ pub struct QueryRuntimeConfig {
     pub extensions: EngineExtensions,
     /// Engine-wide query memory policy.
     pub memory: QueryMemoryConfig,
+    /// Optional observer for finalized query memory observations.
+    pub query_memory_observer: Option<QueryMemoryObserver>,
     /// Runtime-build selector for app-owned request identities.
     pub request_identity_selector: Option<Arc<dyn RequestIdentitySelector>>,
     /// Factory that binds selected identities to request-time HTTP authenticators.
@@ -677,6 +702,7 @@ impl QueryRuntimeConfig {
             database_pool_registry: Arc::new(crate::DatabasePoolRegistry::new()),
             extensions,
             memory: QueryMemoryConfig::default(),
+            query_memory_observer: None,
             request_identity_selector: None,
             request_identity_http_authenticator_factory: None,
             dependent_join: DependentJoinConfig::default(),
@@ -1266,12 +1292,46 @@ impl QueryTableFunctionUsage {
 mod tests {
     use std::collections::BTreeMap;
     use std::str::FromStr as _;
+    use std::sync::Arc;
 
     use coral_spec::parse_source_manifest_value;
     use coral_spec::v4::{AcceptedIdentityRequirement, IdentityRequirements};
     use serde_json::json;
 
-    use super::{MemorySize, QuerySource, RuntimeSourceComponent, RuntimeSourcePackage};
+    use super::{
+        MemorySize, QueryMemoryObservation, QueryMemoryObserver, QueryMemoryOutcome,
+        QueryRuntimeConfig, QueryRuntimeContext, QuerySource, RuntimeSourceComponent,
+        RuntimeSourcePackage,
+    };
+    use crate::EngineExtensions;
+
+    #[test]
+    fn query_memory_contract_defaults_observer_to_none() {
+        assert!(
+            QueryRuntimeConfig::default()
+                .query_memory_observer
+                .is_none()
+        );
+        assert!(
+            QueryRuntimeConfig::new(QueryRuntimeContext::default(), EngineExtensions::default())
+                .query_memory_observer
+                .is_none()
+        );
+
+        let observer: QueryMemoryObserver = Arc::new(|observation| {
+            assert_eq!(
+                observation,
+                QueryMemoryObservation {
+                    datafusion_reserved_peak_bytes: 0,
+                    outcome: QueryMemoryOutcome::Success,
+                }
+            );
+        });
+        observer(QueryMemoryObservation {
+            datafusion_reserved_peak_bytes: 0,
+            outcome: QueryMemoryOutcome::Success,
+        });
+    }
 
     #[test]
     fn memory_size_parses_binary_units() {

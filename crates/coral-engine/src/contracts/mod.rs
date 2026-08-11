@@ -13,10 +13,11 @@ pub use catalog::{
 pub use error::{CoreError, StatusCode, StructuredQueryError};
 pub use query::{
     DependentJoinConfig, DependentJoinSourceConfig, EffectiveDependentJoinConfig, MemorySize,
-    QueryExecution, QueryExecutionProvenance, QueryMemoryConfig, QueryParameterValue,
-    QueryParameters, QueryPlan, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,
-    QueryTableFunctionUsage, QueryTableUsage, QueryTestFailure, QueryTestResult, QueryTestSuccess,
-    ResolvedQueryResources, RuntimeSourceComponent, RuntimeSourcePackage, SourceValidationReport,
+    QueryExecution, QueryExecutionProvenance, QueryMemoryConfig, QueryMemoryObservation,
+    QueryMemoryObserver, QueryMemoryOutcome, QueryParameterValue, QueryParameters, QueryPlan,
+    QueryRuntimeConfig, QueryRuntimeContext, QuerySource, QueryTableFunctionUsage, QueryTableUsage,
+    QueryTestFailure, QueryTestResult, QueryTestSuccess, ResolvedQueryResources,
+    RuntimeSourceComponent, RuntimeSourcePackage, SourceValidationReport,
 };
 pub(crate) use query_error::{ColumnParts, TableRefParts};
 pub use udfs::{
