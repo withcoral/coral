@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use coral_app::{
     AuthServerError, BearerAuthenticator, CoralAuthorizationServer, McpHttpServeConfig,
-    RunningCoralAuthorizationServer, SessionAuthSettings, start_for_serve,
+    RunningCoralAuthorizationServer, SessionAuthSettings,
 };
 use coral_client::{
     AppClient, BearerToken, ClientError,
@@ -179,10 +179,15 @@ pub(crate) async fn start(
     let grpc_authentication_enabled = session_auth.is_some();
     let mcp_principal_provider =
         mcp_session_authenticator(session_auth.as_ref(), mcp_config.as_ref());
-    let (grpc, oauth_server) = start_for_serve(builder, session_auth)
+    let builder = match session_auth {
+        Some(session_auth) => builder.with_session_auth(session_auth),
+        None => builder,
+    };
+    let mut grpc = builder
+        .start()
         .await
-        .map_err(|error| ServeError(ServeErrorKind::GrpcStart(error)))?
-        .into_parts();
+        .map_err(|error| ServeError(ServeErrorKind::GrpcStart(error)))?;
+    let oauth_server = grpc.take_authorization_server();
     let grpc_addr = grpc.local_addr();
     let oauth = match start_oauth(oauth_server).await {
         Ok(server) => server,
@@ -216,8 +221,9 @@ pub(crate) async fn start(
 /// Derives the public MCP surface's session policy.
 ///
 /// MCP HTTP admits only its own audience, which stops a token minted for a
-/// sibling surface being replayed at it. App bootstrap independently derives
-/// the private gRPC policy from every public audience.
+/// sibling surface being replayed at it. The CLI gives the same resolved
+/// session configuration to the gRPC builder, which derives the private API's
+/// policy from every public audience.
 fn mcp_session_authenticator(
     session_auth: Option<&SessionAuthSettings>,
     mcp_config: Option<&McpHttpServeConfig>,

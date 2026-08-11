@@ -234,6 +234,7 @@ impl ServerMode {
 #[derive(Clone, Default)]
 pub struct ServerBuilder {
     config: ServerConfig,
+    session_auth: Option<Box<SessionAuthSettings>>,
 }
 
 impl ServerBuilder {
@@ -242,6 +243,7 @@ impl ServerBuilder {
     pub fn new() -> Self {
         Self {
             config: ServerConfig::new(),
+            session_auth: None,
         }
     }
 
@@ -262,6 +264,7 @@ impl ServerBuilder {
     pub fn configured_standalone_grpc() -> Self {
         Self {
             config: ServerConfig::new().with_configured_standalone_grpc(),
+            session_auth: None,
         }
     }
 
@@ -293,9 +296,11 @@ impl ServerBuilder {
 
     /// Resolves the settings for companions served beside this gRPC server.
     ///
-    /// Only settings are returned. Constructing the session providers and the
-    /// authorization server, and running the transports they belong to, is the
-    /// caller's job: this builder starts a gRPC server and nothing else.
+    /// Only settings are returned. The caller chooses the companion topology
+    /// and each surface's session policy. Passing resolved session auth back via
+    /// [`ServerBuilder::with_session_auth`] lets app startup prepare an
+    /// authorization server against the migrated database without starting its
+    /// HTTP transport.
     ///
     /// # Errors
     ///
@@ -327,8 +332,6 @@ impl ServerBuilder {
     /// request. Product runtimes can authenticate inbound metadata and select
     /// any canonical principal by installing their own provider.
     ///
-    /// `start_for_serve` owns the gRPC authentication policy: it derives one
-    /// provider from every configured public audience and installs it here.
     /// Without this call a standalone listener serves the local principal to
     /// every caller its address is reachable from.
     pub fn with_principal_provider(
@@ -336,6 +339,20 @@ impl ServerBuilder {
         principal_provider: Arc<dyn PrincipalProvider>,
     ) -> Self {
         self.config.principal_provider = principal_provider;
+        self
+    }
+
+    /// Configures session authentication for this server.
+    ///
+    /// Startup derives the private gRPC policy from every configured public
+    /// audience and prepares the authorization server after the app database
+    /// has been opened and migrated. The caller remains responsible for taking
+    /// that server from the returned [`RunningServer`] and running its transport.
+    #[must_use]
+    pub fn with_session_auth(mut self, session_auth: SessionAuthSettings) -> Self {
+        self.config.principal_provider =
+            session_auth.principal_provider(session_auth.public_audiences().iter().cloned());
+        self.session_auth = Some(Box::new(session_auth));
         self
     }
 
@@ -387,60 +404,15 @@ impl ServerBuilder {
     ///
     /// Returns [`AppError`] if the config directory cannot be determined,
     /// required directories cannot be created, the config or credential backends
-    /// fail to initialize, or the gRPC server cannot be started.
+    /// fail to initialize, session authentication cannot be prepared, or the
+    /// gRPC server cannot be started.
     pub async fn start(self) -> Result<RunningServer, AppError> {
-        start_components(self, None)
-            .await
-            .map(|started| started.grpc)
+        start_components(self).await
     }
 }
 
-/// Starts the app-owned components needed by `coral serve`.
-///
-/// Session authentication is resolved before this call so public transports can
-/// derive their own audience-specific authenticators. This entry point derives
-/// the private gRPC policy, then constructs the authorization server only after
-/// the app database has been opened and migrated.
-///
-/// # Errors
-///
-/// Returns [`AppError`] if app initialization, authorization-server
-/// construction, or gRPC startup fails.
-pub async fn start_for_serve(
-    builder: ServerBuilder,
-    session_auth: Option<SessionAuthSettings>,
-) -> Result<StartedServe, AppError> {
-    let builder = match session_auth.as_ref() {
-        Some(session_auth) => builder.with_principal_provider(
-            session_auth.principal_provider(session_auth.public_audiences().iter().cloned()),
-        ),
-        None => builder,
-    };
-    start_components(builder, session_auth).await
-}
-
-/// App-owned components initialized for `coral serve`.
-pub struct StartedServe {
-    grpc: RunningServer,
-    authorization_server: Option<CoralAuthorizationServer>,
-}
-
-impl StartedServe {
-    /// Consumes the initialized serve components.
-    #[must_use]
-    pub fn into_parts(self) -> (RunningServer, Option<CoralAuthorizationServer>) {
-        (self.grpc, self.authorization_server)
-    }
-}
-
-#[expect(
-    clippy::too_many_lines,
-    reason = "the composition root keeps database, telemetry, and manager construction together"
-)]
-async fn start_components(
-    builder: ServerBuilder,
-    session_auth: Option<SessionAuthSettings>,
-) -> Result<StartedServe, AppError> {
+async fn start_components(builder: ServerBuilder) -> Result<RunningServer, AppError> {
+    let session_auth = builder.session_auth;
     let env = AppEnvironment::discover();
     let layout = env.app_state_layout(builder.config.config_dir.clone())?;
     let mode = builder.config.resolved_mode(&layout)?;
@@ -454,7 +426,7 @@ async fn start_components(
     run_state_migrations(&coral_db, &config_store, &layout).await?;
     let coral_db = Arc::new(coral_db);
     let authorization_server = session_auth
-        .map(|settings| build_authorization_server(settings, Arc::clone(&coral_db)))
+        .map(|settings| build_authorization_server(*settings, Arc::clone(&coral_db)).map(Box::new))
         .transpose()?;
     let (telemetry_config, active_trace_store) =
         init_server_telemetry(&layout, builder.config.enable_stderr_logs)?;
@@ -533,7 +505,7 @@ async fn start_components(
         workspace_lifecycle_lock,
     );
     let trace_components = trace_components_for_store(active_trace_store);
-    let grpc = start_server(
+    let mut grpc = start_server(
         ServerDependencies {
             db: Arc::clone(&coral_db),
             local_principal,
@@ -551,10 +523,8 @@ async fn start_components(
         grpc_listener,
     )
     .await?;
-    Ok(StartedServe {
-        grpc,
-        authorization_server,
-    })
+    grpc.authorization_server = authorization_server;
+    Ok(grpc)
 }
 
 fn build_authorization_server(
@@ -648,6 +618,7 @@ pub struct RunningServer {
     endpoint_uri: String,
     local_addr: SocketAddr,
     local_trace_store_dir: Option<PathBuf>,
+    authorization_server: Option<Box<CoralAuthorizationServer>>,
     search: SearchManager,
     search_observations: Mutex<Option<SearchObservationHandle>>,
     shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
@@ -677,6 +648,16 @@ impl RunningServer {
     /// trace history is enabled for this process.
     pub fn local_trace_store_dir(&self) -> Option<&std::path::Path> {
         self.local_trace_store_dir.as_deref()
+    }
+
+    /// Takes the authorization server prepared from this server's session-auth
+    /// configuration, if one was supplied.
+    ///
+    /// Preparing it during app startup lets it share the migrated state database.
+    /// The caller owns whether and how its HTTP transport is run.
+    #[must_use]
+    pub fn take_authorization_server(&mut self) -> Option<CoralAuthorizationServer> {
+        self.authorization_server.take().map(|server| *server)
     }
 
     /// Waits until the background server task exits.
@@ -906,6 +887,7 @@ async fn start_server(
         endpoint_uri,
         local_addr,
         local_trace_store_dir,
+        authorization_server: None,
         search,
         search_observations: Mutex::new(search_observations),
         shutdown_tx: Mutex::new(Some(shutdown_tx)),
@@ -1149,7 +1131,7 @@ mod tests {
     use super::{
         RunningServer, ServerBuilder, ServerDependencies, ServerMode, StaticAsset,
         StaticAssetsProvider, TraceServerComponents, is_grpc_web_content_type,
-        is_native_grpc_content_type, start_for_serve, start_server,
+        is_native_grpc_content_type, start_server,
     };
     use crate::auth::session::test_signing_key;
     use crate::bootstrap::AppError;
@@ -1323,6 +1305,7 @@ enabled = false
             endpoint_uri: "http://127.0.0.1:0".to_string(),
             local_addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
             local_trace_store_dir: None,
+            authorization_server: None,
             search,
             search_observations: Mutex::new(Some(search_observations)),
             shutdown_tx: Mutex::new(None),
@@ -1509,23 +1492,23 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
     }
 
     #[tokio::test]
-    async fn start_for_serve_without_session_auth_returns_only_grpc() {
+    async fn start_without_session_auth_does_not_prepare_an_authorization_server() {
         let temp = TempDir::new().expect("temp dir");
         let config_dir = temp.path().join("coral-config");
         disable_internal_tracing(&config_dir);
         let builder = ServerBuilder::ephemeral_grpc().with_config_dir(config_dir);
 
-        let started = start_for_serve(builder, None)
+        let mut grpc = builder
+            .start()
             .await
-            .expect("start unauthenticated serve components");
-        let (grpc, authorization_server) = started.into_parts();
+            .expect("start unauthenticated gRPC server");
 
-        assert!(authorization_server.is_none());
+        assert!(grpc.take_authorization_server().is_none());
         grpc.shutdown().await.expect("shutdown gRPC server");
     }
 
     #[tokio::test]
-    async fn start_for_serve_builds_authorization_server_after_database_bootstrap() {
+    async fn session_auth_prepares_authorization_server_after_database_bootstrap() {
         let temp = TempDir::new().expect("temp dir");
         let config_dir = temp.path().join("coral-config");
         configure_serve_session_auth(&config_dir);
@@ -1535,11 +1518,14 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
             .take_session_auth()
             .expect("configured session auth");
 
-        let started = start_for_serve(builder, Some(session_auth))
+        let mut grpc = builder
+            .with_session_auth(session_auth)
+            .start()
             .await
-            .expect("start authenticated serve components");
-        let (grpc, authorization_server) = started.into_parts();
-        let authorization_server = authorization_server.expect("authorization server");
+            .expect("start authenticated gRPC server");
+        let authorization_server = grpc
+            .take_authorization_server()
+            .expect("authorization server");
         let running_authorization_server = authorization_server
             .start()
             .await
