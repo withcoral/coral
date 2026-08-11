@@ -74,8 +74,7 @@ pub use auth::{
 };
 pub use bootstrap::{
     AppError, McpHttpServeConfig, READINESS_SERVICE_NAME, RunningServer, ServeSettings,
-    ServerBuilder, ServerMode, SessionAuthSettings, StartedServe, StaticAsset,
-    StaticAssetsProvider, start_for_serve,
+    ServerBuilder, ServerMode, SessionAuthSettings, StaticAsset, StaticAssetsProvider,
 };
 pub use coral_engine::{EngineExtensions, QuerySource};
 pub use identity::{
