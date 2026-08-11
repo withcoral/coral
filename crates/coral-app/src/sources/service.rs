@@ -848,7 +848,8 @@ mod tests {
     use crate::query::extensions::NoopEngineExtensionsProvider;
     use crate::request_context::RequestContext;
     use crate::state::db::{
-        AddMemberOutcome, CoralDb, DatabaseConfig, ResolvedDatabaseConfig, UpsertLoginOutcome,
+        AddMemberOutcome, CoralDb, DatabaseConfig, DbRepos, ResolvedDatabaseConfig,
+        UpsertLoginOutcome,
     };
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::workspaces::{MemberRole, WorkspaceAuthorizer};
@@ -1063,8 +1064,11 @@ mod tests {
         let owner_id = provision_user(&db, "owner").await;
         let member_id = provision_user(&db, "member").await;
         let workspace = format!("default-{owner_id}");
+        let mut session = db.as_ref();
         assert!(matches!(
-            db.add_workspace_member(&workspace, &member_id, MemberRole::Member, 2)
+            session
+                .workspaces()
+                .add_member(&workspace, &member_id, MemberRole::Member, 2)
                 .await
                 .expect("add member"),
             AddMemberOutcome::Added(_)

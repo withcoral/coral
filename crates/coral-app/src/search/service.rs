@@ -571,7 +571,8 @@ mod tests {
     };
     use crate::state::AppStateLayout;
     use crate::state::db::{
-        AddMemberOutcome, CoralDb, DatabaseConfig, ResolvedDatabaseConfig, UpsertLoginOutcome,
+        AddMemberOutcome, CoralDb, DatabaseConfig, DbRepos, ResolvedDatabaseConfig,
+        UpsertLoginOutcome,
     };
     use crate::workspaces::{MemberRole, WorkspaceAction, WorkspaceAuthorizer, WorkspaceName};
 
@@ -582,8 +583,11 @@ mod tests {
         let member_id = provision_user(&db, "member").await;
         let workspace =
             WorkspaceName::parse(&format!("default-{owner_id}")).expect("owner workspace");
+        let mut session = db.as_ref();
         assert!(matches!(
-            db.add_workspace_member(workspace.as_str(), &member_id, MemberRole::Member, 2)
+            session
+                .workspaces()
+                .add_member(workspace.as_str(), &member_id, MemberRole::Member, 2)
                 .await
                 .expect("add member"),
             AddMemberOutcome::Added(_)
