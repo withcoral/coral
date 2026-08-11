@@ -26,8 +26,22 @@ impl OpenApiDialect for OpenApi31Importer {
     /// it where a 3.0 one wrote a one-element `enum` — most often to pin a
     /// discriminator on each branch of a union. Read as the enum it is
     /// equivalent to, so those branches keep their fixed value.
+    ///
+    /// Only a scalar constant is read this way. `const` may hold any JSON value,
+    /// and an object or array one describes a shape rather than a value: taking
+    /// `{type: object, properties: {...}, const: {...}}` for an enum would stand
+    /// the stringified constant where the declared fields should be and drop
+    /// every column. Those fall through to the shape dispatch instead, which is
+    /// what describes them.
     fn const_enum_values(&self, schema: &Value) -> Option<Vec<String>> {
-        schema.get("const").map(|value| vec![enum_value(value)])
+        let value = schema.get("const")?;
+        // Scalars are stringified exactly as `enum` members already are, so
+        // `const: 4` and `enum: [4]` agree rather than the newer keyword
+        // inventing its own reading. `null` is excluded with the structured
+        // values: it constrains the schema to hold nothing, which the type
+        // already says better than a one-value enum of "null" would.
+        matches!(value, Value::String(_) | Value::Number(_) | Value::Bool(_))
+            .then(|| vec![enum_value(value)])
     }
 
     /// A 3.1 document still carrying `nullable` is usually a 3.0 one whose

@@ -3895,31 +3895,21 @@ surface:
     )
     .expect("3.1 import");
 
-    let operation_ids = |imported: &ImportedSurface| {
-        imported
-            .operations
-            .iter()
-            .map(|operation| operation.id.clone())
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(operation_ids(&as_30), operation_ids(&as_31));
     assert!(
-        !operation_ids(&as_31).is_empty(),
+        !as_31.operations.is_empty() && !as_31.types.is_empty(),
         "a fixture importing nothing would make this vacuous"
     );
 
-    let type_ids = |imported: &ImportedSurface| {
-        imported
-            .types
-            .iter()
-            .map(|ty| ty.id.clone())
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(type_ids(&as_30), type_ids(&as_31));
-
-    // Serializing the metadata catalog compares row paths, pagination, and
-    // lookup keys in one assertion, so an inference that quietly changed under
-    // 3.1 shows up here rather than needing its own case.
+    // Serialized whole rather than compared by id. Names matching says only that
+    // both versions found the same operations and types — it would hold just as
+    // well if 3.1 gave every one of those types a different shape, different
+    // nullability, or different fields, which is exactly the kind of divergence
+    // this test exists to catch. The same for the metadata catalog, which
+    // carries row paths, pagination, and lookup keys.
+    assert_eq!(
+        serde_json::to_value(&as_30.semantic_ir).expect("3.0 semantic IR"),
+        serde_json::to_value(&as_31.semantic_ir).expect("3.1 semantic IR"),
+    );
     assert_eq!(
         serde_json::to_value(&as_30.operation_metadata).expect("3.0 metadata"),
         serde_json::to_value(&as_31.operation_metadata).expect("3.1 metadata"),
@@ -3963,5 +3953,74 @@ fn openapi_31_stays_quiet_about_a_leftover_nullable_false() {
             .any(|diagnostic| diagnostic.message.contains("'nullable'")),
         "a no-op keyword is not worth a diagnostic: {:?}",
         operation.diagnostics
+    );
+}
+
+#[test]
+fn openapi_31_leaves_a_structured_const_to_the_shape_dispatch() {
+    // `const` may hold any JSON value. An object or array one describes a shape
+    // rather than a value, so reading it as an enum would stand the stringified
+    // constant where the declared fields belong and drop every column.
+    let imported = import_versioned_response_schema(
+        "3.1.0",
+        r"                type: object
+                properties:
+                  settings:
+                    type: object
+                    const: {theme: dark}
+                    properties:
+                      theme: {type: string}
+                  tags:
+                    type: array
+                    const: [a, b]
+                    items: {type: string}",
+    )
+    .expect("3.1 should import");
+
+    let IrTypeShape::Object { fields } = &probe_field_type(&imported, "settings").shape else {
+        panic!("an object with a const still declares fields, and they have to survive");
+    };
+    let names: Vec<&str> = fields.iter().map(|field| field.name.as_str()).collect();
+    assert_eq!(names, ["theme"]);
+
+    assert!(
+        matches!(
+            probe_field_type(&imported, "tags").shape,
+            IrTypeShape::List { .. }
+        ),
+        "an array with a const is still a list"
+    );
+}
+
+#[test]
+fn openapi_31_reads_a_scalar_const_the_way_it_reads_a_one_value_enum() {
+    // `const: 4` and `enum: [4]` say the same thing, so they have to import the
+    // same way — the newer keyword does not get its own reading of a value.
+    let as_const = import_versioned_response_schema(
+        "3.1.0",
+        r"                type: object
+                properties:
+                  pinned:
+                    type: integer
+                    const: 4",
+    )
+    .expect("const import");
+    let as_enum = import_versioned_response_schema(
+        "3.1.0",
+        r"                type: object
+                properties:
+                  pinned:
+                    type: integer
+                    enum: [4]",
+    )
+    .expect("enum import");
+
+    let IrTypeShape::Enum { values } = &probe_field_type(&as_const, "pinned").shape else {
+        panic!("a scalar const is a single-value enum");
+    };
+    assert_eq!(values, &["4"]);
+    assert_eq!(
+        serde_json::to_value(&probe_field_type(&as_enum, "pinned").shape).expect("enum shape"),
+        serde_json::to_value(&probe_field_type(&as_const, "pinned").shape).expect("const shape"),
     );
 }
