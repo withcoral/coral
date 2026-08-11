@@ -12,6 +12,10 @@ use crate::v4::{
 };
 use crate::{ManifestError, Result};
 
+use super::dialect::OpenApiDialect;
+use super::v3_0::OpenApi30Importer;
+use super::version::{OpenApiVersion, parse_openapi_version};
+
 pub fn import_openapi_surface(
     manifest: &V4SourceManifest,
     surface: &V4Surface,
@@ -19,17 +23,11 @@ pub fn import_openapi_surface(
 ) -> Result<ImportedSurface> {
     let document: Value =
         serde_yaml::from_slice(document_bytes).map_err(ManifestError::parse_yaml)?;
-    let openapi = document
-        .get("openapi")
-        .and_then(Value::as_str)
-        .ok_or_else(|| ManifestError::validation("OpenAPI document is missing openapi version"))?;
-    if !openapi.starts_with("3.0.") {
-        return Err(ManifestError::validation(format!(
-            "OpenAPI document uses unsupported version '{openapi}'"
-        )));
-    }
+    let dialect: &dyn OpenApiDialect = match parse_openapi_version(&document)? {
+        OpenApiVersion::V3_0 => &OpenApi30Importer,
+    };
 
-    let mut importer = OpenApiImporter::new(manifest, surface, &document);
+    let mut importer = OpenApiImporter::new(manifest, surface, &document, dialect);
     importer.import()
 }
 
@@ -37,6 +35,7 @@ pub(super) struct OpenApiImporter<'a> {
     pub(super) manifest: &'a V4SourceManifest,
     pub(super) surface: &'a V4Surface,
     pub(super) document: &'a Value,
+    pub(super) dialect: &'a dyn OpenApiDialect,
     pub(super) types: BTreeMap<String, IrType>,
     pub(super) diagnostics: Vec<Diagnostic>,
 }
@@ -47,11 +46,17 @@ pub(super) enum RefDiagnosticContext<'a> {
 }
 
 impl<'a> OpenApiImporter<'a> {
-    fn new(manifest: &'a V4SourceManifest, surface: &'a V4Surface, document: &'a Value) -> Self {
+    fn new(
+        manifest: &'a V4SourceManifest,
+        surface: &'a V4Surface,
+        document: &'a Value,
+        dialect: &'a dyn OpenApiDialect,
+    ) -> Self {
         Self {
             manifest,
             surface,
             document,
+            dialect,
             types: BTreeMap::new(),
             diagnostics: Vec::new(),
         }

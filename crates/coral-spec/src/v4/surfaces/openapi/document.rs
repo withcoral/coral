@@ -2,6 +2,8 @@ use serde_json::{Map, Value};
 
 use crate::{ManifestError, Result};
 
+use super::version::parse_openapi_version;
+
 pub fn normalize_source_document(bytes: &[u8]) -> Result<String> {
     let value: Value = serde_yaml::from_slice(bytes).map_err(ManifestError::parse_yaml)?;
     serde_yaml::to_string(&value).map_err(ManifestError::serialize_yaml)
@@ -16,15 +18,11 @@ pub struct OpenApiDocumentMetadata {
 pub fn openapi_document_metadata(document_bytes: &[u8]) -> Result<OpenApiDocumentMetadata> {
     let document: Value =
         serde_yaml::from_slice(document_bytes).map_err(ManifestError::parse_yaml)?;
-    let openapi = document
-        .get("openapi")
-        .and_then(Value::as_str)
-        .ok_or_else(|| ManifestError::validation("OpenAPI document is missing openapi version"))?;
-    if !openapi.starts_with("3.0.") {
-        return Err(ManifestError::validation(format!(
-            "OpenAPI document uses unsupported version '{openapi}'"
-        )));
-    }
+    // Validated but otherwise unused: everything read below is spelled the same
+    // in every supported version, so this needs no dialect. Rejecting here keeps
+    // metadata extraction and import agreeing on what Coral will accept, rather
+    // than describing a document the importer would go on to refuse.
+    parse_openapi_version(&document)?;
     Ok(OpenApiDocumentMetadata {
         description: trimmed_string_at(&document, &["info", "description"]),
         server_url: document

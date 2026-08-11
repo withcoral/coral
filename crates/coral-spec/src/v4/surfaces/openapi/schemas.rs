@@ -70,10 +70,7 @@ impl OpenApiImporter<'_> {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
-        let nullable = resolved
-            .get("nullable")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
+        let nullable = self.dialect.schema_nullable(&resolved);
         self.types.insert(
             type_id.clone(),
             IrType {

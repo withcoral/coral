@@ -3232,3 +3232,120 @@ components:
         "the inherited columns must survive two levels of composition"
     );
 }
+
+/// A minimal but complete document whose first line the caller chooses, so a
+/// version test varies the version and nothing else.
+fn version_probe_document(first_line: &str) -> String {
+    format!(
+        r"{first_line}
+info:
+  title: Demo
+  description: Query demo data.
+servers:
+  - url: https://api.example.com/v1
+paths:
+  /items:
+    get:
+      operationId: items/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: {{type: string}}
+"
+    )
+}
+
+#[expect(
+    clippy::unwrap_in_result,
+    reason = "Only the import's own result is under test; a manifest that will not parse is a bug in this file, not an outcome to return."
+)]
+fn import_version_probe(first_line: &str) -> crate::Result<ImportedSurface> {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: version_probe
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    import_openapi_surface(
+        v4,
+        &v4.surface,
+        version_probe_document(first_line).as_bytes(),
+    )
+}
+
+#[test]
+fn importer_accepts_every_spelling_of_a_supported_version() {
+    // `3.0` carries no patch component, which the field's grammar allows and a
+    // `"3.0."` prefix test rejected.
+    for version in ["3.0.0", "3.0.3", "3.0.4", "3.0"] {
+        let imported = import_version_probe(&format!("openapi: '{version}'"))
+            .unwrap_or_else(|error| panic!("version {version} should import: {error}"));
+        assert_eq!(
+            imported.operations.len(),
+            1,
+            "version {version} should import its one operation"
+        );
+    }
+}
+
+#[test]
+fn importer_rejects_unsupported_versions_by_name() {
+    for version in ["2.0", "3.1.0", "3.2.0", "4.0.0", "3"] {
+        let error = import_version_probe(&format!("openapi: '{version}'"))
+            .expect_err(&format!("version {version} should be rejected"));
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("unsupported version '{version}'")),
+            "version {version} should be named in its own rejection: {error}"
+        );
+    }
+}
+
+#[test]
+fn importer_names_swagger_documents_rather_than_reporting_a_missing_field() {
+    let error = import_version_probe("swagger: '2.0'").expect_err("Swagger should be rejected");
+    let message = error.to_string();
+    assert!(
+        message.contains("Swagger version '2.0'"),
+        "a Swagger document deserves to be told what it is: {message}"
+    );
+}
+
+#[test]
+fn importer_rejects_documents_declaring_no_version() {
+    let error =
+        import_version_probe("x-unversioned: true").expect_err("missing version should reject");
+    assert!(
+        error.to_string().contains("missing openapi version"),
+        "{error}"
+    );
+}
+
+#[test]
+fn document_metadata_applies_the_same_version_gate_as_import() {
+    let metadata = openapi_document_metadata(version_probe_document("openapi: '3.0'").as_bytes())
+        .expect("3.0 metadata");
+    assert_eq!(metadata.description.as_deref(), Some("Query demo data."));
+
+    // Both entry points read the version, so they have to agree on the answer:
+    // describing a document the importer would refuse is the confusing outcome.
+    let error = openapi_document_metadata(version_probe_document("openapi: '3.1.0'").as_bytes())
+        .expect_err("3.1 metadata should be rejected while import rejects it");
+    assert!(
+        error.to_string().contains("unsupported version '3.1.0'"),
+        "{error}"
+    );
+}
