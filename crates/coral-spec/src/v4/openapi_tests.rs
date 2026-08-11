@@ -4465,6 +4465,7 @@ fn openapi_31_reads_a_scalar_const_the_way_it_reads_a_one_value_enum() {
     );
 }
 
+#[test]
 fn openapi_30_still_requires_paths() {
     let error = import_document(
         r"
@@ -4507,7 +4508,7 @@ webhooks:
         .find(|diagnostic| diagnostic.message.contains("webhook"))
         .expect("a webhook-only document should say why it imported nothing");
     assert!(
-        diagnostic.message.contains('2'),
+        diagnostic.message.contains("2 webhook(s)"),
         "the count makes it clear what was skipped: {}",
         diagnostic.message
     );
@@ -4653,6 +4654,43 @@ components:
         "A party in the system.",
         "the shared type describes the schema, not either use of it"
     );
+}
+
+#[test]
+fn importer_rejects_a_paths_member_that_is_not_a_mapping() {
+    // Absent and malformed must not collapse into each other. A 3.1 document may
+    // legitimately omit `paths`, but one that declares it as a string or a list
+    // is broken — and reporting that as a source with no tables sends whoever
+    // wrote it looking in the wrong place.
+    for version in ["3.0.3", "3.1.0"] {
+        for malformed in ["paths: not-a-mapping", "paths: [/items]", "paths: 7"] {
+            let error = import_document(&format!("openapi: {version}\n{malformed}\n"))
+                .expect_err(&format!("{version} with `{malformed}` should be rejected"));
+            assert!(
+                error.to_string().contains("paths must be a mapping"),
+                "{version} with `{malformed}`: {error}"
+            );
+        }
+    }
+}
+
+#[test]
+fn openapi_31_still_accepts_a_document_that_simply_omits_paths() {
+    // The other side of the boundary above: omitting `paths` stays legal under
+    // 3.1, so tightening the malformed case must not take the absent one with
+    // it.
+    let imported = import_document(
+        r"
+openapi: 3.1.0
+info:
+  title: Components only
+components:
+  schemas:
+    party: {type: object, properties: {id: {type: string}}}
+",
+    )
+    .expect("a 3.1 document may omit paths entirely");
+    assert!(imported.operations.is_empty());
 }
 
 #[test]

@@ -72,15 +72,25 @@ impl<'a> OpenApiImporter<'a> {
     }
 
     fn import(&mut self) -> Result<ImportedSurface> {
-        let paths = self.document.get("paths").and_then(Value::as_object);
-        if paths.is_none() && self.dialect.paths_required() {
-            return Err(ManifestError::validation(
-                "OpenAPI document is missing paths",
-            ));
-        }
         // A document describing only `webhooks` or only reusable `components` is
         // well-formed under 3.1 and simply has nothing here to import, so it
         // yields an empty surface rather than an error.
+        //
+        // Absent and malformed are kept apart. Reading `paths` straight through
+        // `as_object` collapses them, and then a 3.1 document whose `paths` is a
+        // string or a list imports as an empty surface — reported as a source
+        // with no tables rather than as the broken descriptor it is.
+        let paths = match self.document.get("paths") {
+            Some(paths) => Some(paths.as_object().ok_or_else(|| {
+                ManifestError::validation("OpenAPI document paths must be a mapping")
+            })?),
+            None if self.dialect.paths_required() => {
+                return Err(ManifestError::validation(
+                    "OpenAPI document is missing paths",
+                ));
+            }
+            None => None,
+        };
         self.report_unimported_sections();
         let mut operations = Vec::new();
         let mut operation_metadata = BTreeMap::new();
