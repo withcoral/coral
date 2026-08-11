@@ -101,6 +101,14 @@ impl OpenApiImporter<'_> {
         if self.types.contains_key(&type_id) {
             return Some(type_id);
         }
+        // The target's own description, never one written beside the `$ref`.
+        // 3.1 does give those siblings meaning, but a type here is interned by
+        // the name it is referenced under and shared by every site that
+        // references it, so there is nowhere to put a site-specific description
+        // except over the top of the shared one — where the first reference
+        // would win and every later one would be lost. The site's wording
+        // already reaches the only place it fits, `field_description` below,
+        // which reads it in preference to the target's.
         let description = resolved
             .get("description")
             .and_then(Value::as_str)

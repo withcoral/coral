@@ -29,4 +29,7 @@ pub(super) trait OpenApiDialect {
     /// annotation would be — but ignoring it silently changes what the schema
     /// means, and the author is unlikely to have intended that.
     fn removed_keyword_warning(&self, schema: &Value) -> Option<String>;
+
+    /// Whether a document must declare `paths` to be well-formed.
+    fn paths_required(&self) -> bool;
 }

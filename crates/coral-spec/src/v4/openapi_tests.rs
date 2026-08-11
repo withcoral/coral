@@ -4384,6 +4384,54 @@ fn openapi_31_leaves_a_structured_const_to_the_shape_dispatch() {
     );
 }
 
+/// Imports a whole document verbatim, so a test can control what top-level
+/// sections it declares.
+#[expect(
+    clippy::unwrap_in_result,
+    reason = "Only the import's own result is under test; a manifest that will not parse is a bug in this file, not an outcome to return."
+)]
+fn import_document(document: &str) -> crate::Result<ImportedSurface> {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: document_probe
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    import_openapi_surface(v4, &v4.surface, document.as_bytes())
+}
+
+#[test]
+fn openapi_31_accepts_a_document_declaring_no_paths() {
+    // 3.1 made `paths` optional. Such a document has nothing to import, but it
+    // is well-formed, and refusing it would reject a spec its own author's
+    // tooling considers valid.
+    let imported = import_document(
+        r"
+openapi: 3.1.0
+info:
+  title: Callbacks only
+webhooks:
+  issueOpened:
+    post:
+      operationId: webhooks/issue-opened
+      responses:
+        '200': {description: ok}
+",
+    )
+    .expect("a 3.1 document may omit paths");
+
+    assert!(
+        imported.operations.is_empty(),
+        "webhooks are not operations Coral can call"
+    );
+}
+
 #[test]
 fn openapi_31_reads_a_scalar_const_the_way_it_reads_a_one_value_enum() {
     // `const: 4` and `enum: [4]` say the same thing, so they have to import the
@@ -4414,6 +4462,196 @@ fn openapi_31_reads_a_scalar_const_the_way_it_reads_a_one_value_enum() {
     assert_eq!(
         serde_json::to_value(&probe_field_type(&as_enum, "pinned").shape).expect("enum shape"),
         serde_json::to_value(&probe_field_type(&as_const, "pinned").shape).expect("const shape"),
+    );
+}
+
+fn openapi_30_still_requires_paths() {
+    let error = import_document(
+        r"
+openapi: 3.0.3
+info:
+  title: No paths
+",
+    )
+    .expect_err("3.0 requires paths");
+    assert!(error.to_string().contains("missing paths"), "{error}");
+}
+
+#[test]
+fn importer_says_when_a_document_is_all_webhooks() {
+    // Without this the surface imports to nothing and the author is left to
+    // work out why on their own.
+    let imported = import_document(
+        r"
+openapi: 3.1.0
+info:
+  title: Callbacks only
+webhooks:
+  issueOpened:
+    post:
+      operationId: webhooks/issue-opened
+      responses:
+        '200': {description: ok}
+  issueClosed:
+    post:
+      operationId: webhooks/issue-closed
+      responses:
+        '200': {description: ok}
+",
+    )
+    .expect("import");
+
+    let diagnostic = imported
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.message.contains("webhook"))
+        .expect("a webhook-only document should say why it imported nothing");
+    assert!(
+        diagnostic.message.contains('2'),
+        "the count makes it clear what was skipped: {}",
+        diagnostic.message
+    );
+    assert_eq!(
+        diagnostic.operation_id, None,
+        "nothing was imported, so this belongs to the document rather than an operation"
+    );
+}
+
+#[test]
+fn importer_stays_quiet_about_webhooks_a_document_does_not_have() {
+    let imported = import_document(
+        r"
+openapi: 3.1.0
+paths:
+  /items:
+    get:
+      operationId: items/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {type: object}
+",
+    )
+    .expect("import");
+
+    assert!(
+        !imported
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("webhook")),
+        "{:?}",
+        imported.diagnostics
+    );
+}
+
+const REF_SIBLING_PROBE: &str = r"
+paths:
+  /items/{id}:
+    get:
+      operationId: items/get
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  primary:
+                    $ref: '#/components/schemas/party'
+                    description: The party that owns this item.
+components:
+  schemas:
+    party:
+      type: object
+      description: A party in the system.
+      properties:
+        id: {type: string}
+";
+
+#[test]
+fn a_ref_site_description_describes_the_field_and_the_target_describes_the_type() {
+    // 3.1 gives keywords beside a `$ref` meaning where 3.0 ignored them, but the
+    // distinction lands in the same place under both versions, so neither
+    // dialect needs a say in it.
+    //
+    // A type here is interned by the name it is referenced under and shared by
+    // every site referencing it, so a description written beside one `$ref`
+    // cannot go on the type without overwriting what the other sites say. The
+    // field is where a site-specific description fits, and it already reads the
+    // site in preference to the target — which is 3.1's rule, applied to both.
+    for version in ["3.0.3", "3.1.0"] {
+        let imported = import_document(&format!("openapi: {version}{REF_SIBLING_PROBE}"))
+            .unwrap_or_else(|error| panic!("{version} import: {error}"));
+
+        assert_eq!(
+            probe_row_type(&imported, "primary").description,
+            "The party that owns this item.",
+            "{version}: the field takes the description written at the reference site"
+        );
+        assert_eq!(
+            probe_field_type(&imported, "primary").description,
+            "A party in the system.",
+            "{version}: the shared type keeps its own description, so a second reference to it cannot be given a different one"
+        );
+    }
+}
+
+#[test]
+fn a_shared_schema_keeps_one_description_across_every_reference_site() {
+    // The reason the rule above has to hold: two fields referencing one schema
+    // share a single imported type, and whichever was imported first would
+    // otherwise decide what the other one says.
+    let imported = import_document(
+        r"
+openapi: 3.1.0
+paths:
+  /items:
+    get:
+      operationId: items/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  buyer:
+                    $ref: '#/components/schemas/party'
+                    description: The buying party.
+                  seller:
+                    $ref: '#/components/schemas/party'
+                    description: The selling party.
+components:
+  schemas:
+    party:
+      type: object
+      description: A party in the system.
+      properties:
+        id: {type: string}
+",
+    )
+    .expect("import");
+
+    assert_eq!(
+        probe_row_type(&imported, "buyer").description,
+        "The buying party."
+    );
+    assert_eq!(
+        probe_row_type(&imported, "seller").description,
+        "The selling party."
+    );
+    assert_eq!(
+        probe_row_type(&imported, "buyer").type_ref,
+        probe_row_type(&imported, "seller").type_ref,
+        "both reference the same schema, so both must land on the same type"
+    );
+    assert_eq!(
+        probe_field_type(&imported, "seller").description,
+        "A party in the system.",
+        "the shared type describes the schema, not either use of it"
     );
 }
 

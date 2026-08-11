@@ -72,15 +72,20 @@ impl<'a> OpenApiImporter<'a> {
     }
 
     fn import(&mut self) -> Result<ImportedSurface> {
-        let paths = self
-            .document
-            .get("paths")
-            .and_then(Value::as_object)
-            .ok_or_else(|| ManifestError::validation("OpenAPI document is missing paths"))?;
+        let paths = self.document.get("paths").and_then(Value::as_object);
+        if paths.is_none() && self.dialect.paths_required() {
+            return Err(ManifestError::validation(
+                "OpenAPI document is missing paths",
+            ));
+        }
+        // A document describing only `webhooks` or only reusable `components` is
+        // well-formed under 3.1 and simply has nothing here to import, so it
+        // yields an empty surface rather than an error.
+        self.report_unimported_sections();
         let mut operations = Vec::new();
         let mut operation_metadata = BTreeMap::new();
         let mut operation_ids = HashSet::new();
-        for (path, path_item) in paths {
+        for (path, path_item) in paths.into_iter().flatten() {
             let Some(path_item) = path_item.as_object() else {
                 continue;
             };
@@ -136,6 +141,28 @@ impl<'a> OpenApiImporter<'a> {
             semantic_ir,
             operation_metadata,
         })
+    }
+
+    /// Records what the document describes that this importer does not read.
+    ///
+    /// `webhooks` is 3.1's home for provider-initiated callbacks. Coral models a
+    /// source as endpoints it calls, so there is nothing to map them onto — but
+    /// a document whose whole surface is webhooks would otherwise import to
+    /// nothing at all, with no indication of why.
+    fn report_unimported_sections(&mut self) {
+        let webhooks = self
+            .document
+            .get("webhooks")
+            .and_then(Value::as_object)
+            .map_or(0, serde_json::Map::len);
+        if webhooks > 0 {
+            self.diagnostics.push(Diagnostic::new(
+                format!(
+                    "OpenAPI document declares {webhooks} webhook(s), which Coral does not import; only operations under 'paths' become tables"
+                ),
+                None,
+            ));
+        }
     }
 
     pub(super) fn resolve_ref(

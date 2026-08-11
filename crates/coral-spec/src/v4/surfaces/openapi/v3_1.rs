@@ -80,4 +80,10 @@ impl OpenApiDialect for OpenApi31Importer {
             "the 'nullable' keyword was removed in OpenAPI 3.1 and is ignored; list 'null' in the schema's type instead".to_string()
         })
     }
+
+    /// 3.1 made `paths` optional, so a document may describe only `webhooks` or
+    /// only reusable `components`.
+    fn paths_required(&self) -> bool {
+        false
+    }
 }

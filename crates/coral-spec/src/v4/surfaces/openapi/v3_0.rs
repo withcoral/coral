@@ -32,4 +32,10 @@ impl OpenApiDialect for OpenApi30Importer {
     fn removed_keyword_warning(&self, _schema: &Value) -> Option<String> {
         None
     }
+
+    /// `paths` is the only place a 3.0 document can describe an endpoint, and
+    /// the specification requires it.
+    fn paths_required(&self) -> bool {
+        true
+    }
 }
