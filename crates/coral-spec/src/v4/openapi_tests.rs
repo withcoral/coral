@@ -5184,3 +5184,100 @@ fn a_structured_const_leaves_a_neighbouring_enum_to_be_read() {
     };
     assert_eq!(values, &["compact", "roomy"]);
 }
+
+#[test]
+fn a_recursive_nullable_reference_reached_through_a_wrapper_terminates() {
+    // A self-referential type whose recursion is wrapped at the use site. The
+    // walk unwraps `node` to its inline branch, which carries no `$ref` of its
+    // own, so before the walk reported the reference it had crossed every
+    // nested `child` was interned under the suggested id instead — a fresh
+    // `node_child_child…` on each pass, which the interning check could never
+    // match. The import recursed until the stack ran out.
+    let imported = import_document(
+        r"
+openapi: 3.1.0
+paths:
+  /trees:
+    get:
+      operationId: trees/get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  root:
+                    anyOf:
+                      - type: 'null'
+                      - $ref: '#/components/schemas/node'
+components:
+  schemas:
+    node:
+      anyOf:
+        - type: 'null'
+        - type: object
+          properties:
+            label: {type: string}
+            child:
+              anyOf:
+                - type: 'null'
+                - $ref: '#/components/schemas/node'
+",
+    )
+    .expect("import");
+
+    // The recursive type is interned once, under the name it is referenced by,
+    // and the field reaches it. One copy is what ends the recursion; the name is
+    // what makes the copy findable.
+    assert_eq!(probe_row_type(&imported, "root").type_ref, "node");
+    assert_eq!(
+        imported
+            .types
+            .iter()
+            .filter(|ty| ty.id.starts_with("node"))
+            .count(),
+        2,
+        "the recursive type and its one scalar field, not a chain of copies: {:?}",
+        imported.types.iter().map(|ty| &ty.id).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn a_chain_of_nullable_wrappers_yields_its_description_at_any_depth() {
+    // The description lookup steps through wrappers iteratively, so no depth of
+    // nesting puts it on the stack. Depths either side of the import walk's own
+    // budget are checked together: that budget bounds a walk that follows
+    // `$ref`s and so can be led in circles, and borrowing it here would have
+    // quietly dropped the description of anything nested past it.
+    for depth in [1usize, 8, 12] {
+        let mut wrapper = "{type: string, description: The item's label.}".to_string();
+        for _ in 0..depth {
+            wrapper = format!("{{anyOf: [{{type: 'null'}}, {wrapper}]}}");
+        }
+        let imported = import_document(&format!(
+            r"
+openapi: 3.1.0
+paths:
+  /items:
+    get:
+      operationId: items/get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deep: {wrapper}
+"
+        ))
+        .expect("import");
+
+        assert_eq!(
+            probe_row_type(&imported, "deep").description,
+            "The item's label.",
+            "at depth {depth}"
+        );
+    }
+}

@@ -106,8 +106,7 @@ impl OpenApiImporter<'_> {
         // For a collection that published one row holding the whole list.
         let resolved = self
             .schema_through_null_unions(&resolved, operation_id, diagnostics)
-            .and_then(|site| self.resolve_ref(&site, operation_id, diagnostics))
-            .unwrap_or(resolved);
+            .map_or(resolved, |walk| walk.resolved);
         let (cardinality, row_schema, schema_entity_name) =
             classify_response_schema(path, &resolved);
         // Only when the classification set this schema aside. A singleton hands

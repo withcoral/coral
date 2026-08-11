@@ -65,6 +65,42 @@ const COMPOSABLE_REF_SIBLINGS: [&str; 3] = ["properties", "required", "additiona
 /// for ever.
 const MAX_NULL_UNION_DEPTH: usize = 8;
 
+/// Where a walk through a chain of `[T, null]` unions ended.
+pub(super) struct NullUnionWalk {
+    /// The schema carrying the shape, with the walk's last `$ref` hop already
+    /// followed.
+    pub(super) resolved: Value,
+    /// The reference the result is interned under, when the walk crossed one.
+    ///
+    /// The site the walk ended on supplies this, so a chain of aliases still
+    /// interns under the name it finally arrived at and every route to that
+    /// name shares one type. Only when the walk ends somewhere unnamed — a
+    /// union whose real branch is written inline — does the first reference it
+    /// crossed stand in.
+    ///
+    /// That fallback is what terminates a recursive nullable reference. A
+    /// self-referential type reached through a wrapper — `node: anyOf: [null,
+    /// {type: object, properties: {child: {anyOf: [null, {$ref: node}]}}}]` —
+    /// ends its walk on the inline branch, and without a name to intern under
+    /// every nested `child` took the suggested id instead, growing a fresh
+    /// `node_child_child…` that the interning check could never match until the
+    /// stack ran out.
+    pub(super) reference: Option<String>,
+}
+
+impl NullUnionWalk {
+    fn ending_at(site: &Value, resolved: Value, first_reference: Option<String>) -> Self {
+        Self {
+            reference: site
+                .get("$ref")
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+                .or(first_reference),
+            resolved,
+        }
+    }
+}
+
 /// Why folding a schema's `allOf` tree stopped.
 enum AllOfMergeError {
     /// A branch could not be resolved. A diagnostic naming it has already been
@@ -106,29 +142,30 @@ impl OpenApiImporter<'_> {
         // documents spell it `anyOf: [{type: 'null'}, {$ref: ...}]`. Left alone
         // it matches no arm of the shape dispatch below and imports as opaque
         // JSON, taking every field of the referenced type with it.
-        let site = self.schema_through_null_unions(schema, operation_id, diagnostics)?;
-        let resolved = self.resolve_ref(&site, operation_id, diagnostics)?;
+        let walk = self.schema_through_null_unions(schema, operation_id, diagnostics)?;
+        let resolved = walk.resolved;
         // The type id still comes from the reference this was reached by, and
-        // only falls back to the branch's own. That ordering is what ends a
-        // cycle: `Node: anyOf: [{type: 'null'}, {$ref: Node}]` unwraps to a
-        // schema that resolves back to the same union, and taking the branch's
+        // only falls back to what the walk arrived at. That ordering is what
+        // ends a cycle: `Node: anyOf: [{type: 'null'}, {$ref: Node}]` unwraps to
+        // a schema that resolves back to the same union, and taking the branch's
         // identity instead would leave the interning check below — the thing
         // that terminates every other `$ref` cycle here — with a name that never
         // repeats, growing a fresh `root_child_child…` on each pass until the
         // stack ran out.
         //
-        // Preferring the branch's id when this site has none is what keeps a
-        // nullable reference on the type it already has, rather than copying the
-        // target and every inline schema beneath it once per referring site —
-        // on GitHub's 3.1 descriptor, the difference between 15k imported types
-        // and 25k.
+        // Preferring a reference over the suggested id when this site has none
+        // is what keeps a nullable reference on the type it already has, rather
+        // than copying the target and every inline schema beneath it once per
+        // referring site — on GitHub's 3.1 descriptor, the difference between
+        // 15k imported types and 25k.
         let type_id = schema
             .get("$ref")
-            .or_else(|| site.get("$ref"))
             .and_then(Value::as_str)
+            .map(ToString::to_string)
+            .or(walk.reference)
             .map_or_else(
                 || normalize_identifier(suggested_id, "type"),
-                type_id_from_ref,
+                |reference| type_id_from_ref(&reference),
             );
         if self.types.contains_key(&type_id) {
             return Some(type_id);
@@ -551,9 +588,9 @@ impl OpenApiImporter<'_> {
     /// Follows a chain of unions between a schema and `null` to the schema that
     /// carries the shape, returning the one given when it is not such a union.
     ///
-    /// The referencing site is returned rather than what it resolves to, so the
-    /// caller can still see the `$ref` and keep the type identity that comes
-    /// with it.
+    /// Both halves of what the caller needs come back together: the resolved
+    /// schema, so the one `$ref` hop the walk already followed is not followed
+    /// again on the hot path, and the reference to intern the result under.
     ///
     /// Bounded twice over, because `resolve_ref` follows one hop and tracks
     /// nothing: a branch leading back to a reference already followed stops the
@@ -565,37 +602,51 @@ impl OpenApiImporter<'_> {
         schema: &Value,
         operation_id: &str,
         diagnostics: &mut Vec<Diagnostic>,
-    ) -> Option<Value> {
+    ) -> Option<NullUnionWalk> {
         let mut site = schema.clone();
         let mut followed = BTreeSet::new();
+        let mut first_reference = None;
         if let Some(reference) = site.get("$ref").and_then(Value::as_str) {
             followed.insert(reference.to_string());
+            first_reference = Some(reference.to_string());
         }
         for _ in 0..MAX_NULL_UNION_DEPTH {
             let resolved = self.resolve_ref(&site, operation_id, diagnostics)?;
             let Some(branch) = null_union_branch(&resolved).cloned() else {
-                return Some(site);
+                return Some(NullUnionWalk::ending_at(&site, resolved, first_reference));
             };
-            if let Some(reference) = branch.get("$ref").and_then(Value::as_str)
-                && !followed.insert(reference.to_string())
-            {
-                return Some(site);
+            if let Some(reference) = branch.get("$ref").and_then(Value::as_str) {
+                first_reference.get_or_insert_with(|| reference.to_string());
+                if !followed.insert(reference.to_string()) {
+                    return Some(NullUnionWalk::ending_at(&site, resolved, first_reference));
+                }
             }
             site = branch;
         }
-        Some(site)
+        let resolved = self.resolve_ref(&site, operation_id, diagnostics)?;
+        Some(NullUnionWalk::ending_at(&site, resolved, first_reference))
     }
 
     fn field_description(&self, schema: &Value) -> String {
-        if let Some(description) = schema.get("description").and_then(Value::as_str) {
-            return description.to_string();
-        }
-        // A nullable spelling wraps the schema that has the description. The
-        // wrapper says nothing itself, so without this a field written
-        // `anyOf: [{type: 'null'}, {$ref: ...}]` lost the column description
-        // that the same field written as a bare `$ref` keeps.
-        if let Some(branch) = null_union_branch(schema) {
-            return self.field_description(branch);
+        // Iterative rather than recursive, so no chain of wrappers can put this
+        // lookup on the stack. It needs no depth budget the way the import walk
+        // above does: that one follows `$ref`s, which can lead anywhere and
+        // back, while this only ever steps to a branch written inside the schema
+        // it is already holding. Each step is strictly further into one finite
+        // tree, so the loop ends because the document does.
+        let mut schema = schema;
+        loop {
+            if let Some(description) = schema.get("description").and_then(Value::as_str) {
+                return description.to_string();
+            }
+            // A nullable spelling wraps the schema that has the description. The
+            // wrapper says nothing itself, so without this a field written
+            // `anyOf: [{type: 'null'}, {$ref: ...}]` lost the column description
+            // that the same field written as a bare `$ref` keeps.
+            let Some(branch) = null_union_branch(schema) else {
+                break;
+            };
+            schema = branch;
         }
         let Some(reference) = schema.get("$ref").and_then(Value::as_str) else {
             return String::new();
