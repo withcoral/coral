@@ -2,7 +2,6 @@
 
 use sea_query::{Expr, ExprTrait, JoinType, Order, Query};
 
-use super::repositories::users::UserRecord;
 use super::schema::{Users, WorkspaceMembers};
 use super::{CoralDb, DbError, DbRepos, DbSession};
 use crate::workspaces::MemberRole;
@@ -77,88 +76,6 @@ impl CoralDb {
             .map(Some)
     }
 
-    pub(crate) async fn add_workspace_member(
-        &self,
-        workspace_id: &str,
-        user_id: &str,
-        role: MemberRole,
-        created_at_unix_nanos: i64,
-    ) -> Result<AddMemberOutcome, DbError> {
-        let mut tx = self.begin().await?;
-        if !tx
-            .workspaces()
-            .hold_for_child_mutation(workspace_id)
-            .await?
-        {
-            tx.rollback().await?;
-            return Ok(AddMemberOutcome::WorkspaceNotFound);
-        }
-        let Some(user) = tx.users().get_by_user_id(user_id).await? else {
-            tx.rollback().await?;
-            return Ok(AddMemberOutcome::UserNotFound);
-        };
-        if let Some(existing_role) = tx
-            .workspace_members()
-            .role_for_user_id(workspace_id, user_id)
-            .await?
-        {
-            if existing_role == role {
-                tx.rollback().await?;
-                return Ok(AddMemberOutcome::ExistingSameRole(member_view(user, role)));
-            }
-            // Adding someone who is already a member states the role they
-            // should hold, so it moves them to it. The one move that cannot be
-            // honored is the one that would leave nobody in charge.
-            if existing_role == MemberRole::Owner
-                && tx.workspace_members().owner_count(workspace_id).await? <= 1
-            {
-                tx.rollback().await?;
-                return Ok(AddMemberOutcome::LastOwnerProtected);
-            }
-            if !tx
-                .workspace_members()
-                .update_role(workspace_id, user_id, role)
-                .await?
-            {
-                tx.rollback().await?;
-                return Ok(AddMemberOutcome::WorkspaceNotFound);
-            }
-            tx.commit().await?;
-            return Ok(AddMemberOutcome::RoleUpdated(member_view(user, role)));
-        }
-        match tx
-            .workspace_members()
-            .insert(workspace_id, user_id, role, created_at_unix_nanos)
-            .await
-        {
-            Ok(()) => {
-                tx.commit().await?;
-                Ok(AddMemberOutcome::Added(member_view(user, role)))
-            }
-            Err(error) if error.is_unique_violation() => {
-                // `hold_for_child_mutation` serializes membership writes, so a
-                // membership appearing between the read above and this insert
-                // means the lock did not hold. Report what is true now rather
-                // than guessing: the role this caller asked for is applied on
-                // their next attempt.
-                tx.rollback().await?;
-                let mut session = self;
-                let Some(existing_role) = session
-                    .workspace_members()
-                    .role_for_user_id(workspace_id, user_id)
-                    .await?
-                else {
-                    return Err(error);
-                };
-                Ok(AddMemberOutcome::ExistingSameRole(member_view(
-                    user,
-                    existing_role,
-                )))
-            }
-            Err(error) => Err(error),
-        }
-    }
-
     pub(crate) async fn remove_workspace_member(
         &self,
         workspace_id: &str,
@@ -194,14 +111,6 @@ impl CoralDb {
             tx.rollback().await?;
             Ok(RemoveMemberOutcome::MemberNotFound)
         }
-    }
-}
-
-fn member_view(user: UserRecord, role: MemberRole) -> WorkspaceMemberView {
-    WorkspaceMemberView {
-        user_id: user.user_id,
-        role,
-        display_name: user.display_name,
     }
 }
 
@@ -258,14 +167,18 @@ mod tests {
             WorkspaceCreationOutcome::Created
         );
 
+        let mut first_session = db;
+        let mut second_session = db;
+        let mut first_workspaces = first_session.workspaces();
+        let mut second_workspaces = second_session.workspaces();
         let (first, second) = tokio::join!(
-            db.add_workspace_member(
+            first_workspaces.add_member(
                 &identical_add_workspace_id,
                 &member_id,
                 MemberRole::Member,
                 11,
             ),
-            db.add_workspace_member(
+            second_workspaces.add_member(
                 &identical_add_workspace_id,
                 &member_id,
                 MemberRole::Member,
@@ -295,14 +208,18 @@ mod tests {
                 .expect("create conflicting-add workspace"),
             WorkspaceCreationOutcome::Created
         );
+        let mut member_session = db;
+        let mut owner_session = db;
+        let mut member_workspaces = member_session.workspaces();
+        let mut owner_workspaces = owner_session.workspaces();
         let (member_add, owner_add) = tokio::join!(
-            db.add_workspace_member(
+            member_workspaces.add_member(
                 &conflicting_add_workspace_id,
                 &conflicting_member_id,
                 MemberRole::Member,
                 21,
             ),
-            db.add_workspace_member(
+            owner_workspaces.add_member(
                 &conflicting_add_workspace_id,
                 &conflicting_member_id,
                 MemberRole::Owner,
@@ -353,15 +270,18 @@ mod tests {
                 .expect("create owner-removal workspace"),
             WorkspaceCreationOutcome::Created
         );
+        let mut session = db;
         assert!(matches!(
-            db.add_workspace_member(
-                &owner_removal_workspace_id,
-                &other_owner_id,
-                MemberRole::Owner,
-                31,
-            )
-            .await
-            .expect("add owner"),
+            session
+                .workspaces()
+                .add_member(
+                    &owner_removal_workspace_id,
+                    &other_owner_id,
+                    MemberRole::Owner,
+                    31,
+                )
+                .await
+                .expect("add owner"),
             AddMemberOutcome::Added(_)
         ));
 

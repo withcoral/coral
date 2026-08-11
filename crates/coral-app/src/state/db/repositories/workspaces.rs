@@ -1,8 +1,11 @@
 use sea_query::{Expr, ExprTrait, OnConflict, Query};
 
+use super::users::UserRecord;
 use crate::state::db::schema::Workspaces;
 use crate::state::db::session::DbSession;
-use crate::state::db::{CoralTx, DbError};
+use crate::state::db::workspace_member_state::{AddMemberOutcome, WorkspaceMemberView};
+use crate::state::db::{CoralDb, CoralTx, DbError, DbRepos};
+use crate::workspaces::MemberRole;
 
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
 pub(crate) struct WorkspaceRecord {
@@ -87,6 +90,92 @@ where
     }
 }
 
+impl WorkspacesRepo<'_, &CoralDb> {
+    #[cfg_attr(not(test), expect(dead_code, reason = "used higher in the PR stack"))]
+    pub(crate) async fn add_member(
+        &mut self,
+        workspace_id: &str,
+        user_id: &str,
+        role: MemberRole,
+        created_at_unix_nanos: i64,
+    ) -> Result<AddMemberOutcome, DbError> {
+        let db = *self.session;
+        let mut tx = db.begin().await?;
+        if !tx
+            .workspaces()
+            .hold_for_child_mutation(workspace_id)
+            .await?
+        {
+            tx.rollback().await?;
+            return Ok(AddMemberOutcome::WorkspaceNotFound);
+        }
+        let Some(user) = tx.users().get_by_user_id(user_id).await? else {
+            tx.rollback().await?;
+            return Ok(AddMemberOutcome::UserNotFound);
+        };
+        if let Some(existing_role) = tx
+            .workspace_members()
+            .role_for_user_id(workspace_id, user_id)
+            .await?
+        {
+            if existing_role == role {
+                tx.rollback().await?;
+                return Ok(AddMemberOutcome::ExistingSameRole(member_view(user, role)));
+            }
+            // Adding someone who is already a member states the role they
+            // should hold, so it moves them to it. The one move that cannot be
+            // honored is the one that would leave nobody in charge.
+            if existing_role == MemberRole::Owner
+                && tx.workspace_members().owner_count(workspace_id).await? <= 1
+            {
+                tx.rollback().await?;
+                return Ok(AddMemberOutcome::LastOwnerProtected);
+            }
+            if !tx
+                .workspace_members()
+                .update_role(workspace_id, user_id, role)
+                .await?
+            {
+                tx.rollback().await?;
+                return Ok(AddMemberOutcome::WorkspaceNotFound);
+            }
+            tx.commit().await?;
+            return Ok(AddMemberOutcome::RoleUpdated(member_view(user, role)));
+        }
+        match tx
+            .workspace_members()
+            .insert(workspace_id, user_id, role, created_at_unix_nanos)
+            .await
+        {
+            Ok(()) => {
+                tx.commit().await?;
+                Ok(AddMemberOutcome::Added(member_view(user, role)))
+            }
+            Err(error) if error.is_unique_violation() => {
+                // `hold_for_child_mutation` serializes membership writes, so a
+                // membership appearing between the read above and this insert
+                // means the lock did not hold. Report what is true now rather
+                // than guessing: the role this caller asked for is applied on
+                // their next attempt.
+                tx.rollback().await?;
+                let mut session = db;
+                let Some(existing_role) = session
+                    .workspace_members()
+                    .role_for_user_id(workspace_id, user_id)
+                    .await?
+                else {
+                    return Err(error);
+                };
+                Ok(AddMemberOutcome::ExistingSameRole(member_view(
+                    user,
+                    existing_role,
+                )))
+            }
+            Err(error) => Err(error),
+        }
+    }
+}
+
 impl WorkspacesRepo<'_, CoralTx<'_>> {
     /// Holds an existing workspace parent for a child-table mutation.
     ///
@@ -102,6 +191,15 @@ impl WorkspacesRepo<'_, CoralTx<'_>> {
             .and_where(Expr::col(Workspaces::Id).eq(id))
             .to_owned();
         Ok(DbSession::execute_rows_affected(self.session, statement).await? == 1)
+    }
+}
+
+#[cfg_attr(not(test), expect(dead_code, reason = "used higher in the PR stack"))]
+fn member_view(user: UserRecord, role: MemberRole) -> WorkspaceMemberView {
+    WorkspaceMemberView {
+        user_id: user.user_id,
+        role,
+        display_name: user.display_name,
     }
 }
 
