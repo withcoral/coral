@@ -4024,3 +4024,53 @@ fn openapi_31_reads_a_scalar_const_the_way_it_reads_a_one_value_enum() {
         serde_json::to_value(&probe_field_type(&as_const, "pinned").shape).expect("const shape"),
     );
 }
+
+#[test]
+fn a_const_narrows_the_enum_it_is_declared_beside() {
+    // How a 2020-12 document pins one branch of a union: the branch re-declares
+    // the discriminator it shares with the rest of the family — `enum` listing
+    // every tag — and adds the `const` saying which one it is. Both constrain
+    // the schema, so the narrower has to win; reading `enum` first left the
+    // branch claiming every tag in the family instead of its own.
+    let imported = import_versioned_response_schema(
+        "3.1.0",
+        r"                type: object
+                properties:
+                  kind:
+                    type: string
+                    enum: [invoice, receipt, credit_note]
+                    const: invoice",
+    )
+    .expect("3.1 should import");
+
+    let IrTypeShape::Enum { values } = &probe_field_type(&imported, "kind").shape else {
+        panic!("a pinned discriminator is still an enum");
+    };
+    assert_eq!(
+        values,
+        &["invoice"],
+        "the const pins the branch; the enum only says what the family allows"
+    );
+}
+
+#[test]
+fn a_structured_const_leaves_a_neighbouring_enum_to_be_read() {
+    // The other side of that ordering. `const_enum_values` reads only scalars,
+    // so a structured constant must fall past it to the `enum` arm rather than
+    // shadowing it — otherwise moving `const` ahead of `enum` would lose the
+    // values a schema declaring both had before.
+    let imported = import_versioned_response_schema(
+        "3.1.0",
+        r"                type: object
+                properties:
+                  layout:
+                    enum: [compact, roomy]
+                    const: {theme: dark}",
+    )
+    .expect("3.1 should import");
+
+    let IrTypeShape::Enum { values } = &probe_field_type(&imported, "layout").shape else {
+        panic!("the enum is still the readable constraint here");
+    };
+    assert_eq!(values, &["compact", "roomy"]);
+}

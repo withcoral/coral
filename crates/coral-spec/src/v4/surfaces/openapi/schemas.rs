@@ -152,12 +152,22 @@ impl OpenApiImporter<'_> {
                     diagnostics,
                 ),
             }
+        // `const` is read before `enum`, because a schema carrying both is
+        // constrained by both and `const` is the narrower of the two. That pair
+        // is how a 2020-12 document pins one branch of a union: the branch
+        // re-declares the shared discriminator it inherits — `enum` listing
+        // every tag in the family — and adds the single `const` that says which
+        // of them this branch is. Reading `enum` first published all of them,
+        // leaving each branch claiming the whole family's tags.
+        //
+        // A structured `const` still falls through to `enum` and then to the
+        // shape dispatch, because `const_enum_values` reads only scalars.
+        } else if let Some(values) = self.dialect.const_enum_values(&resolved) {
+            IrTypeShape::Enum { values }
         } else if let Some(values) = resolved.get("enum").and_then(Value::as_array) {
             IrTypeShape::Enum {
                 values: values.iter().map(enum_value).collect(),
             }
-        } else if let Some(values) = self.dialect.const_enum_values(&resolved) {
-            IrTypeShape::Enum { values }
         } else if let Some(scalar) = json_schema_scalar_type(&resolved) {
             IrTypeShape::Scalar(scalar)
         // `type` is matched through the array-aware helpers rather than read as
