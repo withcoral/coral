@@ -1118,7 +1118,7 @@ mod tests {
 
     async fn provision_user(db: &CoralDb, subject: &str) -> String {
         let UpsertLoginOutcome::Upserted(user) = db
-            .provision_login("issuer", subject, None, 1)
+            .upsert_user_and_ensure_default_workspace("issuer", subject, None, 1)
             .await
             .expect("provision user")
         else {
