@@ -54,6 +54,8 @@ const LOCAL_TRACE_EXCLUDED_RPC_SERVICES: &[&str] = &["coral.v1.TraceService"];
 pub(crate) const QUERY_TRACE_SOURCES_ATTR: &str = "coral.query.sources";
 pub(crate) const QUERY_TRACE_TABLES_ATTR: &str = "coral.query.tables";
 pub(crate) const QUERY_TRACE_TABLE_FUNCTIONS_ATTR: &str = "coral.query.table_functions";
+/// Stable span name for Universal Search executions.
+pub(crate) const SEARCH_SPAN_NAME: &str = "coral.search";
 
 pub(crate) fn app_error_type(error: &AppError) -> &'static str {
     match error {

@@ -3,6 +3,7 @@ syntax = "proto3";
 package coral.v1;
 
 import "coral/v1/resources.proto";
+import "coral/v1/search.proto";
 
 // Query status derived from locally captured spans.
 enum TraceStatus {
@@ -173,12 +174,29 @@ message TraceSpan {
   bool is_remote = 22;
 }
 
+// Marker returned when the successful Search response exceeded the local
+// history retention cap.
+message TraceSearchResponseTooLarge {}
+
+// Historical Search outcome retained for one exact Search execution.
+message TraceSearchResponse {
+  // Retained outcome for the historical Search execution.
+  oneof outcome {
+    // Complete public Search response returned by the historical execution.
+    SearchResponse response = 1;
+    // The response was successful but too large to retain.
+    TraceSearchResponseTooLarge too_large = 2;
+  }
+}
+
 // Trace detail for timeline and diagnostic views.
 message GetTraceResponse {
   // Summary for the trace.
   TraceSummary summary = 1;
   // Spans ordered by start time.
   repeated TraceSpan spans = 2;
+  // Historical Search response for a workspace-scoped Query Stream Search.
+  TraceSearchResponse search_response = 3;
 }
 
 // Local trace inspection APIs.

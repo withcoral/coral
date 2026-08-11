@@ -1827,7 +1827,7 @@ fn parse_attributes(attributes_json: &str) -> Option<JsonValue> {
     serde_json::from_str(attributes_json).ok()
 }
 
-fn attributes_match_workspace(attributes_json: &str, workspace_name: &str) -> bool {
+pub(super) fn attributes_match_workspace(attributes_json: &str, workspace_name: &str) -> bool {
     workspace_attribute(attributes_json).is_some_and(|workspace| workspace == workspace_name)
 }
 

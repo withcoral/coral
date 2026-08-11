@@ -1,9 +1,10 @@
 //! Builds and runs the Coral gRPC server.
 
 use std::net::{Ipv4Addr, SocketAddr};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::Duration;
 
 use coral_api::v1::catalog_service_server::CatalogServiceServer;
 use coral_api::v1::feature_service_server::FeatureServiceServer;
@@ -352,9 +353,11 @@ impl ServerBuilder {
         let config_store = ConfigStore::new(layout.clone());
         run_state_migrations(&coral_db, &config_store, &layout).await?;
         let coral_db = Arc::new(coral_db);
-        let (telemetry_config, active_trace_store) =
-            init_server_telemetry(&layout, self.config.enable_stderr_logs)?;
-        let active_trace_store_dir = active_trace_store.as_ref().map(|store| store.dir.clone());
+        let telemetry = init_server_telemetry(&layout, self.config.enable_stderr_logs)?;
+        let active_trace_store_dir = telemetry
+            .active_trace_store
+            .as_ref()
+            .map(|store| store.dir.clone());
         let credential_config = CredentialStorageConfig::load(&layout)?;
         let credential_store =
             CredentialStore::with_preference(layout.clone(), credential_config.storage);
@@ -387,7 +390,8 @@ impl ServerBuilder {
         let task_manager = TaskManager::new(TaskStore::new(Arc::clone(&coral_db)));
         let task_activity = crate::task::activity::TaskActivityRecorder::new(Arc::clone(&coral_db));
         let query_runtime_context = env.query_runtime_context().with_body_capture_max_bytes(
-            telemetry_config
+            telemetry
+                .config
                 .trace_history
                 .http_body_recording_max_bytes(),
         );
@@ -416,12 +420,8 @@ impl ServerBuilder {
             CatalogDiscovery::new(query_manager.clone()),
             workspace_lifecycle_lock.clone(),
         );
-        let trace_components = init_trace_components(
-            active_trace_store,
-            Arc::clone(&coral_db),
-            workspace_lifecycle_lock,
-            &telemetry_config,
-        );
+        let trace_components =
+            init_trace_components(telemetry, Arc::clone(&coral_db), workspace_lifecycle_lock);
         let dependencies = ServerDependencies {
             gui_onboarding: GuiOnboardingManager::new(Arc::clone(&coral_db)),
             source: source_manager,
@@ -438,35 +438,97 @@ impl ServerBuilder {
     }
 }
 
+struct InitializedServerTelemetry {
+    config: TelemetryConfig,
+    active_trace_store: Option<crate::telemetry::InstalledLocalTraceStore>,
+    search_response_history_binding: SearchResponseHistoryBinding,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SearchResponseHistoryBinding {
+    Disabled,
+    CaptureOnly,
+    Attached,
+    Incompatible,
+}
+
+impl SearchResponseHistoryBinding {
+    fn capture_enabled(self) -> bool {
+        matches!(self, Self::CaptureOnly | Self::Attached)
+    }
+
+    fn reader_enabled(self) -> bool {
+        self == Self::Attached
+    }
+}
+
 fn init_server_telemetry(
     layout: &AppStateLayout,
     enable_stderr_logs: bool,
-) -> Result<
-    (
-        TelemetryConfig,
-        Option<crate::telemetry::InstalledLocalTraceStore>,
-    ),
-    AppError,
-> {
+) -> Result<InitializedServerTelemetry, AppError> {
     let config = TelemetryConfig::load(layout)?;
     let local_trace_store_dir = config
         .trace_history
         .enabled
         .then(|| layout.local_trace_store_dir());
     let installed_trace_store =
-        crate::telemetry::init_tracing(&config, enable_stderr_logs, local_trace_store_dir)?;
+        crate::telemetry::init_tracing(&config, enable_stderr_logs, local_trace_store_dir.clone())?;
     let active_trace_store = config
         .trace_history
         .enabled
         .then_some(installed_trace_store)
         .flatten();
-    Ok((config, active_trace_store))
+    let configured_retention = config.trace_history.retention();
+    let search_response_history_binding = search_response_history_binding(
+        local_trace_store_dir.as_deref(),
+        configured_retention,
+        active_trace_store.as_ref(),
+    );
+    if let (Some(configured_dir), Some(active_store)) = (
+        local_trace_store_dir.as_deref(),
+        active_trace_store.as_ref(),
+    ) && search_response_history_binding == SearchResponseHistoryBinding::Incompatible
+    {
+        tracing::warn!(
+            configured_trace_store_dir = %configured_dir.display(),
+            active_trace_store_dir = %active_store.dir.display(),
+            ?configured_retention,
+            active_retention = ?active_store.retention,
+            "Search response history is disabled because this server does not match the process-owned trace store"
+        );
+    }
+    Ok(InitializedServerTelemetry {
+        config,
+        active_trace_store,
+        search_response_history_binding,
+    })
+}
+
+fn search_response_history_binding(
+    configured_trace_store_dir: Option<&Path>,
+    configured_retention: Duration,
+    active_trace_store: Option<&crate::telemetry::InstalledLocalTraceStore>,
+) -> SearchResponseHistoryBinding {
+    match (configured_trace_store_dir, active_trace_store) {
+        (None, _) => SearchResponseHistoryBinding::Disabled,
+        (Some(_configured_dir), None) => SearchResponseHistoryBinding::CaptureOnly,
+        (Some(configured_dir), Some(active_store))
+            if configured_dir == active_store.dir
+                && configured_retention == active_store.retention =>
+        {
+            SearchResponseHistoryBinding::Attached
+        }
+        (Some(_configured_dir), Some(_active_store)) => SearchResponseHistoryBinding::Incompatible,
+    }
 }
 
 fn trace_components_for_store(
     active_trace_store: Option<crate::telemetry::InstalledLocalTraceStore>,
+    coral_db: Arc<CoralDb>,
+    search_response_history_retention: Duration,
     search_response_history: SearchResponseHistory,
     search_response_history_worker: SearchResponseHistoryWorker,
+    attach_search_response_history_reader: bool,
 ) -> TraceServerComponents {
     match active_trace_store {
         None => TraceServerComponents {
@@ -474,32 +536,50 @@ fn trace_components_for_store(
             search_response_history_worker: Some(search_response_history_worker),
             ..TraceServerComponents::default()
         },
-        Some(store) => TraceServerComponents {
-            local_trace_store_dir: Some(store.dir.clone()),
-            service: Some(TraceService::new(TraceManager::new(
-                store.dir,
-                store.retention,
-            ))),
-            search_response_history: Some(search_response_history),
-            search_response_history_worker: Some(search_response_history_worker),
-        },
+        Some(store) => {
+            let trace_manager = TraceManager::new(store.dir.clone(), store.retention);
+            let trace_manager = if attach_search_response_history_reader {
+                trace_manager
+                    .with_search_response_history(coral_db, search_response_history_retention)
+            } else {
+                trace_manager
+            };
+            TraceServerComponents {
+                local_trace_store_dir: Some(store.dir),
+                service: Some(TraceService::new(trace_manager)),
+                search_response_history: Some(search_response_history),
+                search_response_history_worker: Some(search_response_history_worker),
+            }
+        }
     }
 }
 
 fn init_trace_components(
-    active_trace_store: Option<crate::telemetry::InstalledLocalTraceStore>,
+    telemetry: InitializedServerTelemetry,
     coral_db: Arc<CoralDb>,
     workspace_lifecycle_lock: WorkspaceLifecycleLock,
-    telemetry_config: &TelemetryConfig,
 ) -> TraceServerComponents {
-    let trace_history = &telemetry_config.trace_history;
+    let InitializedServerTelemetry {
+        config,
+        active_trace_store,
+        search_response_history_binding,
+    } = telemetry;
+    let trace_history = &config.trace_history;
+    let search_response_history_retention = trace_history.retention();
     let (history, worker) = SearchResponseHistory::start(
-        coral_db,
+        Arc::clone(&coral_db),
         workspace_lifecycle_lock,
-        trace_history.enabled,
-        trace_history.retention(),
+        search_response_history_binding.capture_enabled(),
+        search_response_history_retention,
     );
-    trace_components_for_store(active_trace_store, history, worker)
+    trace_components_for_store(
+        active_trace_store,
+        coral_db,
+        search_response_history_retention,
+        history,
+        worker,
+        search_response_history_binding.reader_enabled(),
+    )
 }
 
 async fn init_database(layout: &AppStateLayout) -> Result<CoralDb, AppError> {
@@ -868,7 +948,7 @@ mod tests {
 
     use std::future::Future as _;
     use std::net::{Ipv4Addr, SocketAddr, TcpListener};
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
     use std::task::Poll;
     use std::time::Duration;
@@ -891,8 +971,8 @@ mod tests {
     use tonic::{Code, Request};
 
     use super::{
-        RunningServer, ServerBuilder, ServerDependencies, ServerMode, TraceServerComponents,
-        start_server,
+        RunningServer, SearchResponseHistoryBinding, ServerBuilder, ServerDependencies, ServerMode,
+        TraceServerComponents, search_response_history_binding, start_server,
     };
     use crate::bootstrap::AppError;
     use crate::catalog::discovery::CatalogDiscovery;
@@ -921,6 +1001,78 @@ mod tests {
 
     fn default_workspace() -> Workspace {
         workspace_to_proto(&WorkspaceName::default())
+    }
+
+    #[test]
+    fn search_response_history_uses_the_matching_process_trace_store() {
+        let configured_dir = PathBuf::from("matching-trace-store");
+        let configured_retention = Duration::from_mins(1);
+        let active_store = crate::telemetry::InstalledLocalTraceStore {
+            dir: configured_dir.clone(),
+            retention: configured_retention,
+        };
+
+        let binding = search_response_history_binding(
+            Some(configured_dir.as_path()),
+            configured_retention,
+            Some(&active_store),
+        );
+
+        assert_eq!(binding, SearchResponseHistoryBinding::Attached);
+        assert!(binding.capture_enabled());
+        assert!(binding.reader_enabled());
+    }
+
+    #[test]
+    fn search_response_history_rejects_a_different_process_trace_store() {
+        let configured_dir = PathBuf::from("configured-trace-store");
+        let configured_retention = Duration::from_mins(1);
+        let active_store = crate::telemetry::InstalledLocalTraceStore {
+            dir: PathBuf::from("process-trace-store"),
+            retention: configured_retention,
+        };
+
+        let binding = search_response_history_binding(
+            Some(configured_dir.as_path()),
+            configured_retention,
+            Some(&active_store),
+        );
+
+        assert_eq!(binding, SearchResponseHistoryBinding::Incompatible);
+        assert!(!binding.capture_enabled());
+        assert!(!binding.reader_enabled());
+    }
+
+    #[test]
+    fn search_response_history_still_captures_without_a_coral_trace_store() {
+        let binding = search_response_history_binding(
+            Some(Path::new("configured-trace-store")),
+            Duration::from_mins(1),
+            None,
+        );
+
+        assert_eq!(binding, SearchResponseHistoryBinding::CaptureOnly);
+        assert!(binding.capture_enabled());
+        assert!(!binding.reader_enabled());
+    }
+
+    #[test]
+    fn search_response_history_rejects_different_process_retention() {
+        let configured_dir = PathBuf::from("matching-trace-store");
+        let active_store = crate::telemetry::InstalledLocalTraceStore {
+            dir: configured_dir.clone(),
+            retention: Duration::from_mins(1),
+        };
+
+        let binding = search_response_history_binding(
+            Some(configured_dir.as_path()),
+            Duration::from_mins(2),
+            Some(&active_store),
+        );
+
+        assert_eq!(binding, SearchResponseHistoryBinding::Incompatible);
+        assert!(!binding.capture_enabled());
+        assert!(!binding.reader_enabled());
     }
 
     fn disable_internal_tracing(config_dir: &Path) {

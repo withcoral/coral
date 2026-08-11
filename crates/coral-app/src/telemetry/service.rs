@@ -1,19 +1,26 @@
 //! Implements the gRPC `TraceService` for local trace inspection.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use coral_api::v1::trace_search_response::Outcome as TraceSearchResponseOutcome;
 use coral_api::v1::trace_service_server::TraceService as TraceServiceApi;
 use coral_api::v1::{
-    GetTraceRequest, GetTraceResponse, ListTracesRequest, ListTracesResponse, TraceInvocationKind,
-    TraceOperationKind, TraceSpan, TraceStatus, TraceSummary, TraceView, Workspace,
+    GetTraceRequest, GetTraceResponse, ListTracesRequest, ListTracesResponse, SearchResponse,
+    TraceInvocationKind, TraceOperationKind, TraceSearchResponse, TraceSearchResponseTooLarge,
+    TraceSpan, TraceStatus, TraceSummary, TraceView, Workspace,
 };
+use prost::Message as _;
 use tonic::{Code, Request, Response, Status};
 
 use crate::bootstrap::app_status;
 use crate::telemetry::local_store::{
-    StoredTraceInvocationKind, StoredTraceOperationKind, StoredTraceStatus, TraceDetailRecord,
-    TraceSpanRecord, TraceSummaryRecord,
+    StoredTraceInvocationKind, StoredTraceOperationKind, StoredTraceStatus, TraceSpanRecord,
+    TraceSummaryRecord,
 };
 use crate::telemetry::manager::{
-    GetTraceQuery, ListTracesQuery, TraceListView, TraceManager, TraceManagerError,
+    GetTraceQuery, ListTracesQuery, RetainedSearchResponse, TraceDetail, TraceListView,
+    TraceManager, TraceManagerError,
 };
 use crate::transport::{grpc_span, instrument_grpc};
 use crate::workspaces::WorkspaceName;
@@ -23,12 +30,19 @@ const MAX_TRACE_PAGE_SIZE: usize = 200;
 
 #[derive(Clone)]
 pub(crate) struct TraceService {
+    warnings: Arc<TraceServiceWarnings>,
     traces: TraceManager,
+}
+
+#[derive(Debug, Default)]
+struct TraceServiceWarnings {
+    malformed_search_response: AtomicBool,
 }
 
 impl TraceService {
     pub(crate) fn new(trace_manager: TraceManager) -> Self {
         Self {
+            warnings: Arc::new(TraceServiceWarnings::default()),
             traces: trace_manager,
         }
     }
@@ -77,6 +91,7 @@ impl TraceServiceApi for TraceService {
     ) -> Result<Response<GetTraceResponse>, Status> {
         let span = grpc_span(&request);
         let traces = self.traces.clone();
+        let warnings = Arc::clone(&self.warnings);
         instrument_grpc(span, async move {
             let request = request.into_inner();
             if request.trace_id.trim().is_empty() {
@@ -95,7 +110,7 @@ impl TraceServiceApi for TraceService {
                 })
                 .await
                 .map_err(trace_manager_status)?;
-            Ok(Response::new(trace_detail_to_proto(trace)))
+            Ok(Response::new(trace_detail_to_proto(trace, &warnings)))
         })
         .await
     }
@@ -151,11 +166,52 @@ fn trace_manager_status(error: TraceManagerError) -> Status {
     }
 }
 
-fn trace_detail_to_proto(trace: TraceDetailRecord) -> GetTraceResponse {
+fn trace_detail_to_proto(detail: TraceDetail, warnings: &TraceServiceWarnings) -> GetTraceResponse {
+    let TraceDetail {
+        trace,
+        search_response,
+    } = detail;
     GetTraceResponse {
         summary: Some(trace_summary_to_proto(trace.summary)),
         spans: trace.spans.into_iter().map(trace_span_to_proto).collect(),
+        search_response: retained_search_response_to_proto(search_response, warnings),
     }
+}
+
+fn retained_search_response_to_proto(
+    retained: Option<RetainedSearchResponse>,
+    warnings: &TraceServiceWarnings,
+) -> Option<TraceSearchResponse> {
+    let outcome = match retained? {
+        RetainedSearchResponse::Response(encoded) => {
+            match SearchResponse::decode(encoded.as_slice()) {
+                Ok(response) => {
+                    warnings
+                        .malformed_search_response
+                        .store(false, Ordering::Relaxed);
+                    TraceSearchResponseOutcome::Response(response)
+                }
+                Err(error) => {
+                    if !warnings
+                        .malformed_search_response
+                        .swap(true, Ordering::Relaxed)
+                    {
+                        tracing::warn!(
+                            error = ?error,
+                            "ignored malformed retained Search response"
+                        );
+                    }
+                    return None;
+                }
+            }
+        }
+        RetainedSearchResponse::TooLarge => {
+            TraceSearchResponseOutcome::TooLarge(TraceSearchResponseTooLarge {})
+        }
+    };
+    Some(TraceSearchResponse {
+        outcome: Some(outcome),
+    })
 }
 
 fn trace_summary_to_proto(summary: TraceSummaryRecord) -> TraceSummary {
@@ -236,16 +292,19 @@ mod tests {
 
     use coral_api::v1::trace_service_server::TraceService as TraceServiceApi;
     use coral_api::v1::{
-        GetTraceRequest, ListTracesRequest, TraceInvocationKind, TraceOperationKind, TraceView,
-        Workspace,
+        GetTraceRequest, ListTracesRequest, SearchResponse, TraceInvocationKind,
+        TraceOperationKind, TraceView, Workspace,
     };
+    use prost::Message as _;
     use serde_json::json;
     use tempfile::TempDir;
     use tonic::{Code, Request};
 
     use super::{
-        TraceService, normalize_page_size, parse_page_token, trace_invocation_kind_to_proto,
+        TraceService, TraceServiceWarnings, normalize_page_size, parse_page_token,
+        retained_search_response_to_proto, trace_invocation_kind_to_proto,
     };
+    use crate::telemetry::manager::RetainedSearchResponse;
     use crate::telemetry::{TraceManager, local_store::StoredTraceInvocationKind};
 
     #[test]
@@ -277,6 +336,45 @@ mod tests {
             trace_invocation_kind_to_proto(StoredTraceInvocationKind::Mcp),
             TraceInvocationKind::Mcp
         );
+    }
+
+    #[test]
+    fn retained_response_decode_warning_recovers_and_too_large_is_preserved() {
+        let warnings = TraceServiceWarnings::default();
+        assert_eq!(
+            retained_search_response_to_proto(
+                Some(RetainedSearchResponse::Response(vec![0xff])),
+                &warnings,
+            ),
+            None
+        );
+        assert!(
+            warnings
+                .malformed_search_response
+                .load(std::sync::atomic::Ordering::Relaxed)
+        );
+
+        let valid = SearchResponse::default().encode_to_vec();
+        assert!(
+            retained_search_response_to_proto(
+                Some(RetainedSearchResponse::Response(valid)),
+                &warnings,
+            )
+            .is_some()
+        );
+        assert!(
+            !warnings
+                .malformed_search_response
+                .load(std::sync::atomic::Ordering::Relaxed)
+        );
+
+        let too_large =
+            retained_search_response_to_proto(Some(RetainedSearchResponse::TooLarge), &warnings)
+                .expect("too-large outcome");
+        assert!(matches!(
+            too_large.outcome,
+            Some(coral_api::v1::trace_search_response::Outcome::TooLarge(_))
+        ));
     }
 
     #[tokio::test]

@@ -22,10 +22,6 @@ where
         Self { session }
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "next stack layer wires trace reads")
-    )]
     pub(in crate::state::db) async fn get(
         &mut self,
         workspace_id: &str,
