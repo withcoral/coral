@@ -28,4 +28,4 @@ surface:
     reset_header: x-rate-limit-reset
 
 test_queries:
-  - SELECT id, text FROM x_v4.search_recents(query => 'from:XDevelopers', max_results => 10) LIMIT 5
+  - SELECT id, text FROM x_v4.posts.searchpostsrecent(query => 'from:XDevelopers', max_results => 10) LIMIT 5

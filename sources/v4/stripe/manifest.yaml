@@ -19,4 +19,4 @@ surface:
         from: template
         template: Bearer {{input.STRIPE_API_KEY}}
 test_queries:
-  - SELECT * FROM stripe_v4.account LIMIT 1
+  - SELECT * FROM stripe_v4.public.getaccount LIMIT 1

@@ -956,7 +956,7 @@ impl SourceManager {
             return;
         }
         match SqliteSearchStore::open_workspace(&self.layout, workspace_name)
-            .and_then(|store| store.clear_catalog_workspace())
+            .and_then(|store| store.clear_catalog_source(source_name.as_str()))
         {
             Ok(result) => {
                 tracing::debug!(

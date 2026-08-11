@@ -91,7 +91,7 @@ pub use contracts::{
     UdfRuntimeImplementation, UdfRuntimePublish, UdfRuntimeResultColumn, UdfRuntimeSignature,
     UdfRuntimeSqlDefinition, UdfRuntimeTableFunctionPublish,
 };
-pub use runtime::normalize_catalog_name;
+pub use runtime::{DATAFUSION_DEFAULT_CATALOG, normalize_catalog_name};
 
 /// High-level query operations for the local query engine.
 pub struct CoralQuery;

@@ -106,7 +106,7 @@ Only switch to Coral repo layout when the user is explicitly editing the Coral r
 - Include `search_limits` on every `kind: search` function and expose stable result identifiers for follow-up detail queries.
 - Prefer explicit pagination when the API shape is known.
 - Verify pagination with actual row fetches, not only `COUNT(*)`.
-- Add or update `test_queries` when you want `coral source test` to perform a basic smoke/connection check.
+- Add or update `test_queries` when you want `coral source test` to perform a basic smoke/connection check. DSL v4 test queries must use the canonical three-part `source_catalog.inner_schema.relation` name reported by Coral; do not flatten the inner schema into a two-part name.
 
 ## Metadata UX Rules
 
@@ -169,17 +169,18 @@ coral source lint ./my-source.yaml
 coral source add --file ./my-source.yaml
 coral source test my_source
 coral sql "SELECT catalog_name, schema_name, table_name, description, required_filters FROM coral.tables WHERE schema_name = 'my_source' OR catalog_name = 'my_source' ORDER BY catalog_name, schema_name, table_name LIMIT 50 OFFSET 0"
-coral sql "SELECT function_name, kind, arguments_json, result_columns_json, search_limits_json FROM coral.table_functions WHERE schema_name = 'my_source' ORDER BY function_name LIMIT 50 OFFSET 0"
+coral sql "SELECT catalog_name, schema_name, function_name, kind, arguments_json, result_columns_json, search_limits_json FROM coral.table_functions WHERE schema_name = 'my_source' OR catalog_name = 'my_source' ORDER BY catalog_name, schema_name, function_name LIMIT 50 OFFSET 0"
 coral sql "SELECT table_name, filter_name, filter_mode, is_required, data_type, description FROM coral.filters WHERE schema_name = 'my_source' OR catalog_name = 'my_source' ORDER BY table_name, filter_name LIMIT 100 OFFSET 0"
 coral sql "SELECT table_name, column_name, data_type, is_virtual, is_required_filter, filter_mode, description FROM coral.columns WHERE schema_name = 'my_source' OR catalog_name = 'my_source' ORDER BY table_name, ordinal_position LIMIT 100 OFFSET 0"
 coral sql "SELECT catalog_name, key, kind, value, default_value, hint, required, is_set FROM coral.inputs WHERE schema_name = 'my_source' OR catalog_name = 'my_source' ORDER BY key"
 ```
 
 Each `WHERE` clause matches on both qualifiers because a source is addressed
-either by schema or by catalog. Schema-addressed sources carry the source name in
-`schema_name` and leave `catalog_name` empty; database sources put the source name
-in `catalog_name`, and their `coral.inputs` rows have an empty `schema_name`.
-Filtering on `schema_name` alone returns zero rows for a database source without
+either by schema or by catalog. DSL v3 sources carry the source name in
+`schema_name` and leave `catalog_name` empty. DSL v4 sources put the source name
+in `catalog_name`; their `coral.inputs` rows have an empty `schema_name`, while
+relation metadata keeps the schema inside that catalog. Filtering on
+`schema_name` alone can therefore return zero rows for a DSL v4 source without
 reporting an error, which reads as "this source declares nothing".
 
 For repo sources or already-named sources, add `test_queries` for a basic smoke/connection check and run:

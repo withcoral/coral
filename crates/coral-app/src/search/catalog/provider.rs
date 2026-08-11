@@ -143,9 +143,9 @@ impl CatalogMetadataProvider {
         resolution: &CatalogResolution,
     ) -> Result<CatalogProjection, SqliteSearchError> {
         let catalog_fingerprint =
-            CatalogSearchSnapshot::fingerprint_catalog_with_runtime_schema_owners(
+            CatalogSearchSnapshot::fingerprint_catalog_with_runtime_namespace_owners(
                 &resolution.catalog,
-                &resolution.runtime_schema_owners,
+                &resolution.runtime_namespace_owners,
             );
         let store = SqliteSearchStore::open_workspace(&self.layout, &request.workspace_name)?;
         let capabilities = store.capabilities();
@@ -193,9 +193,9 @@ impl CatalogMetadataProvider {
             });
         }
 
-        let snapshot = CatalogSearchSnapshot::from_catalog_with_runtime_schema_owners(
+        let snapshot = CatalogSearchSnapshot::from_catalog_with_runtime_namespace_owners(
             &resolution.catalog,
-            &resolution.runtime_schema_owners,
+            &resolution.runtime_namespace_owners,
         );
         let expected_document_count = u32::try_from(snapshot.documents.len()).unwrap_or(u32::MAX);
         let index_snapshot = snapshot.index_snapshot();
@@ -235,9 +235,9 @@ impl CatalogMetadataProvider {
         resolution: &CatalogResolution,
         force: bool,
     ) -> Result<SearchMaintenanceResult, SearchManagerError> {
-        let snapshot = CatalogSearchSnapshot::from_catalog_with_runtime_schema_owners(
+        let snapshot = CatalogSearchSnapshot::from_catalog_with_runtime_namespace_owners(
             &resolution.catalog,
-            &resolution.runtime_schema_owners,
+            &resolution.runtime_namespace_owners,
         )
         .index_snapshot();
         let store = SqliteSearchStore::open_workspace(&self.layout, workspace_name)
@@ -614,7 +614,12 @@ pub(crate) fn resolve_entry(
             )
         }
         SearchSurfaceKind::TableFunction => {
-            let function = find_function(catalog, &id.schema_name, &id.name)?;
+            let function = find_function(
+                catalog,
+                id.catalog_name.as_deref(),
+                &id.schema_name,
+                &id.name,
+            )?;
             let (arguments, returns, omitted) = function_fields(function, evidence);
             (
                 CatalogSurface {
@@ -656,9 +661,14 @@ pub(crate) fn resolve_surface_id(
             })
         }
         SearchSurfaceKind::TableFunction => {
-            let function = find_function(catalog, &id.schema_name, &id.name)?;
+            let function = find_function(
+                catalog,
+                id.catalog_name.as_deref(),
+                &id.schema_name,
+                &id.name,
+            )?;
             Some(SearchSurfaceId {
-                catalog_name: None,
+                catalog_name: function.catalog_name.clone(),
                 schema_name: function.schema_name.clone(),
                 name: function.function_name.clone(),
                 kind: SearchSurfaceKind::TableFunction,
@@ -785,11 +795,14 @@ fn find_table<'a>(
 
 fn find_function<'a>(
     catalog: &'a CatalogInfo,
+    catalog_name: Option<&str>,
     schema_name: &str,
     function_name: &str,
 ) -> Option<&'a TableFunctionInfo> {
     catalog.table_functions.iter().find(|function| {
-        function.schema_name == schema_name && function.function_name == function_name
+        function.catalog_name.as_deref() == catalog_name
+            && function.schema_name == schema_name
+            && function.function_name == function_name
     })
 }
 

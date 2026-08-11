@@ -704,8 +704,17 @@ fn load_projection_catalog(
             read_projection_override_yaml(source_name, &projections_file.path)?
         }
     };
-    if let Err(error) = validate_projection_catalog_header(manifest, &projections, projections_file)
-    {
+    validate_projection_catalog_identity(manifest, &projections).map_err(|error| {
+        match projections_file.origin {
+            V4ProjectionCatalogOrigin::Materialized => {
+                incompatible_materialization_error(source_name, error)
+            }
+            V4ProjectionCatalogOrigin::Override => {
+                invalid_projection_override_error(source_name, &projections_file.path, error)
+            }
+        }
+    })?;
+    if let Err(error) = validate_projection_catalog_generator(&projections, projections_file) {
         diagnostics.push(materialization_warning(error));
     }
     Ok(projections)
@@ -728,10 +737,13 @@ fn materialization_warning(message: impl Into<String>) -> Diagnostic {
     Diagnostic::new(message, None)
 }
 
-fn validate_projection_catalog_header(
+/// Gates the projection catalog on hard compatibility invariants.
+///
+/// A wrong artifact schema version or source identity means the file cannot be
+/// interpreted for this source at all, so loading must fail.
+fn validate_projection_catalog_identity(
     manifest: &V4SourceManifest,
     projections: &ProjectionCatalog,
-    projections_file: &V4ProjectionCatalogFile,
 ) -> Result<(), String> {
     if projections.artifact_schema_version != V4_ARTIFACT_SCHEMA_VERSION {
         return Err("projection catalog artifact schema version mismatch".to_string());
@@ -739,6 +751,17 @@ fn validate_projection_catalog_header(
     if projections.source_name != manifest.common.name {
         return Err("projection catalog source name does not match installed manifest".to_string());
     }
+    Ok(())
+}
+
+/// Checks projection provenance against this build's generator version.
+///
+/// Generator drift is advisory: routine Coral upgrades bump the generator
+/// version, and previously installed sources must keep loading.
+fn validate_projection_catalog_generator(
+    projections: &ProjectionCatalog,
+    projections_file: &V4ProjectionCatalogFile,
+) -> Result<(), String> {
     match projections_file.origin {
         V4ProjectionCatalogOrigin::Materialized => {
             if projections.generator_version.as_deref() != Some(PROJECTION_GENERATOR_VERSION) {
@@ -2409,7 +2432,9 @@ surface:
                 "projection_override={projection_override}, metadata_override={metadata_override}: {message}"
             );
             assert!(
-                message.contains("Re-add the source or reconcile the selected artifact files"),
+                message.contains(
+                    "Reinstall the source or explicitly regenerate its materialized artifacts"
+                ),
                 "projection_override={projection_override}, metadata_override={metadata_override}: {message}"
             );
             assert!(
@@ -2452,7 +2477,7 @@ surface:
             "unexpected error: {message}"
         );
         assert!(
-            !message.contains("Re-add the source"),
+            !message.contains("Reinstall the source"),
             "unexpected error: {message}"
         );
     }
@@ -2694,7 +2719,7 @@ surface:
             ),
             "unexpected error: {error:#}"
         );
-        assert!(error.to_string().contains("Re-add the source"));
+        assert!(error.to_string().contains("Reinstall the source"));
     }
 
     #[test]

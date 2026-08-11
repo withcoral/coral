@@ -36,9 +36,11 @@ export async function loadSchemaTableRoute({
     columns: await fetchTableColumnsFromCoral(
       catalogClientForRequest(request, context.get(requestAuthContext).accessToken),
       workspaceFromParams(params),
-      params.catalogName,
-      params.schemaName,
-      params.tableName,
+      {
+        catalogName: params.catalogName ?? '',
+        schemaName: params.schemaName,
+        tableName: params.tableName,
+      },
       request.signal,
     ),
   }

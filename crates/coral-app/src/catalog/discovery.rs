@@ -1,8 +1,8 @@
 //! Workspace-scoped catalog discovery operations.
 
 use coral_engine::{
-    CatalogInfo, ColumnInfo, DescribeCatalogSurfaceInfo, TableFunctionInfo, TableInfo,
-    normalize_catalog_name,
+    CatalogInfo, ColumnInfo, DATAFUSION_DEFAULT_CATALOG, DescribeCatalogSurfaceInfo,
+    TableFunctionInfo, TableInfo, normalize_catalog_name,
 };
 use regex::{Regex, RegexBuilder};
 
@@ -163,11 +163,8 @@ pub(crate) struct CatalogTableRef<'a> {
 }
 
 impl<'a> CatalogTableRef<'a> {
-    /// Builds a table reference with the catalog reduced to its meaning:
-    /// `catalog_name` is `None` exactly when the table is addressed as two
-    /// parts. Blank and whitespace-only catalogs are absent, and the
-    /// default-catalog sentinel names schema-backed tables, so callers do not
-    /// have to trim before constructing one.
+    /// Builds a table reference. An absent catalog remains a wildcard for
+    /// internal discovery and missing-table recovery.
     pub(crate) fn new(
         catalog_name: Option<&'a str>,
         schema_name: &'a str,
@@ -177,10 +174,24 @@ impl<'a> CatalogTableRef<'a> {
             .map(str::trim)
             .filter(|catalog_name| !catalog_name.is_empty());
         Self {
-            catalog_name: normalize_catalog_name(catalog_name),
+            catalog_name,
             schema_name,
             table_name,
         }
+    }
+
+    /// Builds an exact public API table reference. An omitted protobuf catalog
+    /// means the two-part/default-catalog form, never a wildcard.
+    pub(crate) fn exact(
+        catalog_name: Option<&'a str>,
+        schema_name: &'a str,
+        table_name: &'a str,
+    ) -> Self {
+        Self::new(
+            Some(catalog_name.unwrap_or(DATAFUSION_DEFAULT_CATALOG)),
+            schema_name,
+            table_name,
+        )
     }
 }
 
@@ -623,7 +634,7 @@ fn table_matches_ref(table: &TableInfo, table_ref: CatalogTableRef<'_>) -> bool 
 fn table_qualifier_matches(table: &TableInfo, table_ref: CatalogTableRef<'_>) -> bool {
     match table_ref.catalog_name {
         Some(catalog_name) => {
-            table.catalog_name.as_deref() == Some(catalog_name)
+            table.catalog_name.as_deref() == normalize_catalog_name(Some(catalog_name))
                 && table.schema_name == table_ref.schema_name
         }
         None => table.schema_name == table_ref.schema_name,
@@ -662,7 +673,7 @@ mod tests {
         CatalogMetadataField, CatalogSurfaceRef, CatalogTableRef, compile_metadata_regex,
         table_matched_fields, table_matches_ref,
     };
-    use coral_engine::TableInfo;
+    use coral_engine::{DATAFUSION_DEFAULT_CATALOG, TableInfo};
 
     fn table(required_filters: Vec<String>) -> TableInfo {
         TableInfo {
@@ -772,5 +783,18 @@ mod tests {
 
         let surface_ref = CatalogSurfaceRef::new(Some(" coral_db "), "main", "users");
         assert_eq!(surface_ref.catalog, Some(" coral_db "));
+    }
+
+    #[test]
+    fn exact_two_part_reference_selects_only_the_default_catalog() {
+        let mut default_table = table(Vec::new());
+        default_table.schema_name = "main".to_string();
+        default_table.table_name = "users".to_string();
+        let database_table = database_table("main", "users");
+        let table_ref = CatalogTableRef::exact(None, "main", "users");
+
+        assert_eq!(table_ref.catalog_name, Some(DATAFUSION_DEFAULT_CATALOG));
+        assert!(table_matches_ref(&default_table, table_ref));
+        assert!(!table_matches_ref(&database_table, table_ref));
     }
 }

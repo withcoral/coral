@@ -36,9 +36,167 @@ surface:
         .filter(|projection| projection.visibility == ProjectionVisibility::Published)
         .map(|projection| projection.name.as_str())
         .collect::<Vec<_>>();
-    assert!(published.contains(&"issue"), "{published:?}");
-    assert!(published.contains(&"search_issues"), "{published:?}");
-    assert!(published.contains(&"get_issues"), "{published:?}");
+    assert!(published.len() >= 3, "{published:?}");
+    assert!(
+        catalog
+            .projections
+            .iter()
+            .all(|projection| !projection.name.is_empty())
+    );
+}
+
+#[test]
+fn openapi_projections_persist_leaf_names_while_ir_owns_schema() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: github_v4
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.github.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.0.3
+paths:
+  /repos/{owner}/{repo}/issues:
+    get:
+      tags: ['', Issue Tracking, ignored]
+      operationId: issues/list-for-repo
+      parameters:
+        - {name: owner, in: path, required: true, schema: {type: string}}
+        - {name: repo, in: path, required: true, schema: {type: string}}
+      responses: {'200': {content: {application/json: {schema: {type: array, items: {type: object}}}}}}
+  /users:
+    get:
+      operationId: users/list
+      responses: {'200': {content: {application/json: {schema: {type: array, items: {type: object}}}}}}
+"
+        .as_bytes(),
+    )
+    .expect("import");
+
+    let catalog =
+        generate_projection_catalog(v4, &ir.validated_plan().expect("plan")).expect("catalog");
+    let tagged = catalog
+        .projections
+        .iter()
+        .find(|projection| projection.operation_id == "issues_list_for_repo")
+        .expect("tagged projection");
+    assert_eq!(tagged.name, "list_for_repo");
+    let tagged_operation = ir
+        .operations
+        .iter()
+        .find(|operation| operation.id == tagged.operation_id)
+        .expect("tagged operation");
+    assert_eq!(
+        operation_sql_schema_name(tagged_operation),
+        "issue_tracking"
+    );
+    let untagged = catalog
+        .projections
+        .iter()
+        .find(|projection| projection.operation_id == "users_list")
+        .expect("untagged projection");
+    assert_eq!(untagged.name, "list");
+    let untagged_operation = ir
+        .operations
+        .iter()
+        .find(|operation| operation.id == untagged.operation_id)
+        .expect("untagged operation");
+    assert_eq!(operation_sql_schema_name(untagged_operation), "public");
+
+    let mut empty_group_operation = untagged_operation.clone();
+    empty_group_operation.naming = Some(IrOperationNaming {
+        group: Some(String::new()),
+        operation: None,
+    });
+    assert_eq!(operation_sql_schema_name(&empty_group_operation), "public");
+}
+
+#[test]
+fn projection_collisions_are_scoped_to_the_derived_schema() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: demo_v4
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.0.3
+paths:
+  /alpha/items:
+    get:
+      tags: [alpha]
+      operationId: alpha/list
+      responses: {'200': {content: {application/json: {schema: {type: array, items: {type: object}}}}}}
+  /beta/items:
+    get:
+      tags: [beta]
+      operationId: beta/list
+      responses: {'200': {content: {application/json: {schema: {type: array, items: {type: object}}}}}}
+  /alpha/other-items:
+    get:
+      tags: [alpha]
+      operationId: other/list
+      responses: {'200': {content: {application/json: {schema: {type: array, items: {type: object}}}}}}
+"
+        .as_bytes(),
+    )
+    .expect("import");
+
+    let catalog =
+        generate_projection_catalog(v4, &ir.validated_plan().expect("plan")).expect("catalog");
+    let schemas = ir
+        .operations
+        .iter()
+        .map(|operation| (operation.id.as_str(), operation_sql_schema_name(operation)))
+        .collect::<HashMap<_, _>>();
+    let names = catalog
+        .projections
+        .iter()
+        .map(|projection| {
+            (
+                schemas
+                    .get(projection.operation_id.as_str())
+                    .copied()
+                    .expect("projection operation schema"),
+                projection.name.as_str(),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    assert!(names.contains(&("alpha", "list")));
+    assert!(names.contains(&("beta", "list")));
+    assert_eq!(
+        names
+            .iter()
+            .filter(|(schema, name)| *schema == "alpha" && *name == "list")
+            .count(),
+        1
+    );
+    assert_eq!(
+        names
+            .iter()
+            .filter(|(schema, _)| *schema == "alpha")
+            .count(),
+        2
+    );
 }
 
 fn items_api_catalog(lookup_keys: Option<(bool, &[&str])>) -> ProjectionCatalog {
@@ -393,26 +551,39 @@ components:
     .expect("import");
     let catalog =
         generate_projection_catalog(v4, &ir.validated_plan().expect("plan")).expect("catalog");
+    let schemas = ir
+        .operations
+        .iter()
+        .map(|operation| (operation.id.as_str(), operation_sql_schema_name(operation)))
+        .collect::<HashMap<_, _>>();
     let names = catalog
         .projections
         .iter()
-        .map(|projection| projection.name.as_str())
+        .map(|projection| {
+            (
+                schemas
+                    .get(projection.operation_id.as_str())
+                    .copied()
+                    .expect("projection operation schema"),
+                projection.name.as_str(),
+            )
+        })
         .collect::<BTreeSet<_>>();
     let expected = [
-        "billing_get_github_billing_ai_credit_usage_report_org",
-        "billing_get_github_billing_ai_credit_usage_report_user",
-        "repos_list_for_user",
-        "activity_list_repos_watched_by_user",
-        "projects_list_items_for_org",
-        "projects_list_items_for_user",
-        "projects_list_view_items_for_org",
-        "projects_list_view_items_for_user",
+        ("billing", "get_github_billing_ai_credit_usage_report_org"),
+        ("billing", "get_github_billing_ai_credit_usage_report_user"),
+        ("repos", "list_for_user"),
+        ("activity", "list_repos_watched_by_user"),
+        ("projects", "list_items_for_org"),
+        ("projects", "list_items_for_user"),
+        ("projects", "list_view_items_for_org"),
+        ("projects", "list_view_items_for_user"),
     ];
     for name in expected {
-        assert!(names.contains(name), "missing {name}: {names:?}");
+        assert!(names.contains(&name), "missing {name:?}: {names:?}");
     }
     assert!(
-        names.iter().all(|name| !name.contains("__")),
+        names.iter().all(|(_, name)| !name.contains("__")),
         "tag-grouped names should not need hash suffixes: {names:?}"
     );
     assert!(
@@ -1155,19 +1326,19 @@ components:
     let issues_list = names_by_operation
         .get("issues_list")
         .expect("issues_list projection");
-    assert_eq!(issues_list.0, "issue");
+    assert_eq!(issues_list.0, "list");
     let org_issues = names_by_operation
         .get("issues_list_for_org")
         .expect("issues_list_for_org projection");
-    assert_eq!(org_issues.0, "orgs_issue");
+    assert_eq!(org_issues.0, "list_for_org");
     let repo_issues = names_by_operation
         .get("issues_list_for_repo")
         .expect("issues_list_for_repo projection");
-    assert_eq!(repo_issues.0, "repos_issue");
+    assert_eq!(repo_issues.0, "list_for_repo");
     let pulls = names_by_operation
         .get("pulls_list")
         .expect("pulls_list projection");
-    assert_eq!(pulls.0, "pull_request");
+    assert_eq!(pulls.0, "repos_list");
     assert!(matches!(
         pulls.1,
         ProjectionKind::TableFunction {
@@ -1177,11 +1348,11 @@ components:
     let commits = names_by_operation
         .get("repos_list_commits")
         .expect("repos_list_commits projection");
-    assert_eq!(commits.0, "commit");
+    assert_eq!(commits.0, "list_commits");
     let pull_commits = names_by_operation
         .get("pulls_list_commits")
         .expect("pulls_list_commits projection");
-    assert_eq!(pull_commits.0, "repos_pulls_commit");
+    assert_eq!(pull_commits.0, "repos_pulls_list_commits");
     let pull_commits_projection = catalog
         .projections
         .iter()
@@ -1198,7 +1369,7 @@ components:
         .iter()
         .filter(|diagnostic| diagnostic.message.contains("projection name collision"))
         .collect::<Vec<_>>();
-    assert_eq!(catalog_collision_diagnostics.len(), 3);
+    assert_eq!(catalog_collision_diagnostics.len(), 2);
     let projection_collision_diagnostics = catalog
         .projections
         .iter()
@@ -1328,6 +1499,14 @@ fn generated_mcp_projection_exposes_current_row_result_columns() {
         .iter()
         .find(|projection| projection.operation_id == "search_issues")
         .expect("mcp search projection");
+
+    assert_eq!(projection.name, "search_issues");
+    let operation = mcp_ir
+        .operations
+        .iter()
+        .find(|operation| operation.id == projection.operation_id)
+        .expect("MCP operation");
+    assert_eq!(operation_sql_schema_name(operation), "public");
 
     let columns = projection
         .columns

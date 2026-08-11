@@ -19,10 +19,16 @@ pub(super) fn resolve_projection_name_collisions(
         .iter()
         .map(|operation| (operation.id.as_str(), operation))
         .collect::<HashMap<_, _>>();
-    let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    let mut groups: BTreeMap<(String, String), Vec<usize>> = BTreeMap::new();
     for (index, projection) in projections.iter().enumerate() {
+        let operation = operations.get(projection.operation_id.as_str()).copied();
         groups
-            .entry(projection.name.clone())
+            .entry((
+                operation
+                    .map_or("public", operation_sql_schema_name)
+                    .to_string(),
+                projection.name.clone(),
+            ))
             .or_default()
             .push(index);
     }
@@ -43,10 +49,18 @@ pub(super) fn resolve_projection_name_collisions(
         keep_base_name.insert(keep);
     }
 
-    let mut used_names = HashSet::new();
+    let mut used_names = HashMap::<String, HashSet<String>>::new();
     for index in keep_base_name.iter().copied() {
         if let Some(projection) = projections.get(index) {
-            used_names.insert(projection.name.clone());
+            let operation = operations.get(projection.operation_id.as_str()).copied();
+            used_names
+                .entry(
+                    operation
+                        .map_or("public", operation_sql_schema_name)
+                        .to_string(),
+                )
+                .or_default()
+                .insert(projection.name.clone());
         }
     }
 
@@ -60,9 +74,13 @@ pub(super) fn resolve_projection_name_collisions(
                 .get(*index)
                 .expect("projection index came from projections");
             let operation = operations.get(projection.operation_id.as_str()).copied();
+            let schema_name = operation
+                .map_or("public", operation_sql_schema_name)
+                .to_string();
+            let schema_names = used_names.entry(schema_name).or_default();
             let name =
-                collision_resolved_projection_name(manifest, projection, operation, &used_names);
-            used_names.insert(name.clone());
+                collision_resolved_projection_name(manifest, projection, operation, schema_names);
+            schema_names.insert(name.clone());
             let projection = projections
                 .get_mut(*index)
                 .expect("projection index came from projections");
@@ -112,6 +130,15 @@ fn collision_resolved_projection_name(
         manifest.common.name, projection.operation_id
     ));
     format!("{contextual_name}__{suffix}")
+}
+
+pub fn operation_sql_schema_name(operation: &IrOperation) -> &str {
+    operation
+        .naming
+        .as_ref()
+        .and_then(|naming| naming.group.as_deref())
+        .filter(|group| !group.is_empty())
+        .unwrap_or("public")
 }
 
 fn required_input_count(operation: &IrOperation) -> usize {
@@ -240,9 +267,8 @@ pub(super) fn projection_name(operation: &IrOperation, is_search: bool) -> Strin
 
 pub(super) fn projection_name_from_operation_naming(operation: &IrOperation) -> Option<String> {
     let naming = operation.naming.as_ref()?;
-    let group = non_empty_naming_part(naming.group.as_deref())?;
     let operation = non_empty_naming_part(naming.operation.as_deref())?;
-    Some(format!("{group}_{operation}"))
+    Some(operation.to_string())
 }
 
 fn non_empty_naming_part(part: Option<&str>) -> Option<&str> {

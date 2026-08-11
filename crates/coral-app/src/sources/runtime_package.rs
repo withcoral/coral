@@ -13,8 +13,9 @@ use coral_spec::backends::mcp::{
 use coral_spec::v4::{
     IrExecutionAttachment, Projection, ProjectionKind, ProjectionVisibility, SqlInputExposure,
     SurfaceType, V4MaterializedSource, V4SourceManifest, mcp_projection_arg_specs,
-    openapi_document_metadata, projection_arg_specs, projection_column_specs,
-    projection_filter_specs, request_spec_for_projection, validate_openapi_base_url_template,
+    openapi_document_metadata, operation_sql_schema_name, projection_arg_specs,
+    projection_column_specs, projection_filter_specs, request_spec_for_projection,
+    validate_openapi_base_url_template,
 };
 use coral_spec::{
     PaginationSpec, ParsedTemplate, RequestSpec, ResponseSpec, SourceManifestCommon,
@@ -33,7 +34,8 @@ use crate::sources::model::InstalledSource;
 use crate::state::AppStateLayout;
 use crate::workspaces::WorkspaceName;
 
-const RUNTIME_CONTRACT_FINGERPRINT_VERSION: u32 = 3;
+const LEGACY_RUNTIME_CONTRACT_FINGERPRINT_VERSION: u32 = 3;
+const V4_RUNTIME_CONTRACT_FINGERPRINT_VERSION: u32 = 5;
 
 /// Versioned, non-secret identity for the installed runtime contract used by
 /// query execution and derived local state.
@@ -65,7 +67,7 @@ struct RuntimeContractFingerprintInput<'a> {
     /// Stable within this explicitly versioned fingerprint format. Using the
     /// compiled component keeps artifact provenance and diagnostics out while
     /// covering every backend-ready runtime field.
-    v4_runtime_contract: Option<V4RuntimeContract<'a>>,
+    v4_runtime_contract: Option<Vec<V4RuntimeContract<'a>>>,
 }
 
 /// Canonical serialization of the compiled v4 runtime component, hashed by
@@ -85,23 +87,32 @@ enum V4RuntimeContract<'a> {
 pub(crate) fn runtime_contract_fingerprint(
     manifest_yaml: &str,
     variables: &BTreeMap<String, String>,
-    v4_component: Option<&RuntimeSourceComponent>,
+    v4_components: Option<&[RuntimeSourceComponent]>,
 ) -> Result<RuntimeContractFingerprint, AppError> {
-    let v4_runtime_contract = match v4_component {
-        Some(RuntimeSourceComponent::Database(database)) => {
-            Some(V4RuntimeContract::Database(database))
-        }
-        Some(RuntimeSourceComponent::Http(http)) => Some(V4RuntimeContract::Http(http)),
-        Some(RuntimeSourceComponent::Mcp(mcp)) => Some(V4RuntimeContract::Mcp(mcp)),
-        Some(RuntimeSourceComponent::File(_)) => {
-            return Err(AppError::Internal(
-                "DSL v4 runtime fingerprint received a file component".to_string(),
-            ));
-        }
-        None => None,
+    let v4_runtime_contract = v4_components
+        .map(|components| {
+            components
+                .iter()
+                .map(|component| match component {
+                    RuntimeSourceComponent::Database(database) => {
+                        Ok(V4RuntimeContract::Database(database))
+                    }
+                    RuntimeSourceComponent::Http(http) => Ok(V4RuntimeContract::Http(http)),
+                    RuntimeSourceComponent::Mcp(mcp) => Ok(V4RuntimeContract::Mcp(mcp)),
+                    RuntimeSourceComponent::File(_) => Err(AppError::Internal(
+                        "DSL v4 runtime fingerprint received a file component".to_string(),
+                    )),
+                })
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()?;
+    let version = if v4_components.is_some() {
+        V4_RUNTIME_CONTRACT_FINGERPRINT_VERSION
+    } else {
+        LEGACY_RUNTIME_CONTRACT_FINGERPRINT_VERSION
     };
     let input = RuntimeContractFingerprintInput {
-        version: RUNTIME_CONTRACT_FINGERPRINT_VERSION,
+        version,
         manifest_sha256: sha256_hex(manifest_yaml.as_bytes()),
         variables,
         v4_runtime_contract,
@@ -112,7 +123,7 @@ pub(crate) fn runtime_contract_fingerprint(
         ))
     })?;
     Ok(RuntimeContractFingerprint(format!(
-        "v{RUNTIME_CONTRACT_FINGERPRINT_VERSION}:{}",
+        "v{version}:{}",
         sha256_hex(&bytes)
     )))
 }
@@ -131,8 +142,8 @@ pub(crate) fn query_source_from_installed_manifest(
 ) -> Result<LoadedRuntimeSource, AppError> {
     let source_spec = &installed.source_spec;
     let (query_source, runtime_contract_fingerprint) = if let Some(v4) = source_spec.as_v4() {
-        let component = if v4.surface.surface_type == SurfaceType::Database {
-            Some(runtime_component_for_v4_database_source(v4)?)
+        let components = if v4.surface.surface_type == SurfaceType::Database {
+            vec![runtime_component_for_v4_database_source(v4)?]
         } else {
             let materialized = load_v4_materialization_with_reporter(
                 layout,
@@ -142,7 +153,7 @@ pub(crate) fn query_source_from_installed_manifest(
                 v4,
                 diagnostic_reporter,
             )?;
-            runtime_component_for_v4_source(v4, &materialized).map_err(|error| match error {
+            runtime_components_for_v4_source(v4, &materialized).map_err(|error| match error {
                 error @ AppError::UnsupportedV4IdentityRequirements { .. } => error,
                 error => incompatible_materialization_error(
                     &source.name,
@@ -153,19 +164,8 @@ pub(crate) fn query_source_from_installed_manifest(
         let runtime_contract_fingerprint = runtime_contract_fingerprint(
             &installed.manifest_yaml,
             &source.variables,
-            component.as_ref(),
+            Some(&components),
         )?;
-        let catalog_target = if matches!(
-            component.as_ref(),
-            Some(RuntimeSourceComponent::Database(_))
-        ) {
-            RuntimeCatalogTarget::Source
-        } else {
-            // Static DSL v4 placement changes only when canonical projection
-            // schemas are materialized; until then preserve the existing
-            // default-catalog runtime contract.
-            RuntimeCatalogTarget::Default
-        };
         let query_source = QuerySource::from_runtime_components(
             RuntimeSourcePackage {
                 source_name: source_spec.schema_name().to_string(),
@@ -174,8 +174,8 @@ pub(crate) fn query_source_from_installed_manifest(
                 declared_inputs: source_spec.declared_inputs().to_vec(),
                 test_queries: source_spec.test_queries().to_vec(),
                 identity_requirements: None,
-                catalog_target,
-                components: component.into_iter().collect(),
+                catalog_target: RuntimeCatalogTarget::Source,
+                components,
             },
             source.variables.clone(),
             resolved_secrets,
@@ -195,27 +195,29 @@ pub(crate) fn query_source_from_installed_manifest(
     })
 }
 
-pub(crate) fn runtime_component_for_v4_source(
+pub(crate) fn runtime_components_for_v4_source(
     manifest: &V4SourceManifest,
     materialized: &V4MaterializedSource,
-) -> Result<Option<RuntimeSourceComponent>, AppError> {
+) -> Result<Vec<RuntimeSourceComponent>, AppError> {
     if manifest.identity_requirements.is_some() {
         return Err(AppError::UnsupportedV4IdentityRequirements {
             source_name: manifest.common.name.clone(),
         });
     }
-    if !has_published_projection(materialized) {
-        return Ok(None);
-    }
     match manifest.surface.surface_type {
-        SurfaceType::OpenApi => Ok(Some(RuntimeSourceComponent::Http(
-            http_manifest_for_surface(manifest, materialized)?,
-        ))),
-        SurfaceType::Mcp => Ok(Some(RuntimeSourceComponent::Mcp(mcp_manifest_for_surface(
-            manifest,
-            materialized,
-        )?))),
-        SurfaceType::Database => Ok(Some(runtime_component_for_v4_database_source(manifest)?)),
+        SurfaceType::OpenApi => Ok(http_manifests_for_surface(manifest, materialized)?
+            .into_iter()
+            .map(RuntimeSourceComponent::Http)
+            .collect()),
+        SurfaceType::Mcp => Ok(if has_published_projection(materialized) {
+            vec![RuntimeSourceComponent::Mcp(mcp_manifest_for_surface(
+                manifest,
+                materialized,
+            )?)]
+        } else {
+            Vec::new()
+        }),
+        SurfaceType::Database => Ok(vec![runtime_component_for_v4_database_source(manifest)?]),
     }
 }
 
@@ -246,10 +248,10 @@ fn has_published_projection(materialized: &V4MaterializedSource) -> bool {
         .any(|projection| projection.visibility == ProjectionVisibility::Published)
 }
 
-fn http_manifest_for_surface(
+fn http_manifests_for_surface(
     manifest: &V4SourceManifest,
     materialized: &V4MaterializedSource,
-) -> Result<HttpSourceManifest, AppError> {
+) -> Result<Vec<HttpSourceManifest>, AppError> {
     let surface = &manifest.surface;
     let openapi_runtime = surface.openapi_runtime().ok_or_else(|| {
         AppError::FailedPrecondition("DSL v4 surface is not an OpenAPI surface".to_string())
@@ -262,8 +264,7 @@ fn http_manifest_for_surface(
         .iter()
         .map(|operation| (operation.id.as_str(), operation))
         .collect::<HashMap<_, _>>();
-    let mut tables = Vec::new();
-    let mut functions = Vec::new();
+    let mut schemas = BTreeMap::<String, (Vec<HttpTableSpec>, Vec<SourceTableFunctionSpec>)>::new();
     for projection in materialized
         .projections
         .projections
@@ -287,6 +288,9 @@ fn http_manifest_for_surface(
         let request = request_spec_for_projection(projection, operation)
             .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
         let columns = projection_column_specs(projection);
+        let (tables, functions) = schemas
+            .entry(operation_sql_schema_name(operation).to_string())
+            .or_default();
         match &projection.kind {
             ProjectionKind::Table => {
                 tables.push(HttpTableSpec {
@@ -326,22 +330,26 @@ fn http_manifest_for_surface(
             }
         }
     }
-    Ok(HttpSourceManifest {
-        common: SourceManifestCommon {
-            dsl_version: manifest.common.dsl_version,
-            name: manifest.common.name.clone(),
-            version: String::new(),
-            description: manifest.common.description.clone(),
-            test_queries: Vec::new(),
-        },
-        base_url: surface_base_url(manifest, surface, materialized_surface)?,
-        auth: openapi_runtime.auth.clone(),
-        request_headers: openapi_runtime.request_headers.clone(),
-        rate_limit: openapi_runtime.rate_limit.clone(),
-        tables,
-        functions,
-        declared_inputs: manifest.declared_inputs.clone(),
-    })
+    let base_url = surface_base_url(manifest, surface, materialized_surface)?;
+    Ok(schemas
+        .into_iter()
+        .map(|(schema_name, (tables, functions))| HttpSourceManifest {
+            common: SourceManifestCommon {
+                dsl_version: manifest.common.dsl_version,
+                name: schema_name,
+                version: String::new(),
+                description: manifest.common.description.clone(),
+                test_queries: Vec::new(),
+            },
+            base_url: base_url.clone(),
+            auth: openapi_runtime.auth.clone(),
+            request_headers: openapi_runtime.request_headers.clone(),
+            rate_limit: openapi_runtime.rate_limit.clone(),
+            tables,
+            functions,
+            declared_inputs: manifest.declared_inputs.clone(),
+        })
+        .collect())
 }
 
 fn rest_execution_for_operation(
@@ -422,7 +430,7 @@ fn mcp_manifest_for_surface(
     Ok(McpSourceManifest {
         common: SourceManifestCommon {
             dsl_version: manifest.common.dsl_version,
-            name: manifest.common.name.clone(),
+            name: "public".to_string(),
             version: String::new(),
             description: manifest.common.description.clone(),
             test_queries: Vec::new(),
@@ -596,9 +604,21 @@ mod tests {
     use crate::bootstrap::AppError;
 
     use super::{
-        runtime_component_for_v4_database_source, runtime_component_for_v4_source,
-        runtime_contract_fingerprint, surface_base_url,
+        runtime_component_for_v4_database_source, runtime_contract_fingerprint, surface_base_url,
     };
+
+    fn runtime_component_for_v4_source(
+        manifest: &V4SourceManifest,
+        materialized: &V4MaterializedSource,
+    ) -> Result<Option<RuntimeSourceComponent>, AppError> {
+        let mut components = super::runtime_components_for_v4_source(manifest, materialized)?;
+        if components.len() > 1 {
+            return Err(AppError::Internal(
+                "test fixture must use at most one schema".to_string(),
+            ));
+        }
+        Ok(components.pop())
+    }
 
     fn surface_without_authored_base_url() -> V4Surface {
         openapi_surface_with_base_url("")
@@ -1209,8 +1229,12 @@ surface:
         let component = runtime_component_for_v4_source(&manifest, &materialized)
             .expect("component")
             .expect("published component");
-        let first = runtime_contract_fingerprint("name: demo", &BTreeMap::new(), Some(&component))
-            .expect("first fingerprint");
+        let first = runtime_contract_fingerprint(
+            "name: demo",
+            &BTreeMap::new(),
+            Some(std::slice::from_ref(&component)),
+        )
+        .expect("first fingerprint");
 
         materialized.surface.raw_source_document_path = PathBuf::from("/second/raw.json");
         materialized.surface.normalized_source_document_path =
@@ -1218,18 +1242,24 @@ surface:
         let moved_component = runtime_component_for_v4_source(&manifest, &materialized)
             .expect("component")
             .expect("published component");
-        let moved =
-            runtime_contract_fingerprint("name: demo", &BTreeMap::new(), Some(&moved_component))
-                .expect("moved fingerprint");
+        let moved = runtime_contract_fingerprint(
+            "name: demo",
+            &BTreeMap::new(),
+            Some(std::slice::from_ref(&moved_component)),
+        )
+        .expect("moved fingerprint");
         assert_eq!(first, moved);
 
         materialized.surface.source_document_sha256 = Some("document-two".to_string());
         let changed_component = runtime_component_for_v4_source(&manifest, &materialized)
             .expect("component")
             .expect("published component");
-        let changed =
-            runtime_contract_fingerprint("name: demo", &BTreeMap::new(), Some(&changed_component))
-                .expect("changed fingerprint");
+        let changed = runtime_contract_fingerprint(
+            "name: demo",
+            &BTreeMap::new(),
+            Some(std::slice::from_ref(&changed_component)),
+        )
+        .expect("changed fingerprint");
         assert_eq!(first, changed);
 
         materialized.fingerprint = None;
@@ -1241,11 +1271,11 @@ surface:
         let without_optional_provenance = runtime_contract_fingerprint(
             "name: demo",
             &BTreeMap::new(),
-            Some(&without_provenance_component),
+            Some(std::slice::from_ref(&without_provenance_component)),
         )
         .expect("fingerprint without optional provenance");
         assert_eq!(first, without_optional_provenance);
-        assert!(without_optional_provenance.as_str().starts_with("v3:"));
+        assert!(without_optional_provenance.as_str().starts_with("v5:"));
     }
 
     #[test]
@@ -1290,12 +1320,18 @@ surface:
         let second_component = runtime_component_for_v4_source(&manifest, &second_materialized)
             .expect("component")
             .expect("published component");
-        let first =
-            runtime_contract_fingerprint("name: demo", &BTreeMap::new(), Some(&first_component))
-                .expect("first fingerprint");
-        let second =
-            runtime_contract_fingerprint("name: demo", &BTreeMap::new(), Some(&second_component))
-                .expect("second fingerprint");
+        let first = runtime_contract_fingerprint(
+            "name: demo",
+            &BTreeMap::new(),
+            Some(std::slice::from_ref(&first_component)),
+        )
+        .expect("first fingerprint");
+        let second = runtime_contract_fingerprint(
+            "name: demo",
+            &BTreeMap::new(),
+            Some(std::slice::from_ref(&second_component)),
+        )
+        .expect("second fingerprint");
 
         assert_ne!(first, second);
     }
@@ -1349,7 +1385,7 @@ surface:
         let coral_engine::RuntimeSourceComponent::Http(http) = component else {
             panic!("expected HTTP component");
         };
-        assert_eq!(http.common.name, "github_v4");
+        assert_eq!(http.common.name, "public");
         let table_pagination = &http.tables.first().expect("http table").pagination;
 
         assert_eq!(table_pagination.mode, PaginationMode::Page);

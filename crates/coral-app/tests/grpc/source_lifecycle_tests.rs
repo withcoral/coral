@@ -72,6 +72,169 @@ async fn import_source_persists_and_lists() {
 }
 
 #[tokio::test]
+async fn installed_v4_openapi_uses_materialized_catalog_identities() {
+    let harness = GrpcHarness::new().await;
+    let _server = harness.import_v4_openapi_catalog_fixture().await;
+
+    assert_eq!(
+        harness
+            .execute_sql_rows("SELECT id, label FROM openapi_v4.alpha.list")
+            .await,
+        vec![serde_json::json!({"id": 1, "label": "alpha"})]
+    );
+    assert_eq!(
+        harness
+            .execute_sql_rows("SELECT id, label FROM openapi_v4.beta.list")
+            .await,
+        vec![serde_json::json!({"id": 2, "label": "beta"})]
+    );
+    assert_eq!(
+        harness
+            .execute_sql_rows("SELECT id, label FROM openapi_v4.public.list")
+            .await,
+        vec![serde_json::json!({"id": 3, "label": "public"})]
+    );
+    assert_eq!(
+        harness
+            .execute_sql_rows("SELECT id, label FROM openapi_v4.alpha.get(id => '42')",)
+            .await,
+        vec![serde_json::json!({"id": 42, "label": "alpha detail"})]
+    );
+
+    let projections_path =
+        source_dir(harness.config_dir(), "openapi_v4").join("materialized/v4/projections.yaml");
+    let mut projections: serde_yaml::Value =
+        serde_yaml::from_slice(&fs::read(&projections_path).expect("read installed projections"))
+            .expect("parse installed projections");
+    projections["artifact_schema_version"] = serde_yaml::Value::Number(0.into());
+    fs::write(
+        &projections_path,
+        serde_yaml::to_string(&projections).expect("encode stale projections"),
+    )
+    .expect("write stale projections");
+    let harness = Box::pin(harness.restart()).await;
+
+    let error = harness
+        .source_client()
+        .validate_source(Request::new(ValidateSourceRequest {
+            workspace: Some(default_workspace()),
+            name: "openapi_v4".to_string(),
+        }))
+        .await
+        .expect_err("stale materialization must not be silently regenerated");
+    assert_eq!(error.code(), tonic::Code::FailedPrecondition);
+    assert!(
+        error.message().contains("Reinstall the source")
+            && error.message().contains("explicitly regenerate"),
+        "unexpected stale materialization error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn installed_v4_mcp_uses_public_catalog_identities() {
+    let harness = GrpcHarness::new().await;
+    let _server = harness.import_v4_mcp_catalog_fixture().await;
+    let validated = harness.validate_source("mcp_v4").await;
+    assert_eq!(validated.tables.len(), 1);
+
+    let table_rows = harness
+        .execute_sql_rows("SELECT result FROM mcp_v4.public.list_items")
+        .await;
+    assert_eq!(table_rows.len(), 1);
+    assert!(
+        table_rows[0]["result"]
+            .as_str()
+            .is_some_and(|result| { result.contains("from MCP") })
+    );
+    let function_rows = harness
+        .execute_sql_rows("SELECT result FROM mcp_v4.public.get_item(id => '42')")
+        .await;
+    assert_eq!(function_rows.len(), 1);
+    assert!(
+        function_rows[0]["result"]
+            .as_str()
+            .is_some_and(|result| { result.contains("MCP detail") && result.contains("42") })
+    );
+
+    let catalog = harness
+        .catalog_client()
+        .list_catalog(Request::new(ListCatalogRequest {
+            workspace: Some(default_workspace()),
+            catalog_name: "mcp_v4".to_string(),
+            schema_name: "public".to_string(),
+            kind: 0,
+            pagination: None,
+        }))
+        .await
+        .expect("list v4 MCP catalog")
+        .into_inner();
+    assert_eq!(catalog.items.len(), 2);
+    assert!(catalog.items.iter().all(|item| match item.item.as_ref() {
+        Some(catalog_item::Item::Table(table)) =>
+            table.catalog_name == "mcp_v4" && table.schema_name == "public",
+        Some(catalog_item::Item::TableFunction(function)) =>
+            function.catalog_name == "mcp_v4" && function.schema_name == "public",
+        None => false,
+    }));
+
+    for sql in [
+        "SELECT id FROM mcp_v4.list_items",
+        "SELECT id FROM mcp_v4.get_item(id => '42')",
+    ] {
+        let error = harness
+            .query_client()
+            .execute_sql(Request::new(ExecuteSqlRequest {
+                workspace: Some(default_workspace()),
+                sql: sql.to_string(),
+                guide_read_context: None,
+                task_attribution: None,
+            }))
+            .await
+            .expect_err("former two-part MCP name must fail");
+        assert!(matches!(
+            error.code(),
+            tonic::Code::NotFound | tonic::Code::InvalidArgument
+        ));
+    }
+
+    let source_root = source_dir(harness.config_dir(), "mcp_v4");
+    let generated_path = source_root.join("materialized/v4/projections.yaml");
+    let mut projections: serde_yaml::Value =
+        serde_yaml::from_slice(&fs::read(&generated_path).expect("read generated MCP projections"))
+            .expect("parse generated MCP projections");
+    let projection_list = projections["projections"]
+        .as_sequence_mut()
+        .expect("projection list");
+    let get_item = projection_list
+        .iter_mut()
+        .find(|projection| projection["name"] == "get_item")
+        .expect("get_item projection");
+    get_item["name"] = "list_items".into();
+    let override_path = source_root.join("overrides/projections.yaml");
+    fs::create_dir_all(override_path.parent().expect("override directory"))
+        .expect("create override directory");
+    fs::write(
+        override_path,
+        serde_yaml::to_string(&projections).expect("encode colliding projections"),
+    )
+    .expect("write colliding projection override");
+    let harness = Box::pin(harness.restart()).await;
+
+    let error = harness
+        .source_client()
+        .validate_source(Request::new(ValidateSourceRequest {
+            workspace: Some(default_workspace()),
+            name: "mcp_v4".to_string(),
+        }))
+        .await
+        .expect_err("MCP table and function names share the public namespace");
+    assert!(
+        error.message().contains("public.list_items") && error.message().contains("repeated"),
+        "unexpected MCP collision error: {error}"
+    );
+}
+
+#[tokio::test]
 async fn import_source_with_secrets_and_variables_get_source_returns_details() {
     let harness = GrpcHarness::new().await;
 

@@ -43,11 +43,9 @@ query with `coral sql`. See
 [Query your data](/getting-started/quickstart#3-query-your-data) for a complete
 example.
 
-Here, `github` is the query-visible SQL schema. JSON and MCP results include it
-in `sql_reference`. A catalog-backed table uses a three-part
-`catalog.schema.table` reference. For a source with multiple runtime components,
-the query-visible schema can differ from the installed source name because each
-component can publish its own SQL schema.
+Here, `github` is a DSL v3 source's query-visible SQL schema. JSON and MCP
+results include it in `sql_reference`. DSL v4 results use the source name as a
+catalog and provide a three-part `catalog.schema.relation` reference.
 
 When more fields matched than were shown, the result reports how many were left
 out so you can widen the query rather than assume the column does not exist.

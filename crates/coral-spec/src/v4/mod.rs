@@ -3,12 +3,12 @@
     reason = "DSL v4 contracts are field-heavy artifact models documented in the PRD."
 )]
 
-pub const V4_ARTIFACT_SCHEMA_VERSION: u32 = 6;
+pub const V4_ARTIFACT_SCHEMA_VERSION: u32 = 7;
 pub const SURFACE_IMPORTER_VERSION: &str = "surface-import-v4";
 pub const OPENAPI_IMPORTER_VERSION: &str = "openapi-v9";
 pub const MCP_IMPORTER_VERSION: &str = "mcp-tools-v4";
 pub const OPERATION_METADATA_GENERATOR_VERSION: &str = "operation-metadata-v4";
-pub const PROJECTION_GENERATOR_VERSION: &str = "derive-read-v13";
+pub const PROJECTION_GENERATOR_VERSION: &str = "derive-read-v14";
 
 mod artifacts;
 mod diagnostics;
@@ -57,8 +57,8 @@ pub use operation_metadata::{
 pub use projections::{
     Projection, ProjectionCatalog, ProjectionColumn, ProjectionInput, ProjectionKind,
     ProjectionVisibility, SqlInputExposure, generate_projection_catalog, mcp_projection_arg_specs,
-    projection_arg_specs, projection_column_specs, projection_filter_specs,
-    request_spec_for_projection, validate_projection_compatibility,
+    operation_sql_schema_name, projection_arg_specs, projection_column_specs,
+    projection_filter_specs, request_spec_for_projection, validate_projection_compatibility,
 };
 pub use schema::generated_v4_source_manifest_schema;
 pub use surfaces::{

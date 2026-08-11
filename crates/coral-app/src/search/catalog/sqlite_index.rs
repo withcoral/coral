@@ -331,10 +331,11 @@ fn insert_catalog_source_owners(
     )?;
     let mut source_owners = BTreeMap::new();
     for document in &snapshot.documents {
-        source_owners.insert(
-            document.source_name.as_str(),
-            document.owner_source_name.as_str(),
-        );
+        let runtime_namespace = document
+            .catalog_name
+            .as_deref()
+            .unwrap_or(&document.source_name);
+        source_owners.insert(runtime_namespace, document.owner_source_name.as_str());
     }
     for (source_name, owner_source_name) in source_owners {
         insert.execute(params![
@@ -477,7 +478,7 @@ pub(crate) fn clear_catalog_source_documents_in_transaction(
               FROM catalog_documents AS documents
               INNER JOIN catalog_source_owners AS owners
                   ON owners.workspace = documents.workspace
-                 AND owners.source_name = documents.source_name
+                 AND owners.source_name = COALESCE(documents.catalog_name, documents.source_name)
               WHERE documents.workspace = ?1
                 AND owners.owner_source_name = ?2
           )
@@ -488,7 +489,7 @@ pub(crate) fn clear_catalog_source_documents_in_transaction(
         "
         DELETE FROM catalog_documents
         WHERE workspace = ?1
-          AND source_name IN (
+          AND COALESCE(catalog_name, source_name) IN (
               SELECT source_name
               FROM catalog_source_owners
               WHERE workspace = ?1 AND owner_source_name = ?2

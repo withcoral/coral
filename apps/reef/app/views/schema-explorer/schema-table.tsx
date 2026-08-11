@@ -23,14 +23,14 @@ interface DisplayColumn {
 // The parent schema layout resolves its schema before rendering this Outlet, so
 // table metadata (description, required filters) is available synchronously.
 function useSelectedTable(): {
-  catalogName?: string
+  catalogName: string
   schemaName: string
   tableName: string
   table?: TableDef
 } {
   const schema = useOutletContext<SchemaResponse>()
   const params = useParams()
-  const catalogName = params.catalogName
+  const catalogName = params.catalogName ?? ''
   const schemaName = params.schemaName ?? ''
   const tableName = params.tableName ?? ''
   return {

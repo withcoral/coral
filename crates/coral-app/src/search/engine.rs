@@ -664,7 +664,7 @@ mod tests {
                 table_functions: Vec::new(),
             },
             failed_source_names: BTreeSet::new(),
-            runtime_schema_owners: BTreeMap::new(),
+            runtime_namespace_owners: BTreeMap::new(),
         }
     }
 
