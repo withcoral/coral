@@ -7,7 +7,7 @@ use super::workspace_state::{hold_user_for_workspace_creation, try_create_worksp
 use super::{CoralDb, DbError, DbRepos};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum EnsureUserDefaultWorkspaceOutcome {
+pub(crate) enum DefaultWorkspaceProvisioningOutcome {
     Created(String),
     AlreadyExists(String),
     UserNotFound,
@@ -68,19 +68,19 @@ impl CoralDb {
         &self,
         user_id: &str,
         now_unix_nanos: i64,
-    ) -> Result<EnsureUserDefaultWorkspaceOutcome, DbError> {
+    ) -> Result<DefaultWorkspaceProvisioningOutcome, DbError> {
         let mut tx = self.begin().await?;
         if !hold_user_for_workspace_creation(&mut tx, user_id).await? {
             tx.rollback().await?;
-            return Ok(EnsureUserDefaultWorkspaceOutcome::UserNotFound);
+            return Ok(DefaultWorkspaceProvisioningOutcome::UserNotFound);
         }
         let workspace_id = default_workspace_id(user_id);
         if try_create_workspace_with_owner(&mut tx, &workspace_id, user_id, now_unix_nanos).await? {
             tx.commit().await?;
-            Ok(EnsureUserDefaultWorkspaceOutcome::Created(workspace_id))
+            Ok(DefaultWorkspaceProvisioningOutcome::Created(workspace_id))
         } else {
             tx.rollback().await?;
-            Ok(EnsureUserDefaultWorkspaceOutcome::AlreadyExists(
+            Ok(DefaultWorkspaceProvisioningOutcome::AlreadyExists(
                 workspace_id,
             ))
         }
@@ -110,7 +110,7 @@ mod tests {
     use sea_query::{Expr, ExprTrait, Query};
     use tempfile::tempdir;
 
-    use super::EnsureUserDefaultWorkspaceOutcome;
+    use super::DefaultWorkspaceProvisioningOutcome;
     use crate::state::AppStateLayout;
     use crate::state::db::repositories::users::UpsertLoginOutcome;
     use crate::state::db::schema::Tasks;
@@ -154,7 +154,7 @@ mod tests {
             db.ensure_user_default_workspace(&collision_user, 21)
                 .await
                 .expect("detect collision"),
-            EnsureUserDefaultWorkspaceOutcome::AlreadyExists(collision_workspace.clone())
+            DefaultWorkspaceProvisioningOutcome::AlreadyExists(collision_workspace.clone())
         );
         assert_eq!(
             session
@@ -174,11 +174,11 @@ mod tests {
         assert!(matches!(
             (first.expect("first ensure"), second.expect("second ensure")),
             (
-                EnsureUserDefaultWorkspaceOutcome::Created(_),
-                EnsureUserDefaultWorkspaceOutcome::AlreadyExists(_)
+                DefaultWorkspaceProvisioningOutcome::Created(_),
+                DefaultWorkspaceProvisioningOutcome::AlreadyExists(_)
             ) | (
-                EnsureUserDefaultWorkspaceOutcome::AlreadyExists(_),
-                EnsureUserDefaultWorkspaceOutcome::Created(_)
+                DefaultWorkspaceProvisioningOutcome::AlreadyExists(_),
+                DefaultWorkspaceProvisioningOutcome::Created(_)
             )
         ));
     }
