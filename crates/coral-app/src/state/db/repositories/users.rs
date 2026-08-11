@@ -9,7 +9,7 @@
 use sea_query::{Expr, ExprTrait, OnConflict, Order, Query};
 
 use crate::state::db::schema::Users;
-use crate::state::db::{DbError, DbSession};
+use crate::state::db::{CoralTx, DbError, DbSession};
 
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
 pub(crate) struct UserRecord {
@@ -108,6 +108,23 @@ where
             .and_where(Expr::col(Users::Subject).eq(subject))
             .to_owned();
         self.session.fetch_optional(statement).await
+    }
+}
+
+impl UsersRepo<'_, CoralTx<'_>> {
+    pub(crate) async fn hold_for_workspace_creation(
+        &mut self,
+        user_id: &str,
+    ) -> Result<bool, DbError> {
+        let statement = Query::update()
+            .table(Users::Table)
+            .value(
+                Users::LastLoginAtUnixNanos,
+                Expr::col(Users::LastLoginAtUnixNanos),
+            )
+            .and_where(Expr::col(Users::UserId).eq(user_id))
+            .to_owned();
+        Ok(self.session.execute_rows_affected(statement).await? == 1)
     }
 }
 
