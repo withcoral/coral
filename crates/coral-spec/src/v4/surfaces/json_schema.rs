@@ -463,6 +463,15 @@ pub(crate) fn json_schema_type_contains(schema: &Value, expected: &str) -> bool 
     }
 }
 
+/// Whether the schema declares a `type` at all.
+///
+/// Separates "declared a type this code has no shape for" from "declared
+/// nothing", which JSON Schema reads as accepting any instance and the importer
+/// reads as an object.
+pub(crate) fn json_schema_has_declared_type(schema: &Value) -> bool {
+    !schema_type_values(schema).is_empty()
+}
+
 pub(crate) fn json_schema_type_display(schema: &Value) -> String {
     match schema.get("type") {
         Some(Value::String(value)) => value.clone(),

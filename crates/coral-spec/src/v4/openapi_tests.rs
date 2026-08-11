@@ -3361,3 +3361,204 @@ fn document_metadata_applies_the_same_version_gate_as_import() {
         "{error}"
     );
 }
+
+/// Imports a document whose one operation returns `response_schema`.
+#[expect(
+    clippy::unwrap_in_result,
+    reason = "Only the import's own result is under test; a manifest that will not parse is a bug in this file, not an outcome to return."
+)]
+fn import_response_schema(response_schema: &str) -> crate::Result<ImportedSurface> {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: type_array_probe
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    import_openapi_surface(
+        v4,
+        &v4.surface,
+        format!(
+            r"
+openapi: 3.0.3
+paths:
+  /items:
+    get:
+      operationId: items/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+{response_schema}
+"
+        )
+        .as_bytes(),
+    )
+}
+
+#[test]
+fn importer_reads_a_nullable_collection_as_a_list() {
+    // The type array is what a nullable schema looks like once `nullable` is
+    // gone. Read as a string, `type` came back as `None` here and the schema
+    // fell through to the typeless default, so the collection was imported as a
+    // single object row and every item was lost.
+    let imported = import_response_schema(
+        r"                type: [array, 'null']
+                items:
+                  type: object
+                  properties:
+                    id: {type: string}",
+    )
+    .expect("import");
+
+    let operation = imported.operations.first().expect("operation");
+    assert_eq!(operation.output.cardinality, OutputCardinality::List);
+}
+
+#[test]
+fn importer_reads_a_nullable_object_as_an_object() {
+    // This case survived the string-only read by luck rather than by design: an
+    // unreadable `type` fell through to a default of "object", which is what a
+    // nullable object needed anyway. Pinned because the new dispatch reaches the
+    // same answer deliberately, and a later reshuffle of the branch order should
+    // not be free to lose it.
+    let imported = import_response_schema(
+        r"                type: [object, 'null']
+                properties:
+                  id: {type: string}
+                  name: {type: string}",
+    )
+    .expect("import");
+
+    let operation = imported.operations.first().expect("operation");
+    assert_eq!(operation.output.cardinality, OutputCardinality::Singleton);
+    let IrTypeShape::Object { fields } = &imported
+        .types
+        .iter()
+        .find(|ty| ty.id == operation.output.type_ref)
+        .expect("row type")
+        .shape
+    else {
+        panic!("a nullable object should keep its fields rather than fall back to opaque JSON");
+    };
+    let names: Vec<&str> = fields.iter().map(|field| field.name.as_str()).collect();
+    assert_eq!(names, ["id", "name"]);
+}
+
+#[test]
+fn importer_reads_a_nullable_collection_of_objects_into_row_fields() {
+    // Nullable rows inside a plain collection, which the "object" default also
+    // happened to get right. Kept as the composed counterpart to the two cases
+    // above, and as the anchor for the nullability assertion below.
+    let imported = import_response_schema(
+        r"                type: array
+                items:
+                  type: [object, 'null']
+                  properties:
+                    id: {type: string}
+                    label: {type: string}",
+    )
+    .expect("import");
+
+    let operation = imported.operations.first().expect("operation");
+    assert_eq!(operation.output.cardinality, OutputCardinality::List);
+    let row_type = imported
+        .types
+        .iter()
+        .find(|ty| ty.id == operation.output.type_ref)
+        .expect("row type");
+    assert!(
+        !row_type.nullable,
+        "reading 'null' out of a type array is the 3.1 dialect's job; 3.0 spells nullability with its own keyword"
+    );
+    let IrTypeShape::Object { fields } = &row_type.shape else {
+        panic!("a nullable row should keep its fields rather than fall back to opaque JSON");
+    };
+    let names: Vec<&str> = fields.iter().map(|field| field.name.as_str()).collect();
+    assert_eq!(names, ["id", "label"]);
+}
+
+#[test]
+fn importer_still_reads_a_typeless_schema_as_an_object() {
+    // Declaring no type at all is not the same as declaring one this code has
+    // no shape for: JSON Schema accepts any instance, and the importer has
+    // always read that as an object.
+    let imported = import_response_schema(
+        r"                properties:
+                  id: {type: string}",
+    )
+    .expect("import");
+
+    let operation = imported.operations.first().expect("operation");
+    assert_eq!(operation.output.cardinality, OutputCardinality::Singleton);
+    let IrTypeShape::Object { fields } = &imported
+        .types
+        .iter()
+        .find(|ty| ty.id == operation.output.type_ref)
+        .expect("row type")
+        .shape
+    else {
+        panic!("a typeless schema with properties should still be an object");
+    };
+    assert_eq!(fields.len(), 1);
+}
+
+#[test]
+fn importer_reads_a_nullable_array_property_as_a_list() {
+    // The type-import half of the same fault. A nullable collection nested as a
+    // property never reached the array branch: its `type` did not read as a
+    // string, so it took the "object" default, found neither `properties` nor
+    // `additionalProperties`, and collapsed to opaque JSON — losing the element
+    // type of every optional list an API returns.
+    let imported = import_response_schema(
+        r"                type: object
+                properties:
+                  id: {type: string}
+                  tags:
+                    type: [array, 'null']
+                    items: {type: string}",
+    )
+    .expect("import");
+
+    let operation = imported.operations.first().expect("operation");
+    let IrTypeShape::Object { fields } = &imported
+        .types
+        .iter()
+        .find(|ty| ty.id == operation.output.type_ref)
+        .expect("row type")
+        .shape
+    else {
+        panic!("expected an object row");
+    };
+    let tags = fields
+        .iter()
+        .find(|field| field.name == "tags")
+        .expect("tags field");
+    let IrTypeShape::List { item_type_ref } = &imported
+        .types
+        .iter()
+        .find(|ty| ty.id == tags.type_ref)
+        .expect("tags type")
+        .shape
+    else {
+        panic!("a nullable array property should import as a list, not opaque JSON");
+    };
+    assert!(
+        matches!(
+            imported
+                .types
+                .iter()
+                .find(|ty| &ty.id == item_type_ref)
+                .expect("item type")
+                .shape,
+            IrTypeShape::Scalar(IrScalarType::String)
+        ),
+        "the element type has to survive, or the list is untyped"
+    );
+}

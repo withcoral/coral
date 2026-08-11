@@ -5,6 +5,7 @@ use serde_json::{Map, Value};
 use crate::ResponseSpec;
 use crate::v4::diagnostics::Diagnostic;
 use crate::v4::ir::{IrOperationOutput, OutputCardinality, RestResponseAttachment};
+use crate::v4::surfaces::json_schema::{json_schema_has_declared_type, json_schema_type_contains};
 
 use super::import::OpenApiImporter;
 
@@ -232,7 +233,12 @@ fn classify_response_schema(
     if schema == &Value::Null {
         return (OutputCardinality::None, Value::Null, None);
     }
-    if schema.get("type").and_then(Value::as_str) == Some("array") {
+    // Matched through the array-aware helpers, because a nullable schema
+    // declares its type as an array — `{"type": ["array", "null"]}` is 3.1's
+    // spelling of a nullable collection. Reading only the string form missed
+    // every one of them and fell through to the typeless default, so a nullable
+    // collection was classified as a singleton object and its rows were lost.
+    if json_schema_type_contains(schema, "array") {
         let item = schema.get("items").cloned().unwrap_or(Value::Null);
         return (
             OutputCardinality::List,
@@ -242,12 +248,7 @@ fn classify_response_schema(
                 .map(entity_name_from_ref),
         );
     }
-    if schema
-        .get("type")
-        .and_then(Value::as_str)
-        .unwrap_or("object")
-        == "object"
-    {
+    if json_schema_type_contains(schema, "object") || !json_schema_has_declared_type(schema) {
         return (
             OutputCardinality::Singleton,
             schema.clone(),
