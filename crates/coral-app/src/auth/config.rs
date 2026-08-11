@@ -136,6 +136,7 @@ impl AuthSettings {
 /// [`AuthSettings::resolve_runtime_dependencies`] is the only constructor, so
 /// holding one is proof that the provider secret was fetched from its source —
 /// which is why reading it cannot fail and nothing rechecks runtime readiness.
+#[derive(Clone)]
 pub(crate) struct ResolvedAuthSettings {
     http_bind_addr: SocketAddr,
     authorization_server: AuthorizationServerSettings,
