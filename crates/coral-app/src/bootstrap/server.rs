@@ -414,6 +414,10 @@ impl ServerBuilder {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the composition root keeps database, telemetry, and manager construction together"
+)]
 async fn start_components(builder: ServerBuilder) -> Result<RunningServer, AppError> {
     let session_auth = builder.session_auth;
     let env = AppEnvironment::discover();
