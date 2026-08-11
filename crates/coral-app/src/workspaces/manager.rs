@@ -225,9 +225,10 @@ impl WorkspaceManager {
             ));
         }
         let _lifecycle_guard = self.lifecycle_lock.lock_async().await;
-        match self
-            .db
-            .create_workspace_with_owner(
+        let mut session = self.db.as_ref();
+        match session
+            .workspaces()
+            .create_with_owner(
                 workspace_name.as_str(),
                 principal.id().as_str(),
                 now_unix_nanos_i64()?,

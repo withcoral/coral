@@ -6,6 +6,7 @@ use crate::state::db::session::DbSession;
 use crate::state::db::workspace_member_state::{
     AddMemberOutcome, RemoveMemberOutcome, WorkspaceMemberView,
 };
+use crate::state::db::workspace_state::WorkspaceCreationOutcome;
 use crate::state::db::{CoralDb, CoralTx, DbError, DbRepos};
 use crate::workspaces::MemberRole;
 
@@ -93,6 +94,34 @@ where
 }
 
 impl WorkspacesRepo<'_, &CoralDb> {
+    pub(crate) async fn create_with_owner(
+        &mut self,
+        workspace_id: &str,
+        creator_user_id: &str,
+        created_at_unix_nanos: i64,
+    ) -> Result<WorkspaceCreationOutcome, DbError> {
+        let db = *self.session;
+        let mut tx = db.begin().await?;
+        if !tx
+            .users()
+            .hold_for_workspace_creation(creator_user_id)
+            .await?
+        {
+            tx.rollback().await?;
+            return Ok(WorkspaceCreationOutcome::UserNotFound);
+        }
+        if !tx
+            .workspaces()
+            .try_create_with_owner(workspace_id, creator_user_id, created_at_unix_nanos)
+            .await?
+        {
+            tx.rollback().await?;
+            return Ok(WorkspaceCreationOutcome::AlreadyExists);
+        }
+        tx.commit().await?;
+        Ok(WorkspaceCreationOutcome::Created)
+    }
+
     pub(crate) async fn add_member(
         &mut self,
         workspace_id: &str,
@@ -216,6 +245,36 @@ impl WorkspacesRepo<'_, &CoralDb> {
 }
 
 impl WorkspacesRepo<'_, CoralTx<'_>> {
+    pub(crate) async fn try_create_with_owner(
+        &mut self,
+        workspace_id: &str,
+        creator_user_id: &str,
+        created_at_unix_nanos: i64,
+    ) -> Result<bool, DbError> {
+        let statement = Query::insert()
+            .into_table(Workspaces::Table)
+            .columns([Workspaces::Id, Workspaces::CreatedAtUnixNanos])
+            .values_panic([
+                Expr::val(workspace_id.to_string()),
+                Expr::val(created_at_unix_nanos),
+            ])
+            .on_conflict(OnConflict::column(Workspaces::Id).do_nothing().to_owned())
+            .to_owned();
+        if self.session.execute_rows_affected(statement).await? == 0 {
+            return Ok(false);
+        }
+        self.session
+            .workspace_members()
+            .insert(
+                workspace_id,
+                creator_user_id,
+                MemberRole::Owner,
+                created_at_unix_nanos,
+            )
+            .await?;
+        Ok(true)
+    }
+
     /// Holds an existing workspace parent for a child-table mutation.
     ///
     /// The no-op update is portable across `SQLite` and Postgres and establishes
