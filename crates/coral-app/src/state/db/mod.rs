@@ -12,6 +12,7 @@ mod schema;
 mod session;
 mod task_query_state;
 mod task_state;
+mod trace_search_response_state;
 mod transaction;
 mod workspace_state;
 
