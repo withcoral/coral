@@ -11,8 +11,6 @@ use super::query;
 use super::response::{TrustedRedirect, direct_error};
 use crate::identity::pre_v1_task_attribution_id_for_principal_claim;
 
-const LOGIN_PROVISION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
-
 pub(super) async fn oidc_callback(
     State(state): State<AuthorizationServerHttpState>,
     RawQuery(raw_query): RawQuery,
@@ -73,24 +71,19 @@ pub(super) async fn oidc_callback(
     };
     let pre_v1_task_attribution_id =
         pre_v1_task_attribution_id_for_principal_claim(&identity.principal);
-    let user_id = match tokio::time::timeout(
-        LOGIN_PROVISION_TIMEOUT,
-        state.code_store.provision_login(
+    let user_id = match state
+        .code_store
+        .provision_login(
             &identity.issuer,
             &identity.subject,
             identity.display_name.as_deref(),
             &pre_v1_task_attribution_id,
-        ),
-    )
-    .await
+        )
+        .await
     {
-        Ok(Ok(user_id)) => user_id,
-        Ok(Err(_error)) => {
+        Ok(user_id) => user_id,
+        Err(_error) => {
             tracing::warn!("OIDC callback could not provision the authenticated user");
-            return trusted.error("server_error", "authorization failed");
-        }
-        Err(_elapsed) => {
-            tracing::warn!("OIDC callback user provisioning timed out");
             return trusted.error("server_error", "authorization failed");
         }
     };
@@ -707,13 +700,7 @@ mod tests {
         }
     }
 
-    #[derive(Clone, Copy)]
-    enum ProvisionFailure {
-        Database,
-        Timeout,
-    }
-
-    struct FailProvisioningCodeStore(ProvisionFailure);
+    struct FailProvisioningCodeStore;
 
     #[async_trait::async_trait]
     impl CodeStore for FailProvisioningCodeStore {
@@ -746,15 +733,12 @@ mod tests {
             _display_name: Option<&str>,
             _pre_v1_task_attribution_id: &str,
         ) -> Result<String, LoginProvisionError> {
-            match self.0 {
-                ProvisionFailure::Database => Err(LoginProvisionError::Database),
-                ProvisionFailure::Timeout => std::future::pending().await,
-            }
+            Err(LoginProvisionError::Database)
         }
     }
 
     #[tokio::test]
-    async fn issuer_mismatch_and_provisioning_failures_store_no_code() {
+    async fn issuer_mismatch_and_database_failures_store_no_code() {
         let server = MockServer::start().await;
         mount_provider(&server, 200, 200, NONCE).await;
         let provider_issuer = server.uri();
@@ -778,23 +762,13 @@ mod tests {
         .await;
         assert_server_error_without_code(&response);
 
-        for (index, failure) in [ProvisionFailure::Database, ProvisionFailure::Timeout]
-            .into_iter()
-            .enumerate()
-        {
-            let state_key = format!("failure-{index}");
-            let store = Arc::new(InMemoryStateStore::new());
-            seed(store.as_ref(), &state_key).await;
-            let mut state = state(&provider_issuer, store);
-            state.code_store = Arc::new(FailProvisioningCodeStore(failure));
-            let response = tokio::time::timeout(
-                Duration::from_secs(3),
-                callback(state, &[("state", &state_key), ("code", PROVIDER_CODE)]),
-            )
-            .await
-            .expect("callback's two-second provisioning limit");
-            assert_server_error_without_code(&response);
-        }
+        let state_key = "provisioning-failure";
+        let store = Arc::new(InMemoryStateStore::new());
+        seed(store.as_ref(), state_key).await;
+        let mut state = state(&provider_issuer, store);
+        state.code_store = Arc::new(FailProvisioningCodeStore);
+        let response = callback(state, &[("state", state_key), ("code", PROVIDER_CODE)]).await;
+        assert_server_error_without_code(&response);
     }
 
     fn assert_server_error_without_code(response: &Response) {
