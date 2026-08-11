@@ -1,6 +1,6 @@
 //! Transactional login provisioning and pre-v1 task-attribution rekeying.
 
-#![cfg_attr(not(test), expect(dead_code, reason = "wired in M2"))]
+#![cfg_attr(not(test), expect(dead_code, reason = "used higher in the PR stack"))]
 
 use super::repositories::users::UpsertLoginOutcome;
 use super::workspace_state::{hold_user_for_workspace_creation, try_create_workspace_with_owner};
