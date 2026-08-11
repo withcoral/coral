@@ -3,12 +3,177 @@
 use arrow::array::RecordBatch;
 use datafusion::common::Result;
 use datafusion::execution::TaskContext;
-use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
+use datafusion::execution::memory_pool::{
+    MemoryConsumer, MemoryLimit, MemoryPool, MemoryReservation,
+};
+use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::physical_plan::RecordBatchStream;
 use futures::Stream;
 use serde_json::Value;
+use std::fmt::{Debug, Display, Formatter};
 use std::pin::Pin;
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::task::{Context, Poll};
+
+use crate::{QueryMemoryObservation, QueryMemoryObserver, QueryMemoryOutcome};
+
+/// Tracks DataFusion reservations for one top-level query execution.
+pub(crate) struct QueryMemoryExecution {
+    tracker: Arc<QueryMemoryTracker>,
+}
+
+impl QueryMemoryExecution {
+    pub(crate) fn begin(observer: QueryMemoryObserver) -> Self {
+        Self {
+            tracker: Arc::new(QueryMemoryTracker {
+                observer,
+                state: Mutex::new(QueryMemoryState::default()),
+            }),
+        }
+    }
+
+    /// Replaces only the task's pool, retaining all other runtime services.
+    pub(crate) fn task_context(&self, context: TaskContext) -> Result<TaskContext> {
+        let runtime = context.runtime_env();
+        let pool = Arc::new(QueryMemoryPool {
+            inner: Arc::clone(&runtime.memory_pool),
+            tracker: Arc::clone(&self.tracker),
+        });
+        let runtime = RuntimeEnvBuilder::from_runtime_env(runtime.as_ref())
+            .with_memory_pool(pool)
+            .build_arc()?;
+        Ok(context.with_runtime(runtime))
+    }
+
+    pub(crate) fn finish(self, outcome: QueryMemoryOutcome) {
+        self.tracker.set_outcome(outcome);
+    }
+}
+
+impl Drop for QueryMemoryExecution {
+    fn drop(&mut self) {
+        self.tracker.set_outcome(QueryMemoryOutcome::Cancelled);
+    }
+}
+
+#[derive(Default)]
+struct QueryMemoryState {
+    reserved_bytes: usize,
+    peak_bytes: usize,
+    outcome: Option<QueryMemoryOutcome>,
+    finalized: bool,
+}
+
+struct QueryMemoryTracker {
+    observer: QueryMemoryObserver,
+    state: Mutex<QueryMemoryState>,
+}
+
+impl QueryMemoryTracker {
+    fn lock(&self) -> MutexGuard<'_, QueryMemoryState> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn set_outcome(&self, outcome: QueryMemoryOutcome) {
+        let observation = {
+            let mut state = self.lock();
+            state.outcome.get_or_insert(outcome);
+            Self::finalize(&mut state)
+        };
+        self.observe(observation);
+    }
+
+    fn finalize(state: &mut QueryMemoryState) -> Option<QueryMemoryObservation> {
+        if state.finalized || state.reserved_bytes != 0 {
+            return None;
+        }
+        let outcome = state.outcome?;
+        state.finalized = true;
+        Some(QueryMemoryObservation {
+            datafusion_reserved_peak_bytes: state.peak_bytes,
+            outcome,
+        })
+    }
+
+    fn observe(&self, observation: Option<QueryMemoryObservation>) {
+        if let Some(observation) = observation {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                (self.observer)(observation);
+            }));
+        }
+    }
+}
+
+struct QueryMemoryPool {
+    inner: Arc<dyn MemoryPool>,
+    tracker: Arc<QueryMemoryTracker>,
+}
+
+impl Debug for QueryMemoryPool {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("QueryMemoryPool")
+            .field("inner", &self.inner)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Display for QueryMemoryPool {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        Display::fmt(self.inner.as_ref(), formatter)
+    }
+}
+
+impl MemoryPool for QueryMemoryPool {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn register(&self, consumer: &MemoryConsumer) {
+        let _state = self.tracker.lock();
+        self.inner.register(consumer);
+    }
+
+    fn unregister(&self, consumer: &MemoryConsumer) {
+        let _state = self.tracker.lock();
+        self.inner.unregister(consumer);
+    }
+
+    fn grow(&self, reservation: &MemoryReservation, additional: usize) {
+        let mut state = self.tracker.lock();
+        self.inner.grow(reservation, additional);
+        state.reserved_bytes += additional;
+        state.peak_bytes = state.peak_bytes.max(state.reserved_bytes);
+    }
+
+    fn shrink(&self, reservation: &MemoryReservation, shrink: usize) {
+        let observation = {
+            let mut state = self.tracker.lock();
+            self.inner.shrink(reservation, shrink);
+            state.reserved_bytes -= shrink;
+            QueryMemoryTracker::finalize(&mut state)
+        };
+        self.tracker.observe(observation);
+    }
+
+    fn try_grow(&self, reservation: &MemoryReservation, additional: usize) -> Result<()> {
+        let mut state = self.tracker.lock();
+        self.inner.try_grow(reservation, additional)?;
+        state.reserved_bytes += additional;
+        state.peak_bytes = state.peak_bytes.max(state.reserved_bytes);
+        Ok(())
+    }
+
+    fn reserved(&self) -> usize {
+        self.inner.reserved()
+    }
+
+    fn memory_limit(&self) -> MemoryLimit {
+        self.inner.memory_limit()
+    }
+}
 
 /// Memory reservation wrapper for one execution that retains Coral-owned data.
 #[derive(Debug)]
@@ -165,12 +330,181 @@ fn json_value_heap_size(value: &Value) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex, mpsc};
+    use std::thread;
 
-    use datafusion::execution::memory_pool::{GreedyMemoryPool, MemoryConsumer, MemoryPool};
+    use datafusion::execution::TaskContext;
+    use datafusion::execution::memory_pool::{
+        GreedyMemoryPool, MemoryConsumer, MemoryLimit, MemoryPool, UnboundedMemoryPool,
+    };
+    use datafusion::execution::runtime_env::RuntimeEnvBuilder;
     use serde_json::json;
 
-    use super::{RetainedMemory, json_rows_retained_size};
+    use crate::{QueryMemoryObservation, QueryMemoryObserver, QueryMemoryOutcome};
+
+    use super::{QueryMemoryExecution, RetainedMemory, json_rows_retained_size};
+
+    fn query_memory_observations() -> (QueryMemoryObserver, Arc<Mutex<Vec<QueryMemoryObservation>>>)
+    {
+        let observations = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&observations);
+        (
+            Arc::new(move |observation| captured.lock().unwrap().push(observation)),
+            observations,
+        )
+    }
+
+    fn query_memory_context(pool: Arc<dyn MemoryPool>) -> TaskContext {
+        let runtime = RuntimeEnvBuilder::new()
+            .with_memory_pool(pool)
+            .build_arc()
+            .unwrap();
+        TaskContext::default().with_runtime(runtime)
+    }
+
+    #[test]
+    fn query_memory_reports_each_terminal_outcome_once_and_contains_panics() {
+        for outcome in [QueryMemoryOutcome::Success, QueryMemoryOutcome::Error] {
+            let (observer, observations) = query_memory_observations();
+            QueryMemoryExecution::begin(observer).finish(outcome);
+            assert_eq!(
+                observations.lock().unwrap().as_slice(),
+                &[QueryMemoryObservation {
+                    datafusion_reserved_peak_bytes: 0,
+                    outcome,
+                }]
+            );
+        }
+
+        let (observer, observations) = query_memory_observations();
+        drop(QueryMemoryExecution::begin(observer));
+        assert_eq!(
+            observations.lock().unwrap()[0].outcome,
+            QueryMemoryOutcome::Cancelled
+        );
+
+        let observer: QueryMemoryObserver = Arc::new(|_| panic!("observer panic"));
+        QueryMemoryExecution::begin(observer).finish(QueryMemoryOutcome::Success);
+    }
+
+    #[test]
+    fn query_memory_aggregates_wrappers_and_waits_for_final_release() {
+        let inner: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(64));
+        let runtime = query_memory_context(Arc::clone(&inner)).runtime_env();
+        let (released_tx, released_rx) = mpsc::channel();
+        let observations = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&observations);
+        let observer = Arc::new(move |observation| {
+            captured.lock().unwrap().push(observation);
+            released_tx.send(thread::current().id()).unwrap();
+        });
+        let execution = QueryMemoryExecution::begin(observer);
+        let tracker = Arc::clone(&execution.tracker);
+        let first = execution
+            .task_context(TaskContext::default().with_runtime(Arc::clone(&runtime)))
+            .unwrap();
+        let second = execution
+            .task_context(TaskContext::default().with_runtime(Arc::clone(&runtime)))
+            .unwrap();
+        assert!(!runtime.memory_pool.is::<super::QueryMemoryPool>());
+        assert_eq!(first.memory_pool().name(), "greedy");
+        assert!(matches!(
+            first.memory_pool().memory_limit(),
+            MemoryLimit::Finite(64)
+        ));
+
+        let first = MemoryConsumer::new("first").register(first.memory_pool());
+        let second = MemoryConsumer::new("second").register(second.memory_pool());
+        first.grow(4);
+        second.try_grow(7).unwrap();
+        first.shrink(3);
+        first.grow(2);
+        assert_eq!(inner.reserved(), 10);
+        assert_eq!(tracker.lock().peak_bytes, 11);
+
+        execution.finish(QueryMemoryOutcome::Success);
+        drop(first);
+        assert!(observations.lock().unwrap().is_empty());
+        let release_thread = thread::spawn(move || {
+            drop(second);
+            thread::current().id()
+        });
+        let callback_thread = released_rx.recv().unwrap();
+        assert_eq!(callback_thread, release_thread.join().unwrap());
+        assert_eq!(tracker.lock().reserved_bytes, 0);
+        assert_eq!(inner.reserved(), 0);
+        assert_eq!(
+            observations.lock().unwrap().as_slice(),
+            &[QueryMemoryObservation {
+                datafusion_reserved_peak_bytes: 11,
+                outcome: QueryMemoryOutcome::Success,
+            }]
+        );
+    }
+
+    #[test]
+    fn query_memory_excludes_failed_growth_and_omits_leaks() {
+        let inner: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(8));
+        let (observer, observations) = query_memory_observations();
+        let execution = QueryMemoryExecution::begin(observer);
+        let context = execution.task_context(query_memory_context(inner)).unwrap();
+        let reservation = MemoryConsumer::new("limited").register(context.memory_pool());
+        reservation.try_grow(4).unwrap();
+        assert!(reservation.try_grow(5).is_err());
+        execution.finish(QueryMemoryOutcome::Error);
+        drop(reservation);
+        assert_eq!(
+            observations.lock().unwrap()[0].datafusion_reserved_peak_bytes,
+            4
+        );
+
+        let (observer, observations) = query_memory_observations();
+        let execution = QueryMemoryExecution::begin(observer);
+        let context = execution
+            .task_context(query_memory_context(Arc::new(
+                UnboundedMemoryPool::default(),
+            )))
+            .unwrap();
+        let leaked = MemoryConsumer::new("leaked").register(context.memory_pool());
+        leaked.grow(1);
+        std::mem::forget(leaked);
+        drop(execution);
+        assert!(observations.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn query_memory_keeps_overlapping_executions_independent() {
+        let inner: Arc<dyn MemoryPool> = Arc::new(UnboundedMemoryPool::default());
+        let (left_observer, left_observations) = query_memory_observations();
+        let (right_observer, right_observations) = query_memory_observations();
+        let left = QueryMemoryExecution::begin(left_observer);
+        let right = QueryMemoryExecution::begin(right_observer);
+        let left_context = left
+            .task_context(query_memory_context(Arc::clone(&inner)))
+            .unwrap();
+        let right_context = right
+            .task_context(query_memory_context(Arc::clone(&inner)))
+            .unwrap();
+        let left_reservation = MemoryConsumer::new("left").register(left_context.memory_pool());
+        let right_reservation = MemoryConsumer::new("right").register(right_context.memory_pool());
+        left_reservation.grow(3);
+        right_reservation.grow(5);
+        left.finish(QueryMemoryOutcome::Success);
+        right.finish(QueryMemoryOutcome::Error);
+        drop(left_reservation);
+        assert_eq!(
+            left_observations.lock().unwrap()[0].datafusion_reserved_peak_bytes,
+            3
+        );
+        assert!(right_observations.lock().unwrap().is_empty());
+        assert_eq!(inner.reserved(), 5);
+        drop(right_reservation);
+        assert_eq!(
+            right_observations.lock().unwrap()[0].datafusion_reserved_peak_bytes,
+            5
+        );
+        assert_eq!(inner.reserved(), 0);
+    }
 
     #[test]
     fn json_retained_size_accounts_for_rows_and_containers() {
