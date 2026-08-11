@@ -17,7 +17,6 @@ const MAX_DISPLAY_NAME_BYTES: usize = 255;
 pub(super) struct ValidatedOidcIdentity {
     pub(super) issuer: String,
     pub(super) subject: String,
-    // Retained only to rekey task attribution created before internal user IDs.
     pub(super) principal: String,
     pub(super) display_name: Option<String>,
 }
