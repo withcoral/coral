@@ -15,8 +15,9 @@ use super::state_store::{
     ApprovalStore, CodeStore, InMemoryStateStore, OAuthAuthorizationCodeRecord, SessionStore,
     StateStoreError,
 };
+use crate::bootstrap::AppError;
 use crate::oauth_resource::{CanonicalOauthUrl, OauthUrlError};
-use crate::state::db::{CoralDb, DbError, UpsertLoginOutcome, now_unix_nanos_i64};
+use crate::state::db::{CoralDb, UpsertLoginOutcome, now_unix_nanos_i64};
 use axum::Router;
 use axum::extract::State;
 use axum::http::header;
@@ -330,19 +331,6 @@ impl AuthorizationServerHttpState {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LoginProvisionError {
-    Database,
-    IssuerMismatch,
-    Unavailable,
-}
-
-impl From<DbError> for LoginProvisionError {
-    fn from(_error: DbError) -> Self {
-        Self::Database
-    }
-}
-
 #[async_trait::async_trait]
 trait LoginCodeStore: CodeStore {
     async fn provision_login(
@@ -351,7 +339,7 @@ trait LoginCodeStore: CodeStore {
         subject: &str,
         display_name: Option<&str>,
         pre_v1_task_attribution_id: &str,
-    ) -> Result<String, LoginProvisionError>;
+    ) -> Result<UpsertLoginOutcome, AppError>;
 }
 
 #[async_trait::async_trait]
@@ -362,8 +350,10 @@ impl LoginCodeStore for InMemoryStateStore {
         _subject: &str,
         _display_name: Option<&str>,
         _pre_v1_task_attribution_id: &str,
-    ) -> Result<String, LoginProvisionError> {
-        Err(LoginProvisionError::Unavailable)
+    ) -> Result<UpsertLoginOutcome, AppError> {
+        Err(AppError::Unavailable(
+            "login provisioning requires a database".to_string(),
+        ))
     }
 }
 
@@ -421,11 +411,9 @@ impl LoginCodeStore for DbBackedLoginCodeStore {
         subject: &str,
         display_name: Option<&str>,
         pre_v1_task_attribution_id: &str,
-    ) -> Result<String, LoginProvisionError> {
-        let now_unix_nanos =
-            now_unix_nanos_i64().map_err(|_error| LoginProvisionError::Unavailable)?;
-        match self
-            .database
+    ) -> Result<UpsertLoginOutcome, AppError> {
+        let now_unix_nanos = now_unix_nanos_i64()?;
+        self.database
             .provision_login_and_reattribute_pre_v1_tasks(
                 issuer,
                 subject,
@@ -433,11 +421,8 @@ impl LoginCodeStore for DbBackedLoginCodeStore {
                 pre_v1_task_attribution_id,
                 now_unix_nanos,
             )
-            .await?
-        {
-            UpsertLoginOutcome::Upserted(user) => Ok(user.user_id),
-            UpsertLoginOutcome::IssuerMismatch { .. } => Err(LoginProvisionError::IssuerMismatch),
-        }
+            .await
+            .map_err(AppError::from)
     }
 }
 
