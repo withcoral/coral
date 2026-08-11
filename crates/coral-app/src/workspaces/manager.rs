@@ -262,9 +262,10 @@ impl WorkspaceManager {
         user_id: &str,
         role: MemberRole,
     ) -> Result<WorkspaceMemberView, AppError> {
-        match self
-            .db
-            .add_workspace_member(
+        let mut session = self.db.as_ref();
+        match session
+            .workspaces()
+            .add_member(
                 workspace_name.as_str(),
                 user_id,
                 role,
