@@ -31,7 +31,11 @@ export function OnboardingSourcesPage({
   search,
   step,
 }: OnboardingSourcesPageProps) {
-  const hasConnectedSource = entries.some((entry) => entry.installed)
+  // Onboarding installs a source by name from the compiled catalog. Presets have
+  // no manifest to install and need the multi-step create flow instead, so they
+  // stay out of this surface.
+  const catalogEntries = entries.filter((entry) => !entry.preset)
+  const hasConnectedSource = catalogEntries.some((entry) => entry.installed)
   const canContinue = hasConnectedSource && !continueDisabled
 
   if (!step.nextHref) {
@@ -71,7 +75,7 @@ export function OnboardingSourcesPage({
       sideTitle="Connect sources to Coral"
     >
       <SourceCatalogSurface
-        entries={entries}
+        entries={catalogEntries}
         errorMessage={errorMessage}
         loadState={loadState}
         onPick={onSourceSelect}

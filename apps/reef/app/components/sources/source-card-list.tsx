@@ -64,5 +64,6 @@ export function SourceCardList(props: SourceCardListProps) {
 function sourceOriginPill(entry: SourceCardEntry): CardHeaderPill | undefined {
   if (entry.origin === 'bundled') return { label: 'Core' }
   if (entry.origin === 'imported') return { label: 'Imported' }
+  if (entry.origin === 'preset') return { label: 'Preset' }
   return undefined
 }
