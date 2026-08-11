@@ -3302,7 +3302,19 @@ fn importer_accepts_every_spelling_of_a_supported_version() {
 
 #[test]
 fn importer_rejects_unsupported_versions_by_name() {
-    for version in ["2.0", "3.1.0", "3.2.0", "4.0.0", "3"] {
+    for version in [
+        "2.0",
+        "3.1.0",
+        "3.2.0",
+        "4.0.0",
+        "3",
+        // Well-formed prefix, malformed remainder. The version field holds one
+        // optional numeric patch component and nothing else.
+        "3.0.",
+        "3.0.banana",
+        "3.0.1.2",
+        "3.0.1-rc1",
+    ] {
         let error = import_version_probe(&format!("openapi: '{version}'"))
             .expect_err(&format!("version {version} should be rejected"));
         assert!(

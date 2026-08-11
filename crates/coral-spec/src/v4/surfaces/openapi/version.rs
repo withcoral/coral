@@ -35,11 +35,32 @@ pub(super) fn parse_openapi_version(document: &Value) -> Result<OpenApiVersion> 
             "OpenAPI document is missing openapi version",
         ));
     };
-    let mut components = declared.trim().split('.');
-    match (components.next(), components.next()) {
-        (Some("3"), Some("0")) => Ok(OpenApiVersion::V3_0),
-        _ => Err(ManifestError::validation(format!(
+    let unsupported = || {
+        ManifestError::validation(format!(
             "OpenAPI document uses unsupported version '{declared}'"
-        ))),
+        ))
+    };
+    let mut components = declared.trim().split('.');
+    let version = match (components.next(), components.next()) {
+        (Some("3"), Some("0")) => OpenApiVersion::V3_0,
+        _ => return Err(unsupported()),
+    };
+    // The patch component is optional, but a present one has to be a number and
+    // has to be the last thing in the string. Matching only the first two
+    // components would take `3.0.banana`, `3.0.` and `3.0.1.2` for well-formed
+    // 3.0 and import them, and this is the one place left that reads the
+    // version — so it is the place to say what the field may hold.
+    //
+    // Both remaining components are taken up front, mirroring the match above:
+    // deciding this in a guard would leave whether `3.0.1.2` is rejected resting
+    // on a mid-match side effect, which is not something a reader should have to
+    // trace.
+    let is_numeric = |component: &str| {
+        !component.is_empty() && component.bytes().all(|byte| byte.is_ascii_digit())
+    };
+    match (components.next(), components.next()) {
+        (None, _) => Ok(version),
+        (Some(patch), None) if is_numeric(patch) => Ok(version),
+        _ => Err(unsupported()),
     }
 }
