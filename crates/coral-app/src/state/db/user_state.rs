@@ -1,9 +1,6 @@
 //! Transactional login provisioning and pre-v1 task-attribution rekeying.
 
 use super::repositories::users::UpsertLoginOutcome;
-#[cfg(test)]
-use super::workspace_state::hold_user_for_workspace_creation;
-use super::workspace_state::try_create_workspace_with_owner;
 use super::{CoralDb, DbError, DbRepos};
 
 #[cfg(test)]
@@ -33,7 +30,8 @@ impl CoralDb {
             return Ok(outcome);
         };
         let workspace_id = default_workspace_id(&user.user_id);
-        try_create_workspace_with_owner(&mut tx, &workspace_id, &user.user_id, now_unix_nanos)
+        tx.workspaces()
+            .try_create_with_owner(&workspace_id, &user.user_id, now_unix_nanos)
             .await?;
         tx.tasks()
             .reattribute_pre_v1_tasks_to_user(pre_v1_task_attribution_id, &user.user_id)
@@ -60,7 +58,8 @@ impl CoralDb {
             return Ok(outcome);
         };
         let workspace_id = default_workspace_id(&user.user_id);
-        try_create_workspace_with_owner(&mut tx, &workspace_id, &user.user_id, now_unix_nanos)
+        tx.workspaces()
+            .try_create_with_owner(&workspace_id, &user.user_id, now_unix_nanos)
             .await?;
         tx.commit().await?;
         Ok(outcome)
@@ -73,12 +72,16 @@ impl CoralDb {
         now_unix_nanos: i64,
     ) -> Result<DefaultWorkspaceProvisioningOutcome, DbError> {
         let mut tx = self.begin().await?;
-        if !hold_user_for_workspace_creation(&mut tx, user_id).await? {
+        if !tx.users().hold_for_workspace_creation(user_id).await? {
             tx.rollback().await?;
             return Ok(DefaultWorkspaceProvisioningOutcome::UserNotFound);
         }
         let workspace_id = default_workspace_id(user_id);
-        if try_create_workspace_with_owner(&mut tx, &workspace_id, user_id, now_unix_nanos).await? {
+        if tx
+            .workspaces()
+            .try_create_with_owner(&workspace_id, user_id, now_unix_nanos)
+            .await?
+        {
             tx.commit().await?;
             Ok(DefaultWorkspaceProvisioningOutcome::Created(workspace_id))
         } else {

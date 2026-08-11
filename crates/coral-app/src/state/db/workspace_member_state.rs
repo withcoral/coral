@@ -118,8 +118,11 @@ mod tests {
         let other_owner_id = create_user(db, &format!("other-owner-{suffix}")).await;
 
         let identical_add_workspace_id = format!("identical-add-{suffix}");
+        let mut session = db;
         assert_eq!(
-            db.create_workspace_with_owner(&identical_add_workspace_id, &owner_id, 10)
+            session
+                .workspaces()
+                .create_with_owner(&identical_add_workspace_id, &owner_id, 10)
                 .await
                 .expect("create owned workspace"),
             WorkspaceCreationOutcome::Created
@@ -161,7 +164,9 @@ mod tests {
 
         let conflicting_add_workspace_id = format!("conflicting-add-{suffix}");
         assert_eq!(
-            db.create_workspace_with_owner(&conflicting_add_workspace_id, &owner_id, 20)
+            session
+                .workspaces()
+                .create_with_owner(&conflicting_add_workspace_id, &owner_id, 20)
                 .await
                 .expect("create conflicting-add workspace"),
             WorkspaceCreationOutcome::Created
@@ -225,7 +230,9 @@ mod tests {
 
         let owner_removal_workspace_id = format!("owner-removal-{suffix}");
         assert_eq!(
-            db.create_workspace_with_owner(&owner_removal_workspace_id, &owner_id, 30)
+            session
+                .workspaces()
+                .create_with_owner(&owner_removal_workspace_id, &owner_id, 30)
                 .await
                 .expect("create owner-removal workspace"),
             WorkspaceCreationOutcome::Created
