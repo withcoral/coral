@@ -13,6 +13,7 @@ import { Typography } from '@/wax/components/typography'
 import { OAuthProgressDialog } from '@/components/sources/install/oauth-progress-dialog'
 import { oauthActionLabel, useOAuthInstallFlow } from '@/lib/source-oauth-install-flow'
 import type { SourceCreatePrefill } from '@/lib/source-presets'
+import { isHttpsUrl } from '@/lib/urls'
 import type { SourcesActionData } from '@/routes/sources-action'
 import type {
   SourceDetectedAuth,
@@ -810,14 +811,6 @@ function draftIsDirty(draft: Draft): boolean {
 
 function sourceNameIsValid(name: string): boolean {
   return sourceNameValidationError(name) === null
-}
-
-function isHttpsUrl(value: string): boolean {
-  try {
-    return new URL(value.trim()).protocol === 'https:'
-  } catch {
-    return false
-  }
 }
 
 /** Base URLs also allow http:// so sources can point at a local API. */

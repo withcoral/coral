@@ -70,7 +70,6 @@ const PROVIDER_ICONS: Record<string, string> = {
 
   // Communications
   resend: '/images/providers/resend.png',
-  twilio: '/images/providers/twilio.png',
 
   // LLM providers
   claude: '/images/providers/claude_code.svg',

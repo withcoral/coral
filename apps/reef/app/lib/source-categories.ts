@@ -13,6 +13,10 @@ export const SOURCE_CATEGORY_ORDER: SourceCategory[] = [
   { key: 'analytics', label: 'Analytics' },
   { key: 'business', label: 'Business' },
   { key: 'ai-ml', label: 'AI/ML' },
+  // Last because it is the least central to the product. Empty categories are
+  // dropped in groupSourceCatalogSections, so this only shows once a media source
+  // is in the catalog.
+  { key: 'media', label: 'Media' },
 ]
 
 const SOURCE_CATEGORY: Record<string, string> = {
@@ -51,9 +55,9 @@ const SOURCE_CATEGORY: Record<string, string> = {
   resend: 'communication',
   sentry: 'observability',
   slack: 'communication',
+  spotify: 'media',
   statusgator: 'observability',
   stripe: 'business',
-  twilio: 'communication',
   val_town: 'developer-tools',
   vercel: 'developer-tools',
   wandb: 'ai-ml',

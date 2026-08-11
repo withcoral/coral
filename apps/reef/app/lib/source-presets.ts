@@ -15,6 +15,8 @@
 // flow understands (see SurfaceType in views/sources/source-create.tsx). Google
 // Discovery documents and GraphQL endpoints cannot be created this way.
 
+import { isHttpsUrl } from '@/lib/urls'
+
 export interface SourcePreset {
   /** Canonical source name. Must match the name a manifest would use. */
   name: string
@@ -119,13 +121,6 @@ export const SOURCE_PRESETS: readonly SourcePreset[] = [
     surfaceType: 'openapi',
   },
   {
-    name: 'twilio',
-    description: 'Query messages, calls, phone numbers, and recordings from Twilio.',
-    specUrl:
-      'https://raw.githubusercontent.com/twilio/twilio-oai/main/spec/json/twilio_api_v2010.json',
-    surfaceType: 'openapi',
-  },
-  {
     name: 'val_town',
     description: 'Query vals, runs, blobs, and HTTP endpoints from Val Town.',
     specUrl: 'https://api.val.town/openapi.json',
@@ -169,15 +164,15 @@ export interface SourceCreatePrefill {
 /**
  * Reads a prefill out of a create-flow query string. Takes the params rather than
  * a whole URL because that is all it reads, which lets the route parse them on the
- * client instead of paying for a loader. Returns null unless the spec is an HTTPS
- * URL — discovery rejects anything else anyway, and the query string is untrusted
- * input, so an unusable value should leave the flow empty rather than seed it with
- * junk. An unrecognised `kind` is dropped instead of trusted, and the create flow
- * falls back to its own default.
+ * client instead of paying for a loader. Returns null unless the spec parses as an
+ * HTTPS URL — discovery rejects anything else anyway, and the query string is
+ * untrusted input, so an unusable value should leave the flow empty rather than seed
+ * it with junk. An unrecognised `kind` is dropped instead of trusted, and the create
+ * flow falls back to its own default.
  */
 export function sourceCreatePrefill(params: URLSearchParams): SourceCreatePrefill | null {
   const spec = params.get(SPEC_PARAM)?.trim()
-  if (!spec || !spec.startsWith('https://')) return null
+  if (!spec || !isHttpsUrl(spec)) return null
 
   const kind = params.get(KIND_PARAM)?.trim()
   const name = params.get(NAME_PARAM)?.trim()
