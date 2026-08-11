@@ -101,10 +101,7 @@ impl ObservedValuesLiveScopeLoader {
             loaded_runtime.runtime_contract_fingerprint.as_str(),
             source.credential_revision,
         );
-        // A component whose name diverges from its package fails this source
-        // closed through the existing partial-result channel.
-        let scopes = source_surface_scopes(&loaded_runtime.query_source, seed)
-            .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
+        let scopes = source_surface_scopes(&loaded_runtime.query_source, seed);
         Ok(scopes.into_iter().map(|scope| scope.live_scope()).collect())
     }
 }
@@ -179,6 +176,7 @@ mod tests {
         let second_scope = second.live_scopes.first().expect("second live scope");
         assert_eq!(first_scope.source_name, "github");
         assert_eq!(second_scope.source_name, "github");
+        assert_eq!(first_scope.schema_name, "github");
         assert_eq!(first_scope.surface_kind, ObservedValuesSurfaceKind::Table);
         assert_eq!(first_scope.surface_name, "issues");
         assert_ne!(first_scope.source_scope_id, second_scope.source_scope_id);
@@ -263,7 +261,6 @@ mod tests {
                 credential_revision,
             ),
         )
-        .expect("coherent source identity")
         .into_iter()
         .next()
         .expect("publisher scope")
@@ -307,7 +304,7 @@ mod tests {
 
         assert_eq!(load.live_scopes.len(), 1);
         let live_scope = load.live_scopes.first().expect("live scope");
-        assert_eq!(live_scope.source_name, "github");
+        assert_eq!(live_scope.schema_name, "github");
         assert_eq!(load.failed_sources.len(), 1);
         let failed_source = load.failed_sources.first().expect("failed source");
         assert_eq!(failed_source.source_name, "broken");

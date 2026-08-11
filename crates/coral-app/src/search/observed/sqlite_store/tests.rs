@@ -3112,6 +3112,8 @@ fn test_live_scope_for_source(
 ) -> ObservedValuesLiveScope {
     ObservedValuesLiveScope {
         source_name: source_name.to_string(),
+        catalog_name: None,
+        schema_name: source_name.to_string(),
         source_scope_id: source_scope_id.to_string(),
         surface_kind: ObservedValuesSurfaceKind::Table,
         surface_name: surface_name.to_string(),

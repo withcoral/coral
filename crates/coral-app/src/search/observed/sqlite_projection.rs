@@ -2787,6 +2787,8 @@ mod tests {
                 .into_iter()
                 .map(|(source_name, source_scope_id)| ObservedValuesLiveScope {
                     source_name: source_name.to_string(),
+                    catalog_name: None,
+                    schema_name: source_name.to_string(),
                     source_scope_id: source_scope_id.to_string(),
                     surface_kind: ObservedValuesSurfaceKind::Table,
                     surface_name: "issues".to_string(),
@@ -2858,6 +2860,8 @@ mod tests {
         let policy = ObservedValuesRetrievalPolicy::new(
             vec![ObservedValuesLiveScope {
                 source_name: "github".to_string(),
+                catalog_name: None,
+                schema_name: "github".to_string(),
                 source_scope_id: "eu".to_string(),
                 surface_kind: ObservedValuesSurfaceKind::Table,
                 surface_name: "issues".to_string(),
@@ -2878,6 +2882,8 @@ mod tests {
         let policy = ObservedValuesRetrievalPolicy::new(
             vec![ObservedValuesLiveScope {
                 source_name: "github".to_string(),
+                catalog_name: None,
+                schema_name: "github".to_string(),
                 source_scope_id: "scope".to_string(),
                 surface_kind: ObservedValuesSurfaceKind::Table,
                 surface_name: "issues".to_string(),
