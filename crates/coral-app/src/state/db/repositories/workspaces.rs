@@ -141,7 +141,6 @@ impl WorkspacesRepo<'_, &CoralDb> {
         }
     }
 
-    #[cfg_attr(not(test), expect(dead_code, reason = "used higher in the PR stack"))]
     pub(crate) async fn remove_member(
         &mut self,
         workspace_id: &str,
