@@ -17,7 +17,7 @@ use std::task::{Context, Poll};
 
 use crate::{QueryMemoryObservation, QueryMemoryObserver, QueryMemoryOutcome};
 
-/// Tracks DataFusion reservations for one top-level query execution.
+/// Tracks `DataFusion` reservations for one top-level query execution.
 pub(crate) struct QueryMemoryExecution {
     tracker: Arc<QueryMemoryTracker>,
 }
@@ -73,7 +73,7 @@ impl QueryMemoryTracker {
     fn lock(&self) -> MutexGuard<'_, QueryMemoryState> {
         self.state
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn set_outcome(&self, outcome: QueryMemoryOutcome) {
@@ -99,9 +99,11 @@ impl QueryMemoryTracker {
 
     fn observe(&self, observation: Option<QueryMemoryObservation>) {
         if let Some(observation) = observation {
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                (self.observer)(observation);
-            }));
+            drop(std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                || {
+                    (self.observer)(observation);
+                },
+            )));
         }
     }
 }
@@ -379,8 +381,11 @@ mod tests {
         let (observer, observations) = query_memory_observations();
         drop(QueryMemoryExecution::begin(observer));
         assert_eq!(
-            observations.lock().unwrap()[0].outcome,
-            QueryMemoryOutcome::Cancelled
+            observations.lock().unwrap().as_slice(),
+            &[QueryMemoryObservation {
+                datafusion_reserved_peak_bytes: 0,
+                outcome: QueryMemoryOutcome::Cancelled,
+            }]
         );
 
         let observer: QueryMemoryObserver = Arc::new(|_| panic!("observer panic"));
@@ -454,8 +459,11 @@ mod tests {
         execution.finish(QueryMemoryOutcome::Error);
         drop(reservation);
         assert_eq!(
-            observations.lock().unwrap()[0].datafusion_reserved_peak_bytes,
-            4
+            observations.lock().unwrap().as_slice(),
+            &[QueryMemoryObservation {
+                datafusion_reserved_peak_bytes: 4,
+                outcome: QueryMemoryOutcome::Error,
+            }]
         );
 
         let (observer, observations) = query_memory_observations();
@@ -467,7 +475,7 @@ mod tests {
             .unwrap();
         let leaked = MemoryConsumer::new("leaked").register(context.memory_pool());
         leaked.grow(1);
-        std::mem::forget(leaked);
+        let _leaked_reservation = Box::leak(Box::new(leaked));
         drop(execution);
         assert!(observations.lock().unwrap().is_empty());
     }
@@ -493,15 +501,21 @@ mod tests {
         right.finish(QueryMemoryOutcome::Error);
         drop(left_reservation);
         assert_eq!(
-            left_observations.lock().unwrap()[0].datafusion_reserved_peak_bytes,
-            3
+            left_observations.lock().unwrap().as_slice(),
+            &[QueryMemoryObservation {
+                datafusion_reserved_peak_bytes: 3,
+                outcome: QueryMemoryOutcome::Success,
+            }]
         );
         assert!(right_observations.lock().unwrap().is_empty());
         assert_eq!(inner.reserved(), 5);
         drop(right_reservation);
         assert_eq!(
-            right_observations.lock().unwrap()[0].datafusion_reserved_peak_bytes,
-            5
+            right_observations.lock().unwrap().as_slice(),
+            &[QueryMemoryObservation {
+                datafusion_reserved_peak_bytes: 5,
+                outcome: QueryMemoryOutcome::Error,
+            }]
         );
         assert_eq!(inner.reserved(), 0);
     }

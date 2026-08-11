@@ -660,7 +660,7 @@ pub enum QueryMemoryOutcome {
 /// Bounded, identity-free memory observation for one query execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QueryMemoryObservation {
-    /// Peak bytes reserved through DataFusion's memory pool.
+    /// Peak bytes reserved through `DataFusion`'s memory pool.
     pub datafusion_reserved_peak_bytes: usize,
     /// Final query execution outcome.
     pub outcome: QueryMemoryOutcome,
