@@ -272,8 +272,8 @@ impl McpHttpServeConfig {
 /// Nothing here is live. The gRPC server's bootstrap resolves configuration; the
 /// call site turns these settings into services and owns their lifecycle, so a
 /// server builder never constructs a transport it does not run. The CLI derives
-/// the MCP authenticator from its single audience; `start_for_serve` derives the
-/// gRPC policy from the full public-audience set.
+/// the MCP authenticator from its single audience and installs session auth on
+/// the gRPC builder, which derives the private policy from the full audience set.
 pub struct ServeSettings {
     pub(super) mcp_http: Option<McpHttpServeConfig>,
     pub(super) session_auth: Option<SessionAuthSettings>,
@@ -297,6 +297,7 @@ impl ServeSettings {
 ///
 /// Holding one is proof the signing key and provider secret were fetched from
 /// their configured sources.
+#[derive(Clone)]
 pub struct SessionAuthSettings {
     pub(super) settings: ResolvedAuthSettings,
     pub(super) session_tokens: SessionTokenIssuer,
