@@ -31,6 +31,7 @@ use crate::runtime::error::{
     query_result_observer_error_to_core,
 };
 use crate::runtime::json::register_json_support;
+use crate::runtime::memory::QueryMemoryExecution;
 use crate::runtime::pattern_validator::register_pattern_validator;
 use crate::runtime::query_planner::CoralQueryPlanner;
 use crate::runtime::registry::{
@@ -47,9 +48,9 @@ use crate::runtime::udfs::published_table_functions;
 use crate::{
     BoundRequestIdentityHttpAuthenticator, CatalogInfo, CoreError, DependentJoinConfig,
     DescribeTableInfo, MemorySize, QueryExecution, QueryExecutionProvenance, QueryMemoryConfig,
-    QueryMemoryObserver, QueryParameterValue, QueryParameters, QueryPlan, QueryResultObserver,
-    QueryResultObserverError, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,
-    QueryTableFunctionUsage, QueryTableUsage, RequestAuthenticator,
+    QueryMemoryObserver, QueryMemoryOutcome, QueryParameterValue, QueryParameters, QueryPlan,
+    QueryResultObserver, QueryResultObserverError, QueryRuntimeConfig, QueryRuntimeContext,
+    QuerySource, QueryTableFunctionUsage, QueryTableUsage, RequestAuthenticator,
     RequestIdentityHttpAuthenticatorError, RequestIdentityHttpAuthenticatorFactory,
     RequestIdentitySelectionContext, RequestIdentitySelectionError, RequestIdentitySelector,
     ResolvedQueryResources, SelectedRequestIdentity, SourceDecorator, SourceInputResolver,
@@ -769,9 +770,32 @@ impl QueryRuntimeAdapter {
         &self,
         prepared: PreparedSql,
     ) -> Result<QueryExecution, CoreError> {
+        let memory = self
+            .query_memory_observer
+            .clone()
+            .map(QueryMemoryExecution::begin);
+        let result = self
+            .execute_prepared_with_memory(prepared, memory.as_ref())
+            .await;
+        if let Some(memory) = memory {
+            let outcome = if result.is_ok() {
+                QueryMemoryOutcome::Success
+            } else {
+                QueryMemoryOutcome::Error
+            };
+            memory.finish(outcome);
+        }
+        result
+    }
+
+    async fn execute_prepared_with_memory(
+        &self,
+        prepared: PreparedSql,
+        memory: Option<&QueryMemoryExecution>,
+    ) -> Result<QueryExecution, CoreError> {
         let sql = prepared.sql.clone();
         let params = prepared.params.clone();
-        match self.execute_prepared_once(prepared).await {
+        match self.execute_prepared_once(prepared, memory).await {
             Ok(execution) => Ok(execution),
             Err(SqlExecutionFailure::Collection(error)) => {
                 // Resolver-row overflow is a dependent-join buffering limit, not
@@ -806,7 +830,7 @@ impl QueryRuntimeAdapter {
                         return Err(self.sql_execution_failure_to_core(error, &sql).await);
                     }
                 };
-                match self.execute_prepared_once(prepared).await {
+                match self.execute_prepared_once(prepared, memory).await {
                     Ok(execution) => Ok(execution),
                     Err(error) => {
                         if is_missing_required_filter_failure(&error) {
@@ -897,6 +921,7 @@ impl QueryRuntimeAdapter {
     async fn execute_prepared_once(
         &self,
         prepared: PreparedSql,
+        memory: Option<&QueryMemoryExecution>,
     ) -> Result<QueryExecution, SqlExecutionFailure> {
         let PreparedSql {
             dataframe,
@@ -904,13 +929,18 @@ impl QueryRuntimeAdapter {
             resources,
             ..
         } = prepared;
-        let task_ctx = Arc::new(dataframe.task_ctx());
+        let task_ctx = dataframe.task_ctx();
+        let task_ctx = match memory {
+            Some(memory) => memory.task_context(task_ctx),
+            None => Ok(task_ctx),
+        }
+        .map_err(SqlExecutionFailure::Collection)?;
         let physical_plan = dataframe
             .create_physical_plan()
             .await
             .map_err(SqlExecutionFailure::Collection)?;
         let arrow_schema = physical_plan.schema();
-        let batches = collect(physical_plan, task_ctx)
+        let batches = collect(physical_plan, Arc::new(task_ctx))
             .await
             .map_err(SqlExecutionFailure::Collection)?;
         let execution = QueryExecution::new(arrow_schema, batches, &sql, resources);
@@ -1582,18 +1612,34 @@ fn query_result_observer_error(name: &str, error: &QueryResultObserverError) -> 
 }
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, HashMap};
+    use std::collections::{BTreeMap, HashMap, VecDeque};
+    use std::fmt;
     use std::str::FromStr as _;
+    use std::sync::Mutex;
 
+    use arrow::array::RecordBatch;
+    use async_trait::async_trait;
     use coral_spec::v4::IdentityRequirements;
-    use datafusion::execution::memory_pool::MemoryConsumer;
+    use datafusion::common::{Result as DataFusionResult, Statistics};
+    use datafusion::execution::context::QueryPlanner;
+    use datafusion::execution::memory_pool::{GreedyMemoryPool, MemoryConsumer, MemoryPool};
+    use datafusion::execution::{SessionState, SessionStateBuilder};
+    use datafusion::logical_expr::LogicalPlan;
+    use datafusion::physical_plan::empty::EmptyExec;
+    use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+    use datafusion::physical_plan::{
+        DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SendableRecordBatchStream,
+    };
+    use futures::stream;
+    use tokio::sync::Notify;
 
     use super::*;
     use crate::backends::common::RegisteredColumn;
     use crate::backends::{RegisteredTable, SourceQualifiedName};
+    use crate::runtime::dependent_join::error::DependentJoinError;
     use crate::{
-        DependentJoinConfig, MemorySize, QueryMemoryConfig, QueryRuntimeContext,
-        UdfRuntimeImplementation, UdfRuntimePublish, UdfRuntimeResultColumn,
+        DependentJoinConfig, MemorySize, QueryMemoryConfig, QueryMemoryObservation,
+        QueryRuntimeContext, UdfRuntimeImplementation, UdfRuntimePublish, UdfRuntimeResultColumn,
         UdfRuntimeTableFunctionPublish,
     };
 
@@ -1625,6 +1671,187 @@ mod tests {
             name_to_source: HashMap::new(),
             query_result_observers: Vec::new(),
         }
+    }
+
+    #[derive(Clone, Debug)]
+    enum QueryMemoryTestBehavior {
+        Complete {
+            bytes: usize,
+            fail: bool,
+        },
+        Wait {
+            bytes: usize,
+            started: Arc<Notify>,
+            finish: Arc<Notify>,
+        },
+        ResolverError {
+            bytes: usize,
+            release: Arc<Notify>,
+            released: Arc<Notify>,
+        },
+    }
+
+    #[derive(Debug)]
+    struct QueryMemoryTestPlanner(Mutex<VecDeque<QueryMemoryTestBehavior>>);
+
+    #[async_trait]
+    impl QueryPlanner for QueryMemoryTestPlanner {
+        async fn create_physical_plan(
+            &self,
+            logical_plan: &LogicalPlan,
+            _session_state: &SessionState,
+        ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+            let behavior = self.0.lock().unwrap().pop_front().ok_or_else(|| {
+                DataFusionError::Internal("missing query-memory test behavior".into())
+            })?;
+            Ok(Arc::new(QueryMemoryTestExec {
+                inner: EmptyExec::new(Arc::new(logical_plan.schema().as_arrow().clone())),
+                behavior,
+            }))
+        }
+    }
+
+    #[derive(Debug)]
+    struct QueryMemoryTestExec {
+        inner: EmptyExec,
+        behavior: QueryMemoryTestBehavior,
+    }
+
+    impl DisplayAs for QueryMemoryTestExec {
+        fn fmt_as(&self, _format: DisplayFormatType, f: &mut fmt::Formatter) -> fmt::Result {
+            write!(f, "QueryMemoryTestExec")
+        }
+    }
+
+    impl ExecutionPlan for QueryMemoryTestExec {
+        fn name(&self) -> &'static str {
+            "QueryMemoryTestExec"
+        }
+
+        fn properties(&self) -> &Arc<PlanProperties> {
+            self.inner.properties()
+        }
+
+        fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+            Vec::new()
+        }
+
+        fn with_new_children(
+            self: Arc<Self>,
+            _children: Vec<Arc<dyn ExecutionPlan>>,
+        ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+            Ok(self)
+        }
+
+        fn execute(
+            &self,
+            _partition: usize,
+            context: Arc<datafusion::execution::TaskContext>,
+        ) -> DataFusionResult<SendableRecordBatchStream> {
+            let reservation =
+                MemoryConsumer::new("query-memory-test").register(context.memory_pool());
+            reservation.try_grow(self.behavior.bytes())?;
+            let behavior = self.behavior.clone();
+            let output_schema = self.schema();
+            let stream_schema = Arc::clone(&output_schema);
+            let output = async move {
+                match behavior {
+                    QueryMemoryTestBehavior::Complete { fail, .. } => {
+                        drop(reservation);
+                        if fail {
+                            Err(DataFusionError::Execution(
+                                "query-memory test failure".into(),
+                            ))
+                        } else {
+                            Ok(RecordBatch::new_empty(output_schema))
+                        }
+                    }
+                    QueryMemoryTestBehavior::Wait {
+                        started, finish, ..
+                    } => {
+                        started.notify_one();
+                        finish.notified().await;
+                        drop(reservation);
+                        Ok(RecordBatch::new_empty(output_schema))
+                    }
+                    QueryMemoryTestBehavior::ResolverError {
+                        release, released, ..
+                    } => {
+                        tokio::spawn(async move {
+                            release.notified().await;
+                            drop(reservation);
+                            released.notify_one();
+                        });
+                        Err(DependentJoinError::ResolverRows {
+                            source_schema: "test".into(),
+                            table: "rows".into(),
+                            observed: 2,
+                            cap: 1,
+                        }
+                        .into_datafusion())
+                    }
+                }
+            };
+            Ok(Box::pin(RecordBatchStreamAdapter::new(
+                stream_schema,
+                stream::once(output),
+            )))
+        }
+
+        fn partition_statistics(
+            &self,
+            _partition: Option<usize>,
+        ) -> DataFusionResult<Arc<Statistics>> {
+            Ok(Arc::new(Statistics::new_unknown(&self.schema())))
+        }
+    }
+
+    impl QueryMemoryTestBehavior {
+        fn bytes(&self) -> usize {
+            match self {
+                Self::Complete { bytes, .. }
+                | Self::Wait { bytes, .. }
+                | Self::ResolverError { bytes, .. } => *bytes,
+            }
+        }
+    }
+
+    fn query_memory_test_context(
+        pool: Arc<dyn MemoryPool>,
+        behaviors: impl IntoIterator<Item = QueryMemoryTestBehavior>,
+    ) -> Arc<SessionContext> {
+        let runtime = RuntimeEnvBuilder::new()
+            .with_memory_pool(pool)
+            .build_arc()
+            .unwrap();
+        let state = SessionStateBuilder::new()
+            .with_config(SessionConfig::new())
+            .with_runtime_env(runtime)
+            .with_default_features()
+            .with_query_planner(Arc::new(QueryMemoryTestPlanner(Mutex::new(
+                behaviors.into_iter().collect(),
+            ))))
+            .build();
+        Arc::new(SessionContext::new_with_state(state))
+    }
+
+    fn query_memory_observer() -> (QueryMemoryObserver, Arc<Mutex<Vec<QueryMemoryObservation>>>) {
+        let observations = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&observations);
+        (
+            Arc::new(move |observation| captured.lock().unwrap().push(observation)),
+            observations,
+        )
+    }
+
+    fn query_memory_test_adapter(
+        ctx: Arc<SessionContext>,
+        observer: QueryMemoryObserver,
+    ) -> QueryRuntimeAdapter {
+        let mut adapter = adapter_with_sources(Vec::new());
+        adapter.ctx = ctx;
+        adapter.query_memory_observer = Some(observer);
+        adapter
     }
 
     fn demo_source() -> RegisteredSource {
@@ -1851,6 +2078,214 @@ mod tests {
             ),
             CoreError::FailedPrecondition(detail) if detail.contains("selected identity 'identity-1'")
         ));
+    }
+
+    fn query_memory_fallback(ctx: Arc<SessionContext>) -> FallbackRuntime {
+        let fallback = FallbackRuntime::new(FallbackRuntimeConfig {
+            sources: Vec::new(),
+            runtime_context: QueryRuntimeContext::default(),
+            database_pool_registry: Arc::new(crate::DatabasePoolRegistry::new()),
+            dependent_join: DependentJoinConfig::default(),
+            memory: QueryMemoryConfig::default(),
+            udfs: Vec::new(),
+            extension_hooks: RuntimeExtensionHooks {
+                request_authenticators: HashMap::new(),
+                source_input_resolver: None,
+                source_observation_publishers: Vec::new(),
+            },
+            request_identity_http_authenticators: HashMap::new(),
+        });
+        assert!(
+            fallback
+                .runtime
+                .set(RegisteredRuntime {
+                    ctx,
+                    active_sources: Vec::new(),
+                    column_fetchers: Vec::new(),
+                    source_function_names: HashSet::new(),
+                    tables: Vec::new(),
+                    table_functions: Vec::new(),
+                    failures: Vec::new(),
+                    column_fetch_failures: catalog::CatalogColumnFetchFailures::default(),
+                })
+                .is_ok()
+        );
+        fallback
+    }
+
+    #[tokio::test]
+    async fn query_memory_reports_top_level_success_error_and_cancellation_once() {
+        for (fail, outcome, bytes) in [
+            (false, QueryMemoryOutcome::Success, 7),
+            (true, QueryMemoryOutcome::Error, 9),
+        ] {
+            let pool: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(64));
+            let ctx = query_memory_test_context(
+                pool,
+                [QueryMemoryTestBehavior::Complete { bytes, fail }],
+            );
+            let (observer, observations) = query_memory_observer();
+            let result = query_memory_test_adapter(ctx, observer)
+                .execute_sql("select 1", &QueryParameters::new())
+                .await;
+
+            assert_eq!(result.is_err(), fail);
+            assert_eq!(
+                observations.lock().unwrap().as_slice(),
+                &[QueryMemoryObservation {
+                    datafusion_reserved_peak_bytes: bytes,
+                    outcome,
+                }]
+            );
+        }
+
+        let started = Arc::new(Notify::new());
+        let finish = Arc::new(Notify::new());
+        let pool: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(64));
+        let ctx = query_memory_test_context(
+            pool,
+            [QueryMemoryTestBehavior::Wait {
+                bytes: 11,
+                started: Arc::clone(&started),
+                finish,
+            }],
+        );
+        let (observer, observations) = query_memory_observer();
+        let adapter = Arc::new(query_memory_test_adapter(ctx, observer));
+        let task = tokio::spawn(async move {
+            adapter
+                .execute_sql("select 1", &QueryParameters::new())
+                .await
+        });
+        started.notified().await;
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert_eq!(
+            observations.lock().unwrap().as_slice(),
+            &[QueryMemoryObservation {
+                datafusion_reserved_peak_bytes: 11,
+                outcome: QueryMemoryOutcome::Cancelled,
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn query_memory_fallback_shares_peak_until_delayed_primary_release() {
+        let release_primary = Arc::new(Notify::new());
+        let primary_released = Arc::new(Notify::new());
+        let fallback_started = Arc::new(Notify::new());
+        let finish_fallback = Arc::new(Notify::new());
+        let pool: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(64));
+        let primary = query_memory_test_context(
+            Arc::clone(&pool),
+            [QueryMemoryTestBehavior::ResolverError {
+                bytes: 4,
+                release: Arc::clone(&release_primary),
+                released: Arc::clone(&primary_released),
+            }],
+        );
+        let fallback = query_memory_test_context(
+            Arc::clone(&pool),
+            [QueryMemoryTestBehavior::Wait {
+                bytes: 7,
+                started: Arc::clone(&fallback_started),
+                finish: Arc::clone(&finish_fallback),
+            }],
+        );
+        let (observer, observations) = query_memory_observer();
+        let mut adapter = query_memory_test_adapter(primary, observer);
+        adapter.fallback_runtime = Some(query_memory_fallback(fallback));
+        let adapter = Arc::new(adapter);
+        let task = tokio::spawn(async move {
+            adapter
+                .execute_sql("select 1", &QueryParameters::new())
+                .await
+        });
+
+        fallback_started.notified().await;
+        assert_eq!(pool.reserved(), 11);
+        assert!(observations.lock().unwrap().is_empty());
+        release_primary.notify_one();
+        primary_released.notified().await;
+        assert_eq!(pool.reserved(), 7);
+        assert!(observations.lock().unwrap().is_empty());
+        finish_fallback.notify_one();
+        task.await.unwrap().expect("fallback query should succeed");
+
+        assert_eq!(pool.reserved(), 0);
+        assert_eq!(
+            observations.lock().unwrap().as_slice(),
+            &[QueryMemoryObservation {
+                datafusion_reserved_peak_bytes: 11,
+                outcome: QueryMemoryOutcome::Success,
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn query_memory_overlapping_executions_are_independent_under_global_limit() {
+        let first_started = Arc::new(Notify::new());
+        let first_finish = Arc::new(Notify::new());
+        let second_started = Arc::new(Notify::new());
+        let second_finish = Arc::new(Notify::new());
+        let pool: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(8));
+        let ctx = query_memory_test_context(
+            Arc::clone(&pool),
+            [
+                QueryMemoryTestBehavior::Wait {
+                    bytes: 3,
+                    started: Arc::clone(&first_started),
+                    finish: Arc::clone(&first_finish),
+                },
+                QueryMemoryTestBehavior::Wait {
+                    bytes: 5,
+                    started: Arc::clone(&second_started),
+                    finish: Arc::clone(&second_finish),
+                },
+            ],
+        );
+        let (observer, observations) = query_memory_observer();
+        let adapter = Arc::new(query_memory_test_adapter(ctx, observer));
+        let first = tokio::spawn({
+            let adapter = Arc::clone(&adapter);
+            async move {
+                adapter
+                    .execute_sql("select 1", &QueryParameters::new())
+                    .await
+            }
+        });
+        first_started.notified().await;
+        let second = tokio::spawn(async move {
+            adapter
+                .execute_sql("select 2", &QueryParameters::new())
+                .await
+        });
+        second_started.notified().await;
+
+        assert_eq!(pool.reserved(), 8);
+        let extra = MemoryConsumer::new("global-limit-check").register(&pool);
+        assert!(extra.try_grow(1).is_err());
+        first_finish.notify_one();
+        first.await.unwrap().expect("first query should succeed");
+        second_finish.notify_one();
+        second.await.unwrap().expect("second query should succeed");
+
+        let mut observations = observations.lock().unwrap().clone();
+        observations.sort_by_key(|observation| observation.datafusion_reserved_peak_bytes);
+        assert_eq!(
+            observations,
+            [
+                QueryMemoryObservation {
+                    datafusion_reserved_peak_bytes: 3,
+                    outcome: QueryMemoryOutcome::Success,
+                },
+                QueryMemoryObservation {
+                    datafusion_reserved_peak_bytes: 5,
+                    outcome: QueryMemoryOutcome::Success,
+                },
+            ]
+        );
+        assert_eq!(pool.reserved(), 0);
     }
 
     #[test]
