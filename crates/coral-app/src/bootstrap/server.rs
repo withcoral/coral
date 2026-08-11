@@ -110,12 +110,11 @@ pub(crate) struct ServerConfig {
     config_dir: Option<PathBuf>,
     mode: ServerModeSelection,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
-    /// Provider every request's principal is resolved through.
+    /// Explicit provider every request's principal is resolved through.
     ///
-    /// Always present, defaulting to [`LocalPrincipalProvider`], so nothing
-    /// downstream of the builder has to handle a server that might have no way
-    /// to name its caller.
-    principal_provider: Arc<dyn PrincipalProvider>,
+    /// When absent, startup derives a provider from session authentication or
+    /// falls back to [`LocalPrincipalProvider`].
+    principal_provider: Option<Arc<dyn PrincipalProvider>>,
     feedback_publisher: Arc<dyn FeedbackPublisher>,
     feature_overrides: FeatureOverrides,
     enable_stderr_logs: bool,
@@ -138,7 +137,7 @@ impl ServerConfig {
             config_dir: None,
             mode: ServerModeSelection::Explicit(ServerMode::EphemeralGrpc),
             engine_extensions_providers: Vec::new(),
-            principal_provider: Arc::new(LocalPrincipalProvider),
+            principal_provider: None,
             feedback_publisher: Arc::new(HostedFeedbackPublisher::new()),
             feature_overrides: FeatureOverrides::default(),
             enable_stderr_logs: false,
@@ -334,11 +333,14 @@ impl ServerBuilder {
     ///
     /// Without this call a standalone listener serves the local principal to
     /// every caller its address is reachable from.
+    ///
+    /// This cannot be combined with [`ServerBuilder::with_session_auth`];
+    /// startup rejects that ambiguous authentication policy.
     pub fn with_principal_provider(
         mut self,
         principal_provider: Arc<dyn PrincipalProvider>,
     ) -> Self {
-        self.config.principal_provider = principal_provider;
+        self.config.principal_provider = Some(principal_provider);
         self
     }
 
@@ -348,10 +350,11 @@ impl ServerBuilder {
     /// audience and prepares the authorization server after the app database
     /// has been opened and migrated. The caller remains responsible for taking
     /// that server from the returned [`RunningServer`] and running its transport.
+    ///
+    /// This cannot be combined with [`ServerBuilder::with_principal_provider`];
+    /// startup rejects that ambiguous authentication policy.
     #[must_use]
     pub fn with_session_auth(mut self, session_auth: SessionAuthSettings) -> Self {
-        self.config.principal_provider =
-            session_auth.principal_provider(session_auth.public_audiences().iter().cloned());
         self.session_auth = Some(Box::new(session_auth));
         self
     }
@@ -395,6 +398,20 @@ impl ServerBuilder {
         self
     }
 
+    fn resolve_principal_provider(&self) -> Result<Arc<dyn PrincipalProvider>, AppError> {
+        match (&self.session_auth, &self.config.principal_provider) {
+            (Some(_), Some(_)) => Err(AppError::FailedPrecondition(
+                "session authentication cannot be combined with an explicit principal provider"
+                    .to_string(),
+            )),
+            (Some(session_auth), None) => Ok(
+                session_auth.principal_provider(session_auth.public_audiences().iter().cloned())
+            ),
+            (None, Some(principal_provider)) => Ok(Arc::clone(principal_provider)),
+            (None, None) => Ok(Arc::new(LocalPrincipalProvider)),
+        }
+    }
+
     /// Starts the Coral gRPC server on TCP.
     ///
     /// By default, Coral keeps a real local gRPC boundary here so the public
@@ -412,11 +429,11 @@ impl ServerBuilder {
 }
 
 async fn start_components(builder: ServerBuilder) -> Result<RunningServer, AppError> {
+    let principal_provider = builder.resolve_principal_provider()?;
     let session_auth = builder.session_auth;
     let env = AppEnvironment::discover();
     let layout = env.app_state_layout(builder.config.config_dir.clone())?;
     let mode = builder.config.resolved_mode(&layout)?;
-    let principal_provider = builder.config.principal_provider.clone();
     let grpc_listener = builder.config.grpc_listener.clone();
     layout.ensure()?;
     let features = FeatureStore::from_layout(layout.clone())
@@ -1536,6 +1553,40 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
             .await
             .expect("shutdown authorization server");
         grpc.shutdown().await.expect("shutdown gRPC server");
+    }
+
+    #[tokio::test]
+    async fn session_auth_rejects_an_explicit_principal_provider_in_either_order() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+        configure_serve_session_auth(&config_dir);
+        let builder = ServerBuilder::ephemeral_grpc().with_config_dir(config_dir);
+        let mut settings = builder.serve_settings().expect("resolve serve settings");
+        let session_auth = settings
+            .take_session_auth()
+            .expect("configured session auth");
+        let builders = [
+            builder
+                .clone()
+                .with_principal_provider(Arc::new(RejectingPrincipalProvider))
+                .with_session_auth(session_auth.clone()),
+            builder
+                .with_session_auth(session_auth)
+                .with_principal_provider(Arc::new(RejectingPrincipalProvider)),
+        ];
+
+        for builder in builders {
+            let Err(error) = builder.start().await else {
+                panic!("conflicting authentication policies must fail startup");
+            };
+            let AppError::FailedPrecondition(message) = error else {
+                panic!("expected failed precondition, got {error}");
+            };
+            assert_eq!(
+                message,
+                "session authentication cannot be combined with an explicit principal provider"
+            );
+        }
     }
 
     #[test]
