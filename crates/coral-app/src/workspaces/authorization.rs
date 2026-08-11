@@ -197,8 +197,11 @@ mod tests {
             WorkspaceName::parse(&format!("default-{owner_id}")).expect("owner default workspace");
         let member_workspace = WorkspaceName::parse(&format!("default-{member_id}"))
             .expect("member default workspace");
+        let mut session = db.as_ref();
         assert!(matches!(
-            db.add_workspace_member(workspace.as_str(), &member_id, MemberRole::Member, 2)
+            session
+                .workspaces()
+                .add_member(workspace.as_str(), &member_id, MemberRole::Member, 2)
                 .await
                 .expect("add member"),
             AddMemberOutcome::Added(_)
