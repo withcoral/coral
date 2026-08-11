@@ -1,6 +1,6 @@
 //! Transactional persistence for workspace creation and deletion.
 
-#![cfg_attr(not(test), expect(dead_code, reason = "wired in M3"))]
+#![cfg_attr(not(test), expect(dead_code, reason = "used higher in the PR stack"))]
 
 use sea_query::{Expr, ExprTrait, OnConflict, Query};
 
