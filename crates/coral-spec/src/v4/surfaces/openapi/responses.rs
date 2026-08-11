@@ -238,16 +238,12 @@ fn classify_response_schema(
     // spelling of a nullable collection. Reading only the string form missed
     // every one of them and fell through to the typeless default, so a nullable
     // collection was classified as a singleton object and its rows were lost.
-    if json_schema_type_contains(schema, "array") {
-        let item = schema.get("items").cloned().unwrap_or(Value::Null);
-        return (
-            OutputCardinality::List,
-            item.clone(),
-            item.get("$ref")
-                .and_then(Value::as_str)
-                .map(entity_name_from_ref),
-        );
-    }
+    //
+    // Object is tested first, in the same order `import_schema` tests it. Only a
+    // schema claiming both types can tell the difference, and the two have to
+    // agree about it: one deciding a response is a list while the other builds
+    // its row type as an object would leave the cardinality and the row shape
+    // describing different things.
     if json_schema_type_contains(schema, "object") || !json_schema_has_declared_type(schema) {
         return (
             OutputCardinality::Singleton,
@@ -257,6 +253,16 @@ fn classify_response_schema(
                 .and_then(Value::as_str)
                 .map(entity_name_from_ref)
                 .or_else(|| Some(entity_name_from_path(path))),
+        );
+    }
+    if json_schema_type_contains(schema, "array") {
+        let item = schema.get("items").cloned().unwrap_or(Value::Null);
+        return (
+            OutputCardinality::List,
+            item.clone(),
+            item.get("$ref")
+                .and_then(Value::as_str)
+                .map(entity_name_from_ref),
         );
     }
     (OutputCardinality::Unknown, schema.clone(), None)

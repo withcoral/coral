@@ -3419,6 +3419,55 @@ fn importer_reads_a_nullable_collection_as_a_list() {
 
     let operation = imported.operations.first().expect("operation");
     assert_eq!(operation.output.cardinality, OutputCardinality::List);
+
+    // The cardinality alone would still be satisfied if the item schema handed
+    // to `import_schema` were the wrong one — the rows would be typed as opaque
+    // JSON, which is the other half of the same data loss.
+    let IrTypeShape::Object { fields } = &imported
+        .types
+        .iter()
+        .find(|ty| ty.id == operation.output.type_ref)
+        .expect("row type")
+        .shape
+    else {
+        panic!("the row type has to come from `items`, not from the collection itself");
+    };
+    let names: Vec<&str> = fields.iter().map(|field| field.name.as_str()).collect();
+    assert_eq!(names, ["id"]);
+}
+
+#[test]
+fn response_and_schema_dispatch_agree_when_a_schema_claims_both_types() {
+    // Only a schema declaring both types can tell the two dispatches apart, and
+    // they have to answer alike: a response read as a list whose row type was
+    // built as an object would describe a collection of one thing and rows of
+    // another.
+    let imported = import_response_schema(
+        r"                type: [object, array]
+                properties:
+                  id: {type: string}
+                items: {type: string}",
+    )
+    .expect("import");
+
+    let operation = imported.operations.first().expect("operation");
+    assert_eq!(
+        operation.output.cardinality,
+        OutputCardinality::Singleton,
+        "object wins in `classify_response_schema`, as it does in `import_schema`"
+    );
+    assert!(
+        matches!(
+            imported
+                .types
+                .iter()
+                .find(|ty| ty.id == operation.output.type_ref)
+                .expect("row type")
+                .shape,
+            IrTypeShape::Object { .. }
+        ),
+        "the row type must be the object the cardinality claims it is"
+    );
 }
 
 #[test]
