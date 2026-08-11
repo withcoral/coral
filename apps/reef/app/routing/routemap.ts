@@ -18,6 +18,7 @@ const WORKSPACE_TRACES_PATH = '/workspaces/:workspaceId/traces'
 const WORKSPACE_TRACE_PATH = '/workspaces/:workspaceId/traces/:traceId'
 const SETTINGS_PATH = '/settings'
 const SETTINGS_MCP_CLIENTS_PATH = '/settings/mcp-clients'
+const SETTINGS_RUNTIME_FEATURES_PATH = '/settings/runtime-features'
 
 export const routeDefinitions = {
   home: {
@@ -43,6 +44,10 @@ export const routeDefinitions = {
   settingsMcpClients: {
     path: SETTINGS_MCP_CLIENTS_PATH,
     toPath: () => SETTINGS_MCP_CLIENTS_PATH,
+  },
+  settingsRuntimeFeatures: {
+    path: SETTINGS_RUNTIME_FEATURES_PATH,
+    toPath: () => SETTINGS_RUNTIME_FEATURES_PATH,
   },
   workspaces: {
     path: WORKSPACES_PATH,

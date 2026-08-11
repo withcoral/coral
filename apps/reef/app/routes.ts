@@ -36,6 +36,7 @@ export default [
       route(routePattern('settings'), 'routes/settings.tsx', [
         index('routes/settings/index.ts'),
         route('mcp-clients', 'routes/settings/mcp-clients.tsx'),
+        route('runtime-features', 'routes/settings/runtime-features.tsx'),
       ]),
     ]),
   ]),
