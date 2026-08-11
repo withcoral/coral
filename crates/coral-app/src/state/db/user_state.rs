@@ -35,7 +35,7 @@ impl CoralDb {
         try_create_workspace_with_owner(&mut tx, &workspace_id, &user.user_id, now_unix_nanos)
             .await?;
         tx.tasks()
-            .reattribute_pre_v1_task_attribution(pre_v1_task_attribution_id, &user.user_id)
+            .reattribute_pre_v1_tasks_to_user(pre_v1_task_attribution_id, &user.user_id)
             .await?;
         tx.commit().await?;
         Ok(outcome)
@@ -86,15 +86,15 @@ impl CoralDb {
         }
     }
 
-    pub(crate) async fn reattribute_pre_v1_task_principal_digest(
+    pub(crate) async fn reattribute_pre_v1_tasks_to_user(
         &self,
-        pre_v1_principal_digest: &str,
+        pre_v1_task_attribution_id: &str,
         user_id: &str,
     ) -> Result<u64, DbError> {
         let mut tx = self.begin().await?;
         let updated = tx
             .tasks()
-            .reattribute_pre_v1_task_attribution(pre_v1_principal_digest, user_id)
+            .reattribute_pre_v1_tasks_to_user(pre_v1_task_attribution_id, user_id)
             .await?;
         tx.commit().await?;
         Ok(updated)
@@ -212,7 +212,7 @@ mod tests {
             TaskCreationResult::Created
         );
         assert_eq!(
-            db.reattribute_pre_v1_task_principal_digest("pre-v1-digest", &user_id)
+            db.reattribute_pre_v1_tasks_to_user("pre-v1-digest", &user_id)
                 .await
                 .expect("reattribute"),
             1
