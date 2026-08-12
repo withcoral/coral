@@ -259,11 +259,61 @@ describe('Coral OAuth adapter', () => {
   })
 
   it('rejects metadata for a different issuer', async () => {
-    mockFetch(jsonResponse({ ...metadata, issuer: 'https://attacker.example' }))
+    mockFetch(
+      jsonResponse({
+        ...metadata,
+        authorization_endpoint: 'not a URL',
+        issuer: 'https://attacker.example',
+      }),
+    )
 
     await expect(
       startCoralOAuthLogin(new Request('https://reef.example.test/login'), config),
     ).rejects.toThrow('metadata issuer does not match')
+  })
+
+  it.each([
+    ['lookalike host', 'https://coral.example.test.attacker.test/oauth'],
+    ['alternate port', 'https://coral.example.test:444/oauth'],
+    ['scheme change', 'http://coral.example.test/oauth'],
+    ['credentials', 'https://user:password@coral.example.test/oauth'],
+    ['relative URL', '/oauth'],
+    ['malformed URL', 'not a URL'],
+    ['non-HTTP URL', 'ftp://coral.example.test/oauth'],
+  ])('rejects an untrusted authorization endpoint using a %s', async (_, endpoint) => {
+    const fetch = mockFetch(jsonResponse({ ...metadata, authorization_endpoint: endpoint }))
+
+    await expect(
+      startCoralOAuthLogin(new Request('https://reef.example.test/login'), config),
+    ).rejects.toThrow('authorization_endpoint must be an absolute same-origin HTTP(S) URL')
+    expect(fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    ['lookalike host', 'https://coral.example.test.attacker.test/oauth'],
+    ['alternate port', 'https://coral.example.test:444/oauth'],
+    ['scheme change', 'http://coral.example.test/oauth'],
+    ['credentials', 'https://user:password@coral.example.test/oauth'],
+    ['relative URL', '/oauth'],
+    ['malformed URL', 'not a URL'],
+    ['non-HTTP URL', 'ftp://coral.example.test/oauth'],
+  ])('rejects an untrusted token endpoint using a %s', async (_, endpoint) => {
+    const fetch = mockFetch(
+      jsonResponse(metadata),
+      jsonResponse({ ...metadata, token_endpoint: endpoint }),
+    )
+    const login = await startCoralOAuthLogin(new Request('https://reef.example.test/login'), config)
+    const state = new URL(login.headers.get('location') ?? '').searchParams.get('state')
+
+    await expect(
+      completeCoralOAuthLogin(
+        new Request(`https://reef.example.test/auth/callback?code=abc&state=${state}`, {
+          headers: { cookie: cookieHeader(login, oauthCookieName(config)) },
+        }),
+        config,
+      ),
+    ).rejects.toThrow('token_endpoint must be an absolute same-origin HTTP(S) URL')
+    expect(fetch).toHaveBeenCalledTimes(2)
   })
 
   it('requires a positive standards-based token expiry', async () => {
