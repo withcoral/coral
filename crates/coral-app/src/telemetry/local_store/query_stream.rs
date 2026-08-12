@@ -298,10 +298,14 @@ impl StreamingQueryStreamAggregate {
     }
 
     fn workspace(&self) -> Option<&str> {
-        self.entry
-            .workspace
-            .as_deref()
-            .or_else(|| self.workspace_evidence.unique())
+        match (
+            self.entry.workspace.as_deref(),
+            self.workspace_evidence.unique(),
+        ) {
+            (Some(entry), Some(evidence)) if entry == evidence => Some(entry),
+            (None, evidence) => evidence,
+            _ => None,
+        }
     }
 
     fn may_match_workspace(&self, workspace_name: Option<&str>) -> bool {

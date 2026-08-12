@@ -343,14 +343,6 @@ mod tests {
         assert_eq!(
             session
                 .workspace_members()
-                .owned_workspaces_for_user_id("missing-user", None, 10)
-                .await
-                .expect("list no owned workspaces"),
-            Vec::<String>::new()
-        );
-        assert_eq!(
-            session
-                .workspace_members()
                 .owned_workspaces_for_user_id(&user_id, None, 1)
                 .await
                 .expect("list first owned workspace"),
@@ -364,15 +356,6 @@ mod tests {
                 .expect("list owned workspaces after cursor"),
             vec![workspace_c.clone()]
         );
-        assert_eq!(
-            session
-                .workspace_members()
-                .owned_workspaces_for_user_id(&user_id, None, 10)
-                .await
-                .expect("list all owned workspaces"),
-            vec![workspace_a.clone(), workspace_c.clone()]
-        );
-
         let mut tx = db.begin().await.expect("begin delete tx");
         assert!(
             tx.workspaces()

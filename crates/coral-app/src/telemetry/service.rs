@@ -510,6 +510,18 @@ mod tests {
         let detail_summary = detail.summary.expect("query stream detail summary");
         assert_eq!(detail_summary, *summary);
         assert_eq!(detail.spans.len(), 2);
+        let mixed = TraceServiceApi::get_trace(
+            &fixture.service,
+            view_get_request(
+                &fixture.owner,
+                "mixed-trace",
+                Some("alpha"),
+                TraceView::QueryStream,
+            ),
+        )
+        .await
+        .expect_err("mixed-workspace trace must be concealed");
+        assert_eq!(mixed.code(), Code::NotFound);
 
         let unknown_view = TraceServiceApi::list_traces(
             &fixture.service,
@@ -659,7 +671,7 @@ mod tests {
         workspace_name: Option<&str>,
         view: TraceView,
     ) -> Request<ListTracesRequest> {
-        let mut request = list_request(principal, workspace_name, 10, "");
+        let mut request = list_request(principal, workspace_name, 1, "");
         request.get_mut().view = view as i32;
         request
     }
@@ -745,7 +757,6 @@ mod tests {
                     "coral.stream.entry": true,
                     "coral.stream.kind": "query",
                     "coral.stream.name": "sql",
-                    "workspace": "alpha",
                     "sql": "SELECT 42",
                     "row_count": 1,
                     "status": "ok",
@@ -753,7 +764,20 @@ mod tests {
                 .to_string()
             ),
         );
-        write_trace_records(trace_store, &[tool, nested]);
+        let mut mixed_tool = tool.clone();
+        let mixed_tool_object = mixed_tool.as_object_mut().expect("mixed tool object");
+        mixed_tool_object.insert("trace_id".to_string(), json!("mixed-trace"));
+        mixed_tool_object.insert("span_id".to_string(), json!("mixed-tool"));
+        let mut bridge = trace_record_json("mixed-trace", "bridge", "unused", 15, 35);
+        let bridge_object = bridge.as_object_mut().expect("bridge record object");
+        bridge_object.insert("parent_span_id".to_string(), json!("mixed-tool"));
+        bridge_object.insert("attributes_json".to_string(), json!("{}"));
+        let mut sentinel = trace_record_json("mixed-trace", "beta-query", "beta", 20, 30);
+        sentinel
+            .as_object_mut()
+            .expect("sentinel record object")
+            .insert("parent_span_id".to_string(), json!("bridge"));
+        write_trace_records(trace_store, &[tool, nested, mixed_tool, bridge, sentinel]);
     }
 
     fn trace_record_json(
