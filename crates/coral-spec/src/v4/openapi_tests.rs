@@ -3844,6 +3844,53 @@ fn openapi_31_reads_const_as_a_single_value_enum() {
 }
 
 #[test]
+fn openapi_31_reads_nullability_out_of_const_and_enum() {
+    // Neither of these names a type, so `type` had nothing to say about them
+    // and the columns came out non-nullable while the document was constraining
+    // them to a value that is null, or to a set that includes it.
+    let imported = import_versioned_response_schema(
+        "3.1.0",
+        r"                type: object
+                properties:
+                  always_null:
+                    const: null
+                  sometimes_null:
+                    enum: [null, open]
+                  never_null:
+                    enum: [open, paid]",
+    )
+    .expect("3.1 should import");
+
+    assert!(
+        probe_field_type(&imported, "always_null").nullable,
+        "a schema constrained to null admits null"
+    );
+    assert!(
+        probe_field_type(&imported, "sometimes_null").nullable,
+        "an enum listing null admits null"
+    );
+    assert!(
+        !probe_field_type(&imported, "never_null").nullable,
+        "an enum that does not list null still forbids it"
+    );
+
+    // The shapes are the other half: deriving nullability must not change what
+    // the values themselves import as.
+    let IrTypeShape::Enum { values } = &probe_field_type(&imported, "sometimes_null").shape else {
+        panic!("an enum listing null is still an enum");
+    };
+    assert_eq!(values, &["null", "open"]);
+    assert!(
+        matches!(
+            probe_field_type(&imported, "always_null").shape,
+            IrTypeShape::Json
+        ),
+        "a null constant constrains the value, not the shape, and `const_enum_values` \
+         already declines to read it as a one-value enum"
+    );
+}
+
+#[test]
 fn openapi_30_leaves_const_alone() {
     // `const` is not a 3.0 keyword, so a 3.0 document using it gets no special
     // reading — the schema is typeless and stays opaque.

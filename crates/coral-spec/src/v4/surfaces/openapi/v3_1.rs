@@ -18,8 +18,23 @@ pub(super) struct OpenApi31Importer;
 impl OpenApiDialect for OpenApi31Importer {
     /// 3.1 dropped `nullable` in favour of JSON Schema's own `null` type, which
     /// a schema admits by listing it alongside the type it otherwise is.
+    ///
+    /// `type` is not the only keyword that admits it, though, and a schema
+    /// constraining its value can say so without naming a type at all: `{const:
+    /// null}` and `{enum: [null, ...]}` each accept a null instance. Reading
+    /// only `type` left those columns marked non-nullable while the document
+    /// said the opposite — and for the typeless spellings, nothing else in the
+    /// schema said anything about them either.
     fn schema_nullable(&self, schema: &Value) -> bool {
         json_schema_type_contains(schema, "null")
+            || schema.get("const").is_some_and(Value::is_null)
+            // Any null member, not only a lone one: `enum: [null, 'a']` admits
+            // null exactly as `enum: [null]` does, and the values themselves are
+            // what the shape dispatch reads.
+            || schema
+                .get("enum")
+                .and_then(Value::as_array)
+                .is_some_and(|values| values.iter().any(Value::is_null))
     }
 
     /// `const` is 2020-12's single-value constraint, and 3.1 documents reach for
