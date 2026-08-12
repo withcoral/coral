@@ -97,23 +97,6 @@ describe('architecture', () => {
     expect(server).toContain('pathToFileURL(process.argv[1]).href === import.meta.url')
   })
 
-  it('runs the production server smoke after its build when server inputs change', () => {
-    const validate = fs.readFileSync(
-      path.resolve(reefRoot, '../..', '.github/workflows/validate.yml'),
-      'utf8',
-    )
-    const smokeFilter = validate.match(
-      /            reef-server-smoke:\n(?<paths>(?:              - .*\n)+)/,
-    )?.groups?.paths
-
-    expect(smokeFilter).toBe(
-      "              - '.github/workflows/validate.yml'\n              - 'apps/reef/**'\n",
-    )
-    expect(validate.indexOf('run: npm run build --prefix apps/reef')).toBeLessThan(
-      validate.indexOf('run: npm run test:server --prefix apps/reef'),
-    )
-  })
-
   it('keeps a story in every visual Wax component directory', () => {
     const missingStories = fs
       .readdirSync(waxComponentsDir, { withFileTypes: true })

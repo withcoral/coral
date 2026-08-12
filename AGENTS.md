@@ -46,7 +46,9 @@
 - UI changes must pass `npm run check --prefix apps/ui` (oxfmt + oxlint) before submitting.
 - Reef changes must pass `npm run check --prefix apps/reef`,
   `npm run typecheck --prefix apps/reef`, `npm test --prefix apps/reef`, and
-  `npm run build --prefix apps/reef` before submitting.
+  `npm run build --prefix apps/reef`, followed by
+  `npm run test:server --prefix apps/reef`, before submitting. The production
+  server smoke test consumes the build output and runs on every Reef CI job.
 - Desktop changes must pass `npm run check --prefix apps/desktop` and
   `npm test --prefix apps/desktop` before submitting.
 - Keep Reef Vitest coverage Node-only and focused on atomic deterministic

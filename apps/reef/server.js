@@ -45,7 +45,7 @@ export async function startServer({
   server,
   env = process.env,
   host = env.HOST?.trim() || '0.0.0.0',
-  port = env.PORT ? Number(env.PORT) : 3000,
+  port = Number(env.PORT?.trim() || 3000),
   listen = listenServer,
   installShutdown = installShutdownHandlers,
 }) {

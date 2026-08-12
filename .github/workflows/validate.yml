@@ -39,7 +39,6 @@ jobs:
       ui-build: ${{ steps.filter.outputs.ui-build }}
       ui-tests: ${{ steps.filter.outputs.ui-tests }}
       reef-checks: ${{ steps.filter.outputs.reef-checks }}
-      reef-server-smoke: ${{ steps.filter.outputs.reef-server-smoke }}
       desktop-checks: ${{ steps.filter.outputs.desktop-checks }}
       proto-lint: ${{ steps.filter.outputs.proto-lint }}
       source-lint: ${{ steps.filter.outputs.source-lint }}
@@ -105,9 +104,6 @@ jobs:
               # Reef re-exports the desktop IPC bridge types, so a change there
               # can break the reef type-check.
               - 'apps/desktop/src/shared/types.ts'
-            reef-server-smoke:
-              - '.github/workflows/validate.yml'
-              - 'apps/reef/**'
             desktop-checks:
               - '.github/workflows/validate.yml'
               - 'apps/desktop/**'
@@ -482,7 +478,6 @@ jobs:
         run: npm run build --prefix apps/reef
 
       - name: Smoke production Reef server
-        if: ${{ needs.changes.outputs.reef-server-smoke == 'true' }}
         run: npm run test:server --prefix apps/reef
 
   desktop-checks:

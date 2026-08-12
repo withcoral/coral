@@ -1,10 +1,21 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { readdir } from 'node:fs/promises'
+import { access, readdir } from 'node:fs/promises'
 import { EventEmitter, once } from 'node:events'
 import { test } from 'node:test'
 
 import { createWebRequest, startServer } from './server.js'
+
+try {
+  await Promise.all([
+    access(new URL('./build/server/index.js', import.meta.url)),
+    access(new URL('./build/client/assets/', import.meta.url)),
+  ])
+} catch {
+  throw new Error(
+    'Reef production build artifacts are missing; run `npm run build` before `npm run test:server`.',
+  )
+}
 
 const REQUIRED_ENV = {
   CORAL_ENDPOINT: 'http://127.0.0.1:9',
@@ -48,6 +59,22 @@ test('probes valid runtime config immediately before listen with a fresh context
   assert.deepEqual(events, ['probe', 'listen:0.0.0.0:3000', 'shutdown'])
   assert.equal(contexts.length, 1)
   assert.match(warnings[0], /authentication is disabled/)
+})
+
+test('treats a blank PORT as unset', async () => {
+  let configuredPort
+
+  await startServer({
+    env: { PORT: '   ', REEF_AUTH_MODE: 'required' },
+    handler: async () => new Response(null, { status: 204 }),
+    installShutdown: () => undefined,
+    listen: async (_server, port) => {
+      configuredPort = port
+    },
+    server: {},
+  })
+
+  assert.equal(configuredPort, 3000)
 })
 
 test('aborts Fetch requests only for actual Node client disconnects', () => {
@@ -155,22 +182,40 @@ test('production entry names fatal runtime config and exits without listening', 
   assert.match(error, /Reef startup failed: runtime configuration: health probe returned HTTP 500/)
 })
 
+test('stops waiting for a listening port when the child exits', async () => {
+  const child = spawn(process.execPath, ['-e', 'process.exit(2)'], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+
+  await assert.rejects(listeningPort(child), /server exited before listening \(2\)/)
+})
+
 function listeningPort(child) {
   return new Promise((resolve, reject) => {
     let output = ''
-    const timeout = setTimeout(
-      () => reject(new Error('server did not listen within 10 seconds')),
-      10_000,
-    )
-    child.stdout.setEncoding('utf8').on('data', (chunk) => {
+    const cleanup = () => {
+      clearTimeout(timeout)
+      child.stdout.off('data', onData)
+      child.off('exit', onExit)
+    }
+    const onData = (chunk) => {
       output += chunk
       const match = output.match(/Reef listening on http:\/\/127\.0\.0\.1:(\d+)/)
       if (match) {
-        clearTimeout(timeout)
+        cleanup()
         resolve(Number(match[1]))
       }
-    })
-    child.once('exit', (code) => reject(new Error(`server exited before listening (${code})`)))
+    }
+    const onExit = (code) => {
+      cleanup()
+      reject(new Error(`server exited before listening (${code})`))
+    }
+    const timeout = setTimeout(() => {
+      cleanup()
+      reject(new Error('server did not listen within 10 seconds'))
+    }, 10_000)
+    child.stdout.setEncoding('utf8').on('data', onData)
+    child.once('exit', onExit)
   })
 }
 
