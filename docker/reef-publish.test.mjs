@@ -75,18 +75,46 @@ test('moving aliases have one coordinator after both immutable publishers', asyn
 
 test('alias publication converges absent, same, mismatch, and partial-failure states', async () => {
   const workflow = await read('../.github/workflows/docker-aliases.yml')
-  const coralWrite = workflow.indexOf('imagetools create --tag "ghcr.io/withcoral/coral:${alias}"')
-  const reefWrite = workflow.indexOf('imagetools create --tag "ghcr.io/withcoral/reef:${alias}"')
-  const coralRead = workflow.indexOf('coral_actual="$(docker buildx imagetools inspect')
-  const reefRead = workflow.indexOf('reef_actual="$(docker buildx imagetools inspect')
+  const operations = [
+    ['write-coral', workflow.indexOf('imagetools create --tag "ghcr.io/withcoral/coral:${alias}"')],
+    ['write-reef', workflow.indexOf('imagetools create --tag "ghcr.io/withcoral/reef:${alias}"')],
+    ['read-coral', workflow.indexOf('coral_actual="$(docker buildx imagetools inspect')],
+    ['read-reef', workflow.indexOf('reef_actual="$(docker buildx imagetools inspect')],
+  ].sort((left, right) => left[1] - right[1])
 
-  // create is an idempotent upsert: absent, same, and mismatched aliases all converge.
-  assert.ok(coralWrite >= 0 && coralWrite < reefWrite)
-  assert.ok(reefWrite < coralRead && coralRead < reefRead)
+  assert.deepEqual(
+    operations.map(([name, offset]) => [name, offset >= 0]),
+    [
+      ['write-coral', true],
+      ['write-reef', true],
+      ['read-coral', true],
+      ['read-reef', true],
+    ],
+  )
   assert.match(workflow, /test "\$coral_actual" = "\$CORAL_DIGEST"/)
   assert.match(workflow, /test "\$reef_actual" = "\$REEF_DIGEST"/)
-  assert.match(workflow, /set -euo pipefail/)
-  assert.match(workflow, /retry is idempotent and converges both aliases before completion/)
+
+  const expected = { coral: 'coral-new', reef: 'reef-new' }
+  const run = (initial, failAfter = Number.POSITIVE_INFINITY) => {
+    const state = { ...initial }
+    for (const [index, [operation]] of operations.entries()) {
+      if (index === failAfter) throw Object.assign(new Error('injected failure'), { state })
+      if (operation === 'write-coral') state.coral = expected.coral
+      if (operation === 'write-reef') state.reef = expected.reef
+      if (operation === 'read-coral') assert.equal(state.coral, expected.coral)
+      if (operation === 'read-reef') assert.equal(state.reef, expected.reef)
+    }
+    return state
+  }
+
+  for (const initial of [{}, expected, { coral: 'old', reef: 'old' }]) {
+    assert.deepEqual(run(initial), expected)
+  }
+  for (let failAfter = 0; failAfter < operations.length; failAfter += 1) {
+    let partial
+    assert.throws(() => run({}, failAfter), (error) => ((partial = error.state), true))
+    assert.deepEqual(run(partial), expected)
+  }
 })
 
 test('GitHub release promotion is the final coordinated commit point', async () => {
