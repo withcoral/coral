@@ -634,6 +634,14 @@ mod tests {
             session.execute(statement).await
         }
 
+        async fn execute_rows_affected<S>(&mut self, statement: S) -> Result<u64, DbError>
+        where
+            S: SqlxBinder,
+        {
+            let mut session = self.db;
+            session.execute_rows_affected(statement).await
+        }
+
         async fn fetch_optional<T>(
             &mut self,
             statement: SelectStatement,
