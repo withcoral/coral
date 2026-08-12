@@ -2,6 +2,7 @@ import { create } from '@bufbuild/protobuf'
 
 import type { Route } from './+types/functions'
 
+import { requestAuthContext } from '@/auth/server-context'
 import type { FunctionDetailsProps } from '@/components/functions'
 import {
   DeleteFunctionRequestSchema,
@@ -22,7 +23,11 @@ export type FunctionsActionData =
   | { message: string; name: string; status: 'error' }
   | { name: string; status: 'success' }
 
-export async function action({ params, request }: Route.ActionArgs): Promise<FunctionsActionData> {
+export async function action({
+  context,
+  params,
+  request,
+}: Route.ActionArgs): Promise<FunctionsActionData> {
   const formData = await request.formData()
   const nameValue = formData.get('name')
   const name = typeof nameValue === 'string' ? nameValue : ''
@@ -30,23 +35,29 @@ export async function action({ params, request }: Route.ActionArgs): Promise<Fun
 
   try {
     const workspace = workspaceFromParams(params)
-    await functionClientForRequest(request).deleteFunction(
-      create(DeleteFunctionRequestSchema, { name, workspace }),
-      { signal: request.signal },
-    )
+    await functionClientForRequest(
+      request,
+      context.get(requestAuthContext).accessToken,
+    ).deleteFunction(create(DeleteFunctionRequestSchema, { name, workspace }), {
+      signal: request.signal,
+    })
     return { name, status: 'success' }
   } catch (error) {
     return { message: errorMessage(error), name, status: 'error' }
   }
 }
 
-export async function loader({ params, request }: Route.LoaderArgs): Promise<FunctionsRouteData> {
+export async function loader({
+  context,
+  params,
+  request,
+}: Route.LoaderArgs): Promise<FunctionsRouteData> {
   try {
     const workspace = workspaceFromParams(params)
-    const response = await functionClientForRequest(request).listFunctions(
-      create(ListFunctionsRequestSchema, { workspace }),
-      { signal: request.signal },
-    )
+    const response = await functionClientForRequest(
+      request,
+      context.get(requestAuthContext).accessToken,
+    ).listFunctions(create(ListFunctionsRequestSchema, { workspace }), { signal: request.signal })
     return {
       functions: response.functions
         .map(toFunctionDetails)

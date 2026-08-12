@@ -12,6 +12,11 @@
 /.react-router/
 /build/
 
+# Vitest failure artifacts: screenshots and attachments are written on a failing
+# run and are never inputs to one.
+/.vitest-attachments/
+**/__screenshots__/
+
 /storybook-static/
 /build-storybook.log
 /.playwright-cli/

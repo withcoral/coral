@@ -15,10 +15,14 @@ const NDJSON_HEADERS = {
 
 type OAuthSourceResponse = CreateBundledSourceWithOAuthResponse | ImportSourceResponse
 
-export function oauthSourceStreamResponse(
+export async function oauthSourceStreamResponse(
   responses: AsyncIterable<OAuthSourceResponse>,
   signal?: AbortSignal,
-): Response {
+): Promise<Response> {
+  const iterator = responses[Symbol.asyncIterator]()
+  const first = await iterator.next()
+  if (first.done) throw new Error('OAuth install stream ended without a source event')
+
   const encoder = new TextEncoder()
   let closed = false
 
@@ -30,7 +34,7 @@ export function oauthSourceStreamResponse(
       }
 
       try {
-        await relayOAuthSourceStreamEvents(responses, send, signal)
+        await relayOAuthSourceStreamEvents(responsesFromFirst(first.value, iterator), send, signal)
       } catch (error) {
         if (!signal?.aborted) {
           send({ type: 'error', message: error instanceof Error ? error.message : String(error) })
@@ -48,6 +52,22 @@ export function oauthSourceStreamResponse(
   })
 
   return new Response(stream, { headers: NDJSON_HEADERS })
+}
+
+async function* responsesFromFirst(
+  first: OAuthSourceResponse,
+  iterator: AsyncIterator<OAuthSourceResponse>,
+): AsyncIterable<OAuthSourceResponse> {
+  try {
+    yield first
+    while (true) {
+      const next = await iterator.next()
+      if (next.done) return
+      yield next.value
+    }
+  } finally {
+    await iterator.return?.()
+  }
 }
 
 export async function relayOAuthSourceStreamEvents(
