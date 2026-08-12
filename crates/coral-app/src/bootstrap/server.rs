@@ -434,6 +434,7 @@ impl ServerBuilder {
     }
 }
 
+#[expect(clippy::too_many_lines, reason = "server composition root")]
 async fn start_components(builder: ServerBuilder) -> Result<RunningServer, AppError> {
     let local_principal = builder.local_principal_policy();
     let principal_provider = builder.resolve_principal_provider()?;

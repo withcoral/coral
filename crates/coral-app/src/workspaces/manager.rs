@@ -535,7 +535,7 @@ mod tests {
     async fn list_members(
         service: &WorkspaceService,
         principal: &Principal,
-    ) -> Vec<WorkspaceMember> {
+    ) -> Result<Vec<WorkspaceMember>, tonic::Status> {
         service
             .list_workspace_members(request(
                 ListWorkspaceMembersRequest {
@@ -544,9 +544,7 @@ mod tests {
                 principal,
             ))
             .await
-            .expect("list members")
-            .into_inner()
-            .members
+            .map(|response| response.into_inner().members)
     }
 
     async fn add_member(
@@ -564,6 +562,27 @@ mod tests {
             ))
             .await
             .map(|response| response.into_inner().member.expect("added member"))
+    }
+
+    async fn seed_concealed_workspaces(mut db: &CoralDb, member_id: &str) {
+        let mut tx = db.begin().await.expect("begin legacy workspace setup");
+        tx.workspaces()
+            .create("ownerless", 1)
+            .await
+            .expect("create ownerless workspace");
+        tx.workspace_members()
+            .insert("ownerless", member_id, MemberRole::Member, 1)
+            .await
+            .expect("seed ownerless member");
+        tx.commit().await.expect("commit ownerless workspace");
+        db.workspaces()
+            .create_with_local_owner("local-only", 1)
+            .await
+            .expect("create local-only workspace");
+        db.workspaces()
+            .add_member("local-only", member_id, MemberRole::Member, 1)
+            .await
+            .expect("seed local-only member");
     }
 
     #[tokio::test]
@@ -615,7 +634,6 @@ mod tests {
         let member = Principal::parse(&member_id, PrincipalKind::User).expect("member principal");
         let manager = test_manager(&layout, Arc::clone(&db));
         let service = WorkspaceService::new(manager, LocalPrincipalPolicy::NoLocalPrincipal);
-
         for name in ["default", "default-user-id", "team"] {
             service
                 .create_workspace(request(
@@ -648,28 +666,7 @@ mod tests {
         .await
         .expect_err("changing a member role must fail");
         assert_eq!(error.code(), Code::AlreadyExists);
-
-        let mut tx = db.begin().await.expect("begin legacy workspace setup");
-        tx.workspaces()
-            .create("ownerless", 1)
-            .await
-            .expect("create ownerless workspace");
-        tx.workspace_members()
-            .insert("ownerless", &member_id, MemberRole::Member, 1)
-            .await
-            .expect("seed ownerless member");
-        tx.commit().await.expect("commit ownerless workspace");
-        db.as_ref()
-            .workspaces()
-            .create_with_local_owner("local-only", 1)
-            .await
-            .expect("create local-only workspace");
-        db.as_ref()
-            .workspaces()
-            .add_member("local-only", &member_id, MemberRole::Member, 1)
-            .await
-            .expect("seed local-only member");
-
+        seed_concealed_workspaces(&db, &member_id).await;
         let memberships = service
             .list_workspaces(request(ListWorkspacesRequest {}, &member))
             .await
@@ -679,27 +676,16 @@ mod tests {
         assert!(matches!(memberships.as_slice(), [membership]
             if membership.workspace.as_ref().is_some_and(|workspace| workspace.name == "team")
                 && membership.role == WorkspaceRole::Member as i32));
-
-        let members = list_members(&service, &owner).await;
+        let members = list_members(&service, &owner).await.expect("list members");
         assert!(
             [WorkspaceRole::Owner, WorkspaceRole::Member]
                 .into_iter()
                 .all(|role| members.iter().any(|member| member.role == role as i32))
         );
-        assert_eq!(
-            service
-                .list_workspace_members(request(
-                    ListWorkspaceMembersRequest {
-                        workspace: Some(workspace("team")),
-                    },
-                    &member,
-                ))
-                .await
-                .expect_err("member cannot manage memberships")
-                .code(),
-            Code::PermissionDenied
-        );
-
+        let error = list_members(&service, &member)
+            .await
+            .expect_err("member cannot manage memberships");
+        assert_eq!(error.code(), Code::PermissionDenied);
         for member in [
             None,
             Some(member_record(WorkspaceRole::Unspecified as i32)),
@@ -710,7 +696,6 @@ mod tests {
                 .expect_err("adding an invalid member must fail");
             assert_eq!(error.code(), Code::InvalidArgument);
         }
-
         service
             .remove_workspace_member(request(
                 RemoveWorkspaceMemberRequest {
