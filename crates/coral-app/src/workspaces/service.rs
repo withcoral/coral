@@ -232,28 +232,3 @@ fn workspace_member_to_proto(member: crate::state::db::WorkspaceMemberView) -> W
         display_name: member.display_name.unwrap_or_default(),
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{member_role_from_proto, member_role_to_proto};
-    use crate::workspaces::MemberRole;
-    use coral_api::v1::WorkspaceRole;
-
-    #[test]
-    fn workspace_member_roles_are_strict_at_the_transport_edge() {
-        let roles = [WorkspaceRole::Owner, WorkspaceRole::Member];
-        assert_eq!(
-            roles.map(|role| member_role_from_proto(role as i32).expect("valid role")),
-            [MemberRole::Owner, MemberRole::Member]
-        );
-        assert_eq!(
-            [MemberRole::Owner, MemberRole::Member].map(member_role_to_proto),
-            roles
-        );
-        assert!(
-            [WorkspaceRole::Unspecified as i32, i32::MAX]
-                .into_iter()
-                .all(|role| member_role_from_proto(role).is_err())
-        );
-    }
-}
