@@ -1,5 +1,6 @@
 mod document;
 mod import;
+mod normalize;
 mod operations;
 mod responses;
 mod schemas;

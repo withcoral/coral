@@ -13,18 +13,38 @@ pub struct OpenApiDocumentMetadata {
     pub server_url: Option<String>,
 }
 
-pub fn openapi_document_metadata(document_bytes: &[u8]) -> Result<OpenApiDocumentMetadata> {
-    let document: Value =
-        serde_yaml::from_slice(document_bytes).map_err(ManifestError::parse_yaml)?;
+/// Accepts the `OpenAPI` versions the importer reads, and rejects the rest.
+///
+/// 3.0 and 3.1 share one code path rather than one per version. The 3.1 changes
+/// this importer can even observe are how nullability is spelled — a `null`
+/// member in a `type` array, or a union whose only other variant is `null` —
+/// and [`super::normalize::normalize_nullable_unions`] rewrites both into the
+/// 3.0 forms before anything reads the document. Everything downstream is
+/// version-agnostic, so there is nothing left for a version branch to decide.
+///
+/// The two spellings also coexist in the wild: `OpenAI` publishes a `3.1.0`
+/// document that still uses the 3.0 `nullable` keyword in over a hundred
+/// places. Dispatching on the declared version would read those as errors in a
+/// document that imports correctly today.
+pub(super) fn validate_supported_openapi_version(document: &Value) -> Result<()> {
     let openapi = document
         .get("openapi")
         .and_then(Value::as_str)
         .ok_or_else(|| ManifestError::validation("OpenAPI document is missing openapi version"))?;
-    if !openapi.starts_with("3.0.") {
+    if !(openapi.starts_with("3.0.") || openapi.starts_with("3.1.")) {
         return Err(ManifestError::validation(format!(
             "OpenAPI document uses unsupported version '{openapi}'"
         )));
     }
+    Ok(())
+}
+
+pub fn openapi_document_metadata(document_bytes: &[u8]) -> Result<OpenApiDocumentMetadata> {
+    let document: Value =
+        serde_yaml::from_slice(document_bytes).map_err(ManifestError::parse_yaml)?;
+    validate_supported_openapi_version(&document)?;
+    // Deliberately not normalized: this reads `info` and `servers` only, and
+    // neither carries a schema.
     Ok(OpenApiDocumentMetadata {
         description: trimmed_string_at(&document, &["info", "description"]),
         server_url: document

@@ -12,22 +12,18 @@ use crate::v4::{
 };
 use crate::{ManifestError, Result};
 
+use super::document::validate_supported_openapi_version;
+use super::normalize::normalize_nullable_unions;
+
 pub fn import_openapi_surface(
     manifest: &V4SourceManifest,
     surface: &V4Surface,
     document_bytes: &[u8],
 ) -> Result<ImportedSurface> {
-    let document: Value =
+    let mut document: Value =
         serde_yaml::from_slice(document_bytes).map_err(ManifestError::parse_yaml)?;
-    let openapi = document
-        .get("openapi")
-        .and_then(Value::as_str)
-        .ok_or_else(|| ManifestError::validation("OpenAPI document is missing openapi version"))?;
-    if !openapi.starts_with("3.0.") {
-        return Err(ManifestError::validation(format!(
-            "OpenAPI document uses unsupported version '{openapi}'"
-        )));
-    }
+    validate_supported_openapi_version(&document)?;
+    normalize_nullable_unions(&mut document);
 
     let mut importer = OpenApiImporter::new(manifest, surface, &document);
     importer.import()
