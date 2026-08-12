@@ -1,13 +1,8 @@
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "workspace membership APIs are wired to production consumers in later milestones"
-    )
-)]
+#![cfg_attr(not(test), expect(dead_code, reason = "used higher in the PR stack"))]
 
 use sea_query::{Expr, ExprTrait, Func, Order, Query};
 
+use crate::identity::LOCAL_PRINCIPAL_ID;
 use crate::state::db::schema::WorkspaceMembers;
 use crate::state::db::{CoralTx, DbError, DbSession};
 use crate::workspaces::MemberRole;
@@ -53,6 +48,29 @@ where
         rows.into_iter()
             .map(|(workspace_id, role)| Ok((workspace_id, parse_role(&role)?)))
             .collect()
+    }
+
+    pub(crate) async fn role_for_user_id_with_non_local_owner(
+        &mut self,
+        workspace_id: &str,
+        user_id: &str,
+    ) -> Result<Option<MemberRole>, DbError> {
+        let non_local_owner = Query::select()
+            .column(WorkspaceMembers::UserId)
+            .from(WorkspaceMembers::Table)
+            .and_where(Expr::col(WorkspaceMembers::WorkspaceId).eq(workspace_id))
+            .and_where(Expr::col(WorkspaceMembers::Role).eq(MemberRole::Owner.as_str()))
+            .and_where(Expr::col(WorkspaceMembers::UserId).ne(LOCAL_PRINCIPAL_ID))
+            .to_owned();
+        let statement = Query::select()
+            .column(WorkspaceMembers::Role)
+            .from(WorkspaceMembers::Table)
+            .and_where(Expr::col(WorkspaceMembers::WorkspaceId).eq(workspace_id))
+            .and_where(Expr::col(WorkspaceMembers::UserId).eq(user_id))
+            .and_where(Expr::exists(non_local_owner))
+            .to_owned();
+        let row: Option<(String,)> = self.session.fetch_optional(statement).await?;
+        row.map(|(role,)| parse_role(&role)).transpose()
     }
 }
 

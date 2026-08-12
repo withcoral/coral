@@ -86,11 +86,18 @@ impl WorkspaceAuthorizer {
         }
 
         let mut session = self.db.as_ref();
-        let role = session
-            .workspace_members()
-            .role_for_user_id(workspace.as_str(), principal.id().as_str())
-            .await?
-            .ok_or_else(|| AppError::WorkspaceNotFound(workspace.to_string()))?;
+        let role = if self.local_principal == LocalPrincipalPolicy::NoLocalPrincipal {
+            session
+                .workspace_members()
+                .role_for_user_id_with_non_local_owner(workspace.as_str(), principal.id().as_str())
+                .await?
+        } else {
+            session
+                .workspace_members()
+                .role_for_user_id(workspace.as_str(), principal.id().as_str())
+                .await?
+        }
+        .ok_or_else(|| AppError::WorkspaceNotFound(workspace.to_string()))?;
         if role.allows(action) {
             Ok(())
         } else {
@@ -113,7 +120,7 @@ mod tests {
     use crate::state::AppStateLayout;
     use crate::state::db::{
         AddMemberOutcome, CoralDb, DatabaseConfig, DbRepos, ResolvedDatabaseConfig,
-        UpsertLoginOutcome,
+        UpsertLoginOutcome, UserRecord,
     };
     use crate::workspaces::{MemberRole, WorkspaceName};
 
@@ -244,6 +251,92 @@ mod tests {
                 .await,
             Err(AppError::WorkspaceNotFound(ref name)) if name == workspace.as_str()
         ));
+    }
+
+    #[tokio::test]
+    async fn strict_policy_conceals_ownerless_workspace_from_member() {
+        let (_temp, db) = database(true).await;
+        let member_id = create_directory_user(&db, "ownerless-member").await;
+        let workspace = WorkspaceName::parse("ownerless-workspace").expect("workspace");
+        let mut tx = db.begin().await.expect("begin ownerless workspace setup");
+        tx.workspaces()
+            .create(workspace.as_str(), 1)
+            .await
+            .expect("create ownerless workspace");
+        assert!(
+            tx.workspaces()
+                .hold_for_child_mutation(workspace.as_str())
+                .await
+                .expect("hold ownerless workspace")
+        );
+        tx.workspace_members()
+            .insert(workspace.as_str(), &member_id, MemberRole::Member, 2)
+            .await
+            .expect("insert stale member");
+        tx.commit().await.expect("commit ownerless workspace setup");
+        let authorizer = WorkspaceAuthorizer::new(db);
+        let member = Principal::parse(&member_id, PrincipalKind::User).expect("member");
+
+        for action in [WorkspaceAction::Read, WorkspaceAction::Manage] {
+            assert!(matches!(
+                authorizer.authorize(&member, &workspace, action).await,
+                Err(AppError::WorkspaceNotFound(ref name)) if name == workspace.as_str()
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn strict_policy_conceals_local_only_workspace_from_member() {
+        let (_temp, db) = database(true).await;
+        let member_id = create_directory_user(&db, "local-only-member").await;
+        let workspace = WorkspaceName::parse("local-only-workspace").expect("workspace");
+        let mut tx = db.begin().await.expect("begin local-only workspace setup");
+        tx.users()
+            .insert_for_test(&UserRecord {
+                user_id: crate::identity::LOCAL_PRINCIPAL_ID.to_string(),
+                issuer: crate::identity::LOCAL_PRINCIPAL_ID.to_string(),
+                subject: String::new(),
+                display_name: Some("Local".to_string()),
+                created_at_unix_nanos: 1,
+                last_login_at_unix_nanos: 1,
+            })
+            .await
+            .expect("insert local principal");
+        tx.workspaces()
+            .create(workspace.as_str(), 1)
+            .await
+            .expect("create local-only workspace");
+        assert!(
+            tx.workspaces()
+                .hold_for_child_mutation(workspace.as_str())
+                .await
+                .expect("hold local-only workspace")
+        );
+        tx.workspace_members()
+            .insert(
+                workspace.as_str(),
+                crate::identity::LOCAL_PRINCIPAL_ID,
+                MemberRole::Owner,
+                2,
+            )
+            .await
+            .expect("insert local owner");
+        tx.workspace_members()
+            .insert(workspace.as_str(), &member_id, MemberRole::Member, 3)
+            .await
+            .expect("insert stale member");
+        tx.commit()
+            .await
+            .expect("commit local-only workspace setup");
+        let authorizer = WorkspaceAuthorizer::new(db);
+        let member = Principal::parse(&member_id, PrincipalKind::User).expect("member");
+
+        for action in [WorkspaceAction::Read, WorkspaceAction::Manage] {
+            assert!(matches!(
+                authorizer.authorize(&member, &workspace, action).await,
+                Err(AppError::WorkspaceNotFound(ref name)) if name == workspace.as_str()
+            ));
+        }
     }
 
     async fn database(migrate: bool) -> (TempDir, Arc<CoralDb>) {
