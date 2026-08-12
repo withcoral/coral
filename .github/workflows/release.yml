@@ -495,7 +495,7 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --clobber
 
-      - name: Promote GitHub release
+      - name: Read GitHub release
         id: promote-release
         env:
           GH_TOKEN: ${{ steps.github-app-token.outputs.token }}
@@ -504,14 +504,6 @@ jobs:
           release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG_NAME}")"
           release_id="$(printf '%s' "$release_json" | jq -r '.id')"
           was_prerelease="$(printf '%s' "$release_json" | jq -r '.prerelease')"
-
-          if [ "$was_prerelease" = "true" ]; then
-            release_json="$(gh api \
-              --method PATCH \
-              "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
-              -F prerelease=false \
-              -F make_latest=true)"
-          fi
 
           {
             echo "was_prerelease=${was_prerelease}"
@@ -560,41 +552,6 @@ jobs:
               client_payload: { version },
             });
 
-      - name: Post promoted release to Discord
-        if: steps.promote-release.outputs.was_prerelease == 'true'
-        env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_CHANGELOG_WEBHOOK }}
-          TAG_NAME: ${{ steps.promote-release.outputs.tag_name }}
-          RELEASE_NAME: ${{ steps.promote-release.outputs.release_name }}
-          RELEASE_BODY: ${{ steps.promote-release.outputs.body }}
-          RELEASE_URL: ${{ steps.promote-release.outputs.release_url }}
-        run: |
-          MAX_LEN=3500
-          BODY="$RELEASE_BODY"
-          if [ ${#BODY} -gt $MAX_LEN ]; then
-            BODY="${BODY:0:$MAX_LEN}..."
-          fi
-
-          TITLE_MAX_LEN=256
-          TITLE="🪸 ${RELEASE_NAME:-$TAG_NAME}"
-          if [ ${#TITLE} -gt $TITLE_MAX_LEN ]; then
-            TITLE="${TITLE:0:$((TITLE_MAX_LEN - 3))}..."
-          fi
-
-          jq -n \
-            --arg title "$TITLE" \
-            --arg desc "$BODY" \
-            --arg url "$RELEASE_URL" \
-            '{
-              embeds: [{
-                title: $title,
-                description: $desc,
-                url: $url,
-                color: 16744272,
-                footer: { text: "Fresh from the reef" }
-              }]
-            }' | curl -sf -H "Content-Type: application/json" -d @- "$DISCORD_WEBHOOK"
-
   # Additive by design: a failure here leaves the image missing until a manual
   # `docker-publish` dispatch, and never blocks or rewinds a published release.
   publish-docker:
@@ -621,3 +578,66 @@ jobs:
     with:
       tag: ${{ needs.validate-release-ref.outputs.tag-name }}
       commit-sha: ${{ needs.validate-release-ref.outputs.commit-sha }}
+
+  coordinate-docker-aliases:
+    needs:
+      - validate-release-ref
+      - publish-docker
+      - publish-reef-docker
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/docker-aliases.yml
+    with:
+      tag: ${{ needs.validate-release-ref.outputs.tag-name }}
+      coral-digest: ${{ needs.publish-docker.outputs.digest }}
+      reef-digest: ${{ needs.publish-reef-docker.outputs.digest }}
+
+  promote-release:
+    needs:
+      - validate-release-ref
+      - coordinate-docker-aliases
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create GitHub App token
+        uses: actions/create-github-app-token@f8d387b68d61c58ab83c6c016672934102569859 # v3.0.0
+        id: github-app-token
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          repositories: coral
+
+      - name: Mark the coordinated release complete
+        id: promote
+        env:
+          GH_TOKEN: ${{ steps.github-app-token.outputs.token }}
+          TAG_NAME: ${{ needs.validate-release-ref.outputs.tag-name }}
+        run: |
+          set -euo pipefail
+          release_id="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG_NAME}" --jq .id)"
+          release="$(gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
+            -F prerelease=false -F make_latest=true)"
+          {
+            echo "name=$(printf '%s' "$release" | jq -r '.name // ""')"
+            echo "url=$(printf '%s' "$release" | jq -r .html_url)"
+            echo "body<<__BODY__"
+            printf '%s' "$release" | jq -r '.body // ""'
+            echo "__BODY__"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Post promoted release to Discord
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_CHANGELOG_WEBHOOK }}
+          TAG_NAME: ${{ needs.validate-release-ref.outputs.tag-name }}
+          RELEASE_NAME: ${{ steps.promote.outputs.name }}
+          RELEASE_BODY: ${{ steps.promote.outputs.body }}
+          RELEASE_URL: ${{ steps.promote.outputs.url }}
+        run: |
+          body="${RELEASE_BODY:0:3500}"
+          title="🪸 ${RELEASE_NAME:-$TAG_NAME}"
+          jq -n --arg title "${title:0:253}" --arg desc "$body" --arg url "$RELEASE_URL" \
+            '{embeds:[{title:$title,description:$desc,url:$url,color:16744272,footer:{text:"Fresh from the reef"}}]}' |
+            curl -sf -H "Content-Type: application/json" -d @- "$DISCORD_WEBHOOK"

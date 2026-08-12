@@ -1,0 +1,78 @@
+name: Coordinate Docker aliases
+on:
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+      coral-digest:
+        required: true
+        type: string
+      reef-digest:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+concurrency:
+  # Alias publication is one cross-repository state transition at a time.
+  group: coordinated-docker-aliases
+  queue: max
+
+jobs:
+  aliases:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      TAG: ${{ inputs.tag }}
+      CORAL_DIGEST: ${{ inputs.coral-digest }}
+      REEF_DIGEST: ${{ inputs.reef-digest }}
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          cache-binary: false
+
+      - name: Advance and verify coordinated aliases
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          line="${version%.*}"
+          # The release remains a prerelease until both aliases verify.
+          draft="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)"
+          test "$draft" = false
+
+          stable="$(gh release list --repo "$GITHUB_REPOSITORY" \
+            --exclude-pre-releases --exclude-drafts --limit 1000 \
+            --json tagName --jq '.[].tagName')"
+          candidates="$(printf '%s\n%s\n' "$stable" "$TAG" | grep -v '^$' | sort -u)"
+          newest="$(printf '%s\n' "$candidates" | sort -V | tail -1)"
+          newest_line="$(printf '%s\n' "$candidates" | grep -E "^v${line//./\\.}\." | sort -V | tail -1)"
+
+          aliases=()
+          [ "$TAG" != "$newest_line" ] || aliases+=("$line")
+          [ "$TAG" != "$newest" ] || aliases+=(latest)
+          for alias in "${aliases[@]}"; do
+            # A partial failure is deliberately a failed release workflow. A
+            # retry is idempotent and converges both aliases before completion.
+            docker buildx imagetools create --tag "ghcr.io/withcoral/coral:${alias}" \
+              "ghcr.io/withcoral/coral@${CORAL_DIGEST}"
+            docker buildx imagetools create --tag "ghcr.io/withcoral/reef:${alias}" \
+              "ghcr.io/withcoral/reef@${REEF_DIGEST}"
+            coral_actual="$(docker buildx imagetools inspect "ghcr.io/withcoral/coral:${alias}" --format '{{.Manifest.Digest}}')"
+            reef_actual="$(docker buildx imagetools inspect "ghcr.io/withcoral/reef:${alias}" --format '{{.Manifest.Digest}}')"
+            test "$coral_actual" = "$CORAL_DIGEST"
+            test "$reef_actual" = "$REEF_DIGEST"
+          done

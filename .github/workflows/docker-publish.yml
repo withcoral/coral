@@ -6,6 +6,10 @@ on:
         description: Published release tag to package, e.g. v1.2.3.
         required: true
         type: string
+    outputs:
+      digest:
+        description: Published Coral version digest.
+        value: ${{ jobs.publish-image.outputs.digest }}
   workflow_dispatch:
     inputs:
       tag:
@@ -39,6 +43,8 @@ jobs:
       contents: read
       packages: write
       id-token: write
+    outputs:
+      digest: ${{ steps.manifest.outputs.digest }}
     steps:
       - name: Validate tag
         id: tag
@@ -139,41 +145,6 @@ jobs:
           test -n "$digest"
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
 
-      - name: Read release prerelease flag
-        id: release
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          prerelease="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isPrerelease --jq '.isPrerelease')"
-          echo "prerelease=${prerelease}" >> "$GITHUB_OUTPUT"
-
-      - name: Resolve the newest stable tags
-        id: newest
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          MAJOR_MINOR: ${{ steps.tag.outputs.major-minor }}
-        run: |
-          set -euo pipefail
-          # One listing, ranked by version rather than by GitHub's own ordering
-          # (which is by commit date, not by semver). "$TAG" joins the candidate
-          # set either way: the release path may not list it yet, and the CVE
-          # rebuild path already does, so both compare against the same set.
-          stable="$(gh release list --repo "$GITHUB_REPOSITORY" \
-            --exclude-pre-releases --exclude-drafts --limit 1000 \
-            --json tagName --jq '.[].tagName')"
-          candidates="$(printf '%s\n%s\n' "$stable" "$TAG" | grep -v '^$' | sort -u)"
-          newest="$(printf '%s\n' "$candidates" | sort -V | tail -1)"
-          # Dots are literal so the 1.2 line never absorbs 1.20.x.
-          line="$(printf '%s\n' "$candidates" | grep -E "^v${MAJOR_MINOR//./\\.}\." | sort -V | tail -1)"
-          echo "newest stable release is '${newest}'; newest in the ${MAJOR_MINOR} line is '${line}'; this run packages '${TAG}'"
-          {
-            echo "tag=${newest}"
-            echo "line-tag=${line}"
-          } >> "$GITHUB_OUTPUT"
-
       - name: Prepare smoke helper
         shell: bash
         run: |
@@ -251,32 +222,17 @@ jobs:
           "$RUNNER_TEMP/wait-healthy.sh" coral-smoke-seed
           docker logs coral-smoke-seed 2>&1 | grep -F 'CORAL_SEED_CONFIG ignored'
 
-      # The digest is deliberately untagged until every smoke check passes, so
-      # a broken rebuild cannot move an existing release, line, or latest tag.
+      # Moving aliases are applied to Coral and Reef together by the release
+      # coordinator after both immutable images have passed their own gates.
       - name: Tag the validated manifest
         id: manifest
         shell: bash
         env:
           BUILD_DIGEST: ${{ steps.build.outputs.digest }}
           VERSION: ${{ steps.tag.outputs.version }}
-          MAJOR_MINOR: ${{ steps.tag.outputs.major-minor }}
-          PRERELEASE: ${{ steps.release.outputs.prerelease }}
-          NEWEST_TAG: ${{ steps.newest.outputs.tag }}
-          NEWEST_LINE_TAG: ${{ steps.newest.outputs.line-tag }}
         run: |
           set -euo pipefail
-          # The exact version tag always publishes. The moving tags never move
-          # backwards and never point at a prerelease: a CVE rebuild of a
-          # superseded release re-publishes its own version tag, but leaves
-          # `X.Y` and `latest` on whichever release is newest by semver.
-          tags=(--tag "${IMAGE}:${VERSION}")
-          if [ "$PRERELEASE" = "false" ] && [ "$NEWEST_LINE_TAG" = "$TAG" ]; then
-            tags+=(--tag "${IMAGE}:${MAJOR_MINOR}")
-          fi
-          if [ "$PRERELEASE" = "false" ] && [ "$NEWEST_TAG" = "$TAG" ]; then
-            tags+=(--tag "${IMAGE}:latest")
-          fi
-          docker buildx imagetools create "${tags[@]}" "${IMAGE}@${BUILD_DIGEST}"
+          docker buildx imagetools create --tag "${IMAGE}:${VERSION}" "${IMAGE}@${BUILD_DIGEST}"
           # Tagging republishes the index, so re-read the digest the tags resolve to.
           digest="$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" --format '{{.Manifest.Digest}}')"
           test -n "$digest"

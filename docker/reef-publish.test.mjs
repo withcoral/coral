@@ -57,3 +57,45 @@ test('release waits for completed artifacts before publishing Reef', async () =>
   assert.match(workflow, /uses: \.\/\.github\/workflows\/reef-docker-publish\.yml/)
   assert.match(workflow, /commit-sha: \$\{\{ needs\.validate-release-ref\.outputs\.commit-sha \}\}/)
 })
+
+test('moving aliases have one coordinator after both immutable publishers', async () => {
+  const [release, coral, aliases] = await Promise.all([
+    read('../.github/workflows/release.yml'),
+    read('../.github/workflows/docker-publish.yml'),
+    read('../.github/workflows/docker-aliases.yml'),
+  ])
+
+  assert.doesNotMatch(coral, /\$\{IMAGE\}:(?:latest|\$\{MAJOR_MINOR\})/)
+  assert.match(release, /coordinate-docker-aliases:\n(?:.|\n)*- publish-docker\n(?:.|\n)*- publish-reef-docker/)
+  assert.match(aliases, /group: coordinated-docker-aliases/)
+  assert.match(aliases, /test "\$draft" = false/)
+  assert.match(aliases, /\[ "\$TAG" != "\$newest_line" \] \|\| aliases\+=\("\$line"\)/)
+  assert.match(aliases, /\[ "\$TAG" != "\$newest" \] \|\| aliases\+=\(latest\)/)
+})
+
+test('alias publication converges absent, same, mismatch, and partial-failure states', async () => {
+  const workflow = await read('../.github/workflows/docker-aliases.yml')
+  const coralWrite = workflow.indexOf('imagetools create --tag "ghcr.io/withcoral/coral:${alias}"')
+  const reefWrite = workflow.indexOf('imagetools create --tag "ghcr.io/withcoral/reef:${alias}"')
+  const coralRead = workflow.indexOf('coral_actual="$(docker buildx imagetools inspect')
+  const reefRead = workflow.indexOf('reef_actual="$(docker buildx imagetools inspect')
+
+  // create is an idempotent upsert: absent, same, and mismatched aliases all converge.
+  assert.ok(coralWrite >= 0 && coralWrite < reefWrite)
+  assert.ok(reefWrite < coralRead && coralRead < reefRead)
+  assert.match(workflow, /test "\$coral_actual" = "\$CORAL_DIGEST"/)
+  assert.match(workflow, /test "\$reef_actual" = "\$REEF_DIGEST"/)
+  assert.match(workflow, /set -euo pipefail/)
+  assert.match(workflow, /retry is idempotent and converges both aliases before completion/)
+})
+
+test('GitHub release promotion is the final coordinated commit point', async () => {
+  const release = await read('../.github/workflows/release.yml')
+  const coordinate = release.indexOf('coordinate-docker-aliases:')
+  const promote = release.indexOf('promote-release:', coordinate)
+
+  assert.ok(coordinate >= 0 && coordinate < promote)
+  assert.match(release.slice(promote), /- coordinate-docker-aliases/)
+  assert.match(release.slice(promote), /-F prerelease=false -F make_latest=true/)
+  assert.doesNotMatch(release.slice(0, coordinate), /-F prerelease=false/)
+})

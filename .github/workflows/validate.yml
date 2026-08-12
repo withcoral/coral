@@ -108,6 +108,7 @@ jobs:
             reef-image:
               - '.github/workflows/validate.yml'
               - '.github/workflows/reef-docker-publish.yml'
+              - '.github/workflows/docker-aliases.yml'
               - '.dockerignore'
               - 'Makefile'
               - 'Cargo.toml'
