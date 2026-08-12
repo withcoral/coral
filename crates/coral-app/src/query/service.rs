@@ -12,7 +12,7 @@ use coral_api::v1::{
 };
 use tonic::{Request, Response, Status};
 
-use crate::bootstrap::core_status;
+use crate::bootstrap::{app_status, core_status};
 use crate::query::QueryAttribution;
 use crate::query::manager::{ExecuteSqlOutcome, QueryManager, RequiredQueryGuide};
 use crate::task::manager::TaskManager;
@@ -20,18 +20,25 @@ use crate::task::service::task_manager_status;
 use crate::transport::{
     grpc_span, instrument_grpc, query_status, request_context, workspace_name_from_proto,
 };
+use crate::workspaces::{WorkspaceAction, WorkspaceAuthorizer};
 
 #[derive(Clone)]
 pub(crate) struct QueryService {
     queries: QueryManager,
     tasks: TaskManager,
+    workspace_authorizer: WorkspaceAuthorizer,
 }
 
 impl QueryService {
-    pub(crate) fn new(query_manager: QueryManager, task_manager: TaskManager) -> Self {
+    pub(crate) fn new(
+        query_manager: QueryManager,
+        task_manager: TaskManager,
+        workspace_authorizer: WorkspaceAuthorizer,
+    ) -> Self {
         Self {
             queries: query_manager,
             tasks: task_manager,
+            workspace_authorizer,
         }
     }
 }
@@ -45,10 +52,19 @@ impl QueryServiceApi for QueryService {
         let span = grpc_span(&request);
         let queries = self.queries.clone();
         let tasks = self.tasks.clone();
+        let workspace_authorizer = self.workspace_authorizer.clone();
         let request_context = request_context(&request)?.clone();
         Box::pin(instrument_grpc(span, async move {
             let inner = request.into_inner();
             let workspace_name = workspace_name_from_proto(inner.workspace.as_ref())?;
+            workspace_authorizer
+                .authorize(
+                    request_context.principal(),
+                    &workspace_name,
+                    WorkspaceAction::Read,
+                )
+                .await
+                .map_err(app_status)?;
             let shown_guide_ids = shown_guide_ids(inner.guide_read_context);
             let attribution = QueryAttribution::new(
                 tasks
@@ -98,10 +114,19 @@ impl QueryServiceApi for QueryService {
         let span = grpc_span(&request);
         let queries = self.queries.clone();
         let tasks = self.tasks.clone();
+        let workspace_authorizer = self.workspace_authorizer.clone();
         let request_context = request_context(&request)?.clone();
         Box::pin(instrument_grpc(span, async move {
             let inner = request.into_inner();
             let workspace_name = workspace_name_from_proto(inner.workspace.as_ref())?;
+            workspace_authorizer
+                .authorize(
+                    request_context.principal(),
+                    &workspace_name,
+                    WorkspaceAction::Read,
+                )
+                .await
+                .map_err(app_status)?;
             let attribution = QueryAttribution::new(
                 tasks
                     .validate_attribution(&workspace_name, request_context.task_id())

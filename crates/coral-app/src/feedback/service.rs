@@ -11,19 +11,25 @@ use crate::task::service::task_manager_status;
 use crate::transport::{
     grpc_span, instrument_grpc, request_context, workspace_name_from_proto, workspace_to_proto,
 };
-use crate::workspaces::{WorkspaceAction, WorkspaceAuthorizer, WorkspaceName};
+use crate::workspaces::{WorkspaceAction, WorkspaceAuthorizer};
 
 #[derive(Clone)]
 pub(crate) struct FeedbackService {
     feedback: FeedbackManager,
     tasks: TaskManager,
+    workspace_authorizer: WorkspaceAuthorizer,
 }
 
 impl FeedbackService {
-    pub(crate) fn new(feedback: FeedbackManager, task_manager: TaskManager) -> Self {
+    pub(crate) fn new(
+        feedback: FeedbackManager,
+        task_manager: TaskManager,
+        workspace_authorizer: WorkspaceAuthorizer,
+    ) -> Self {
         Self {
             feedback,
             tasks: task_manager,
+            workspace_authorizer,
         }
     }
 }
@@ -42,12 +48,14 @@ impl FeedbackServiceApi for FeedbackService {
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            authorize_read(
-                workspace_authorizer.as_ref(),
-                request_context.principal(),
-                &workspace_name,
-            )
-            .await?;
+            workspace_authorizer
+                .authorize(
+                    request_context.principal(),
+                    &workspace_name,
+                    WorkspaceAction::Read,
+                )
+                .await
+                .map_err(app_status)?;
             let task_id = tasks
                 .validate_attribution(&workspace_name, request_context.task_id())
                 .await
@@ -67,19 +75,6 @@ impl FeedbackServiceApi for FeedbackService {
         })
         .await
     }
-}
-
-async fn authorize_read(
-    authorizer: Option<&WorkspaceAuthorizer>,
-    principal: &crate::identity::Principal,
-    workspace: &WorkspaceName,
-) -> Result<(), Status> {
-    let authorizer =
-        authorizer.ok_or_else(|| Status::internal("workspace authorization is unavailable"))?;
-    authorizer
-        .authorize(principal, workspace, WorkspaceAction::Read)
-        .await
-        .map_err(app_status)
 }
 
 fn feedback_report_to_proto(report: FeedbackReport) -> ProtoFeedbackReport {
@@ -103,25 +98,18 @@ mod tests {
     use tonic::{Code, Request};
     use tonic_types::{ErrorDetail, StatusExt as _};
 
-    use super::{FeedbackService, FeedbackServiceApi, authorize_read};
+    use super::{FeedbackService, FeedbackServiceApi};
     use crate::feedback::manager::FeedbackManager;
     use crate::identity::{Principal, PrincipalKind};
     use crate::request_context::RequestContext;
     use crate::state::AppStateLayout;
-    use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig, UpsertLoginOutcome};
+    use crate::state::db::{
+        CoralDb, DatabaseConfig, DbRepos, ResolvedDatabaseConfig, UpsertLoginOutcome,
+    };
     use crate::task::id::TaskId;
     use crate::task::manager::TaskManager;
     use crate::task::store::TaskStore;
     use crate::workspaces::{WorkspaceAuthorizer, WorkspaceName};
-
-    #[tokio::test]
-    async fn read_authorization_fails_closed_without_injected_authorizer() {
-        let denied = authorize_read(None, &Principal::local(), &WorkspaceName::default())
-            .await
-            .expect_err("missing authorizer must never bypass policy");
-
-        assert_eq!(denied.code(), Code::Internal);
-    }
 
     #[tokio::test]
     async fn authorized_submission_persists_feedback_through_handler() {
@@ -205,11 +193,15 @@ mod tests {
         db.migrate().await.expect("migrate sqlite");
         let owner_id = provision_user(&db, "owner").await;
         let nonmember_id = provision_user(&db, "nonmember").await;
-        let workspace = format!("default-{owner_id}");
+        let workspace = "feedback-team".to_string();
+        db.as_ref()
+            .workspaces()
+            .create_with_owner(&workspace, &owner_id, 1)
+            .await
+            .expect("create workspace");
         let feedback = FeedbackManager::new(layout.clone());
         let tasks = TaskManager::new(TaskStore::new(Arc::clone(&db)));
-        let service =
-            FeedbackService::new(feedback, tasks).with_authorizer(WorkspaceAuthorizer::new(db));
+        let service = FeedbackService::new(feedback, tasks, WorkspaceAuthorizer::new(db));
 
         Fixture {
             _temp: temp,
@@ -222,8 +214,10 @@ mod tests {
     }
 
     async fn provision_user(db: &CoralDb, subject: &str) -> String {
-        let UpsertLoginOutcome::Upserted(user) = db
-            .upsert_user_and_ensure_default_workspace("issuer", subject, None, 1)
+        let mut session = db;
+        let UpsertLoginOutcome::Upserted(user) = session
+            .users()
+            .upsert_login("issuer", subject, None, 1)
             .await
             .expect("provision user")
         else {

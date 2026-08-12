@@ -24,19 +24,25 @@ use crate::transport::{
     describe_table_response_to_proto, grpc_span, instrument_grpc, pagination_to_proto,
     query_status, request_context, workspace_name_from_proto,
 };
-use crate::workspaces::WorkspaceName;
+use crate::workspaces::{WorkspaceAction, WorkspaceAuthorizer, WorkspaceName};
 
 #[derive(Clone)]
 pub(crate) struct CatalogService {
     catalog: CatalogDiscovery,
     tasks: TaskManager,
+    workspace_authorizer: WorkspaceAuthorizer,
 }
 
 impl CatalogService {
-    pub(crate) fn new(query_manager: QueryManager, task_manager: TaskManager) -> Self {
+    pub(crate) fn new(
+        query_manager: QueryManager,
+        task_manager: TaskManager,
+        workspace_authorizer: WorkspaceAuthorizer,
+    ) -> Self {
         Self {
             catalog: CatalogDiscovery::new(query_manager),
             tasks: task_manager,
+            workspace_authorizer,
         }
     }
 }
@@ -50,11 +56,13 @@ impl CatalogServiceApi for CatalogService {
         let span = grpc_span(&request);
         let catalog = self.catalog.clone();
         let tasks = self.tasks.clone();
+        let workspace_authorizer = self.workspace_authorizer.clone();
         let request_context = request_context(&request)?.clone();
         Box::pin(instrument_grpc(span, async move {
             let request = request.into_inner();
             let pagination = pagination_from_proto(request.pagination.unwrap_or_default());
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            authorize_read(&workspace_authorizer, &request_context, &workspace_name).await?;
             let attribution = query_attribution(&tasks, &workspace_name, &request_context).await?;
             let catalog_name = optional_trimmed(&request.catalog_name);
             let schema_name = optional_trimmed(&request.schema_name);
@@ -101,10 +109,12 @@ impl CatalogServiceApi for CatalogService {
         let span = grpc_span(&request);
         let catalog = self.catalog.clone();
         let tasks = self.tasks.clone();
+        let workspace_authorizer = self.workspace_authorizer.clone();
         let request_context = request_context(&request)?.clone();
         Box::pin(instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            authorize_read(&workspace_authorizer, &request_context, &workspace_name).await?;
             let attribution = query_attribution(&tasks, &workspace_name, &request_context).await?;
             let catalog_name = optional_trimmed(&request.catalog_name);
             let schema_name = optional_trimmed(&request.schema_name);
@@ -152,10 +162,12 @@ impl CatalogServiceApi for CatalogService {
         let span = grpc_span(&request);
         let catalog = self.catalog.clone();
         let tasks = self.tasks.clone();
+        let workspace_authorizer = self.workspace_authorizer.clone();
         let request_context = request_context(&request)?.clone();
         Box::pin(instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            authorize_read(&workspace_authorizer, &request_context, &workspace_name).await?;
             let attribution = query_attribution(&tasks, &workspace_name, &request_context).await?;
             let catalog_name = optional_trimmed(&request.catalog_name);
             let schema_name = required_trimmed(&request.schema_name, "schema_name")?;
@@ -183,10 +195,12 @@ impl CatalogServiceApi for CatalogService {
         let span = grpc_span(&request);
         let catalog = self.catalog.clone();
         let tasks = self.tasks.clone();
+        let workspace_authorizer = self.workspace_authorizer.clone();
         let request_context = request_context(&request)?.clone();
         Box::pin(instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            authorize_read(&workspace_authorizer, &request_context, &workspace_name).await?;
             let attribution = query_attribution(&tasks, &workspace_name, &request_context).await?;
             let catalog_name = optional_trimmed(&request.catalog_name);
             let schema_name = required_trimmed(&request.schema_name, "schema_name")?;
@@ -232,6 +246,17 @@ impl CatalogServiceApi for CatalogService {
         }))
         .await
     }
+}
+
+async fn authorize_read(
+    authorizer: &WorkspaceAuthorizer,
+    context: &RequestContext,
+    workspace: &WorkspaceName,
+) -> Result<(), Status> {
+    authorizer
+        .authorize(context.principal(), workspace, WorkspaceAction::Read)
+        .await
+        .map_err(app_status)
 }
 
 async fn query_attribution(

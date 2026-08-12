@@ -61,6 +61,7 @@ pub(crate) struct SourceService {
     sources: SourceManager,
     queries: QueryManager,
     workspaces: WorkspaceManager,
+    workspace_authorizer: WorkspaceAuthorizer,
 }
 
 impl SourceService {
@@ -68,11 +69,13 @@ impl SourceService {
         source_manager: SourceManager,
         query_manager: QueryManager,
         workspace_manager: WorkspaceManager,
+        workspace_authorizer: WorkspaceAuthorizer,
     ) -> Self {
         Self {
             sources: source_manager,
             queries: query_manager,
             workspaces: workspace_manager,
+            workspace_authorizer,
         }
     }
 }
@@ -94,7 +97,7 @@ impl SourceServiceApi for SourceService {
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            authorize_manage(workspace_authorizer.as_ref(), &principal, &workspace_name).await?;
+            authorize_manage(&workspace_authorizer, &principal, &workspace_name).await?;
             require_workspace(&workspaces, &workspace_name).await?;
             let sources = sources
                 .discover_sources(&workspace_name)
@@ -119,7 +122,7 @@ impl SourceServiceApi for SourceService {
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            authorize_manage(workspace_authorizer.as_ref(), &principal, &workspace_name).await?;
+            authorize_manage(&workspace_authorizer, &principal, &workspace_name).await?;
             require_workspace(&workspaces, &workspace_name).await?;
             let sources: Vec<_> = sources
                 .list_workspace_sources(&workspace_name)
@@ -144,7 +147,7 @@ impl SourceServiceApi for SourceService {
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            authorize_manage(workspace_authorizer.as_ref(), &principal, &workspace_name).await?;
+            authorize_manage(&workspace_authorizer, &principal, &workspace_name).await?;
             require_workspace(&workspaces, &workspace_name).await?;
             let source_name = SourceName::parse(&request.name).map_err(app_status)?;
             let source = sources
@@ -169,7 +172,7 @@ impl SourceServiceApi for SourceService {
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            authorize_manage(workspace_authorizer.as_ref(), &principal, &workspace_name).await?;
+            authorize_manage(&workspace_authorizer, &principal, &workspace_name).await?;
             require_workspace(&workspaces, &workspace_name).await?;
             let source_name = SourceName::parse(&request.name).map_err(app_status)?;
             let source = sources
@@ -194,7 +197,7 @@ impl SourceServiceApi for SourceService {
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            authorize_manage(workspace_authorizer.as_ref(), &principal, &workspace_name).await?;
+            authorize_manage(&workspace_authorizer, &principal, &workspace_name).await?;
             let revision = require_active_workspace_revision(&workspaces, &workspace_name).await?;
             let bundled_name = SourceName::parse(&request.name).map_err(app_status)?;
             let command = CreateBundledSourceCommand {
@@ -228,7 +231,7 @@ impl SourceServiceApi for SourceService {
         instrument_grpc(span.clone(), async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            authorize_manage(workspace_authorizer.as_ref(), &principal, &workspace_name).await?;
+            authorize_manage(&workspace_authorizer, &principal, &workspace_name).await?;
             let revision = require_active_workspace_revision(&workspaces, &workspace_name).await?;
             let response_workspace_name = workspace_name.clone();
             let command = CreateBundledSourceWithOAuthCommand {
@@ -275,7 +278,7 @@ impl SourceServiceApi for SourceService {
         instrument_grpc(span.clone(), async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            authorize_manage(workspace_authorizer.as_ref(), &principal, &workspace_name).await?;
+            authorize_manage(&workspace_authorizer, &principal, &workspace_name).await?;
             let revision = require_active_workspace_revision(&workspaces, &workspace_name).await?;
             let response_workspace_name = workspace_name.clone();
             if request.oauth_credential_retrievals.is_empty() {
@@ -337,7 +340,7 @@ impl SourceServiceApi for SourceService {
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            authorize_manage(workspace_authorizer.as_ref(), &principal, &workspace_name).await?;
+            authorize_manage(&workspace_authorizer, &principal, &workspace_name).await?;
             let revision = require_active_workspace_revision(&workspaces, &workspace_name).await?;
             let source_name = SourceName::parse(&request.name).map_err(app_status)?;
             sources
@@ -361,7 +364,7 @@ impl SourceServiceApi for SourceService {
         Box::pin(instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            authorize_manage(workspace_authorizer.as_ref(), &principal, &workspace_name).await?;
+            authorize_manage(&workspace_authorizer, &principal, &workspace_name).await?;
             require_workspace(&workspaces, &workspace_name).await?;
             let source_name = SourceName::parse(&request.name).map_err(app_status)?;
             let result = queries
@@ -381,12 +384,10 @@ impl SourceServiceApi for SourceService {
 }
 
 async fn authorize_manage(
-    authorizer: Option<&WorkspaceAuthorizer>,
+    authorizer: &WorkspaceAuthorizer,
     principal: &crate::identity::Principal,
     workspace: &WorkspaceName,
 ) -> Result<(), Status> {
-    let authorizer =
-        authorizer.ok_or_else(|| Status::internal("workspace authorization is unavailable"))?;
     authorizer
         .authorize(principal, workspace, WorkspaceAction::Manage)
         .await
@@ -987,21 +988,12 @@ mod tests {
                     &fixture.owner_agent,
                 ))
                 .await
-                .expect_err("an owner role cannot promote an agent credential"),
+                .expect_err("agent credential is denied even with an owner role"),
         );
-
-        let unavailable = authorize_manage(
-            None,
-            &Principal::local(),
-            &WorkspaceName::parse(&fixture.workspace).expect("workspace"),
-        )
-        .await
-        .expect_err("missing authorizer must never bypass policy");
-        assert_eq!(unavailable.code(), Code::Internal);
     }
 
     #[tokio::test]
-    async fn source_configuration_requires_manage_allows_owner_oauth_validation() {
+    async fn owner_oauth_validation_passes_manage_gate() {
         let fixture = source_service_fixture().await;
 
         let Err(status) = fixture
@@ -1056,8 +1048,13 @@ mod tests {
         db.migrate().await.expect("migrate sqlite");
         let owner_id = provision_user(&db, "owner").await;
         let member_id = provision_user(&db, "member").await;
-        let workspace = format!("default-{owner_id}");
+        let workspace = "source-team".to_string();
         let mut session = db.as_ref();
+        session
+            .workspaces()
+            .create_with_owner(&workspace, &owner_id, 1)
+            .await
+            .expect("create workspace");
         assert!(matches!(
             session
                 .workspaces()
@@ -1066,9 +1063,13 @@ mod tests {
                 .expect("add member"),
             AddMemberOutcome::Added(_)
         ));
+        let workspace_name = WorkspaceName::parse(&workspace).expect("workspace");
+        config_store
+            .create_legacy_workspace_entry_for_tests(&workspace_name)
+            .expect("create workspace configuration");
         config_store
             .upsert_source(
-                &WorkspaceName::parse(&workspace).expect("workspace"),
+                &workspace_name,
                 InstalledSource {
                     name: SourceName::parse("sensitive").expect("source"),
                     version: Some("1".to_string()),
@@ -1100,8 +1101,8 @@ mod tests {
             layout,
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
-        let service = SourceService::new(sources, queries, workspaces)
-            .with_authorizer(WorkspaceAuthorizer::new(db));
+        let service =
+            SourceService::new(sources, queries, workspaces, WorkspaceAuthorizer::new(db));
 
         SourceServiceFixture {
             _temp: temp,
@@ -1114,8 +1115,10 @@ mod tests {
     }
 
     async fn provision_user(db: &CoralDb, subject: &str) -> String {
-        let UpsertLoginOutcome::Upserted(user) = db
-            .upsert_user_and_ensure_default_workspace("issuer", subject, None, 1)
+        let mut session = db;
+        let UpsertLoginOutcome::Upserted(user) = session
+            .users()
+            .upsert_login("issuer", subject, None, 1)
             .await
             .expect("provision user")
         else {

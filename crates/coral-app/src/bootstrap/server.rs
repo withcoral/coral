@@ -75,8 +75,8 @@ use crate::telemetry::{TelemetryConfig, TraceManager};
 use crate::transport::GrpcRequestContextLayer;
 use crate::users::{UserManager, UserService};
 use crate::workspaces::{
-    LocalPrincipalPolicy, WorkspaceLifecycleLock, WorkspaceManager, WorkspacePoolRegistry,
-    WorkspaceService,
+    LocalPrincipalPolicy, WorkspaceAuthorizer, WorkspaceLifecycleLock, WorkspaceManager,
+    WorkspacePoolRegistry, WorkspaceService,
 };
 
 /// A static asset (e.g., a built SPA file) served on the same port as
@@ -775,6 +775,10 @@ struct ServerDependencies {
     task: TaskManager,
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the server composition root wires every application service"
+)]
 async fn start_server(
     dependencies: ServerDependencies,
     trace_components: TraceServerComponents,
@@ -805,14 +809,28 @@ async fn start_server(
         None => (source, query),
     };
     let health_queries = query.clone();
-    let source_service = SourceService::new(source, query.clone(), workspace.clone());
+    let workspace_authorizer = match local_principal {
+        LocalPrincipalPolicy::NoLocalPrincipal => WorkspaceAuthorizer::new(Arc::clone(&db)),
+        LocalPrincipalPolicy::ImplicitOwner => {
+            WorkspaceAuthorizer::trusting_local_principal(Arc::clone(&db))
+        }
+    };
+    let source_service = SourceService::new(
+        source,
+        query.clone(),
+        workspace.clone(),
+        workspace_authorizer.clone(),
+    );
     let workspace_service = WorkspaceService::new(workspace, local_principal);
-    let catalog_service = CatalogService::new(query.clone(), task.clone());
-    let function_service = FunctionService::new(query.clone());
-    let query_service = QueryService::new(query, task.clone());
-    let search_service = SearchService::new(search.clone(), task.clone());
-    let feedback_service = FeedbackService::new(feedback, task.clone());
-    let task_service = TaskService::new(task);
+    let catalog_service =
+        CatalogService::new(query.clone(), task.clone(), workspace_authorizer.clone());
+    let function_service = FunctionService::new(query.clone(), workspace_authorizer.clone());
+    let query_service = QueryService::new(query, task.clone(), workspace_authorizer.clone());
+    let search_service =
+        SearchService::new(search.clone(), task.clone(), workspace_authorizer.clone());
+    let feedback_service =
+        FeedbackService::new(feedback, task.clone(), workspace_authorizer.clone());
+    let task_service = TaskService::new(task, workspace_authorizer);
     let mut application_routes = Routes::default()
         .add_service(
             SourceServiceServer::new(source_service)
