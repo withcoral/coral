@@ -1,6 +1,6 @@
-import { DEFAULT_DEV_CORAL_ENDPOINT } from './constants'
+import { DEFAULT_DEV_CORAL_ENDPOINT, DEFAULT_DEV_CORAL_PORT } from './constants'
 import { isExplicitLoopbackUrl } from './loopback.server'
-import { isLocalDevOrigin, trimTrailingSlash } from './utils'
+import { trimTrailingSlash } from './utils'
 
 export interface CoralEndpointPolicy {
   authenticatedCleartextOrigin: string | null
@@ -25,7 +25,11 @@ export function resolveCoralEndpoint({
     if (env.NODE_ENV === 'production') throw new Error('CORAL_ENDPOINT must be set in production')
 
     const requestUrl = new URL(request.url)
-    return policy(isLocalDevOrigin(requestUrl) ? DEFAULT_DEV_CORAL_ENDPOINT : requestUrl.origin)
+    return policy(
+      isExplicitLoopbackUrl(requestUrl) && requestUrl.port !== DEFAULT_DEV_CORAL_PORT
+        ? DEFAULT_DEV_CORAL_ENDPOINT
+        : requestUrl.origin,
+    )
   }
 
   return policy(configured, authenticated, env.REEF_ALLOW_INSECURE_CORAL_ENDPOINT)

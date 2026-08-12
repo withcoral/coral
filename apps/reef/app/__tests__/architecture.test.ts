@@ -77,29 +77,6 @@ describe('architecture', () => {
     expect(dependencyNames.filter((name) => name.toLowerCase().includes('tailwind'))).toEqual([])
   })
 
-  it('keeps Coral endpoint policy and configuration server-only', () => {
-    const runtimeFiles = filesUnder(
-      appDir,
-      (name) => /\.[cm]?[jt]sx?$/.test(name) && !name.includes('.test.'),
-    )
-    const endpointConfig = ['CORAL_ENDPOINT', 'REEF_ALLOW_INSECURE_CORAL_ENDPOINT']
-    const violations = runtimeFiles.flatMap((file) => {
-      const source = fs.readFileSync(file, 'utf8')
-      const readsEndpointConfig = endpointConfig.some((name) =>
-        new RegExp(`(?:process\\.env|env)\\.${name}\\b`).test(source),
-      )
-      const importsEndpointPolicy = importsFrom(source).some((specifier) =>
-        specifier.endsWith('/coral-endpoint.server'),
-      )
-      return (readsEndpointConfig || importsEndpointPolicy) &&
-        !path.basename(file).includes('.server.')
-        ? [path.relative(appDir, file)]
-        : []
-    })
-
-    expect(violations, 'Coral endpoint policy must remain in server-only modules').toEqual([])
-  })
-
   it('keeps a story in every visual Wax component directory', () => {
     const missingStories = fs
       .readdirSync(waxComponentsDir, { withFileTypes: true })

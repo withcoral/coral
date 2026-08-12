@@ -56,6 +56,7 @@ describe('request-scoped Coral transport authentication', () => {
   })
 
   afterEach(() => {
+    vi.restoreAllMocks()
     vi.unstubAllEnvs()
   })
 
@@ -141,7 +142,6 @@ describe('request-scoped Coral transport authentication', () => {
     expect(warn).toHaveBeenCalledWith(
       expect.stringContaining('bearer tokens over cleartext HTTP to http://coral.internal:50051'),
     )
-    warn.mockRestore()
   })
 
   // The transport follows the deployment topology, not whether a token reached

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
+import { DEFAULT_DEV_CORAL_ENDPOINT } from './constants'
 import { resolveCoralEndpoint } from './coral-endpoint.server'
 
 const request = new Request('https://attacker.example.test/a/path')
@@ -104,4 +105,20 @@ describe('Coral endpoint policy', () => {
       'CORAL_ENDPOINT must be set in production',
     )
   })
+
+  it.each(['http://[::1]:5173/a/path', 'http://[::ffff:127.0.0.1]:5173/a/path'])(
+    'uses the default Coral endpoint for unauthenticated IPv6 development origin %s',
+    (url) => {
+      expect(
+        resolveCoralEndpoint({
+          authenticated: false,
+          env: { NODE_ENV: 'development' },
+          request: new Request(url),
+        }),
+      ).toEqual({
+        authenticatedCleartextOrigin: null,
+        baseUrl: DEFAULT_DEV_CORAL_ENDPOINT,
+      })
+    },
+  )
 })
