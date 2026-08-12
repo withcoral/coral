@@ -81,7 +81,9 @@ mod tests {
     };
     use crate::state::db::session::DbRepos;
     use crate::state::db::{CoralDb, DatabaseConfig, DbError, DbSession, ResolvedDatabaseConfig};
-    use crate::telemetry::{StoredTraceStatus, TraceSummaryRecord};
+    use crate::telemetry::{
+        StoredTraceInvocationKind, StoredTraceOperationKind, StoredTraceStatus, TraceSummaryRecord,
+    };
     use crate::workspaces::WorkspaceName;
 
     #[test]
@@ -693,6 +695,9 @@ mod tests {
             span_count: 1,
             row_count: 1,
             row_count_recorded: true,
+            operation_kind: StoredTraceOperationKind::Unspecified,
+            operation_name: String::new(),
+            invocation_kind: StoredTraceInvocationKind::Unspecified,
         }
     }
 
