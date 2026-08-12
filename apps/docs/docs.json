@@ -79,6 +79,7 @@
         "pages": [
           "guides/use-coral-over-mcp",
           "guides/search-with-coral",
+          "guides/self-host-reef-with-docker",
           "guides/write-a-custom-source",
           "guides/observe-with-opentelemetry"
         ]

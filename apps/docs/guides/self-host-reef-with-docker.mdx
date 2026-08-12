@@ -1,0 +1,162 @@
+---
+title: "Self-host Reef with Docker"
+description: "Run the Reef web console against Coral using the supported container network topologies."
+---
+
+Reef is Coral's server-rendered web console. Its image runs a Node server on
+port `3000`; it is not a static site and is not included in the Coral image.
+
+## Prerequisites
+
+You need Docker with the Buildx plugin and a Coral OAuth deployment. Choose the
+same release for both images:
+
+```bash
+export CORAL_IMAGE=ghcr.io/withcoral/coral:1.2.3
+export REEF_IMAGE=ghcr.io/withcoral/reef:1.2.3
+export REEF_SESSION_SECRET="$(openssl rand -hex 32)"
+```
+
+Coral publishes matching `latest` and `X.Y` aliases only after both release
+images are available and verified. Pin `X.Y.Z` in production for reproducible
+deployments.
+
+## Configure Reef
+
+The container validates its configuration before opening its listener.
+
+| Variable | Required | Description |
+| --- | --- | --- |
+| `CORAL_ENDPOINT` | Always | Absolute Coral HTTP(S) endpoint. It must not include credentials, a query, or a fragment. |
+| `REEF_AUTH_MODE` | Always | `required` for authenticated production use, or `disabled` for an intentionally unauthenticated console. |
+| `REEF_SESSION_SECRET` | With required auth | Random secret of at least 32 characters. |
+| `REEF_AUTH_ISSUER` | With required auth | Coral OAuth issuer. Use HTTPS except for explicit loopback development. |
+| `REEF_PUBLIC_URL` | With required auth | Externally reachable Reef origin, normally HTTPS. |
+| `REEF_ALLOW_INSECURE_CORAL_ENDPOINT` | No | Set to `1` or `true` only to opt into cleartext h2c on an operator-controlled network. |
+| `REEF_SESSION_COOKIE_NAME` | No | Session cookie name; defaults to `reef_session`. |
+| `REEF_SESSION_MAX_AGE_SECONDS` | No | Positive session lifetime; defaults to `3600`. |
+| `PORT` | No | Node listener port; defaults to `3000`. |
+
+`REEF_AUTH_MODE=disabled` starts successfully but prints a loud warning. Anyone
+who can reach Reef can then read sources and submit credentials. Disabled mode
+also requires a gRPC-Web-capable proxy in front of Coral; the standard
+`coral server` endpoint alone is not sufficient. Use required auth unless you
+have deliberately provided both network isolation and that proxy.
+
+## Choose a network topology
+
+### Shared network namespace
+
+This is the simplest secure connection when Reef and Coral run on one host.
+Publish Reef's port on the Coral container because both processes share its
+network namespace:
+
+```bash
+docker run -d --name coral-reef \
+  -p 127.0.0.1:3000:3000 \
+  "$CORAL_IMAGE"
+
+docker run -d --name reef \
+  --network container:coral-reef \
+  -e CORAL_ENDPOINT=http://127.0.0.1:14555 \
+  -e REEF_AUTH_MODE=required \
+  -e REEF_SESSION_SECRET \
+  -e REEF_AUTH_ISSUER=https://coral.example.com \
+  -e REEF_PUBLIC_URL=https://reef.example.com \
+  "$REEF_IMAGE"
+```
+
+Explicit loopback HTTP is accepted without an insecure opt-in. Put your public
+HTTPS reverse proxy in front of Reef at `reef.example.com`.
+
+### HTTPS between Reef and Coral
+
+Use this shape when the containers do not share a network namespace. Terminate
+TLS at Coral or at an operator-managed proxy that forwards HTTP/2 gRPC to Coral:
+
+```bash
+docker run -d --name reef \
+  --network app-network \
+  -p 127.0.0.1:3000:3000 \
+  -e CORAL_ENDPOINT=https://coral.internal.example.com \
+  -e REEF_AUTH_MODE=required \
+  -e REEF_SESSION_SECRET \
+  -e REEF_AUTH_ISSUER=https://coral.example.com \
+  -e REEF_PUBLIC_URL=https://reef.example.com \
+  "$REEF_IMAGE"
+```
+
+The container uses Node's trust store. If your internal endpoint uses a private
+CA, mount its certificate and set `NODE_EXTRA_CA_CERTS` to the mounted path.
+
+### Explicit cleartext h2c
+
+Use cleartext only on a network whose membership and traffic you control. The
+opt-in is intentionally noisy:
+
+```bash
+docker run -d --name reef \
+  --network app-network \
+  -p 127.0.0.1:3000:3000 \
+  -e CORAL_ENDPOINT=http://coral:14555 \
+  -e REEF_ALLOW_INSECURE_CORAL_ENDPOINT=1 \
+  -e REEF_AUTH_MODE=required \
+  -e REEF_SESSION_SECRET \
+  -e REEF_AUTH_ISSUER=https://coral.example.com \
+  -e REEF_PUBLIC_URL=https://reef.example.com \
+  "$REEF_IMAGE"
+```
+
+Without `REEF_ALLOW_INSECURE_CORAL_ENDPOINT=1` or `true`, authenticated Reef
+rejects a non-loopback HTTP endpoint before listening.
+
+## Probe and operate the container
+
+`/healthz` reports whether Reef is alive and its configuration is valid. Docker
+uses this endpoint for the image health check. `/readyz` additionally calls
+Coral, so use it for readiness and traffic admission:
+
+```bash
+curl --fail http://127.0.0.1:3000/healthz
+curl --fail http://127.0.0.1:3000/readyz
+```
+
+A Coral outage makes `/readyz` fail while `/healthz` remains healthy. This lets
+you distinguish a live Reef process from an upstream connectivity problem.
+
+The image runs as UID/GID `1000:1000` and supports a read-only root filesystem.
+It does not require a writable volume. Stop the container with `SIGTERM`; the
+server drains active connections before exiting.
+
+## Build and test locally
+
+Build the current checkout and run the repository's complete topology matrix:
+
+```bash
+make docker-build
+make reef-docker-build
+make reef-docker-smoke
+```
+
+Set `REEF_DOCKER_IMAGE=reef:test` to choose another local tag. Set
+`DOCKER_NO_CACHE=1` to bypass BuildKit caches. The smoke matrix exercises
+loopback, HTTPS, opted-in h2c, invalid configuration, non-root execution,
+read-only filesystems, and the auth-disabled warning.
+
+## Troubleshoot startup
+
+Read the container log first:
+
+```bash
+docker logs reef
+```
+
+- A `CORAL_ENDPOINT` error means the URL is malformed or violates the selected
+  transport policy. Do not put credentials in this URL.
+- A session-secret error means required auth is enabled but the secret is
+  absent or shorter than 32 characters.
+- An issuer or public-URL error means the value is not an allowed HTTP(S) URL
+  or origin. Production values should use HTTPS.
+- A healthy `/healthz` with a failing `/readyz` means Reef started correctly
+  but cannot complete a Coral catalog request. Check DNS, certificates, proxy
+  HTTP/2 support, and the configured endpoint.
