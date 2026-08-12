@@ -83,6 +83,18 @@ describe('Coral endpoint policy', () => {
     },
   )
 
+  it.each([
+    'https://operator:secret@coral.example.test',
+    'https://coral.example.test/rpc?tenant=analytics',
+    'https://coral.example.test/rpc?',
+    'https://coral.example.test/rpc#method',
+    'https://coral.example.test/rpc#',
+  ])('rejects endpoint URL components that Connect cannot safely compose: %s', (CORAL_ENDPOINT) => {
+    expect(() => resolve({ CORAL_ENDPOINT })).toThrow(
+      'CORAL_ENDPOINT must not include credentials, a query string, or a fragment',
+    )
+  })
+
   it('preserves request-derived development fallback only for unauthenticated calls', () => {
     expect(resolve({ NODE_ENV: 'development' }, false)).toEqual({
       authenticatedCleartextOrigin: null,

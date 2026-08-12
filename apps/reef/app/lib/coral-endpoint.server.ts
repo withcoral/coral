@@ -45,6 +45,14 @@ function policy(
   if (endpoint.protocol !== 'http:' && endpoint.protocol !== 'https:') {
     throw new Error('CORAL_ENDPOINT must be an absolute HTTP(S) URL')
   }
+  if (
+    endpoint.username ||
+    endpoint.password ||
+    configured.includes('?') ||
+    configured.includes('#')
+  ) {
+    throw new Error('CORAL_ENDPOINT must not include credentials, a query string, or a fragment')
+  }
 
   const baseUrl = trimTrailingSlash(configured)
   if (!authenticated || endpoint.protocol === 'https:' || isExplicitLoopbackUrl(endpoint)) {
