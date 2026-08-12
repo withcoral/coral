@@ -1518,8 +1518,8 @@ mod tests {
         .with_task_activity_recorder(TaskActivityRecorder::new(Arc::clone(&db)));
         QueryManagerFixture {
             _temp: temp,
-            db,
             manager,
+            db,
         }
     }
 
