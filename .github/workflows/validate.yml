@@ -107,13 +107,7 @@ jobs:
               - 'apps/desktop/src/shared/types.ts'
             reef-server-smoke:
               - '.github/workflows/validate.yml'
-              - 'apps/reef/server.js'
-              - 'apps/reef/server.test.mjs'
-              - 'apps/reef/app/entry.server.*'
-              - 'apps/reef/app/lib/runtime-config.server.ts'
-              - 'apps/reef/app/routes.ts'
-              - 'apps/reef/app/routes/**'
-              - 'apps/reef/package*.json'
+              - 'apps/reef/**'
             desktop-checks:
               - '.github/workflows/validate.yml'
               - 'apps/desktop/**'

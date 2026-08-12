@@ -102,16 +102,13 @@ describe('architecture', () => {
       path.resolve(reefRoot, '../..', '.github/workflows/validate.yml'),
       'utf8',
     )
-    for (const input of [
-      'apps/reef/server.js',
-      'apps/reef/app/entry.server.*',
-      'apps/reef/app/lib/runtime-config.server.ts',
-      'apps/reef/app/routes.ts',
-      'apps/reef/app/routes/**',
-      'apps/reef/package*.json',
-    ]) {
-      expect(validate).toContain(`- '${input}'`)
-    }
+    const smokeFilter = validate.match(
+      /            reef-server-smoke:\n(?<paths>(?:              - .*\n)+)/,
+    )?.groups?.paths
+
+    expect(smokeFilter).toBe(
+      "              - '.github/workflows/validate.yml'\n              - 'apps/reef/**'\n",
+    )
     expect(validate.indexOf('run: npm run build --prefix apps/reef')).toBeLessThan(
       validate.indexOf('run: npm run test:server --prefix apps/reef'),
     )
