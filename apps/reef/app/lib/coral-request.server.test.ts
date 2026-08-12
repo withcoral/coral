@@ -34,6 +34,9 @@ import {
 } from './coral-request.server'
 
 const request = new Request('http://localhost:5173/workspaces/analytics/sources')
+const attackerRequest = new Request('https://attacker.example.test/workspaces/analytics/sources', {
+  headers: { Host: 'attacker.example.test', 'X-Forwarded-Host': 'attacker.example.test' },
+})
 const clientFactories = [
   catalogClientForRequest,
   functionClientForRequest,
@@ -59,7 +62,7 @@ describe('request-scoped Coral transport authentication', () => {
   it('uses native gRPC and adds the server-held bearer token to every Coral RPC', async () => {
     for (const clientFactory of clientFactories) {
       const transport = clientFactory(
-        request,
+        attackerRequest,
         'coral-access-token',
       ) as unknown as GrpcTransportOptions
       const [interceptor] = transport.interceptors ?? []
@@ -69,6 +72,20 @@ describe('request-scoped Coral transport authentication', () => {
       expect(await authorizationHeader(interceptor)).toBe('Bearer coral-access-token')
     }
     expect(transportMocks.createGrpcTransport).toHaveBeenCalledTimes(clientFactories.length)
+    expect(transportMocks.createGrpcWebTransport).not.toHaveBeenCalled()
+  })
+
+  it('requires CORAL_ENDPOINT under auth instead of trusting request or forwarded hosts', () => {
+    vi.stubEnv('CORAL_ENDPOINT', '')
+    vi.stubEnv('REEF_AUTH_MODE', 'required')
+    vi.stubEnv('REEF_AUTH_ISSUER', 'https://auth.example.test')
+    vi.stubEnv('REEF_PUBLIC_URL', 'https://reef.example.test')
+    vi.stubEnv('REEF_SESSION_SECRET', '0123456789abcdef0123456789abcdef')
+
+    expect(() => sourceClientForRequest(attackerRequest, 'coral-access-token')).toThrow(
+      'CORAL_ENDPOINT must be set when Coral authentication is enabled',
+    )
+    expect(transportMocks.createGrpcTransport).not.toHaveBeenCalled()
     expect(transportMocks.createGrpcWebTransport).not.toHaveBeenCalled()
   })
 
@@ -103,6 +120,28 @@ describe('request-scoped Coral transport authentication', () => {
     expect(transport.baseUrl).toBe(endpoint)
     expect(transportMocks.createGrpcTransport).toHaveBeenCalledOnce()
     expect(transportMocks.createGrpcWebTransport).not.toHaveBeenCalled()
+  })
+
+  it('allows opted-in h2c with native bearer transport and warns once per origin', () => {
+    vi.stubEnv('CORAL_ENDPOINT', 'http://coral.internal:50051/rpc')
+    vi.stubEnv('REEF_ALLOW_INSECURE_CORAL_ENDPOINT', ' TrUe ')
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+
+    for (const clientFactory of clientFactories) {
+      const transport = clientFactory(
+        request,
+        'coral-access-token',
+      ) as unknown as GrpcTransportOptions
+      expect(transport.baseUrl).toBe('http://coral.internal:50051/rpc')
+    }
+
+    expect(transportMocks.createGrpcTransport).toHaveBeenCalledTimes(clientFactories.length)
+    expect(transportMocks.createGrpcWebTransport).not.toHaveBeenCalled()
+    expect(warn).toHaveBeenCalledOnce()
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('bearer tokens over cleartext HTTP to http://coral.internal:50051'),
+    )
+    warn.mockRestore()
   })
 
   // The transport follows the deployment topology, not whether a token reached

@@ -56,12 +56,30 @@ canonicalize to the same URL. Reef derives the OAuth resource
 `https://reef.example.com/auth/callback` from it. Do not configure separate
 client, resource, callback, or scope values.
 
-`CORAL_ENDPOINT` is only the data-plane address. Authenticated Reef calls it
-with native gRPC over HTTP/2 and attaches the server-held bearer token. The
-endpoint must use HTTPS, except for the explicit-loopback local topology below.
-It is not an OAuth resource and does not need to match `REEF_PUBLIC_URL`.
-Reef does not use Coral's MCP HTTP endpoint or protected-resource metadata for
-login or data access.
+`CORAL_ENDPOINT` is only the Reef-to-Coral data-plane address and is required
+whenever authentication is enabled. Reef never derives an authenticated Coral
+destination from the browser request URL, `Host`, or forwarded-host headers.
+Authenticated Reef uses native gRPC over HTTP/2 and attaches the server-held
+bearer token. It does not use Coral's MCP HTTP endpoint or protected-resource
+metadata for login or data access.
+
+Choose one transport topology:
+
+1. Use `CORAL_ENDPOINT=https://coral.internal.example.com` when TLS terminates
+   at Coral or at a trusted proxy directly in front of it.
+2. Use explicit-loopback HTTP, such as `http://127.0.0.1:14555` or bare
+   `http://localhost:14555`, when Reef and Coral share a host. Acceptance of
+   `localhost` trusts that host's name resolution; use a loopback IP when that
+   trust is undesirable. Names such as `coral.localhost` are not treated as
+   explicit loopback.
+3. On a trusted private network without Reef-to-Coral TLS, set an `http://`
+   endpoint and `REEF_ALLOW_INSECURE_CORAL_ENDPOINT=true`. This sends bearer
+   tokens in cleartext on that network and emits a process warning once per
+   Coral origin.
+
+The insecure endpoint flag relaxes only the Reef-to-Coral hop. It does not
+relax `REEF_PUBLIC_URL`, the OAuth issuer, browser-to-Reef transport, audience,
+cookie, or callback validation.
 
 `REEF_SESSION_MAX_AGE_SECONDS` defaults to 3600 and caps how long Reef keeps a
 login, even if Coral issues a longer-lived access token. A shorter token expiry
