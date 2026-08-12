@@ -1495,9 +1495,10 @@ async fn search_reads_v4_catalog_from_database_after_legacy_artifacts_are_remove
         SearchProviderState::ResultsFound,
     );
     assert!(response.results.iter().any(|result| {
-        result.surface.as_ref().is_some_and(|surface| {
-            surface.schema_name == "github_v4_query" && surface.name == "issues"
-        })
+        result
+            .surface
+            .as_ref()
+            .is_some_and(|entry| entry.schema_name == "github_v4_query" && entry.name == "issues")
     }));
 }
 

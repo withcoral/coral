@@ -2049,6 +2049,30 @@ surface:
     }
 
     #[test]
+    fn retiring_materialization_preserves_rollback_state() {
+        let (_state, _descriptor, layout, _manifest_yaml, _manifest) = setup_materialization();
+        let materialized_dir = layout.v4_materialized_dir(&workspace_name(), &source_name());
+
+        let backup =
+            replace_or_retire_v4_materialization(&layout, &workspace_name(), &source_name(), None)
+                .expect("retire materialization")
+                .expect("existing materialization backup");
+
+        assert!(!materialized_dir.exists());
+        assert!(backup.exists());
+
+        replace_or_retire_v4_materialization(
+            &layout,
+            &workspace_name(),
+            &source_name(),
+            Some(&backup),
+        )
+        .expect("restore materialization");
+
+        assert!(materialized_dir.join(PROJECTIONS_FILENAME).exists());
+    }
+
+    #[test]
     fn failed_singular_materialization_removes_the_atomic_temp_directory() {
         let descriptor_temp = TempDir::new().expect("descriptor temp dir");
         let missing_openapi_file = descriptor_temp.path().join("missing-openapi.yaml");
