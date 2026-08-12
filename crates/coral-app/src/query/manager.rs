@@ -193,6 +193,10 @@ impl QueryManager {
     }
 
     #[cfg(test)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "database handle joins the existing collaborator set the query manager owns"
+    )]
     pub(crate) fn new(
         config_store: ConfigStore,
         workspace_manager: WorkspaceManager,

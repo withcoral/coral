@@ -102,6 +102,10 @@ impl SearchManager {
         )
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "database handle joins the existing collaborator set the search manager owns"
+    )]
     pub(crate) fn with_diagnostic_reporter(
         layout: AppStateLayout,
         config_store: &ConfigStore,
@@ -247,7 +251,6 @@ impl SearchManager {
                 continue;
             };
             let observed_policy = match request.provider {
-                SearchIndexProvider::Catalog => None,
                 SearchIndexProvider::ObservedValues | SearchIndexProvider::All
                     if self.observed_values_search_enabled =>
                 {
@@ -256,7 +259,9 @@ impl SearchManager {
                             .await,
                     )
                 }
-                SearchIndexProvider::ObservedValues | SearchIndexProvider::All => None,
+                SearchIndexProvider::Catalog
+                | SearchIndexProvider::ObservedValues
+                | SearchIndexProvider::All => None,
             };
             let search = self.clone();
             let request = request.clone();
