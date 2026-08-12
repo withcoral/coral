@@ -3143,15 +3143,20 @@ surface:
         std::fs::remove_file(&openapi_file).expect("remove authored descriptor after import");
 
         let source_name = SourceName::parse("github_v4_query").expect("source name");
-        let generated_path = fixture
-            .manager
-            .layout
-            .v4_projection_catalog_file(&workspace_name, &source_name)
-            .path;
-        let mut projections: ProjectionCatalog = serde_yaml::from_slice(
-            &std::fs::read(generated_path).expect("read generated projections"),
-        )
-        .expect("parse generated projections");
+        // Materializations now live in the database, so the generated projection
+        // catalog comes from the imported record rather than the on-disk artifact.
+        let generated_projections_yaml = {
+            let mut session = fixture.db.as_ref();
+            session
+                .materializations()
+                .get(&workspace_name, &source_name)
+                .await
+                .expect("get materialization record")
+                .expect("materialization record for imported v4 source")
+                .projections_yaml
+        };
+        let mut projections: ProjectionCatalog =
+            serde_yaml::from_str(&generated_projections_yaml).expect("parse generated projections");
         let issues = projections
             .projections
             .iter_mut()
@@ -3347,10 +3352,27 @@ surface:
             .expect("import v4 source");
 
         let source_name = SourceName::parse("github_v4_pagination_override").expect("source name");
+        // Materializations now live in the database, so the generated operation
+        // metadata comes from the imported record rather than the on-disk artifact.
+        let generated_metadata_yaml = {
+            let mut session = fixture.db.as_ref();
+            session
+                .materializations()
+                .get(&workspace_name, &source_name)
+                .await
+                .expect("get materialization record")
+                .expect("materialization record for imported v4 source")
+                .surfaces
+                .into_iter()
+                .next()
+                .expect("materialized surface")
+                .operation_metadata_yaml
+        };
         write_widgets_operation_metadata_override(
             &fixture.manager.layout,
             &workspace_name,
             &source_name,
+            &generated_metadata_yaml,
         );
 
         let execution = fixture
@@ -3417,14 +3439,11 @@ paths:
         layout: &AppStateLayout,
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
+        generated_metadata_yaml: &str,
     ) {
-        let generated_path = layout
-            .v4_materialized_dir(workspace_name, source_name)
-            .join(crate::sources::materialization::OPERATION_METADATA_FILENAME);
-        let mut metadata: coral_spec::v4::OperationMetadataCatalog = serde_yaml::from_slice(
-            &std::fs::read(&generated_path).expect("read generated operation metadata"),
-        )
-        .expect("parse generated operation metadata");
+        let mut metadata: coral_spec::v4::OperationMetadataCatalog =
+            serde_yaml::from_str(generated_metadata_yaml)
+                .expect("parse generated operation metadata");
         let operation = metadata
             .operations
             .values_mut()
