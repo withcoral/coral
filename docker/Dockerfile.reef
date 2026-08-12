@@ -17,8 +17,13 @@ COPY apps/reef/package.json apps/reef/package-lock.json ./
 RUN npm ci --omit=dev
 
 FROM node:24.15.0-trixie-slim
+ARG REEF_VERSION
+ARG REEF_REVISION
 WORKDIR /app
 ENV NODE_ENV=production PORT=3000
+LABEL org.opencontainers.image.source="https://github.com/withcoral/coral" \
+      org.opencontainers.image.version="$REEF_VERSION" \
+      org.opencontainers.image.revision="$REEF_REVISION"
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=build /src/apps/reef/build ./build
 COPY --from=build /src/apps/reef/package.json ./package.json

@@ -107,6 +107,7 @@ jobs:
               - 'apps/desktop/src/shared/types.ts'
             reef-image:
               - '.github/workflows/validate.yml'
+              - '.github/workflows/reef-docker-publish.yml'
               - '.dockerignore'
               - 'Makefile'
               - 'Cargo.toml'
@@ -122,6 +123,7 @@ jobs:
               - 'docker/entrypoint-reef.sh'
               - 'docker/reef-smoke.sh'
               - 'docker/reef-image.test.mjs'
+              - 'docker/reef-publish.test.mjs'
               - 'apps/reef/**'
               - 'apps/desktop/src/shared/types.ts'
               - 'crates/coral-api/proto/**'
@@ -519,7 +521,7 @@ jobs:
           cache-binary: false
 
       - name: Check Reef image contract
-        run: node --test docker/reef-image.test.mjs
+        run: node --test docker/reef-image.test.mjs docker/reef-publish.test.mjs
 
       - name: Build and smoke linux/amd64 Coral and Reef images
         run: |

@@ -608,3 +608,16 @@ jobs:
     uses: ./.github/workflows/docker-publish.yml
     with:
       tag: ${{ needs.validate-release-ref.outputs.tag-name }}
+
+  publish-reef-docker:
+    needs:
+      - validate-release-ref
+      - publish-version
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    uses: ./.github/workflows/reef-docker-publish.yml
+    with:
+      tag: ${{ needs.validate-release-ref.outputs.tag-name }}
+      commit-sha: ${{ needs.validate-release-ref.outputs.commit-sha }}
