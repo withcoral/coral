@@ -37,8 +37,6 @@ pub(crate) use task_state::TaskMutationBarrier;
 pub(crate) use task_state::{TaskCreation, TaskCreationResult};
 pub(crate) use transaction::CoralTx;
 #[expect(unused_imports, reason = "used higher in the PR stack")]
-pub(crate) use user_state::DefaultWorkspaceProvisioningOutcome;
-#[expect(unused_imports, reason = "used higher in the PR stack")]
 pub(crate) use workspace_member_state::{
     AddMemberOutcome, RemoveMemberOutcome, WorkspaceMemberView,
 };

@@ -1,7 +1,8 @@
 import classNames from 'classnames'
 import { useEffect, useRef, useState } from 'react'
-import { Link, NavLink, useLocation, useMatch, useParams } from 'react-router'
+import { Form, Link, NavLink, useLocation, useMatch, useParams } from 'react-router'
 
+import type { BrowserAuth } from '@/auth/types'
 import { KeyboardShortcut } from '@/wax/components/keyboard-shortcut'
 import {
   Container as ButtonContainer,
@@ -29,13 +30,18 @@ import * as styles from './sidebar.css'
 import { useSidebarState } from './use-sidebar-state'
 
 interface SidebarProps {
+  auth?: BrowserAuth
   initialIsMinimized: boolean
   workspaces: ReadonlyArray<Pick<Workspace, 'name'>>
 }
 
 type NavItem = { icon: IconName; label: string; paths: string[]; to: string }
 
-export function Sidebar({ initialIsMinimized, workspaces }: SidebarProps) {
+export function Sidebar({
+  auth = { mode: 'disabled' },
+  initialIsMinimized,
+  workspaces,
+}: SidebarProps) {
   const location = useLocation()
   const { workspaceId } = useParams()
   const { isMinimized, toggleSidebar } = useSidebarState(initialIsMinimized)
@@ -43,6 +49,7 @@ export function Sidebar({ initialIsMinimized, workspaces }: SidebarProps) {
   const updateState = useDesktopUpdateState(desktop)
   const [createWorkspaceDialogOpen, setCreateWorkspaceDialogOpen] = useState(false)
   const createWorkspaceDialogSession = useRef(0)
+  const logoutForm = useRef<HTMLFormElement>(null)
   const createWorkspaceFetcherKey = `create-workspace-${createWorkspaceDialogSession.current}`
   const currentWorkspace = workspaces.find((workspace) => workspace.name === workspaceId)
   const workspaceNavTarget = currentWorkspace ?? workspaces[0]
@@ -208,6 +215,25 @@ export function Sidebar({ initialIsMinimized, workspaces }: SidebarProps) {
                   <Menu.Item icon="Settings" to={settingsPath}>
                     Settings
                   </Menu.Item>
+                  {auth.mode === 'required' && (
+                    <>
+                      <Menu.Separator />
+                      <Form
+                        action="/logout"
+                        className={styles.workspaceMenuForm}
+                        method="post"
+                        ref={logoutForm}
+                      >
+                        <input name="csrf" type="hidden" value={auth.csrfToken} />
+                        <Menu.Item
+                          icon="LogOut"
+                          onClick={() => logoutForm.current?.requestSubmit()}
+                        >
+                          Sign out
+                        </Menu.Item>
+                      </Form>
+                    </>
+                  )}
                 </Menu.Content>
               </Menu.Container>
 
