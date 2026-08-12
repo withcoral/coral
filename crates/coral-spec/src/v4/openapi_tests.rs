@@ -3938,6 +3938,101 @@ fn openapi_31_reads_const_as_a_single_value_enum() {
     assert_eq!(values, &["open", "paid"]);
 }
 
+/// Imports a document at `version` that declares `dialect_declaration` at its
+/// root, so a test can vary the dialect against a schema the importer would
+/// otherwise read without complaint.
+#[expect(
+    clippy::unwrap_in_result,
+    reason = "Only the import's own result is under test; a manifest that will not parse is a bug in this file, not an outcome to return."
+)]
+fn import_document_declaring_dialect(
+    version: &str,
+    dialect_declaration: &str,
+) -> crate::Result<ImportedSurface> {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: dialect_declaration_probe
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    import_openapi_surface(
+        v4,
+        &v4.surface,
+        format!(
+            r"
+openapi: {version}
+{dialect_declaration}
+paths:
+  /items:
+    get:
+      operationId: items/get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  kind: {{const: invoice}}
+"
+        )
+        .as_bytes(),
+    )
+}
+
+#[test]
+fn openapi_31_rejects_a_dialect_it_does_not_read() {
+    // `const` is the keyword at stake: draft-04 does not have it, so this
+    // document does not mean by it what the importer would persist — the closed
+    // enum `["invoice"]` on a column the author left unconstrained.
+    let error = import_document_declaring_dialect(
+        "3.1.0",
+        "jsonSchemaDialect: http://json-schema.org/draft-04/schema#",
+    )
+    .expect_err("a dialect Coral cannot read has to be refused, not guessed at");
+    assert!(
+        error.to_string().contains("draft-04"),
+        "the message should name the dialect that was asked for: {error}"
+    );
+}
+
+#[test]
+fn openapi_31_imports_the_dialects_it_is_written_in() {
+    for declaration in [
+        "jsonSchemaDialect: https://spec.openapis.org/oas/3.1/dialect/base",
+        "jsonSchemaDialect: https://json-schema.org/draft/2020-12/schema",
+        "",
+    ] {
+        let imported = import_document_declaring_dialect("3.1.0", declaration)
+            .unwrap_or_else(|error| panic!("'{declaration}' should import: {error}"));
+        let IrTypeShape::Enum { values } = &probe_field_type(&imported, "kind").shape else {
+            panic!("'{declaration}' selects the dialect `const` is read in");
+        };
+        assert_eq!(values, &["invoice"]);
+    }
+}
+
+#[test]
+fn openapi_30_ignores_a_dialect_declaration() {
+    // 3.0's schema object is its own dialect, fixed by that specification. The
+    // keyword selects nothing there, and `const` is not read either way.
+    let imported = import_document_declaring_dialect(
+        "3.0.3",
+        "jsonSchemaDialect: http://json-schema.org/draft-04/schema#",
+    )
+    .expect("3.0 has no dialect to choose");
+    assert!(
+        matches!(probe_field_type(&imported, "kind").shape, IrTypeShape::Json),
+        "3.0 leaves `const` alone whatever the document declares"
+    );
+}
+
 #[test]
 fn openapi_31_reads_nullability_out_of_const_and_enum() {
     // Neither of these names a type, so `type` had nothing to say about them

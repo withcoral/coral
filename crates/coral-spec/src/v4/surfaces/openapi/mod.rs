@@ -1,6 +1,7 @@
 mod dialect;
 mod document;
 mod import;
+mod json_schema_dialect;
 mod operations;
 mod responses;
 mod schemas;

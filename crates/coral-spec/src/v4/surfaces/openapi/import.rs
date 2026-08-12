@@ -13,6 +13,7 @@ use crate::v4::{
 use crate::{ManifestError, Result};
 
 use super::dialect::OpenApiDialect;
+use super::json_schema_dialect::validate_json_schema_dialect;
 use super::v3_0::OpenApi30Importer;
 use super::v3_1::OpenApi31Importer;
 use super::version::{OpenApiVersion, parse_openapi_version};
@@ -26,7 +27,13 @@ pub fn import_openapi_surface(
         serde_yaml::from_slice(document_bytes).map_err(ManifestError::parse_yaml)?;
     let dialect: &dyn OpenApiDialect = match parse_openapi_version(&document)? {
         OpenApiVersion::V3_0 => &OpenApi30Importer,
-        OpenApiVersion::V3_1 => &OpenApi31Importer,
+        OpenApiVersion::V3_1 => {
+            // Only 3.1 can choose a dialect. 3.0's schema object is its own,
+            // fixed by that specification, so neither keyword means anything
+            // there and a document carrying one is not selecting anything.
+            validate_json_schema_dialect(&document)?;
+            &OpenApi31Importer
+        }
     };
 
     let mut importer = OpenApiImporter::new(manifest, surface, &document, dialect);
