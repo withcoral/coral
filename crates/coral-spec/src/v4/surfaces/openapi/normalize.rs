@@ -159,42 +159,58 @@ fn sole_declared_variant(union: Option<&Value>) -> Option<&Map<String, Value>> {
 /// Whether a schema accepts nothing but `null`.
 fn declares_only_null(schema: &Value) -> bool {
     match schema.get("type") {
-        Some(Value::String(declared)) => declared == "null",
         Some(Value::Array(declared)) => {
-            !declared.is_empty() && declared.iter().all(|value| value.as_str() == Some("null"))
+            !declared.is_empty() && declared.iter().all(names_null_type)
         }
-        _ => false,
+        Some(declared) => names_null_type(declared),
+        None => false,
     }
 }
 
-/// Rewrites `type: [T, "null"]` to `type: T`.
+/// Whether a `type` member names the null type, in either spelling.
+///
+/// JSON Schema's `type` holds strings, so an unquoted `null` is authored by
+/// mistake — but it is a mistake YAML invites and JSON does not. `type: [array,
+/// null]` is what the correct thing looks like in YAML, and a plain `null`
+/// scalar resolves to the null value rather than to the string, so the member
+/// reaches this pass as [`Value::Null`]; writing a bare `null` where a string
+/// belongs in JSON is visibly wrong instead. Reading both costs nothing, since
+/// a member that is literally null cannot be naming some other type.
+fn names_null_type(value: &Value) -> bool {
+    value.is_null() || value.as_str() == Some("null")
+}
+
+/// Rewrites a `type` array that names one type to that name, dropping any
+/// `null` alongside it.
 ///
 /// Scalars already survive the array spelling — `json_schema_scalar_type` skips
 /// `null` members — so this exists for `array` and `object`, which are read
 /// through [`serde_json::Value::as_str`] and would otherwise fall through to
 /// `Json`.
 ///
-/// Does not fire on an array that declares no `null`: a single-member `[T]` is
-/// equivalent to `T`, but rewriting it would touch documents this pass has no
-/// business changing.
+/// A single-member `[T]` is collapsed too, even though it drops nothing. It
+/// means exactly what `T` means, no reader here can see through the array, and
+/// 3.0 forbids `type` arrays outright — so unlike the `anyOf: [{$ref: T}]`
+/// spelling that GitHub's 3.0 document relies on, collapsing it cannot reach a
+/// document that imports correctly today.
 fn drop_null_from_type_array(object: &mut Map<String, Value>) {
     let Some(declared) = object.get("type").and_then(Value::as_array) else {
         return;
     };
-    // A `type` array holds type names. Anything else is not one — most likely a
-    // `properties` map for a property named `type`, which must be left alone.
-    if !declared.iter().all(Value::is_string) {
+    // A `type` array holds type names, and nothing else belongs in one — a
+    // payload that happens to carry a `type` key must be left alone.
+    if !declared
+        .iter()
+        .all(|value| value.is_string() || value.is_null())
+    {
         return;
     }
-    let mut named = declared
-        .iter()
-        .filter(|value| value.as_str() != Some("null"));
+    let mut named = declared.iter().filter(|value| !names_null_type(value));
     let Some(declared_type) = named.next() else {
         return;
     };
-    // More than one shape is a genuine union; a single name with nothing
-    // dropped was never a nullable spelling.
-    if named.next().is_some() || declared.len() == 1 {
+    // More than one name is a genuine union.
+    if named.next().is_some() {
         return;
     }
     let declared_type = declared_type.clone();
@@ -227,6 +243,16 @@ mod tests {
         assert_eq!(
             normalized(json!({"anyOf": [{"type": "integer"}, {"type": ["null"]}]})),
             json!({"type": "integer"})
+        );
+        // `- type: null` in YAML, where the plain scalar resolves to the null
+        // value rather than to the string.
+        assert_eq!(
+            normalized(json!({"anyOf": [{"type": "integer"}, {"type": null}]})),
+            json!({"type": "integer"})
+        );
+        assert_eq!(
+            normalized(json!({"oneOf": [{"type": "object"}, {"type": [null]}]})),
+            json!({"type": "object"})
         );
     }
 
@@ -302,6 +328,26 @@ mod tests {
             normalized(json!({"type": ["null", "object"], "properties": {}})),
             json!({"type": "object", "properties": {}})
         );
+        // `type: [array, null]` in YAML, where the unquoted `null` never
+        // reaches this pass as a string.
+        assert_eq!(
+            normalized(json!({"type": ["array", null], "items": {"type": "string"}})),
+            json!({"type": "array", "items": {"type": "string"}})
+        );
+    }
+
+    #[test]
+    fn collapses_type_arrays_that_name_one_type() {
+        // Nothing is dropped here — the array spelling itself is what no
+        // reader can see through, and only 3.1 can produce it.
+        assert_eq!(
+            normalized(json!({"type": ["array"], "items": {"type": "string"}})),
+            json!({"type": "array", "items": {"type": "string"}})
+        );
+        assert_eq!(
+            normalized(json!({"type": ["string"]})),
+            json!({"type": "string"})
+        );
     }
 
     #[test]
@@ -312,8 +358,9 @@ mod tests {
             json!({"oneOf": [{"$ref": "#/components/schemas/a"}, {"$ref": "#/components/schemas/b"}]}),
             // GitHub's 3.0 nullable-ref spelling.
             json!({"anyOf": [{"$ref": "#/components/schemas/a"}]}),
-            json!({"type": ["string"]}),
+            // Nothing but `null` is left to name.
             json!({"type": ["null"]}),
+            json!({"type": [null]}),
             json!({"type": "string", "nullable": true}),
         ] {
             assert_eq!(normalized(schema.clone()), schema);

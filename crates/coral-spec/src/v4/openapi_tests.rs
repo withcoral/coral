@@ -3459,6 +3459,73 @@ paths:
     assert_eq!(operation.output.cardinality, OutputCardinality::List);
 }
 
+/// The same collection, spelled the way YAML invites: an unquoted `null` is a
+/// plain scalar, so it reaches the importer as a null rather than as the string
+/// every other test quotes. A `[T]` array names one type and only 3.1 can write
+/// one, so it collapses too — read as an object, either would import as a
+/// single row.
+#[test]
+fn importer_reads_unquoted_and_single_member_type_arrays_as_lists() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: nullable_root
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.1.0
+paths:
+  /items:
+    get:
+      operationId: items/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: [array, null]
+                items:
+                  type: object
+                  properties:
+                    id: {type: [string, null]}
+  /records:
+    get:
+      operationId: records/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: [array]
+                items:
+                  type: [object]
+                  properties:
+                    id: {type: string}
+"
+        .as_bytes(),
+    )
+    .expect("nullable root import");
+
+    for operation in &ir.operations {
+        assert_eq!(
+            operation.output.cardinality,
+            OutputCardinality::List,
+            "{}",
+            operation.id
+        );
+    }
+    assert!(ir.diagnostics.is_empty(), "{:?}", ir.diagnostics);
+}
+
 /// Row-path inference refuses alternation, so an envelope whose rows sit behind
 /// a union has no path and the relation collapses to one JSON row. Unwrapping
 /// runs before inference, so the path is there to find.
