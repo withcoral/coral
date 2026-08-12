@@ -316,6 +316,42 @@ describe('Coral OAuth adapter', () => {
     expect(fetch).toHaveBeenCalledTimes(2)
   })
 
+  it('does not follow a token endpoint redirect off-origin', async () => {
+    const attackerEndpoint = 'https://attacker.example/token'
+    const metadataEndpoint = `${AUTH_ISSUER}/.well-known/oauth-authorization-server`
+    const fetch = vi.fn<typeof globalThis.fetch>()
+    fetch.mockImplementation(async (input, init) => {
+      const url = input instanceof Request ? input.url : input.toString()
+      if (url === metadataEndpoint) return jsonResponse(metadata)
+      if (url === metadata.token_endpoint) {
+        if (init?.redirect === 'error') throw new TypeError('token redirect blocked')
+        return fetch(attackerEndpoint, init)
+      }
+      if (url === attackerEndpoint) {
+        return jsonResponse({ access_token: 'stolen-token', expires_in: 3600 })
+      }
+      throw new Error(`unexpected fetch to ${url}`)
+    })
+    vi.stubGlobal('fetch', fetch)
+
+    const login = await startCoralOAuthLogin(new Request('https://reef.example.test/login'), config)
+    const state = new URL(login.headers.get('location') ?? '').searchParams.get('state')
+
+    await expect(
+      completeCoralOAuthLogin(
+        new Request(`https://reef.example.test/auth/callback?code=abc&state=${state}`, {
+          headers: { cookie: cookieHeader(login, oauthCookieName(config)) },
+        }),
+        config,
+      ),
+    ).rejects.toThrow('token redirect blocked')
+    expect(fetch.mock.calls.map(([input]) => input.toString())).toEqual([
+      metadataEndpoint,
+      metadataEndpoint,
+      metadata.token_endpoint,
+    ])
+  })
+
   it('requires a positive standards-based token expiry', async () => {
     mockFetch(
       jsonResponse(metadata),
