@@ -798,6 +798,10 @@ async fn run_server(
     requested_workspace: Option<String>,
 ) -> Result<(), anyhow::Error> {
     let server = bootstrap::start_standalone_server(feature_overrides, requested_workspace).await?;
+    Box::pin(serve_running_server(server)).await
+}
+
+async fn serve_running_server(server: crate::serve::RunningServer) -> Result<(), anyhow::Error> {
     let endpoint = server.endpoint_uri().to_string();
 
     // An endpoint that does not parse back to an address is treated as exposed:

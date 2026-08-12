@@ -8,10 +8,11 @@ use std::process::{Command, Stdio};
 
 #[test]
 fn onboard_rejects_non_interactive_terminals() {
-    let config_dir = tempfile::tempdir().expect("config dir");
+    let temp = tempfile::tempdir().expect("temp dir");
+    let config_dir = temp.path().join("state-must-not-exist");
     let output = Command::new(env!("CARGO_BIN_EXE_coral"))
         .arg("onboard")
-        .env("CORAL_CONFIG_DIR", config_dir.path())
+        .env("CORAL_CONFIG_DIR", &config_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -23,5 +24,9 @@ fn onboard_rejects_non_interactive_terminals() {
     assert!(
         stderr.contains("interactive source install requires a TTY"),
         "expected TTY error in stderr, got: {stderr}"
+    );
+    assert!(
+        !config_dir.exists(),
+        "TTY validation must run before bootstrap creates local state"
     );
 }

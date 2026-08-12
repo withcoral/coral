@@ -1174,11 +1174,12 @@ mod tests {
     use tokio::sync::{oneshot, watch};
     use tonic::transport::Endpoint;
     use tonic::{Code, Request};
+    use tracing_subscriber::layer::SubscriberExt as _;
 
     use super::{
         RunningServer, ServerBuilder, ServerDependencies, ServerMode, StaticAsset,
         StaticAssetsProvider, TraceServerComponents, is_grpc_web_content_type,
-        is_native_grpc_content_type, start_server,
+        is_native_grpc_content_type, report_shared_workspace_warnings, start_server,
     };
     use crate::auth::session::test_signing_key;
     use crate::bootstrap::AppError;
@@ -1194,8 +1195,8 @@ mod tests {
     };
     use crate::sources::manager::SourceManager;
     use crate::state::db::{
-        CoralDb, DatabaseConfig, DbRepos, ResolvedDatabaseConfig, UpsertLoginOutcome,
-        run_state_migrations,
+        CoralDb, DatabaseConfig, DbRepos, ResolvedDatabaseConfig, SharedWorkspaceWarnings,
+        UpsertLoginOutcome, run_state_migrations,
     };
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::task::manager::TaskManager;
@@ -1210,6 +1211,25 @@ mod tests {
 
     fn default_workspace() -> Workspace {
         workspace_to_proto(&WorkspaceName::default())
+    }
+
+    #[derive(Clone)]
+    struct CapturedWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for CapturedWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .map_err(|_error| std::io::Error::other("capture lock poisoned"))?
+                .write(bytes)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.0
+                .lock()
+                .map_err(|_error| std::io::Error::other("capture lock poisoned"))?
+                .flush()
+        }
     }
 
     fn create_default_test_workspace(config_dir: &Path) {
@@ -1692,6 +1712,31 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
                 .expect("read local user")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn shared_workspace_warnings_emit_both_inaccessibility_categories() {
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let writer = output.clone();
+        let subscriber = tracing_subscriber::Registry::default().with(
+            tracing_subscriber::fmt::layer()
+                .without_time()
+                .with_ansi(false)
+                .with_writer(move || CapturedWriter(writer.clone())),
+        );
+        tracing::subscriber::with_default(subscriber, || {
+            report_shared_workspace_warnings(&SharedWorkspaceWarnings {
+                ownerless: vec!["ownerless-alpha".to_string()],
+                local_only_owned: vec!["local-only-beta".to_string()],
+            });
+        });
+
+        let output = String::from_utf8(output.lock().expect("capture lock").clone())
+            .expect("captured warnings are UTF-8");
+        assert!(output.contains("workspaces have no owner"));
+        assert!(output.contains("ownerless-alpha"));
+        assert!(output.contains("workspaces are owned only by the local principal"));
+        assert!(output.contains("local-only-beta"));
     }
 
     #[test]
