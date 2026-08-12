@@ -1,5 +1,6 @@
-use sea_query::{Alias, Expr, ExprTrait, Func, Order, Query, SimpleExpr};
+use sea_query::{Expr, ExprTrait, Func, Order, Query};
 
+use crate::identity::LOCAL_PRINCIPAL_ID;
 use crate::state::db::schema::WorkspaceMembers;
 use crate::state::db::{CoralTx, DbError, DbSession};
 use crate::workspaces::MemberRole;
@@ -26,7 +27,6 @@ where
             .from(WorkspaceMembers::Table)
             .and_where(Expr::col(WorkspaceMembers::WorkspaceId).eq(workspace_id))
             .and_where(Expr::col(WorkspaceMembers::UserId).eq(user_id))
-            .and_where(workspace_has_owner())
             .to_owned();
         let row: Option<(String,)> = self.session.fetch_optional(statement).await?;
         row.map(|(role,)| parse_role(&role)).transpose()
@@ -40,7 +40,6 @@ where
             .columns([WorkspaceMembers::WorkspaceId, WorkspaceMembers::Role])
             .from(WorkspaceMembers::Table)
             .and_where(Expr::col(WorkspaceMembers::UserId).eq(user_id))
-            .and_where(workspace_has_owner())
             .order_by(WorkspaceMembers::WorkspaceId, Order::Asc)
             .to_owned();
         let rows: Vec<(String, String)> = self.session.fetch_all(statement).await?;
@@ -67,27 +66,60 @@ where
             statement.and_where(Expr::col(WorkspaceMembers::WorkspaceId).gt(after_workspace_id));
         }
 
-        let rows: Vec<(String,)> = self.session.fetch_all(statement.clone()).await?;
+        let rows: Vec<(String,)> = self.session.fetch_all(statement).await?;
         Ok(rows
             .into_iter()
             .map(|(workspace_id,)| workspace_id)
             .collect())
     }
-}
 
-fn workspace_has_owner() -> SimpleExpr {
-    let owners = Alias::new("workspace_owners");
-    Expr::exists(
-        Query::select()
-            .expr(Expr::val(1))
-            .from_as(WorkspaceMembers::Table, owners.clone())
+    pub(crate) async fn workspaces_for_user_id_with_non_local_owner(
+        &mut self,
+        user_id: &str,
+    ) -> Result<Vec<(String, MemberRole)>, DbError> {
+        let non_local_owned_workspaces = Query::select()
+            .column(WorkspaceMembers::WorkspaceId)
+            .from(WorkspaceMembers::Table)
+            .and_where(Expr::col(WorkspaceMembers::Role).eq(MemberRole::Owner.as_str()))
+            .and_where(Expr::col(WorkspaceMembers::UserId).ne(LOCAL_PRINCIPAL_ID))
+            .to_owned();
+        let statement = Query::select()
+            .columns([WorkspaceMembers::WorkspaceId, WorkspaceMembers::Role])
+            .from(WorkspaceMembers::Table)
+            .and_where(Expr::col(WorkspaceMembers::UserId).eq(user_id))
             .and_where(
-                Expr::col((owners.clone(), WorkspaceMembers::WorkspaceId))
-                    .equals((WorkspaceMembers::Table, WorkspaceMembers::WorkspaceId)),
+                Expr::col(WorkspaceMembers::WorkspaceId).in_subquery(non_local_owned_workspaces),
             )
-            .and_where(Expr::col((owners, WorkspaceMembers::Role)).eq(MemberRole::Owner.as_str()))
-            .to_owned(),
-    )
+            .order_by(WorkspaceMembers::WorkspaceId, Order::Asc)
+            .to_owned();
+        let rows: Vec<(String, String)> = self.session.fetch_all(statement).await?;
+        rows.into_iter()
+            .map(|(workspace_id, role)| Ok((workspace_id, parse_role(&role)?)))
+            .collect()
+    }
+
+    pub(crate) async fn role_for_user_id_with_non_local_owner(
+        &mut self,
+        workspace_id: &str,
+        user_id: &str,
+    ) -> Result<Option<MemberRole>, DbError> {
+        let non_local_owner = Query::select()
+            .column(WorkspaceMembers::UserId)
+            .from(WorkspaceMembers::Table)
+            .and_where(Expr::col(WorkspaceMembers::WorkspaceId).eq(workspace_id))
+            .and_where(Expr::col(WorkspaceMembers::Role).eq(MemberRole::Owner.as_str()))
+            .and_where(Expr::col(WorkspaceMembers::UserId).ne(LOCAL_PRINCIPAL_ID))
+            .to_owned();
+        let statement = Query::select()
+            .column(WorkspaceMembers::Role)
+            .from(WorkspaceMembers::Table)
+            .and_where(Expr::col(WorkspaceMembers::WorkspaceId).eq(workspace_id))
+            .and_where(Expr::col(WorkspaceMembers::UserId).eq(user_id))
+            .and_where(Expr::exists(non_local_owner))
+            .to_owned();
+        let row: Option<(String,)> = self.session.fetch_optional(statement).await?;
+        row.map(|(role,)| parse_role(&role)).transpose()
+    }
 }
 
 impl WorkspaceMembersRepo<'_, CoralTx<'_>> {
@@ -162,7 +194,7 @@ mod tests {
     use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig};
 
     #[tokio::test]
-    async fn owned_workspaces_for_user_id_and_member_repository_round_trips_against_sqlite() {
+    async fn owned_workspaces_for_user_id_and_member_repository_round_trip_against_sqlite() {
         let temp = tempdir().expect("temp dir");
         let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
         let db = open_sqlite(&layout).await;
@@ -172,7 +204,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "set CORAL_TEST_POSTGRES_URL to run the shared repository harness against Postgres"]
-    async fn owned_workspaces_for_user_id_and_member_repository_round_trips_against_postgres() {
+    async fn owned_workspaces_for_user_id_and_member_repository_round_trip_against_postgres() {
         let Some(url) = postgres_test_url() else {
             return;
         };
@@ -285,8 +317,8 @@ mod tests {
                 .workspace_members()
                 .role_for_user_id(&workspace_b, &user_id)
                 .await
-                .expect("conceal member role in ownerless workspace"),
-            None
+                .expect("lookup member role"),
+            Some(MemberRole::Member)
         );
         assert_eq!(
             session
@@ -304,16 +336,9 @@ mod tests {
                 .expect("list visible workspaces"),
             vec![
                 (workspace_a.clone(), MemberRole::Owner),
+                (workspace_b.clone(), MemberRole::Member),
                 (workspace_c.clone(), MemberRole::Owner),
             ]
-        );
-        assert_eq!(
-            session
-                .workspace_members()
-                .owned_workspaces_for_user_id("missing-user", None, 10)
-                .await
-                .expect("list no owned workspaces"),
-            Vec::<String>::new()
         );
         assert_eq!(
             session
@@ -331,15 +356,6 @@ mod tests {
                 .expect("list owned workspaces after cursor"),
             vec![workspace_c.clone()]
         );
-        assert_eq!(
-            session
-                .workspace_members()
-                .owned_workspaces_for_user_id(&user_id, None, 10)
-                .await
-                .expect("list all owned workspaces"),
-            vec![workspace_a.clone(), workspace_c.clone()]
-        );
-
         let mut tx = db.begin().await.expect("begin delete tx");
         assert!(
             tx.workspaces()
@@ -365,8 +381,8 @@ mod tests {
                 .workspace_members()
                 .role_for_user_id(&workspace_b, &user_id)
                 .await
-                .expect("conceal rolled-back member in ownerless workspace"),
-            None
+                .expect("lookup rolled-back member"),
+            Some(MemberRole::Member)
         );
 
         let mut tx = db.begin().await.expect("begin cascade tx");
@@ -391,7 +407,10 @@ mod tests {
                 .workspaces_for_user_id(&user_id)
                 .await
                 .expect("list workspaces after cascade"),
-            vec![(workspace_c, MemberRole::Owner),]
+            vec![
+                (workspace_b, MemberRole::Member),
+                (workspace_c, MemberRole::Owner),
+            ]
         );
     }
 

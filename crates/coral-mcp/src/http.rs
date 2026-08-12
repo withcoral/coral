@@ -18,10 +18,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, Method, Request, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get};
-use coral_api::v1::{
-    CatalogItemKind, GetCurrentUserResponse, ListCatalogRequest, PaginationRequest, Workspace,
-    WorkspaceMembership,
-};
+use coral_api::v1::{CatalogItemKind, ListCatalogRequest, PaginationRequest};
 use coral_app::{CanonicalOauthUrl, OauthUrlError};
 use coral_client::{AppClient, default_workspace};
 use futures::{Stream, StreamExt as _};
@@ -914,53 +911,10 @@ async fn create_session_factory(
         () = state.server.config.cancellation_token.cancelled() => Err(StatusCode::SERVICE_UNAVAILABLE),
         client = (state.runtime.session_client_factory)(token) => client.map_err(|()| StatusCode::SERVICE_UNAVAILABLE),
     }?;
-    let membership_client = client.clone();
-    let current_user_client = client.clone();
-    let workspace_resolution = resolve_authenticated_session_workspace(
-        state.runtime.options.workspace.as_ref(),
-        move || async move { membership_client.list_workspace_memberships().await },
-        move || async move { current_user_client.get_current_user().await },
-    );
-    let workspace = tokio::select! {
-        biased;
-        () = state.server.config.cancellation_token.cancelled() => Err(StatusCode::SERVICE_UNAVAILABLE),
-        workspace = workspace_resolution => workspace.map_err(|_status| StatusCode::SERVICE_UNAVAILABLE),
-    }?;
-    let mut options = state.runtime.options.clone();
-    options.workspace = Some(workspace);
-    Ok(CoralMcpServerFactory::new(client, options))
-}
-
-async fn resolve_authenticated_session_workspace<ListFuture, CurrentUserFuture>(
-    configured_workspace: Option<&Workspace>,
-    list_memberships: impl FnOnce() -> ListFuture,
-    get_current_user: impl FnOnce() -> CurrentUserFuture,
-) -> Result<Workspace, tonic::Status>
-where
-    ListFuture: Future<Output = Result<Vec<WorkspaceMembership>, tonic::Status>>,
-    CurrentUserFuture: Future<Output = Result<GetCurrentUserResponse, tonic::Status>>,
-{
-    let memberships = list_memberships().await?;
-    let visible_workspaces = memberships
-        .into_iter()
-        .filter_map(|membership| membership.workspace)
-        .collect::<Vec<_>>();
-    if let Some(configured_workspace) = configured_workspace
-        && visible_workspaces
-            .iter()
-            .any(|workspace| workspace == configured_workspace)
-    {
-        return Ok(configured_workspace.clone());
-    }
-    let default_workspace = get_current_user().await?.default_workspace;
-    default_workspace
-        .filter(|default| {
-            visible_workspaces
-                .iter()
-                .any(|workspace| workspace == default)
-        })
-        .or_else(|| visible_workspaces.into_iter().next())
-        .ok_or_else(|| tonic::Status::failed_precondition("current user has no visible workspace"))
+    Ok(CoralMcpServerFactory::new(
+        client,
+        state.runtime.options.clone(),
+    ))
 }
 
 async fn authorize_bound_session(
@@ -1110,120 +1064,3 @@ fn catalog_rejection_is_reachable(code: tonic::Code) -> bool {
 
 #[cfg(test)]
 mod tests;
-
-#[cfg(test)]
-mod authenticated_session_workspace_tests {
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    use coral_api::v1::{GetCurrentUserResponse, User, WorkspaceMembership, WorkspaceRole};
-
-    use super::*;
-
-    fn named_workspace(name: &str) -> Workspace {
-        Workspace {
-            name: name.to_string(),
-        }
-    }
-
-    fn membership(workspace: &Workspace) -> WorkspaceMembership {
-        WorkspaceMembership {
-            workspace: Some(workspace.clone()),
-            role: WorkspaceRole::Member as i32,
-        }
-    }
-
-    fn current_user(default_workspace: Workspace) -> GetCurrentUserResponse {
-        GetCurrentUserResponse {
-            user: Some(User {
-                user_id: "user-id".to_string(),
-                display_name: String::new(),
-            }),
-            default_workspace: Some(default_workspace),
-        }
-    }
-
-    #[tokio::test]
-    async fn authenticated_session_workspace_retains_an_authorized_pin_without_fallback() {
-        let configured = named_workspace("configured");
-        let fallback_calls = Arc::new(AtomicUsize::new(0));
-        let counted_fallback_calls = Arc::clone(&fallback_calls);
-
-        let selected = resolve_authenticated_session_workspace(
-            Some(&configured),
-            || std::future::ready(Ok(vec![membership(&configured)])),
-            move || {
-                counted_fallback_calls.fetch_add(1, Ordering::Relaxed);
-                std::future::ready(Ok(current_user(named_workspace("personal"))))
-            },
-        )
-        .await
-        .expect("resolve authorized configured workspace");
-
-        assert_eq!(selected, configured);
-        assert_eq!(fallback_calls.load(Ordering::Relaxed), 0);
-    }
-
-    #[tokio::test]
-    async fn authenticated_session_workspace_rejects_an_invisible_app_default() {
-        let configured = named_workspace("concealed-or-missing");
-        let visible = named_workspace("visible");
-        let personal = named_workspace("app-derived-personal");
-        let membership_calls = Arc::new(AtomicUsize::new(0));
-        let counted_membership_calls = Arc::clone(&membership_calls);
-        let fallback_calls = Arc::new(AtomicUsize::new(0));
-        let counted_fallback_calls = Arc::clone(&fallback_calls);
-
-        let selected = resolve_authenticated_session_workspace(
-            Some(&configured),
-            move || {
-                counted_membership_calls.fetch_add(1, Ordering::Relaxed);
-                std::future::ready(Ok(vec![membership(&visible)]))
-            },
-            move || {
-                counted_fallback_calls.fetch_add(1, Ordering::Relaxed);
-                std::future::ready(Ok(current_user(personal)))
-            },
-        )
-        .await
-        .expect("fall back without probing the configured workspace");
-
-        assert_eq!(selected.name, "visible");
-        assert_eq!(membership_calls.load(Ordering::Relaxed), 1);
-        assert_eq!(fallback_calls.load(Ordering::Relaxed), 1);
-    }
-
-    #[tokio::test]
-    async fn authenticated_session_workspace_accepts_a_visible_app_default() {
-        let visible = named_workspace("visible");
-        let personal = named_workspace("app-derived-personal");
-
-        let selected = resolve_authenticated_session_workspace(
-            None,
-            || std::future::ready(Ok(vec![membership(&visible), membership(&personal)])),
-            || std::future::ready(Ok(current_user(personal.clone()))),
-        )
-        .await
-        .expect("select visible app-derived default");
-
-        assert_eq!(selected.name, "app-derived-personal");
-    }
-
-    #[tokio::test]
-    async fn authenticated_session_workspace_fails_closed_when_the_app_omits_its_default() {
-        let error = resolve_authenticated_session_workspace(
-            None,
-            || std::future::ready(Ok(Vec::new())),
-            || {
-                std::future::ready(Ok(GetCurrentUserResponse {
-                    user: None,
-                    default_workspace: None,
-                }))
-            },
-        )
-        .await
-        .expect_err("a user without visible workspaces must fail session initialization");
-
-        assert_eq!(error.code(), tonic::Code::FailedPrecondition);
-    }
-}

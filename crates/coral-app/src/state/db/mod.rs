@@ -22,7 +22,9 @@ pub(crate) use config::{DatabaseConfig, ResolvedDatabaseConfig};
 pub(crate) use coral_db::CoralDb;
 pub(crate) use error::DbError;
 pub(crate) use import::run_state_migrations;
-pub(crate) use ownership_bootstrap::{ownerless_workspaces, stamp_local_ownership};
+pub(crate) use ownership_bootstrap::{
+    SharedWorkspaceWarnings, migrate_local_ownership_once, shared_workspace_warnings,
+};
 #[expect(
     unused_imports,
     reason = "identity persistence types are not yet wired to production consumers"
@@ -31,7 +33,10 @@ pub(crate) use repositories::identity_specs::{
     IdentitySpecDocumentRecord, IdentitySpecKey, IdentitySpecRecord, IdentitySpecScope,
 };
 pub(crate) use repositories::tasks::{TaskCompletionUpdate, TaskLifecycleState};
-#[expect(unused_imports, reason = "used higher in the PR stack")]
+#[cfg_attr(
+    not(test),
+    expect(unused_imports, reason = "used higher in the PR stack")
+)]
 pub(crate) use repositories::users::{UpsertLoginOutcome, UserRecord};
 pub(crate) use session::{DbRepos, DbSession};
 #[cfg(test)]

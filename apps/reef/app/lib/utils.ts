@@ -1,6 +1,7 @@
 import { DEFAULT_DEV_CORAL_PORT } from './constants'
 
 export function errorMessage(error: unknown): string {
+  if (error instanceof Response) throw error
   return error instanceof Error ? error.message : String(error)
 }
 

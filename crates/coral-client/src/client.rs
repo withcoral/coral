@@ -2,6 +2,7 @@
 
 use std::net::IpAddr;
 
+use coral_api::v1::Workspace;
 use coral_api::v1::catalog_service_client::CatalogServiceClient;
 use coral_api::v1::feedback_service_client::FeedbackServiceClient;
 use coral_api::v1::function_service_client::FunctionServiceClient;
@@ -11,10 +12,6 @@ use coral_api::v1::source_service_client::SourceServiceClient;
 use coral_api::v1::task_service_client::TaskServiceClient;
 use coral_api::v1::user_service_client::UserServiceClient;
 use coral_api::v1::workspace_service_client::WorkspaceServiceClient;
-use coral_api::v1::{
-    GetCurrentUserRequest, GetCurrentUserResponse, ListWorkspacesRequest, Workspace,
-    WorkspaceMembership,
-};
 use coral_api::{
     CATALOG_RESPONSE_MAX_MESSAGE_SIZE, HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE,
     SEARCH_RESPONSE_MAX_MESSAGE_SIZE, SOURCE_RESPONSE_MAX_MESSAGE_SIZE,
@@ -59,7 +56,7 @@ pub type SourceClient = SourceServiceClient<GrpcService>;
 /// Public workspace-management gRPC client.
 pub type WorkspaceClient = WorkspaceServiceClient<GrpcService>;
 
-/// Public user-directory gRPC client.
+/// Internal user-directory gRPC client.
 pub type UserClient = UserServiceClient<GrpcService>;
 
 /// Public catalog-discovery gRPC client.
@@ -274,7 +271,7 @@ impl AppClient {
     }
 
     #[must_use]
-    /// Returns a cloned user-directory client.
+    /// Returns a cloned internal user-directory client.
     pub fn user_client(&self) -> UserClient {
         self.user.clone()
     }
@@ -313,35 +310,6 @@ impl AppClient {
     /// Returns a cloned task-lifecycle client.
     pub fn task_client(&self) -> TaskClient {
         self.task.clone()
-    }
-
-    /// Lists the workspaces visible to the current caller with their roles.
-    ///
-    /// # Errors
-    ///
-    /// Returns the gRPC status from the workspace service.
-    pub async fn list_workspace_memberships(
-        &self,
-    ) -> Result<Vec<WorkspaceMembership>, tonic::Status> {
-        Ok(self
-            .workspace_client()
-            .list_workspaces(ListWorkspacesRequest {})
-            .await?
-            .into_inner()
-            .memberships)
-    }
-
-    /// Gets the current caller and the caller's app-derived default workspace.
-    ///
-    /// # Errors
-    ///
-    /// Returns the gRPC status from the user service.
-    pub async fn get_current_user(&self) -> Result<GetCurrentUserResponse, tonic::Status> {
-        Ok(self
-            .user_client()
-            .get_current_user(GetCurrentUserRequest {})
-            .await?
-            .into_inner())
     }
 
     /// Reports whether the server's engine is ready to answer for its catalog.

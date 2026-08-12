@@ -48,15 +48,21 @@ export function OAuthProgressDialog({
           {awaitingOAuth?.userCode ? (
             <div className={styles.codePanel}>
               <Typography.BodySmall variant="tertiary">Enter this code</Typography.BodySmall>
-              <Typography.CodeLarge
-                as="code"
-                className={styles.code}
-                size={24}
-                variant="primary"
-                weight={700}
-              >
-                {awaitingOAuth.userCode}
-              </Typography.CodeLarge>
+              <div className={styles.codeRow}>
+                <Typography.CodeLarge
+                  as="code"
+                  className={styles.code}
+                  size={24}
+                  variant="primary"
+                  weight={700}
+                >
+                  {awaitingOAuth.userCode}
+                </Typography.CodeLarge>
+                <Button.CopyButton
+                  ariaLabel="Copy device code to clipboard"
+                  textToCopy={awaitingOAuth.userCode}
+                ></Button.CopyButton>
+              </div>
             </div>
           ) : null}
           <Dialog.Actions>

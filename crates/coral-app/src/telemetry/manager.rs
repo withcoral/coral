@@ -4,8 +4,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use super::local_store::{
-    OwnedWorkspaceScope, TraceDetailRecord, TraceReadScope, TraceStore, TraceStoreError,
-    TraceSummaryRecord,
+    OwnedWorkspaceScope, TraceDetailRecord, TraceStore, TraceStoreError, TraceSummaryRecord,
 };
 use crate::workspaces::WorkspaceName;
 
@@ -19,8 +18,7 @@ pub(crate) enum TraceListView {
 ///
 /// The service decides this before any read reaches the store: a named
 /// workspace is authorized for `Manage`, the local principal reads everything,
-/// and a federated caller without a named workspace sees only the workspaces
-/// they own.
+/// and a user without a named workspace sees only the workspaces they own.
 #[derive(Debug)]
 pub(crate) enum TraceAccessScope {
     /// Every trace, including host-level rows with no workspace attribution.
@@ -29,17 +27,6 @@ pub(crate) enum TraceAccessScope {
     Workspace(WorkspaceName),
     /// Only the workspaces the caller owns.
     Owned(OwnedWorkspaceScope),
-}
-
-impl TraceAccessScope {
-    /// Lowers an authorized scope into the store's owned read scope.
-    fn into_read_scope(self) -> TraceReadScope {
-        match self {
-            Self::Unrestricted => TraceReadScope::Unrestricted,
-            Self::Workspace(workspace) => TraceReadScope::Workspace(workspace.as_str().to_string()),
-            Self::Owned(owned) => TraceReadScope::Owned(owned),
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -67,6 +54,10 @@ pub(crate) struct GetTraceQuery {
 pub(crate) enum TraceManagerError {
     #[error("trace '{trace_id}' not found")]
     NotFound { trace_id: String },
+    /// The query-stream view has no owner-scoped read yet, so an owner-scoped caller must name a
+    /// workspace instead of reading across every workspace they own.
+    #[error("query-stream traces require an explicit workspace")]
+    OwnedScopeUnsupported,
     #[error(transparent)]
     Store(TraceStoreError),
 }
@@ -119,10 +110,18 @@ impl TraceManager {
                     .list_traces_for_owned_workspaces(fetch_limit, offset, owned)
                     .await
             }
-            (TraceListView::QueryStream, scope) => {
+            (TraceListView::QueryStream, TraceAccessScope::Unrestricted) => {
                 self.traces
-                    .list_query_stream(fetch_limit, offset, scope.into_read_scope())
+                    .list_query_stream(fetch_limit, offset, None)
                     .await
+            }
+            (TraceListView::QueryStream, TraceAccessScope::Workspace(workspace)) => {
+                self.traces
+                    .list_query_stream(fetch_limit, offset, Some(workspace.as_str().to_string()))
+                    .await
+            }
+            (TraceListView::QueryStream, TraceAccessScope::Owned(_owned)) => {
+                return Err(TraceManagerError::OwnedScopeUnsupported);
             }
         }?;
         let next_offset = (traces.len() > page_size).then(|| offset.saturating_add(page_size));
@@ -158,10 +157,16 @@ impl TraceManager {
                     .get_trace_for_owned_workspaces(trace_id, owned)
                     .await
             }
-            (TraceListView::QueryStream, scope) => {
+            (TraceListView::QueryStream, TraceAccessScope::Unrestricted) => {
+                self.traces.get_query_stream_trace(trace_id, None).await
+            }
+            (TraceListView::QueryStream, TraceAccessScope::Workspace(workspace)) => {
                 self.traces
-                    .get_query_stream_trace(trace_id, scope.into_read_scope())
+                    .get_query_stream_trace(trace_id, Some(workspace.as_str().to_string()))
                     .await
+            }
+            (TraceListView::QueryStream, TraceAccessScope::Owned(_owned)) => {
+                return Err(TraceManagerError::OwnedScopeUnsupported);
             }
         }
         .map_err(TraceManagerError::from)

@@ -1,13 +1,8 @@
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "user persistence APIs are wired to production consumers in later milestones"
-    )
-)]
+#![cfg_attr(not(test), expect(dead_code, reason = "used higher in the PR stack"))]
 
 use sea_query::{Expr, ExprTrait, OnConflict, Order, Query};
 
+use crate::identity::LOCAL_PRINCIPAL_ID;
 use crate::state::db::schema::Users;
 use crate::state::db::{CoralTx, DbError, DbSession};
 
@@ -99,6 +94,44 @@ where
             .order_by(Users::UserId, Order::Asc)
             .to_owned();
         self.session.fetch_all(statement).await
+    }
+
+    pub(crate) async fn ensure_local_user(&mut self, now_unix_nanos: i64) -> Result<(), DbError> {
+        let statement = Query::insert()
+            .into_table(Users::Table)
+            .columns(user_columns())
+            .values_panic([
+                Expr::val(LOCAL_PRINCIPAL_ID),
+                Expr::val(LOCAL_PRINCIPAL_ID),
+                Expr::val(""),
+                Expr::val(Some("Local")),
+                Expr::val(now_unix_nanos),
+                Expr::val(now_unix_nanos),
+            ])
+            .on_conflict(
+                OnConflict::column(Users::UserId)
+                    .update_columns([Users::Issuer, Users::Subject, Users::DisplayName])
+                    .to_owned(),
+            )
+            .to_owned();
+        self.session.execute(statement).await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn insert_for_test(&mut self, record: &UserRecord) -> Result<(), DbError> {
+        let statement = Query::insert()
+            .into_table(Users::Table)
+            .columns(user_columns())
+            .values_panic([
+                Expr::val(record.user_id.clone()),
+                Expr::val(record.issuer.clone()),
+                Expr::val(record.subject.clone()),
+                Expr::val(record.display_name.clone()),
+                Expr::val(record.created_at_unix_nanos),
+                Expr::val(record.last_login_at_unix_nanos),
+            ])
+            .to_owned();
+        self.session.execute(statement).await
     }
 
     async fn get_by_subject(&mut self, subject: &str) -> Result<Option<UserRecord>, DbError> {

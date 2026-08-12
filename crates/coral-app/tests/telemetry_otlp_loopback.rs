@@ -20,7 +20,7 @@ use tonic::Request;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request as WiremockRequest, ResponseTemplate};
 
-use coral_api::v1::{ExecuteSqlRequest, SearchRequest};
+use coral_api::v1::{CreateWorkspaceRequest, ExecuteSqlRequest, SearchRequest};
 use coral_app::{ServerBuilder, shutdown_tracing};
 use coral_client::{AppClient, decode_execute_sql_response, default_workspace};
 
@@ -104,6 +104,12 @@ async fn emit_test_telemetry(endpoint_uri: &str) {
     let app = AppClient::connect(endpoint_uri)
         .await
         .expect("connect loopback client");
+    app.workspace_client()
+        .create_workspace(Request::new(CreateWorkspaceRequest {
+            workspace: Some(default_workspace()),
+        }))
+        .await
+        .expect("create default test workspace");
     let response = app
         .query_client()
         .execute_sql(Request::new(ExecuteSqlRequest {

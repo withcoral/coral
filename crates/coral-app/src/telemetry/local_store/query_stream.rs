@@ -11,9 +11,9 @@ use classification::{
 };
 
 use super::{
-    FederatedTraceScope, StoredTraceOperationKind, StoredTraceStatus, TraceListSpanRecord,
-    TraceSpanRecord, TraceStore, TraceStoreError, TraceSummaryRecord, attr_string, attr_u64,
-    parse_attributes, read_list_spans_file, status_from_attributes, usize_to_u32,
+    StoredTraceOperationKind, StoredTraceStatus, TraceListSpanRecord, TraceSpanRecord, TraceStore,
+    TraceStoreError, TraceSummaryRecord, attr_string, attr_u64, parse_attributes,
+    read_list_spans_file, status_from_attributes, usize_to_u32,
 };
 use coral_telemetry::WORKSPACE_SPAN_ATTRIBUTE;
 
@@ -23,7 +23,7 @@ pub(super) fn list(
     store: &TraceStore,
     limit: usize,
     offset: usize,
-    scope: Option<FederatedTraceScope<'_>>,
+    workspace_name: Option<&str>,
 ) -> Result<Vec<TraceSummaryRecord>, TraceStoreError> {
     if limit == 0 {
         return Ok(Vec::new());
@@ -32,7 +32,7 @@ pub(super) fn list(
     store.prune_expired()?;
     let files = store.jsonl_files_by_modified()?;
     let required_entry_count = offset.saturating_add(limit);
-    let mut projector = QueryStreamProjector::new(required_entry_count, scope);
+    let mut projector = QueryStreamProjector::new(required_entry_count, workspace_name);
     let mut scanned_all_files = true;
     let mut remaining_files = files.as_slice();
     while let Some(newest_bucket_file) = remaining_files.last() {
@@ -57,7 +57,7 @@ pub(super) fn list(
         };
         let watermark = newest_unscanned_file.span_end_upper_bound_unix_nanos;
         projector.advance_watermark(watermark);
-        if projector.page_is_newer_than(watermark) {
+        if workspace_name.is_none() && projector.page_is_newer_than(watermark) {
             scanned_all_files = false;
             break;
         }
@@ -86,15 +86,12 @@ fn sort_and_deduplicate_query_stream_summaries(summaries: &mut Vec<TraceSummaryR
 
 pub(super) fn summary(
     spans: &[TraceSpanRecord],
-    scope: Option<FederatedTraceScope<'_>>,
+    workspace_name: Option<&str>,
 ) -> Option<TraceSummaryRecord> {
-    summaries(spans, scope).into_iter().next()
+    summaries(spans, workspace_name).into_iter().next()
 }
 
-fn summaries(
-    spans: &[TraceSpanRecord],
-    scope: Option<FederatedTraceScope<'_>>,
-) -> Vec<TraceSummaryRecord> {
+fn summaries(spans: &[TraceSpanRecord], workspace_name: Option<&str>) -> Vec<TraceSummaryRecord> {
     let records = spans
         .iter()
         .map(|span| TraceListSpanRecord {
@@ -110,7 +107,7 @@ fn summaries(
         })
         .collect::<Vec<_>>();
     let required_entry_count = records.len();
-    let mut projector = QueryStreamProjector::new(required_entry_count, scope);
+    let mut projector = QueryStreamProjector::new(required_entry_count, workspace_name);
     projector.record_file(records);
     projector.finish();
     projector.into_page(0, required_entry_count)
@@ -301,34 +298,16 @@ impl StreamingQueryStreamAggregate {
     }
 
     fn workspace(&self) -> Option<&str> {
-        self.workspace_evidence
-            .resolve(self.entry.workspace.as_deref())
+        self.entry
+            .workspace
+            .as_deref()
+            .or_else(|| self.workspace_evidence.unique())
     }
 
-    /// Whether the caller may read this operation once it is finalized.
-    ///
-    /// An operation carrying no workspace attribution is a host-level row: it
-    /// belongs to no workspace, so no federated scope authorizes it and only
-    /// the local principal (`None`) sees it.
-    fn is_visible_to(&self, scope: Option<FederatedTraceScope<'_>>) -> bool {
-        scope.is_none_or(|scope| {
+    fn may_match_workspace(&self, workspace_name: Option<&str>) -> bool {
+        workspace_name.is_none_or(|workspace_name| {
             self.workspace()
-                .is_some_and(|workspace| scope.allows_workspace(workspace))
-        })
-    }
-
-    /// Whether this still-open operation could still finalize into the page.
-    ///
-    /// Attribution only accumulates as older files are scanned, so an
-    /// operation already attributed outside the scope can never become
-    /// visible, while one with no attribution yet may still be claimed by a
-    /// descendant in an older file. Answering `true` too often only keeps the
-    /// scan going; answering `false` too early would silently drop rows the
-    /// caller is entitled to.
-    fn may_still_match(&self, scope: Option<FederatedTraceScope<'_>>) -> bool {
-        scope.is_none_or(|scope| {
-            self.workspace()
-                .is_none_or(|workspace| scope.allows_workspace(workspace))
+                .is_none_or(|operation_workspace| operation_workspace == workspace_name)
         })
     }
 
@@ -380,27 +359,29 @@ impl StreamingQueryStreamAggregate {
 /// be discarded. A completed child with an unresolved local parent remains
 /// hidden until that owning ancestry is exported, avoiding an incomplete row
 /// that would later need to be replaced by its outer operation.
-struct QueryStreamProjector<'a> {
+struct QueryStreamProjector {
     required_entry_count: usize,
-    scope: Option<FederatedTraceScope<'a>>,
+    workspace_name: Option<String>,
     nodes: HashMap<QueryStreamSpanKey, QueryStreamNodeState>,
     node_starts: BTreeMap<i64, Vec<QueryStreamSpanKey>>,
     aggregates: HashMap<u64, StreamingQueryStreamAggregate>,
     aggregate_starts: BTreeMap<i64, Vec<u64>>,
     finalized: Vec<TraceSummaryRecord>,
+    trace_workspace_evidence: HashMap<String, QueryStreamWorkspaceEvidence>,
     next_operation_id: u64,
 }
 
-impl<'a> QueryStreamProjector<'a> {
-    fn new(required_entry_count: usize, scope: Option<FederatedTraceScope<'a>>) -> Self {
+impl QueryStreamProjector {
+    fn new(required_entry_count: usize, workspace_name: Option<&str>) -> Self {
         Self {
             required_entry_count,
-            scope,
+            workspace_name: workspace_name.map(str::to_string),
             nodes: HashMap::new(),
             node_starts: BTreeMap::new(),
             aggregates: HashMap::new(),
             aggregate_starts: BTreeMap::new(),
             finalized: Vec::new(),
+            trace_workspace_evidence: HashMap::new(),
             next_operation_id: 0,
         }
     }
@@ -449,6 +430,10 @@ impl<'a> QueryStreamProjector<'a> {
         if self.nodes.contains_key(&key) {
             return;
         }
+        self.trace_workspace_evidence
+            .entry(span.trace_id.clone())
+            .or_default()
+            .record(span.workspace.as_deref());
         let parent = span
             .parent_key()
             .as_ref()
@@ -532,14 +517,14 @@ impl<'a> QueryStreamProjector<'a> {
         let Some(aggregate) = self.aggregates.remove(&operation_id) else {
             return;
         };
-        if aggregate.is_visible_to(self.scope) {
-            self.finalized.push(aggregate.into_summary());
-        }
+        self.finalized.push(aggregate.into_summary());
     }
 
     fn trim_finalized(&mut self) {
         sort_and_deduplicate_query_stream_summaries(&mut self.finalized);
-        self.finalized.truncate(self.required_entry_count);
+        if self.workspace_name.is_none() {
+            self.finalized.truncate(self.required_entry_count);
+        }
     }
 
     fn page_is_newer_than(&self, watermark: i64) -> bool {
@@ -553,11 +538,18 @@ impl<'a> QueryStreamProjector<'a> {
             && self
                 .aggregates
                 .values()
-                .filter(|aggregate| aggregate.may_still_match(self.scope))
+                .filter(|aggregate| aggregate.may_match_workspace(self.workspace_name.as_deref()))
                 .all(|aggregate| aggregate.entry.end_time_unix_nanos < boundary.end_time_unix_nanos)
     }
 
     fn into_page(mut self, offset: usize, limit: usize) -> Vec<TraceSummaryRecord> {
+        if let Some(workspace_name) = self.workspace_name.as_deref() {
+            self.finalized.retain(|summary| {
+                self.trace_workspace_evidence
+                    .get(&summary.trace_id)
+                    .is_some_and(|evidence| evidence.matches(workspace_name))
+            });
+        }
         sort_and_deduplicate_query_stream_summaries(&mut self.finalized);
         self.finalized
             .into_iter()

@@ -1,22 +1,19 @@
 use std::net::TcpListener;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use coral_api::CORAL_ERROR_REASON_WORKSPACE_NOT_FOUND;
 use coral_api::v1::{
-    AddFunctionRequest, AddWorkspaceMemberRequest, CatalogItemKind, CreateWorkspaceRequest,
-    FunctionWriteSurface, ListCatalogRequest, PaginationRequest, RemoveWorkspaceMemberRequest,
-    StartTaskRequest, Workspace, WorkspaceMember, WorkspaceRole,
+    CatalogItemKind, ListCatalogRequest, ListWorkspacesRequest, PaginationRequest,
 };
+use coral_client::default_workspace;
 use jsonwebtoken::jwk::{Jwk, ThumbprintHash};
 use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use reqwest::header::WWW_AUTHENTICATE;
 use ring::rand::SystemRandom;
 use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair};
-use rmcp::model::{CallToolRequestParams, CallToolResult};
-use rmcp::service::RunningService;
+use rmcp::ServiceExt as _;
+use rmcp::model::CallToolRequestParams;
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
-use rmcp::{RoleClient, ServiceExt as _};
 use tempfile::TempDir;
 use tonic::Request;
 
@@ -26,8 +23,6 @@ const INITIALIZE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","param
 const OAUTH_ISSUER: &str = "http://localhost:9080";
 const OAUTH_RESOURCE: &str = "http://localhost:1457";
 const SESSION_ISSUER: &str = "https://auth.example";
-const SESSION_PROVIDER_ISSUER: &str = "https://accounts.example";
-const SESSION_PROVIDER_SUBJECT: &str = "alice";
 const SESSION_RESOURCE: &str = "https://coral.example/mcp";
 const REEF_RESOURCE: &str = "https://reef.example";
 
@@ -59,6 +54,8 @@ fn grpc_addr(server: &RunningServer) -> SocketAddr {
 }
 
 async fn assert_catalog_tool(endpoint: String, bearer: Option<&str>) {
+    const INTENT: &str = "Exercise the composite server";
+
     let mut config = StreamableHttpClientTransportConfig::with_uri(endpoint);
     if let Some(bearer) = bearer {
         config = config.auth_header(bearer);
@@ -67,42 +64,18 @@ async fn assert_catalog_tool(endpoint: String, bearer: Option<&str>) {
         ().serve(StreamableHttpClientTransport::from_config(config))
             .await
             .expect("initialize MCP client");
-    assert_eq!(session_catalog_result(&client).await.is_error, Some(false));
-    client.cancel().await.expect("stop MCP client");
-}
-
-async fn mcp_session(endpoint: &str, bearer: &str) -> RunningService<RoleClient, ()> {
-    ().serve(StreamableHttpClientTransport::from_config(
-        StreamableHttpClientTransportConfig::with_uri(endpoint.to_string()).auth_header(bearer),
-    ))
-    .await
-    .expect("initialize MCP session")
-}
-
-/// Drives one established MCP session through `start_task` and `list_catalog`.
-///
-/// Returns the tool result that ends the exchange: the catalog listing of the
-/// session's resolved workspace, or the failing `start_task` result when that
-/// workspace already refuses the caller.
-async fn session_catalog_result(client: &RunningService<RoleClient, ()>) -> CallToolResult {
-    const INTENT: &str = "Exercise the composite server";
-
-    let started = client
+    let task = client
         .call_tool(CallToolRequestParams::new("start_task").with_arguments(
             serde_json::Map::from_iter([("intent".to_string(), serde_json::json!(INTENT))]),
         ))
         .await
         .expect("start task");
-    let task_id = started
-        .structured_content
-        .as_ref()
-        .and_then(|task| task.get("task_id"))
+    let task = task.structured_content.expect("structured task");
+    let task_id = task
+        .get("task_id")
         .and_then(serde_json::Value::as_str)
-        .map(str::to_string);
-    let Some(task_id) = task_id else {
-        return started;
-    };
-    client
+        .expect("task ID");
+    let result = client
         .call_tool(CallToolRequestParams::new("list_catalog").with_arguments(
             serde_json::Map::from_iter([
                 ("task_id".to_string(), serde_json::json!(task_id)),
@@ -110,15 +83,9 @@ async fn session_catalog_result(client: &RunningService<RoleClient, ()>) -> Call
             ]),
         ))
         .await
-        .expect("call list_catalog")
-}
-
-fn tool_result_json(result: &CallToolResult) -> String {
-    result
-        .structured_content
-        .as_ref()
-        .expect("structured tool result")
-        .to_string()
+        .expect("call list_catalog");
+    assert_eq!(result.is_error, Some(false));
+    client.cancel().await.expect("stop MCP client");
 }
 
 async fn assert_feedback_tool(endpoint: String) {
@@ -163,21 +130,21 @@ async fn assert_unauthorized(base: &str, authorization: &str) {
 /// derived from configuration and so reports true even if nobody installed the
 /// session provider. It is the assertion that fails if composition stops gating
 /// gRPC and the listener quietly falls back to the local principal.
-async fn assert_grpc_rejects_unauthenticated(endpoint: &str, workspace: &Workspace) {
+async fn assert_grpc_rejects_unauthenticated(endpoint: &str) {
     let unauthenticated = AppClient::connect(endpoint)
         .await
         .expect("unauthenticated gRPC client");
     let denied = unauthenticated
         .catalog_client()
-        .list_catalog(Request::new(catalog_request(workspace)))
+        .list_catalog(Request::new(catalog_request()))
         .await
         .expect_err("the gRPC data plane must refuse an unauthenticated call");
     assert_eq!(denied.code(), Code::Unauthenticated);
 }
 
-fn catalog_request(workspace: &Workspace) -> ListCatalogRequest {
+fn catalog_request() -> ListCatalogRequest {
     ListCatalogRequest {
-        workspace: Some(workspace.clone()),
+        workspace: Some(default_workspace()),
         catalog_name: String::new(),
         schema_name: String::new(),
         kind: CatalogItemKind::Unspecified as i32,
@@ -195,12 +162,12 @@ fn catalog_request(workspace: &Workspace) -> ListCatalogRequest {
 /// verifier expects. Fixtures the issuer can never emit — an already-expired
 /// token, or one whose `kid` disclaims the key that signed it — still have to be
 /// assembled by hand wherever they are needed.
-fn session_token(signing_key: &[u8], subject: &str, audience: &str) -> String {
+fn session_token(signing_key: &[u8], audience: &str) -> String {
     coral_app::test_session_tokens::issue_access_token(
         SESSION_ISSUER,
         signing_key,
         Duration::from_mins(5),
-        subject,
+        "alice",
         "https://client.example/client.json",
         audience,
     )
@@ -218,7 +185,6 @@ fn session_token(signing_key: &[u8], subject: &str, audience: &str) -> String {
 fn signed_session_token(
     signing_key: &EncodingKey,
     key_id: &str,
-    subject: &str,
     audience: &str,
     issued_at: u64,
     expires_at: u64,
@@ -232,7 +198,7 @@ fn signed_session_token(
         &serde_json::json!({
             "iss": SESSION_ISSUER,
             "aud": audience,
-            "sub": subject,
+            "sub": "alice",
             "jti": token_id,
             "client_id": "https://client.example/client.json",
             "iat": issued_at,
@@ -293,85 +259,34 @@ redirect_uri = 'https://auth.example/auth/oidc/callback'
     );
 }
 
-async fn provision_session_identity(temp: &TempDir) -> (String, Workspace) {
-    provision_session_identity_for(temp, SESSION_PROVIDER_SUBJECT, "Alice").await
-}
-
-/// Provisions one verified provider identity through the production login path.
-///
-/// Returns the internal user ID a session token carries as its subject and the
-/// personal default workspace login derived for it. Separate subjects are
-/// separate users, which is what lets one server serve two callers.
-async fn provision_session_identity_for(
-    temp: &TempDir,
-    provider_subject: &str,
-    display_name: &str,
-) -> (String, Workspace) {
-    let user_id = coral_app::test_session_tokens::provision_test_login(
-        temp.path(),
-        SESSION_PROVIDER_ISSUER,
-        provider_subject,
-        Some(display_name),
-        &format!("test-session-pre-v1-attribution-{provider_subject}"),
-    )
-    .await
-    .expect("provision verified session identity");
-    let workspace = Workspace {
-        name: format!("default-{user_id}"),
-    };
-    (user_id, workspace)
-}
-
-async fn authenticated_client(server: &RunningServer, token: &str) -> AppClient {
-    connect_with_loopback_bearer(
+async fn assert_grpc_authenticated(server: &RunningServer, token: &str) {
+    let authenticated = connect_with_loopback_bearer(
         server.endpoint_uri(),
         BearerToken::new(token).expect("bearer token"),
     )
     .await
-    .expect("authenticated gRPC client")
+    .expect("authenticated gRPC client");
+    let response = authenticated
+        .workspace_client()
+        .list_workspaces(Request::new(ListWorkspacesRequest {}))
+        .await
+        .expect("authenticated workspace listing")
+        .into_inner();
+    assert!(response.memberships.is_empty());
 }
 
-/// Installs a table function whose name identifies `workspace` in any catalog
-/// listing a session resolved to it can read.
-async fn install_workspace_probe(client: &AppClient, workspace: &Workspace, function: &str) {
+async fn assert_authenticated_surfaces(server: &RunningServer, mcp_endpoint: &str, token: &str) {
+    assert_grpc_authenticated(server, token).await;
+    let config =
+        StreamableHttpClientTransportConfig::with_uri(mcp_endpoint.to_string()).auth_header(token);
+    let client =
+        ().serve(StreamableHttpClientTransport::from_config(config))
+            .await
+            .expect("initialize authenticated MCP client");
     client
-        .function_client()
-        .add_function(Request::new(AddFunctionRequest {
-            workspace: Some(workspace.clone()),
-            sql: format!(
-                "/*\nname: {function}\nschema: functions\ndescription: Session workspace probe\nguide: Names the workspace a session resolved.\n*/\n\nselect 1 as value\n"
-            ),
-            fail_if_exists: true,
-            write_surface: FunctionWriteSurface::Mcp as i32,
-        }))
+        .cancel()
         .await
-        .expect("install probe function");
-}
-
-fn session_mcp_options(workspace: &Workspace) -> McpOptions {
-    McpOptions {
-        workspace: Some(workspace.clone()),
-        ..McpOptions::default()
-    }
-}
-
-async fn assert_grpc_authenticated(server: &RunningServer, token: &str, workspace: &Workspace) {
-    authenticated_client(server, token)
-        .await
-        .catalog_client()
-        .list_catalog(Request::new(catalog_request(workspace)))
-        .await
-        .expect("authenticated catalog call");
-}
-
-async fn assert_authenticated_data(
-    server: &RunningServer,
-    mcp_endpoint: &str,
-    token: &str,
-    workspace: &Workspace,
-) {
-    assert_grpc_authenticated(server, token, workspace).await;
-    assert_catalog_tool(mcp_endpoint.to_string(), Some(token)).await;
+        .expect("stop authenticated MCP client");
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -388,7 +303,6 @@ async fn assert_bearer_rejected(
     server: &RunningServer,
     mcp_endpoint: &str,
     token: &str,
-    workspace: &Workspace,
 ) -> BearerRejection {
     let client = connect_with_loopback_bearer(
         server.endpoint_uri(),
@@ -398,7 +312,7 @@ async fn assert_bearer_rejected(
     .expect("gRPC client");
     let denied = client
         .catalog_client()
-        .list_catalog(Request::new(catalog_request(workspace)))
+        .list_catalog(Request::new(catalog_request()))
         .await
         .expect_err("invalid session token must fail gRPC");
     let grpc_code = denied.code();
@@ -460,42 +374,16 @@ fn loopback_grpc_endpoint_maps_wildcards_and_rejects_public_addresses() {
     .expect_err("IPv4-mapped IPv6 address must be rejected");
 }
 
-#[tokio::test]
-async fn shutdown_components_run_in_reverse_order_and_retain_every_failure() {
-    let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let mcp_calls = Arc::clone(&calls);
-    let oauth_calls = Arc::clone(&calls);
-    let grpc_calls = Arc::clone(&calls);
-    let (mcp_result, oauth_result, grpc_result) = shutdown_in_reverse_startup_order(
-        move || async move {
-            mcp_calls.lock().expect("record MCP shutdown").push("MCP");
-            Err(McpHttpError::ShutdownTimedOut)
-        },
-        move || async move {
-            oauth_calls
-                .lock()
-                .expect("record OAuth shutdown")
-                .push("OAuth");
-            Err(AuthServerError::Config("OAuth test failure".to_string()))
-        },
-        move || async move {
-            grpc_calls
-                .lock()
-                .expect("record gRPC shutdown")
-                .push("gRPC");
-            Err(LocalServerError::Unavailable(
-                "gRPC test failure".to_string(),
-            ))
-        },
+#[test]
+fn shutdown_failures_retain_every_component_in_order() {
+    let failures = ShutdownFailures::from_results(
+        Err(McpHttpError::ShutdownTimedOut),
+        Err(AuthServerError::Config("OAuth test failure".to_string())),
+        Err(LocalServerError::Unavailable(
+            "gRPC test failure".to_string(),
+        )),
     )
-    .await;
-
-    assert_eq!(
-        *calls.lock().expect("read shutdown order"),
-        ["MCP", "OAuth", "gRPC"]
-    );
-    let failures = ShutdownFailures::from_results(mcp_result, oauth_result, grpc_result)
-        .expect_err("all shutdown failures");
+    .expect_err("all shutdown failures");
 
     assert!(failures.mcp.is_some());
     assert!(failures.oauth.is_some());
@@ -511,7 +399,7 @@ async fn auth_disabled_companion_serves_and_shuts_down() {
     let temp = TempDir::new().expect("temp dir");
     write_config(
         &temp,
-        "[trace_history]\nenabled = false\n\n[server.mcp_http]\nenabled = true\nbind = '127.0.0.1:0'\n",
+        "[trace_history]\nenabled = false\n\n[server.mcp_http]\nenabled = true\nbind = '127.0.0.1:0'\n\n[workspaces.default]\n",
     );
     let server = start(
         ServerBuilder::configured_standalone_grpc()
@@ -526,9 +414,7 @@ async fn auth_disabled_companion_serves_and_shuts_down() {
     let mcp_addr = server.mcp_http_addr().expect("MCP HTTP endpoint");
     assert!(server.oauth_addr().is_none());
     assert_catalog_tool(format!("http://{mcp_addr}/mcp"), None).await;
-    Box::pin(server.shutdown())
-        .await
-        .expect("shutdown composite server");
+    server.shutdown().await.expect("shutdown composite server");
     let grpc_rebound = TcpListener::bind(grpc_addr).expect("gRPC port must be released");
     let mcp_rebound = TcpListener::bind(mcp_addr).expect("MCP port must be released");
     drop((grpc_rebound, mcp_rebound));
@@ -539,7 +425,7 @@ async fn companion_uses_supplied_mcp_options() {
     let temp = TempDir::new().expect("temp dir");
     write_config(
         &temp,
-        "[trace_history]\nenabled = false\n\n[server.mcp_http]\nenabled = true\nbind = '127.0.0.1:0'\n",
+        "[trace_history]\nenabled = false\n\n[server.mcp_http]\nenabled = true\nbind = '127.0.0.1:0'\n\n[workspaces.default]\n[workspaces.other]\n",
     );
     let server = start(
         ServerBuilder::configured_standalone_grpc()
@@ -547,6 +433,7 @@ async fn companion_uses_supplied_mcp_options() {
             .with_noop_feedback_uploads(),
         McpOptions {
             feedback_enabled: true,
+            workspace: Some(default_workspace()),
             ..McpOptions::default()
         },
     )
@@ -554,9 +441,57 @@ async fn companion_uses_supplied_mcp_options() {
     .expect("start composite server");
     let mcp_addr = server.mcp_http_addr().expect("MCP HTTP endpoint");
     assert_feedback_tool(format!("http://{mcp_addr}/mcp")).await;
-    Box::pin(server.shutdown())
-        .await
-        .expect("shutdown composite server");
+    server.shutdown().await.expect("shutdown composite server");
+}
+
+#[tokio::test]
+async fn auth_disabled_companion_guides_when_no_workspace_exists() {
+    let temp = TempDir::new().expect("temp dir");
+    write_config(
+        &temp,
+        "[trace_history]\nenabled = false\n\n[server.mcp_http]\nenabled = true\nbind = '127.0.0.1:0'\n",
+    );
+
+    let Err(error) = start(
+        ServerBuilder::configured_standalone_grpc()
+            .with_config_dir(temp.path())
+            .with_noop_feedback_uploads(),
+        McpOptions::default(),
+    )
+    .await
+    else {
+        panic!("empty local state must not choose a workspace");
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("no workspace is available; create one with `coral workspace create <name>`")
+    );
+}
+
+#[tokio::test]
+async fn auth_disabled_companion_guides_when_workspace_is_ambiguous() {
+    let temp = TempDir::new().expect("temp dir");
+    write_config(
+        &temp,
+        "[trace_history]\nenabled = false\n\n[server.mcp_http]\nenabled = true\nbind = '127.0.0.1:0'\n\n[workspaces.alpha]\n[workspaces.beta]\n",
+    );
+
+    let Err(error) = start(
+        ServerBuilder::configured_standalone_grpc()
+            .with_config_dir(temp.path())
+            .with_noop_feedback_uploads(),
+        McpOptions::default(),
+    )
+    .await
+    else {
+        panic!("ambiguous local state must not choose a workspace");
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("multiple workspaces are available; specify one with `--workspace <name>`")
+    );
 }
 
 /// The advertised protected-resource identifier and the minted token audience
@@ -592,9 +527,7 @@ async fn oauth_and_mcp_companions_serve_and_release_all_listeners() {
     let metadata = response.text().await.expect("OAuth metadata body");
     assert!(metadata.contains(&format!(r#""issuer":"{OAUTH_ISSUER}""#)));
 
-    Box::pin(server.shutdown())
-        .await
-        .expect("shutdown composite server");
+    server.shutdown().await.expect("shutdown composite server");
     let grpc_rebound = TcpListener::bind(grpc_addr).expect("gRPC port must be released");
     let oauth_rebound = TcpListener::bind(oauth_addr).expect("OAuth port must be released");
     let mcp_rebound = TcpListener::bind(mcp_addr).expect("MCP port must be released");
@@ -641,12 +574,11 @@ async fn session_authenticated_companion_gates_grpc_and_mcp() {
         EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
             .expect("P-256 signing key");
     write_session_config(&temp, signing_key.as_ref());
-    let (user_id, workspace) = provision_session_identity(&temp).await;
     let server = start(
         ServerBuilder::configured_standalone_grpc()
             .with_config_dir(temp.path())
             .with_noop_feedback_uploads(),
-        session_mcp_options(&workspace),
+        McpOptions::default(),
     )
     .await
     .expect("start authenticated composite server");
@@ -673,16 +605,16 @@ async fn session_authenticated_companion_gates_grpc_and_mcp() {
 
     assert_unauthorized(&base, "Bearer wrong-token").await;
 
-    let wrong_audience = session_token(signing_key.as_ref(), &user_id, "https://other.example/mcp");
+    let wrong_audience = session_token(signing_key.as_ref(), "https://other.example/mcp");
     assert_unauthorized(&base, &format!("Bearer {wrong_audience}")).await;
 
-    assert_grpc_rejects_unauthenticated(server.endpoint_uri(), &workspace).await;
+    assert_grpc_rejects_unauthenticated(server.endpoint_uri()).await;
 
-    let token = session_token(signing_key.as_ref(), &user_id, &resource);
-    assert_authenticated_data(&server, &format!("{base}/mcp"), &token, &workspace).await;
+    let token = session_token(signing_key.as_ref(), &resource);
+    assert_authenticated_surfaces(&server, &format!("{base}/mcp"), &token).await;
 
-    let reef_token = session_token(signing_key.as_ref(), &user_id, REEF_RESOURCE);
-    assert_grpc_authenticated(&server, &reef_token, &workspace).await;
+    let reef_token = session_token(signing_key.as_ref(), REEF_RESOURCE);
+    assert_grpc_authenticated(&server, &reef_token).await;
     assert_unauthorized(&base, &format!("Bearer {reef_token}")).await;
 
     // Readiness observes the backend, not just the port: stopping gRPC while MCP
@@ -721,7 +653,6 @@ async fn reef_only_audience_authenticates_private_grpc_without_mcp_http() {
         EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
             .expect("P-256 signing key");
     write_reef_only_session_config(&temp, signing_key.as_ref());
-    let (user_id, workspace) = provision_session_identity(&temp).await;
 
     let server = start(
         ServerBuilder::configured_standalone_grpc()
@@ -735,66 +666,12 @@ async fn reef_only_audience_authenticates_private_grpc_without_mcp_http() {
     assert!(server.grpc_authentication_enabled());
     assert!(server.mcp_http_addr().is_none());
     assert!(server.oauth_addr().is_some());
-    assert_grpc_rejects_unauthenticated(server.endpoint_uri(), &workspace).await;
+    assert_grpc_rejects_unauthenticated(server.endpoint_uri()).await;
 
-    let reef_token = session_token(signing_key.as_ref(), &user_id, REEF_RESOURCE);
-    assert_grpc_authenticated(&server, &reef_token, &workspace).await;
+    let reef_token = session_token(signing_key.as_ref(), REEF_RESOURCE);
+    assert_grpc_authenticated(&server, &reef_token).await;
 
-    Box::pin(server.shutdown())
-        .await
-        .expect("shutdown Reef-only server");
-}
-
-/// A shared deployment serves around a workspace nobody owns instead of
-/// refusing to start, and it grants the host nothing: the local principal is
-/// concealed from that workspace exactly as any stranger is. Appointing an
-/// owner is the admin tool's job, out of band.
-#[tokio::test]
-async fn ownerless_workspaces_serve_without_granting_the_host_access() {
-    let temp = TempDir::new().expect("temp dir");
-    let signing_key =
-        EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
-            .expect("P-256 signing key");
-    write_session_config(&temp, signing_key.as_ref());
-    let (_user_id, personal_workspace) = provision_session_identity(&temp).await;
-    let default_workspace = Workspace {
-        name: "default".to_string(),
-    };
-
-    let server = start(
-        ServerBuilder::configured_standalone_grpc()
-            .with_config_dir(temp.path())
-            .with_noop_feedback_uploads(),
-        session_mcp_options(&personal_workspace),
-    )
-    .await
-    .expect("an ownerless workspace must not block startup");
-    assert!(server.grpc_authentication_enabled());
-    Box::pin(server.shutdown())
-        .await
-        .expect("stop the authenticated server");
-
-    // The host reaches the same state directory locally, and is refused: with
-    // `[auth]` configured there is no principal that owns everything.
-    let local = ServerBuilder::ephemeral_grpc()
-        .with_config_dir(temp.path())
-        .with_noop_feedback_uploads()
-        .start()
-        .await
-        .expect("start a local server against auth-configured state");
-    let local_client = AppClient::connect(local.endpoint_uri())
-        .await
-        .expect("connect local principal");
-    let denied = local_client
-        .task_client()
-        .start_task(Request::new(StartTaskRequest {
-            workspace: Some(default_workspace),
-            intent: "reach a workspace the host does not belong to".to_string(),
-        }))
-        .await
-        .expect_err("the host holds no membership and must be concealed");
-    assert_eq!(denied.code(), Code::NotFound);
-    local.shutdown().await.expect("stop local server");
+    server.shutdown().await.expect("shutdown Reef-only server");
 }
 
 #[tokio::test]
@@ -804,7 +681,6 @@ async fn session_failures_and_restart_are_fail_closed() {
         EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
             .expect("P-256 signing key");
     write_session_config(&temp, signing_key.as_ref());
-    let (user_id, workspace) = provision_session_identity(&temp).await;
 
     let encoding_key = EncodingKey::from_ec_der(signing_key.as_ref());
     let key_id = Jwk::from_encoding_key(&encoding_key, Algorithm::ES256)
@@ -814,28 +690,22 @@ async fn session_failures_and_restart_are_fail_closed() {
         .duration_since(UNIX_EPOCH)
         .expect("current time")
         .as_secs();
-    let valid = session_token(signing_key.as_ref(), &user_id, SESSION_RESOURCE);
+    let valid = session_token(signing_key.as_ref(), SESSION_RESOURCE);
     let expired = signed_session_token(
         &encoding_key,
         &key_id,
-        &user_id,
         SESSION_RESOURCE,
         now.saturating_sub(300),
         now.saturating_sub(120),
         "expired-token",
     );
-    let wrong_audience = session_token(
-        signing_key.as_ref(),
-        &user_id,
-        "https://coral.example/not-mcp",
-    );
+    let wrong_audience = session_token(signing_key.as_ref(), "https://coral.example/not-mcp");
     let forged_key =
         EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
             .expect("forged P-256 signing key");
     let forged = signed_session_token(
         &EncodingKey::from_ec_der(forged_key.as_ref()),
         &key_id,
-        &user_id,
         SESSION_RESOURCE,
         now.saturating_sub(1),
         now + 300,
@@ -846,7 +716,7 @@ async fn session_failures_and_restart_are_fail_closed() {
         ServerBuilder::configured_standalone_grpc()
             .with_config_dir(temp.path())
             .with_noop_feedback_uploads(),
-        session_mcp_options(&workspace),
+        McpOptions::default(),
     )
     .await
     .expect("start authenticated composite server");
@@ -855,25 +725,23 @@ async fn session_failures_and_restart_are_fail_closed() {
         server.mcp_http_addr().expect("MCP HTTP endpoint")
     );
 
-    let expired_rejection =
-        assert_bearer_rejected(&server, &mcp_endpoint, &expired, &workspace).await;
+    let expired_rejection = assert_bearer_rejected(&server, &mcp_endpoint, &expired).await;
     let wrong_audience_rejection =
-        assert_bearer_rejected(&server, &mcp_endpoint, &wrong_audience, &workspace).await;
+        assert_bearer_rejected(&server, &mcp_endpoint, &wrong_audience).await;
     let malformed_rejection =
-        assert_bearer_rejected(&server, &mcp_endpoint, "not-a-session-token", &workspace).await;
-    let forged_rejection =
-        assert_bearer_rejected(&server, &mcp_endpoint, &forged, &workspace).await;
+        assert_bearer_rejected(&server, &mcp_endpoint, "not-a-session-token").await;
+    let forged_rejection = assert_bearer_rejected(&server, &mcp_endpoint, &forged).await;
     assert_eq!(expired_rejection, wrong_audience_rejection);
     assert_eq!(expired_rejection, malformed_rejection);
     assert_eq!(expired_rejection, forged_rejection);
-    assert_authenticated_data(&server, &mcp_endpoint, &valid, &workspace).await;
-    Box::pin(server.shutdown()).await.expect("first shutdown");
+    assert_authenticated_surfaces(&server, &mcp_endpoint, &valid).await;
+    server.shutdown().await.expect("first shutdown");
 
     let restarted = start(
         ServerBuilder::configured_standalone_grpc()
             .with_config_dir(temp.path())
             .with_noop_feedback_uploads(),
-        session_mcp_options(&workspace),
+        McpOptions::default(),
     )
     .await
     .expect("restart authenticated composite server");
@@ -881,168 +749,8 @@ async fn session_failures_and_restart_are_fail_closed() {
         "http://{}/mcp",
         restarted.mcp_http_addr().expect("restarted MCP endpoint")
     );
-    assert_authenticated_data(&restarted, &restarted_mcp, &valid, &workspace).await;
-    Box::pin(restarted.shutdown())
-        .await
-        .expect("restarted shutdown");
-}
-
-/// Two bearer-bound MCP sessions on one server must serve two workspaces.
-///
-/// MCP is pinned to Alice's personal workspace, which Bob may not use: his
-/// session must land in his own workspace, and nothing he receives may reveal
-/// that the pinned workspace exists. The same run proves MCP stays
-/// single-audience for a caller the server otherwise authenticates.
-#[tokio::test]
-async fn authenticated_mcp_workspace_isolation_conceals_an_unauthorized_pin() {
-    let temp = TempDir::new().expect("temp dir");
-    let signing_key =
-        EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
-            .expect("P-256 signing key");
-    write_session_config(&temp, signing_key.as_ref());
-    let (alice_id, alice_workspace) = provision_session_identity(&temp).await;
-    let (bob_id, bob_workspace) = provision_session_identity_for(&temp, "bob", "Bob").await;
-
-    let server = Box::pin(start(
-        ServerBuilder::configured_standalone_grpc()
-            .with_config_dir(temp.path())
-            .with_noop_feedback_uploads(),
-        session_mcp_options(&alice_workspace),
-    ))
-    .await
-    .expect("start authenticated composite server");
-    let base = format!(
-        "http://{}",
-        server.mcp_http_addr().expect("MCP HTTP endpoint")
-    );
-    let alice_token = session_token(signing_key.as_ref(), &alice_id, SESSION_RESOURCE);
-    let bob_token = session_token(signing_key.as_ref(), &bob_id, SESSION_RESOURCE);
-
-    let alice = authenticated_client(&server, &alice_token).await;
-    let bob = authenticated_client(&server, &bob_token).await;
-    install_workspace_probe(&alice, &alice_workspace, "alice_only_probe").await;
-    install_workspace_probe(&bob, &bob_workspace, "bob_only_probe").await;
-
-    let alice_session = mcp_session(&format!("{base}/mcp"), &alice_token).await;
-    let bob_session = mcp_session(&format!("{base}/mcp"), &bob_token).await;
-    let alice_catalog = tool_result_json(&session_catalog_result(&alice_session).await);
-    let bob_catalog = tool_result_json(&session_catalog_result(&bob_session).await);
-
-    assert!(
-        alice_catalog.contains("alice_only_probe") && !alice_catalog.contains("bob_only_probe"),
-        "the pinned workspace's member must see only that workspace: {alice_catalog}"
-    );
-    assert!(
-        bob_catalog.contains("bob_only_probe") && !bob_catalog.contains("alice_only_probe"),
-        "an unauthorized pin must fall back to the caller's own workspace: {bob_catalog}"
-    );
-    assert!(
-        !bob_catalog.contains(&alice_workspace.name),
-        "the fallback must not disclose that the pinned workspace exists: {bob_catalog}"
-    );
-
-    // Bob's Reef-audience token authenticates the private gRPC data plane, so
-    // its MCP rejection is audience validation rather than an unknown caller.
-    let reef_token = session_token(signing_key.as_ref(), &bob_id, REEF_RESOURCE);
-    assert_grpc_authenticated(&server, &reef_token, &bob_workspace).await;
-    assert_unauthorized(&base, &format!("Bearer {reef_token}")).await;
-
-    alice_session.cancel().await.expect("stop Alice's session");
-    bob_session.cancel().await.expect("stop Bob's session");
-    Box::pin(server.shutdown())
-        .await
-        .expect("shutdown composite server");
-}
-
-/// Revoked membership must be enforced on the next request an already
-/// established MCP session makes, and must conceal the workspace instead of
-/// confirming it to the caller who just lost access to it.
-#[tokio::test]
-async fn authenticated_mcp_workspace_revocation_denies_an_established_session() {
-    let temp = TempDir::new().expect("temp dir");
-    let signing_key =
-        EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
-            .expect("P-256 signing key");
-    write_session_config(&temp, signing_key.as_ref());
-    let (alice_id, _alice_workspace) = provision_session_identity(&temp).await;
-    let (bob_id, _bob_workspace) = provision_session_identity_for(&temp, "bob", "Bob").await;
-    let shared = Workspace {
-        name: "shared".to_string(),
-    };
-
-    let server = Box::pin(start(
-        ServerBuilder::configured_standalone_grpc()
-            .with_config_dir(temp.path())
-            .with_noop_feedback_uploads(),
-        session_mcp_options(&shared),
-    ))
-    .await
-    .expect("start authenticated composite server");
-    let mcp_endpoint = format!(
-        "http://{}/mcp",
-        server.mcp_http_addr().expect("MCP HTTP endpoint")
-    );
-    let alice_token = session_token(signing_key.as_ref(), &alice_id, SESSION_RESOURCE);
-    let bob_token = session_token(signing_key.as_ref(), &bob_id, SESSION_RESOURCE);
-
-    let alice = authenticated_client(&server, &alice_token).await;
-    alice
-        .workspace_client()
-        .create_workspace(Request::new(CreateWorkspaceRequest {
-            workspace: Some(shared.clone()),
-        }))
-        .await
-        .expect("create the shared workspace");
-    install_workspace_probe(&alice, &shared, "shared_only_probe").await;
-    alice
-        .workspace_client()
-        .add_workspace_member(Request::new(AddWorkspaceMemberRequest {
-            workspace: Some(shared.clone()),
-            member: Some(WorkspaceMember {
-                user_id: bob_id.clone(),
-                role: WorkspaceRole::Member as i32,
-                display_name: String::new(),
-            }),
-        }))
-        .await
-        .expect("grant Bob membership");
-
-    let bob_session = mcp_session(&mcp_endpoint, &bob_token).await;
-    let admitted = tool_result_json(&session_catalog_result(&bob_session).await);
-    assert!(
-        admitted.contains("shared_only_probe"),
-        "a member's session must resolve the configured pin: {admitted}"
-    );
-
-    alice
-        .workspace_client()
-        .remove_workspace_member(Request::new(RemoveWorkspaceMemberRequest {
-            workspace: Some(shared.clone()),
-            user_id: bob_id.clone(),
-        }))
-        .await
-        .expect("revoke Bob's membership");
-
-    let revoked = session_catalog_result(&bob_session).await;
-    assert_eq!(
-        revoked.is_error,
-        Some(true),
-        "an established session must not outlive the membership that admitted it"
-    );
-    let revoked = tool_result_json(&revoked);
-    assert!(
-        revoked.contains(CORAL_ERROR_REASON_WORKSPACE_NOT_FOUND),
-        "revocation must conceal the workspace: {revoked}"
-    );
-    assert!(
-        !revoked.to_lowercase().contains("permission"),
-        "concealment must not confirm the workspace to a revoked caller: {revoked}"
-    );
-
-    bob_session.cancel().await.expect("stop Bob's session");
-    Box::pin(server.shutdown())
-        .await
-        .expect("shutdown composite server");
+    assert_authenticated_surfaces(&restarted, &restarted_mcp, &valid).await;
+    restarted.shutdown().await.expect("restarted shutdown");
 }
 
 #[tokio::test]

@@ -8,9 +8,9 @@
 
 use std::fs;
 
-use coral_api::v1::ListSourcesRequest;
+use coral_api::v1::ListWorkspacesRequest;
 use coral_client::{
-    AppClient, default_workspace,
+    AppClient,
     local::{LocalServerError, ServerBuilder},
 };
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -33,16 +33,14 @@ async fn server_lifecycle_can_repeat_within_process() {
             .await
             .expect("connect client");
 
-        let sources = app
-            .source_client()
-            .list_sources(Request::new(ListSourcesRequest {
-                workspace: Some(default_workspace()),
-            }))
+        let memberships = app
+            .workspace_client()
+            .list_workspaces(Request::new(ListWorkspacesRequest {}))
             .await
-            .expect("list sources")
+            .expect("list workspaces")
             .into_inner()
-            .sources;
-        assert!(sources.is_empty());
+            .memberships;
+        assert!(memberships.is_empty());
 
         server.shutdown().await.expect("shutdown server");
     }

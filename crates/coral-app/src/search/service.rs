@@ -58,21 +58,20 @@ use crate::workspaces::{WorkspaceAction, WorkspaceAuthorizer, WorkspaceName};
 pub(crate) struct SearchService {
     search: SearchManager,
     tasks: TaskManager,
-    workspace_authorizer: Option<WorkspaceAuthorizer>,
+    workspace_authorizer: WorkspaceAuthorizer,
 }
 
 impl SearchService {
-    pub(crate) fn new(search_manager: SearchManager, task_manager: TaskManager) -> Self {
+    pub(crate) fn new(
+        search_manager: SearchManager,
+        task_manager: TaskManager,
+        workspace_authorizer: WorkspaceAuthorizer,
+    ) -> Self {
         Self {
             search: search_manager,
             tasks: task_manager,
-            workspace_authorizer: None,
+            workspace_authorizer,
         }
-    }
-
-    pub(crate) fn with_authorizer(mut self, authorizer: WorkspaceAuthorizer) -> Self {
-        self.workspace_authorizer = Some(authorizer);
-        self
     }
 }
 
@@ -91,7 +90,7 @@ impl SearchServiceApi for SearchService {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             authorize(
-                workspace_authorizer.as_ref(),
+                &workspace_authorizer,
                 request_context.principal(),
                 &workspace_name,
                 WorkspaceAction::Read,
@@ -126,7 +125,7 @@ impl SearchServiceApi for SearchService {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             authorize(
-                workspace_authorizer.as_ref(),
+                &workspace_authorizer,
                 &principal,
                 &workspace_name,
                 WorkspaceAction::Manage,
@@ -158,7 +157,7 @@ impl SearchServiceApi for SearchService {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             authorize(
-                workspace_authorizer.as_ref(),
+                &workspace_authorizer,
                 &principal,
                 &workspace_name,
                 WorkspaceAction::Manage,
@@ -186,7 +185,7 @@ impl SearchServiceApi for SearchService {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             authorize(
-                workspace_authorizer.as_ref(),
+                &workspace_authorizer,
                 &principal,
                 &workspace_name,
                 WorkspaceAction::Manage,
@@ -205,13 +204,11 @@ impl SearchServiceApi for SearchService {
 }
 
 async fn authorize(
-    authorizer: Option<&WorkspaceAuthorizer>,
+    authorizer: &WorkspaceAuthorizer,
     principal: &crate::identity::Principal,
     workspace: &WorkspaceName,
     action: WorkspaceAction,
 ) -> Result<(), Status> {
-    let authorizer =
-        authorizer.ok_or_else(|| Status::internal("workspace authorization is unavailable"))?;
     authorizer
         .authorize(principal, workspace, action)
         .await
@@ -553,73 +550,18 @@ fn provider_coverage_to_proto(coverage: &ProviderCoverage) -> SearchProviderCove
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use coral_api::v1::{
         SearchClearTarget as ProtoSearchClearTarget,
         SearchProviderState as ProtoSearchProviderState, search_clear_target,
     };
-    use tempfile::TempDir;
     use tonic::Code;
 
-    use super::{authorize, clear_target_from_proto, provider_status_to_proto};
-    use crate::identity::{Principal, PrincipalKind};
+    use super::{clear_target_from_proto, provider_status_to_proto};
     use crate::search::maintenance::SearchClearTarget;
     use crate::search::result::{
         ProviderCoverage, ProviderStatus, SearchProviderKind,
         SearchProviderState as DomainProviderState,
     };
-    use crate::state::AppStateLayout;
-    use crate::state::db::{
-        AddMemberOutcome, CoralDb, DatabaseConfig, DbRepos, ResolvedDatabaseConfig,
-        UpsertLoginOutcome,
-    };
-    use crate::workspaces::{MemberRole, WorkspaceAction, WorkspaceAuthorizer, WorkspaceName};
-
-    #[tokio::test]
-    async fn search_actions_enforce_member_and_agent_policy() {
-        let (_temp, db) = database().await;
-        let owner_id = provision_user(&db, "owner").await;
-        let member_id = provision_user(&db, "member").await;
-        let workspace =
-            WorkspaceName::parse(&format!("default-{owner_id}")).expect("owner workspace");
-        let mut session = db.as_ref();
-        assert!(matches!(
-            session
-                .workspaces()
-                .add_member(workspace.as_str(), &member_id, MemberRole::Member, 2)
-                .await
-                .expect("add member"),
-            AddMemberOutcome::Added(_)
-        ));
-        let authorizer = WorkspaceAuthorizer::new(db);
-
-        let unavailable = authorize(None, &Principal::local(), &workspace, WorkspaceAction::Read)
-            .await
-            .expect_err("missing authorizer must never bypass policy");
-        assert_eq!(unavailable.code(), Code::Internal);
-
-        for kind in [PrincipalKind::User, PrincipalKind::Agent] {
-            let principal = Principal::parse(&member_id, kind).expect("member principal");
-            authorize(
-                Some(&authorizer),
-                &principal,
-                &workspace,
-                WorkspaceAction::Read,
-            )
-            .await
-            .expect("member principals can read search data");
-            let denied = authorize(
-                Some(&authorizer),
-                &principal,
-                &workspace,
-                WorkspaceAction::Manage,
-            )
-            .await
-            .expect_err("members and agents cannot mutate search state");
-            assert_eq!(denied.code(), Code::PermissionDenied);
-        }
-    }
 
     #[test]
     fn skipped_provider_status_maps_without_coverage() {
@@ -681,31 +623,5 @@ mod tests {
                 "source={source_name:?}"
             );
         }
-    }
-
-    async fn database() -> (TempDir, Arc<CoralDb>) {
-        let temp = TempDir::new().expect("temp dir");
-        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
-        let DatabaseConfig::Sqlite { path } = DatabaseConfig::load(&layout).expect("config") else {
-            panic!("default test database must be SQLite")
-        };
-        let db = Arc::new(
-            CoralDb::open(ResolvedDatabaseConfig::Sqlite { path })
-                .await
-                .expect("open sqlite"),
-        );
-        db.migrate().await.expect("migrate sqlite");
-        (temp, db)
-    }
-
-    async fn provision_user(db: &CoralDb, subject: &str) -> String {
-        let UpsertLoginOutcome::Upserted(user) = db
-            .upsert_user_and_ensure_default_workspace("issuer", subject, None, 1)
-            .await
-            .expect("provision user")
-        else {
-            panic!("new subject should create a user")
-        };
-        user.user_id
     }
 }

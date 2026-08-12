@@ -163,7 +163,7 @@ fn query_stream_stops_after_a_complete_recent_page() {
     files.write_at(&recent, recent_time);
     files.write_invalid_at(old_time);
 
-    let summaries = files.list(1, 0, Some("alpha"));
+    let summaries = files.list(1, 0, None);
     assert_eq!(summaries.len(), 1);
     assert_eq!(
         summaries.first().expect("recent summary").root_span_id,
@@ -172,7 +172,7 @@ fn query_stream_stops_after_a_complete_recent_page() {
 }
 
 #[test]
-fn query_stream_ignores_known_other_workspaces_when_stopping() {
+fn query_stream_stops_with_entries_from_multiple_workspaces() {
     let files = TraceFiles::new();
     let now = SystemTime::now();
     let unreadable_time = now - Duration::from_hours(2);
@@ -189,23 +189,23 @@ fn query_stream_ignores_known_other_workspaces_when_stopping() {
         .entry("query", "sql", "beta")
         .attrs(json!({"sql": "SELECT 'beta'"}))
         .times(
-            unix_nanos(now - Duration::from_hours(3)),
+            unix_nanos(now - Duration::from_secs(3)),
             unix_nanos(now - Duration::from_millis(500)),
         )
         .build();
     files.write("spans-recent-workspaces.jsonl", &[alpha, beta]);
     files.write_invalid_at(unreadable_time);
 
-    let summaries = files.list(1, 0, Some("alpha"));
+    let summaries = files.list(1, 0, None);
     assert_eq!(summaries.len(), 1);
     assert_eq!(
-        summaries.first().expect("alpha summary").root_span_id,
-        "alpha-recent-entry"
+        summaries.first().expect("newest summary").root_span_id,
+        "beta-long-entry"
     );
 }
 
 #[test]
-fn query_stream_ignores_descendant_workspace_mismatches_when_stopping() {
+fn query_stream_stops_with_descendant_workspace_evidence() {
     let files = TraceFiles::new();
     let now = SystemTime::now();
     let unreadable_time = now - Duration::from_hours(2);
@@ -226,7 +226,7 @@ fn query_stream_ignores_descendant_workspace_mismatches_when_stopping() {
             "mcp.tool.name": "legacy_tool",
         }))
         .times(
-            unix_nanos(now - Duration::from_hours(3)),
+            unix_nanos(now - Duration::from_secs(3)),
             unix_nanos(now - Duration::from_millis(500)),
         )
         .build();
@@ -245,11 +245,11 @@ fn query_stream_ignores_descendant_workspace_mismatches_when_stopping() {
     );
     files.write_invalid_at(unreadable_time);
 
-    let summaries = files.list(1, 0, Some("alpha"));
+    let summaries = files.list(1, 0, None);
     assert_eq!(summaries.len(), 1);
     assert_eq!(
-        summaries.first().expect("alpha summary").root_span_id,
-        "alpha-recent-entry"
+        summaries.first().expect("newest summary").root_span_id,
+        "beta-tool-entry"
     );
 }
 
@@ -282,7 +282,7 @@ fn query_stream_offset_page_reads_enough_recent_files_then_stops() {
     files.write_at(&second, second_time);
     files.write_invalid_at(unreadable_time);
 
-    let summaries = files.list(1, 1, Some("alpha"));
+    let summaries = files.list(1, 1, None);
     assert_eq!(summaries.len(), 1);
     assert_eq!(
         summaries.first().expect("offset summary").root_span_id,

@@ -1,5 +1,4 @@
 use std::fmt;
-use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 
@@ -116,6 +115,8 @@ enum McpStartError {
     #[error(transparent)]
     Client(#[from] ClientError),
     #[error(transparent)]
+    WorkspaceSelection(#[from] crate::LocalWorkspaceSelectionError),
+    #[error(transparent)]
     Http(#[from] McpHttpError),
 }
 
@@ -168,19 +169,7 @@ impl RunningServer {
 /// The gRPC bootstrap resolves configuration and starts a gRPC server; deciding
 /// what else runs beside it, and wiring the session policies each surface
 /// enforces, happens here — where the transports' lifecycles are already owned.
-/// Starts the composite server.
-///
-/// The composition future carries every manager, listener, and resolved config
-/// in one frame, so it is boxed here: each caller — the CLI entry points, the UI
-/// command, and the tests — then holds a pointer rather than the whole frame.
 pub(crate) async fn start(
-    builder: ServerBuilder,
-    mcp_options: McpOptions,
-) -> Result<RunningServer, ServeError> {
-    Box::pin(start_composed(builder, mcp_options)).await
-}
-
-async fn start_composed(
     builder: ServerBuilder,
     mcp_options: McpOptions,
 ) -> Result<RunningServer, ServeError> {
@@ -265,39 +254,16 @@ async fn shutdown_components(
     oauth: Option<RunningCoralAuthorizationServer>,
     mcp_http: Option<RunningMcpHttpServer>,
 ) -> Result<(), ShutdownFailures> {
-    let (mcp_result, oauth_result, grpc_result) = shutdown_in_reverse_startup_order(
-        move || async move {
-            match mcp_http {
-                Some(server) => server.shutdown().await,
-                None => Ok(()),
-            }
-        },
-        move || async move {
-            match oauth {
-                Some(server) => server.shutdown().await,
-                None => Ok(()),
-            }
-        },
-        move || async move { grpc.shutdown().await },
-    )
-    .await;
+    let mcp_result = match mcp_http {
+        Some(server) => server.shutdown().await,
+        None => Ok(()),
+    };
+    let oauth_result = match oauth {
+        Some(server) => server.shutdown().await,
+        None => Ok(()),
+    };
+    let grpc_result = grpc.shutdown().await;
     ShutdownFailures::from_results(mcp_result, oauth_result, grpc_result)
-}
-
-async fn shutdown_in_reverse_startup_order<McpFuture, OAuthFuture, GrpcFuture>(
-    shutdown_mcp: impl FnOnce() -> McpFuture,
-    shutdown_oauth: impl FnOnce() -> OAuthFuture,
-    shutdown_grpc: impl FnOnce() -> GrpcFuture,
-) -> (McpFuture::Output, OAuthFuture::Output, GrpcFuture::Output)
-where
-    McpFuture: Future,
-    OAuthFuture: Future,
-    GrpcFuture: Future,
-{
-    let mcp_result = shutdown_mcp().await;
-    let oauth_result = shutdown_oauth().await;
-    let grpc_result = shutdown_grpc().await;
-    (mcp_result, oauth_result, grpc_result)
 }
 
 async fn start_mcp_http(
@@ -314,6 +280,13 @@ async fn start_mcp_http(
         McpHttpServeConfig::AuthDisabled { bind_addr } => {
             let config = McpHttpConfig::new(bind_addr)?;
             let app = AppClient::connect(&grpc_endpoint_uri).await?;
+            let requested_workspace = mcp_options
+                .workspace
+                .as_ref()
+                .map(|workspace| workspace.name.clone());
+            let mut mcp_options = mcp_options;
+            mcp_options.workspace =
+                Some(crate::resolve_local_workspace(&app, requested_workspace).await?);
             start_auth_disabled(config, app, mcp_options).await?
         }
         McpHttpServeConfig::Authenticated {

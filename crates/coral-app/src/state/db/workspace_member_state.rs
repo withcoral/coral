@@ -127,6 +127,40 @@ mod tests {
                 .expect("create owned workspace"),
             WorkspaceCreationOutcome::Created
         );
+        assert_eq!(
+            session
+                .workspace_members()
+                .role_for_user_id(&identical_add_workspace_id, &owner_id)
+                .await
+                .expect("read creator membership"),
+            Some(MemberRole::Owner)
+        );
+
+        let rolled_back_workspace_id = format!("rolled-back-create-{suffix}");
+        let mut tx = db.begin().await.expect("begin rolled-back create");
+        assert!(
+            tx.workspaces()
+                .try_create_with_owner(&rolled_back_workspace_id, &owner_id, 11)
+                .await
+                .expect("stage owned workspace")
+        );
+        tx.rollback().await.expect("roll back owned workspace");
+        assert_eq!(
+            session
+                .workspaces()
+                .get(&rolled_back_workspace_id)
+                .await
+                .expect("read rolled-back workspace"),
+            None
+        );
+        assert_eq!(
+            session
+                .workspace_members()
+                .role_for_user_id(&rolled_back_workspace_id, &owner_id)
+                .await
+                .expect("read rolled-back creator membership"),
+            None
+        );
 
         let mut first_session = db;
         let mut second_session = db;

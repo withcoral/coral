@@ -32,7 +32,7 @@ message WorkspaceMembership {
   WorkspaceRole role = 2;
 }
 
-// Lists configured workspaces.
+// Lists workspaces visible to the current user.
 message ListWorkspacesRequest {}
 
 // Returns the current user's workspace memberships.
@@ -41,7 +41,7 @@ message ListWorkspacesResponse {
   repeated WorkspaceMembership memberships = 1;
 }
 
-// Creates one workspace.
+// Creates one workspace owned by the current user.
 message CreateWorkspaceRequest {
   // Workspace resource to create.
   Workspace workspace = 1;
@@ -104,9 +104,9 @@ message RemoveWorkspaceMemberResponse {}
 
 // Workspace management APIs.
 service WorkspaceService {
-  // Lists configured workspaces.
+  // Lists workspaces visible to the current user.
   rpc ListWorkspaces(ListWorkspacesRequest) returns (ListWorkspacesResponse);
-  // Creates one workspace.
+  // Creates one workspace owned by the current user.
   rpc CreateWorkspace(CreateWorkspaceRequest) returns (CreateWorkspaceResponse);
   // Deletes one workspace and its managed artifacts.
   rpc DeleteWorkspace(DeleteWorkspaceRequest) returns (DeleteWorkspaceResponse);

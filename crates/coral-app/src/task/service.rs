@@ -18,20 +18,15 @@ use crate::workspaces::{WorkspaceAction, WorkspaceAuthorizer, WorkspaceName};
 #[derive(Clone)]
 pub(crate) struct TaskService {
     task: TaskManager,
-    workspace_authorizer: Option<WorkspaceAuthorizer>,
+    workspace_authorizer: WorkspaceAuthorizer,
 }
 
 impl TaskService {
-    pub(crate) fn new(task: TaskManager) -> Self {
+    pub(crate) fn new(task: TaskManager, workspace_authorizer: WorkspaceAuthorizer) -> Self {
         Self {
             task,
-            workspace_authorizer: None,
+            workspace_authorizer,
         }
-    }
-
-    pub(crate) fn with_authorizer(mut self, authorizer: WorkspaceAuthorizer) -> Self {
-        self.workspace_authorizer = Some(authorizer);
-        self
     }
 }
 
@@ -48,7 +43,7 @@ impl TaskServiceApi for TaskService {
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace = workspace_name_from_proto(request.workspace.as_ref())?;
-            authorize_read(workspace_authorizer.as_ref(), &created_by, &workspace).await?;
+            authorize_read(&workspace_authorizer, &created_by, &workspace).await?;
             let start = task
                 .start_task(workspace, created_by, request.intent)
                 .await
@@ -71,7 +66,7 @@ impl TaskServiceApi for TaskService {
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace = workspace_name_from_proto(request.workspace.as_ref())?;
-            authorize_read(workspace_authorizer.as_ref(), &principal, &workspace).await?;
+            authorize_read(&workspace_authorizer, &principal, &workspace).await?;
             let task_id = TaskId::parse(&request.task_id).map_err(app_status)?;
             let outcome = task_outcome_from_proto(request.task_status).map_err(app_status)?;
             let completion = task
@@ -87,12 +82,10 @@ impl TaskServiceApi for TaskService {
 }
 
 async fn authorize_read(
-    authorizer: Option<&WorkspaceAuthorizer>,
+    authorizer: &WorkspaceAuthorizer,
     principal: &crate::identity::Principal,
     workspace: &WorkspaceName,
 ) -> Result<(), Status> {
-    let authorizer =
-        authorizer.ok_or_else(|| Status::internal("workspace authorization is unavailable"))?;
     authorizer
         .authorize(principal, workspace, WorkspaceAction::Read)
         .await
@@ -165,25 +158,16 @@ mod tests {
     use tempfile::TempDir;
     use tonic::{Code, Request};
 
-    use super::{TaskService, TaskServiceApi, authorize_read};
+    use super::{TaskService, TaskServiceApi};
     use crate::identity::Principal;
     use crate::request_context::RequestContext;
     use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig, run_state_migrations};
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::task::manager::TaskManager;
     use crate::task::store::TaskStore;
-    use crate::workspaces::{WorkspaceAuthorizer, WorkspaceName};
+    use crate::workspaces::WorkspaceAuthorizer;
 
     const UNKNOWN_TASK_ID: &str = "550e8400-e29b-41d4-a716-446655440000";
-
-    #[tokio::test]
-    async fn read_authorization_fails_closed_without_injected_authorizer() {
-        let denied = authorize_read(None, &Principal::local(), &WorkspaceName::default())
-            .await
-            .expect_err("missing authorizer must never bypass policy");
-
-        assert_eq!(denied.code(), Code::Internal);
-    }
 
     async fn service() -> (TempDir, TaskService) {
         let dir = TempDir::new().expect("temp dir");
@@ -200,11 +184,14 @@ mod tests {
         );
         db.migrate().await.expect("migrate sqlite");
         let config_store = ConfigStore::new(layout.clone());
+        config_store
+            .create_legacy_workspace_entry_for_tests(&crate::workspaces::WorkspaceName::default())
+            .expect("create default test workspace");
         run_state_migrations(&db, &config_store, &layout)
             .await
-            .expect("import default workspace");
+            .expect("run state migrations");
         let task = TaskManager::new(TaskStore::new(Arc::clone(&db)));
-        let service = TaskService::new(task).with_authorizer(WorkspaceAuthorizer::new(db));
+        let service = TaskService::new(task, WorkspaceAuthorizer::trusting_local_principal(db));
         (dir, service)
     }
 
