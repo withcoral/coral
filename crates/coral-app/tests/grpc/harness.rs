@@ -90,6 +90,10 @@ impl GrpcHarness {
         .await
     }
 
+    #[expect(
+        dead_code,
+        reason = "resilience coverage lands with the hardening docs PR in the stacked sequence"
+    )]
     pub(crate) async fn start_with_owned_config_dir(
         temp_dir: TempDir,
         config_dir: PathBuf,
