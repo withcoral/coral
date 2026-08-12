@@ -1323,7 +1323,7 @@ async fn insert_trace_summary(config_dir: &Path, workspace_id: &str, trace_id: &
         .execute(&pool)
         .await
         .expect("insert workspace");
-    sqlx::query("INSERT INTO trace_summaries (trace_id, workspace_id, root_span_id, name, query, status, start_time_unix_nanos, end_time_unix_nanos, duration_nanos, span_count, row_count) VALUES (?1, ?2, 'root', 'coral.query', 'SELECT 1', 'ok', 1, 2, 1, 1, 1)")
+    sqlx::query("INSERT INTO trace_summaries (trace_id, workspace_id, root_span_id, name, query, status, start_time_unix_nanos, end_time_unix_nanos, duration_nanos, span_count, row_count, operation_kind, operation_name, invocation_kind) VALUES (?1, ?2, 'root', 'coral.query', 'SELECT 1', 'ok', 1, 2, 1, 1, 1, 'unspecified', '', 'unspecified')")
         .bind(trace_id)
         .bind(workspace_id)
     .execute(&pool)
