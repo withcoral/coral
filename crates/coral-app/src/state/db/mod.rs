@@ -31,7 +31,10 @@ pub(crate) use repositories::identity_specs::{
     IdentitySpecDocumentRecord, IdentitySpecKey, IdentitySpecRecord, IdentitySpecScope,
 };
 pub(crate) use repositories::tasks::{TaskCompletionUpdate, TaskLifecycleState};
-#[expect(unused_imports, reason = "used higher in the PR stack")]
+#[cfg_attr(
+    not(test),
+    expect(unused_imports, reason = "used higher in the PR stack")
+)]
 pub(crate) use repositories::users::{UpsertLoginOutcome, UserRecord};
 pub(crate) use session::{DbRepos, DbSession};
 #[cfg(test)]

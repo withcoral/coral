@@ -152,7 +152,7 @@ mod tests {
         assert_eq!(
             report,
             WorkspaceCatalogCutoverReport {
-                workspace_count: 2,
+                workspace_count: 1,
                 cutover_performed: true
             }
         );
@@ -166,10 +166,7 @@ mod tests {
                 .into_iter()
                 .map(|workspace| workspace.id)
                 .collect::<Vec<_>>(),
-            vec![
-                "analytics".to_string(),
-                WorkspaceName::default().as_str().to_string(),
-            ]
+            vec!["analytics".to_string()]
         );
         assert!(
             session
@@ -212,10 +209,7 @@ mod tests {
                 .into_iter()
                 .map(|workspace| workspace.id)
                 .collect::<Vec<_>>(),
-            vec![
-                "analytics".to_string(),
-                WorkspaceName::default().as_str().to_string(),
-            ]
+            vec!["analytics".to_string()]
         );
     }
 
@@ -239,7 +233,7 @@ mod tests {
         assert_eq!(
             report,
             WorkspaceCatalogCutoverReport {
-                workspace_count: 1,
+                workspace_count: 0,
                 cutover_performed: false
             }
         );

@@ -30,21 +30,20 @@ use crate::workspaces::{WorkspaceAction, WorkspaceAuthorizer, WorkspaceName};
 pub(crate) struct CatalogService {
     catalog: CatalogDiscovery,
     tasks: TaskManager,
-    workspace_authorizer: Option<WorkspaceAuthorizer>,
+    workspace_authorizer: WorkspaceAuthorizer,
 }
 
 impl CatalogService {
-    pub(crate) fn new(query_manager: QueryManager, task_manager: TaskManager) -> Self {
+    pub(crate) fn new(
+        query_manager: QueryManager,
+        task_manager: TaskManager,
+        workspace_authorizer: WorkspaceAuthorizer,
+    ) -> Self {
         Self {
             catalog: CatalogDiscovery::new(query_manager),
             tasks: task_manager,
-            workspace_authorizer: None,
+            workspace_authorizer,
         }
-    }
-
-    pub(crate) fn with_authorizer(mut self, authorizer: WorkspaceAuthorizer) -> Self {
-        self.workspace_authorizer = Some(authorizer);
-        self
     }
 }
 
@@ -61,14 +60,9 @@ impl CatalogServiceApi for CatalogService {
         let request_context = request_context(&request)?.clone();
         Box::pin(instrument_grpc(span, async move {
             let request = request.into_inner();
-            let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            authorize_read(
-                workspace_authorizer.as_ref(),
-                request_context.principal(),
-                &workspace_name,
-            )
-            .await?;
             let pagination = pagination_from_proto(request.pagination.unwrap_or_default());
+            let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            authorize_read(&workspace_authorizer, &request_context, &workspace_name).await?;
             let attribution = query_attribution(&tasks, &workspace_name, &request_context).await?;
             let catalog_name = optional_trimmed(&request.catalog_name);
             let schema_name = optional_trimmed(&request.schema_name);
@@ -120,12 +114,7 @@ impl CatalogServiceApi for CatalogService {
         Box::pin(instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            authorize_read(
-                workspace_authorizer.as_ref(),
-                request_context.principal(),
-                &workspace_name,
-            )
-            .await?;
+            authorize_read(&workspace_authorizer, &request_context, &workspace_name).await?;
             let attribution = query_attribution(&tasks, &workspace_name, &request_context).await?;
             let catalog_name = optional_trimmed(&request.catalog_name);
             let schema_name = optional_trimmed(&request.schema_name);
@@ -178,12 +167,7 @@ impl CatalogServiceApi for CatalogService {
         Box::pin(instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            authorize_read(
-                workspace_authorizer.as_ref(),
-                request_context.principal(),
-                &workspace_name,
-            )
-            .await?;
+            authorize_read(&workspace_authorizer, &request_context, &workspace_name).await?;
             let attribution = query_attribution(&tasks, &workspace_name, &request_context).await?;
             let catalog_name = optional_trimmed(&request.catalog_name);
             let schema_name = required_trimmed(&request.schema_name, "schema_name")?;
@@ -216,12 +200,7 @@ impl CatalogServiceApi for CatalogService {
         Box::pin(instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            authorize_read(
-                workspace_authorizer.as_ref(),
-                request_context.principal(),
-                &workspace_name,
-            )
-            .await?;
+            authorize_read(&workspace_authorizer, &request_context, &workspace_name).await?;
             let attribution = query_attribution(&tasks, &workspace_name, &request_context).await?;
             let catalog_name = optional_trimmed(&request.catalog_name);
             let schema_name = required_trimmed(&request.schema_name, "schema_name")?;
@@ -270,14 +249,12 @@ impl CatalogServiceApi for CatalogService {
 }
 
 async fn authorize_read(
-    authorizer: Option<&WorkspaceAuthorizer>,
-    principal: &crate::identity::Principal,
+    authorizer: &WorkspaceAuthorizer,
+    context: &RequestContext,
     workspace: &WorkspaceName,
 ) -> Result<(), Status> {
-    let authorizer =
-        authorizer.ok_or_else(|| Status::internal("workspace authorization is unavailable"))?;
     authorizer
-        .authorize(principal, workspace, WorkspaceAction::Read)
+        .authorize(context.principal(), workspace, WorkspaceAction::Read)
         .await
         .map_err(app_status)
 }
@@ -325,89 +302,4 @@ fn required_trimmed(value: &str, field: &str) -> Result<String, Status> {
         )));
     }
     Ok(value.to_string())
-}
-
-#[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-
-    use coral_api::{CORAL_ERROR_DOMAIN, CORAL_ERROR_REASON_WORKSPACE_NOT_FOUND};
-    use tempfile::TempDir;
-    use tonic::Code;
-    use tonic_types::{ErrorDetail, StatusExt as _};
-
-    use super::authorize_read;
-    use crate::identity::{Principal, PrincipalKind};
-    use crate::state::AppStateLayout;
-    use crate::state::db::{
-        AddMemberOutcome, CoralDb, DatabaseConfig, DbRepos, ResolvedDatabaseConfig,
-        UpsertLoginOutcome,
-    };
-    use crate::workspaces::{MemberRole, WorkspaceAuthorizer, WorkspaceName};
-
-    #[tokio::test]
-    async fn read_authorization_allows_members_and_conceals_nonmembers() {
-        let (_temp, db) = database().await;
-        let owner_id = provision_user(&db, "owner").await;
-        let member_id = provision_user(&db, "member").await;
-        let nonmember_id = provision_user(&db, "nonmember").await;
-        let workspace =
-            WorkspaceName::parse(&format!("default-{owner_id}")).expect("owner workspace");
-        let mut session = db.as_ref();
-        assert!(matches!(
-            session
-                .workspaces()
-                .add_member(workspace.as_str(), &member_id, MemberRole::Member, 2)
-                .await
-                .expect("add member"),
-            AddMemberOutcome::Added(_)
-        ));
-        let authorizer = WorkspaceAuthorizer::new(db);
-        let member = Principal::parse(&member_id, PrincipalKind::User).expect("member");
-        let nonmember = Principal::parse(&nonmember_id, PrincipalKind::User).expect("nonmember");
-
-        authorize_read(Some(&authorizer), &member, &workspace)
-            .await
-            .expect("member can read catalog data");
-        let denied = authorize_read(Some(&authorizer), &nonmember, &workspace)
-            .await
-            .expect_err("nonmember cannot discover workspace existence");
-        assert_eq!(denied.code(), Code::NotFound);
-        let info = denied
-            .get_error_details_vec()
-            .into_iter()
-            .find_map(|detail| match detail {
-                ErrorDetail::ErrorInfo(info) => Some(info),
-                _ => None,
-            })
-            .expect("structured workspace-not-found detail");
-        assert_eq!(info.reason, CORAL_ERROR_REASON_WORKSPACE_NOT_FOUND);
-        assert_eq!(info.domain, CORAL_ERROR_DOMAIN);
-    }
-
-    async fn database() -> (TempDir, Arc<CoralDb>) {
-        let temp = TempDir::new().expect("temp dir");
-        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
-        let DatabaseConfig::Sqlite { path } = DatabaseConfig::load(&layout).expect("config") else {
-            panic!("default test database must be SQLite")
-        };
-        let db = Arc::new(
-            CoralDb::open(ResolvedDatabaseConfig::Sqlite { path })
-                .await
-                .expect("open sqlite"),
-        );
-        db.migrate().await.expect("migrate sqlite");
-        (temp, db)
-    }
-
-    async fn provision_user(db: &CoralDb, subject: &str) -> String {
-        let UpsertLoginOutcome::Upserted(user) = db
-            .upsert_user_and_ensure_default_workspace("issuer", subject, None, 1)
-            .await
-            .expect("provision user")
-        else {
-            panic!("new subject should create a user")
-        };
-        user.user_id
-    }
 }

@@ -3,17 +3,22 @@ import { create } from '@bufbuild/protobuf'
 import { WorkspaceSchema } from '@/generated/coral/v1/resources_pb'
 import type { Workspace } from '@/generated/coral/v1/resources_pb'
 import { CreateWorkspaceRequestSchema } from '@/generated/coral/v1/workspaces_pb'
-import type { WorkspaceMembership } from '@/generated/coral/v1/workspaces_pb'
 import { workspaceClientForRequest } from '@/lib/coral-request.server'
 
-export async function listWorkspacesForRequest(request: Request): Promise<WorkspaceMembership[]> {
-  const response = await workspaceClientForRequest(request).listWorkspaces({})
-  return response.memberships
+export async function listWorkspacesForRequest(
+  request: Request,
+  accessToken: string | null,
+): Promise<Workspace[]> {
+  const response = await workspaceClientForRequest(request, accessToken).listWorkspaces({})
+  return response.workspaces
 }
 
-export async function firstWorkspaceForRequest(request: Request): Promise<Workspace> {
-  const [membership] = await listWorkspacesForRequest(request)
-  if (membership?.workspace) return membership.workspace
+export async function firstWorkspaceForRequest(
+  request: Request,
+  accessToken: string | null,
+): Promise<Workspace> {
+  const [workspace] = await listWorkspacesForRequest(request, accessToken)
+  if (workspace) return workspace
 
   throw new Response('No Coral workspace is configured.', {
     status: 404,
@@ -23,9 +28,10 @@ export async function firstWorkspaceForRequest(request: Request): Promise<Worksp
 
 export async function createWorkspaceForRequest(
   request: Request,
+  accessToken: string | null,
   name: string,
 ): Promise<Workspace> {
-  const response = await workspaceClientForRequest(request).createWorkspace(
+  const response = await workspaceClientForRequest(request, accessToken).createWorkspace(
     create(CreateWorkspaceRequestSchema, {
       workspace: create(WorkspaceSchema, { name }),
     }),

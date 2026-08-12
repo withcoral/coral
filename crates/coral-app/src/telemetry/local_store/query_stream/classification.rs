@@ -249,4 +249,8 @@ impl QueryStreamWorkspaceEvidence {
             Self::None | Self::Conflict => None,
         }
     }
+
+    pub(super) fn matches(&self, workspace: &str) -> bool {
+        matches!(self, Self::One(actual) if actual == workspace)
+    }
 }

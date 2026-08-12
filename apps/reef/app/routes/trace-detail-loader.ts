@@ -2,6 +2,7 @@ import { create } from '@bufbuild/protobuf'
 
 import type { Route } from './+types/trace-detail'
 
+import { requestAuthContext } from '@/auth/server-context'
 import type { Workspace } from '@/generated/coral/v1/resources_pb'
 import { GetTraceRequestSchema, TraceView } from '@/generated/coral/v1/traces_pb'
 import { traceClientForRequest } from '@/lib/coral-request.server'
@@ -19,23 +20,34 @@ export type GetTraceForRequest = (
   traceId: string,
   workspace: Workspace,
   view: TraceView,
+  accessToken: string | null,
 ) => Promise<TraceDetailData>
 
-export async function loader({ params, request }: Route.LoaderArgs): Promise<TraceDetailRouteData> {
-  return loadTraceDetailRouteData(request, params.traceId, workspaceFromParams(params))
+export async function loader({
+  context,
+  params,
+  request,
+}: Route.LoaderArgs): Promise<TraceDetailRouteData> {
+  return loadTraceDetailRouteData(
+    request,
+    params.traceId,
+    workspaceFromParams(params),
+    context.get(requestAuthContext).accessToken,
+  )
 }
 
 export async function loadTraceDetailRouteData(
   request: Request,
   traceId: string | undefined,
   workspace: Workspace,
+  accessToken: string | null,
   getTrace: GetTraceForRequest = getTraceForRequest,
 ): Promise<TraceDetailRouteData> {
   if (!traceId) return { detail: null, loadError: 'Missing trace ID' }
 
   try {
     return {
-      detail: await getTrace(request, traceId, workspace, TraceView.QUERY_STREAM),
+      detail: await getTrace(request, traceId, workspace, TraceView.QUERY_STREAM, accessToken),
       loadError: null,
     }
   } catch (error) {
@@ -48,8 +60,9 @@ async function getTraceForRequest(
   traceId: string,
   workspace: Workspace,
   view: TraceView,
+  accessToken: string | null,
 ): Promise<TraceDetailData> {
-  return traceClientForRequest(request).getTrace(
+  return traceClientForRequest(request, accessToken).getTrace(
     create(GetTraceRequestSchema, { traceId, view, workspace }),
   )
 }

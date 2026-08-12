@@ -18,8 +18,7 @@ pub(crate) enum TraceListView {
 ///
 /// The service decides this before any read reaches the store: a named
 /// workspace is authorized for `Manage`, the local principal reads everything,
-/// and a federated caller without a named workspace sees only the workspaces
-/// they own.
+/// and a user without a named workspace sees only the workspaces they own.
 #[derive(Debug)]
 pub(crate) enum TraceAccessScope {
     /// Every trace, including host-level rows with no workspace attribution.
@@ -55,8 +54,8 @@ pub(crate) struct GetTraceQuery {
 pub(crate) enum TraceManagerError {
     #[error("trace '{trace_id}' not found")]
     NotFound { trace_id: String },
-    /// The query-stream view has no owner-scoped read yet, so an owner-scoped
-    /// caller must name the workspace instead of reading across all of them.
+    /// The query-stream view has no owner-scoped read yet, so an owner-scoped caller must name a
+    /// workspace instead of reading across every workspace they own.
     #[error("query-stream traces require an explicit workspace")]
     OwnedScopeUnsupported,
     #[error(transparent)]

@@ -1053,8 +1053,12 @@ async fn run_workspace(app: &AppClient, args: WorkspaceArgs) -> Result<(), CliEr
                 .into_inner()
                 .memberships
                 .into_iter()
-                .filter_map(|membership| membership.workspace)
-                .collect::<Vec<_>>();
+                .map(|membership| {
+                    membership.workspace.ok_or_else(|| {
+                        anyhow::anyhow!("list workspaces response missing workspace")
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
             if workspaces.is_empty() {
                 println!("No workspaces configured.");
             } else {
