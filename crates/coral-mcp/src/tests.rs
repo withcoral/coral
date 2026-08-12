@@ -2439,10 +2439,6 @@ async fn add_function_is_create_only() {
 }
 
 #[tokio::test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "End-to-end feedback coverage verifies the advertised surface, persistence, result contract, and validation together."
-)]
 async fn mcp_feedback_tool_persists_blocked_agent_report() {
     let temp = TempDir::new().expect("temp dir");
     let session = start_session_with_options(
