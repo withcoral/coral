@@ -463,6 +463,21 @@ pub(crate) fn json_schema_type_contains(schema: &Value, expected: &str) -> bool 
     }
 }
 
+/// Whether `expected` is the only type the schema declares, ignoring `null`.
+///
+/// Weaker than `json_schema_type_contains` on purpose. A nullable schema spells
+/// itself as a union with `null` — `{"type": ["array", "null"]}` is 3.1's
+/// nullable collection — so `null` cannot count against a single-shape reading.
+/// Every other extra type can: `{"type": ["array", "string"]}` describes a
+/// response that is sometimes a collection and sometimes one string, and no
+/// single shape is true of both.
+pub(crate) fn json_schema_declares_only_type(schema: &Value, expected: &str) -> bool {
+    let mut declared = schema_type_values(schema)
+        .into_iter()
+        .filter(|value| *value != "null");
+    declared.next() == Some(expected) && declared.next().is_none()
+}
+
 /// Whether the schema declares a `type` at all.
 ///
 /// Separates "declared a type this code has no shape for" from "declared

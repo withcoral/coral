@@ -5,7 +5,9 @@ use serde_json::{Map, Value};
 use crate::ResponseSpec;
 use crate::v4::diagnostics::Diagnostic;
 use crate::v4::ir::{IrOperationOutput, OutputCardinality, RestResponseAttachment};
-use crate::v4::surfaces::json_schema::{json_schema_has_declared_type, json_schema_type_contains};
+use crate::v4::surfaces::json_schema::{
+    json_schema_declares_only_type, json_schema_has_declared_type, json_schema_type_contains,
+};
 
 use super::import::OpenApiImporter;
 
@@ -255,7 +257,10 @@ fn classify_response_schema(
                 .or_else(|| Some(entity_name_from_path(path))),
         );
     }
-    if json_schema_type_contains(schema, "array") {
+    // The sole declared type, matching `import_schema`: a union that only
+    // includes `array` is not a collection, and reading one as a list would
+    // claim a row count for responses that are a single string.
+    if json_schema_declares_only_type(schema, "array") {
         let item = schema.get("items").cloned().unwrap_or(Value::Null);
         return (
             OutputCardinality::List,

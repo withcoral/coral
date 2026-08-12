@@ -7,8 +7,8 @@ use crate::v4::ir::{IrField, IrType, IrTypeShape};
 use crate::v4::naming::normalize_identifier;
 use crate::v4::surfaces::json_schema::{
     JsonObjectShape, JsonSchemaComparisonError, JsonSchemaWalkError, RefError,
-    direct_json_object_shape, json_schema_has_declared_type, json_schema_required_fields,
-    json_schema_scalar_type, json_schema_type_contains,
+    direct_json_object_shape, json_schema_declares_only_type, json_schema_has_declared_type,
+    json_schema_required_fields, json_schema_scalar_type, json_schema_type_contains,
     merge_json_object_shape_annotation_insensitive, with_resolved_json_schema,
 };
 
@@ -195,7 +195,15 @@ impl OpenApiImporter<'_> {
             } else {
                 IrTypeShape::Json
             }
-        } else if json_schema_type_contains(&resolved, "array") {
+        // Asking for the sole declared type, where the object branch above only
+        // asks whether `object` is among them. A union that merely includes
+        // `array` is not a collection: `{"type": ["array", "string"]}` accepts
+        // one string too, and importing `items` regardless types those instances
+        // as a row of item-derived columns that are all null. Object stays the
+        // permissive reading because it is already what a schema declaring no
+        // type at all is imported as, so a union including it degrades to the
+        // same columns rather than to a claim about the response's shape.
+        } else if json_schema_declares_only_type(&resolved, "array") {
             let item = resolved.get("items").unwrap_or(&Value::Null);
             let item_type_ref = self
                 .import_schema(item, &format!("{type_id}_item"), operation_id, diagnostics)

@@ -3471,6 +3471,43 @@ fn response_and_schema_dispatch_agree_when_a_schema_claims_both_types() {
 }
 
 #[test]
+fn importer_reads_a_union_of_a_collection_and_a_scalar_as_json() {
+    // `null` is the only type a collection may be unioned with and still be a
+    // collection. This one also accepts a bare string, so importing `items`
+    // would type every string response as a single row of item-derived columns,
+    // each of them null. Neither shape is true of both instances, so the
+    // response keeps the shape the importer uses when it cannot tell.
+    let imported = import_response_schema(
+        r"                type: [array, string]
+                items:
+                  type: object
+                  properties:
+                    id: {type: string}",
+    )
+    .expect("import");
+
+    let operation = imported.operations.first().expect("operation");
+    assert_eq!(
+        operation.output.cardinality,
+        OutputCardinality::Unknown,
+        "a union including `array` does not make the response a collection"
+    );
+    assert!(
+        matches!(
+            imported
+                .types
+                .iter()
+                .find(|ty| ty.id == operation.output.type_ref)
+                .expect("row type")
+                .shape,
+            IrTypeShape::Json
+        ),
+        "both dispatches have to decline: an `id` column here would come from \
+         `items`, which only describes the collection branch"
+    );
+}
+
+#[test]
 fn importer_reads_a_nullable_object_as_an_object() {
     // This case survived the string-only read by luck rather than by design: an
     // unreadable `type` fell through to a default of "object", which is what a
