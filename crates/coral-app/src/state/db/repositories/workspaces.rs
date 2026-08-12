@@ -42,12 +42,7 @@ where
         self.session.execute(statement).await
     }
 
-    /// Inserts a workspace row with no membership.
-    ///
-    /// Production creation goes through `create_workspace_for_user`, which
-    /// records the creator as owner in the same transaction; a row with no
-    /// owner is unreachable. Tests use this to build pre-access-control state.
-    #[cfg(test)]
+    #[cfg_attr(not(test), expect(dead_code, reason = "used higher in the PR stack"))]
     pub(crate) async fn create(
         &mut self,
         id: &str,
@@ -113,6 +108,30 @@ impl WorkspacesRepo<'_, &CoralDb> {
         if !tx
             .workspaces()
             .try_create_with_owner(workspace_id, creator_user_id, created_at_unix_nanos)
+            .await?
+        {
+            tx.rollback().await?;
+            return Ok(WorkspaceCreationOutcome::AlreadyExists);
+        }
+        tx.commit().await?;
+        Ok(WorkspaceCreationOutcome::Created)
+    }
+
+    pub(crate) async fn create_with_local_owner(
+        &mut self,
+        workspace_id: &str,
+        created_at_unix_nanos: i64,
+    ) -> Result<WorkspaceCreationOutcome, DbError> {
+        let db = *self.session;
+        let mut tx = db.begin().await?;
+        tx.users().ensure_local_user(created_at_unix_nanos).await?;
+        if !tx
+            .workspaces()
+            .try_create_with_owner(
+                workspace_id,
+                crate::identity::LOCAL_PRINCIPAL_ID,
+                created_at_unix_nanos,
+            )
             .await?
         {
             tx.rollback().await?;

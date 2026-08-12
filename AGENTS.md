@@ -49,6 +49,12 @@
   `npm run build --prefix apps/reef` before submitting.
 - Desktop changes must pass `npm run check --prefix apps/desktop` and
   `npm test --prefix apps/desktop` before submitting.
+- Keep Reef Vitest coverage Node-only and focused on atomic deterministic
+  functions and policies or explicit architectural invariants. Do not add broad
+  browser, router, or framework-plumbing tests without a named contract or
+  regression they protect.
+- Use Storybook and Chromatic for Reef component visual states.
+- Reef styling uses vanilla-extract; do not introduce Tailwind.
 - Run `make perf-check` before submitting PRs that could affect CLI startup,
   local server bootstrap, source registration, or `coral.tables` catalog query
   latency. CI installs the bundled `github` source with fake credentials and
@@ -209,6 +215,12 @@
   becoming a separate source of truth. Use
   `cargo run --locked -p xtask -- export-skills --dest <path>` for local
   export checks and distribution syncs.
+- Keep `plugins/coral` conformant with Agent Plugins 1.0: portable metadata
+  belongs in root `plugin.json`, skills are discovered from `skills/`, and MCP
+  servers are declared in root `mcp.json`. Keep the legacy `.codex-plugin`,
+  `.mcp.json`, and `.app.json` package files for pre-0.147 Codex compatibility.
+  Put current Codex-only metadata under `extensions.com.openai`, and align shared
+  metadata and MCP invocation across both representations.
 - Coral skills must include `agents/openai.yaml`. Keep
   `interface.display_name` in the form `Coral` or `Coral <Title Case Suffix>`,
   keep the top-level `SKILL.md` heading equal to that display name, and set

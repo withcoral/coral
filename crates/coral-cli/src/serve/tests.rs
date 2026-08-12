@@ -1,7 +1,8 @@
 use std::net::TcpListener;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use coral_api::v1::{CatalogItemKind, ListCatalogRequest, PaginationRequest, Workspace};
+use coral_api::v1::{CatalogItemKind, ListCatalogRequest, PaginationRequest};
+use coral_client::default_workspace;
 use jsonwebtoken::jwk::{Jwk, ThumbprintHash};
 use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use reqwest::header::WWW_AUTHENTICATE;
@@ -20,8 +21,6 @@ const INITIALIZE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","param
 const OAUTH_ISSUER: &str = "http://localhost:9080";
 const OAUTH_RESOURCE: &str = "http://localhost:1457";
 const SESSION_ISSUER: &str = "https://auth.example";
-const SESSION_PROVIDER_ISSUER: &str = "https://accounts.example";
-const SESSION_PROVIDER_SUBJECT: &str = "alice";
 const SESSION_RESOURCE: &str = "https://coral.example/mcp";
 const REEF_RESOURCE: &str = "https://reef.example";
 
@@ -129,21 +128,21 @@ async fn assert_unauthorized(base: &str, authorization: &str) {
 /// derived from configuration and so reports true even if nobody installed the
 /// session provider. It is the assertion that fails if composition stops gating
 /// gRPC and the listener quietly falls back to the local principal.
-async fn assert_grpc_rejects_unauthenticated(endpoint: &str, workspace: &Workspace) {
+async fn assert_grpc_rejects_unauthenticated(endpoint: &str) {
     let unauthenticated = AppClient::connect(endpoint)
         .await
         .expect("unauthenticated gRPC client");
     let denied = unauthenticated
         .catalog_client()
-        .list_catalog(Request::new(catalog_request(workspace)))
+        .list_catalog(Request::new(catalog_request()))
         .await
         .expect_err("the gRPC data plane must refuse an unauthenticated call");
     assert_eq!(denied.code(), Code::Unauthenticated);
 }
 
-fn catalog_request(workspace: &Workspace) -> ListCatalogRequest {
+fn catalog_request() -> ListCatalogRequest {
     ListCatalogRequest {
-        workspace: Some(workspace.clone()),
+        workspace: Some(default_workspace()),
         catalog_name: String::new(),
         schema_name: String::new(),
         kind: CatalogItemKind::Unspecified as i32,
@@ -161,12 +160,12 @@ fn catalog_request(workspace: &Workspace) -> ListCatalogRequest {
 /// verifier expects. Fixtures the issuer can never emit — an already-expired
 /// token, or one whose `kid` disclaims the key that signed it — still have to be
 /// assembled by hand wherever they are needed.
-fn session_token(signing_key: &[u8], subject: &str, audience: &str) -> String {
+fn session_token(signing_key: &[u8], audience: &str) -> String {
     coral_app::test_session_tokens::issue_access_token(
         SESSION_ISSUER,
         signing_key,
         Duration::from_mins(5),
-        subject,
+        "alice",
         "https://client.example/client.json",
         audience,
     )
@@ -184,7 +183,6 @@ fn session_token(signing_key: &[u8], subject: &str, audience: &str) -> String {
 fn signed_session_token(
     signing_key: &EncodingKey,
     key_id: &str,
-    subject: &str,
     audience: &str,
     issued_at: u64,
     expires_at: u64,
@@ -198,7 +196,7 @@ fn signed_session_token(
         &serde_json::json!({
             "iss": SESSION_ISSUER,
             "aud": audience,
-            "sub": subject,
+            "sub": "alice",
             "jti": token_id,
             "client_id": "https://client.example/client.json",
             "iat": issued_at,
@@ -259,30 +257,7 @@ redirect_uri = 'https://auth.example/auth/oidc/callback'
     );
 }
 
-async fn provision_session_identity(temp: &TempDir) -> (String, Workspace) {
-    let user_id = coral_app::test_session_tokens::provision_test_login(
-        temp.path(),
-        SESSION_PROVIDER_ISSUER,
-        SESSION_PROVIDER_SUBJECT,
-        Some("Alice"),
-        "test-session-pre-v1-attribution",
-    )
-    .await
-    .expect("provision verified session identity");
-    let workspace = Workspace {
-        name: format!("default-{user_id}"),
-    };
-    (user_id, workspace)
-}
-
-fn session_mcp_options(workspace: &Workspace) -> McpOptions {
-    McpOptions {
-        workspace: Some(workspace.clone()),
-        ..McpOptions::default()
-    }
-}
-
-async fn assert_grpc_authenticated(server: &RunningServer, token: &str, workspace: &Workspace) {
+async fn assert_grpc_authenticated(server: &RunningServer, token: &str) {
     let authenticated = connect_with_loopback_bearer(
         server.endpoint_uri(),
         BearerToken::new(token).expect("bearer token"),
@@ -291,18 +266,13 @@ async fn assert_grpc_authenticated(server: &RunningServer, token: &str, workspac
     .expect("authenticated gRPC client");
     authenticated
         .catalog_client()
-        .list_catalog(Request::new(catalog_request(workspace)))
+        .list_catalog(Request::new(catalog_request()))
         .await
         .expect("authenticated catalog call");
 }
 
-async fn assert_authenticated_data(
-    server: &RunningServer,
-    mcp_endpoint: &str,
-    token: &str,
-    workspace: &Workspace,
-) {
-    assert_grpc_authenticated(server, token, workspace).await;
+async fn assert_authenticated_data(server: &RunningServer, mcp_endpoint: &str, token: &str) {
+    assert_grpc_authenticated(server, token).await;
     assert_catalog_tool(mcp_endpoint.to_string(), Some(token)).await;
 }
 
@@ -320,7 +290,6 @@ async fn assert_bearer_rejected(
     server: &RunningServer,
     mcp_endpoint: &str,
     token: &str,
-    workspace: &Workspace,
 ) -> BearerRejection {
     let client = connect_with_loopback_bearer(
         server.endpoint_uri(),
@@ -330,7 +299,7 @@ async fn assert_bearer_rejected(
     .expect("gRPC client");
     let denied = client
         .catalog_client()
-        .list_catalog(Request::new(catalog_request(workspace)))
+        .list_catalog(Request::new(catalog_request()))
         .await
         .expect_err("invalid session token must fail gRPC");
     let grpc_code = denied.code();
@@ -541,12 +510,11 @@ async fn session_authenticated_companion_gates_grpc_and_mcp() {
         EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
             .expect("P-256 signing key");
     write_session_config(&temp, signing_key.as_ref());
-    let (user_id, workspace) = provision_session_identity(&temp).await;
     let server = start(
         ServerBuilder::configured_standalone_grpc()
             .with_config_dir(temp.path())
             .with_noop_feedback_uploads(),
-        session_mcp_options(&workspace),
+        McpOptions::default(),
     )
     .await
     .expect("start authenticated composite server");
@@ -573,16 +541,16 @@ async fn session_authenticated_companion_gates_grpc_and_mcp() {
 
     assert_unauthorized(&base, "Bearer wrong-token").await;
 
-    let wrong_audience = session_token(signing_key.as_ref(), &user_id, "https://other.example/mcp");
+    let wrong_audience = session_token(signing_key.as_ref(), "https://other.example/mcp");
     assert_unauthorized(&base, &format!("Bearer {wrong_audience}")).await;
 
-    assert_grpc_rejects_unauthenticated(server.endpoint_uri(), &workspace).await;
+    assert_grpc_rejects_unauthenticated(server.endpoint_uri()).await;
 
-    let token = session_token(signing_key.as_ref(), &user_id, &resource);
-    assert_authenticated_data(&server, &format!("{base}/mcp"), &token, &workspace).await;
+    let token = session_token(signing_key.as_ref(), &resource);
+    assert_authenticated_data(&server, &format!("{base}/mcp"), &token).await;
 
-    let reef_token = session_token(signing_key.as_ref(), &user_id, REEF_RESOURCE);
-    assert_grpc_authenticated(&server, &reef_token, &workspace).await;
+    let reef_token = session_token(signing_key.as_ref(), REEF_RESOURCE);
+    assert_grpc_authenticated(&server, &reef_token).await;
     assert_unauthorized(&base, &format!("Bearer {reef_token}")).await;
 
     // Readiness observes the backend, not just the port: stopping gRPC while MCP
@@ -621,7 +589,6 @@ async fn reef_only_audience_authenticates_private_grpc_without_mcp_http() {
         EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
             .expect("P-256 signing key");
     write_reef_only_session_config(&temp, signing_key.as_ref());
-    let (user_id, workspace) = provision_session_identity(&temp).await;
 
     let server = start(
         ServerBuilder::configured_standalone_grpc()
@@ -635,10 +602,10 @@ async fn reef_only_audience_authenticates_private_grpc_without_mcp_http() {
     assert!(server.grpc_authentication_enabled());
     assert!(server.mcp_http_addr().is_none());
     assert!(server.oauth_addr().is_some());
-    assert_grpc_rejects_unauthenticated(server.endpoint_uri(), &workspace).await;
+    assert_grpc_rejects_unauthenticated(server.endpoint_uri()).await;
 
-    let reef_token = session_token(signing_key.as_ref(), &user_id, REEF_RESOURCE);
-    assert_grpc_authenticated(&server, &reef_token, &workspace).await;
+    let reef_token = session_token(signing_key.as_ref(), REEF_RESOURCE);
+    assert_grpc_authenticated(&server, &reef_token).await;
 
     server.shutdown().await.expect("shutdown Reef-only server");
 }
@@ -650,7 +617,6 @@ async fn session_failures_and_restart_are_fail_closed() {
         EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
             .expect("P-256 signing key");
     write_session_config(&temp, signing_key.as_ref());
-    let (user_id, workspace) = provision_session_identity(&temp).await;
 
     let encoding_key = EncodingKey::from_ec_der(signing_key.as_ref());
     let key_id = Jwk::from_encoding_key(&encoding_key, Algorithm::ES256)
@@ -660,28 +626,22 @@ async fn session_failures_and_restart_are_fail_closed() {
         .duration_since(UNIX_EPOCH)
         .expect("current time")
         .as_secs();
-    let valid = session_token(signing_key.as_ref(), &user_id, SESSION_RESOURCE);
+    let valid = session_token(signing_key.as_ref(), SESSION_RESOURCE);
     let expired = signed_session_token(
         &encoding_key,
         &key_id,
-        &user_id,
         SESSION_RESOURCE,
         now.saturating_sub(300),
         now.saturating_sub(120),
         "expired-token",
     );
-    let wrong_audience = session_token(
-        signing_key.as_ref(),
-        &user_id,
-        "https://coral.example/not-mcp",
-    );
+    let wrong_audience = session_token(signing_key.as_ref(), "https://coral.example/not-mcp");
     let forged_key =
         EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
             .expect("forged P-256 signing key");
     let forged = signed_session_token(
         &EncodingKey::from_ec_der(forged_key.as_ref()),
         &key_id,
-        &user_id,
         SESSION_RESOURCE,
         now.saturating_sub(1),
         now + 300,
@@ -692,7 +652,7 @@ async fn session_failures_and_restart_are_fail_closed() {
         ServerBuilder::configured_standalone_grpc()
             .with_config_dir(temp.path())
             .with_noop_feedback_uploads(),
-        session_mcp_options(&workspace),
+        McpOptions::default(),
     )
     .await
     .expect("start authenticated composite server");
@@ -701,25 +661,23 @@ async fn session_failures_and_restart_are_fail_closed() {
         server.mcp_http_addr().expect("MCP HTTP endpoint")
     );
 
-    let expired_rejection =
-        assert_bearer_rejected(&server, &mcp_endpoint, &expired, &workspace).await;
+    let expired_rejection = assert_bearer_rejected(&server, &mcp_endpoint, &expired).await;
     let wrong_audience_rejection =
-        assert_bearer_rejected(&server, &mcp_endpoint, &wrong_audience, &workspace).await;
+        assert_bearer_rejected(&server, &mcp_endpoint, &wrong_audience).await;
     let malformed_rejection =
-        assert_bearer_rejected(&server, &mcp_endpoint, "not-a-session-token", &workspace).await;
-    let forged_rejection =
-        assert_bearer_rejected(&server, &mcp_endpoint, &forged, &workspace).await;
+        assert_bearer_rejected(&server, &mcp_endpoint, "not-a-session-token").await;
+    let forged_rejection = assert_bearer_rejected(&server, &mcp_endpoint, &forged).await;
     assert_eq!(expired_rejection, wrong_audience_rejection);
     assert_eq!(expired_rejection, malformed_rejection);
     assert_eq!(expired_rejection, forged_rejection);
-    assert_authenticated_data(&server, &mcp_endpoint, &valid, &workspace).await;
+    assert_authenticated_data(&server, &mcp_endpoint, &valid).await;
     server.shutdown().await.expect("first shutdown");
 
     let restarted = start(
         ServerBuilder::configured_standalone_grpc()
             .with_config_dir(temp.path())
             .with_noop_feedback_uploads(),
-        session_mcp_options(&workspace),
+        McpOptions::default(),
     )
     .await
     .expect("restart authenticated composite server");
@@ -727,7 +685,7 @@ async fn session_failures_and_restart_are_fail_closed() {
         "http://{}/mcp",
         restarted.mcp_http_addr().expect("restarted MCP endpoint")
     );
-    assert_authenticated_data(&restarted, &restarted_mcp, &valid, &workspace).await;
+    assert_authenticated_data(&restarted, &restarted_mcp, &valid).await;
     restarted.shutdown().await.expect("restarted shutdown");
 }
 

@@ -2,6 +2,7 @@ import { generatePath } from 'react-router'
 import type { RouteObject } from 'react-router'
 
 const HOME_PATH = '/'
+const LOGIN_PATH = '/login'
 const ONBOARDING_PATH = '/onboarding'
 const WORKSPACES_PATH = '/workspaces'
 const WORKSPACE_FUNCTIONS_PATH = '/workspaces/:workspaceId/functions'
@@ -21,6 +22,14 @@ export const routeDefinitions = {
   home: {
     path: HOME_PATH,
     toPath: () => HOME_PATH,
+  },
+  // The one public route with call sites spread across the app: the interstitial
+  // form, the callback error boundary, and the redirect every expired session
+  // produces all name it, and two of those live outside `routes/`. Callers add
+  // their own query, as they do for every other route here.
+  login: {
+    path: LOGIN_PATH,
+    toPath: () => LOGIN_PATH,
   },
   onboarding: {
     path: ONBOARDING_PATH,

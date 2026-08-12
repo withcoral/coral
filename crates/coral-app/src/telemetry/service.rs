@@ -1,4 +1,4 @@
-//! Implements the gRPC `TraceService` for local trace inspection.
+//! Implements the gRPC `TraceService` for trace inspection.
 
 use coral_api::v1::trace_service_server::TraceService as TraceServiceApi;
 use coral_api::v1::{
@@ -29,20 +29,18 @@ const OWNED_WORKSPACE_PAGE_SIZE: usize = 200;
 #[derive(Clone)]
 pub(crate) struct TraceService {
     traces: TraceManager,
-    workspace_authorizer: Option<WorkspaceAuthorizer>,
+    workspace_authorizer: WorkspaceAuthorizer,
 }
 
 impl TraceService {
-    pub(crate) fn new(trace_manager: TraceManager) -> Self {
+    pub(crate) fn new(
+        trace_manager: TraceManager,
+        workspace_authorizer: WorkspaceAuthorizer,
+    ) -> Self {
         Self {
             traces: trace_manager,
-            workspace_authorizer: None,
+            workspace_authorizer,
         }
-    }
-
-    pub(crate) fn with_authorizer(mut self, authorizer: WorkspaceAuthorizer) -> Self {
-        self.workspace_authorizer = Some(authorizer);
-        self
     }
 }
 
@@ -59,16 +57,15 @@ impl TraceServiceApi for TraceService {
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_filter_from_proto(request.workspace.as_ref())?;
-            let access_scope =
-                trace_access_scope(workspace_name, workspace_authorizer.as_ref(), &principal)
-                    .await?;
+            let scope =
+                trace_access_scope(workspace_name, &workspace_authorizer, &principal).await?;
             let page_size = normalize_page_size(request.page_size);
             let offset = parse_page_token(&request.page_token)?;
             let view = trace_list_view_from_proto(request.view)?;
             let page = traces
                 .list_traces(ListTracesQuery {
                     view,
-                    scope: access_scope,
+                    scope,
                     page_size,
                     offset,
                 })
@@ -99,9 +96,8 @@ impl TraceServiceApi for TraceService {
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_filter_from_proto(request.workspace.as_ref())?;
-            let access_scope =
-                trace_access_scope(workspace_name, workspace_authorizer.as_ref(), &principal)
-                    .await?;
+            let scope =
+                trace_access_scope(workspace_name, &workspace_authorizer, &principal).await?;
             if request.trace_id.trim().is_empty() {
                 return Err(Status::new(
                     Code::InvalidArgument,
@@ -112,7 +108,7 @@ impl TraceServiceApi for TraceService {
             let trace = traces
                 .get_trace(GetTraceQuery {
                     trace_id: request.trace_id,
-                    scope: access_scope,
+                    scope,
                     view,
                 })
                 .await
@@ -129,11 +125,9 @@ impl TraceServiceApi for TraceService {
 /// everything; every other caller is confined to the workspaces they own.
 async fn trace_access_scope(
     workspace_name: Option<WorkspaceName>,
-    authorizer: Option<&WorkspaceAuthorizer>,
+    authorizer: &WorkspaceAuthorizer,
     principal: &Principal,
 ) -> Result<TraceAccessScope, Status> {
-    let authorizer =
-        authorizer.ok_or_else(|| Status::internal("workspace authorization is unavailable"))?;
     match workspace_name {
         Some(workspace_name) => {
             authorizer
@@ -161,7 +155,7 @@ async fn owned_workspace_scope(
     let mut workspaces = Vec::new();
     loop {
         let page = authorizer
-            .owned_workspace_page_for_federated_user(
+            .owned_workspace_page_for_user(
                 principal,
                 after_workspace.as_ref(),
                 OWNED_WORKSPACE_PAGE_SIZE,
@@ -383,27 +377,24 @@ mod tests {
 
         let denied = TraceServiceApi::list_traces(
             &fixture.service,
-            list_request(&fixture.member, Some("alpha"), 10, "not-a-token"),
+            list_request(
+                &fixture.member,
+                Some("alpha"),
+                10,
+                "invalid-before-authorization",
+            ),
         )
         .await
-        .expect_err("authorization must precede invalid token rejection");
+        .expect_err("workspace members cannot inspect traces");
         assert_eq!(denied.code(), Code::PermissionDenied);
 
         let concealed = TraceServiceApi::get_trace(
             &fixture.service,
-            get_request(&fixture.owner, "gamma-trace", Some("gamma")),
+            get_request(&fixture.nonmember, "", Some("alpha")),
         )
         .await
-        .expect_err("unowned trace must be concealed");
+        .expect_err("nonmember workspace must be concealed before trace validation");
         assert_eq!(concealed.code(), Code::NotFound);
-
-        let blank = TraceServiceApi::get_trace(
-            &fixture.service,
-            get_request(&fixture.owner, "", Some("gamma")),
-        )
-        .await
-        .expect_err("authorization must precede blank trace ID rejection");
-        assert_eq!(blank.code(), Code::NotFound);
     }
 
     #[tokio::test]
@@ -429,6 +420,15 @@ mod tests {
         assert_eq!(trace_ids(&second), vec!["alpha-trace"]);
         assert!(second.next_page_token.is_empty());
 
+        let member_only = TraceServiceApi::list_traces(
+            &fixture.service,
+            list_request(&fixture.member, None, 10, ""),
+        )
+        .await
+        .expect("global listing includes only owned workspaces")
+        .into_inner();
+        assert!(member_only.traces.is_empty());
+
         for concealed_trace_id in ["gamma-trace", "host-trace"] {
             let status = TraceServiceApi::get_trace(
                 &fixture.service,
@@ -438,6 +438,29 @@ mod tests {
             .expect_err("unowned global trace must be concealed");
             assert_eq!(status.code(), Code::NotFound);
         }
+
+        let strict_local = TraceServiceApi::list_traces(
+            &fixture.service,
+            list_request(
+                &Principal::local(),
+                None,
+                10,
+                "invalid-before-authorization",
+            ),
+        )
+        .await
+        .expect_err("shared mode rejects the local principal before request validation");
+        assert_eq!(strict_local.code(), Code::PermissionDenied);
+
+        let agent = Principal::parse(fixture.owner.id().as_str(), PrincipalKind::Agent)
+            .expect("owner agent");
+        let agent_denied = TraceServiceApi::list_traces(
+            &fixture.service,
+            list_request(&agent, None, 10, "invalid-before-authorization"),
+        )
+        .await
+        .expect_err("global trace access requires a user principal");
+        assert_eq!(agent_denied.code(), Code::PermissionDenied);
 
         let local = TraceServiceApi::list_traces(
             &fixture.local_service,
@@ -450,46 +473,6 @@ mod tests {
             trace_ids(&local),
             vec!["beta-trace", "gamma-trace", "alpha-trace", "host-trace"]
         );
-    }
-
-    #[tokio::test]
-    async fn owner_scoped_calls_read_projected_proto_fields() {
-        let fixture = service_fixture().await;
-        let response = TraceServiceApi::list_traces(
-            &fixture.service,
-            list_request(&fixture.owner, Some("alpha"), 10, ""),
-        )
-        .await
-        .expect("owner lists alpha traces")
-        .into_inner();
-        let summary = response.traces.first().expect("alpha trace");
-        assert_eq!(summary.trace_id, "alpha-trace");
-        assert_eq!(
-            summary.operation_kind,
-            TraceOperationKind::Unspecified as i32
-        );
-        assert!(summary.operation_name.is_empty());
-        assert_eq!(
-            summary.invocation_kind,
-            TraceInvocationKind::Unspecified as i32
-        );
-
-        let detail = TraceServiceApi::get_trace(
-            &fixture.service,
-            get_request(&fixture.owner, "alpha-trace", Some("alpha")),
-        )
-        .await
-        .expect("get alpha trace")
-        .into_inner();
-        assert_eq!(detail.spans.len(), 2);
-
-        let status = TraceServiceApi::get_trace(
-            &fixture.service,
-            get_request(&fixture.owner, "beta-trace", Some("alpha")),
-        )
-        .await
-        .expect_err("beta trace should not match alpha workspace");
-        assert_eq!(status.code(), Code::NotFound);
     }
 
     #[tokio::test]
@@ -527,6 +510,18 @@ mod tests {
         let detail_summary = detail.summary.expect("query stream detail summary");
         assert_eq!(detail_summary, *summary);
         assert_eq!(detail.spans.len(), 2);
+        let mixed = TraceServiceApi::get_trace(
+            &fixture.service,
+            view_get_request(
+                &fixture.owner,
+                "mixed-trace",
+                Some("alpha"),
+                TraceView::QueryStream,
+            ),
+        )
+        .await
+        .expect_err("mixed-workspace trace must be concealed");
+        assert_eq!(mixed.code(), Code::NotFound);
 
         let unknown_view = TraceServiceApi::list_traces(
             &fixture.service,
@@ -543,17 +538,12 @@ mod tests {
         .await
         .expect_err("unknown view is rejected");
         assert_eq!(unknown_view.code(), Code::InvalidArgument);
-    }
-
-    #[tokio::test]
-    async fn owner_scoped_query_stream_listing_requires_a_workspace() {
-        let fixture = fixture_with_traces(write_query_stream_trace_fixture).await;
         let status = TraceServiceApi::list_traces(
             &fixture.service,
             view_list_request(&fixture.owner, None, TraceView::QueryStream),
         )
         .await
-        .expect_err("owner-scoped query-stream listing has no scoped read yet");
+        .expect_err("query-stream view has no owner-scoped read yet");
         assert_eq!(status.code(), Code::PermissionDenied);
     }
 
@@ -563,6 +553,7 @@ mod tests {
         local_service: TraceService,
         owner: Principal,
         member: Principal,
+        nonmember: Principal,
     }
 
     async fn fixture_with_traces(write_traces: impl FnOnce(&Path)) -> ServiceFixture {
@@ -579,44 +570,40 @@ mod tests {
         db.migrate().await.expect("migrate sqlite");
         let owner_id = provision_user(&db, "trace-owner").await;
         let member_id = provision_user(&db, "trace-member").await;
+        let nonmember_id = provision_user(&db, "trace-nonmember").await;
+        let gamma_owner_id = provision_user(&db, "gamma-owner").await;
 
-        let mut tx = db.begin().await.expect("begin workspace setup");
-        for workspace in ["alpha", "beta", "gamma"] {
-            tx.workspaces()
-                .create(workspace, 1)
-                .await
-                .expect("create workspace");
-            assert!(
-                tx.workspaces()
-                    .hold_for_child_mutation(workspace)
-                    .await
-                    .expect("hold workspace")
-            );
-        }
-        for (workspace, user_id, role) in [
-            ("alpha", owner_id.as_str(), MemberRole::Owner),
-            ("beta", owner_id.as_str(), MemberRole::Owner),
-            ("alpha", member_id.as_str(), MemberRole::Member),
-            ("gamma", member_id.as_str(), MemberRole::Owner),
+        let mut session = db.as_ref();
+        for (workspace, owner_id) in [
+            ("alpha", owner_id.as_str()),
+            ("beta", owner_id.as_str()),
+            ("gamma", gamma_owner_id.as_str()),
         ] {
-            tx.workspace_members()
-                .insert(workspace, user_id, role, 2)
+            session
+                .workspaces()
+                .create_with_owner(workspace, owner_id, 1)
                 .await
-                .expect("insert workspace membership");
+                .expect("create owned workspace");
         }
-        tx.commit().await.expect("commit workspace setup");
+        session
+            .workspaces()
+            .add_member("alpha", &member_id, MemberRole::Member, 2)
+            .await
+            .expect("add workspace member");
 
         let trace_store = temp.path().join("trace-store");
         std::fs::create_dir_all(&trace_store).expect("trace store dir");
         write_traces(&trace_store);
-        let traces = TraceManager::new(trace_store, Duration::from_mins(1));
+        let manager = TraceManager::new(trace_store, Duration::from_mins(1));
         ServiceFixture {
-            service: TraceService::new(traces.clone())
-                .with_authorizer(WorkspaceAuthorizer::new(Arc::clone(&db))),
-            local_service: TraceService::new(traces)
-                .with_authorizer(WorkspaceAuthorizer::trusting_local_principal(db)),
+            service: TraceService::new(manager.clone(), WorkspaceAuthorizer::new(Arc::clone(&db))),
+            local_service: TraceService::new(
+                manager,
+                WorkspaceAuthorizer::trusting_local_principal(db),
+            ),
             owner: Principal::parse(&owner_id, PrincipalKind::User).expect("owner"),
             member: Principal::parse(&member_id, PrincipalKind::User).expect("member"),
+            nonmember: Principal::parse(&nonmember_id, PrincipalKind::User).expect("nonmember"),
             _temp: temp,
         }
     }
@@ -630,20 +617,10 @@ mod tests {
         *host_trace
             .get_mut("attributes_json")
             .expect("trace attributes") = json!(r#"{"sql":"SELECT host","status":"ok"}"#);
-        let mut alpha_grpc = trace_record_json("alpha-trace", "alpha-grpc", "alpha", 5, 35);
-        let alpha_grpc_object = alpha_grpc.as_object_mut().expect("gRPC record object");
-        alpha_grpc_object.insert("name".to_string(), json!("grpc.request"));
-        alpha_grpc_object.insert("attributes_json".to_string(), json!("{}"));
-        let mut alpha_query = trace_record_json("alpha-trace", "alpha-span", "alpha", 10, 30);
-        alpha_query
-            .as_object_mut()
-            .expect("query record object")
-            .insert("parent_span_id".to_string(), json!("alpha-grpc"));
         write_trace_records(
             trace_store,
             &[
-                alpha_grpc,
-                alpha_query,
+                trace_record_json("alpha-trace", "alpha-span", "alpha", 10, 30),
                 trace_record_json("beta-trace", "beta-span", "beta", 40, 60),
                 trace_record_json("gamma-trace", "gamma-span", "gamma", 30, 50),
                 host_trace,
@@ -652,8 +629,10 @@ mod tests {
     }
 
     async fn provision_user(db: &CoralDb, subject: &str) -> String {
-        let UpsertLoginOutcome::Upserted(user) = db
-            .upsert_user_and_ensure_default_workspace("issuer", subject, None, 1)
+        let mut session = db;
+        let UpsertLoginOutcome::Upserted(user) = session
+            .users()
+            .upsert_login("issuer", subject, None, 1)
             .await
             .expect("provision user")
         else {
@@ -692,15 +671,9 @@ mod tests {
         workspace_name: Option<&str>,
         view: TraceView,
     ) -> Request<ListTracesRequest> {
-        authenticated_request(
-            ListTracesRequest {
-                page_size: 10,
-                page_token: String::new(),
-                workspace: workspace_name.map(workspace),
-                view: view as i32,
-            },
-            principal,
-        )
+        let mut request = list_request(principal, workspace_name, 1, "");
+        request.get_mut().view = view as i32;
+        request
     }
 
     fn get_request(
@@ -724,14 +697,9 @@ mod tests {
         workspace_name: Option<&str>,
         view: TraceView,
     ) -> Request<GetTraceRequest> {
-        authenticated_request(
-            GetTraceRequest {
-                trace_id: trace_id.to_string(),
-                workspace: workspace_name.map(workspace),
-                view: view as i32,
-            },
-            principal,
-        )
+        let mut request = get_request(principal, trace_id, workspace_name);
+        request.get_mut().view = view as i32;
+        request
     }
 
     fn trace_ids(response: &coral_api::v1::ListTracesResponse) -> Vec<&str> {
@@ -789,7 +757,6 @@ mod tests {
                     "coral.stream.entry": true,
                     "coral.stream.kind": "query",
                     "coral.stream.name": "sql",
-                    "workspace": "alpha",
                     "sql": "SELECT 42",
                     "row_count": 1,
                     "status": "ok",
@@ -797,7 +764,15 @@ mod tests {
                 .to_string()
             ),
         );
-        write_trace_records(trace_store, &[tool, nested]);
+        let mut mixed_tool = tool.clone();
+        let mixed_tool_object = mixed_tool.as_object_mut().expect("mixed tool object");
+        mixed_tool_object.insert("trace_id".to_string(), json!("mixed-trace"));
+        mixed_tool_object.insert("span_id".to_string(), json!("mixed-tool"));
+        let mut sentinel = trace_record_json("mixed-trace", "beta-query", "beta", 20, 30);
+        let sentinel_object = sentinel.as_object_mut().expect("sentinel record object");
+        sentinel_object.insert("parent_span_id".to_string(), json!("remote-parent"));
+        sentinel_object.insert("parent_span_is_remote".to_string(), json!(true));
+        write_trace_records(trace_store, &[tool, nested, mixed_tool, sentinel]);
     }
 
     fn trace_record_json(

@@ -3,6 +3,7 @@ import { style } from '@vanilla-extract/css'
 import { theme } from '@/wax/theme/theme.css'
 
 export const code = style({
+  gridColumn: 2,
   letterSpacing: '0.08em',
   lineHeight: '32px',
 })
@@ -16,6 +17,13 @@ export const codePanel = style({
   flexDirection: 'column',
   gap: 4,
   padding: 16,
+})
+
+export const codeRow = style({
+  alignItems: 'center',
+  display: 'grid',
+  gridTemplateColumns: '1fr auto 1fr',
+  gap: 12,
 })
 
 export const error = style({

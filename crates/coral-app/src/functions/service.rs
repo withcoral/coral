@@ -25,20 +25,18 @@ use crate::workspaces::{WorkspaceAction, WorkspaceAuthorizer, WorkspaceName};
 #[derive(Clone)]
 pub(crate) struct FunctionService {
     queries: QueryManager,
-    workspace_authorizer: Option<WorkspaceAuthorizer>,
+    workspace_authorizer: WorkspaceAuthorizer,
 }
 
 impl FunctionService {
-    pub(crate) fn new(query_manager: QueryManager) -> Self {
+    pub(crate) fn new(
+        query_manager: QueryManager,
+        workspace_authorizer: WorkspaceAuthorizer,
+    ) -> Self {
         Self {
             queries: query_manager,
-            workspace_authorizer: None,
+            workspace_authorizer,
         }
-    }
-
-    pub(crate) fn with_authorizer(mut self, authorizer: WorkspaceAuthorizer) -> Self {
-        self.workspace_authorizer = Some(authorizer);
-        self
     }
 }
 
@@ -56,7 +54,7 @@ impl FunctionServiceApi for FunctionService {
             let inner = request.into_inner();
             let workspace_name = workspace_name_from_proto(inner.workspace.as_ref())?;
             authorize(
-                workspace_authorizer.as_ref(),
+                &workspace_authorizer,
                 &principal,
                 &workspace_name,
                 WorkspaceAction::Manage,
@@ -96,7 +94,7 @@ impl FunctionServiceApi for FunctionService {
             let inner = request.into_inner();
             let workspace_name = workspace_name_from_proto(inner.workspace.as_ref())?;
             authorize(
-                workspace_authorizer.as_ref(),
+                &workspace_authorizer,
                 &principal,
                 &workspace_name,
                 WorkspaceAction::Read,
@@ -126,7 +124,7 @@ impl FunctionServiceApi for FunctionService {
             let inner = request.into_inner();
             let workspace_name = workspace_name_from_proto(inner.workspace.as_ref())?;
             authorize(
-                workspace_authorizer.as_ref(),
+                &workspace_authorizer,
                 &principal,
                 &workspace_name,
                 WorkspaceAction::Manage,
@@ -145,13 +143,11 @@ impl FunctionServiceApi for FunctionService {
 }
 
 async fn authorize(
-    authorizer: Option<&WorkspaceAuthorizer>,
+    authorizer: &WorkspaceAuthorizer,
     principal: &crate::identity::Principal,
     workspace: &WorkspaceName,
     action: WorkspaceAction,
 ) -> Result<(), Status> {
-    let authorizer =
-        authorizer.ok_or_else(|| Status::internal("workspace authorization is unavailable"))?;
     authorizer
         .authorize(principal, workspace, action)
         .await
@@ -250,64 +246,7 @@ fn function_table_function_publish_to_proto(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
-    use tempfile::TempDir;
-    use tonic::Code;
-
     use super::*;
-    use crate::identity::{Principal, PrincipalKind};
-    use crate::state::AppStateLayout;
-    use crate::state::db::{
-        AddMemberOutcome, CoralDb, DatabaseConfig, DbRepos, ResolvedDatabaseConfig,
-        UpsertLoginOutcome,
-    };
-    use crate::workspaces::{MemberRole, WorkspaceAction, WorkspaceAuthorizer};
-
-    #[tokio::test]
-    async fn function_actions_enforce_read_and_manage_policy() {
-        let (_temp, db) = database().await;
-        let owner_id = provision_user(&db, "owner").await;
-        let member_id = provision_user(&db, "member").await;
-        let workspace =
-            WorkspaceName::parse(&format!("default-{owner_id}")).expect("owner workspace");
-        let mut session = db.as_ref();
-        assert!(matches!(
-            session
-                .workspaces()
-                .add_member(workspace.as_str(), &member_id, MemberRole::Member, 2)
-                .await
-                .expect("add member"),
-            AddMemberOutcome::Added(_)
-        ));
-        let authorizer = WorkspaceAuthorizer::new(db);
-
-        let unavailable = authorize(None, &Principal::local(), &workspace, WorkspaceAction::Read)
-            .await
-            .expect_err("missing authorizer must never bypass policy");
-        assert_eq!(unavailable.code(), Code::Internal);
-
-        for kind in [PrincipalKind::User, PrincipalKind::Agent] {
-            let principal = Principal::parse(&member_id, kind).expect("member principal");
-            authorize(
-                Some(&authorizer),
-                &principal,
-                &workspace,
-                WorkspaceAction::Read,
-            )
-            .await
-            .expect("member principals can list functions");
-            let denied = authorize(
-                Some(&authorizer),
-                &principal,
-                &workspace,
-                WorkspaceAction::Manage,
-            )
-            .await
-            .expect_err("members and agents cannot mutate functions");
-            assert_eq!(denied.code(), Code::PermissionDenied);
-        }
-    }
 
     #[test]
     fn invalid_function_listing_keeps_inventory_identity_and_error() {
@@ -330,31 +269,5 @@ mod tests {
             function.workspace.expect("workspace").name,
             workspace.as_str()
         );
-    }
-
-    async fn database() -> (TempDir, Arc<CoralDb>) {
-        let temp = TempDir::new().expect("temp dir");
-        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
-        let DatabaseConfig::Sqlite { path } = DatabaseConfig::load(&layout).expect("config") else {
-            panic!("default test database must be SQLite")
-        };
-        let db = Arc::new(
-            CoralDb::open(ResolvedDatabaseConfig::Sqlite { path })
-                .await
-                .expect("open sqlite"),
-        );
-        db.migrate().await.expect("migrate sqlite");
-        (temp, db)
-    }
-
-    async fn provision_user(db: &CoralDb, subject: &str) -> String {
-        let UpsertLoginOutcome::Upserted(user) = db
-            .upsert_user_and_ensure_default_workspace("issuer", subject, None, 1)
-            .await
-            .expect("provision user")
-        else {
-            panic!("new subject should create a user")
-        };
-        user.user_id
     }
 }

@@ -42,6 +42,8 @@
 )]
 
 mod auth;
+#[cfg(test)]
+mod authorization_service_tests;
 /// Bootstrap entrypoints and local server assembly.
 pub mod bootstrap;
 mod catalog;
