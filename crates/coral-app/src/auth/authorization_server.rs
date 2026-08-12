@@ -106,7 +106,7 @@ impl CoralAuthorizationServer {
         }
     }
 
-    /// Attaches the app database used to provision authenticated users.
+    /// Attaches the app database used to persist verified identities.
     #[must_use]
     #[expect(dead_code, reason = "used higher in the PR stack")]
     pub(crate) fn with_database(mut self, database: Arc<CoralDb>) -> Self {
@@ -333,7 +333,8 @@ impl AuthorizationServerHttpState {
 
 #[async_trait::async_trait]
 trait LoginCodeStore: CodeStore {
-    async fn provision_login(
+    /// Persists the verified identity before an authorization code is issued.
+    async fn persist_login_identity(
         &self,
         issuer: &str,
         subject: &str,
@@ -344,7 +345,7 @@ trait LoginCodeStore: CodeStore {
 
 #[async_trait::async_trait]
 impl LoginCodeStore for InMemoryStateStore {
-    async fn provision_login(
+    async fn persist_login_identity(
         &self,
         _issuer: &str,
         _subject: &str,
@@ -352,7 +353,7 @@ impl LoginCodeStore for InMemoryStateStore {
         _pre_v1_task_attribution_id: &str,
     ) -> Result<UpsertLoginOutcome, AppError> {
         Err(AppError::Unavailable(
-            "login provisioning requires a database".to_string(),
+            "login identity persistence requires a database".to_string(),
         ))
     }
 }
@@ -405,7 +406,7 @@ impl CodeStore for DbBackedLoginCodeStore {
 
 #[async_trait::async_trait]
 impl LoginCodeStore for DbBackedLoginCodeStore {
-    async fn provision_login(
+    async fn persist_login_identity(
         &self,
         issuer: &str,
         subject: &str,
@@ -414,7 +415,7 @@ impl LoginCodeStore for DbBackedLoginCodeStore {
     ) -> Result<UpsertLoginOutcome, AppError> {
         let now_unix_nanos = now_unix_nanos_i64()?;
         self.database
-            .provision_login_and_reattribute_pre_v1_tasks(
+            .persist_login_identity_and_reattribute_legacy_tasks(
                 issuer,
                 subject,
                 display_name,

@@ -1,12 +1,14 @@
 //! Transactional pre-v1 task-attribution rekeying.
 
-#![cfg_attr(not(test), expect(dead_code, reason = "used higher in the PR stack"))]
-
 use super::repositories::users::UpsertLoginOutcome;
 use super::{CoralDb, DbError, DbRepos};
 
 impl CoralDb {
-    pub(crate) async fn provision_login_and_reattribute_pre_v1_tasks(
+    /// Persists one verified login identity and updates only matching pre-v1 task attribution.
+    ///
+    /// The attribution update rewrites only matching historical task metadata. It does not create,
+    /// select, or modify any workspace, membership, or permission.
+    pub(crate) async fn persist_login_identity_and_reattribute_legacy_tasks(
         &self,
         issuer: &str,
         subject: &str,
@@ -24,12 +26,14 @@ impl CoralDb {
             return Ok(outcome);
         };
         tx.tasks()
-            .reattribute_pre_v1_tasks_to_user(pre_v1_task_attribution_id, &user.user_id)
+            .reattribute_legacy_tasks_to_user(pre_v1_task_attribution_id, &user.user_id)
             .await?;
         tx.commit().await?;
         Ok(outcome)
     }
-    pub(crate) async fn reattribute_pre_v1_tasks_to_user(
+
+    #[cfg(test)]
+    pub(crate) async fn reattribute_legacy_tasks_to_user(
         &self,
         pre_v1_task_attribution_id: &str,
         user_id: &str,
@@ -37,7 +41,7 @@ impl CoralDb {
         let mut tx = self.begin().await?;
         let updated = tx
             .tasks()
-            .reattribute_pre_v1_tasks_to_user(pre_v1_task_attribution_id, user_id)
+            .reattribute_legacy_tasks_to_user(pre_v1_task_attribution_id, user_id)
             .await?;
         tx.commit().await?;
         Ok(updated)
@@ -58,7 +62,7 @@ mod tests {
     };
 
     #[tokio::test]
-    async fn reattributes_only_the_pre_v1_task_digest() {
+    async fn reattributes_only_matching_legacy_task_metadata() {
         let temp = tempdir().expect("temp dir");
         let db = open_sqlite(&temp).await;
         let user_id = create_user(&db, "rekey").await;
@@ -86,7 +90,7 @@ mod tests {
             TaskCreationResult::Created
         );
         assert_eq!(
-            db.reattribute_pre_v1_tasks_to_user("pre-v1-digest", &user_id)
+            db.reattribute_legacy_tasks_to_user("pre-v1-digest", &user_id)
                 .await
                 .expect("reattribute"),
             1
