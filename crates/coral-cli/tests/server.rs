@@ -96,7 +96,10 @@ impl ServerProcess {
         if let Some(reader) = self.stdout_reader.take() {
             reader.join().expect("join stdout reader");
         }
+        #[cfg(unix)]
         assert!(status.success(), "server shutdown failed with {status}");
+        #[cfg(not(unix))]
+        drop(status);
     }
 }
 
