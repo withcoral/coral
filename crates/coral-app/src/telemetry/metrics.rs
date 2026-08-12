@@ -377,8 +377,9 @@ mod tests {
         };
         let points = gauge.data_points().collect::<Vec<_>>();
         assert_eq!(points.len(), 1);
-        assert!(points[0].attributes().next().is_none());
-        assert_eq!(points[0].value(), expected);
+        let point = points.first().expect("active query gauge point");
+        assert!(point.attributes().next().is_none());
+        assert_eq!(point.value(), expected);
     }
 
     fn assert_query_memory_histogram(

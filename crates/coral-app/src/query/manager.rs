@@ -7,13 +7,14 @@ use std::time::Instant;
 
 use coral_engine::{
     CatalogInfo, CoralQuery, CoreError, DescribeTableInfo, PreparedQueryRuntime, QueryExecution,
-    QueryExecutionProvenance, QueryPlan, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,
-    ResolvedQueryResources, SourceDecorator, SourceDecoratorError, SourceFailurePolicy,
-    SourceInputResolver, SourceTables, SourceValidationReport, StatusCode, TableInfo,
-    UdfRuntimeDefinition,
+    QueryExecutionProvenance, QueryMemoryObserver, QueryPlan, QueryRuntimeConfig,
+    QueryRuntimeContext, QuerySource, ResolvedQueryResources, SourceDecorator,
+    SourceDecoratorError, SourceFailurePolicy, SourceInputResolver, SourceTables,
+    SourceValidationReport, StatusCode, TableInfo, UdfRuntimeDefinition,
 };
 use coral_spec::{ManifestInputKind, ManifestInputSpec};
-use opentelemetry::trace::Status as OtelStatus;
+use opentelemetry::Context;
+use opentelemetry::trace::{Status as OtelStatus, TraceContextExt as _};
 use serde_json::json;
 use tracing::Instrument as _;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
@@ -480,12 +481,10 @@ impl QueryManager {
                     .await
                     .map_err(QueryManagerError::App)?;
                 let runtime = self
-                    .prepared_runtime_with_udfs(
+                    .prepared_execute_sql_runtime_with_udfs(
                         workspace_name,
                         &source_load.loaded,
                         &config,
-                        CredentialResolutionMode::Refreshing,
-                        SourceObservationMode::Enabled,
                     )
                     .await?;
                 let prepared = runtime
@@ -521,11 +520,7 @@ impl QueryManager {
                 }
                 ExecuteSqlOutcome::GuideRequired(_) => None,
             },
-            |span, outcome| {
-                if let ExecuteSqlOutcome::Executed(execution) = outcome {
-                    record_query_provenance(span, execution.provenance());
-                }
-            },
+            record_execute_sql_success_fields,
         ))
         .await
     }
@@ -1012,6 +1007,36 @@ impl QueryManager {
             .await
     }
 
+    async fn prepared_execute_sql_runtime_with_udfs(
+        &self,
+        workspace_name: &WorkspaceName,
+        selected_sources: &[LoadedQuerySource],
+        config: &AppConfig,
+    ) -> Result<PreparedQueryRuntime, QueryManagerError> {
+        let runtime_config = self
+            .runtime_config_for_execute_sql(workspace_name, selected_sources, config)
+            .map_err(QueryManagerError::App)?;
+        self.prepare_runtime_with_udfs(workspace_name, selected_sources, runtime_config)
+            .await
+    }
+
+    fn runtime_config_for_execute_sql(
+        &self,
+        workspace_name: &WorkspaceName,
+        selected_sources: &[LoadedQuerySource],
+        config: &AppConfig,
+    ) -> Result<QueryRuntimeConfig, AppError> {
+        let mut runtime = self.runtime_config_with_credential_mode(
+            workspace_name,
+            selected_sources,
+            config,
+            CredentialResolutionMode::Refreshing,
+            SourceObservationMode::Enabled,
+        )?;
+        runtime.query_memory_observer = Some(query_memory_observer(bounded_current_context()));
+        Ok(runtime)
+    }
+
     async fn prepared_catalog_runtime_with_udfs(
         &self,
         workspace_name: &WorkspaceName,
@@ -1188,38 +1213,103 @@ where
     let started_at = Instant::now();
     let _active_query = crate::telemetry::metrics::metrics().begin_query();
     let query_span = create_query_span(operation, workspace_name, sql, task_id);
-    let result = query.instrument(query_span.clone()).await;
+    let result = Box::pin(async {
+        let result = query.await;
+        let row_count = result.as_ref().ok().and_then(row_count);
+        crate::telemetry::metrics::metrics().record_query(
+            operation.as_str(),
+            started_at.elapsed(),
+            row_count,
+            result.is_ok(),
+        );
 
-    let row_count = result.as_ref().ok().and_then(row_count);
-    crate::telemetry::metrics::metrics().record_query(
-        operation.as_str(),
-        started_at.elapsed(),
-        row_count,
-        result.is_ok(),
-    );
-
-    if result.is_ok() {
-        query_span.record("status", "ok");
-        query_span.set_status(OtelStatus::Ok);
-        if let Some(row_count) = row_count {
-            query_span.record("row_count", row_count);
+        if result.is_ok() {
+            query_span.record("status", "ok");
+            query_span.set_status(OtelStatus::Ok);
+            if let Some(row_count) = row_count {
+                query_span.record("row_count", row_count);
+            }
+            if let Ok(value) = &result {
+                record_success_fields(&query_span, value);
+            }
+        } else if let Err(error) = &result {
+            let error_kind = query_error_kind(error);
+            let error_type = query_error_type(error);
+            let error_message = query_error_message(error);
+            query_span.record("status", "error");
+            query_span.record("error.kind", error_kind);
+            query_span.record("error.type", error_type.as_str());
+            query_span.record("exception.message", error_message.as_str());
+            query_span.set_status(OtelStatus::error(error_message));
         }
-        if let Ok(value) = &result {
-            record_success_fields(&query_span, value);
-        }
-    } else if let Err(error) = &result {
-        let error_kind = query_error_kind(error);
-        let error_type = query_error_type(error);
-        let error_message = query_error_message(error);
-        query_span.record("status", "error");
-        query_span.record("error.kind", error_kind);
-        query_span.record("error.type", error_type.as_str());
-        query_span.record("exception.message", error_message.as_str());
-        query_span.set_status(OtelStatus::error(error_message));
-    }
+        result
+    })
+    .instrument(query_span.clone())
+    .await;
 
     drop(query_span);
     result
+}
+
+fn query_memory_observer(parent_context: Context) -> QueryMemoryObserver {
+    let metrics = crate::telemetry::metrics::metrics();
+    Arc::new(move |observation| {
+        let bytes = u64::try_from(observation.datafusion_reserved_peak_bytes).ok();
+        let span_bytes = bytes.and_then(|bytes| i64::try_from(bytes).ok());
+        let span = tracing::info_span!(
+            "coral.query.memory.datafusion",
+            datafusion_reserved_peak_bytes = tracing::field::Empty,
+        );
+        if let Err(error) = span.set_parent(parent_context.clone()) {
+            tracing::debug!(%error, "failed to link DataFusion memory observation span");
+        }
+        let _entered = span.enter();
+        if let Some(bytes) = span_bytes {
+            span.record("datafusion_reserved_peak_bytes", bytes);
+        }
+        metrics.record_datafusion_reserved_peak(bytes, observation.outcome);
+    })
+}
+
+fn bounded_current_context() -> Context {
+    let current = tracing::Span::current().context();
+    // Retain only immutable trace identity, not the tracing span or its SQL fields.
+    Context::new().with_remote_span_context(current.span().span_context().clone())
+}
+
+fn record_execute_sql_success_fields(span: &tracing::Span, outcome: &ExecuteSqlOutcome) {
+    let ExecuteSqlOutcome::Executed(execution) = outcome else {
+        return;
+    };
+    record_query_provenance(span, execution.provenance());
+    record_arrow_result_memory(span, execution);
+}
+
+fn record_arrow_result_memory(parent: &tracing::Span, execution: &QueryExecution) {
+    let bytes = checked_memory_size(
+        execution
+            .batches()
+            .iter()
+            .map(arrow::record_batch::RecordBatch::get_array_memory_size),
+    );
+    let span_bytes = bytes.and_then(|bytes| i64::try_from(bytes).ok());
+    let span = tracing::info_span!(
+        "coral.query.result.arrow",
+        estimated_occupied_memory_bytes = tracing::field::Empty,
+    );
+    if let Err(error) = span.set_parent(parent.context()) {
+        tracing::debug!(%error, "failed to link Arrow result memory span");
+    }
+    let _entered = span.enter();
+    if let Some(bytes) = span_bytes {
+        span.record("estimated_occupied_memory_bytes", bytes);
+    }
+    crate::telemetry::metrics::metrics().record_arrow_estimated_occupied_memory(bytes);
+}
+
+fn checked_memory_size(mut sizes: impl Iterator<Item = usize>) -> Option<u64> {
+    let bytes = sizes.try_fold(0usize, usize::checked_add)?;
+    u64::try_from(bytes).ok()
 }
 
 fn create_query_span(
@@ -1375,15 +1465,16 @@ fn validate_required_variables(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::sync::Arc;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use coral_engine::{
-        EngineExtensions, QueryExecutionProvenance, QueryTableFunctionUsage, QueryTableUsage,
-        ResolvedQueryResources, SourceDecorator, SourceDecoratorError,
-        SourceInputResolutionContext, SourceInputResolver, SourceInputResolverError, SourceTables,
+        EngineExtensions, QueryExecutionProvenance, QueryMemoryObservation, QueryMemoryOutcome,
+        QueryTableFunctionUsage, QueryTableUsage, ResolvedQueryResources, SourceDecorator,
+        SourceDecoratorError, SourceInputResolutionContext, SourceInputResolver,
+        SourceInputResolverError, SourceTables,
     };
     use coral_spec::parse_source_manifest_yaml;
     use coral_spec::v4::ProjectionCatalog;
@@ -1401,6 +1492,71 @@ mod tests {
     use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig, run_state_migrations};
     use crate::task::manager::TaskManager;
     use crate::task::store::TaskStore;
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct HistogramPoint {
+        attributes: BTreeMap<String, String>,
+        count: u64,
+        sum: u64,
+    }
+
+    fn histogram_points(
+        exporter: &opentelemetry_sdk::metrics::InMemoryMetricExporter,
+        name: &str,
+    ) -> Vec<HistogramPoint> {
+        use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData, ResourceMetrics};
+
+        crate::telemetry::metrics::test_support::flush_metrics();
+        let finished = exporter.get_finished_metrics().expect("finished metrics");
+        let metric = finished
+            .iter()
+            .rev()
+            .flat_map(ResourceMetrics::scope_metrics)
+            .flat_map(opentelemetry_sdk::metrics::data::ScopeMetrics::metrics)
+            .find(|metric| metric.name() == name)
+            .unwrap_or_else(|| panic!("metric {name} missing"));
+        let AggregatedMetrics::U64(MetricData::Histogram(histogram)) = metric.data() else {
+            panic!("metric {name} should be a u64 histogram");
+        };
+        histogram
+            .data_points()
+            .map(|point| HistogramPoint {
+                attributes: point
+                    .attributes()
+                    .map(|attribute| {
+                        (
+                            attribute.key.as_str().to_string(),
+                            attribute.value.as_str().into_owned(),
+                        )
+                    })
+                    .collect(),
+                count: point.count(),
+                sum: point.sum(),
+            })
+            .collect()
+    }
+
+    fn active_query_count(exporter: &opentelemetry_sdk::metrics::InMemoryMetricExporter) -> u64 {
+        use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData, ResourceMetrics};
+
+        crate::telemetry::metrics::test_support::flush_metrics();
+        let finished = exporter.get_finished_metrics().expect("finished metrics");
+        let metric = finished
+            .iter()
+            .rev()
+            .flat_map(ResourceMetrics::scope_metrics)
+            .flat_map(opentelemetry_sdk::metrics::data::ScopeMetrics::metrics)
+            .find(|metric| metric.name() == "coral.query.active")
+            .expect("active query metric");
+        let AggregatedMetrics::U64(MetricData::Gauge(gauge)) = metric.data() else {
+            panic!("active query metric should be a u64 gauge");
+        };
+        let points = gauge.data_points().collect::<Vec<_>>();
+        assert_eq!(points.len(), 1);
+        let point = points.first().expect("active query gauge point");
+        assert!(point.attributes().next().is_none());
+        point.value()
+    }
 
     struct QueryManagerFixture {
         _temp: TempDir,
@@ -1680,29 +1836,6 @@ mod tests {
     async fn active_query_lifecycle_is_poll_scoped() {
         use std::future::{pending, poll_fn};
         use std::task::Poll;
-
-        use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData, ResourceMetrics};
-
-        fn active_query_count(
-            exporter: &opentelemetry_sdk::metrics::InMemoryMetricExporter,
-        ) -> u64 {
-            crate::telemetry::metrics::test_support::flush_metrics();
-            let finished = exporter.get_finished_metrics().expect("finished metrics");
-            let metric = finished
-                .iter()
-                .rev()
-                .flat_map(ResourceMetrics::scope_metrics)
-                .flat_map(opentelemetry_sdk::metrics::data::ScopeMetrics::metrics)
-                .find(|metric| metric.name() == "coral.query.active")
-                .expect("active query metric");
-            let AggregatedMetrics::U64(MetricData::Gauge(gauge)) = metric.data() else {
-                panic!("active query metric should be a u64 gauge");
-            };
-            let points = gauge.data_points().collect::<Vec<_>>();
-            assert_eq!(points.len(), 1);
-            assert!(points[0].attributes().next().is_none());
-            points[0].value()
-        }
 
         crate::telemetry::metrics::test_support::reset_metrics();
         let exporter = crate::telemetry::metrics::test_support::install_metrics_exporter();
@@ -2029,6 +2162,304 @@ mod tests {
             .iter()
             .find(|attribute| attribute.key.as_str() == name)
             .map(|attribute| attribute.value.as_str().into_owned())
+    }
+
+    fn assert_datafusion_memory_spans(spans: &[opentelemetry_sdk::trace::SpanData]) {
+        let parent = spans
+            .iter()
+            .find(|span| span.name == "coral.query")
+            .expect("query parent span");
+        let children = spans
+            .iter()
+            .filter(|span| span.name == "coral.query.memory.datafusion")
+            .collect::<Vec<_>>();
+        assert_eq!(children.len(), 3);
+        for child in children {
+            assert_eq!(
+                child.span_context.trace_id(),
+                parent.span_context.trace_id()
+            );
+            assert_eq!(child.parent_span_id, parent.span_context.span_id());
+            assert!(child.end_time >= parent.end_time);
+            let measurement = child
+                .attributes
+                .iter()
+                .find(|attribute| attribute.key.as_str() == "datafusion_reserved_peak_bytes")
+                .expect("numeric DataFusion peak");
+            assert!(matches!(measurement.value, opentelemetry::Value::I64(_)));
+            for forbidden in ["sql", "workspace", "task.id", "source", "table", "user"] {
+                assert!(span_attr(child, forbidden).is_none());
+            }
+        }
+    }
+
+    fn assert_datafusion_memory_metrics(
+        exporter: &opentelemetry_sdk::metrics::InMemoryMetricExporter,
+    ) {
+        let mut points = histogram_points(exporter, "coral.query.memory.datafusion_reserved_peak");
+        points.sort_by(|left, right| left.attributes.cmp(&right.attributes));
+        assert_eq!(
+            points,
+            vec![
+                HistogramPoint {
+                    attributes: BTreeMap::from([
+                        ("operation".to_string(), "execute_sql".to_string()),
+                        ("status".to_string(), "error".to_string()),
+                    ]),
+                    count: 2,
+                    sum: 52,
+                },
+                HistogramPoint {
+                    attributes: BTreeMap::from([
+                        ("operation".to_string(), "execute_sql".to_string()),
+                        ("status".to_string(), "ok".to_string()),
+                    ]),
+                    count: 1,
+                    sum: 17,
+                },
+            ]
+        );
+    }
+
+    fn assert_arrow_memory_observations(
+        spans: &[opentelemetry_sdk::trace::SpanData],
+        metric_exporter: &opentelemetry_sdk::metrics::InMemoryMetricExporter,
+        estimated_bytes: u64,
+    ) {
+        let query_spans = spans
+            .iter()
+            .filter(|span| span.name == "coral.query")
+            .collect::<Vec<_>>();
+        let arrow_spans = spans
+            .iter()
+            .filter(|span| span.name == "coral.query.result.arrow")
+            .collect::<Vec<_>>();
+        assert_eq!(arrow_spans.len(), 2);
+        let mut recorded_bytes = BTreeSet::new();
+        for child in arrow_spans {
+            let parent = query_spans
+                .iter()
+                .find(|parent| parent.span_context.span_id() == child.parent_span_id)
+                .expect("Arrow span should have a query parent");
+            assert!(child.end_time <= parent.end_time);
+            let measurement = child
+                .attributes
+                .iter()
+                .find(|attribute| attribute.key.as_str() == "estimated_occupied_memory_bytes")
+                .expect("numeric Arrow estimate");
+            assert!(matches!(measurement.value, opentelemetry::Value::I64(_)));
+            recorded_bytes.insert(
+                span_attr(child, "estimated_occupied_memory_bytes")
+                    .expect("numeric Arrow estimate"),
+            );
+            for forbidden in ["sql", "workspace", "task.id", "source", "table", "user"] {
+                assert!(span_attr(child, forbidden).is_none());
+            }
+        }
+        assert_eq!(
+            recorded_bytes,
+            BTreeSet::from(["0".to_string(), estimated_bytes.to_string()])
+        );
+        assert_eq!(
+            histogram_points(
+                metric_exporter,
+                "coral.query.result.arrow.estimated_occupied_memory",
+            ),
+            vec![HistogramPoint {
+                attributes: BTreeMap::from([
+                    ("operation".to_string(), "execute_sql".to_string()),
+                    ("status".to_string(), "ok".to_string()),
+                ]),
+                count: 2,
+                sum: estimated_bytes,
+            }]
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn query_memory_observation_is_execute_sql_only_and_preserves_delayed_parentage() {
+        use opentelemetry::trace::TracerProvider as _;
+        use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        crate::telemetry::metrics::test_support::reset_metrics();
+        let metric_exporter = crate::telemetry::metrics::test_support::install_metrics_exporter();
+        let span_exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(span_exporter.clone())
+            .build();
+        let subscriber = tracing_subscriber::Registry::default()
+            .with(tracing_opentelemetry::layer().with_tracer(provider.tracer("query-memory-test")));
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
+        let workspace = WorkspaceName::default();
+        let config = AppConfig::default();
+        assert!(
+            fixture
+                .manager
+                .runtime_config(&workspace, &[], &config)
+                .expect("ordinary runtime config")
+                .query_memory_observer
+                .is_none()
+        );
+        assert!(
+            fixture
+                .manager
+                .runtime_config_without_source_observations(&workspace, &[], &config)
+                .expect("source-validation runtime config")
+                .query_memory_observer
+                .is_none()
+        );
+
+        let query_span = create_query_span(
+            QueryOperation::ExecuteSql,
+            &workspace,
+            "SELECT sensitive_value",
+            None,
+        );
+        let mut execute_config = {
+            let _entered = query_span.enter();
+            fixture
+                .manager
+                .runtime_config_for_execute_sql(&workspace, &[], &config)
+                .expect("execute SQL runtime config")
+        };
+        let observer = execute_config
+            .query_memory_observer
+            .take()
+            .expect("execute SQL observer");
+        drop(execute_config);
+        drop(query_span);
+
+        for (bytes, outcome) in [
+            (17, QueryMemoryOutcome::Success),
+            (23, QueryMemoryOutcome::Error),
+            (29, QueryMemoryOutcome::Cancelled),
+        ] {
+            observer(QueryMemoryObservation {
+                datafusion_reserved_peak_bytes: bytes,
+                outcome,
+            });
+        }
+
+        provider.force_flush().expect("flush spans");
+        let spans = span_exporter.get_finished_spans().expect("finished spans");
+        assert_datafusion_memory_spans(&spans);
+        assert_datafusion_memory_metrics(&metric_exporter);
+        let outcome = fixture
+            .manager
+            .execute_sql(&workspace, "SELECT 1", None, &QueryAttribution::default())
+            .await
+            .expect("constant query should execute");
+        let ExecuteSqlOutcome::Executed(execution) = outcome else {
+            panic!("constant query should not require a guide");
+        };
+        assert_eq!(execution.row_count(), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn arrow_result_memory_is_checked_success_only_and_query_scoped() {
+        use arrow::array::{ArrayRef, StringArray};
+        use arrow::datatypes::{DataType, Field, Schema};
+        use arrow::record_batch::RecordBatch;
+        use opentelemetry::trace::TracerProvider as _;
+        use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        crate::telemetry::metrics::test_support::reset_metrics();
+        let metric_exporter = crate::telemetry::metrics::test_support::install_metrics_exporter();
+        let span_exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(span_exporter.clone())
+            .build();
+        let subscriber = tracing_subscriber::Registry::default()
+            .with(tracing_opentelemetry::layer().with_tracer(provider.tracer("arrow-memory-test")));
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "value",
+            DataType::Utf8,
+            false,
+        )]));
+        let shared: ArrayRef = Arc::new(StringArray::from(vec!["zero", "one", "two"]));
+        let sliced = shared.slice(1, 2);
+        let batches = vec![
+            RecordBatch::try_new(Arc::clone(&schema), vec![Arc::clone(&shared)])
+                .expect("shared batch"),
+            RecordBatch::try_new(Arc::clone(&schema), vec![sliced]).expect("sliced batch"),
+        ];
+        let estimated_bytes = u64::try_from(
+            batches
+                .iter()
+                .map(RecordBatch::get_array_memory_size)
+                .sum::<usize>(),
+        )
+        .expect("test estimate fits u64");
+        let workspace = WorkspaceName::default();
+        let executed = ExecuteSqlOutcome::Executed(QueryExecution::new(
+            Arc::clone(&schema),
+            batches,
+            "SELECT sensitive_value",
+            ResolvedQueryResources::new(Vec::new(), Vec::new(), Vec::new()),
+        ));
+        run_query_operation(
+            QueryOperation::ExecuteSql,
+            &workspace,
+            "SELECT sensitive_value",
+            None,
+            async { Ok(executed) },
+            |outcome| match outcome {
+                ExecuteSqlOutcome::Executed(execution) => {
+                    Some(u64::try_from(execution.row_count()).expect("row count"))
+                }
+                ExecuteSqlOutcome::GuideRequired(_) => None,
+            },
+            record_execute_sql_success_fields,
+        )
+        .await
+        .expect("shared result succeeds");
+
+        let empty_schema = Arc::new(Schema::empty());
+        let empty = ExecuteSqlOutcome::Executed(QueryExecution::new(
+            Arc::clone(&empty_schema),
+            vec![RecordBatch::new_empty(empty_schema)],
+            "SELECT nothing",
+            ResolvedQueryResources::new(Vec::new(), Vec::new(), Vec::new()),
+        ));
+        run_query_operation(
+            QueryOperation::ExecuteSql,
+            &workspace,
+            "SELECT nothing",
+            None,
+            async { Ok(empty) },
+            |_| Some(0),
+            record_execute_sql_success_fields,
+        )
+        .await
+        .expect("empty result succeeds");
+        let failed = run_query_operation(
+            QueryOperation::ExecuteSql,
+            &workspace,
+            "SELECT fails",
+            None,
+            async {
+                Err::<ExecuteSqlOutcome, _>(QueryManagerError::App(AppError::InvalidInput(
+                    "expected".to_string(),
+                )))
+            },
+            |_| None,
+            record_execute_sql_success_fields,
+        )
+        .await;
+        assert!(failed.is_err(), "failed query omits Arrow measurement");
+
+        assert_eq!(checked_memory_size([usize::MAX, 1].into_iter()), None);
+        assert_eq!(checked_memory_size(std::iter::empty()), Some(0));
+
+        provider.force_flush().expect("flush spans");
+        let spans = span_exporter.get_finished_spans().expect("finished spans");
+        assert_arrow_memory_observations(&spans, &metric_exporter, estimated_bytes);
     }
 
     fn execution_to_rows(outcome: &ExecuteSqlOutcome) -> Vec<Value> {
