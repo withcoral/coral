@@ -3,10 +3,10 @@
     reason = "DSL v4 contracts are field-heavy artifact models documented in the PRD."
 )]
 
-pub const V4_ARTIFACT_SCHEMA_VERSION: u32 = 5;
-pub const SURFACE_IMPORTER_VERSION: &str = "surface-import-v3";
-pub const OPENAPI_IMPORTER_VERSION: &str = "openapi-v8";
-pub const MCP_IMPORTER_VERSION: &str = "mcp-tools-v3";
+pub const V4_ARTIFACT_SCHEMA_VERSION: u32 = 6;
+pub const SURFACE_IMPORTER_VERSION: &str = "surface-import-v4";
+pub const OPENAPI_IMPORTER_VERSION: &str = "openapi-v9";
+pub const MCP_IMPORTER_VERSION: &str = "mcp-tools-v4";
 pub const OPERATION_METADATA_GENERATOR_VERSION: &str = "operation-metadata-v4";
 pub const PROJECTION_GENERATOR_VERSION: &str = "derive-read-v13";
 
@@ -38,8 +38,8 @@ pub use artifacts::{
 };
 pub use diagnostics::Diagnostic;
 pub use ir::{
-    HttpMethod, IrEntityCandidate, IrExecutionAttachment, IrField, IrInputLocation, IrOperation,
-    IrOperationInput, IrOperationNaming, IrOperationOutput, IrScalarType, IrType, IrTypeShape,
+    HttpMethod, IrExecutionAttachment, IrField, IrInputLocation, IrOperation, IrOperationInput,
+    IrOperationNaming, IrOperationOutput, IrScalarType, IrType, IrTypeShape,
     McpExecutionAttachment, OutputCardinality, RestExecutionAttachment, RestParameterBinding,
     RestRequestBody, RestResponseAttachment, SemanticIr,
 };
