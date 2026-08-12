@@ -2,6 +2,7 @@ import { create } from '@bufbuild/protobuf'
 
 import type { Route } from './+types/sources'
 
+import { requestAuthContext } from '@/auth/server-context'
 import {
   DiscoverSourcesRequestSchema,
   ListSourcesRequestSchema,
@@ -17,16 +18,28 @@ export interface SourcesRouteData {
   loadError: string | null
 }
 
-export async function loader({ params, request }: Route.LoaderArgs): Promise<SourcesRouteData> {
-  return loadSourcesRouteData(request, workspaceFromParams(params))
+export async function loader({
+  context,
+  params,
+  request,
+}: Route.LoaderArgs): Promise<SourcesRouteData> {
+  return loadSourcesRouteData(
+    request,
+    workspaceFromParams(params),
+    context.get(requestAuthContext).accessToken,
+  )
 }
 
 export async function loadSourcesRouteData(
   request: Request,
   workspace: Workspace,
+  accessToken: string | null,
 ): Promise<SourcesRouteData> {
   try {
-    return { entries: await listCatalogForRequest(request, workspace), loadError: null }
+    return {
+      entries: await listCatalogForRequest(request, workspace, accessToken),
+      loadError: null,
+    }
   } catch (error) {
     return { entries: [], loadError: errorMessage(error) }
   }
@@ -35,8 +48,9 @@ export async function loadSourcesRouteData(
 export async function listCatalogForRequest(
   request: Request,
   workspace: Workspace,
+  accessToken: string | null,
 ): Promise<CatalogEntry[]> {
-  const sourceClient = sourceClientForRequest(request)
+  const sourceClient = sourceClientForRequest(request, accessToken)
   const [discovered, installed] = await Promise.all([
     sourceClient.discoverSources(create(DiscoverSourcesRequestSchema, { workspace })),
     sourceClient.listSources(create(ListSourcesRequestSchema, { workspace })),

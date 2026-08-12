@@ -21,7 +21,6 @@ use coral_api::v1::search_service_server::SearchServiceServer;
 use coral_api::v1::source_service_server::SourceServiceServer;
 use coral_api::v1::task_service_server::TaskServiceServer;
 use coral_api::v1::trace_service_server::TraceServiceServer;
-use coral_api::v1::user_service_server::UserServiceServer;
 use coral_api::v1::workspace_service_server::WorkspaceServiceServer;
 use coral_api::{
     CATALOG_RESPONSE_MAX_MESSAGE_SIZE, HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE,
@@ -73,10 +72,9 @@ use crate::task::store::TaskStore;
 use crate::telemetry::service::TraceService;
 use crate::telemetry::{TelemetryConfig, TraceManager};
 use crate::transport::GrpcRequestContextLayer;
-use crate::users::{UserManager, UserService};
 use crate::workspaces::{
-    LocalPrincipalPolicy, WorkspaceAuthorizer, WorkspaceLifecycleLock, WorkspaceManager,
-    WorkspacePoolRegistry, WorkspaceService,
+    LocalPrincipalPolicy, WorkspaceLifecycleLock, WorkspaceManager, WorkspacePoolRegistry,
+    WorkspaceService,
 };
 
 /// A static asset (e.g., a built SPA file) served on the same port as
@@ -412,6 +410,14 @@ impl ServerBuilder {
         }
     }
 
+    fn local_principal_policy(&self) -> LocalPrincipalPolicy {
+        if self.session_auth.is_none() && self.config.principal_provider.is_none() {
+            LocalPrincipalPolicy::ImplicitOwner
+        } else {
+            LocalPrincipalPolicy::NoLocalPrincipal
+        }
+    }
+
     /// Starts the Coral gRPC server on TCP.
     ///
     /// By default, Coral keeps a real local gRPC boundary here so the public
@@ -428,7 +434,9 @@ impl ServerBuilder {
     }
 }
 
+#[expect(clippy::too_many_lines, reason = "server composition root")]
 async fn start_components(builder: ServerBuilder) -> Result<RunningServer, AppError> {
+    let local_principal = builder.local_principal_policy();
     let principal_provider = builder.resolve_principal_provider()?;
     let session_auth = builder.session_auth;
     let env = AppEnvironment::discover();
@@ -465,14 +473,6 @@ async fn start_components(builder: ServerBuilder) -> Result<RunningServer, AppEr
     )
     .with_pool_registry(Arc::clone(&workspace_pool_registry))
     .with_database_sources_enabled(database_sources_enabled);
-    // An `[auth]` section makes the state directory shared, and a shared
-    // deployment has no superuser: the local principal is authorized from its
-    // membership like anyone else, and a lockout is repaired out of band.
-    let local_principal = if config_store.auth_is_configured()? {
-        LocalPrincipalPolicy::Ordinary
-    } else {
-        LocalPrincipalPolicy::ImplicitOwner
-    };
     let workspace_manager = WorkspaceManager::new(
         config_store.clone(),
         credential_manager.clone(),
@@ -483,10 +483,6 @@ async fn start_components(builder: ServerBuilder) -> Result<RunningServer, AppEr
         diagnostic_reporter.clone(),
     )
     .with_pool_registry(Arc::clone(&workspace_pool_registry));
-    let workspace_manager = match local_principal {
-        LocalPrincipalPolicy::ImplicitOwner => workspace_manager.trusting_local_principal(),
-        LocalPrincipalPolicy::Ordinary => workspace_manager,
-    };
     let feedback_manager =
         FeedbackManager::with_publisher(layout.clone(), builder.config.feedback_publisher);
     let task_manager = TaskManager::new(TaskStore::new(Arc::clone(&coral_db)));
@@ -524,7 +520,6 @@ async fn start_components(builder: ServerBuilder) -> Result<RunningServer, AppEr
     let trace_components = trace_components_for_store(active_trace_store);
     let mut grpc = start_server(
         ServerDependencies {
-            db: Arc::clone(&coral_db),
             local_principal,
             source: source_manager,
             workspace: workspace_manager,
@@ -766,9 +761,6 @@ struct TraceServerComponents {
 }
 
 struct ServerDependencies {
-    db: Arc<CoralDb>,
-    /// Whether this state directory grants the built-in local principal
-    /// ownership of every workspace. Shared deployments grant it to no one.
     local_principal: LocalPrincipalPolicy,
     source: SourceManager,
     workspace: WorkspaceManager,
@@ -779,10 +771,6 @@ struct ServerDependencies {
     task: TaskManager,
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "the composition root keeps service construction and mounting together"
-)]
 async fn start_server(
     dependencies: ServerDependencies,
     trace_components: TraceServerComponents,
@@ -795,7 +783,6 @@ async fn start_server(
         local_trace_store_dir,
     } = trace_components;
     let ServerDependencies {
-        db,
         local_principal,
         source,
         workspace,
@@ -805,12 +792,6 @@ async fn start_server(
         feedback,
         task,
     } = dependencies;
-    let authorizer = match local_principal {
-        LocalPrincipalPolicy::ImplicitOwner => {
-            WorkspaceAuthorizer::trusting_local_principal(Arc::clone(&db))
-        }
-        LocalPrincipalPolicy::Ordinary => WorkspaceAuthorizer::new(Arc::clone(&db)),
-    };
     let (source, query) = match search_observations.as_ref() {
         Some(search_observations) => (
             source.with_search_observation_handle(search_observations.clone()),
@@ -819,31 +800,20 @@ async fn start_server(
         None => (source, query),
     };
     let health_queries = query.clone();
-    let source_service = SourceService::new(source, query.clone(), workspace.clone())
-        .with_authorizer(authorizer.clone());
-    let workspace_service = WorkspaceService::new(workspace).with_authorizer(authorizer.clone());
-    let users = match local_principal {
-        LocalPrincipalPolicy::ImplicitOwner => UserManager::new(db).trusting_local_principal(),
-        LocalPrincipalPolicy::Ordinary => UserManager::new(db),
-    };
-    let user_service = UserService::new(users);
-    let catalog_service =
-        CatalogService::new(query.clone(), task.clone()).with_authorizer(authorizer.clone());
-    let function_service = FunctionService::new(query.clone()).with_authorizer(authorizer.clone());
-    let query_service = QueryService::new(query, task.clone()).with_authorizer(authorizer.clone());
-    let search_service =
-        SearchService::new(search.clone(), task.clone()).with_authorizer(authorizer.clone());
-    let feedback_service =
-        FeedbackService::new(feedback, task.clone()).with_authorizer(authorizer.clone());
-    let task_service = TaskService::new(task).with_authorizer(authorizer.clone());
-    let trace_service = trace_service.map(|service| service.with_authorizer(authorizer));
+    let source_service = SourceService::new(source, query.clone(), workspace.clone());
+    let workspace_service = WorkspaceService::new(workspace, local_principal);
+    let catalog_service = CatalogService::new(query.clone(), task.clone());
+    let function_service = FunctionService::new(query.clone());
+    let query_service = QueryService::new(query, task.clone());
+    let search_service = SearchService::new(search.clone(), task.clone());
+    let feedback_service = FeedbackService::new(feedback, task.clone());
+    let task_service = TaskService::new(task);
     let mut application_routes = Routes::default()
         .add_service(
             SourceServiceServer::new(source_service)
                 .max_encoding_message_size(SOURCE_RESPONSE_MAX_MESSAGE_SIZE),
         )
         .add_service(WorkspaceServiceServer::new(workspace_service))
-        .add_service(UserServiceServer::new(user_service))
         .add_service(
             CatalogServiceServer::new(catalog_service)
                 .max_encoding_message_size(CATALOG_RESPONSE_MAX_MESSAGE_SIZE),
@@ -1590,6 +1560,16 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
     }
 
     #[test]
+    fn explicit_principal_provider_selects_strict_local_policy() {
+        assert_eq!(
+            ServerBuilder::new()
+                .with_principal_provider(Arc::new(LocalPrincipalProvider))
+                .local_principal_policy(),
+            LocalPrincipalPolicy::NoLocalPrincipal
+        );
+    }
+
+    #[test]
     fn explicit_standalone_grpc_does_not_parse_the_configured_bind() {
         let temp = TempDir::new().expect("temp dir");
         let config_dir = temp.path().join("coral-config");
@@ -2001,7 +1981,6 @@ backend = "unsupported"
         let server = start_server(
             ServerDependencies {
                 local_principal: LocalPrincipalPolicy::ImplicitOwner,
-                db: Arc::clone(&db),
                 source: source_manager,
                 workspace: workspace_manager,
                 query: query_manager,
@@ -2455,7 +2434,6 @@ tables:
         let running = start_server(
             ServerDependencies {
                 local_principal: LocalPrincipalPolicy::ImplicitOwner,
-                db: Arc::clone(&db),
                 source: source_manager,
                 workspace: workspace_manager,
                 query: query_manager,
@@ -2585,7 +2563,6 @@ tables:
         let running = start_server(
             ServerDependencies {
                 local_principal: LocalPrincipalPolicy::ImplicitOwner,
-                db: Arc::clone(&db),
                 source: source_manager,
                 workspace: workspace_manager,
                 query: query_manager,
@@ -2715,7 +2692,6 @@ tables:
         let running = start_server(
             ServerDependencies {
                 local_principal: LocalPrincipalPolicy::ImplicitOwner,
-                db: Arc::clone(&db),
                 source: source_manager,
                 workspace: workspace_manager,
                 query: query_manager,

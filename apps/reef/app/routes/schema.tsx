@@ -1,4 +1,5 @@
 import { fetchSchemaFromCoral } from '@/lib/schema-explorer'
+import { requestAuthContext } from '@/auth/server-context'
 import { catalogClientForRequest } from '@/lib/coral-request.server'
 import { workspaceFromParams } from '@/lib/workspace-routing'
 import { SchemaExplorer, SchemaExplorerError } from '@/views/schema-explorer/schema'
@@ -9,10 +10,14 @@ import type { Route } from './+types/schema'
 // global navigation progress bar is the pending UI and a failure lands in the
 // route ErrorBoundary. The abort signal cancels the catalog request when the
 // navigation is superseded.
-export async function loader({ params, request }: Route.LoaderArgs) {
+export async function loader({ context, params, request }: Route.LoaderArgs) {
   const workspace = workspaceFromParams(params)
   return {
-    schema: await fetchSchemaFromCoral(catalogClientForRequest(request), workspace, request.signal),
+    schema: await fetchSchemaFromCoral(
+      catalogClientForRequest(request, context.get(requestAuthContext).accessToken),
+      workspace,
+      request.signal,
+    ),
   }
 }
 
