@@ -29,7 +29,7 @@ async fn workspace_names(harness: &GrpcHarness) -> Vec<String> {
         .into_inner()
         .memberships
         .into_iter()
-        .filter_map(|membership| membership.workspace)
+        .map(|membership| membership.workspace.expect("membership workspace"))
         .map(|workspace| workspace.name)
         .collect()
 }

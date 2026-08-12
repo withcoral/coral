@@ -16,27 +16,30 @@ use crate::transport::{
     grpc_span, instrument_grpc, request_context, workspace_name_from_proto, workspace_to_proto,
 };
 use crate::workspaces::{
-    MemberRole, WorkspaceAction, WorkspaceAuthorizer, WorkspaceManager, WorkspaceRecord,
+    LocalPrincipalPolicy, MemberRole, WorkspaceAction, WorkspaceAuthorizer, WorkspaceManager,
+    WorkspaceRecord,
 };
 
 #[derive(Clone)]
 pub(crate) struct WorkspaceService {
     workspaces: WorkspaceManager,
-    authorizer: Option<WorkspaceAuthorizer>,
+    authorizer: WorkspaceAuthorizer,
 }
 
 impl WorkspaceService {
-    pub(crate) fn new(workspace_manager: WorkspaceManager) -> Self {
+    pub(crate) fn new(
+        workspace_manager: WorkspaceManager,
+        local_principal: LocalPrincipalPolicy,
+    ) -> Self {
+        let workspace_manager = match local_principal {
+            LocalPrincipalPolicy::NoLocalPrincipal => workspace_manager,
+            LocalPrincipalPolicy::ImplicitOwner => workspace_manager.trusting_local_principal(),
+        };
+        let authorizer = workspace_manager.workspace_authorizer();
         Self {
             workspaces: workspace_manager,
-            authorizer: None,
+            authorizer,
         }
-    }
-
-    #[expect(dead_code, reason = "wired by control-plane composition in t15")]
-    pub(crate) fn with_authorizer(mut self, authorizer: WorkspaceAuthorizer) -> Self {
-        self.authorizer = Some(authorizer);
-        self
     }
 
     async fn authorize(
@@ -44,18 +47,9 @@ impl WorkspaceService {
         principal: &Principal,
         workspace: &crate::workspaces::WorkspaceName,
     ) -> Result<(), AppError> {
-        if let Some(authorizer) = &self.authorizer {
-            return authorizer
-                .authorize(principal, workspace, WorkspaceAction::Manage)
-                .await;
-        }
-        if principal.is_local() {
-            Ok(())
-        } else {
-            Err(AppError::PermissionDenied(
-                "workspace authorization is unavailable".to_string(),
-            ))
-        }
+        self.authorizer
+            .authorize(principal, workspace, WorkspaceAction::Manage)
+            .await
     }
 }
 
@@ -94,16 +88,10 @@ impl WorkspaceServiceApi for WorkspaceService {
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            let creation = workspaces
+            let workspace = workspaces
                 .create_workspace_for_user(&workspace_name, &principal)
-                .await;
-            let workspace = match creation {
-                Err(AppError::UserNotFound(_)) if principal.is_local() => {
-                    workspaces.create_workspace(&workspace_name).await
-                }
-                result => result,
-            }
-            .map_err(app_status)?;
+                .await
+                .map_err(app_status)?;
             Ok(Response::new(CreateWorkspaceResponse {
                 workspace: Some(workspace_record_to_proto(&workspace)),
             }))
@@ -258,24 +246,18 @@ mod tests {
 
     #[test]
     fn workspace_member_roles_are_strict_at_the_transport_edge() {
-        assert_eq!(
-            member_role_from_proto(WorkspaceRole::Owner as i32).expect("owner role"),
-            MemberRole::Owner
-        );
-        assert_eq!(
-            member_role_from_proto(WorkspaceRole::Member as i32).expect("member role"),
-            MemberRole::Member
-        );
-        member_role_from_proto(WorkspaceRole::Unspecified as i32)
-            .expect_err("unspecified role must be rejected");
-        member_role_from_proto(i32::MAX).expect_err("unknown role must be rejected");
-        assert_eq!(
-            member_role_to_proto(MemberRole::Owner),
-            WorkspaceRole::Owner
-        );
-        assert_eq!(
-            member_role_to_proto(MemberRole::Member),
-            WorkspaceRole::Member
-        );
+        for (proto, member) in [
+            (WorkspaceRole::Owner, MemberRole::Owner),
+            (WorkspaceRole::Member, MemberRole::Member),
+        ] {
+            assert_eq!(
+                member_role_from_proto(proto as i32).expect("valid role"),
+                member
+            );
+            assert_eq!(member_role_to_proto(member), proto);
+        }
+        for invalid in [WorkspaceRole::Unspecified as i32, i32::MAX] {
+            member_role_from_proto(invalid).expect_err("invalid role must be rejected");
+        }
     }
 }

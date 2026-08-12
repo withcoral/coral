@@ -31,11 +31,6 @@ impl WorkspaceName {
     pub(crate) fn is_default(&self) -> bool {
         self.0 == DEFAULT_WORKSPACE_ID
     }
-
-    #[must_use]
-    pub(crate) fn has_reserved_personal_default_prefix(&self) -> bool {
-        self.0.starts_with("default-")
-    }
 }
 
 impl fmt::Display for WorkspaceName {
@@ -57,14 +52,5 @@ mod tests {
     #[test]
     fn parses_default_workspace_name() {
         assert_eq!(WorkspaceName::default().as_str(), DEFAULT_WORKSPACE_ID);
-    }
-
-    #[test]
-    fn parses_reserved_personal_default_names_for_persisted_state() {
-        let name = WorkspaceName::parse(" default-user-id ").expect("workspace name");
-
-        assert_eq!(name.as_str(), "default-user-id");
-        assert!(name.has_reserved_personal_default_prefix());
-        assert!(!WorkspaceName::default().has_reserved_personal_default_prefix());
     }
 }

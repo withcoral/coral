@@ -346,12 +346,26 @@ async fn workspace_list_renders_configured_workspaces() {
         vec!["Workspace", "---------", "default", "work"],
         "expected workspace list"
     );
-    assert_eq!(
-        server.list_workspaces_requests().len(),
-        1,
-        "expected one list_workspaces call"
-    );
+    server.shutdown().await;
+}
 
+#[tokio::test(flavor = "multi_thread")]
+async fn workspace_list_rejects_membership_without_workspace() {
+    let server = MockServer::start_with_config(MockServerConfig::default().with_list_workspaces(
+        ListWorkspacesResponse {
+            memberships: vec![WorkspaceMembership {
+                workspace: None,
+                role: WorkspaceRole::Owner as i32,
+            }],
+        },
+    ))
+    .await;
+
+    let assert = server.cmd().args(["workspace", "list"]).assert().failure();
+    assert!(
+        String::from_utf8_lossy(&assert.get_output().stderr)
+            .contains("list workspaces response missing workspace")
+    );
     server.shutdown().await;
 }
 

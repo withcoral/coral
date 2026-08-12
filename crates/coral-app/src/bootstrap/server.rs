@@ -73,7 +73,8 @@ use crate::telemetry::service::TraceService;
 use crate::telemetry::{TelemetryConfig, TraceManager};
 use crate::transport::GrpcRequestContextLayer;
 use crate::workspaces::{
-    WorkspaceLifecycleLock, WorkspaceManager, WorkspacePoolRegistry, WorkspaceService,
+    LocalPrincipalPolicy, WorkspaceLifecycleLock, WorkspaceManager, WorkspacePoolRegistry,
+    WorkspaceService,
 };
 
 /// A static asset (e.g., a built SPA file) served on the same port as
@@ -409,6 +410,14 @@ impl ServerBuilder {
         }
     }
 
+    fn local_principal_policy(&self) -> LocalPrincipalPolicy {
+        if self.session_auth.is_none() && self.config.principal_provider.is_none() {
+            LocalPrincipalPolicy::ImplicitOwner
+        } else {
+            LocalPrincipalPolicy::NoLocalPrincipal
+        }
+    }
+
     /// Starts the Coral gRPC server on TCP.
     ///
     /// By default, Coral keeps a real local gRPC boundary here so the public
@@ -426,6 +435,7 @@ impl ServerBuilder {
 }
 
 async fn start_components(builder: ServerBuilder) -> Result<RunningServer, AppError> {
+    let local_principal = builder.local_principal_policy();
     let principal_provider = builder.resolve_principal_provider()?;
     let session_auth = builder.session_auth;
     let env = AppEnvironment::discover();
@@ -509,6 +519,7 @@ async fn start_components(builder: ServerBuilder) -> Result<RunningServer, AppEr
     let trace_components = trace_components_for_store(active_trace_store);
     let mut grpc = start_server(
         ServerDependencies {
+            local_principal,
             source: source_manager,
             workspace: workspace_manager,
             query: query_manager,
@@ -749,6 +760,7 @@ struct TraceServerComponents {
 }
 
 struct ServerDependencies {
+    local_principal: LocalPrincipalPolicy,
     source: SourceManager,
     workspace: WorkspaceManager,
     query: QueryManager,
@@ -770,6 +782,7 @@ async fn start_server(
         local_trace_store_dir,
     } = trace_components;
     let ServerDependencies {
+        local_principal,
         source,
         workspace,
         query,
@@ -787,7 +800,7 @@ async fn start_server(
     };
     let health_queries = query.clone();
     let source_service = SourceService::new(source, query.clone(), workspace.clone());
-    let workspace_service = WorkspaceService::new(workspace);
+    let workspace_service = WorkspaceService::new(workspace, local_principal);
     let catalog_service = CatalogService::new(query.clone(), task.clone());
     let function_service = FunctionService::new(query.clone());
     let query_service = QueryService::new(query, task.clone());
@@ -1125,7 +1138,7 @@ mod tests {
     use crate::task::store::TaskStore;
     use crate::telemetry::{TraceManager, service::TraceService};
     use crate::transport::workspace_to_proto;
-    use crate::workspaces::{WorkspaceManager, WorkspaceName};
+    use crate::workspaces::{LocalPrincipalPolicy, WorkspaceManager, WorkspaceName};
     use crate::{
         AwsEngineExtensionsProvider, LocalPrincipalProvider, NoopEngineExtensionsProvider,
         Principal, PrincipalProvider, PrincipalProviderError,
@@ -1546,6 +1559,16 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
     }
 
     #[test]
+    fn explicit_principal_provider_selects_strict_local_policy() {
+        assert_eq!(
+            ServerBuilder::new()
+                .with_principal_provider(Arc::new(LocalPrincipalProvider))
+                .local_principal_policy(),
+            LocalPrincipalPolicy::NoLocalPrincipal
+        );
+    }
+
+    #[test]
     fn explicit_standalone_grpc_does_not_parse_the_configured_bind() {
         let temp = TempDir::new().expect("temp dir");
         let config_dir = temp.path().join("coral-config");
@@ -1956,6 +1979,7 @@ backend = "unsupported"
         ));
         let server = start_server(
             ServerDependencies {
+                local_principal: LocalPrincipalPolicy::ImplicitOwner,
                 source: source_manager,
                 workspace: workspace_manager,
                 query: query_manager,
@@ -2408,6 +2432,7 @@ tables:
         );
         let running = start_server(
             ServerDependencies {
+                local_principal: LocalPrincipalPolicy::ImplicitOwner,
                 source: source_manager,
                 workspace: workspace_manager,
                 query: query_manager,
@@ -2536,6 +2561,7 @@ tables:
         );
         let running = start_server(
             ServerDependencies {
+                local_principal: LocalPrincipalPolicy::ImplicitOwner,
                 source: source_manager,
                 workspace: workspace_manager,
                 query: query_manager,
@@ -2664,6 +2690,7 @@ tables:
         );
         let running = start_server(
             ServerDependencies {
+                local_principal: LocalPrincipalPolicy::ImplicitOwner,
                 source: source_manager,
                 workspace: workspace_manager,
                 query: query_manager,

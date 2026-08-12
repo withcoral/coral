@@ -2,6 +2,7 @@
 
 use sea_query::{Expr, ExprTrait, OnConflict, Order, Query};
 
+use crate::identity::LOCAL_PRINCIPAL_ID;
 use crate::state::db::schema::Users;
 use crate::state::db::{CoralTx, DbError, DbSession};
 
@@ -93,6 +94,23 @@ where
             .order_by(Users::UserId, Order::Asc)
             .to_owned();
         self.session.fetch_all(statement).await
+    }
+
+    pub(crate) async fn ensure_local_user(&mut self, now_unix_nanos: i64) -> Result<(), DbError> {
+        let statement = Query::insert()
+            .into_table(Users::Table)
+            .columns(user_columns())
+            .values_panic([
+                Expr::val(LOCAL_PRINCIPAL_ID),
+                Expr::val(LOCAL_PRINCIPAL_ID),
+                Expr::val(""),
+                Expr::val(Some("Local")),
+                Expr::val(now_unix_nanos),
+                Expr::val(now_unix_nanos),
+            ])
+            .on_conflict(OnConflict::column(Users::UserId).do_nothing().to_owned())
+            .to_owned();
+        self.session.execute(statement).await
     }
 
     #[cfg(test)]

@@ -42,6 +42,7 @@ where
         self.session.execute(statement).await
     }
 
+    #[cfg_attr(not(test), expect(dead_code, reason = "used higher in the PR stack"))]
     pub(crate) async fn create(
         &mut self,
         id: &str,
@@ -107,6 +108,30 @@ impl WorkspacesRepo<'_, &CoralDb> {
         if !tx
             .workspaces()
             .try_create_with_owner(workspace_id, creator_user_id, created_at_unix_nanos)
+            .await?
+        {
+            tx.rollback().await?;
+            return Ok(WorkspaceCreationOutcome::AlreadyExists);
+        }
+        tx.commit().await?;
+        Ok(WorkspaceCreationOutcome::Created)
+    }
+
+    pub(crate) async fn create_with_local_owner(
+        &mut self,
+        workspace_id: &str,
+        created_at_unix_nanos: i64,
+    ) -> Result<WorkspaceCreationOutcome, DbError> {
+        let db = *self.session;
+        let mut tx = db.begin().await?;
+        tx.users().ensure_local_user(created_at_unix_nanos).await?;
+        if !tx
+            .workspaces()
+            .try_create_with_owner(
+                workspace_id,
+                crate::identity::LOCAL_PRINCIPAL_ID,
+                created_at_unix_nanos,
+            )
             .await?
         {
             tx.rollback().await?;

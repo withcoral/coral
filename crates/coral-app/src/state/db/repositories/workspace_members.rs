@@ -48,6 +48,31 @@ where
             .collect()
     }
 
+    pub(crate) async fn workspaces_for_user_id_with_non_local_owner(
+        &mut self,
+        user_id: &str,
+    ) -> Result<Vec<(String, MemberRole)>, DbError> {
+        let non_local_owned_workspaces = Query::select()
+            .column(WorkspaceMembers::WorkspaceId)
+            .from(WorkspaceMembers::Table)
+            .and_where(Expr::col(WorkspaceMembers::Role).eq(MemberRole::Owner.as_str()))
+            .and_where(Expr::col(WorkspaceMembers::UserId).ne(LOCAL_PRINCIPAL_ID))
+            .to_owned();
+        let statement = Query::select()
+            .columns([WorkspaceMembers::WorkspaceId, WorkspaceMembers::Role])
+            .from(WorkspaceMembers::Table)
+            .and_where(Expr::col(WorkspaceMembers::UserId).eq(user_id))
+            .and_where(
+                Expr::col(WorkspaceMembers::WorkspaceId).in_subquery(non_local_owned_workspaces),
+            )
+            .order_by(WorkspaceMembers::WorkspaceId, Order::Asc)
+            .to_owned();
+        let rows: Vec<(String, String)> = self.session.fetch_all(statement).await?;
+        rows.into_iter()
+            .map(|(workspace_id, role)| Ok((workspace_id, parse_role(&role)?)))
+            .collect()
+    }
+
     pub(crate) async fn role_for_user_id_with_non_local_owner(
         &mut self,
         workspace_id: &str,
