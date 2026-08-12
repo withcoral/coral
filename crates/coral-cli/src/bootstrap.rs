@@ -47,9 +47,8 @@ pub(crate) async fn bootstrap(options: BootstrapOptions) -> Result<Bootstrap, Bo
         });
     }
 
-    let server = configure_server_builder(ServerBuilder::new(), options)
-        .start()
-        .await?;
+    let builder = configure_server_builder(ServerBuilder::new(), options);
+    let server = with_configured_session_auth(builder)?.start().await?;
     let app = AppClient::connect(server.endpoint_uri()).await?;
     Ok(Bootstrap {
         app,
@@ -104,6 +103,13 @@ fn configure_server_builder(builder: ServerBuilder, options: BootstrapOptions) -
         .add_engine_extensions_provider(Arc::new(AwsEngineExtensionsProvider))
 }
 
+fn with_configured_session_auth(builder: ServerBuilder) -> Result<ServerBuilder, LocalServerError> {
+    match builder.serve_settings()?.take_session_auth() {
+        Some(session_auth) => Ok(builder.with_session_auth(session_auth)),
+        None => Ok(builder),
+    }
+}
+
 #[cfg(feature = "cli-test-server")]
 fn bootstrap_endpoint() -> Option<String> {
     crate::env::bootstrap_endpoint()
@@ -112,4 +118,48 @@ fn bootstrap_endpoint() -> Option<String> {
 #[cfg(not(feature = "cli-test-server"))]
 fn bootstrap_endpoint() -> Option<String> {
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use coral_api::v1::ListWorkspacesRequest;
+    use ring::rand::SystemRandom;
+    use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair};
+    use tempfile::TempDir;
+    use tonic::{Code, Request};
+
+    use super::{ServerBuilder, with_configured_session_auth};
+    use coral_client::AppClient;
+
+    #[tokio::test]
+    async fn configured_auth_denies_local_principal_to_ordinary_cli_client() {
+        let config_dir = TempDir::new().expect("config dir");
+        let signing_key =
+            EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
+                .expect("generate session signing key");
+        std::fs::write(config_dir.path().join("session.key"), signing_key.as_ref())
+            .expect("write session signing key");
+        std::fs::write(
+            config_dir.path().join("config.toml"),
+            "[auth]\nallowed_audiences = ['https://surface.example.test/']\n\n[auth.session]\nsigning_key_file = 'session.key'\n\n[auth.authorization_server]\nissuer = 'https://auth.example.test'\n\n[auth.provider]\nissuer = 'https://accounts.example.test'\nclient_id = 'client'\nclient_secret = 'secret'\nredirect_uri = 'https://auth.example.test/auth/oidc/callback'\n",
+        )
+        .expect("write config");
+
+        let server =
+            with_configured_session_auth(ServerBuilder::new().with_config_dir(config_dir.path()))
+                .expect("resolve configured session auth")
+                .start()
+                .await
+                .expect("start CLI app server");
+        let client = AppClient::connect(server.endpoint_uri())
+            .await
+            .expect("connect CLI app client");
+        let denied = client
+            .workspace_client()
+            .list_workspaces(Request::new(ListWorkspacesRequest {}))
+            .await
+            .expect_err("ordinary CLI client must not become the local principal");
+        assert_eq!(denied.code(), Code::Unauthenticated);
+        server.shutdown().await.expect("shut down CLI app server");
+    }
 }
