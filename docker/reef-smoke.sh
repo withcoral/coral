@@ -6,12 +6,39 @@ CORAL_IMAGE=${CORAL_IMAGE:-coral:local}
 prefix="reef-smoke-$$"
 reef="$prefix-reef"
 coral="$prefix-coral"
+proxy="$prefix-proxy"
 network="$prefix-net"
 secret=reef-smoke-session-secret-0123456789abcdef
+tls_dir=
 
 cleanup() {
-  docker rm -f "$reef" "$coral" >/dev/null 2>&1 || true
+  docker rm -f "$reef" "$coral" "$proxy" >/dev/null 2>&1 || true
   docker network rm "$network" >/dev/null 2>&1 || true
+  [ -z "$tls_dir" ] || rm -rf "$tls_dir"
+}
+
+wait_for_coral() {
+  attempts=0
+  while [ "$attempts" -lt 60 ]; do
+    docker exec "$coral" grpc_health_probe -addr=127.0.0.1:14555 >/dev/null 2>&1 && return 0
+    attempts=$((attempts + 1))
+    sleep 1
+  done
+  docker logs "$coral" >&2 || true
+  return 1
+}
+
+assert_ready() {
+  published_by=$1
+  address=$(docker port "$published_by" 3000/tcp)
+  attempts=0
+  while [ "$attempts" -lt 30 ]; do
+    curl -fsS "http://$address/readyz" | grep -F '"coral":"reachable"' >/dev/null && return 0
+    attempts=$((attempts + 1))
+    sleep 1
+  done
+  docker logs "$reef" >&2 || true
+  return 1
 }
 trap cleanup EXIT HUP INT TERM
 
@@ -54,23 +81,41 @@ run_required() {
 }
 
 # A: Reef and Coral share one network namespace and Reef uses explicit loopback.
-docker run -d --name "$coral" "$CORAL_IMAGE" >/dev/null
+docker run -d --name "$coral" -p 127.0.0.1::3000 "$CORAL_IMAGE" >/dev/null
+wait_for_coral
 run_required "$reef" http://127.0.0.1:14555 --network "container:$coral"
+assert_ready "$coral"
 docker rm -f "$reef" "$coral" >/dev/null
 
 # B: cleartext h2c on an operator-controlled network requires the explicit opt-in.
 docker network create "$network" >/dev/null
-docker run -d --name "$coral" --network "$network" "$CORAL_IMAGE" >/dev/null
-run_required "$reef" "http://$coral:14555" --network "$network" \
+docker run -d --name "$coral" --network "$network" --network-alias coral "$CORAL_IMAGE" >/dev/null
+wait_for_coral
+run_required "$reef" http://coral:14555 --network "$network" -p 127.0.0.1::3000 \
   -e REEF_ALLOW_INSECURE_CORAL_ENDPOINT=1
+assert_ready "$reef"
 docker stop "$coral" >/dev/null
 [ "$(docker inspect --format '{{.State.Health.Status}}' "$reef")" = healthy ]
+! curl -fsS "http://$(docker port "$reef" 3000/tcp)/readyz" >/dev/null 2>&1
 docker rm -f "$reef" "$coral" >/dev/null
 docker network rm "$network" >/dev/null
 
-# C: operator-supplied HTTPS is accepted without the cleartext escape hatch.
-run_required "$reef" https://coral.internal:443
-docker rm -f "$reef" >/dev/null
+# C: a real TLS terminator proxies HTTP/2 gRPC to Coral.
+tls_dir=$(mktemp -d)
+openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+  -subj /CN=coral-tls -addext subjectAltName=DNS:coral-tls \
+  -keyout "$tls_dir/key.pem" -out "$tls_dir/cert.pem" >/dev/null 2>&1
+docker network create "$network" >/dev/null
+docker run -d --name "$coral" --network "$network" --network-alias coral "$CORAL_IMAGE" >/dev/null
+wait_for_coral
+docker run -d --name "$proxy" --network "$network" --network-alias coral-tls \
+  -v "$(pwd)/docker/reef-smoke-nginx.conf:/etc/nginx/nginx.conf:ro" \
+  -v "$tls_dir:/tls:ro" nginx:alpine >/dev/null
+run_required "$reef" https://coral-tls:443 --network "$network" -p 127.0.0.1::3000 \
+  -e NODE_EXTRA_CA_CERTS=/tls/cert.pem -v "$tls_dir:/tls:ro"
+assert_ready "$reef"
+docker rm -f "$reef" "$proxy" "$coral" >/dev/null
+docker network rm "$network" >/dev/null
 
 # Invalid cleartext config fails before listen and reports the named cause.
 docker run --read-only --name "$reef" \

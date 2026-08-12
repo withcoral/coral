@@ -112,6 +112,7 @@ jobs:
               - 'docker/Dockerfile.reef'
               - 'docker/entrypoint-reef.sh'
               - 'docker/reef-smoke.sh'
+              - 'docker/reef-smoke-nginx.conf'
               - 'docker/reef-image.test.mjs'
               - 'apps/reef/**'
               - 'apps/desktop/src/shared/types.ts'
@@ -494,7 +495,10 @@ jobs:
 
   reef-image:
     name: Reef image
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    # Building the real Coral peer dominates this job. Match Rust-heavy CI
+    # capacity while Dockerfile.local's locked cache mounts retain registry,
+    # git, and target artifacts within the BuildKit builder.
+    runs-on: blacksmith-16vcpu-ubuntu-2404
     needs: changes
     if: ${{ needs.changes.outputs.reef-image == 'true' }}
     steps:
@@ -502,13 +506,21 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          cache-binary: false
 
       - name: Check Reef image contract
         run: node --test docker/reef-image.test.mjs
 
-      - name: Check Reef Docker build
-        run: docker buildx build --check --file docker/Dockerfile.reef .
+      - name: Build linux/amd64 Coral and Reef images
+        run: |
+          make docker-build DOCKER_IMAGE=coral:local
+          make reef-docker-build REEF_DOCKER_IMAGE=reef:local
+          test "$(docker image inspect reef:local --format '{{.Os}}/{{.Architecture}}')" = linux/amd64
+
+      - name: Smoke Reef against real Coral topologies
+        run: make reef-docker-smoke
 
   desktop-checks:
     name: Desktop checks

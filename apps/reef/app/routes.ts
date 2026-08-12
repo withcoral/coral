@@ -6,6 +6,7 @@ export default [
   // Public resources: health probes must not cross the session boundary; Coral
   // needs CIMD before authorization; and the browser needs auth routes outside it.
   route('healthz', 'routes/healthz.ts'),
+  route('readyz', 'routes/readyz.ts'),
   route('.well-known/oauth-client', 'routes/oauth-client-metadata.ts'),
   route(routePattern('login'), 'routes/login.tsx'),
   route('auth/callback', 'routes/auth.callback.tsx'),
