@@ -4,7 +4,7 @@ use crate::bootstrap::AppError;
 use crate::identity::{Principal, PrincipalKind};
 use crate::state::db::{CoralDb, DbRepos};
 use crate::users::{CurrentUser, UserView};
-use crate::workspaces::{LocalPrincipalPolicy, MemberRole, WorkspaceName};
+use crate::workspaces::{LocalPrincipalPolicy, MemberRole};
 
 /// App-domain user directory and current-user behavior.
 #[derive(Clone)]
@@ -21,9 +21,9 @@ impl UserManager {
         }
     }
 
-    /// Lets the local principal read the directory without owning a workspace.
+    /// Allows the built-in local principal to list users without owning a workspace.
     ///
-    /// Only a state directory without `[auth]` may be served this way.
+    /// Only a single-user deployment may opt into this policy.
     pub(crate) fn trusting_local_principal(mut self) -> Self {
         self.local_principal = LocalPrincipalPolicy::ImplicitOwner;
         self
@@ -33,6 +33,7 @@ impl UserManager {
         &self,
         principal: &Principal,
     ) -> Result<CurrentUser, AppError> {
+        self.local_principal.validate_request_principal(principal)?;
         require_human(principal)?;
         let mut session = self.db.as_ref();
         let user = session
@@ -40,19 +41,11 @@ impl UserManager {
             .get_by_user_id(principal.id().as_str())
             .await?
             .ok_or_else(|| AppError::UserNotFound(principal.id().to_string()))?;
-        let default_workspace = WorkspaceName::parse(&format!("default-{}", user.user_id))
-            .map_err(|error| {
-                AppError::Database(format!(
-                    "invalid personal workspace derived for user '{}': {error}",
-                    user.user_id
-                ))
-            })?;
         Ok(CurrentUser {
             user: UserView {
                 user_id: user.user_id,
                 display_name: user.display_name,
             },
-            default_workspace,
         })
     }
 
@@ -60,11 +53,10 @@ impl UserManager {
         &self,
         principal: &Principal,
     ) -> Result<Vec<UserView>, AppError> {
+        self.local_principal.validate_request_principal(principal)?;
         require_human(principal)?;
         let mut session = self.db.as_ref();
-        let trusted_local =
-            principal.is_local() && self.local_principal == LocalPrincipalPolicy::ImplicitOwner;
-        if !trusted_local
+        if !(principal.is_local() && self.local_principal.is_implicit_owner())
             && !session
                 .workspace_members()
                 .workspaces_for_user_id(principal.id().as_str())
@@ -114,9 +106,9 @@ mod tests {
     };
 
     #[tokio::test]
-    async fn current_user_is_self_scoped_and_derives_the_personal_default() {
+    async fn current_user_returns_identity_only_with_zero_workspace_memberships() {
         let (_temp, db, manager) = manager().await;
-        let user_id = provision_user(&db, "owner", Some("Owner")).await;
+        let user_id = create_directory_user(&db, "memberless", Some("Memberless")).await;
         let principal = Principal::parse(&user_id, PrincipalKind::User).expect("principal");
 
         let current = manager
@@ -125,10 +117,15 @@ mod tests {
             .expect("current user");
 
         assert_eq!(current.user.user_id, user_id);
-        assert_eq!(current.user.display_name.as_deref(), Some("Owner"));
+        assert_eq!(current.user.display_name.as_deref(), Some("Memberless"));
+        let mut session = db.as_ref();
         assert_eq!(
-            current.default_workspace.as_str(),
-            format!("default-{}", current.user.user_id)
+            session
+                .workspace_members()
+                .workspaces_for_user_id(&current.user.user_id)
+                .await
+                .expect("list current-user memberships"),
+            Vec::new()
         );
     }
 
@@ -156,10 +153,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn strict_policy_rejects_local_principal_before_database_lookup() {
+        let (_temp, db, _manager) = manager_without_migrations().await;
+        let manager = UserManager::new(db);
+
+        assert!(matches!(
+            manager.get_current_user(&Principal::local()).await,
+            Err(AppError::PermissionDenied(_))
+        ));
+        assert!(matches!(
+            manager.list_users(&Principal::local()).await,
+            Err(AppError::PermissionDenied(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn implicit_owner_lists_users_without_a_workspace_membership() {
+        let (_temp, db, manager) = manager().await;
+        let user_id = create_directory_user(&db, "directory-only", Some("Directory User")).await;
+
+        let users = manager
+            .trusting_local_principal()
+            .list_users(&Principal::local())
+            .await
+            .expect("implicit owner lists users");
+
+        assert!(users.iter().any(|user| user.user_id == user_id));
+        let mut session = db.as_ref();
+        assert!(
+            session
+                .workspace_members()
+                .workspaces_for_user_id(&user_id)
+                .await
+                .expect("list directory-user memberships")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
     async fn list_users_requires_a_human_workspace_owner() {
         let (_temp, db, manager) = manager().await;
-        let owner_id = provision_user(&db, "owner", Some("Owner")).await;
+        let owner_id = create_directory_user(&db, "owner", Some("Owner")).await;
         let directory_only_id = create_directory_user(&db, "directory-only", Some("Member")).await;
+        let mut session = db.as_ref();
+        session
+            .workspaces()
+            .create_with_owner("owned-workspace", &owner_id, 2)
+            .await
+            .expect("create owner workspace");
 
         let users = manager
             .list_users(&Principal::parse(&owner_id, PrincipalKind::User).expect("owner"))
@@ -185,6 +226,13 @@ mod tests {
     }
 
     async fn manager() -> (TempDir, Arc<CoralDb>, UserManager) {
+        let (temp, db, _) = manager_without_migrations().await;
+        db.migrate().await.expect("migrate");
+        let manager = UserManager::new(Arc::clone(&db));
+        (temp, db, manager)
+    }
+
+    async fn manager_without_migrations() -> (TempDir, Arc<CoralDb>, UserManager) {
         let temp = TempDir::new().expect("temp dir");
         let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
         let DatabaseConfig::Sqlite { path } = DatabaseConfig::load(&layout).expect("config") else {
@@ -195,20 +243,8 @@ mod tests {
                 .await
                 .expect("open sqlite"),
         );
-        db.migrate().await.expect("migrate");
         let manager = UserManager::new(Arc::clone(&db));
         (temp, db, manager)
-    }
-
-    async fn provision_user(db: &CoralDb, subject: &str, display_name: Option<&str>) -> String {
-        let UpsertLoginOutcome::Upserted(user) = db
-            .upsert_user_and_ensure_default_workspace("issuer", subject, display_name, 1)
-            .await
-            .expect("provision user")
-        else {
-            panic!("new subject should create user")
-        };
-        user.user_id
     }
 
     async fn create_directory_user(

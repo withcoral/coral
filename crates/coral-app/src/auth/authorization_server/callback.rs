@@ -74,7 +74,7 @@ pub(super) async fn oidc_callback(
         pre_v1_task_attribution_id_for_principal_claim(&identity.principal);
     let user_id = match state
         .code_store
-        .provision_login(
+        .persist_login_identity(
             &identity.issuer,
             &identity.subject,
             identity.display_name.as_deref(),
@@ -88,7 +88,7 @@ pub(super) async fn oidc_callback(
             return trusted.error("server_error", "authorization failed");
         }
         Err(error) => {
-            tracing::warn!(%error, "OIDC callback could not provision the authenticated user");
+            tracing::warn!(%error, "OIDC callback could not persist the verified identity");
             return trusted.error("server_error", "authorization failed");
         }
     };
@@ -207,7 +207,6 @@ mod tests {
         CoralDb, DatabaseConfig, DbRepos, DbSession, ResolvedDatabaseConfig, TaskCreation,
         TaskCreationResult,
     };
-    use crate::workspaces::MemberRole;
 
     const OIDC_STATE: &str = "oidc-state";
     const CLIENT_STATE: &str = "client&error=injected";
@@ -467,18 +466,15 @@ mod tests {
         clippy::too_many_lines,
         reason = "covers the complete legacy-attribution login transition"
     )]
-    async fn login_rekeys_legacy_task_attribution_before_code_storage() {
+    async fn login_reattributes_legacy_task_metadata_before_code_storage() {
         let server = MockServer::start().await;
         mount_provider(&server, 200, 200, NONCE).await;
         let provider_issuer = server.uri();
         let (_temp, database) = open_sqlite().await;
-        let UpsertLoginOutcome::Upserted(existing_user) = database
-            .upsert_user_and_ensure_default_workspace(
-                &provider_issuer,
-                "raw-principal",
-                Some("Existing User"),
-                1,
-            )
+        let mut database_session = database.as_ref();
+        let UpsertLoginOutcome::Upserted(existing_user) = database_session
+            .users()
+            .upsert_login(&provider_issuer, "raw-principal", Some("Existing User"), 1)
             .await
             .expect("seed existing user")
         else {
@@ -561,14 +557,22 @@ mod tests {
         assert_eq!(attribution, Some((existing_user.user_id.clone(),)));
         assert_eq!(
             session
-                .workspace_members()
-                .role_for_user_id(
-                    &format!("default-{}", existing_user.user_id),
-                    &existing_user.user_id,
-                )
+                .workspaces()
+                .list()
                 .await
-                .expect("personal workspace ownership"),
-            Some(MemberRole::Owner)
+                .expect("list workspaces")
+                .into_iter()
+                .map(|workspace| workspace.id)
+                .collect::<Vec<_>>(),
+            vec!["legacy-workspace"]
+        );
+        assert_eq!(
+            session
+                .workspace_members()
+                .workspaces_for_user_id(&existing_user.user_id)
+                .await
+                .expect("list login user's memberships"),
+            vec![]
         );
         let requests = server.received_requests().await.expect("requests");
         let token_requests = requests
@@ -593,7 +597,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn first_login_owns_default_workspace_and_relogin_preserves_user_id() {
+    async fn first_login_creates_no_workspace_and_relogin_preserves_user_id() {
         let server = MockServer::start().await;
         mount_provider(&server, 200, 200, NONCE).await;
         let provider_issuer = server.uri();
@@ -635,14 +639,84 @@ mod tests {
         assert_eq!(first_user_id, second_user_id);
         let mut session = database.as_ref();
         assert_eq!(
+            session.workspaces().list().await.expect("list workspaces"),
+            vec![]
+        );
+        assert_eq!(
             session
                 .workspace_members()
-                .role_for_user_id(&format!("default-{first_user_id}"), first_user_id)
+                .workspaces_for_user_id(first_user_id)
                 .await
-                .expect("personal workspace ownership"),
-            Some(MemberRole::Owner)
+                .expect("list memberships"),
+            vec![]
         );
         assert_eq!(session.users().list().await.expect("users").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn concurrent_first_logins_converge_on_one_user_without_workspaces() {
+        let server = MockServer::start().await;
+        mount_provider(&server, 200, 200, NONCE).await;
+        let provider_issuer = server.uri();
+        let (_temp, database) = open_sqlite().await;
+        let store = Arc::new(InMemoryStateStore::new());
+        let second_state = "concurrent-oidc-state";
+        seed(store.as_ref(), OIDC_STATE).await;
+        seed(store.as_ref(), second_state).await;
+        let first_query = [("state", OIDC_STATE), ("code", PROVIDER_CODE)];
+        let second_query = [("state", second_state), ("code", PROVIDER_CODE)];
+
+        let (first, second) = tokio::join!(
+            callback(
+                state_with_database(&provider_issuer, store.clone(), Arc::clone(&database)),
+                &first_query,
+            ),
+            callback(
+                state_with_database(&provider_issuer, store.clone(), Arc::clone(&database)),
+                &second_query,
+            ),
+        );
+
+        let mut user_ids = Vec::new();
+        for response in [first, second] {
+            let values = redirect_query(&response);
+            let code = values
+                .iter()
+                .find(|(key, _value)| key == "code")
+                .expect("authorization code")
+                .1
+                .clone();
+            user_ids.push(
+                store
+                    .take_authorization_code_for_request(
+                        &code,
+                        &session().client_id,
+                        REDIRECT_URI,
+                        &session().code_challenge,
+                        RESOURCE,
+                    )
+                    .await
+                    .expect("store")
+                    .expect("authorization")
+                    .user_id,
+            );
+        }
+
+        assert_eq!(user_ids[0], user_ids[1]);
+        let mut session = database.as_ref();
+        assert_eq!(session.users().list().await.expect("users").len(), 1);
+        assert_eq!(
+            session.workspaces().list().await.expect("list workspaces"),
+            vec![]
+        );
+        assert_eq!(
+            session
+                .workspace_members()
+                .workspaces_for_user_id(&user_ids[0])
+                .await
+                .expect("list memberships"),
+            vec![]
+        );
     }
 
     async fn assert_provider_failure(token_status: u16, jwks_status: u16, nonce: &str) {
@@ -704,16 +778,16 @@ mod tests {
         }
     }
 
-    struct FailProvisioningCodeStore;
+    struct FailIdentityPersistenceCodeStore;
 
     #[async_trait::async_trait]
-    impl CodeStore for FailProvisioningCodeStore {
+    impl CodeStore for FailIdentityPersistenceCodeStore {
         async fn store_authorization_code(
             &self,
             _code: &str,
             _authorization: OAuthAuthorizationCodeRecord,
         ) -> Result<(), StateStoreError> {
-            panic!("failed provisioning must prevent authorization-code storage")
+            panic!("failed identity persistence must prevent authorization-code storage")
         }
 
         async fn take_authorization_code_for_request(
@@ -729,15 +803,17 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl LoginCodeStore for FailProvisioningCodeStore {
-        async fn provision_login(
+    impl LoginCodeStore for FailIdentityPersistenceCodeStore {
+        async fn persist_login_identity(
             &self,
             _issuer: &str,
             _subject: &str,
             _display_name: Option<&str>,
             _pre_v1_task_attribution_id: &str,
         ) -> Result<UpsertLoginOutcome, AppError> {
-            Err(AppError::Database("test provisioning failure".to_string()))
+            Err(AppError::Database(
+                "test identity persistence failure".to_string(),
+            ))
         }
     }
 
@@ -747,13 +823,10 @@ mod tests {
         mount_provider(&server, 200, 200, NONCE).await;
         let provider_issuer = server.uri();
         let (_temp, database) = open_sqlite().await;
-        database
-            .upsert_user_and_ensure_default_workspace(
-                "https://different-issuer.example",
-                "raw-principal",
-                None,
-                1,
-            )
+        let mut database_session = database.as_ref();
+        database_session
+            .users()
+            .upsert_login("https://different-issuer.example", "raw-principal", None, 1)
             .await
             .expect("seed mismatched issuer");
 
@@ -766,11 +839,11 @@ mod tests {
         .await;
         assert_server_error_without_code(&response);
 
-        let state_key = "provisioning-failure";
+        let state_key = "identity-persistence-failure";
         let store = Arc::new(InMemoryStateStore::new());
         seed(store.as_ref(), state_key).await;
         let mut state = state(&provider_issuer, store);
-        state.code_store = Arc::new(FailProvisioningCodeStore);
+        state.code_store = Arc::new(FailIdentityPersistenceCodeStore);
         let response = callback(state, &[("state", state_key), ("code", PROVIDER_CODE)]).await;
         assert_server_error_without_code(&response);
     }
