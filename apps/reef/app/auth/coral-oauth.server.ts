@@ -191,7 +191,7 @@ async function exchangeAuthorizationCode(
     body,
     headers: { accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded' },
     method: 'POST',
-    redirect: 'error',
+    redirect: 'manual',
   })
   if (!response.ok) {
     throw await tokenExchangeError(response)
