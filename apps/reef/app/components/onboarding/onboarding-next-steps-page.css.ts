@@ -103,24 +103,6 @@ export const commandInput = style({
   ...theme.typography.code,
 })
 
-export const mcpConfig = style([
-  baseInput,
-  {
-    boxSizing: 'border-box',
-    color: theme.content.primary,
-    margin: 0,
-    paddingBlock: 12,
-    paddingInlineEnd: 52,
-    paddingInlineStart: 16,
-    whiteSpace: 'pre-wrap',
-    ...theme.typography.code,
-  },
-])
-
-export const mcpConfigField = style({
-  position: 'relative',
-})
-
 export const copyButton = style({
   insetBlockStart: 8,
   insetInlineEnd: 8,

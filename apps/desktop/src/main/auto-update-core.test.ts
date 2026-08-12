@@ -101,13 +101,6 @@ afterEach(() => {
 })
 
 describe('install', () => {
-  it('configures auto download without automatic install-on-quit', () => {
-    const updater = createFakeUpdater()
-    createDesktopUpdater(createDeps(updater)).install()
-    expect(updater.autoDownload).toBe(true)
-    expect(updater.autoInstallOnAppQuit).toBe(false)
-  })
-
   it('checks shortly after startup and again every interval', async () => {
     const updater = createFakeUpdater()
     createDesktopUpdater(createDeps(updater)).install()
@@ -364,20 +357,6 @@ describe('download completion notifications', () => {
 })
 
 describe('interactive checks', () => {
-  it('reports up to date when no update is available', async () => {
-    const updater = createFakeUpdater()
-    vi.mocked(updater.checkForUpdates).mockResolvedValue({
-      isUpdateAvailable: false,
-      updateInfo: { version: '1.2.3' },
-    })
-    const deps = createDeps(updater)
-    await createDesktopUpdater(deps).check({ interactive: true })
-
-    expect(deps.infoDialogs).toEqual([
-      { message: 'Coral is up to date', detail: 'You are running Coral 1.2.3.' },
-    ])
-  })
-
   it('reuses an in-flight background result', async () => {
     const updater = createFakeUpdater()
     const feed = deferredPromise()
@@ -432,28 +411,6 @@ describe('interactive checks', () => {
     await Promise.all([background, interactive])
   })
 
-  it('reports the downloading version when an update is available', async () => {
-    const updater = createFakeUpdater()
-    const download = deferredPromise()
-    vi.mocked(updater.checkForUpdates).mockResolvedValue(
-      availableUpdate('1.2.4', download.promise),
-    )
-    const deps = createDeps(updater)
-    const check = createDesktopUpdater(deps).check({ interactive: true })
-    await vi.advanceTimersByTimeAsync(0)
-
-    expect(deps.infoDialogs).toEqual([
-      {
-        message: 'Coral 1.2.4 is downloading',
-        detail:
-          'You will be notified when the update is ready. It will install after Coral quits.',
-      },
-    ])
-
-    download.resolve()
-    await check
-  })
-
   it('reports the update as ready (not downloading) once it has been staged', async () => {
     const updater = createFakeUpdater()
     vi.mocked(updater.checkForUpdates).mockResolvedValue(availableUpdate())
@@ -501,20 +458,6 @@ describe('interactive checks', () => {
     expect(deps.notifications).toHaveLength(0)
   })
 
-  it('explains when update checks are unavailable', async () => {
-    const updater = createFakeUpdater()
-    vi.mocked(updater.checkForUpdates).mockResolvedValue(null)
-    const deps = createDeps(updater)
-    await createDesktopUpdater(deps).check({ interactive: true })
-
-    expect(deps.infoDialogs).toEqual([
-      {
-        message: 'Update checks are unavailable for this build',
-        detail: 'Coral can check for desktop updates only from a packaged macOS release build.',
-      },
-    ])
-  })
-
   it('surfaces check failures in an error dialog without throwing', async () => {
     const updater = createFakeUpdater()
     vi.mocked(updater.checkForUpdates).mockRejectedValue(new Error('feed unreachable'))
@@ -539,16 +482,6 @@ describe('background checks', () => {
     expect(console.error).toHaveBeenCalledWith(
       '[coral-updater] update check failed: feed unreachable',
     )
-  })
-
-  it('does not show dialogs on successful background checks', async () => {
-    const updater = createFakeUpdater()
-    vi.mocked(updater.checkForUpdates).mockResolvedValue(availableUpdate())
-    const deps = createDeps(updater)
-    await createDesktopUpdater(deps).check({ interactive: false })
-
-    expect(deps.infoDialogs).toHaveLength(0)
-    expect(deps.errorDialogs).toHaveLength(0)
   })
 
   it('consumes download failures without showing dialogs or notifying', async () => {

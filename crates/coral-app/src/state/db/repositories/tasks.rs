@@ -105,7 +105,11 @@ where
 }
 
 impl TasksRepo<'_, CoralTx<'_>> {
-    pub(crate) async fn reattribute_pre_v1_tasks_to_user(
+    /// Replaces a matching pre-v1 attribution digest with the durable user ID.
+    ///
+    /// This updates historical task metadata only. It does not read or change
+    /// any workspace, membership, or permission.
+    pub(crate) async fn reattribute_legacy_tasks_to_user(
         &mut self,
         pre_v1_task_attribution_id: &str,
         user_id: &str,

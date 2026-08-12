@@ -2,6 +2,7 @@ import { create } from '@bufbuild/protobuf'
 
 import type { Route } from './+types/source-oauth-import'
 
+import { requestAuthContext } from '@/auth/server-context'
 import {
   ImportSourceRequestSchema,
   OAuthCredentialRetrievalSchema,
@@ -15,7 +16,7 @@ import { formValue } from '@/lib/source-install-form'
 import { errorMessage } from '@/lib/utils'
 import { workspaceFromParams } from '@/lib/workspace-routing'
 
-export async function action({ params, request }: Route.ActionArgs): Promise<Response> {
+export async function action({ context, params, request }: Route.ActionArgs): Promise<Response> {
   const formData = await request.formData()
   const manifestYaml = formData.get('manifest_yaml')
   const inputKey = formValue(formData, 'oauth_input_key')
@@ -31,7 +32,10 @@ export async function action({ params, request }: Route.ActionArgs): Promise<Res
   }
 
   try {
-    const stream = sourceClientForRequest(request).importSource(
+    const stream = sourceClientForRequest(
+      request,
+      context.get(requestAuthContext).accessToken,
+    ).importSource(
       create(ImportSourceRequestSchema, {
         manifestYaml,
         oauthCredentialRetrievals: [
@@ -44,7 +48,7 @@ export async function action({ params, request }: Route.ActionArgs): Promise<Res
       }),
       { signal: request.signal },
     )
-    return oauthSourceStreamResponse(stream, request.signal)
+    return await oauthSourceStreamResponse(stream, request.signal)
   } catch (error) {
     return oauthStreamErrorResponse(errorMessage(error), 500)
   }

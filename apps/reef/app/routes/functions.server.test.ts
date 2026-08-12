@@ -1,10 +1,15 @@
 import { create } from '@bufbuild/protobuf'
 import { describe, expect, it, vi } from 'vitest'
 
-const { deleteFunction } = vi.hoisted(() => ({ deleteFunction: vi.fn() }))
+import { authRouteTestArgs } from '@/auth/server-context.test-helper'
+
+const { deleteFunction, functionClientForRequest } = vi.hoisted(() => ({
+  deleteFunction: vi.fn(),
+  functionClientForRequest: vi.fn(),
+}))
 
 vi.mock('@/lib/coral-request.server', () => ({
-  functionClientForRequest: () => ({ deleteFunction }),
+  functionClientForRequest,
 }))
 
 import {
@@ -87,12 +92,12 @@ describe('functions route mapping', () => {
 describe('functions route action', () => {
   it('deletes a function from the route workspace', async () => {
     deleteFunction.mockResolvedValue({})
+    functionClientForRequest.mockReturnValue({ deleteFunction })
+    const request = deleteRequest('review_queue')
 
-    const result = await action({
-      params: { workspaceId: 'analytics' },
-      request: deleteRequest('review_queue'),
-    } as Parameters<typeof action>[0])
+    const result = await action(authRouteTestArgs(request, { workspaceId: 'analytics' }))
 
+    expect(functionClientForRequest).toHaveBeenCalledWith(request, 'test-coral-token')
     expect(deleteFunction).toHaveBeenCalledWith(
       expect.objectContaining({
         name: 'review_queue',

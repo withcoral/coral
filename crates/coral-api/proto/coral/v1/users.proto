@@ -2,8 +2,6 @@ syntax = "proto3";
 
 package coral.v1;
 
-import "coral/v1/resources.proto";
-
 // A user known to this Coral server.
 message User {
   // Stable internal user identifier.
@@ -24,18 +22,19 @@ message ListUsersResponse {
 // Gets the authenticated user.
 message GetCurrentUserRequest {}
 
-// Returns the authenticated user and their personal default workspace.
+// Returns the authenticated user's identity.
 message GetCurrentUserResponse {
+  reserved 2;
+  reserved "default_workspace";
+
   // Authenticated user.
   User user = 1;
-  // Personal default workspace derived by Coral.
-  Workspace default_workspace = 2;
 }
 
 // User directory and current-user APIs.
 service UserService {
   // Lists users known to this Coral server.
   rpc ListUsers(ListUsersRequest) returns (ListUsersResponse);
-  // Gets the authenticated user and their personal default workspace.
+  // Gets the authenticated user's identity.
   rpc GetCurrentUser(GetCurrentUserRequest) returns (GetCurrentUserResponse);
 }
