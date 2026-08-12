@@ -90,6 +90,11 @@
   bypass Docker layer caching. Keep the exported-binary layout, runtime
   platform, and provenance settings aligned with the `docker-publish`
   workflow; local builds must not download a published Coral binary.
+- Use `make reef-docker-build` to build Reef from the current checkout and
+  `make reef-docker-smoke` for its topology/configuration matrix. Reef's
+  runtime stage must remain COPY-only and non-root; build and dependency
+  stages run on the build platform. Local builds follow the Docker daemon's
+  architecture, while release publication is currently linux/amd64 only.
 - Keep adapters thin. If CLI or MCP behavior gets complex, move it inward.
 - Keep server topology orchestration private to `coral-cli` while CLI commands
   are its only consumers. Do not extract the orchestration into a shared
