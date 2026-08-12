@@ -1795,13 +1795,13 @@ mod tests {
             tx.state_migrations()
                 .try_claim(WORKSPACE_CATALOG_CUTOVER_ID, 7)
                 .await
-                .expect("claim workspace cutover")
+                .expect("mark workspace cutover complete")
         );
         assert!(
             tx.state_migrations()
                 .try_claim(SOURCE_CATALOG_IMPORT_ID, 7)
                 .await
-                .expect("claim source import")
+                .expect("mark source import complete")
         );
         tx.commit().await.expect("commit source");
 
@@ -1927,7 +1927,7 @@ mod tests {
                 source_document_raw: b"{}".to_vec(),
                 source_document_yaml: "{}".into(),
                 semantic_ir_yaml: "{}".into(),
-                operation_metadata_yaml: "metadata: true\n".into(),
+                operation_metadata_yaml: "{}".into(),
             }],
         };
         let mut loser_record = winner_record.clone();
