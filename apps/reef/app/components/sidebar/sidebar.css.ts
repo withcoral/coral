@@ -99,6 +99,10 @@ export const toggleButton = style({
   justifyContent: 'center',
 })
 
+export const workspaceMenuForm = style({
+  display: 'contents',
+})
+
 export const nav = style({
   display: 'flex',
   flex: 1,

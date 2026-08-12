@@ -1,4 +1,5 @@
 import { fetchTableColumnsFromCoral } from '@/lib/schema-explorer'
+import { requestAuthContext } from '@/auth/server-context'
 import { catalogClientForRequest } from '@/lib/coral-request.server'
 import { workspaceFromParams } from '@/lib/workspace-routing'
 import { SchemaTableError, SchemaTableView } from '@/views/schema-explorer/schema-table'
@@ -12,11 +13,11 @@ import type { Route } from './+types/schema-table'
 // The abort signal matters: large tables fan out concurrent paginated
 // ListColumns calls, so switching tables quickly would otherwise pile up
 // orphaned requests.
-export async function loader({ params, request }: Route.LoaderArgs) {
+export async function loader({ context, params, request }: Route.LoaderArgs) {
   const workspace = workspaceFromParams(params)
   return {
     columns: await fetchTableColumnsFromCoral(
-      catalogClientForRequest(request),
+      catalogClientForRequest(request, context.get(requestAuthContext).accessToken),
       workspace,
       params.schemaName,
       params.tableName,
