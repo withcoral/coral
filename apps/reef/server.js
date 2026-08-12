@@ -1,7 +1,7 @@
 import { createReadStream } from 'node:fs'
 import { stat } from 'node:fs/promises'
 import { createServer } from 'node:http'
-import { extname, resolve, sep } from 'node:path'
+import { extname, relative, resolve, sep } from 'node:path'
 import { pipeline } from 'node:stream/promises'
 import { Readable } from 'node:stream'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -47,12 +47,14 @@ export async function startServer({
   host = env.HOST?.trim() || '0.0.0.0',
   port = env.PORT ? Number(env.PORT) : 3000,
   listen = listenServer,
+  installShutdown = installShutdownHandlers,
 }) {
   if (env.REEF_AUTH_MODE?.trim().toLowerCase() === 'disabled') {
     console.warn('WARNING: Reef authentication is disabled; all clients have full local access.')
   }
   await probeRuntimeConfig(handler)
   await listen(server, port, host)
+  installShutdown(server)
   return server
 }
 
@@ -92,9 +94,10 @@ async function serveStatic(request, response) {
   }
   if (!metadata.isFile()) return false
 
+  const clientPath = relative(CLIENT_ROOT, file)
   response.setHeader(
     'Cache-Control',
-    pathname.startsWith('/assets/') ? 'public, max-age=31536000, immutable' : 'no-cache',
+    clientPath.split(sep)[0] === 'assets' ? 'public, max-age=31536000, immutable' : 'no-cache',
   )
   response.setHeader('Content-Length', metadata.size)
   response.setHeader('Content-Type', CONTENT_TYPES[extname(file)] ?? 'application/octet-stream')
@@ -103,22 +106,37 @@ async function serveStatic(request, response) {
   return true
 }
 
-function toWebRequest(request) {
+export function createWebRequest(request, response) {
+  const controller = new AbortController()
+  const abort = () => controller.abort()
+  const abortIncompleteRequest = () => !request.complete && abort()
+  const abortIncompleteResponse = () => !response.writableEnded && abort()
+  request.once('aborted', abort)
+  request.once('close', abortIncompleteRequest)
+  response.once('close', abortIncompleteResponse)
+
   const headers = new Headers()
   for (const [name, value] of Object.entries(request.headers)) {
     for (const item of Array.isArray(value) ? value : [value]) {
       if (item !== undefined) headers.append(name, item)
     }
   }
-  const init = { headers, method: request.method }
+  const init = { headers, method: request.method, signal: controller.signal }
   if (request.method !== 'GET' && request.method !== 'HEAD') {
     init.body = Readable.toWeb(request)
     init.duplex = 'half'
   }
-  return new Request(
-    new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`),
-    init,
-  )
+  return {
+    request: new Request(
+      new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`),
+      init,
+    ),
+    release() {
+      request.off('aborted', abort)
+      request.off('close', abortIncompleteRequest)
+      response.off('close', abortIncompleteResponse)
+    },
+  }
 }
 
 async function sendWebResponse(request, response, webResponse) {
@@ -137,18 +155,22 @@ async function sendWebResponse(request, response, webResponse) {
 }
 
 async function handleNodeRequest(request, response, handler) {
+  let bridge
   try {
     if (await serveStatic(request, response)) return
-    const webResponse = await handler(toWebRequest(request), new RouterContextProvider())
+    bridge = createWebRequest(request, response)
+    const webResponse = await handler(bridge.request, new RouterContextProvider())
     await sendWebResponse(request, response, webResponse)
   } catch (error) {
     console.error('Reef request failed:', error)
     if (response.headersSent) response.destroy()
     else response.writeHead(500).end('Internal Server Error')
+  } finally {
+    bridge?.release()
   }
 }
 
-function installShutdown(server) {
+function installShutdownHandlers(server) {
   let closing = false
   const shutdown = () => {
     if (closing) return
@@ -171,7 +193,6 @@ async function main() {
   const server = createServer((request, response) => {
     void handleNodeRequest(request, response, handler)
   })
-  installShutdown(server)
   await startServer({ handler, server })
   const address = server.address()
   const host = typeof address === 'object' && address ? address.address : process.env.HOST
