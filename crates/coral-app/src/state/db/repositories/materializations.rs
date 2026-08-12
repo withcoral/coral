@@ -329,6 +329,7 @@ mod tests {
             variables: std::collections::BTreeMap::default(),
             secrets: Vec::new(),
             credential_storage: None,
+            credential_revision: uuid::Uuid::default(),
             origin: SourceOrigin::Imported,
         };
         let empty_surfaces = MaterializationRecord {
