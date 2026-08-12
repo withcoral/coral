@@ -1186,6 +1186,7 @@ where
     RowCount: FnOnce(&T) -> Option<u64>,
 {
     let started_at = Instant::now();
+    let _active_query = crate::telemetry::metrics::metrics().begin_query();
     let query_span = create_query_span(operation, workspace_name, sql, task_id);
     let result = query.instrument(query_span.clone()).await;
 
@@ -1673,6 +1674,128 @@ mod tests {
         );
 
         drop(operation);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn active_query_lifecycle_is_poll_scoped() {
+        use std::future::{pending, poll_fn};
+        use std::task::Poll;
+
+        use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData, ResourceMetrics};
+
+        fn active_query_count(
+            exporter: &opentelemetry_sdk::metrics::InMemoryMetricExporter,
+        ) -> u64 {
+            crate::telemetry::metrics::test_support::flush_metrics();
+            let finished = exporter.get_finished_metrics().expect("finished metrics");
+            let metric = finished
+                .iter()
+                .rev()
+                .flat_map(ResourceMetrics::scope_metrics)
+                .flat_map(opentelemetry_sdk::metrics::data::ScopeMetrics::metrics)
+                .find(|metric| metric.name() == "coral.query.active")
+                .expect("active query metric");
+            let AggregatedMetrics::U64(MetricData::Gauge(gauge)) = metric.data() else {
+                panic!("active query metric should be a u64 gauge");
+            };
+            let points = gauge.data_points().collect::<Vec<_>>();
+            assert_eq!(points.len(), 1);
+            assert!(points[0].attributes().next().is_none());
+            points[0].value()
+        }
+
+        crate::telemetry::metrics::test_support::reset_metrics();
+        let exporter = crate::telemetry::metrics::test_support::install_metrics_exporter();
+        let workspace = WorkspaceName::default();
+
+        let mut unpolled = Box::pin(run_query_operation(
+            QueryOperation::ExecuteSql,
+            &workspace,
+            "SELECT 1",
+            None,
+            pending::<Result<(), QueryManagerError>>(),
+            |()| None,
+            |_, ()| {},
+        ));
+        assert_eq!(active_query_count(&exporter), 0);
+        poll_fn(|context| {
+            assert!(unpolled.as_mut().poll(context).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        assert_eq!(active_query_count(&exporter), 1);
+        drop(unpolled);
+        assert_eq!(active_query_count(&exporter), 0);
+
+        let mut operations = [
+            QueryOperation::ExecuteSql,
+            QueryOperation::ExplainSql,
+            QueryOperation::ListTables,
+            QueryOperation::ListCatalog,
+            QueryOperation::DescribeTable,
+        ]
+        .map(|operation| {
+            Box::pin(run_query_operation(
+                operation,
+                &workspace,
+                "test operation",
+                None,
+                pending::<Result<(), QueryManagerError>>(),
+                |()| None,
+                |_, ()| {},
+            ))
+        });
+        for (index, operation) in operations.iter_mut().enumerate() {
+            poll_fn(|context| {
+                assert!(operation.as_mut().poll(context).is_pending());
+                Poll::Ready(())
+            })
+            .await;
+            assert_eq!(
+                active_query_count(&exporter),
+                u64::try_from(index).expect("five operations fit in u64") + 1
+            );
+        }
+        drop(operations);
+        assert_eq!(active_query_count(&exporter), 0);
+
+        run_query_operation(
+            QueryOperation::ListTables,
+            &workspace,
+            "LIST TABLES *.*",
+            None,
+            async { Ok::<(), QueryManagerError>(()) },
+            |()| None,
+            |_, ()| {},
+        )
+        .await
+        .expect("successful operation");
+        assert_eq!(active_query_count(&exporter), 0);
+
+        let (release_error, wait_for_error) = tokio::sync::oneshot::channel();
+        let mut handled_error = Box::pin(run_query_operation(
+            QueryOperation::ExplainSql,
+            &workspace,
+            "EXPLAIN SELECT 1",
+            None,
+            async move {
+                wait_for_error.await.expect("release handled error");
+                Err::<(), QueryManagerError>(QueryManagerError::App(AppError::InvalidInput(
+                    "expected test error".to_string(),
+                )))
+            },
+            |()| None,
+            |_, ()| {},
+        ));
+        poll_fn(|context| {
+            assert!(handled_error.as_mut().poll(context).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        assert_eq!(active_query_count(&exporter), 1);
+        release_error.send(()).expect("release handled error");
+        assert!(handled_error.await.is_err());
+        assert_eq!(active_query_count(&exporter), 0);
     }
 
     #[tokio::test(flavor = "current_thread")]
