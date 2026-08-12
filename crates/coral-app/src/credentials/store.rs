@@ -533,19 +533,14 @@ impl CredentialStore {
     }
 
     pub(crate) fn default_write_storage(&self) -> Result<CredentialStorageKind, CredentialsError> {
-        // An explicitly configured preference wins even when a database backend
-        // is attached; only `Auto` may resolve to database storage on its own.
+        if self.database.is_some() {
+            return Ok(CredentialStorageKind::Database);
+        }
         match self.preference {
-            CredentialStoragePreference::Database => {
-                if self.database.is_some() {
-                    Ok(CredentialStorageKind::Database)
-                } else {
-                    Err(CredentialsError::Unavailable(
-                        "database credential storage is configured, but the database backend is not available"
-                            .to_string(),
-                    ))
-                }
-            }
+            CredentialStoragePreference::Database => Err(CredentialsError::Unavailable(
+                "database credential storage is configured, but the database backend is not available"
+                    .to_string(),
+            )),
             CredentialStoragePreference::File => Ok(CredentialStorageKind::File),
             CredentialStoragePreference::Keychain => {
                 self.keychain
@@ -553,18 +548,13 @@ impl CredentialStore {
                     .map_err(configured_keychain_unavailable)?;
                 Ok(CredentialStorageKind::Keychain)
             }
-            CredentialStoragePreference::Auto => {
-                if self.database.is_some() {
-                    return Ok(CredentialStorageKind::Database);
+            CredentialStoragePreference::Auto => match self.keychain.probe() {
+                Ok(()) => Ok(CredentialStorageKind::Keychain),
+                Err(error) => {
+                    tracing::warn!(detail = %error, "keychain unavailable; using plaintext file credential storage");
+                    Ok(CredentialStorageKind::File)
                 }
-                match self.keychain.probe() {
-                    Ok(()) => Ok(CredentialStorageKind::Keychain),
-                    Err(error) => {
-                        tracing::warn!(detail = %error, "keychain unavailable; using plaintext file credential storage");
-                        Ok(CredentialStorageKind::File)
-                    }
-                }
-            }
+            },
         }
     }
 
