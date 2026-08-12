@@ -33,6 +33,7 @@ pub(crate) struct Metrics {
     _active_query_gauge: ObservableGauge<u64>,
     datafusion_reserved_peak: Histogram<u64>,
     arrow_estimated_occupied_memory: Histogram<u64>,
+    ipc_encoded_size: Histogram<u64>,
 }
 
 impl Metrics {
@@ -77,6 +78,11 @@ impl Metrics {
             return;
         };
         self.arrow_estimated_occupied_memory
+            .record(bytes, &query_memory_attributes(QueryMemoryOutcome::Success));
+    }
+
+    pub(crate) fn record_query_result_ipc_encoded_size(&self, bytes: u64) {
+        self.ipc_encoded_size
             .record(bytes, &query_memory_attributes(QueryMemoryOutcome::Success));
     }
 }
@@ -142,6 +148,12 @@ fn build_metrics(meter: &Meter) -> Metrics {
             .u64_histogram("coral.query.result.arrow.estimated_occupied_memory")
             .with_unit("By")
             .with_description("Estimated Arrow occupied memory per query result")
+            .with_boundaries(QUERY_MEMORY_BUCKETS.to_vec())
+            .build(),
+        ipc_encoded_size: meter
+            .u64_histogram("coral.query.result.ipc.encoded_size")
+            .with_unit("By")
+            .with_description("Exact serialized Arrow IPC payload size per query result")
             .with_boundaries(QUERY_MEMORY_BUCKETS.to_vec())
             .build(),
     }
@@ -359,6 +371,35 @@ mod tests {
             &[ExpectedMetricPoint {
                 attributes: &[("operation", "execute_sql"), ("status", "ok")],
                 value: 0,
+            }],
+        );
+    }
+
+    #[test]
+    fn query_result_ipc_exports_explicit_buckets_and_bounded_attributes() {
+        super::test_support::reset_metrics();
+        let exporter = super::test_support::install_metrics_exporter();
+        let metrics = metrics();
+
+        metrics.record_query_result_ipc_encoded_size(4_096);
+
+        super::test_support::flush_metrics();
+        let finished = exporter.get_finished_metrics().expect("finished metrics");
+        assert_query_memory_histogram(
+            &finished,
+            "coral.query.result.ipc.encoded_size",
+            "Exact serialized Arrow IPC payload size per query result",
+            &[ExpectedMetricPoint {
+                attributes: &[("operation", "execute_sql"), ("status", "ok")],
+                value: 1,
+            }],
+        );
+        assert_u64_histogram_points(
+            &finished,
+            "coral.query.result.ipc.encoded_size",
+            &[ExpectedMetricPoint {
+                attributes: &[("operation", "execute_sql"), ("status", "ok")],
+                value: 4_096,
             }],
         );
     }
