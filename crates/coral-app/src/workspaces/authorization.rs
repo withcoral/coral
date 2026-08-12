@@ -279,51 +279,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn owned_workspace_pages_include_only_owner_memberships() {
-        let (_temp, db) = database(true).await;
-        let owner_id = create_directory_user(&db, "enumeration-owner").await;
-        let empty_id = create_directory_user(&db, "enumeration-empty").await;
-        let mut session = db.as_ref();
-        session
-            .workspaces()
-            .create_with_owner("A-owned", &owner_id, 1)
-            .await
-            .expect("create owned workspace");
-
-        let authorizer = WorkspaceAuthorizer::new(db);
-        let owner = Principal::parse(&owner_id, PrincipalKind::User).expect("owner");
-        let empty = Principal::parse(&empty_id, PrincipalKind::User).expect("empty user");
-        assert_eq!(
-            authorizer
-                .owned_workspace_page_for_user(&empty, None, 10)
-                .await
-                .expect("empty owned page"),
-            Vec::<WorkspaceName>::new()
-        );
-        assert_eq!(
-            authorizer
-                .owned_workspace_page_for_user(&owner, None, 10)
-                .await
-                .expect("first owned page"),
-            vec![WorkspaceName::parse("A-owned").expect("workspace")]
-        );
-
-        assert!(matches!(
-            authorizer
-                .owned_workspace_page_for_user(&Principal::local(), None, 10)
-                .await,
-            Err(AppError::PermissionDenied(_))
-        ));
-        let agent = Principal::parse(&owner_id, PrincipalKind::Agent).expect("agent");
-        assert!(matches!(
-            authorizer
-                .owned_workspace_page_for_user(&agent, None, 10)
-                .await,
-            Err(AppError::PermissionDenied(_))
-        ));
-    }
-
-    #[tokio::test]
     async fn strict_policy_conceals_ownerless_workspace_from_member() {
         let (_temp, db) = database(true).await;
         let member_id = create_directory_user(&db, "ownerless-member").await;

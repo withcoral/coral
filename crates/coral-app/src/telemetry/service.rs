@@ -768,16 +768,11 @@ mod tests {
         let mixed_tool_object = mixed_tool.as_object_mut().expect("mixed tool object");
         mixed_tool_object.insert("trace_id".to_string(), json!("mixed-trace"));
         mixed_tool_object.insert("span_id".to_string(), json!("mixed-tool"));
-        let mut bridge = trace_record_json("mixed-trace", "bridge", "unused", 15, 35);
-        let bridge_object = bridge.as_object_mut().expect("bridge record object");
-        bridge_object.insert("parent_span_id".to_string(), json!("mixed-tool"));
-        bridge_object.insert("attributes_json".to_string(), json!("{}"));
         let mut sentinel = trace_record_json("mixed-trace", "beta-query", "beta", 20, 30);
-        sentinel
-            .as_object_mut()
-            .expect("sentinel record object")
-            .insert("parent_span_id".to_string(), json!("bridge"));
-        write_trace_records(trace_store, &[tool, nested, mixed_tool, bridge, sentinel]);
+        let sentinel_object = sentinel.as_object_mut().expect("sentinel record object");
+        sentinel_object.insert("parent_span_id".to_string(), json!("remote-parent"));
+        sentinel_object.insert("parent_span_is_remote".to_string(), json!(true));
+        write_trace_records(trace_store, &[tool, nested, mixed_tool, sentinel]);
     }
 
     fn trace_record_json(

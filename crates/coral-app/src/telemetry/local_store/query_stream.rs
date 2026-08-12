@@ -57,7 +57,7 @@ pub(super) fn list(
         };
         let watermark = newest_unscanned_file.span_end_upper_bound_unix_nanos;
         projector.advance_watermark(watermark);
-        if projector.page_is_newer_than(watermark) {
+        if workspace_name.is_none() && projector.page_is_newer_than(watermark) {
             scanned_all_files = false;
             break;
         }
@@ -298,14 +298,10 @@ impl StreamingQueryStreamAggregate {
     }
 
     fn workspace(&self) -> Option<&str> {
-        match (
-            self.entry.workspace.as_deref(),
-            self.workspace_evidence.unique(),
-        ) {
-            (Some(entry), Some(evidence)) if entry == evidence => Some(entry),
-            (None, evidence) => evidence,
-            _ => None,
-        }
+        self.entry
+            .workspace
+            .as_deref()
+            .or_else(|| self.workspace_evidence.unique())
     }
 
     fn may_match_workspace(&self, workspace_name: Option<&str>) -> bool {
@@ -371,6 +367,7 @@ struct QueryStreamProjector {
     aggregates: HashMap<u64, StreamingQueryStreamAggregate>,
     aggregate_starts: BTreeMap<i64, Vec<u64>>,
     finalized: Vec<TraceSummaryRecord>,
+    trace_workspace_evidence: HashMap<String, QueryStreamWorkspaceEvidence>,
     next_operation_id: u64,
 }
 
@@ -384,6 +381,7 @@ impl QueryStreamProjector {
             aggregates: HashMap::new(),
             aggregate_starts: BTreeMap::new(),
             finalized: Vec::new(),
+            trace_workspace_evidence: HashMap::new(),
             next_operation_id: 0,
         }
     }
@@ -432,6 +430,10 @@ impl QueryStreamProjector {
         if self.nodes.contains_key(&key) {
             return;
         }
+        self.trace_workspace_evidence
+            .entry(span.trace_id.clone())
+            .or_default()
+            .record(span.workspace.as_deref());
         let parent = span
             .parent_key()
             .as_ref()
@@ -515,18 +517,14 @@ impl QueryStreamProjector {
         let Some(aggregate) = self.aggregates.remove(&operation_id) else {
             return;
         };
-        if self
-            .workspace_name
-            .as_deref()
-            .is_none_or(|workspace_name| aggregate.workspace() == Some(workspace_name))
-        {
-            self.finalized.push(aggregate.into_summary());
-        }
+        self.finalized.push(aggregate.into_summary());
     }
 
     fn trim_finalized(&mut self) {
         sort_and_deduplicate_query_stream_summaries(&mut self.finalized);
-        self.finalized.truncate(self.required_entry_count);
+        if self.workspace_name.is_none() {
+            self.finalized.truncate(self.required_entry_count);
+        }
     }
 
     fn page_is_newer_than(&self, watermark: i64) -> bool {
@@ -545,6 +543,13 @@ impl QueryStreamProjector {
     }
 
     fn into_page(mut self, offset: usize, limit: usize) -> Vec<TraceSummaryRecord> {
+        if let Some(workspace_name) = self.workspace_name.as_deref() {
+            self.finalized.retain(|summary| {
+                self.trace_workspace_evidence
+                    .get(&summary.trace_id)
+                    .is_some_and(|evidence| evidence.matches(workspace_name))
+            });
+        }
         sort_and_deduplicate_query_stream_summaries(&mut self.finalized);
         self.finalized
             .into_iter()
