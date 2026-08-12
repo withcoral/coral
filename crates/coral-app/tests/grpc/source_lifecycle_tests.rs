@@ -62,10 +62,13 @@ fn secret_auth_manifest_yaml_at(base_url: &str) -> String {
 }
 
 fn v4_secret_auth_manifest(manifest_yaml: &str) -> String {
-    manifest_yaml.replace(
+    // DSL v4 declares inputs at the manifest root; only the transport auth
+    // belongs to the surface.
+    let with_surface_auth = manifest_yaml.replace(
         "type: openapi",
-        "type: openapi\n  inputs:\n    API_TOKEN:\n      kind: secret\n  auth:\n    type: BasicAuth\n    username: bot\n    password: \"{{input.API_TOKEN}}\"",
-    )
+        "type: openapi\n  auth:\n    type: BasicAuth\n    username: bot\n    password: \"{{input.API_TOKEN}}\"",
+    );
+    format!("inputs:\n  API_TOKEN:\n    kind: secret\n{with_surface_auth}")
 }
 
 #[tokio::test]
