@@ -22,7 +22,9 @@
 )]
 
 use coral_api::v1::trace_service_client::TraceServiceClient;
-use coral_api::v1::{ListSourcesRequest, ListTracesRequest, SearchRequest, TraceView};
+use coral_api::v1::{
+    CreateWorkspaceRequest, ListSourcesRequest, ListTracesRequest, SearchRequest, TraceView,
+};
 use coral_client::{AppClient, default_workspace, local::ServerBuilder};
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
@@ -57,6 +59,12 @@ async fn host_subscriber_keeps_server_available_without_local_only_attributes() 
     let app = AppClient::connect(server.endpoint_uri())
         .await
         .expect("connect client");
+    app.workspace_client()
+        .create_workspace(Request::new(CreateWorkspaceRequest {
+            workspace: Some(default_workspace()),
+        }))
+        .await
+        .expect("create default test workspace");
 
     let sources = app
         .source_client()

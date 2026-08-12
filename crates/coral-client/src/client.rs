@@ -56,7 +56,7 @@ pub type SourceClient = SourceServiceClient<GrpcService>;
 /// Public workspace-management gRPC client.
 pub type WorkspaceClient = WorkspaceServiceClient<GrpcService>;
 
-/// Public user-directory gRPC client.
+/// Internal user-directory gRPC client.
 pub type UserClient = UserServiceClient<GrpcService>;
 
 /// Public catalog-discovery gRPC client.
@@ -271,7 +271,7 @@ impl AppClient {
     }
 
     #[must_use]
-    /// Returns a cloned user-directory client.
+    /// Returns a cloned internal user-directory client.
     pub fn user_client(&self) -> UserClient {
         self.user.clone()
     }

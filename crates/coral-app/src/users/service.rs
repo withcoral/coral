@@ -8,7 +8,7 @@ use coral_api::v1::{
 use tonic::{Request, Response, Status};
 
 use crate::bootstrap::app_status;
-use crate::transport::{grpc_span, instrument_grpc, request_context, workspace_to_proto};
+use crate::transport::{grpc_span, instrument_grpc, request_context};
 use crate::users::{CurrentUser, UserManager, UserView};
 
 #[derive(Clone)]
@@ -72,6 +72,5 @@ fn user_to_proto(user: UserView) -> ProtoUser {
 fn current_user_to_proto(current: CurrentUser) -> GetCurrentUserResponse {
     GetCurrentUserResponse {
         user: Some(user_to_proto(current.user)),
-        default_workspace: Some(workspace_to_proto(&current.default_workspace)),
     }
 }

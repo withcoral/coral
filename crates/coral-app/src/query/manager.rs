@@ -1492,6 +1492,9 @@ mod tests {
     }
 
     async fn test_db(layout: &AppStateLayout, config_store: &ConfigStore) -> Arc<CoralDb> {
+        config_store
+            .create_legacy_workspace_entry_for_tests(&WorkspaceName::default())
+            .expect("create default test workspace");
         let config = DatabaseConfig::load(layout).expect("db config");
         let DatabaseConfig::Sqlite { path } = config else {
             panic!("default test config should be sqlite");
@@ -1589,8 +1592,12 @@ mod tests {
 
         let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
         let (task, request_context, task_id) = active_task_context(&fixture.db).await;
-        let service = QueryService::new(fixture.manager.clone(), task).with_authorizer(
-            crate::workspaces::WorkspaceAuthorizer::new(Arc::clone(&fixture.db)),
+        let service = QueryService::new(
+            fixture.manager.clone(),
+            task,
+            crate::workspaces::WorkspaceAuthorizer::trusting_local_principal(Arc::clone(
+                &fixture.db,
+            )),
         );
 
         let mut request = Request::new(ExecuteSqlRequest {
@@ -1696,8 +1703,12 @@ mod tests {
 
         let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
         let (task, request_context, task_id) = active_task_context(&fixture.db).await;
-        let service = CatalogService::new(fixture.manager.clone(), task).with_authorizer(
-            crate::workspaces::WorkspaceAuthorizer::new(Arc::clone(&fixture.db)),
+        let service = CatalogService::new(
+            fixture.manager.clone(),
+            task,
+            crate::workspaces::WorkspaceAuthorizer::trusting_local_principal(Arc::clone(
+                &fixture.db,
+            )),
         );
 
         call_catalog_tools_with_task(&service, &request_context).await;

@@ -1,7 +1,4 @@
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired to service handlers in later milestones")
-)]
+#![cfg_attr(not(test), expect(dead_code, reason = "used higher in the PR stack"))]
 
 use std::sync::Arc;
 
@@ -16,21 +13,31 @@ pub(crate) enum WorkspaceAction {
     Manage,
 }
 
-/// Whether the built-in local principal owns every workspace.
-///
-/// A state directory with no `[auth]` section is a single-user deployment: the
-/// host user is the deployment, and `coral:local` reaches everything, exactly as
-/// it did before access control existed. Once `[auth]` is configured the
-/// deployment is shared and has no superuser — a lockout is repaired out of band
-/// with the admin tool, not through a privileged request path.
-///
-/// [`Ordinary`](Self::Ordinary) is the default so that forgetting to state the
-/// policy denies rather than grants.
+/// Whether requests may use the built-in local principal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum LocalPrincipalPolicy {
+    /// Reject the local principal before consulting user or membership state.
     #[default]
-    Ordinary,
+    NoLocalPrincipal,
+    /// Treat the local principal as owner without consulting membership state.
     ImplicitOwner,
+}
+
+impl LocalPrincipalPolicy {
+    /// Rejects a local request principal unless this deployment explicitly trusts it.
+    pub(crate) fn validate_request_principal(self, principal: &Principal) -> Result<(), AppError> {
+        if principal.is_local() && self == Self::NoLocalPrincipal {
+            Err(AppError::PermissionDenied(
+                "the local principal is not available under this server policy".to_string(),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    pub(crate) const fn is_implicit_owner(self) -> bool {
+        matches!(self, Self::ImplicitOwner)
+    }
 }
 
 #[derive(Clone)]
@@ -40,17 +47,17 @@ pub(crate) struct WorkspaceAuthorizer {
 }
 
 impl WorkspaceAuthorizer {
-    /// Authorizes every principal from its membership, with no exceptions.
+    /// Authorizes requests and rejects the local principal.
     pub(crate) fn new(db: Arc<CoralDb>) -> Self {
         Self {
             db,
-            local_principal: LocalPrincipalPolicy::Ordinary,
+            local_principal: LocalPrincipalPolicy::default(),
         }
     }
 
     /// Treats the local principal as owner of every workspace.
     ///
-    /// Only a state directory without `[auth]` may be served this way.
+    /// Only a single-user deployment may opt into this policy.
     pub(crate) fn trusting_local_principal(db: Arc<CoralDb>) -> Self {
         Self {
             db,
@@ -59,7 +66,7 @@ impl WorkspaceAuthorizer {
     }
 
     /// Reports the policy so sibling surfaces resolve local access identically.
-    pub(crate) fn local_principal_policy(&self) -> LocalPrincipalPolicy {
+    pub(crate) const fn local_principal_policy(&self) -> LocalPrincipalPolicy {
         self.local_principal
     }
 
@@ -69,7 +76,8 @@ impl WorkspaceAuthorizer {
         workspace: &WorkspaceName,
         action: WorkspaceAction,
     ) -> Result<(), AppError> {
-        if principal.is_local() && self.local_principal == LocalPrincipalPolicy::ImplicitOwner {
+        self.local_principal.validate_request_principal(principal)?;
+        if principal.is_local() {
             return Ok(());
         }
         if principal.kind() == PrincipalKind::Agent && action == WorkspaceAction::Manage {
@@ -79,11 +87,18 @@ impl WorkspaceAuthorizer {
         }
 
         let mut session = self.db.as_ref();
-        let role = session
-            .workspace_members()
-            .role_for_user_id(workspace.as_str(), principal.id().as_str())
-            .await?
-            .ok_or_else(|| AppError::WorkspaceNotFound(workspace.to_string()))?;
+        let role = if self.local_principal == LocalPrincipalPolicy::NoLocalPrincipal {
+            session
+                .workspace_members()
+                .role_for_user_id_with_non_local_owner(workspace.as_str(), principal.id().as_str())
+                .await?
+        } else {
+            session
+                .workspace_members()
+                .role_for_user_id(workspace.as_str(), principal.id().as_str())
+                .await?
+        }
+        .ok_or_else(|| AppError::WorkspaceNotFound(workspace.to_string()))?;
         if role.allows(action) {
             Ok(())
         } else {
@@ -157,21 +172,46 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use super::{WorkspaceAction, WorkspaceAuthorizer};
+    use super::{LocalPrincipalPolicy, WorkspaceAction, WorkspaceAuthorizer};
     use crate::bootstrap::AppError;
     use crate::identity::{Principal, PrincipalKind};
     use crate::state::AppStateLayout;
     use crate::state::db::{
         AddMemberOutcome, CoralDb, DatabaseConfig, DbRepos, ResolvedDatabaseConfig,
-        UpsertLoginOutcome,
+        UpsertLoginOutcome, UserRecord,
     };
     use crate::workspaces::{MemberRole, WorkspaceName};
 
     #[tokio::test]
-    async fn trusted_local_principal_returns_without_database_work() {
+    async fn strict_policy_rejects_local_principal_before_database_lookup() {
+        let (_temp, db) = database(false).await;
+        let authorizer = WorkspaceAuthorizer::new(db);
+
+        assert_eq!(
+            authorizer.local_principal_policy(),
+            LocalPrincipalPolicy::NoLocalPrincipal
+        );
+        assert!(matches!(
+            authorizer
+                .authorize(
+                    &Principal::local(),
+                    &WorkspaceName::parse("schema-is-not-migrated").expect("workspace"),
+                    WorkspaceAction::Manage,
+                )
+                .await,
+            Err(AppError::PermissionDenied(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn implicit_owner_policy_bypasses_database_lookup() {
         let (_temp, db) = database(false).await;
         let authorizer = WorkspaceAuthorizer::trusting_local_principal(db);
 
+        assert_eq!(
+            authorizer.local_principal_policy(),
+            LocalPrincipalPolicy::ImplicitOwner
+        );
         authorizer
             .authorize(
                 &Principal::local(),
@@ -179,31 +219,7 @@ mod tests {
                 WorkspaceAction::Manage,
             )
             .await
-            .expect("a single-user deployment reaches every workspace");
-    }
-
-    /// The deployments this covers are the shared ones, where a host process
-    /// holds no membership and so must be concealed like any other stranger.
-    /// Repairing that is the admin tool's job, not a privileged request path.
-    #[tokio::test]
-    async fn untrusted_local_principal_is_concealed_like_any_non_member() {
-        let (_temp, db) = database(true).await;
-        let owner_id = provision_user(&db, "owner").await;
-        let workspace =
-            WorkspaceName::parse(&format!("default-{owner_id}")).expect("owner default workspace");
-        let authorizer = WorkspaceAuthorizer::new(db);
-
-        for action in [WorkspaceAction::Read, WorkspaceAction::Manage] {
-            assert!(
-                matches!(
-                    authorizer
-                        .authorize(&Principal::local(), &workspace, action)
-                        .await,
-                    Err(AppError::WorkspaceNotFound(_))
-                ),
-                "the local principal must not see a workspace it does not belong to"
-            );
-        }
+            .expect("implicit owner bypasses membership lookup");
     }
 
     #[tokio::test]
@@ -225,13 +241,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn owner_and_member_permissions_follow_the_action() {
+    async fn owner_manages_while_member_only_reads() {
         let (_temp, db) = database(true).await;
-        let owner_id = provision_user(&db, "owner").await;
-        let member_id = provision_user(&db, "member").await;
-        let workspace =
-            WorkspaceName::parse(&format!("default-{owner_id}")).expect("owner default workspace");
+        let owner_id = create_directory_user(&db, "owner").await;
+        let member_id = create_directory_user(&db, "member").await;
+        let workspace = WorkspaceName::parse("team-access").expect("workspace");
         let mut session = db.as_ref();
+        session
+            .workspaces()
+            .create_with_owner(workspace.as_str(), &owner_id, 1)
+            .await
+            .expect("create owner workspace");
         assert!(matches!(
             session
                 .workspaces()
@@ -271,10 +291,15 @@ mod tests {
     #[tokio::test]
     async fn missing_membership_is_concealed_as_workspace_not_found() {
         let (_temp, db) = database(true).await;
-        let owner_id = provision_user(&db, "owner").await;
-        let nonmember_id = provision_user(&db, "nonmember").await;
-        let workspace =
-            WorkspaceName::parse(&format!("default-{owner_id}")).expect("owner default workspace");
+        let owner_id = create_directory_user(&db, "owner").await;
+        let nonmember_id = create_directory_user(&db, "nonmember").await;
+        let workspace = WorkspaceName::parse("concealed-workspace").expect("workspace");
+        let mut session = db.as_ref();
+        session
+            .workspaces()
+            .create_with_owner(workspace.as_str(), &owner_id, 1)
+            .await
+            .expect("create owner workspace");
         let authorizer = WorkspaceAuthorizer::new(db);
         let nonmember = Principal::parse(&nonmember_id, PrincipalKind::User).expect("nonmember");
 
@@ -391,6 +416,92 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn strict_policy_conceals_ownerless_workspace_from_member() {
+        let (_temp, db) = database(true).await;
+        let member_id = create_directory_user(&db, "ownerless-member").await;
+        let workspace = WorkspaceName::parse("ownerless-workspace").expect("workspace");
+        let mut tx = db.begin().await.expect("begin ownerless workspace setup");
+        tx.workspaces()
+            .create(workspace.as_str(), 1)
+            .await
+            .expect("create ownerless workspace");
+        assert!(
+            tx.workspaces()
+                .hold_for_child_mutation(workspace.as_str())
+                .await
+                .expect("hold ownerless workspace")
+        );
+        tx.workspace_members()
+            .insert(workspace.as_str(), &member_id, MemberRole::Member, 2)
+            .await
+            .expect("insert stale member");
+        tx.commit().await.expect("commit ownerless workspace setup");
+        let authorizer = WorkspaceAuthorizer::new(db);
+        let member = Principal::parse(&member_id, PrincipalKind::User).expect("member");
+
+        for action in [WorkspaceAction::Read, WorkspaceAction::Manage] {
+            assert!(matches!(
+                authorizer.authorize(&member, &workspace, action).await,
+                Err(AppError::WorkspaceNotFound(ref name)) if name == workspace.as_str()
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn strict_policy_conceals_local_only_workspace_from_member() {
+        let (_temp, db) = database(true).await;
+        let member_id = create_directory_user(&db, "local-only-member").await;
+        let workspace = WorkspaceName::parse("local-only-workspace").expect("workspace");
+        let mut tx = db.begin().await.expect("begin local-only workspace setup");
+        tx.users()
+            .insert_for_test(&UserRecord {
+                user_id: crate::identity::LOCAL_PRINCIPAL_ID.to_string(),
+                issuer: crate::identity::LOCAL_PRINCIPAL_ID.to_string(),
+                subject: String::new(),
+                display_name: Some("Local".to_string()),
+                created_at_unix_nanos: 1,
+                last_login_at_unix_nanos: 1,
+            })
+            .await
+            .expect("insert local principal");
+        tx.workspaces()
+            .create(workspace.as_str(), 1)
+            .await
+            .expect("create local-only workspace");
+        assert!(
+            tx.workspaces()
+                .hold_for_child_mutation(workspace.as_str())
+                .await
+                .expect("hold local-only workspace")
+        );
+        tx.workspace_members()
+            .insert(
+                workspace.as_str(),
+                crate::identity::LOCAL_PRINCIPAL_ID,
+                MemberRole::Owner,
+                2,
+            )
+            .await
+            .expect("insert local owner");
+        tx.workspace_members()
+            .insert(workspace.as_str(), &member_id, MemberRole::Member, 3)
+            .await
+            .expect("insert stale member");
+        tx.commit()
+            .await
+            .expect("commit local-only workspace setup");
+        let authorizer = WorkspaceAuthorizer::new(db);
+        let member = Principal::parse(&member_id, PrincipalKind::User).expect("member");
+
+        for action in [WorkspaceAction::Read, WorkspaceAction::Manage] {
+            assert!(matches!(
+                authorizer.authorize(&member, &workspace, action).await,
+                Err(AppError::WorkspaceNotFound(ref name)) if name == workspace.as_str()
+            ));
+        }
+    }
+
     async fn database(migrate: bool) -> (TempDir, Arc<CoralDb>) {
         let temp = TempDir::new().expect("temp dir");
         let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
@@ -408,13 +519,15 @@ mod tests {
         (temp, db)
     }
 
-    async fn provision_user(db: &CoralDb, subject: &str) -> String {
-        let UpsertLoginOutcome::Upserted(user) = db
-            .upsert_user_and_ensure_default_workspace("issuer", subject, None, 1)
+    async fn create_directory_user(db: &CoralDb, subject: &str) -> String {
+        let mut session = db;
+        let UpsertLoginOutcome::Upserted(user) = session
+            .users()
+            .upsert_login("issuer", subject, None, 1)
             .await
-            .expect("provision user")
+            .expect("create directory user")
         else {
-            panic!("new subject should create a user")
+            panic!("new subject should create user")
         };
         user.user_id
     }

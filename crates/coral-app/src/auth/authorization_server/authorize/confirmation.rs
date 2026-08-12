@@ -40,7 +40,9 @@ const LOOPBACK_APPROVAL_COOKIE_NAME: &str = "coral_oauth_approval";
 /// ticket, escapes every interpolated value, and already denies every other
 /// fetch through `default-src 'none'`, so the exposure it leaves is small and
 /// bounded — where a wrong `form-action` breaks the feature outright.
-const CONTENT_SECURITY_POLICY: &str = "default-src 'none'; base-uri 'none'; frame-ancestors 'none'";
+const CONTENT_SECURITY_POLICY: &str = "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; style-src 'sha256-pTx31N+AnE5n8nR7RKxlmqWBOu/t24TaMNRVnKPUo1o='";
+
+pub(super) const APPROVAL_PAGE_STYLES: &str = r#":root{color-scheme:light dark;--surface-backdrop:light-dark(#f0f0f0,#212121);--surface-card:light-dark(#fff,rgba(255,255,255,.05));--content-primary:light-dark(#202020,#eee);--content-secondary:light-dark(#646464,#b4b4b4);--stroke-primary:light-dark(rgba(0,0,0,.059),rgba(255,255,255,.071));--warning-background:light-dark(rgba(217,119,6,.12),rgba(251,191,36,.12));--warning-content:light-dark(#92400e,#fcd34d);--button-primary:light-dark(#81d66d,#b2eaa5);--button-primary-hover:light-dark(#398125,#88cc78);--button-primary-content:light-dark(#25411e,#141b13);--button-secondary:light-dark(rgba(0,0,0,.024),rgba(255,255,255,.05));--button-secondary-hover:light-dark(rgba(0,0,0,.059),rgba(255,255,255,.106))}*{box-sizing:border-box}body{background:var(--surface-backdrop);color:var(--content-primary);display:grid;font-family:"Encode Sans Semi Expanded",ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:15px;line-height:1.6;margin:0;min-height:100vh;padding:24px;place-items:center}main{background:var(--surface-card);border:1px solid var(--stroke-primary);border-radius:16px;box-shadow:0 16px 48px rgba(0,0,0,.12);max-width:480px;padding:32px;width:100%}h1{font-size:23px;font-weight:500;letter-spacing:-.23px;line-height:1.35;margin:0 0 12px}p{margin:0}dl{border-block:1px solid var(--stroke-primary);display:grid;gap:4px 24px;grid-template-columns:max-content 1fr;margin:24px 0;padding:20px 0}dt{color:var(--content-secondary);font-size:11.5px;font-weight:500;letter-spacing:.23px}dd{margin:0;min-width:0;text-align:right}code{font-family:"DM Mono","SFMono-Regular","SF Mono",Consolas,"Liberation Mono",Menlo,monospace;font-size:13px;overflow-wrap:anywhere}aside{background:var(--warning-background);border-radius:10px;color:var(--warning-content);margin:0 0 24px;padding:16px}aside h2{font-size:13px;font-weight:500;margin:0 0 4px}form{display:flex;gap:12px;justify-content:flex-end}button{border:0;border-radius:8px;color:var(--content-primary);cursor:pointer;font:500 13px/1.45 "Encode Sans Semi Expanded",ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:.325px;padding:6px 10px;transition:.2s ease background-color,.2s ease color}button:focus-visible{outline:1px solid var(--button-primary);outline-offset:2px}button[value="cancel"]{background:var(--button-secondary)}button[value="cancel"]:hover{background:var(--button-secondary-hover)}button[value="continue"]{background:var(--button-primary);color:var(--button-primary-content)}button[value="continue"]:hover{background:var(--button-primary-hover)}@media (max-width:420px){body{padding:16px}main{padding:24px}dl{grid-template-columns:1fr}dd{text-align:left}form{flex-direction:column-reverse}button{width:100%}}"#;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum ApprovalDecision {
@@ -132,9 +134,8 @@ pub(super) async fn parse_submission(
 /// `Cancel` comes before `Continue` in the form because the first submit button
 /// is the one a browser presses for a bare Enter key, and the safe decision is
 /// the better default for a keystroke nobody aimed at either button. Source
-/// order is display order here: the page has no stylesheet, and
-/// [`CONTENT_SECURITY_POLICY`] has no `style-src`, so it inherits
-/// `default-src 'none'` and no styling could reverse the two.
+/// order keeps `Cancel` as the submit default. The fixed, hash-pinned
+/// stylesheet stacks that safe decision last on a narrow viewport.
 pub(super) fn response(
     ticket: &OAuthAuthorizationApprovalTicket,
     client_name: &str,
@@ -158,7 +159,8 @@ pub(super) fn response(
     });
     let encoded_ticket = Zeroizing::new(URL_SAFE_NO_PAD.encode(ticket.as_bytes()));
     let body = format!(
-        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Approve Coral access</title></head><body><main><h1>Approve access?</h1><p><bdi>{}</bdi> is requesting access to Coral.</p><dl><dt>Client ID hostname</dt><dd><code>{}</code></dd><dt>Redirect host and port</dt><dd><code>{}</code></dd></dl>{}<form method=\"post\" action=\"/oauth/authorize\" autocomplete=\"off\"><input type=\"hidden\" name=\"ticket\" value=\"{}\"><button type=\"submit\" name=\"decision\" value=\"cancel\">Cancel</button><button type=\"submit\" name=\"decision\" value=\"continue\">Continue</button></form></main></body></html>",
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Approve Coral access</title><style>{}</style></head><body><main><h1>Approve access?</h1><p><bdi>{}</bdi> is requesting access to Coral.</p><dl><dt>Client ID hostname</dt><dd><code>{}</code></dd><dt>Redirect host and port</dt><dd><code>{}</code></dd></dl>{}<form method=\"post\" action=\"/oauth/authorize\" autocomplete=\"off\"><input type=\"hidden\" name=\"ticket\" value=\"{}\"><button type=\"submit\" name=\"decision\" value=\"cancel\">Cancel</button><button type=\"submit\" name=\"decision\" value=\"continue\">Continue</button></form></main></body></html>",
+        APPROVAL_PAGE_STYLES,
         escape_html(client_name),
         escape_html(&client_host),
         escape_html(&redirect_destination),
