@@ -189,7 +189,6 @@ async fn manage_rpcs_authorize_before_handler_work() {
         fixture.search.drain_search_queue(DrainSearchQueueRequest {
             workspace: workspace.clone(),
             budget_ms: 60_001,
-            ..Default::default()
         }),
         Some(Code::InvalidArgument)
     );
