@@ -15,7 +15,7 @@
 //!     artifacts.
 //!   - `release-desktop-macos-package` packages, signs, notarizes, and verifies
 //!     the prepared macOS desktop app.
-//!   - `openapi-hydrate` produces a self-contained JSON `OpenAPI` descriptor.
+//!   - `openapi-hydrate` produces a self-contained JSON OpenAPI descriptor.
 //!   - `v4-metadata-report` reports inferred row paths and pagination contracts
 //!     for the v4 source catalog, for diffing across inference changes.
 
@@ -74,7 +74,7 @@ enum Command {
     ReleaseMacosSignNotarize(release::MacosSignNotarizeArgs),
     /// Package, sign, notarize, and verify the prepared macOS desktop app.
     ReleaseDesktopMacosPackage(release::DesktopMacosPackageArgs),
-    /// Hydrate reachable external `OpenAPI` references into JSON.
+    /// Hydrate reachable external OpenAPI references into JSON.
     OpenapiHydrate(openapi::HydrateArgs),
     /// Report inferred row paths and pagination contracts for v4 sources.
     V4MetadataReport(metadata_report::Args),
