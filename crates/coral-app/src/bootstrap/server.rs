@@ -21,6 +21,7 @@ use coral_api::v1::search_service_server::SearchServiceServer;
 use coral_api::v1::source_service_server::SourceServiceServer;
 use coral_api::v1::task_service_server::TaskServiceServer;
 use coral_api::v1::trace_service_server::TraceServiceServer;
+use coral_api::v1::user_service_server::UserServiceServer;
 use coral_api::v1::workspace_service_server::WorkspaceServiceServer;
 use coral_api::{
     CATALOG_RESPONSE_MAX_MESSAGE_SIZE, HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE,
@@ -72,6 +73,7 @@ use crate::task::store::TaskStore;
 use crate::telemetry::service::TraceService;
 use crate::telemetry::{TelemetryConfig, TraceManager};
 use crate::transport::GrpcRequestContextLayer;
+use crate::users::{UserManager, UserService};
 use crate::workspaces::{
     LocalPrincipalPolicy, WorkspaceLifecycleLock, WorkspaceManager, WorkspacePoolRegistry,
     WorkspaceService,
@@ -520,6 +522,7 @@ async fn start_components(builder: ServerBuilder) -> Result<RunningServer, AppEr
     let trace_components = trace_components_for_store(active_trace_store);
     let mut grpc = start_server(
         ServerDependencies {
+            db: Arc::clone(&coral_db),
             local_principal,
             source: source_manager,
             workspace: workspace_manager,
@@ -761,6 +764,7 @@ struct TraceServerComponents {
 }
 
 struct ServerDependencies {
+    db: Arc<CoralDb>,
     local_principal: LocalPrincipalPolicy,
     source: SourceManager,
     workspace: WorkspaceManager,
@@ -783,6 +787,7 @@ async fn start_server(
         local_trace_store_dir,
     } = trace_components;
     let ServerDependencies {
+        db,
         local_principal,
         source,
         workspace,
@@ -814,6 +819,7 @@ async fn start_server(
                 .max_encoding_message_size(SOURCE_RESPONSE_MAX_MESSAGE_SIZE),
         )
         .add_service(WorkspaceServiceServer::new(workspace_service))
+        .add_service(UserServiceServer::new(user_service(db, local_principal)))
         .add_service(
             CatalogServiceServer::new(catalog_service)
                 .max_encoding_message_size(CATALOG_RESPONSE_MAX_MESSAGE_SIZE),
@@ -881,6 +887,14 @@ async fn start_server(
         task_finished,
         task: Mutex::new(Some(task)),
     })
+}
+
+fn user_service(db: Arc<CoralDb>, local_principal: LocalPrincipalPolicy) -> UserService {
+    let users = match local_principal {
+        LocalPrincipalPolicy::NoLocalPrincipal => UserManager::new(db),
+        LocalPrincipalPolicy::ImplicitOwner => UserManager::new(db).trusting_local_principal(),
+    };
+    UserService::new(users)
 }
 
 fn start_grpc_server(
@@ -1103,10 +1117,13 @@ mod tests {
     use coral_api::v1::source_service_client::SourceServiceClient;
     use coral_api::v1::task_service_client::TaskServiceClient;
     use coral_api::v1::trace_service_client::TraceServiceClient;
+    use coral_api::v1::user_service_client::UserServiceClient;
+    use coral_api::v1::workspace_service_client::WorkspaceServiceClient;
     use coral_api::v1::{
-        EndTaskRequest, ExecuteSqlRequest, ImportSourceRequest, ImportSourceResponse,
-        ListSourcesRequest, ListTracesRequest, StartTaskRequest, TaskStatus, TraceView, Workspace,
-        import_source_response,
+        CreateWorkspaceRequest, EndTaskRequest, ExecuteSqlRequest, GetCurrentUserRequest,
+        ImportSourceRequest, ImportSourceResponse, ListSourcesRequest, ListTracesRequest,
+        ListUsersRequest, ListWorkspacesRequest, StartTaskRequest, TaskStatus, TraceView,
+        Workspace, import_source_response,
     };
     use coral_api::{HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE};
     use coral_engine::QueryRuntimeContext;
@@ -1133,7 +1150,10 @@ mod tests {
         SqliteObservedValuesStore,
     };
     use crate::sources::manager::SourceManager;
-    use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig, run_state_migrations};
+    use crate::state::db::{
+        CoralDb, DatabaseConfig, DbRepos, ResolvedDatabaseConfig, UpsertLoginOutcome,
+        run_state_migrations,
+    };
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::task::manager::TaskManager;
     use crate::task::store::TaskStore;
@@ -1202,6 +1222,19 @@ enabled = false
             Err(PrincipalProviderError::unauthenticated(
                 "rejected principal",
             ))
+        }
+    }
+
+    #[derive(Debug)]
+    struct FixedPrincipalProvider(Principal);
+
+    #[tonic::async_trait]
+    impl PrincipalProvider for FixedPrincipalProvider {
+        async fn principal_for_metadata(
+            &self,
+            _metadata: &tonic::metadata::MetadataMap,
+        ) -> Result<Principal, PrincipalProviderError> {
+            Ok(self.0.clone())
         }
     }
 
@@ -1933,7 +1966,11 @@ backend = "unsupported"
     }
 
     #[tokio::test]
-    async fn trace_service_lists_empty_store() {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the running-graph test assembles real app services"
+    )]
+    async fn running_graph_serves_identity_and_owner_scoped_user_directory() {
         let temp = TempDir::new().expect("temp dir");
         let config_dir = temp.path().join("coral-config");
         let layout = AppStateLayout::discover(Some(config_dir)).expect("layout");
@@ -1942,6 +1979,17 @@ backend = "unsupported"
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
         let db = test_db(&layout, &config_store).await;
+        let UpsertLoginOutcome::Upserted(user) = db
+            .as_ref()
+            .users()
+            .upsert_login("issuer", "subject", Some("Owner"), 1)
+            .await
+            .expect("create user")
+        else {
+            panic!("new subject should create a user")
+        };
+        let principal = Principal::parse(&user.user_id, crate::identity::PrincipalKind::User)
+            .expect("user principal");
         let source_manager = SourceManager::new_for_tests(
             config_store.clone(),
             credential_manager.clone(),
@@ -1980,7 +2028,8 @@ backend = "unsupported"
         ));
         let server = start_server(
             ServerDependencies {
-                local_principal: LocalPrincipalPolicy::ImplicitOwner,
+                db,
+                local_principal: LocalPrincipalPolicy::NoLocalPrincipal,
                 source: source_manager,
                 workspace: workspace_manager,
                 query: query_manager,
@@ -1993,7 +2042,7 @@ backend = "unsupported"
                 service: Some(trace_service),
                 local_trace_store_dir: None,
             },
-            Arc::new(LocalPrincipalProvider),
+            Arc::new(FixedPrincipalProvider(principal)),
             ServerMode::EphemeralGrpc,
             None,
         )
@@ -2004,7 +2053,42 @@ backend = "unsupported"
             .connect()
             .await
             .expect("connect");
+        let mut user_client = UserServiceClient::new(channel.clone());
+        let mut workspace_client = WorkspaceServiceClient::new(channel.clone());
         let mut trace_client = TraceServiceClient::new(channel);
+
+        let current = user_client
+            .get_current_user(Request::new(GetCurrentUserRequest {}))
+            .await
+            .expect("get current user")
+            .into_inner()
+            .user
+            .expect("current-user identity");
+        assert_eq!(current.user_id, user.user_id);
+        assert!(
+            workspace_client
+                .list_workspaces(Request::new(ListWorkspacesRequest {}))
+                .await
+                .expect("list empty memberships")
+                .into_inner()
+                .memberships
+                .is_empty()
+        );
+        workspace_client
+            .create_workspace(Request::new(CreateWorkspaceRequest {
+                workspace: Some(Workspace {
+                    name: "team".to_string(),
+                }),
+            }))
+            .await
+            .expect("create owned workspace");
+        let users = user_client
+            .list_users(Request::new(ListUsersRequest {}))
+            .await
+            .expect("owner lists users")
+            .into_inner()
+            .users;
+        assert_eq!(users.as_slice(), [current]);
 
         let response = trace_client
             .list_traces(Request::new(ListTracesRequest {
@@ -2433,6 +2517,7 @@ tables:
         );
         let running = start_server(
             ServerDependencies {
+                db,
                 local_principal: LocalPrincipalPolicy::ImplicitOwner,
                 source: source_manager,
                 workspace: workspace_manager,
@@ -2562,6 +2647,7 @@ tables:
         );
         let running = start_server(
             ServerDependencies {
+                db,
                 local_principal: LocalPrincipalPolicy::ImplicitOwner,
                 source: source_manager,
                 workspace: workspace_manager,
@@ -2691,6 +2777,7 @@ tables:
         );
         let running = start_server(
             ServerDependencies {
+                db,
                 local_principal: LocalPrincipalPolicy::ImplicitOwner,
                 source: source_manager,
                 workspace: workspace_manager,

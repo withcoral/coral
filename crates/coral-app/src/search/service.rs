@@ -52,13 +52,11 @@ use crate::sources::SourceName;
 use crate::task::manager::TaskManager;
 use crate::task::service::task_manager_status;
 use crate::transport::{grpc_span, instrument_grpc, request_context, workspace_name_from_proto};
-use crate::workspaces::WorkspaceAuthorizer;
 
 #[derive(Clone)]
 pub(crate) struct SearchService {
     search: SearchManager,
     tasks: TaskManager,
-    workspace_authorizer: Option<WorkspaceAuthorizer>,
 }
 
 impl SearchService {
@@ -66,13 +64,7 @@ impl SearchService {
         Self {
             search: search_manager,
             tasks: task_manager,
-            workspace_authorizer: None,
         }
-    }
-
-    pub(crate) fn with_authorizer(mut self, authorizer: WorkspaceAuthorizer) -> Self {
-        self.workspace_authorizer = Some(authorizer);
-        self
     }
 }
 

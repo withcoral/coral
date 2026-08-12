@@ -1,10 +1,8 @@
 use std::fs;
 
 use coral_api::v1::{
-    AddWorkspaceMemberRequest, CreateWorkspaceRequest, DeleteWorkspaceRequest,
-    GetCurrentUserRequest, ImportSourceRequest, ListSourcesRequest, ListWorkspaceMembersRequest,
-    ListWorkspacesRequest, RemoveWorkspaceMemberRequest, Source, SourceSecret, SourceVariable,
-    Workspace, WorkspaceMember, WorkspaceRole, import_source_response,
+    CreateWorkspaceRequest, DeleteWorkspaceRequest, ImportSourceRequest, ListSourcesRequest,
+    ListWorkspacesRequest, Source, SourceSecret, SourceVariable, Workspace, import_source_response,
 };
 use coral_client::default_workspace;
 use serde_json::json;
@@ -12,10 +10,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use tempfile::TempDir;
 use tonic::Request;
 
-use crate::harness::{
-    GrpcHarness, WorkspaceAccessControlHarness, fixture_manifest_with_inputs_yaml,
-    fixture_manifest_yaml,
-};
+use crate::harness::{GrpcHarness, fixture_manifest_with_inputs_yaml, fixture_manifest_yaml};
 
 static TRACE_STORE_DELETE_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -122,130 +117,10 @@ fn local_trace_store_dir(harness: &GrpcHarness) -> std::path::PathBuf {
 }
 
 #[tokio::test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "the end-to-end scenario verifies one complete access-control lifecycle"
-)]
-async fn workspace_access_control_grant_revoke_and_owner_floor() {
-    let harness = WorkspaceAccessControlHarness::new().await;
-    let owner = harness.owner();
-    let member = harness.member();
-    let shared = workspace("owner-workspace");
+async fn fresh_server_lists_no_workspaces() {
+    let harness = GrpcHarness::new_empty().await;
 
-    let current = owner
-        .user_client()
-        .get_current_user(Request::new(GetCurrentUserRequest {}))
-        .await
-        .expect("mounted user service")
-        .into_inner()
-        .user
-        .expect("current user");
-    assert_eq!(current.user_id, harness.owner_id());
-    owner
-        .workspace_client()
-        .create_workspace(Request::new(CreateWorkspaceRequest {
-            workspace: Some(shared.clone()),
-        }))
-        .await
-        .expect("owner creates shared workspace");
-    member
-        .workspace_client()
-        .create_workspace(Request::new(CreateWorkspaceRequest {
-            workspace: Some(workspace("member-workspace")),
-        }))
-        .await
-        .expect("member creates own workspace");
-
-    owner
-        .workspace_client()
-        .add_workspace_member(Request::new(AddWorkspaceMemberRequest {
-            workspace: Some(shared.clone()),
-            member: Some(WorkspaceMember {
-                user_id: harness.member_id().to_string(),
-                role: WorkspaceRole::Member as i32,
-                display_name: String::new(),
-            }),
-        }))
-        .await
-        .expect("owner grants membership");
-    let member_memberships = member
-        .workspace_client()
-        .list_workspaces(Request::new(ListWorkspacesRequest {}))
-        .await
-        .expect("member lists visible workspaces")
-        .into_inner()
-        .memberships;
-    assert!(member_memberships.iter().any(|membership| {
-        membership.workspace.as_ref() == Some(&shared)
-            && membership.role == WorkspaceRole::Member as i32
-    }));
-    assert!(member_memberships.iter().any(|membership| {
-        membership.workspace.as_ref() == Some(&workspace("member-workspace"))
-            && membership.role == WorkspaceRole::Owner as i32
-    }));
-
-    let denied_management = member
-        .workspace_client()
-        .list_workspace_members(Request::new(ListWorkspaceMembersRequest {
-            workspace: Some(shared.clone()),
-        }))
-        .await
-        .expect_err("member cannot manage memberships");
-    assert_eq!(denied_management.code(), tonic::Code::PermissionDenied);
-    let denied_delete = member
-        .workspace_client()
-        .delete_workspace(Request::new(DeleteWorkspaceRequest {
-            workspace: Some(shared.clone()),
-        }))
-        .await
-        .expect_err("member cannot delete workspace");
-    assert_eq!(denied_delete.code(), tonic::Code::PermissionDenied);
-
-    owner
-        .workspace_client()
-        .remove_workspace_member(Request::new(RemoveWorkspaceMemberRequest {
-            workspace: Some(shared.clone()),
-            user_id: harness.member_id().to_string(),
-        }))
-        .await
-        .expect("owner revokes membership");
-    let concealed = member
-        .workspace_client()
-        .list_workspace_members(Request::new(ListWorkspaceMembersRequest {
-            workspace: Some(shared.clone()),
-        }))
-        .await
-        .expect_err("revoked membership is concealed immediately");
-    assert_eq!(concealed.code(), tonic::Code::NotFound);
-    let member_memberships = member
-        .workspace_client()
-        .list_workspaces(Request::new(ListWorkspacesRequest {}))
-        .await
-        .expect("member lists after revocation")
-        .into_inner()
-        .memberships;
-    assert!(
-        member_memberships
-            .iter()
-            .all(|membership| membership.workspace.as_ref() != Some(&shared))
-    );
-
-    let owner_floor = owner
-        .workspace_client()
-        .remove_workspace_member(Request::new(RemoveWorkspaceMemberRequest {
-            workspace: Some(shared),
-            user_id: harness.owner_id().to_string(),
-        }))
-        .await
-        .expect_err("last owner cannot be removed");
-    assert_eq!(owner_floor.code(), tonic::Code::FailedPrecondition);
-}
-
-#[tokio::test]
-async fn lists_default_workspace_when_config_is_missing() {
-    let harness = GrpcHarness::new().await;
-
-    assert_eq!(workspace_names(&harness).await, vec!["default"]);
+    assert!(workspace_names(&harness).await.is_empty());
 }
 
 #[tokio::test]

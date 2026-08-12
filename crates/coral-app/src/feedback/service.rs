@@ -11,13 +11,11 @@ use crate::task::service::task_manager_status;
 use crate::transport::{
     grpc_span, instrument_grpc, request_context, workspace_name_from_proto, workspace_to_proto,
 };
-use crate::workspaces::WorkspaceAuthorizer;
 
 #[derive(Clone)]
 pub(crate) struct FeedbackService {
     feedback: FeedbackManager,
     tasks: TaskManager,
-    workspace_authorizer: Option<WorkspaceAuthorizer>,
 }
 
 impl FeedbackService {
@@ -25,13 +23,7 @@ impl FeedbackService {
         Self {
             feedback,
             tasks: task_manager,
-            workspace_authorizer: None,
         }
-    }
-
-    pub(crate) fn with_authorizer(mut self, authorizer: WorkspaceAuthorizer) -> Self {
-        self.workspace_authorizer = Some(authorizer);
-        self
     }
 }
 

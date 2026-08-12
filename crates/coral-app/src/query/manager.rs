@@ -1589,9 +1589,7 @@ mod tests {
 
         let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
         let (task, request_context, task_id) = active_task_context(&fixture.db).await;
-        let service = QueryService::new(fixture.manager.clone(), task).with_authorizer(
-            crate::workspaces::WorkspaceAuthorizer::new(Arc::clone(&fixture.db)),
-        );
+        let service = QueryService::new(fixture.manager.clone(), task);
 
         let mut request = Request::new(ExecuteSqlRequest {
             workspace: Some(Workspace {
@@ -1696,9 +1694,7 @@ mod tests {
 
         let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
         let (task, request_context, task_id) = active_task_context(&fixture.db).await;
-        let service = CatalogService::new(fixture.manager.clone(), task).with_authorizer(
-            crate::workspaces::WorkspaceAuthorizer::new(Arc::clone(&fixture.db)),
-        );
+        let service = CatalogService::new(fixture.manager.clone(), task);
 
         call_catalog_tools_with_task(&service, &request_context).await;
 
