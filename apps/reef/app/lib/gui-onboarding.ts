@@ -1,5 +1,7 @@
+export const COMPLETE_ONBOARDING_INTENT = 'complete-onboarding'
+
 export type CompleteGuiOnboardingError = {
-  intent: 'complete-onboarding'
+  intent: typeof COMPLETE_ONBOARDING_INTENT
   message: string
   status: 'error'
 }

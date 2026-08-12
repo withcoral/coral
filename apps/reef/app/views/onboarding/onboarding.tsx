@@ -9,7 +9,7 @@ import { OnboardingSampleQueryPage } from '@/components/onboarding/onboarding-sa
 import type { SampleQueryLoadState } from '@/components/onboarding/onboarding-sample-query-page'
 import { OnboardingSourcesPage } from '@/components/onboarding/onboarding-sources-page'
 import type { OnboardingStepState } from '@/components/onboarding/onboarding-steps'
-import type { CompleteGuiOnboardingError } from '@/lib/gui-onboarding'
+import { COMPLETE_ONBOARDING_INTENT, type CompleteGuiOnboardingError } from '@/lib/gui-onboarding'
 import type { OnboardingSampleQueryResult } from '@/lib/onboarding-query'
 import type { CatalogEntry } from '@/lib/sources'
 import { SourceDetailDialog } from '@/views/sources/source-detail'
@@ -38,10 +38,9 @@ export function OnboardingView({
   const submit = useSubmit()
   const { step } = loaderData
   const completing =
-    navigation.state !== 'idle' && navigation.formData?.get('intent') === 'complete-onboarding'
-  const completionError =
-    !completing && actionData?.intent === 'complete-onboarding' ? actionData.message : null
-  const sourcesActionData = actionData?.intent === 'complete-onboarding' ? undefined : actionData
+    navigation.state !== 'idle' && navigation.formData?.get('intent') === COMPLETE_ONBOARDING_INTENT
+  const sourcesActionData =
+    actionData?.intent === COMPLETE_ONBOARDING_INTENT ? undefined : actionData
 
   switch (step.step) {
     case 'sources':
@@ -93,11 +92,10 @@ export function OnboardingView({
     case 'next-steps':
       return (
         <OnboardingNextStepsStep
-          completionError={completionError}
           completing={completing}
           mcpClients={mcpClients}
           onContinue={() =>
-            submit({ intent: 'complete-onboarding' }, { method: 'post', replace: true })
+            submit({ intent: COMPLETE_ONBOARDING_INTENT }, { method: 'post', replace: true })
           }
           runtime={loaderData.runtime}
           step={step}
@@ -112,7 +110,6 @@ export function OnboardingView({
 }
 
 function OnboardingNextStepsStep({
-  completionError,
   completing,
   mcpClients,
   onContinue,
@@ -120,7 +117,6 @@ function OnboardingNextStepsStep({
   step,
   workspaces,
 }: {
-  completionError: string | null
   completing: boolean
   mcpClients: McpClientsConnectionState
   onContinue: () => void
@@ -132,7 +128,6 @@ function OnboardingNextStepsStep({
     <>
       {runtime === 'desktop' ? (
         <OnboardingNextStepsPage
-          completionError={completionError}
           completing={completing}
           mcpClients={mcpClients}
           onContinue={onContinue}
@@ -142,7 +137,6 @@ function OnboardingNextStepsStep({
         />
       ) : (
         <OnboardingNextStepsPage
-          completionError={completionError}
           completing={completing}
           onContinue={onContinue}
           runtime="web"

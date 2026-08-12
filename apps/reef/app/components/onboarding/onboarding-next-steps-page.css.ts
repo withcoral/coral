@@ -12,11 +12,6 @@ export const panel = style({
   padding: 24,
 })
 
-export const actionError = style({
-  flexShrink: 0,
-  marginBlockEnd: 24,
-})
-
 export const tabs = style({
   display: 'flex',
   flex: 1,

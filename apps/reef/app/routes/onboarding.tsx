@@ -1,18 +1,17 @@
 import type { Route } from './+types/onboarding'
 
-import { data, redirect, useFetcher } from 'react-router'
+import { useFetcher } from 'react-router'
 
 import { requestAuthContext } from '@/auth/server-context'
 import { getOnboardingStepState } from '@/components/onboarding/onboarding-steps'
 import { isCoralDesktopBuild } from '@/lib/coral-desktop'
-import { completeGuiOnboarding } from '@/lib/gui-onboarding.server'
-import type { CompleteGuiOnboardingError } from '@/lib/gui-onboarding'
+import { COMPLETE_ONBOARDING_INTENT } from '@/lib/gui-onboarding'
 import { loadOnboardingSampleQuery } from '@/lib/onboarding-query.server'
-import { errorMessage } from '@/lib/utils'
 import { firstWorkspaceForRequest, listWorkspacesForRequest } from '@/lib/workspaces.server'
-import { routePath } from '@/routing/routemap'
 import { OnboardingView } from '@/views/onboarding/onboarding'
+import { addToast } from '@/wax/components/toast'
 
+import { runCompleteOnboardingAction } from './onboarding-action'
 import { runSourcesAction } from './sources-action'
 import { loadSourcesRouteData } from './sources-loader'
 import {
@@ -55,23 +54,8 @@ export async function action({ context, request }: Route.ActionArgs) {
   const accessToken = context.get(requestAuthContext).accessToken
   const intent = (await request.clone().formData()).get('intent')
 
-  if (intent === 'complete-onboarding') {
-    try {
-      const workspace = await firstWorkspaceForRequest(request, accessToken)
-      await completeGuiOnboarding(request, accessToken)
-      return redirect(routePath('workspaceTraces', { workspaceId: workspace.name }))
-    } catch (error) {
-      if (error instanceof Response) throw error
-
-      return data(
-        {
-          intent: 'complete-onboarding',
-          message: errorMessage(error),
-          status: 'error',
-        } satisfies CompleteGuiOnboardingError,
-        { status: 500 },
-      )
-    }
+  if (intent === COMPLETE_ONBOARDING_INTENT) {
+    return runCompleteOnboardingAction(request, accessToken)
   }
 
   return runSourcesAction(
@@ -95,10 +79,18 @@ clientLoader.hydrate = true as const
 
 export async function clientAction({ request, serverAction }: Route.ClientActionArgs) {
   const formData = await request.clone().formData()
-  if (formData.get('_intent') !== 'update-mcp-client') return serverAction()
+  if (formData.get('_intent') === 'update-mcp-client') {
+    await updateDesktopMcpClient(formData)
+    return null
+  }
 
-  await updateDesktopMcpClient(formData)
-  return null
+  const result = await serverAction()
+
+  if (result?.intent === COMPLETE_ONBOARDING_INTENT && result.status === 'error') {
+    addToast('error', { description: result.message, title: "Couldn't finish setup" })
+  }
+
+  return result
 }
 
 export default function OnboardingRoute({ actionData, loaderData }: Route.ComponentProps) {
