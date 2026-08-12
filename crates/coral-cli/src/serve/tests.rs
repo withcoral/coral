@@ -586,13 +586,13 @@ fn shutdown_failures_retain_every_component_in_order() {
 async fn auth_disabled_companion_serves_and_shuts_down() {
     let temp = TempDir::new().expect("temp dir");
     write_auth_disabled_config(&temp);
-    let server = start(
+    let server = Box::pin(start(
         ServerBuilder::configured_standalone_grpc()
             .with_config_dir(temp.path())
             .with_noop_feedback_uploads(),
         McpOptions::default(),
         Some(Arc::new(TestMcpProvider)),
-    )
+    ))
     .await
     .expect("start composite server");
     let grpc_addr = grpc_addr(&server);
@@ -647,13 +647,13 @@ async fn opted_in_auth_disabled_companion_serves_off_loopback() {
         "[trace_history]\nenabled = false\n\n[server.mcp_http]\nenabled = true\n\
          bind = '0.0.0.0:0'\nallow_unauthenticated_non_loopback = true\n",
     );
-    let server = start(
+    let server = Box::pin(start(
         ServerBuilder::configured_standalone_grpc()
             .with_config_dir(temp.path())
             .with_noop_feedback_uploads(),
         McpOptions::default(),
         None,
-    )
+    ))
     .await
     .expect("start composite server with the exposure opt-in");
     assert!(!server.mcp_http_authentication_enabled());
@@ -675,7 +675,7 @@ async fn opted_in_auth_disabled_companion_serves_off_loopback() {
 async fn companion_uses_supplied_mcp_options() {
     let temp = TempDir::new().expect("temp dir");
     write_auth_disabled_config(&temp);
-    let server = start(
+    let server = Box::pin(start(
         ServerBuilder::configured_standalone_grpc()
             .with_config_dir(temp.path())
             .with_noop_feedback_uploads(),
@@ -684,7 +684,7 @@ async fn companion_uses_supplied_mcp_options() {
             ..McpOptions::default()
         },
         None,
-    )
+    ))
     .await
     .expect("start composite server");
     let mcp_addr = server.mcp_http_addr().expect("MCP HTTP endpoint");
@@ -709,13 +709,13 @@ async fn oauth_and_mcp_companions_serve_and_release_all_listeners() {
         SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
         Some(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))),
     );
-    let server = start(
+    let server = Box::pin(start(
         ServerBuilder::configured_standalone_grpc()
             .with_config_dir(temp.path())
             .with_noop_feedback_uploads(),
         McpOptions::default(),
         None,
-    )
+    ))
     .await
     .expect("start composite server");
     let grpc_addr = grpc_addr(&server);
@@ -753,14 +753,14 @@ async fn oauth_start_failure_releases_the_started_grpc_listener() {
     // lapses between selection and bind: a parallel process cannot claim it, so
     // startup fails on the occupied OAuth port and must release the gRPC
     // listener afterward.
-    let result = start(
+    let result = Box::pin(start(
         ServerBuilder::standalone_grpc(grpc_addr)
             .with_config_dir(temp.path())
             .with_noop_feedback_uploads()
             .with_prebound_grpc_listener(grpc_listener),
         McpOptions::default(),
         None,
-    )
+    ))
     .await;
     let Err(error) = result else {
         panic!("occupied OAuth address must fail startup");
@@ -781,13 +781,13 @@ async fn session_authenticated_companion_gates_grpc_and_mcp() {
         EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
             .expect("P-256 signing key");
     write_session_config(&temp, signing_key.as_ref());
-    let server = start(
+    let server = Box::pin(start(
         ServerBuilder::configured_standalone_grpc()
             .with_config_dir(temp.path())
             .with_noop_feedback_uploads(),
         McpOptions::default(),
         None,
-    )
+    ))
     .await
     .expect("start authenticated composite server");
     assert!(server.grpc_authentication_enabled());
@@ -896,13 +896,13 @@ async fn session_authenticated_companion_scopes_mcp_to_the_urls_workspace() {
         EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
             .expect("P-256 signing key");
     write_session_config(&temp, signing_key.as_ref());
-    let server = start(
+    let server = Box::pin(start(
         ServerBuilder::configured_standalone_grpc()
             .with_config_dir(temp.path())
             .with_noop_feedback_uploads(),
         McpOptions::default(),
         None,
-    )
+    ))
     .await
     .expect("start authenticated composite server");
     let mcp_addr = server.mcp_http_addr().expect("MCP HTTP endpoint");
@@ -1018,13 +1018,13 @@ async fn coral_ui_only_audience_authenticates_private_grpc_without_mcp_http() {
             .expect("P-256 signing key");
     write_coral_ui_only_session_config(&temp, signing_key.as_ref());
 
-    let server = start(
+    let server = Box::pin(start(
         ServerBuilder::configured_standalone_grpc()
             .with_config_dir(temp.path())
             .with_noop_feedback_uploads(),
         McpOptions::default(),
         Some(Arc::new(UnexpectedMcpProvider)),
-    )
+    ))
     .await
     .expect("start Coral UI-only authenticated server");
 
@@ -1079,13 +1079,13 @@ async fn session_failures_and_restart_are_fail_closed() {
         "forged-token",
     );
 
-    let server = start(
+    let server = Box::pin(start(
         ServerBuilder::configured_standalone_grpc()
             .with_config_dir(temp.path())
             .with_noop_feedback_uploads(),
         McpOptions::default(),
         None,
-    )
+    ))
     .await
     .expect("start authenticated composite server");
     let mcp_endpoint = format!(
@@ -1106,13 +1106,13 @@ async fn session_failures_and_restart_are_fail_closed() {
     assert_authenticated_surfaces(&server, &mcp_endpoint, &valid).await;
     Box::pin(server.shutdown()).await.expect("first shutdown");
 
-    let restarted = start(
+    let restarted = Box::pin(start(
         ServerBuilder::configured_standalone_grpc()
             .with_config_dir(temp.path())
             .with_noop_feedback_uploads(),
         McpOptions::default(),
         None,
-    )
+    ))
     .await
     .expect("restart authenticated composite server");
     let restarted_mcp = format!(
@@ -1138,13 +1138,13 @@ async fn mcp_start_failure_releases_started_oauth_and_grpc_listeners() {
     let temp = TempDir::new().expect("temp dir");
     write_oauth_config(&temp, oauth_addr, Some(mcp_addr));
 
-    let result = start(
+    let result = Box::pin(start(
         ServerBuilder::standalone_grpc(grpc_addr)
             .with_config_dir(temp.path())
             .with_noop_feedback_uploads(),
         McpOptions::default(),
         None,
-    )
+    ))
     .await;
     let Err(error) = result else {
         panic!("occupied MCP address must fail startup");
