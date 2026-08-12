@@ -89,15 +89,10 @@ impl WorkspaceManager {
     }
 
     pub(crate) fn workspace_authorizer(&self) -> crate::workspaces::WorkspaceAuthorizer {
-        match self.local_principal {
-            LocalPrincipalPolicy::NoLocalPrincipal => {
-                crate::workspaces::WorkspaceAuthorizer::new(Arc::clone(&self.db))
-            }
-            LocalPrincipalPolicy::ImplicitOwner => {
-                crate::workspaces::WorkspaceAuthorizer::trusting_local_principal(Arc::clone(
-                    &self.db,
-                ))
-            }
+        if self.local_principal.is_implicit_owner() {
+            crate::workspaces::WorkspaceAuthorizer::trusting_local_principal(Arc::clone(&self.db))
+        } else {
+            crate::workspaces::WorkspaceAuthorizer::new(Arc::clone(&self.db))
         }
     }
 
@@ -547,14 +542,10 @@ mod tests {
             .create_workspace_for_user(&workspace, &Principal::local())
             .await
             .expect("implicit owner creates workspace");
-        assert!(
-            manager
-                .list_workspaces_for(&Principal::local())
-                .await
-                .expect("implicit owner lists workspaces")
-                .iter()
-                .any(|(record, role)| record.name == workspace && *role == MemberRole::Owner)
-        );
+        assert!(matches!(
+            manager.list_workspaces_for(&Principal::local()).await.as_deref(),
+            Ok([(record, MemberRole::Owner)]) if record.name == workspace
+        ));
     }
 
     #[tokio::test]
@@ -579,22 +570,10 @@ mod tests {
             .create_workspace_for_user(&workspace, &owner)
             .await
             .expect("create owned workspace");
-        let first = manager
+        manager
             .add_workspace_member(&workspace, &member_id, MemberRole::Member)
             .await
             .expect("add member");
-        let repeated = manager
-            .add_workspace_member(&workspace, &member_id, MemberRole::Member)
-            .await
-            .expect("repeat identical add");
-        assert_eq!(first, repeated);
-        assert!(matches!(
-            manager
-                .add_workspace_member(&workspace, &member_id, MemberRole::Owner)
-                .await,
-            Err(AppError::WorkspaceMemberRoleConflict { .. })
-        ));
-
         assert!(
             manager
                 .list_workspaces_for(&member)

@@ -714,25 +714,21 @@ async fn delete_workspace_succeeds_when_backup_cleanup_fails_after_config_delete
 }
 
 #[tokio::test]
-async fn delete_default_workspace_returns_failed_precondition() {
+async fn default_workspace_follows_the_regular_delete_lifecycle() {
     let harness = GrpcHarness::new().await;
-
-    let error = harness
+    let deleted = harness
         .workspace_client()
         .delete_workspace(Request::new(DeleteWorkspaceRequest {
             workspace: Some(default_workspace()),
         }))
         .await
-        .expect_err("default workspace delete should fail");
+        .expect("delete default workspace")
+        .into_inner()
+        .workspace
+        .expect("delete workspace response");
 
-    assert_eq!(error.code(), tonic::Code::FailedPrecondition);
-    assert!(
-        error
-            .message()
-            .contains("default workspace cannot be removed"),
-        "expected default workspace guard, got: {}",
-        error.message()
-    );
+    assert_eq!(deleted.name, "default");
+    assert!(workspace_names(&harness).await.is_empty());
 }
 
 fn local_trace_line(

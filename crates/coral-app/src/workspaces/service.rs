@@ -17,7 +17,7 @@ use crate::transport::{
 };
 use crate::workspaces::{
     LocalPrincipalPolicy, MemberRole, WorkspaceAction, WorkspaceAuthorizer, WorkspaceManager,
-    WorkspaceRecord,
+    WorkspaceName, WorkspaceRecord,
 };
 
 #[derive(Clone)]
@@ -45,11 +45,14 @@ impl WorkspaceService {
     async fn authorize(
         &self,
         principal: &Principal,
-        workspace: &crate::workspaces::WorkspaceName,
-    ) -> Result<(), AppError> {
+        workspace: Option<&Workspace>,
+    ) -> Result<WorkspaceName, Status> {
+        let workspace = workspace_name_from_proto(workspace)?;
         self.authorizer
-            .authorize(principal, workspace, WorkspaceAction::Manage)
+            .authorize(principal, &workspace, WorkspaceAction::Manage)
             .await
+            .map_err(app_status)?;
+        Ok(workspace)
     }
 }
 
@@ -109,11 +112,9 @@ impl WorkspaceServiceApi for WorkspaceService {
         let workspaces = self.workspaces.clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
-            let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            service
-                .authorize(&principal, &workspace_name)
-                .await
-                .map_err(app_status)?;
+            let workspace_name = service
+                .authorize(&principal, request.workspace.as_ref())
+                .await?;
             let workspace = workspaces
                 .delete_workspace(&workspace_name)
                 .await
@@ -135,11 +136,9 @@ impl WorkspaceServiceApi for WorkspaceService {
         let workspaces = self.workspaces.clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
-            let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            service
-                .authorize(&principal, &workspace_name)
-                .await
-                .map_err(app_status)?;
+            let workspace_name = service
+                .authorize(&principal, request.workspace.as_ref())
+                .await?;
             let members = workspaces
                 .list_workspace_members(&workspace_name)
                 .await
@@ -162,11 +161,9 @@ impl WorkspaceServiceApi for WorkspaceService {
         let workspaces = self.workspaces.clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
-            let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            service
-                .authorize(&principal, &workspace_name)
-                .await
-                .map_err(app_status)?;
+            let workspace_name = service
+                .authorize(&principal, request.workspace.as_ref())
+                .await?;
             let member = request.member.ok_or_else(|| {
                 app_status(AppError::InvalidInput(
                     "missing workspace member".to_string(),
@@ -194,11 +191,9 @@ impl WorkspaceServiceApi for WorkspaceService {
         let workspaces = self.workspaces.clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
-            let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            service
-                .authorize(&principal, &workspace_name)
-                .await
-                .map_err(app_status)?;
+            let workspace_name = service
+                .authorize(&principal, request.workspace.as_ref())
+                .await?;
             workspaces
                 .remove_workspace_member(&workspace_name, &request.user_id)
                 .await
@@ -246,18 +241,19 @@ mod tests {
 
     #[test]
     fn workspace_member_roles_are_strict_at_the_transport_edge() {
-        for (proto, member) in [
-            (WorkspaceRole::Owner, MemberRole::Owner),
-            (WorkspaceRole::Member, MemberRole::Member),
-        ] {
-            assert_eq!(
-                member_role_from_proto(proto as i32).expect("valid role"),
-                member
-            );
-            assert_eq!(member_role_to_proto(member), proto);
-        }
-        for invalid in [WorkspaceRole::Unspecified as i32, i32::MAX] {
-            member_role_from_proto(invalid).expect_err("invalid role must be rejected");
-        }
+        let roles = [WorkspaceRole::Owner, WorkspaceRole::Member];
+        assert_eq!(
+            roles.map(|role| member_role_from_proto(role as i32).expect("valid role")),
+            [MemberRole::Owner, MemberRole::Member]
+        );
+        assert_eq!(
+            [MemberRole::Owner, MemberRole::Member].map(member_role_to_proto),
+            roles
+        );
+        assert!(
+            [WorkspaceRole::Unspecified as i32, i32::MAX]
+                .into_iter()
+                .all(|role| member_role_from_proto(role).is_err())
+        );
     }
 }

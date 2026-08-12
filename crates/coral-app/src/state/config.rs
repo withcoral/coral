@@ -621,11 +621,6 @@ impl ConfigStore {
         workspace_name: &WorkspaceName,
     ) -> Result<Option<DeletedWorkspace>, AppError> {
         self.update_config(|config| {
-            if workspace_name.is_default() {
-                return Err(AppError::FailedPrecondition(
-                    "default workspace cannot be removed".to_string(),
-                ));
-            }
             let removed = config.workspaces.remove(workspace_name);
             if removed {
                 let sources = config
