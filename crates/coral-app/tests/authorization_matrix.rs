@@ -1,4 +1,4 @@
-//! Freezes the access classification of every authenticated Coral RPC.
+//! Freezes the authorization classification of every served gRPC method.
 
 #![allow(
     unused_crate_dependencies,
@@ -12,8 +12,9 @@ use std::fs;
 enum Access {
     Read,
     Manage,
-    AnyHuman,
-    OwnerOfAny,
+    SelfScoped,
+    AnyAuthenticatedHuman,
+    OwnerOfAnyWorkspace,
     Open,
 }
 
@@ -48,12 +49,21 @@ const AUTHORIZATION_MATRIX: &[(&str, Access)] = &[
     ("coral.v1.TaskService/EndTask", Access::Read),
     ("coral.v1.TraceService/ListTraces", Access::Manage),
     ("coral.v1.TraceService/GetTrace", Access::Manage),
-    ("coral.v1.UserService/ListUsers", Access::OwnerOfAny),
-    ("coral.v1.UserService/GetCurrentUser", Access::AnyHuman),
-    ("coral.v1.WorkspaceService/ListWorkspaces", Access::Read),
+    (
+        "coral.v1.UserService/ListUsers",
+        Access::OwnerOfAnyWorkspace,
+    ),
+    (
+        "coral.v1.UserService/GetCurrentUser",
+        Access::AnyAuthenticatedHuman,
+    ),
+    (
+        "coral.v1.WorkspaceService/ListWorkspaces",
+        Access::SelfScoped,
+    ),
     (
         "coral.v1.WorkspaceService/CreateWorkspace",
-        Access::AnyHuman,
+        Access::AnyAuthenticatedHuman,
     ),
     ("coral.v1.WorkspaceService/DeleteWorkspace", Access::Manage),
     (
@@ -68,16 +78,17 @@ const AUTHORIZATION_MATRIX: &[(&str, Access)] = &[
         "coral.v1.WorkspaceService/RemoveWorkspaceMember",
         Access::Manage,
     ),
-];
-
-const OPEN_RPCS: &[(&str, Access)] = &[
     ("grpc.health.v1.Health/Check", Access::Open),
     ("grpc.health.v1.Health/Watch", Access::Open),
 ];
 
 #[test]
-fn every_coral_rpc_has_exactly_one_frozen_authorization() {
-    let discovered = coral_rpc_names();
+fn every_served_rpc_has_exactly_one_frozen_authorization() {
+    let mut discovered = coral_rpc_names();
+    discovered.extend([
+        "grpc.health.v1.Health/Check".to_string(),
+        "grpc.health.v1.Health/Watch".to_string(),
+    ]);
     let discovered_set = discovered
         .iter()
         .map(String::as_str)
@@ -109,17 +120,11 @@ fn every_coral_rpc_has_exactly_one_frozen_authorization() {
         omitted.is_empty() && stale.is_empty(),
         "authorization matrix mismatch; omitted={omitted:?}, stale={stale:?}"
     );
-    assert!(
-        AUTHORIZATION_MATRIX
-            .iter()
-            .all(|(rpc, access)| rpc.starts_with("coral.v1.") && *access != Access::Open)
-    );
-    assert!(
-        OPEN_RPCS
-            .iter()
-            .all(|(rpc, access)| rpc.starts_with("grpc.health.v1.Health/")
-                && *access == Access::Open)
-    );
+    assert!(AUTHORIZATION_MATRIX.iter().all(|(rpc, access)| {
+        let is_health = rpc.starts_with("grpc.health.v1.Health/");
+        (is_health && *access == Access::Open)
+            || (rpc.starts_with("coral.v1.") && *access != Access::Open)
+    }));
 }
 
 #[test]
