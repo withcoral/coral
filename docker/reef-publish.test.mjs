@@ -12,22 +12,42 @@ test('Reef publication is immutable and release-source pinned', async () => {
   assert.match(workflow, /git rev-parse HEAD/)
   assert.match(workflow, /--platform linux\/amd64/)
   assert.match(workflow, /--provenance=true/)
-  assert.match(workflow, /--tag "\$\{IMAGE\}:\$\{VERSION\}"/)
+  assert.match(workflow, /push-by-digest=true/)
   assert.doesNotMatch(workflow, /\$\{IMAGE\}:(?:latest|\$\{MAJOR_MINOR\})/)
 })
 
-test('publication exposes verified version and digest metadata', async () => {
+test('publication verifies and signs the digest before exposing its version tag', async () => {
   const [workflow, dockerfile] = await Promise.all([
     read('../.github/workflows/reef-docker-publish.yml'),
     read('./Dockerfile.reef'),
   ])
 
-  assert.match(workflow, /digest: \$\{\{ steps\.manifest\.outputs\.digest \}\}/)
+  assert.match(workflow, /digest: \$\{\{ steps\.publish\.outputs\.digest \}\}/)
   assert.match(workflow, /org\.opencontainers\.image\.version/)
   assert.match(workflow, /org\.opencontainers\.image\.revision/)
   assert.match(workflow, /docker buildx imagetools inspect/)
   assert.match(dockerfile, /org\.opencontainers\.image\.version="\$REEF_VERSION"/)
   assert.match(dockerfile, /org\.opencontainers\.image\.revision="\$REEF_REVISION"/)
+
+  const verify = workflow.indexOf('- name: Verify staged image metadata')
+  const sign = workflow.indexOf('- name: Sign the staged manifest')
+  const publish = workflow.indexOf('- name: Publish immutable version tag')
+  assert.ok(verify < sign && sign < publish)
+  assert.doesNotMatch(workflow.slice(0, publish), /--tag "?\$\{IMAGE\}:\$\{VERSION\}/)
+})
+
+test('immutable version publication handles absent, same, and different digests', async () => {
+  const workflow = await read('../.github/workflows/reef-docker-publish.yml')
+  const publish = workflow.slice(workflow.indexOf('- name: Publish immutable version tag'))
+
+  assert.match(workflow, /group: reef-docker-publish-\$\{\{ inputs\.tag \}\}/)
+  assert.match(publish, /existing_digest="\$\(gh api --paginate/)
+  assert.match(publish, /if \[ -n "\$existing_digest" \]/)
+  assert.match(publish, /existing_digest" != "\$BUILD_DIGEST"/)
+  assert.match(publish, /refusing to replace it/)
+  assert.match(publish, /already points to the verified digest/)
+  assert.match(publish, /imagetools create --tag "\$version_ref"/)
+  assert.match(publish, /published_digest" != "\$BUILD_DIGEST"/)
 })
 
 test('release waits for completed artifacts before publishing Reef', async () => {

@@ -23,6 +23,10 @@ on:
 
 permissions:
   contents: read
+concurrency:
+  # Serialize compare-and-set publication for one immutable release tag.
+  group: reef-docker-publish-${{ inputs.tag }}
+  queue: max
 
 env:
   IMAGE: ghcr.io/withcoral/reef
@@ -40,7 +44,7 @@ jobs:
     outputs:
       image: ghcr.io/withcoral/reef
       version: ${{ steps.tag.outputs.version }}
-      digest: ${{ steps.manifest.outputs.digest }}
+      digest: ${{ steps.publish.outputs.digest }}
     steps:
       - name: Validate release inputs
         id: tag
@@ -102,25 +106,10 @@ jobs:
           test -n "$digest"
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
 
-      - name: Publish immutable version tag
-        id: manifest
+      - name: Verify staged image metadata
         shell: bash
         env:
-          BUILD_DIGEST: ${{ steps.build.outputs.digest }}
-          VERSION: ${{ steps.tag.outputs.version }}
-        run: |
-          set -euo pipefail
-          docker buildx imagetools create \
-            --tag "${IMAGE}:${VERSION}" \
-            "${IMAGE}@${BUILD_DIGEST}"
-          digest="$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" --format '{{.Manifest.Digest}}')"
-          test -n "$digest"
-          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
-
-      - name: Verify published version metadata
-        shell: bash
-        env:
-          DIGEST: ${{ steps.manifest.outputs.digest }}
+          DIGEST: ${{ steps.build.outputs.digest }}
           VERSION: ${{ steps.tag.outputs.version }}
         run: |
           set -euo pipefail
@@ -131,8 +120,38 @@ jobs:
       - name: Install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
-      - name: Sign the published manifest
+      - name: Sign the staged manifest
         shell: bash
         env:
-          DIGEST: ${{ steps.manifest.outputs.digest }}
+          DIGEST: ${{ steps.build.outputs.digest }}
         run: cosign sign --yes "${IMAGE}@${DIGEST}"
+
+      - name: Publish immutable version tag
+        id: publish
+        shell: bash
+        env:
+          BUILD_DIGEST: ${{ steps.build.outputs.digest }}
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          set -euo pipefail
+          version_ref="${IMAGE}:${VERSION}"
+          existing_digest="$(gh api --paginate \
+            "/orgs/withcoral/packages/container/reef/versions?per_page=100" \
+            --jq ".[] | select(any(.metadata.container.tags[]; . == \"${VERSION}\")) | .name")"
+          if [ -n "$existing_digest" ]; then
+            test "$(printf '%s\n' "$existing_digest" | wc -l)" -eq 1
+            if [ "$existing_digest" != "$BUILD_DIGEST" ]; then
+              echo "${version_ref} already points to ${existing_digest}; refusing to replace it with ${BUILD_DIGEST}." >&2
+              exit 1
+            fi
+            echo "${version_ref} already points to the verified digest."
+          else
+            docker buildx imagetools create --tag "$version_ref" "${IMAGE}@${BUILD_DIGEST}"
+          fi
+          published_digest="$(docker buildx imagetools inspect "$version_ref" --format '{{.Manifest.Digest}}')"
+          if [ "$published_digest" != "$BUILD_DIGEST" ]; then
+            echo "${version_ref} resolved to ${published_digest}, expected ${BUILD_DIGEST}." >&2
+            exit 1
+          fi
+          echo "digest=${published_digest}" >> "$GITHUB_OUTPUT"
