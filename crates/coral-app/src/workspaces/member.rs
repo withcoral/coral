@@ -1,10 +1,4 @@
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "workspace membership APIs are wired to production consumers in later milestones"
-    )
-)]
+#![cfg_attr(not(test), expect(dead_code, reason = "used higher in the PR stack"))]
 
 use super::WorkspaceAction;
 

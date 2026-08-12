@@ -4,23 +4,36 @@ use crate::bootstrap::AppError;
 use crate::identity::{Principal, PrincipalKind};
 use crate::state::db::{CoralDb, DbRepos};
 use crate::users::{CurrentUser, UserView};
-use crate::workspaces::MemberRole;
+use crate::workspaces::{LocalPrincipalPolicy, MemberRole};
 
 /// App-domain user directory and current-user behavior.
 #[derive(Clone)]
 pub(crate) struct UserManager {
     db: Arc<CoralDb>,
+    local_principal: LocalPrincipalPolicy,
 }
 
 impl UserManager {
     pub(crate) fn new(db: Arc<CoralDb>) -> Self {
-        Self { db }
+        Self {
+            db,
+            local_principal: LocalPrincipalPolicy::default(),
+        }
+    }
+
+    /// Allows the built-in local principal to list users without owning a workspace.
+    ///
+    /// Only a single-user deployment may opt into this policy.
+    pub(crate) fn trusting_local_principal(mut self) -> Self {
+        self.local_principal = LocalPrincipalPolicy::ImplicitOwner;
+        self
     }
 
     pub(crate) async fn get_current_user(
         &self,
         principal: &Principal,
     ) -> Result<CurrentUser, AppError> {
+        self.local_principal.validate_request_principal(principal)?;
         require_human(principal)?;
         let mut session = self.db.as_ref();
         let user = session
@@ -40,9 +53,10 @@ impl UserManager {
         &self,
         principal: &Principal,
     ) -> Result<Vec<UserView>, AppError> {
+        self.local_principal.validate_request_principal(principal)?;
         require_human(principal)?;
         let mut session = self.db.as_ref();
-        if !principal.is_local()
+        if !(principal.is_local() && self.local_principal.is_implicit_owner())
             && !session
                 .workspace_members()
                 .workspaces_for_user_id(principal.id().as_str())
@@ -139,6 +153,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn strict_policy_rejects_local_principal_before_database_lookup() {
+        let (_temp, db, _manager) = manager_without_migrations().await;
+        let manager = UserManager::new(db);
+
+        assert!(matches!(
+            manager.get_current_user(&Principal::local()).await,
+            Err(AppError::PermissionDenied(_))
+        ));
+        assert!(matches!(
+            manager.list_users(&Principal::local()).await,
+            Err(AppError::PermissionDenied(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn implicit_owner_lists_users_without_a_workspace_membership() {
+        let (_temp, db, manager) = manager().await;
+        let user_id = create_directory_user(&db, "directory-only", Some("Directory User")).await;
+
+        let users = manager
+            .trusting_local_principal()
+            .list_users(&Principal::local())
+            .await
+            .expect("implicit owner lists users");
+
+        assert!(users.iter().any(|user| user.user_id == user_id));
+        let mut session = db.as_ref();
+        assert!(
+            session
+                .workspace_members()
+                .workspaces_for_user_id(&user_id)
+                .await
+                .expect("list directory-user memberships")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
     async fn list_users_requires_a_human_workspace_owner() {
         let (_temp, db, manager) = manager().await;
         let owner_id = create_directory_user(&db, "owner", Some("Owner")).await;
@@ -174,6 +226,13 @@ mod tests {
     }
 
     async fn manager() -> (TempDir, Arc<CoralDb>, UserManager) {
+        let (temp, db, _) = manager_without_migrations().await;
+        db.migrate().await.expect("migrate");
+        let manager = UserManager::new(Arc::clone(&db));
+        (temp, db, manager)
+    }
+
+    async fn manager_without_migrations() -> (TempDir, Arc<CoralDb>, UserManager) {
         let temp = TempDir::new().expect("temp dir");
         let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
         let DatabaseConfig::Sqlite { path } = DatabaseConfig::load(&layout).expect("config") else {
@@ -184,7 +243,6 @@ mod tests {
                 .await
                 .expect("open sqlite"),
         );
-        db.migrate().await.expect("migrate");
         let manager = UserManager::new(Arc::clone(&db));
         (temp, db, manager)
     }

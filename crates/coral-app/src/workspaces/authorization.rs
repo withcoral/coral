@@ -1,7 +1,4 @@
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired to service handlers in later milestones")
-)]
+#![cfg_attr(not(test), expect(dead_code, reason = "used higher in the PR stack"))]
 
 use std::sync::Arc;
 
@@ -16,14 +13,60 @@ pub(crate) enum WorkspaceAction {
     Manage,
 }
 
+/// Whether requests may use the built-in local principal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum LocalPrincipalPolicy {
+    /// Reject the local principal before consulting user or membership state.
+    #[default]
+    NoLocalPrincipal,
+    /// Treat the local principal as owner without consulting membership state.
+    ImplicitOwner,
+}
+
+impl LocalPrincipalPolicy {
+    /// Rejects a local request principal unless this deployment explicitly trusts it.
+    pub(crate) fn validate_request_principal(self, principal: &Principal) -> Result<(), AppError> {
+        if principal.is_local() && self == Self::NoLocalPrincipal {
+            Err(AppError::PermissionDenied(
+                "the local principal is not available under this server policy".to_string(),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    pub(crate) const fn is_implicit_owner(self) -> bool {
+        matches!(self, Self::ImplicitOwner)
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct WorkspaceAuthorizer {
     db: Arc<CoralDb>,
+    local_principal: LocalPrincipalPolicy,
 }
 
 impl WorkspaceAuthorizer {
+    /// Authorizes requests and rejects the local principal.
     pub(crate) fn new(db: Arc<CoralDb>) -> Self {
-        Self { db }
+        Self {
+            db,
+            local_principal: LocalPrincipalPolicy::default(),
+        }
+    }
+
+    /// Treats the local principal as owner of every workspace.
+    ///
+    /// Only a single-user deployment may opt into this policy.
+    pub(crate) fn trusting_local_principal(db: Arc<CoralDb>) -> Self {
+        Self {
+            db,
+            local_principal: LocalPrincipalPolicy::ImplicitOwner,
+        }
+    }
+
+    pub(crate) const fn local_principal_policy(&self) -> LocalPrincipalPolicy {
+        self.local_principal
     }
 
     pub(crate) async fn authorize(
@@ -32,6 +75,7 @@ impl WorkspaceAuthorizer {
         workspace: &WorkspaceName,
         action: WorkspaceAction,
     ) -> Result<(), AppError> {
+        self.local_principal.validate_request_principal(principal)?;
         if principal.is_local() {
             return Ok(());
         }
@@ -63,7 +107,7 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use super::{WorkspaceAction, WorkspaceAuthorizer};
+    use super::{LocalPrincipalPolicy, WorkspaceAction, WorkspaceAuthorizer};
     use crate::bootstrap::AppError;
     use crate::identity::{Principal, PrincipalKind};
     use crate::state::AppStateLayout;
@@ -74,10 +118,35 @@ mod tests {
     use crate::workspaces::{MemberRole, WorkspaceName};
 
     #[tokio::test]
-    async fn local_principal_returns_without_database_work() {
+    async fn strict_policy_rejects_local_principal_before_database_lookup() {
         let (_temp, db) = database(false).await;
         let authorizer = WorkspaceAuthorizer::new(db);
 
+        assert_eq!(
+            authorizer.local_principal_policy(),
+            LocalPrincipalPolicy::NoLocalPrincipal
+        );
+        assert!(matches!(
+            authorizer
+                .authorize(
+                    &Principal::local(),
+                    &WorkspaceName::parse("schema-is-not-migrated").expect("workspace"),
+                    WorkspaceAction::Manage,
+                )
+                .await,
+            Err(AppError::PermissionDenied(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn implicit_owner_policy_bypasses_database_lookup() {
+        let (_temp, db) = database(false).await;
+        let authorizer = WorkspaceAuthorizer::trusting_local_principal(db);
+
+        assert_eq!(
+            authorizer.local_principal_policy(),
+            LocalPrincipalPolicy::ImplicitOwner
+        );
         authorizer
             .authorize(
                 &Principal::local(),
@@ -85,7 +154,7 @@ mod tests {
                 WorkspaceAction::Manage,
             )
             .await
-            .expect("local principal bypasses membership storage");
+            .expect("implicit owner bypasses membership lookup");
     }
 
     #[tokio::test]
@@ -107,13 +176,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn owner_and_member_permissions_follow_the_action() {
+    async fn owner_manages_while_member_only_reads() {
         let (_temp, db) = database(true).await;
-        let owner_id = provision_user(&db, "owner").await;
-        let member_id = provision_user(&db, "member").await;
-        let workspace =
-            WorkspaceName::parse(&format!("default-{owner_id}")).expect("owner default workspace");
+        let owner_id = create_directory_user(&db, "owner").await;
+        let member_id = create_directory_user(&db, "member").await;
+        let workspace = WorkspaceName::parse("team-access").expect("workspace");
         let mut session = db.as_ref();
+        session
+            .workspaces()
+            .create_with_owner(workspace.as_str(), &owner_id, 1)
+            .await
+            .expect("create owner workspace");
         assert!(matches!(
             session
                 .workspaces()
@@ -153,10 +226,15 @@ mod tests {
     #[tokio::test]
     async fn missing_membership_is_concealed_as_workspace_not_found() {
         let (_temp, db) = database(true).await;
-        let owner_id = provision_user(&db, "owner").await;
-        let nonmember_id = provision_user(&db, "nonmember").await;
-        let workspace =
-            WorkspaceName::parse(&format!("default-{owner_id}")).expect("owner default workspace");
+        let owner_id = create_directory_user(&db, "owner").await;
+        let nonmember_id = create_directory_user(&db, "nonmember").await;
+        let workspace = WorkspaceName::parse("concealed-workspace").expect("workspace");
+        let mut session = db.as_ref();
+        session
+            .workspaces()
+            .create_with_owner(workspace.as_str(), &owner_id, 1)
+            .await
+            .expect("create owner workspace");
         let authorizer = WorkspaceAuthorizer::new(db);
         let nonmember = Principal::parse(&nonmember_id, PrincipalKind::User).expect("nonmember");
 
@@ -185,13 +263,15 @@ mod tests {
         (temp, db)
     }
 
-    async fn provision_user(db: &CoralDb, subject: &str) -> String {
-        let UpsertLoginOutcome::Upserted(user) = db
-            .upsert_user_and_ensure_default_workspace("issuer", subject, None, 1)
+    async fn create_directory_user(db: &CoralDb, subject: &str) -> String {
+        let mut session = db;
+        let UpsertLoginOutcome::Upserted(user) = session
+            .users()
+            .upsert_login("issuer", subject, None, 1)
             .await
-            .expect("provision user")
+            .expect("create directory user")
         else {
-            panic!("new subject should create a user")
+            panic!("new subject should create user")
         };
         user.user_id
     }
