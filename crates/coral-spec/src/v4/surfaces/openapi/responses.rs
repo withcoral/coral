@@ -94,6 +94,14 @@ impl OpenApiImporter<'_> {
         };
         let (cardinality, row_schema, schema_entity_name) =
             classify_response_schema(path, &resolved);
+        // Only when the classification set this schema aside. A singleton hands
+        // `import_schema` the very schema resolved here, which asks the same
+        // question — reporting it here as well would say it twice. A collection
+        // hands over `items` instead, so this is the one place its own keywords
+        // are ever read.
+        if row_schema != resolved {
+            self.warn_removed_keywords(&resolved, "response schema", operation_id, diagnostics);
+        }
         let type_ref = self
             .import_schema(
                 &row_schema,

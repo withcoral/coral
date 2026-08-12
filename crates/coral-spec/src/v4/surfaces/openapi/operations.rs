@@ -234,6 +234,12 @@ impl OpenApiImporter<'_> {
         diagnostics: &mut Vec<Diagnostic>,
     ) -> Option<IrScalarType> {
         let resolved = self.resolve_ref(schema, operation_id, diagnostics)?;
+        self.warn_removed_keywords(
+            &resolved,
+            &format!("parameter '{name}'"),
+            operation_id,
+            diagnostics,
+        );
         let Some(scalar) = json_schema_scalar_type_or_string(&resolved) else {
             diagnostics.push(Diagnostic::new(
                 format!(

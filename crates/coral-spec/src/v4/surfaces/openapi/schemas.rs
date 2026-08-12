@@ -72,12 +72,12 @@ impl OpenApiImporter<'_> {
             .unwrap_or_default()
             .to_string();
         let nullable = self.dialect.schema_nullable(&resolved);
-        if let Some(warning) = self.dialect.removed_keyword_warning(&resolved) {
-            diagnostics.push(Diagnostic::new(
-                format!("type '{type_id}' in operation '{operation_id}': {warning}"),
-                Some(operation_id.to_string()),
-            ));
-        }
+        self.warn_removed_keywords(
+            &resolved,
+            &format!("type '{type_id}'"),
+            operation_id,
+            diagnostics,
+        );
         self.types.insert(
             type_id.clone(),
             IrType {

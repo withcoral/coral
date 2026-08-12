@@ -149,6 +149,33 @@ impl<'a> OpenApiImporter<'a> {
         }
     }
 
+    /// Reports a schema reaching for a keyword its document's version removed.
+    ///
+    /// Every path that reads a schema has to ask, not just the one that imports
+    /// a type from it. A parameter resolves to a scalar through
+    /// `import_parameter_scalar` and never reaches `import_schema`, and a
+    /// top-level collection response hands `import_schema` its `items` and sets
+    /// the schema carrying the keyword aside — so a `nullable: true` in either
+    /// place was dropped with nothing said, which is the silence this diagnostic
+    /// exists to break.
+    ///
+    /// `subject` names what carries the keyword — a type, a parameter, a
+    /// response — because the operation alone does not locate it.
+    pub(super) fn warn_removed_keywords(
+        &self,
+        schema: &Value,
+        subject: &str,
+        operation_id: &str,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        if let Some(warning) = self.dialect.removed_keyword_warning(schema) {
+            diagnostics.push(Diagnostic::new(
+                format!("{subject} in operation '{operation_id}': {warning}"),
+                Some(operation_id.to_string()),
+            ));
+        }
+    }
+
     pub(super) fn ref_error_diagnostic(
         error: RefError<'_>,
         context: &RefDiagnosticContext<'_>,

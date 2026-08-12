@@ -3802,6 +3802,101 @@ fn openapi_31_warns_when_a_document_still_carries_nullable() {
 }
 
 #[test]
+fn openapi_31_warns_about_a_removed_keyword_on_every_schema_path() {
+    // Three placements the type import never sees. A parameter resolves to a
+    // scalar without reaching `import_schema`, and a collection response hands
+    // it `items` — so the schema carrying the keyword is set aside in both, and
+    // the warning was dropped with it.
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: removed_keywords
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let imported = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.1.0
+paths:
+  /items:
+    get:
+      operationId: items/list
+      parameters:
+        - {name: since, in: query, schema: {type: string, nullable: true}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                nullable: true
+                items:
+                  type: object
+                  properties:
+                    id: {type: string}
+"
+        .as_bytes(),
+    )
+    .expect("3.1 should import");
+
+    let operation = imported.operations.first().expect("operation");
+    let warnings: Vec<&str> = operation
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.message.contains("'nullable'"))
+        .map(|diagnostic| diagnostic.message.as_str())
+        .collect();
+    assert!(
+        warnings
+            .iter()
+            .any(|message| message.contains("parameter 'since'")),
+        "a parameter schema carrying the keyword has to be reported: {warnings:?}"
+    );
+    assert!(
+        warnings
+            .iter()
+            .any(|message| message.contains("response schema")),
+        "a collection response carrying the keyword has to be reported: {warnings:?}"
+    );
+    assert_eq!(
+        warnings.len(),
+        2,
+        "one report each, and none for the item schema, which does not carry it: {warnings:?}"
+    );
+}
+
+#[test]
+fn openapi_31_reports_a_singleton_response_keyword_once() {
+    // The counterpart to setting the schema aside: a singleton hands
+    // `import_schema` the very schema the response resolved to, so both would
+    // report the same keyword in the same place.
+    let imported = import_versioned_response_schema(
+        "3.1.0",
+        r"                type: object
+                nullable: true
+                properties:
+                  id: {type: string}",
+    )
+    .expect("3.1 should import");
+
+    let operation = imported.operations.first().expect("operation");
+    let warnings: Vec<&str> = operation
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.message.contains("'nullable'"))
+        .map(|diagnostic| diagnostic.message.as_str())
+        .collect();
+    assert_eq!(warnings.len(), 1, "said once, not twice: {warnings:?}");
+}
+
+#[test]
 fn openapi_30_does_not_warn_about_nullable() {
     let imported = import_versioned_response_schema("3.0.3", NULLABILITY_PROBE_SCHEMA)
         .expect("3.0 should import");
