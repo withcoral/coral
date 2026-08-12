@@ -6,6 +6,7 @@ import routes from './routes'
 const protectedBoundaryFile = 'routes/_protected.tsx'
 const publicRouteFiles = new Set([
   'routes/healthz.ts',
+  'routes/readyz.ts',
   'routes/oauth-client-metadata.ts',
   'routes/login.tsx',
   'routes/auth.callback.tsx',
