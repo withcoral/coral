@@ -15,6 +15,14 @@ pub(super) trait OpenApiDialect {
     /// keyword and the schema uses it.
     fn const_enum_values(&self, schema: &Value) -> Option<Vec<String>>;
 
+    /// Whether keywords written beside a `$ref` constrain the schema it
+    /// resolves to, or are ignored in its favour.
+    ///
+    /// The versions genuinely disagree: 3.0 defines a Reference Object as an
+    /// object whose other members are ignored, while 3.1 follows 2020-12, where
+    /// `$ref` is one keyword among the rest and every sibling still applies.
+    fn ref_siblings_apply(&self) -> bool;
+
     /// What to warn about a schema reaching for a keyword this version removed.
     ///
     /// Such a keyword is not an error — it is ignored, exactly as an unknown

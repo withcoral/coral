@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::v4::diagnostics::Diagnostic;
 use crate::v4::ir::{IrField, IrType, IrTypeShape};
@@ -30,6 +30,35 @@ const MAX_ALL_OF_DEPTH: usize = 8;
 /// type. Matches the MCP importer's ceiling for the same comparison.
 const MAX_PROPERTY_COMPARISON_DEPTH: usize = 64;
 
+/// Keywords beside a `$ref` that describe it rather than narrow it.
+///
+/// An annotation says nothing about which instances the schema admits, so it
+/// cannot make the reference mean something the reference does not already
+/// mean — a `description` written beside a `$ref` documents the field that
+/// holds it, and the schema is still exactly what it resolves to.
+const REF_SIBLING_ANNOTATIONS: [&str; 11] = [
+    "description",
+    "title",
+    "summary",
+    "example",
+    "examples",
+    "deprecated",
+    "readOnly",
+    "writeOnly",
+    "externalDocs",
+    "xml",
+    "$comment",
+];
+
+/// Assertions beside a `$ref` that the `allOf` fold can compose.
+///
+/// The fold merges properties and answers with an object, so these are the
+/// keywords whose composition it actually implements. Anything else — a
+/// `maxLength` narrowing a referenced string, a `type` contradicting the
+/// reference — is reported instead of being folded into a shape it does not
+/// describe.
+const COMPOSABLE_REF_SIBLINGS: [&str; 3] = ["properties", "required", "additionalProperties"];
+
 /// Why folding a schema's `allOf` tree stopped.
 enum AllOfMergeError {
     /// A branch could not be resolved. A diagnostic naming it has already been
@@ -58,6 +87,12 @@ impl OpenApiImporter<'_> {
         operation_id: &str,
         diagnostics: &mut Vec<Diagnostic>,
     ) -> Option<String> {
+        // Before the reference is resolved, because resolving it is what loses
+        // the assertions written beside it. The rewrite carries no `$ref` of its
+        // own, so this re-entry cannot repeat.
+        if let Some(composed) = self.ref_siblings_composed(schema, operation_id, diagnostics) {
+            return self.import_schema(&composed, suggested_id, operation_id, diagnostics);
+        }
         let resolved = self.resolve_ref(schema, operation_id, diagnostics)?;
         let type_id = schema.get("$ref").and_then(Value::as_str).map_or_else(
             || normalize_identifier(suggested_id, "type"),
@@ -240,6 +275,68 @@ impl OpenApiImporter<'_> {
             },
         );
         Some(type_id)
+    }
+
+    /// Rewrites a `$ref` carrying assertions beside it as the `allOf` it means.
+    ///
+    /// Under 3.1, `{$ref: Base, properties: {extra}, required: [extra]}`
+    /// describes `Base` *and* `extra`. Resolving straight through the reference
+    /// answered `Base` alone, so `extra` was gone from the IR and from every
+    /// projection over it with nothing said — the schema silently narrowed to
+    /// its base.
+    ///
+    /// Composed as `allOf` rather than merged here, so the fold already written
+    /// for that keyword — with its depth ceiling, its cycle guard and its
+    /// conflict reporting — is what does the work.
+    pub(super) fn ref_siblings_composed(
+        &self,
+        schema: &Value,
+        operation_id: &str,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) -> Option<Value> {
+        if !self.dialect.ref_siblings_apply() {
+            return None;
+        }
+        let members = schema.as_object()?;
+        let reference = members.get("$ref")?;
+        let assertions: Map<String, Value> = members
+            .iter()
+            .filter(|(name, _)| {
+                name.as_str() != "$ref" && !REF_SIBLING_ANNOTATIONS.contains(&name.as_str())
+            })
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect();
+        if assertions.is_empty() {
+            return None;
+        }
+        // Only the keywords describing an object can be composed this way: the
+        // `allOf` fold merges properties and answers with an object, so routing
+        // `{$ref: Name, maxLength: 5}` through it would replace a string column
+        // with an object that has no fields. Reporting the ones left out keeps
+        // this from being the same silence one keyword along.
+        if let Some(unsupported) = assertions
+            .keys()
+            .find(|name| !COMPOSABLE_REF_SIBLINGS.contains(&name.as_str()))
+        {
+            diagnostics.push(Diagnostic::new(
+                format!(
+                    "schema in operation '{operation_id}' narrows a '$ref' with '{unsupported}', which Coral does not compose; the reference is imported without it"
+                ),
+                Some(operation_id.to_string()),
+            ));
+            return None;
+        }
+        let mut reference_branch = Map::new();
+        reference_branch.insert("$ref".to_string(), reference.clone());
+        let mut composed = Map::new();
+        composed.insert(
+            "allOf".to_string(),
+            Value::Array(vec![
+                Value::Object(reference_branch),
+                Value::Object(assertions),
+            ]),
+        );
+        Some(Value::Object(composed))
     }
 
     /// Folds a schema's own properties together with those of every `allOf`

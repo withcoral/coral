@@ -21,6 +21,13 @@ impl OpenApiDialect for OpenApi30Importer {
         None
     }
 
+    /// 3.0's Reference Object is a `$ref` and nothing else: any member written
+    /// beside it is ignored, so composing them here would read constraints into
+    /// a document that does not have them.
+    fn ref_siblings_apply(&self) -> bool {
+        false
+    }
+
     /// 3.0 is the oldest version supported here, so it has removed nothing.
     fn removed_keyword_warning(&self, _schema: &Value) -> Option<String> {
         None

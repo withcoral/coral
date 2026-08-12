@@ -59,6 +59,12 @@ impl OpenApiDialect for OpenApi31Importer {
             .then(|| vec![enum_value(value)])
     }
 
+    /// 2020-12 made `$ref` an ordinary keyword, so a 3.1 schema may write one
+    /// alongside the assertions that narrow what it resolves to.
+    fn ref_siblings_apply(&self) -> bool {
+        true
+    }
+
     /// A 3.1 document still carrying `nullable` is usually a 3.0 one whose
     /// version string was raised without converting its schemas. Reading it
     /// would be wrong — 3.1 gives the keyword no meaning — but dropping it in

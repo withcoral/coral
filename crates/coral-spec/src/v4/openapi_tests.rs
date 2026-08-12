@@ -3938,6 +3938,161 @@ fn openapi_31_reads_const_as_a_single_value_enum() {
     assert_eq!(values, &["open", "paid"]);
 }
 
+/// Imports a document at `version` whose response is `$ref: Base` carrying
+/// `siblings` beside it, so a test can hold the shape fixed and vary the
+/// dialect that decides whether those siblings apply.
+#[expect(
+    clippy::unwrap_in_result,
+    reason = "Only the import's own result is under test; a manifest that will not parse is a bug in this file, not an outcome to return."
+)]
+fn import_ref_with_siblings(version: &str, siblings: &str) -> crate::Result<ImportedSurface> {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: ref_siblings_probe
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    import_openapi_surface(
+        v4,
+        &v4.surface,
+        format!(
+            r"
+openapi: {version}
+paths:
+  /items:
+    get:
+      operationId: items/get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Base'
+{siblings}
+components:
+  schemas:
+    Base:
+      type: object
+      properties:
+        id: {{type: string}}
+"
+        )
+        .as_bytes(),
+    )
+}
+
+#[test]
+fn openapi_31_composes_assertions_written_beside_a_ref() {
+    // 2020-12 made `$ref` an ordinary keyword, so this schema is `Base` *and*
+    // `extra`. Resolving through the reference answered `Base` alone and the
+    // column was gone from the IR and from every projection over it.
+    let imported = import_ref_with_siblings(
+        "3.1.0",
+        r"                properties:
+                  extra: {type: string}
+                required: [extra]",
+    )
+    .expect("3.1 should import");
+
+    let operation = imported.operations.first().expect("operation");
+    let IrTypeShape::Object { fields } = &imported
+        .types
+        .iter()
+        .find(|ty| ty.id == operation.output.type_ref)
+        .expect("row type")
+        .shape
+    else {
+        panic!("expected an object row");
+    };
+    let names: Vec<&str> = fields.iter().map(|field| field.name.as_str()).collect();
+    assert_eq!(
+        names,
+        ["extra", "id"],
+        "the reference contributes `id` and the sibling contributes `extra`"
+    );
+}
+
+#[test]
+fn openapi_30_ignores_members_written_beside_a_ref() {
+    // The same document under the other dialect. 3.0 defines a Reference Object
+    // as a `$ref` and nothing else, so reading these siblings would import
+    // constraints the document does not have.
+    let imported = import_ref_with_siblings(
+        "3.0.3",
+        r"                properties:
+                  extra: {type: string}
+                required: [extra]",
+    )
+    .expect("3.0 should import");
+
+    let operation = imported.operations.first().expect("operation");
+    let IrTypeShape::Object { fields } = &imported
+        .types
+        .iter()
+        .find(|ty| ty.id == operation.output.type_ref)
+        .expect("row type")
+        .shape
+    else {
+        panic!("expected an object row");
+    };
+    let names: Vec<&str> = fields.iter().map(|field| field.name.as_str()).collect();
+    assert_eq!(names, ["id"], "3.0 reads the reference alone");
+}
+
+#[test]
+fn openapi_31_reports_a_ref_sibling_it_cannot_compose() {
+    // `allOf` merges properties and answers with an object, so folding this one
+    // through it would put an object with no fields where the referenced shape
+    // was. It is left out — but said, which is the whole complaint.
+    let imported = import_ref_with_siblings("3.1.0", "                maxProperties: 4")
+        .expect("3.1 should import");
+
+    let operation = imported.operations.first().expect("operation");
+    let warning = operation
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.message.contains("maxProperties"))
+        .expect("a constraint that is dropped has to be reported");
+    assert!(
+        warning.message.contains("does not compose"),
+        "the warning should say what happened to it: {}",
+        warning.message
+    );
+}
+
+#[test]
+fn openapi_31_leaves_an_annotated_ref_as_the_reference() {
+    // A `description` beside a `$ref` documents the field that holds it and
+    // admits no different instances, so the schema is still exactly `Base` —
+    // composing here would name a second type for no reason.
+    let imported = import_ref_with_siblings("3.1.0", "                description: the item")
+        .expect("3.1 should import");
+
+    let operation = imported.operations.first().expect("operation");
+    let IrTypeShape::Object { fields } = &imported
+        .types
+        .iter()
+        .find(|ty| ty.id == operation.output.type_ref)
+        .expect("row type")
+        .shape
+    else {
+        panic!("expected an object row");
+    };
+    let names: Vec<&str> = fields.iter().map(|field| field.name.as_str()).collect();
+    assert_eq!(names, ["id"], "the schema is still what the reference says");
+    assert!(
+        operation.diagnostics.is_empty(),
+        "an annotation is not a dropped constraint: {:?}",
+        operation.diagnostics
+    );
+}
+
 /// Imports a document at `version` that declares `dialect_declaration` at its
 /// root, so a test can vary the dialect against a schema the importer would
 /// otherwise read without complaint.

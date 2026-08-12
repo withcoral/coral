@@ -69,7 +69,14 @@ impl OpenApiImporter<'_> {
             );
         };
 
-        let Some(resolved) = self.resolve_ref(&selected.schema, operation_id, diagnostics) else {
+        // Composed before the reference is resolved, because this is where a
+        // response written as a `$ref` with assertions beside it would lose
+        // them: the schema handed on from here is the resolved one, so
+        // `import_schema` never sees the siblings to ask about them.
+        let selected_schema = self
+            .ref_siblings_composed(&selected.schema, operation_id, diagnostics)
+            .unwrap_or_else(|| selected.schema.clone());
+        let Some(resolved) = self.resolve_ref(&selected_schema, operation_id, diagnostics) else {
             diagnostics.push(Diagnostic::new(
                 format!("operation '{operation_id}' response schema could not be resolved"),
                 Some(operation_id.to_string()),
