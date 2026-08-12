@@ -79,9 +79,10 @@ async fn read_rpcs_authorize_before_handler_work() {
     read_rpc!(
         fixture.catalog.list_catalog(ListCatalogRequest {
             workspace: workspace.clone(),
+            kind: 999,
             ..Default::default()
         }),
-        None
+        Some(Code::InvalidArgument)
     );
     read_rpc!(
         fixture.catalog.search_catalog(SearchCatalogRequest {
@@ -179,16 +180,18 @@ async fn manage_rpcs_authorize_before_handler_work() {
             .search
             .rebuild_search_index(RebuildSearchIndexRequest {
                 workspace: workspace.clone(),
+                provider: 999,
                 ..Default::default()
             }),
-        None
+        Some(Code::InvalidArgument)
     );
     manage_rpc!(
         fixture.search.drain_search_queue(DrainSearchQueueRequest {
             workspace: workspace.clone(),
+            budget_ms: 60_001,
             ..Default::default()
         }),
-        None
+        Some(Code::InvalidArgument)
     );
     manage_rpc!(
         fixture.search.clear_search_data(ClearSearchDataRequest {
