@@ -702,7 +702,10 @@ mod tests {
             );
         }
 
-        assert_eq!(user_ids[0], user_ids[1]);
+        let [user_id, same_user_id] = user_ids.as_slice() else {
+            panic!("two callback user IDs expected");
+        };
+        assert_eq!(user_id, same_user_id);
         let mut session = database.as_ref();
         assert_eq!(session.users().list().await.expect("users").len(), 1);
         assert_eq!(
@@ -712,7 +715,7 @@ mod tests {
         assert_eq!(
             session
                 .workspace_members()
-                .workspaces_for_user_id(&user_ids[0])
+                .workspaces_for_user_id(user_id)
                 .await
                 .expect("list memberships"),
             vec![]
