@@ -919,6 +919,7 @@ mod tests {
         Some(db)
     }
 
+    #[expect(clippy::too_many_lines, reason = "repository contract fixture")]
     async fn assert_source_repository_round_trip(db: &CoralDb) {
         let workspace = unique_workspace();
         let alpha = source("alpha", None, [], [], None, SourceOrigin::Imported);
