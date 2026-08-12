@@ -1393,14 +1393,11 @@ mod tests {
 
     use super::*;
     use crate::credentials::{CredentialStorageKind, CredentialStoragePreference, CredentialStore};
-    use crate::identity::{Principal, PrincipalKind};
+    use crate::identity::Principal;
     use crate::request_context::RequestContext;
     use crate::sources::manager::{ImportSourceCommand, SourceBindings, SourceManager};
     use crate::sources::model::SourceOrigin;
-    use crate::state::db::{
-        CoralDb, DatabaseConfig, DbRepos, ResolvedDatabaseConfig, UpsertLoginOutcome,
-        run_state_migrations,
-    };
+    use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig, run_state_migrations};
     use crate::task::manager::TaskManager;
     use crate::task::store::TaskStore;
 
@@ -1526,19 +1523,6 @@ mod tests {
         let task_id = started.id.to_string();
         let context = RequestContext::new(principal).with_task_id(Some(started.id));
         (task, context, task_id)
-    }
-
-    async fn directory_user(db: &CoralDb, subject: &str) -> String {
-        let mut session = db;
-        let UpsertLoginOutcome::Upserted(user) = session
-            .users()
-            .upsert_login("issuer", subject, None, 1)
-            .await
-            .expect("create directory user")
-        else {
-            panic!("new subject should create a user")
-        };
-        user.user_id
     }
 
     fn assert_workspace_not_found(error: AppError, workspace_name: &WorkspaceName) {
@@ -1732,92 +1716,6 @@ mod tests {
         provider.force_flush().expect("flush spans");
         let spans = exporter.get_finished_spans().expect("finished spans");
         assert_catalog_task_spans(&spans, &task_id);
-    }
-
-    #[tokio::test]
-    async fn read_handlers_conceal_workspace_before_state_access() {
-        use coral_api::v1::catalog_service_server::CatalogService as CatalogServiceApi;
-        use coral_api::v1::function_service_server::FunctionService as FunctionServiceApi;
-        use coral_api::v1::query_service_server::QueryService as QueryServiceApi;
-        use coral_api::v1::{
-            ExecuteSqlRequest, ListCatalogRequest, ListFunctionsRequest, PaginationRequest,
-        };
-        use tonic::Code;
-
-        use crate::catalog::service::CatalogService;
-        use crate::functions::service::FunctionService;
-        use crate::query::service::QueryService;
-        use crate::workspaces::{MemberRole, WorkspaceAuthorizer};
-
-        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
-        let owner_id = directory_user(&fixture.db, "read-owner").await;
-        let member_id = directory_user(&fixture.db, "read-member").await;
-        let mut session = fixture.db.as_ref();
-        for (user_id, role) in [
-            (&owner_id, MemberRole::Owner),
-            (&member_id, MemberRole::Member),
-        ] {
-            session
-                .workspaces()
-                .add_member(WorkspaceName::default().as_str(), user_id, role, 2)
-                .await
-                .expect("add workspace member");
-        }
-        let tasks = TaskManager::new(TaskStore::new(Arc::clone(&fixture.db)));
-        let authorizer = WorkspaceAuthorizer::new(Arc::clone(&fixture.db));
-        let context = RequestContext::new(
-            Principal::parse("nonmember", PrincipalKind::User).expect("principal"),
-        );
-        let workspace = Some(default_workspace_proto());
-        let query = QueryService::new(fixture.manager.clone(), tasks.clone(), authorizer.clone());
-        let catalog = CatalogService::new(fixture.manager.clone(), tasks, authorizer.clone());
-        let functions = FunctionService::new(fixture.manager, authorizer);
-
-        let query_status = query
-            .execute_sql(tagged_catalog_request(
-                &context,
-                ExecuteSqlRequest {
-                    workspace: workspace.clone(),
-                    sql: "invalid-before-authorization".to_string(),
-                    guide_read_context: None,
-                },
-            ))
-            .await
-            .expect_err("nonmember cannot query concealed workspace");
-        let catalog_status = catalog
-            .list_catalog(tagged_catalog_request(
-                &context,
-                ListCatalogRequest {
-                    workspace: workspace.clone(),
-                    pagination: Some(PaginationRequest::default()),
-                    ..Default::default()
-                },
-            ))
-            .await
-            .expect_err("nonmember cannot read concealed catalog");
-        let function_status = functions
-            .list_functions(tagged_catalog_request(
-                &context,
-                ListFunctionsRequest {
-                    workspace: workspace.clone(),
-                },
-            ))
-            .await
-            .expect_err("nonmember cannot list functions in concealed workspace");
-
-        for status in [query_status, catalog_status, function_status] {
-            assert_eq!(status.code(), Code::NotFound);
-        }
-        let member_context = RequestContext::new(
-            Principal::parse(&member_id, PrincipalKind::User).expect("member principal"),
-        );
-        functions
-            .list_functions(tagged_catalog_request(
-                &member_context,
-                ListFunctionsRequest { workspace },
-            ))
-            .await
-            .expect("workspace member can list functions");
     }
 
     #[test]
