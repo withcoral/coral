@@ -77,6 +77,46 @@ describe('architecture', () => {
     expect(dependencyNames.filter((name) => name.toLowerCase().includes('tailwind'))).toEqual([])
   })
 
+  it('keeps the production entry dependency-light and import-safe', () => {
+    const server = fs.readFileSync(path.join(reefRoot, 'server.js'), 'utf8')
+    const allowedImports = new Set([
+      'node:fs',
+      'node:fs/promises',
+      'node:http',
+      'node:path',
+      'node:stream',
+      'node:stream/promises',
+      'node:url',
+      'react-router',
+      './build/server/index.js',
+    ])
+
+    expect(importsFrom(server).filter((specifier) => !allowedImports.has(specifier))).toEqual([])
+    expect(server).not.toMatch(/@react-router\/dev|react-router dev|vite|express/)
+    expect(server).toContain('export async function startServer')
+    expect(server).toContain('pathToFileURL(process.argv[1]).href === import.meta.url')
+  })
+
+  it('runs the production server smoke after its build when server inputs change', () => {
+    const validate = fs.readFileSync(
+      path.resolve(reefRoot, '../..', '.github/workflows/validate.yml'),
+      'utf8',
+    )
+    for (const input of [
+      'apps/reef/server.js',
+      'apps/reef/app/entry.server.*',
+      'apps/reef/app/lib/runtime-config.server.ts',
+      'apps/reef/app/routes.ts',
+      'apps/reef/app/routes/**',
+      'apps/reef/package*.json',
+    ]) {
+      expect(validate).toContain(`- '${input}'`)
+    }
+    expect(validate.indexOf('run: npm run build --prefix apps/reef')).toBeLessThan(
+      validate.indexOf('run: npm run test:server --prefix apps/reef'),
+    )
+  })
+
   it('keeps a story in every visual Wax component directory', () => {
     const missingStories = fs
       .readdirSync(waxComponentsDir, { withFileTypes: true })
