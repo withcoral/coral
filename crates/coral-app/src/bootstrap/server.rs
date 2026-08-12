@@ -589,10 +589,7 @@ fn trace_components_for_store(
     active_trace_store.map_or_else(TraceServerComponents::default, |store| {
         TraceServerComponents {
             local_trace_store_dir: Some(store.dir.clone()),
-            service: Some(TraceService::new(TraceManager::new(
-                store.dir,
-                store.retention,
-            ))),
+            manager: Some(TraceManager::new(store.dir, store.retention)),
         }
     })
 }
@@ -759,7 +756,7 @@ impl Drop for RunningServer {
 
 #[derive(Default)]
 struct TraceServerComponents {
-    service: Option<TraceService>,
+    manager: Option<TraceManager>,
     local_trace_store_dir: Option<PathBuf>,
 }
 
@@ -787,7 +784,7 @@ async fn start_server(
     grpc_listener: Option<Arc<std::net::TcpListener>>,
 ) -> Result<RunningServer, AppError> {
     let TraceServerComponents {
-        service: trace_service,
+        manager: trace_manager,
         local_trace_store_dir,
     } = trace_components;
     let ServerDependencies {
@@ -830,7 +827,9 @@ async fn start_server(
         SearchService::new(search.clone(), task.clone(), workspace_authorizer.clone());
     let feedback_service =
         FeedbackService::new(feedback, task.clone(), workspace_authorizer.clone());
-    let task_service = TaskService::new(task, workspace_authorizer);
+    let task_service = TaskService::new(task, workspace_authorizer.clone());
+    let trace_service =
+        trace_manager.map(|manager| TraceService::new(manager, workspace_authorizer));
     let mut application_routes = Routes::default()
         .add_service(
             SourceServiceServer::new(source_service)
@@ -1175,7 +1174,7 @@ mod tests {
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::task::manager::TaskManager;
     use crate::task::store::TaskStore;
-    use crate::telemetry::{TraceManager, service::TraceService};
+    use crate::telemetry::TraceManager;
     use crate::transport::workspace_to_proto;
     use crate::workspaces::{LocalPrincipalPolicy, WorkspaceManager, WorkspaceName};
     use crate::{
@@ -2053,10 +2052,8 @@ backend = "unsupported"
             CatalogDiscovery::new(query_manager.clone()),
             lifecycle_lock,
         );
-        let trace_service = TraceService::new(TraceManager::new(
-            temp.path().join("trace-store"),
-            Duration::from_mins(1),
-        ));
+        let trace_manager =
+            TraceManager::new(temp.path().join("trace-store"), Duration::from_mins(1));
         let server = start_server(
             ServerDependencies {
                 db,
@@ -2070,7 +2067,7 @@ backend = "unsupported"
                 task: task_manager,
             },
             TraceServerComponents {
-                service: Some(trace_service),
+                manager: Some(trace_manager),
                 local_trace_store_dir: None,
             },
             Arc::new(FixedPrincipalProvider(principal)),

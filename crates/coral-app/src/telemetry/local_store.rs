@@ -371,6 +371,36 @@ impl OwnedWorkspaceScope {
     }
 }
 
+#[derive(Clone, Copy)]
+enum TraceWorkspaceScope<'a> {
+    Unrestricted,
+    Named(&'a str),
+    Owned(&'a OwnedWorkspaceScope),
+}
+
+impl TraceWorkspaceScope<'_> {
+    fn permits(self, workspace_names: &HashSet<String>) -> bool {
+        match self {
+            Self::Unrestricted => true,
+            Self::Named(name) => {
+                !workspace_names.is_empty() && workspace_names.iter().all(|actual| actual == name)
+            }
+            Self::Owned(scope) => {
+                !workspace_names.is_empty() && workspace_names.is_subset(&scope.0)
+            }
+        }
+    }
+
+    fn permits_detail(self, detail: &TraceDetailRecord) -> bool {
+        let workspace_names = detail
+            .spans
+            .iter()
+            .filter_map(|span| workspace_attribute(&span.attributes_json))
+            .collect();
+        self.permits(&workspace_names)
+    }
+}
+
 #[derive(Debug, Clone)]
 struct TraceStoreFile {
     path: PathBuf,
@@ -586,6 +616,7 @@ struct TraceListAggregate {
     error_count: u32,
     found_root_span: bool,
     matches_workspace: bool,
+    workspace_names: HashSet<String>,
     primary: Option<TracePrimaryCandidate>,
 }
 
@@ -741,7 +772,7 @@ impl TraceStore {
         limit: usize,
         offset: usize,
     ) -> Result<Vec<TraceSummaryRecord>, TraceStoreError> {
-        self.list_traces_filtered_sync(limit, offset, None)
+        self.list_traces_filtered_sync(limit, offset, TraceWorkspaceScope::Unrestricted)
     }
 
     fn list_traces_for_workspace_sync(
@@ -750,7 +781,7 @@ impl TraceStore {
         offset: usize,
         workspace_name: &str,
     ) -> Result<Vec<TraceSummaryRecord>, TraceStoreError> {
-        self.list_traces_filtered_sync(limit, offset, Some(workspace_name))
+        self.list_traces_filtered_sync(limit, offset, TraceWorkspaceScope::Named(workspace_name))
     }
 
     fn list_traces_for_owned_workspaces_sync(
@@ -763,27 +794,14 @@ impl TraceStore {
             return Ok(Vec::new());
         }
 
-        let candidate_limit = offset.saturating_add(limit);
-        let mut summaries_by_trace = HashMap::new();
-        for workspace_name in &scope.0 {
-            for summary in
-                self.list_traces_for_workspace_sync(candidate_limit, 0, workspace_name)?
-            {
-                summaries_by_trace
-                    .entry(summary.trace_id.clone())
-                    .or_insert(summary);
-            }
-        }
-        let mut summaries = summaries_by_trace.into_values().collect::<Vec<_>>();
-        sort_summaries(&mut summaries);
-        Ok(summaries.into_iter().skip(offset).take(limit).collect())
+        self.list_traces_filtered_sync(limit, offset, TraceWorkspaceScope::Owned(scope))
     }
 
     fn list_traces_filtered_sync(
         &self,
         limit: usize,
         offset: usize,
-        workspace_name: Option<&str>,
+        workspace_scope: TraceWorkspaceScope<'_>,
     ) -> Result<Vec<TraceSummaryRecord>, TraceStoreError> {
         if limit == 0 {
             return Ok(Vec::new());
@@ -799,7 +817,7 @@ impl TraceStore {
         for (file_index, file) in files.iter().enumerate().rev() {
             oldest_scanned_file_index = Some(file_index);
             for span in read_list_spans_file(&file.path)? {
-                record_list_span(span, workspace_name, &mut spans_by_id, &mut traces);
+                record_list_span(span, None, &mut spans_by_id, &mut traces);
             }
 
             let Some(newest_unscanned_file) =
@@ -807,22 +825,24 @@ impl TraceStore {
             else {
                 break;
             };
-            if list_page_is_newer_than_unscanned_files(
-                &traces,
-                required_trace_count,
-                newest_unscanned_file.span_end_upper_bound_unix_nanos,
-                workspace_name,
-            ) {
+            if matches!(workspace_scope, TraceWorkspaceScope::Unrestricted)
+                && list_page_is_newer_than_unscanned_files(
+                    &traces,
+                    required_trace_count,
+                    newest_unscanned_file.span_end_upper_bound_unix_nanos,
+                    None,
+                )
+            {
                 break;
             }
         }
 
-        let page_trace_ids = trace_page_ids(&traces, offset, limit, workspace_name);
+        let page_trace_ids = trace_page_ids(&traces, offset, limit, workspace_scope);
         complete_list_aggregates_for_page(
             &files,
             oldest_scanned_file_index,
             &page_trace_ids,
-            workspace_name,
+            None,
             &mut spans_by_id,
             &mut traces,
         )?;
@@ -891,11 +911,7 @@ impl TraceStore {
         workspace_name: &str,
     ) -> Result<TraceDetailRecord, TraceStoreError> {
         let detail = self.get_trace_sync(trace_id)?;
-        if detail
-            .spans
-            .iter()
-            .any(|span| attributes_match_workspace(&span.attributes_json, workspace_name))
-        {
+        if TraceWorkspaceScope::Named(workspace_name).permits_detail(&detail) {
             Ok(detail)
         } else {
             Err(TraceStoreError::NotFound(trace_id.to_string()))
@@ -924,10 +940,7 @@ impl TraceStore {
             return Err(TraceStoreError::NotFound(trace_id.to_string()));
         }
         let detail = self.get_trace_sync(trace_id)?;
-        if detail.spans.iter().any(|span| {
-            workspace_attribute(&span.attributes_json)
-                .is_some_and(|workspace| scope.0.contains(&workspace))
-        }) {
+        if TraceWorkspaceScope::Owned(scope).permits_detail(&detail) {
             Ok(detail)
         } else {
             Err(TraceStoreError::NotFound(trace_id.to_string()))
@@ -1126,6 +1139,7 @@ impl TraceListAggregate {
             error_count: 0,
             found_root_span: false,
             matches_workspace: false,
+            workspace_names: HashSet::new(),
             primary: None,
         };
         aggregate.record_span(span, workspace_name);
@@ -1143,6 +1157,8 @@ impl TraceListAggregate {
         self.matches_workspace |= workspace_name.is_some_and(|workspace_name| {
             attributes_match_workspace(&span.attributes_json, workspace_name)
         });
+        self.workspace_names
+            .extend(workspace_attribute(&span.attributes_json));
 
         let primary = TracePrimaryCandidate::from_span(span);
         if self
@@ -1189,11 +1205,11 @@ fn trace_page_ids(
     traces: &HashMap<String, TraceListAggregate>,
     offset: usize,
     limit: usize,
-    workspace_name: Option<&str>,
+    workspace_scope: TraceWorkspaceScope<'_>,
 ) -> HashSet<String> {
     let mut aggregates = traces
         .values()
-        .filter(|aggregate| trace_matches_workspace_filter(aggregate, workspace_name))
+        .filter(|aggregate| workspace_scope.permits(&aggregate.workspace_names))
         .collect::<Vec<_>>();
     sort_trace_aggregates(&mut aggregates);
     aggregates
@@ -2823,13 +2839,13 @@ mod tests {
         alpha_old.start_time_unix_nanos = 1;
         alpha_old.end_time_unix_nanos = 2;
 
-        let mut older_duplicate = trace_record("duplicate-workspace", "duplicate-span");
+        let mut older_duplicate = trace_record("mixed-workspace", "alpha-span");
         older_duplicate.attributes_json =
             r#"{"workspace":"alpha","sql":"SELECT duplicate_old"}"#.to_string();
         older_duplicate.start_time_unix_nanos = 50;
         older_duplicate.end_time_unix_nanos = 60;
 
-        let mut newer_duplicate = trace_record("duplicate-workspace", "duplicate-span");
+        let mut newer_duplicate = trace_record("mixed-workspace", "beta-span");
         newer_duplicate.attributes_json =
             r#"{"workspace":"beta","sql":"SELECT duplicate_new"}"#.to_string();
         newer_duplicate.start_time_unix_nanos = 50;
@@ -2887,11 +2903,11 @@ mod tests {
             .get_trace_for_workspace_sync("beta-trace", "alpha")
             .expect_err("beta trace must not be visible through alpha filter");
         store
-            .get_trace_for_workspace_sync("duplicate-workspace", "alpha")
-            .expect_err("newer beta duplicate must not be visible through alpha filter");
+            .get_trace_for_workspace_sync("mixed-workspace", "alpha")
+            .expect_err("mixed-workspace trace must not be visible through alpha filter");
         let scope = OwnedWorkspaceScope::new(["alpha".to_string(), "beta".to_string()]);
         for (offset, expected) in [
-            (0, ["duplicate-workspace", "beta-trace"]),
+            (0, ["mixed-workspace", "beta-trace"]),
             (2, ["alpha-new", "alpha-old"]),
         ] {
             let page = store
@@ -2905,8 +2921,8 @@ mod tests {
             );
         }
         store
-            .get_trace_for_owned_workspaces_sync("beta-trace", &scope)
-            .expect("owned trace detail");
+            .get_trace_for_owned_workspaces_sync("mixed-workspace", &scope)
+            .expect("mixed trace is visible when every attributed workspace is owned");
         for concealed in ["gamma-trace", "host-trace"] {
             assert!(matches!(
                 store.get_trace_for_owned_workspaces_sync(concealed, &scope),

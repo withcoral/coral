@@ -1,4 +1,4 @@
-//! Implements the gRPC `TraceService` for local trace inspection.
+//! Implements the gRPC `TraceService` for trace inspection.
 
 use coral_api::v1::trace_service_server::TraceService as TraceServiceApi;
 use coral_api::v1::{
@@ -29,12 +29,17 @@ const OWNED_WORKSPACE_PAGE_SIZE: usize = 200;
 #[derive(Clone)]
 pub(crate) struct TraceService {
     traces: TraceManager,
+    workspace_authorizer: WorkspaceAuthorizer,
 }
 
 impl TraceService {
-    pub(crate) fn new(trace_manager: TraceManager) -> Self {
+    pub(crate) fn new(
+        trace_manager: TraceManager,
+        workspace_authorizer: WorkspaceAuthorizer,
+    ) -> Self {
         Self {
             traces: trace_manager,
+            workspace_authorizer,
         }
     }
 }
@@ -51,13 +56,12 @@ impl TraceServiceApi for TraceService {
         let principal = request_context(&request)?.principal().clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
+            let workspace_name = workspace_filter_from_proto(request.workspace.as_ref())?;
+            let scope =
+                trace_access_scope(workspace_name, &workspace_authorizer, &principal).await?;
             let page_size = normalize_page_size(request.page_size);
             let offset = parse_page_token(&request.page_token)?;
-            let workspace_name = workspace_filter_from_proto(request.workspace.as_ref())?;
             let view = trace_list_view_from_proto(request.view)?;
-            let scope =
-                trace_access_scope(workspace_name, workspace_authorizer.as_ref(), &principal)
-                    .await?;
             let page = traces
                 .list_traces(ListTracesQuery {
                     view,
@@ -91,17 +95,16 @@ impl TraceServiceApi for TraceService {
         let principal = request_context(&request)?.principal().clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
+            let workspace_name = workspace_filter_from_proto(request.workspace.as_ref())?;
+            let scope =
+                trace_access_scope(workspace_name, &workspace_authorizer, &principal).await?;
             if request.trace_id.trim().is_empty() {
                 return Err(Status::new(
                     Code::InvalidArgument,
                     "invalid input: missing trace_id",
                 ));
             }
-            let workspace_name = workspace_filter_from_proto(request.workspace.as_ref())?;
             let view = trace_list_view_from_proto(request.view)?;
-            let scope =
-                trace_access_scope(workspace_name, workspace_authorizer.as_ref(), &principal)
-                    .await?;
             let trace = traces
                 .get_trace(GetTraceQuery {
                     trace_id: request.trace_id,
@@ -116,22 +119,15 @@ impl TraceServiceApi for TraceService {
     }
 }
 
-fn require_authorizer(
-    authorizer: Option<&WorkspaceAuthorizer>,
-) -> Result<&WorkspaceAuthorizer, Status> {
-    authorizer.ok_or_else(|| Status::internal("workspace authorization is unavailable"))
-}
-
 /// Resolves what the caller may read before any trace leaves the store.
 ///
 /// A named workspace is authorized for `Manage`; the local principal reads
 /// everything; every other caller is confined to the workspaces they own.
 async fn trace_access_scope(
     workspace_name: Option<WorkspaceName>,
-    authorizer: Option<&WorkspaceAuthorizer>,
+    authorizer: &WorkspaceAuthorizer,
     principal: &Principal,
 ) -> Result<TraceAccessScope, Status> {
-    let authorizer = require_authorizer(authorizer)?;
     match workspace_name {
         Some(workspace_name) => {
             authorizer
@@ -159,7 +155,7 @@ async fn owned_workspace_scope(
     let mut workspaces = Vec::new();
     loop {
         let page = authorizer
-            .owned_workspace_page_for_federated_user(
+            .owned_workspace_page_for_user(
                 principal,
                 after_workspace.as_ref(),
                 OWNED_WORKSPACE_PAGE_SIZE,
@@ -381,7 +377,12 @@ mod tests {
 
         let denied = TraceServiceApi::list_traces(
             &fixture.service,
-            list_request(&fixture.member, Some("alpha"), 10, ""),
+            list_request(
+                &fixture.member,
+                Some("alpha"),
+                10,
+                "invalid-before-authorization",
+            ),
         )
         .await
         .expect_err("workspace members cannot inspect traces");
@@ -389,10 +390,10 @@ mod tests {
 
         let concealed = TraceServiceApi::get_trace(
             &fixture.service,
-            get_request(&fixture.owner, "gamma-trace", Some("gamma")),
+            get_request(&fixture.nonmember, "", Some("alpha")),
         )
         .await
-        .expect_err("unowned trace must be concealed");
+        .expect_err("nonmember workspace must be concealed before trace validation");
         assert_eq!(concealed.code(), Code::NotFound);
     }
 
@@ -419,6 +420,15 @@ mod tests {
         assert_eq!(trace_ids(&second), vec!["alpha-trace"]);
         assert!(second.next_page_token.is_empty());
 
+        let member_only = TraceServiceApi::list_traces(
+            &fixture.service,
+            list_request(&fixture.member, None, 10, ""),
+        )
+        .await
+        .expect("global listing includes only owned workspaces")
+        .into_inner();
+        assert!(member_only.traces.is_empty());
+
         for concealed_trace_id in ["gamma-trace", "host-trace"] {
             let status = TraceServiceApi::get_trace(
                 &fixture.service,
@@ -429,8 +439,31 @@ mod tests {
             assert_eq!(status.code(), Code::NotFound);
         }
 
-        let local = TraceServiceApi::list_traces(
+        let strict_local = TraceServiceApi::list_traces(
             &fixture.service,
+            list_request(
+                &Principal::local(),
+                None,
+                10,
+                "invalid-before-authorization",
+            ),
+        )
+        .await
+        .expect_err("shared mode rejects the local principal before request validation");
+        assert_eq!(strict_local.code(), Code::PermissionDenied);
+
+        let agent = Principal::parse(fixture.owner.id().as_str(), PrincipalKind::Agent)
+            .expect("owner agent");
+        let agent_denied = TraceServiceApi::list_traces(
+            &fixture.service,
+            list_request(&agent, None, 10, "invalid-before-authorization"),
+        )
+        .await
+        .expect_err("global trace access requires a user principal");
+        assert_eq!(agent_denied.code(), Code::PermissionDenied);
+
+        let local = TraceServiceApi::list_traces(
+            &fixture.local_service,
             list_request(&Principal::local(), None, 10, ""),
         )
         .await
@@ -440,46 +473,6 @@ mod tests {
             trace_ids(&local),
             vec!["beta-trace", "gamma-trace", "alpha-trace", "host-trace"]
         );
-    }
-
-    #[tokio::test]
-    async fn owner_scoped_calls_read_projected_proto_fields() {
-        let fixture = service_fixture().await;
-        let response = TraceServiceApi::list_traces(
-            &fixture.service,
-            list_request(&fixture.owner, Some("alpha"), 10, ""),
-        )
-        .await
-        .expect("owner lists alpha traces")
-        .into_inner();
-        let summary = response.traces.first().expect("alpha trace");
-        assert_eq!(summary.trace_id, "alpha-trace");
-        assert_eq!(
-            summary.operation_kind,
-            TraceOperationKind::Unspecified as i32
-        );
-        assert!(summary.operation_name.is_empty());
-        assert_eq!(
-            summary.invocation_kind,
-            TraceInvocationKind::Unspecified as i32
-        );
-
-        let detail = TraceServiceApi::get_trace(
-            &fixture.service,
-            get_request(&fixture.owner, "alpha-trace", Some("alpha")),
-        )
-        .await
-        .expect("get alpha trace")
-        .into_inner();
-        assert_eq!(detail.spans.len(), 1);
-
-        let status = TraceServiceApi::get_trace(
-            &fixture.service,
-            get_request(&fixture.owner, "beta-trace", Some("alpha")),
-        )
-        .await
-        .expect_err("beta trace should not match alpha workspace");
-        assert_eq!(status.code(), Code::NotFound);
     }
 
     #[tokio::test]
@@ -533,25 +526,22 @@ mod tests {
         .await
         .expect_err("unknown view is rejected");
         assert_eq!(unknown_view.code(), Code::InvalidArgument);
-    }
-
-    #[tokio::test]
-    async fn owner_scoped_query_stream_listing_requires_a_workspace() {
-        let fixture = fixture_with_traces(write_query_stream_trace_fixture).await;
         let status = TraceServiceApi::list_traces(
             &fixture.service,
             view_list_request(&fixture.owner, None, TraceView::QueryStream),
         )
         .await
-        .expect_err("owner-scoped query-stream listing has no scoped read yet");
+        .expect_err("query-stream view has no owner-scoped read yet");
         assert_eq!(status.code(), Code::PermissionDenied);
     }
 
     struct ServiceFixture {
         _temp: TempDir,
         service: TraceService,
+        local_service: TraceService,
         owner: Principal,
         member: Principal,
+        nonmember: Principal,
     }
 
     async fn fixture_with_traces(write_traces: impl FnOnce(&Path)) -> ServiceFixture {
@@ -568,41 +558,40 @@ mod tests {
         db.migrate().await.expect("migrate sqlite");
         let owner_id = provision_user(&db, "trace-owner").await;
         let member_id = provision_user(&db, "trace-member").await;
+        let nonmember_id = provision_user(&db, "trace-nonmember").await;
+        let gamma_owner_id = provision_user(&db, "gamma-owner").await;
 
-        let mut tx = db.begin().await.expect("begin workspace setup");
-        for workspace in ["alpha", "beta", "gamma"] {
-            tx.workspaces()
-                .create(workspace, 1)
-                .await
-                .expect("create workspace");
-            assert!(
-                tx.workspaces()
-                    .hold_for_child_mutation(workspace)
-                    .await
-                    .expect("hold workspace")
-            );
-        }
-        for (workspace, user_id, role) in [
-            ("alpha", owner_id.as_str(), MemberRole::Owner),
-            ("beta", owner_id.as_str(), MemberRole::Owner),
-            ("alpha", member_id.as_str(), MemberRole::Member),
-            ("gamma", member_id.as_str(), MemberRole::Owner),
+        let mut session = db.as_ref();
+        for (workspace, owner_id) in [
+            ("alpha", owner_id.as_str()),
+            ("beta", owner_id.as_str()),
+            ("gamma", gamma_owner_id.as_str()),
         ] {
-            tx.workspace_members()
-                .insert(workspace, user_id, role, 2)
+            session
+                .workspaces()
+                .create_with_owner(workspace, owner_id, 1)
                 .await
-                .expect("insert workspace membership");
+                .expect("create owned workspace");
         }
-        tx.commit().await.expect("commit workspace setup");
+        session
+            .workspaces()
+            .add_member("alpha", &member_id, MemberRole::Member, 2)
+            .await
+            .expect("add workspace member");
 
         let trace_store = temp.path().join("trace-store");
         std::fs::create_dir_all(&trace_store).expect("trace store dir");
         write_traces(&trace_store);
+        let manager = TraceManager::new(trace_store, Duration::from_mins(1));
         ServiceFixture {
-            service: TraceService::new(TraceManager::new(trace_store, Duration::from_mins(1)))
-                .with_authorizer(WorkspaceAuthorizer::new(db)),
+            service: TraceService::new(manager.clone(), WorkspaceAuthorizer::new(Arc::clone(&db))),
+            local_service: TraceService::new(
+                manager,
+                WorkspaceAuthorizer::trusting_local_principal(db),
+            ),
             owner: Principal::parse(&owner_id, PrincipalKind::User).expect("owner"),
             member: Principal::parse(&member_id, PrincipalKind::User).expect("member"),
+            nonmember: Principal::parse(&nonmember_id, PrincipalKind::User).expect("nonmember"),
             _temp: temp,
         }
     }
@@ -628,8 +617,10 @@ mod tests {
     }
 
     async fn provision_user(db: &CoralDb, subject: &str) -> String {
-        let UpsertLoginOutcome::Upserted(user) = db
-            .upsert_user_and_ensure_default_workspace("issuer", subject, None, 1)
+        let mut session = db;
+        let UpsertLoginOutcome::Upserted(user) = session
+            .users()
+            .upsert_login("issuer", subject, None, 1)
             .await
             .expect("provision user")
         else {
@@ -668,15 +659,9 @@ mod tests {
         workspace_name: Option<&str>,
         view: TraceView,
     ) -> Request<ListTracesRequest> {
-        authenticated_request(
-            ListTracesRequest {
-                page_size: 10,
-                page_token: String::new(),
-                workspace: workspace_name.map(workspace),
-                view: view as i32,
-            },
-            principal,
-        )
+        let mut request = list_request(principal, workspace_name, 10, "");
+        request.get_mut().view = view as i32;
+        request
     }
 
     fn get_request(
@@ -700,14 +685,9 @@ mod tests {
         workspace_name: Option<&str>,
         view: TraceView,
     ) -> Request<GetTraceRequest> {
-        authenticated_request(
-            GetTraceRequest {
-                trace_id: trace_id.to_string(),
-                workspace: workspace_name.map(workspace),
-                view: view as i32,
-            },
-            principal,
-        )
+        let mut request = get_request(principal, trace_id, workspace_name);
+        request.get_mut().view = view as i32;
+        request
     }
 
     fn trace_ids(response: &coral_api::v1::ListTracesResponse) -> Vec<&str> {

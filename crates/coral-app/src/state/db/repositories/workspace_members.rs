@@ -66,7 +66,7 @@ where
             statement.and_where(Expr::col(WorkspaceMembers::WorkspaceId).gt(after_workspace_id));
         }
 
-        let rows: Vec<(String,)> = self.session.fetch_all(statement.clone()).await?;
+        let rows: Vec<(String,)> = self.session.fetch_all(statement).await?;
         Ok(rows
             .into_iter()
             .map(|(workspace_id,)| workspace_id)
@@ -194,7 +194,7 @@ mod tests {
     use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig};
 
     #[tokio::test]
-    async fn owned_workspaces_for_user_id_and_member_repository_round_trips_against_sqlite() {
+    async fn owned_workspaces_for_user_id_and_member_repository_round_trip_against_sqlite() {
         let temp = tempdir().expect("temp dir");
         let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
         let db = open_sqlite(&layout).await;
@@ -204,7 +204,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "set CORAL_TEST_POSTGRES_URL to run the shared repository harness against Postgres"]
-    async fn owned_workspaces_for_user_id_and_member_repository_round_trips_against_postgres() {
+    async fn owned_workspaces_for_user_id_and_member_repository_round_trip_against_postgres() {
         let Some(url) = postgres_test_url() else {
             return;
         };

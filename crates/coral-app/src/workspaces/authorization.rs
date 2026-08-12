@@ -1,5 +1,3 @@
-#![cfg_attr(not(test), expect(dead_code, reason = "used higher in the PR stack"))]
-
 use std::sync::Arc;
 
 use crate::bootstrap::AppError;
@@ -108,7 +106,7 @@ impl WorkspaceAuthorizer {
         }
     }
 
-    pub(crate) async fn owned_workspace_page_for_federated_user(
+    pub(crate) async fn owned_workspace_page_for_user(
         &self,
         principal: &Principal,
         after_workspace: Option<&WorkspaceName>,
@@ -116,7 +114,7 @@ impl WorkspaceAuthorizer {
     ) -> Result<Vec<WorkspaceName>, AppError> {
         if principal.is_local() || principal.kind() != PrincipalKind::User {
             return Err(AppError::PermissionDenied(
-                "owned workspace enumeration requires a federated user principal".to_string(),
+                "owned-workspace enumeration requires a user principal".to_string(),
             ));
         }
 
@@ -132,37 +130,6 @@ impl WorkspaceAuthorizer {
             .into_iter()
             .map(|workspace| WorkspaceName::parse(&workspace))
             .collect()
-    }
-
-    pub(crate) async fn unrestricted_workspace_page_for_local_principal(
-        &self,
-        principal: &Principal,
-        after_workspace: Option<&WorkspaceName>,
-        limit: usize,
-    ) -> Result<Vec<WorkspaceName>, AppError> {
-        if !principal.is_local() {
-            return Err(AppError::PermissionDenied(
-                "unrestricted workspace enumeration requires the local principal".to_string(),
-            ));
-        }
-
-        let mut session = self.db.as_ref();
-        let mut workspaces = session
-            .workspaces()
-            .list()
-            .await?
-            .into_iter()
-            .map(|record| WorkspaceName::parse(&record.id))
-            .collect::<Result<Vec<_>, _>>()?;
-        workspaces.sort();
-        Ok(workspaces
-            .into_iter()
-            .filter(|workspace| match after_workspace {
-                Some(after) => workspace > after,
-                None => true,
-            })
-            .take(limit)
-            .collect())
     }
 }
 
@@ -312,105 +279,45 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn owned_workspace_pages_are_scoped_and_local_pages_are_unrestricted() {
+    async fn owned_workspace_pages_include_only_owner_memberships() {
         let (_temp, db) = database(true).await;
-        let owner_id = directory_user(&db, "enumeration-owner").await;
-        let empty_id = directory_user(&db, "enumeration-empty").await;
-        let persisted_workspaces = [" z-local ", "A-owned", "b-member", "c-owned", "d-member"];
-        let ordered_workspaces = ["A-owned", "b-member", "c-owned", "d-member", "z-local"];
-        let roles = [
-            MemberRole::Member,
-            MemberRole::Owner,
-            MemberRole::Member,
-            MemberRole::Owner,
-            MemberRole::Member,
-        ];
-        let mut tx = db.begin().await.expect("begin workspace setup");
-        for (index, (workspace, role)) in persisted_workspaces.iter().zip(roles).enumerate() {
-            tx.workspaces()
-                .create(workspace, i64::try_from(index).expect("small index"))
-                .await
-                .expect("create workspace");
-            assert!(
-                tx.workspaces()
-                    .hold_for_child_mutation(workspace)
-                    .await
-                    .expect("hold workspace")
-            );
-            tx.workspace_members()
-                .insert(workspace, &owner_id, role, 10)
-                .await
-                .expect("insert workspace membership");
-        }
-        tx.commit().await.expect("commit workspace setup");
+        let owner_id = create_directory_user(&db, "enumeration-owner").await;
+        let empty_id = create_directory_user(&db, "enumeration-empty").await;
+        let mut session = db.as_ref();
+        session
+            .workspaces()
+            .create_with_owner("A-owned", &owner_id, 1)
+            .await
+            .expect("create owned workspace");
 
         let authorizer = WorkspaceAuthorizer::new(db);
         let owner = Principal::parse(&owner_id, PrincipalKind::User).expect("owner");
         let empty = Principal::parse(&empty_id, PrincipalKind::User).expect("empty user");
-        let cursor = WorkspaceName::parse("A-owned").expect("cursor");
         assert_eq!(
             authorizer
-                .owned_workspace_page_for_federated_user(&empty, None, 10)
+                .owned_workspace_page_for_user(&empty, None, 10)
                 .await
                 .expect("empty owned page"),
             Vec::<WorkspaceName>::new()
         );
         assert_eq!(
             authorizer
-                .owned_workspace_page_for_federated_user(&owner, None, 1)
+                .owned_workspace_page_for_user(&owner, None, 10)
                 .await
                 .expect("first owned page"),
             vec![WorkspaceName::parse("A-owned").expect("workspace")]
         );
-        assert_eq!(
-            authorizer
-                .owned_workspace_page_for_federated_user(&owner, Some(&cursor), 10)
-                .await
-                .expect("remaining owned page"),
-            vec![WorkspaceName::parse("c-owned").expect("workspace")]
-        );
 
-        assert_eq!(
-            authorizer
-                .unrestricted_workspace_page_for_local_principal(&Principal::local(), None, 2)
-                .await
-                .expect("local workspace page")
-                .iter()
-                .map(WorkspaceName::as_str)
-                .collect::<Vec<_>>(),
-            &ordered_workspaces[..2]
-        );
-        let local_cursor = WorkspaceName::parse("b-member").expect("local cursor");
-        assert_eq!(
-            authorizer
-                .unrestricted_workspace_page_for_local_principal(
-                    &Principal::local(),
-                    Some(&local_cursor),
-                    10,
-                )
-                .await
-                .expect("remaining local workspace page")
-                .iter()
-                .map(WorkspaceName::as_str)
-                .collect::<Vec<_>>(),
-            &ordered_workspaces[2..]
-        );
         assert!(matches!(
             authorizer
-                .owned_workspace_page_for_federated_user(&Principal::local(), None, 10)
+                .owned_workspace_page_for_user(&Principal::local(), None, 10)
                 .await,
             Err(AppError::PermissionDenied(_))
         ));
         let agent = Principal::parse(&owner_id, PrincipalKind::Agent).expect("agent");
         assert!(matches!(
             authorizer
-                .owned_workspace_page_for_federated_user(&agent, None, 10)
-                .await,
-            Err(AppError::PermissionDenied(_))
-        ));
-        assert!(matches!(
-            authorizer
-                .unrestricted_workspace_page_for_local_principal(&owner, None, 10)
+                .owned_workspace_page_for_user(&agent, None, 10)
                 .await,
             Err(AppError::PermissionDenied(_))
         ));
@@ -528,19 +435,6 @@ mod tests {
             .expect("create directory user")
         else {
             panic!("new subject should create user")
-        };
-        user.user_id
-    }
-
-    async fn directory_user(db: &CoralDb, subject: &str) -> String {
-        let mut session = db;
-        let UpsertLoginOutcome::Upserted(user) = session
-            .users()
-            .upsert_login("issuer", subject, None, 1)
-            .await
-            .expect("create directory user")
-        else {
-            panic!("new subject should create a user")
         };
         user.user_id
     }
