@@ -1169,6 +1169,14 @@ mod tests {
         workspace_to_proto(&WorkspaceName::default())
     }
 
+    fn create_default_test_workspace(config_dir: &Path) {
+        let layout = AppStateLayout::discover(Some(config_dir.to_path_buf())).expect("test layout");
+        layout.ensure().expect("test layout dirs");
+        ConfigStore::new(layout)
+            .create_legacy_workspace_entry_for_tests(&WorkspaceName::default())
+            .expect("create default test workspace");
+    }
+
     fn disable_internal_tracing(config_dir: &Path) {
         std::fs::create_dir_all(config_dir).expect("create config dir");
         std::fs::write(
@@ -1239,6 +1247,9 @@ enabled = false
     }
 
     async fn test_db(layout: &AppStateLayout, config_store: &ConfigStore) -> Arc<CoralDb> {
+        config_store
+            .create_legacy_workspace_entry_for_tests(&WorkspaceName::default())
+            .expect("create default test workspace");
         let config = DatabaseConfig::load(layout).expect("db config");
         let DatabaseConfig::Sqlite { path } = config else {
             panic!("default test config should be sqlite");
@@ -1827,6 +1838,7 @@ backend = "unsupported"
         let temp = TempDir::new().expect("temp dir");
         let config_dir = temp.path().join("coral-config");
         disable_internal_tracing(&config_dir);
+        create_default_test_workspace(&config_dir);
         let server = ServerBuilder::new()
             .with_config_dir(config_dir)
             .start()
@@ -1872,6 +1884,7 @@ backend = "unsupported"
         let temp = TempDir::new().expect("temp dir");
         let config_dir = temp.path().join("coral-config");
         configure_observed_values_search(&config_dir, true);
+        create_default_test_workspace(&config_dir);
         let layout = AppStateLayout::discover(Some(config_dir.clone())).expect("layout");
         layout.ensure().expect("layout dirs");
         let workspace = WorkspaceName::default();
@@ -2207,6 +2220,7 @@ backend = "unsupported"
     #[tokio::test]
     async fn embedded_ui_server_accepts_browser_requests_and_rejects_native_grpc() {
         let temp = TempDir::new().expect("temp dir");
+        create_default_test_workspace(&temp.path().join("coral-config"));
         let running = ServerBuilder::embedded_ui_loopback(0, Arc::new(StubAssets))
             .with_config_dir(temp.path().join("coral-config"))
             .start()
@@ -2254,6 +2268,7 @@ backend = "unsupported"
     #[tokio::test]
     async fn embedded_ui_server_streams_import_source_over_grpc_web() {
         let temp = TempDir::new().expect("temp dir");
+        create_default_test_workspace(&temp.path().join("coral-config"));
         let running = ServerBuilder::embedded_ui_loopback(0, Arc::new(StubAssets))
             .with_config_dir(temp.path().join("coral-config"))
             .start()

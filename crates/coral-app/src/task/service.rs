@@ -162,9 +162,12 @@ mod tests {
         );
         db.migrate().await.expect("migrate sqlite");
         let config_store = ConfigStore::new(layout.clone());
+        config_store
+            .create_legacy_workspace_entry_for_tests(&crate::workspaces::WorkspaceName::default())
+            .expect("create default test workspace");
         run_state_migrations(&db, &config_store, &layout)
             .await
-            .expect("import default workspace");
+            .expect("run state migrations");
         let task = TaskManager::new(TaskStore::new(db));
         let service = TaskService::new(task);
         (dir, service)

@@ -1492,6 +1492,9 @@ mod tests {
     }
 
     async fn test_db(layout: &AppStateLayout, config_store: &ConfigStore) -> Arc<CoralDb> {
+        config_store
+            .create_legacy_workspace_entry_for_tests(&WorkspaceName::default())
+            .expect("create default test workspace");
         let config = DatabaseConfig::load(layout).expect("db config");
         let DatabaseConfig::Sqlite { path } = config else {
             panic!("default test config should be sqlite");
