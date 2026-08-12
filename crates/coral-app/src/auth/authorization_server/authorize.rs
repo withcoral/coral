@@ -300,6 +300,7 @@ mod tests {
     use ring::rand::SystemRandom;
     use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair};
     use serde_json::json;
+    use sha2::{Digest as _, Sha256};
     use tokio::sync::Barrier;
     use url::form_urlencoded;
     use wiremock::matchers::{method, path};
@@ -326,6 +327,11 @@ mod tests {
     const CHALLENGE: &str = "0123456789012345678901234567890123456789012";
     const PROVIDER_SECRET: &str = "provider-secret-must-not-leak";
     const BROWSER_BINDING: [u8; 32] = [0x42; 32];
+
+    fn approval_page_style_src() -> String {
+        let digest = Sha256::digest(confirmation::APPROVAL_PAGE_STYLES.as_bytes());
+        format!("style-src 'sha256-{}'", STANDARD.encode(digest))
+    }
 
     fn settings(issuer: &str) -> ResolvedAuthSettings {
         let settings = AuthSettings::from_toml(&format!(
@@ -585,6 +591,10 @@ mod tests {
     #[tokio::test]
     async fn confirmation_is_secure_and_stores_only_validated_data() {
         let store = Arc::new(InMemoryStateStore::new());
+        let expected_style_src = approval_page_style_src();
+        let expected_csp = format!(
+            "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; {expected_style_src}"
+        );
         let mut request_pairs = pairs();
         request_pairs.push(("approved".into(), "true".into()));
         request_pairs.push(("decision".into(), "continue".into()));
@@ -599,10 +609,7 @@ mod tests {
             (header::CACHE_CONTROL, "no-store"),
             (header::PRAGMA, "no-cache"),
             // No `form-action`: see `approval_page_does_not_restrict_form_action`.
-            (
-                header::CONTENT_SECURITY_POLICY,
-                "default-src 'none'; base-uri 'none'; frame-ancestors 'none'",
-            ),
+            (header::CONTENT_SECURITY_POLICY, expected_csp.as_str()),
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
             // Not `no-referrer`: that policy makes Chromium submit this page's
             // own form with `Origin: null`, which the exact-origin check on the
@@ -840,6 +847,7 @@ mod tests {
         assert!(policy.contains("default-src 'none'"));
         assert!(policy.contains("base-uri 'none'"));
         assert!(policy.contains("frame-ancestors 'none'"));
+        assert!(policy.contains(&approval_page_style_src()));
     }
 
     /// The approval page must not carry `no-referrer`.

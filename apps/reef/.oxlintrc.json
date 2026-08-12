@@ -19,6 +19,13 @@
       "rules": {
         "unicorn/consistent-function-scoping": "off"
       }
+    },
+    {
+      "files": ["app/routes/**/*.{ts,tsx}"],
+      "plugins": ["eslint", "typescript", "unicorn", "oxc", "react", "react-hooks", "import"],
+      "rules": {
+        "import/no-cycle": "error"
+      }
     }
   ],
   "ignorePatterns": [

@@ -471,9 +471,6 @@ jobs:
       - name: Type-check Reef
         run: npm run typecheck --prefix apps/reef
 
-      - name: Install Chromium for Reef browser tests
-        run: npm exec --prefix apps/reef -- playwright install --with-deps chromium
-
       - name: Test Reef
         run: npm test --prefix apps/reef
 

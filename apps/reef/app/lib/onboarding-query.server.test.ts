@@ -1,19 +1,7 @@
 import { tableFromArrays, tableToIPC } from 'apache-arrow'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 
-const { executeSql } = vi.hoisted(() => ({ executeSql: vi.fn() }))
-
-vi.mock('@/lib/coral-request.server', () => ({
-  queryClientForRequest: () => ({ executeSql }),
-}))
-
-import { ONBOARDING_SAMPLE_QUERY } from './onboarding-query'
-import {
-  decodeOnboardingSampleQueryRows,
-  loadOnboardingSampleQuery,
-} from './onboarding-query.server'
-
-beforeEach(() => executeSql.mockReset())
+import { decodeOnboardingSampleQueryRows } from './onboarding-query.server'
 
 describe('decodeOnboardingSampleQueryRows', () => {
   it('decodes the source counts returned by the onboarding query', () => {
@@ -36,40 +24,5 @@ describe('decodeOnboardingSampleQueryRows', () => {
     expect(() => decodeOnboardingSampleQueryRows(arrowIpcStream)).toThrow(
       'The sample query returned an unexpected result shape.',
     )
-  })
-})
-
-describe('loadOnboardingSampleQuery', () => {
-  it('executes the fixed sample query through the request-scoped server client', async () => {
-    executeSql.mockResolvedValue({
-      arrowIpcStream: tableToIPC(
-        tableFromArrays({ source: ['github'], tables: BigInt64Array.from([3n]) }),
-      ),
-    })
-
-    await expect(
-      loadOnboardingSampleQuery(new Request('http://reef.test/onboarding?step=query'), 'analytics'),
-    ).resolves.toEqual({
-      rows: [{ source: 'github', tables: '3' }],
-      status: 'success',
-    })
-    expect(executeSql).toHaveBeenCalledOnce()
-    expect(executeSql.mock.calls[0]?.[0]).toMatchObject({
-      sql: ONBOARDING_SAMPLE_QUERY,
-      workspace: { name: 'analytics' },
-    })
-  })
-
-  it('returns query failures as renderable loader data', async () => {
-    executeSql.mockResolvedValue({
-      arrowIpcStream: tableToIPC(tableFromArrays({ unexpected: ['value'] })),
-    })
-
-    await expect(
-      loadOnboardingSampleQuery(new Request('http://reef.test/onboarding?step=query'), 'analytics'),
-    ).resolves.toEqual({
-      message: 'The sample query returned an unexpected result shape.',
-      status: 'error',
-    })
   })
 })

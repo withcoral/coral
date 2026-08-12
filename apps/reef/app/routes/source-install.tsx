@@ -4,13 +4,22 @@ import { redirect, useNavigate, useRevalidator } from 'react-router'
 import type { SourcesActionData } from './sources-action'
 import { runSourcesAction } from './sources-action'
 
+import { requestAuthContext } from '@/auth/server-context'
 import { addToast } from '@/wax/components/toast'
 import { SourceCreateDialog } from '@/views/sources/source-create'
 import { routePath } from '@/routing/routemap'
 import { workspaceFromParams } from '@/lib/workspace-routing'
 
-export async function action({ params, request }: Route.ActionArgs): Promise<SourcesActionData> {
-  return runSourcesAction(request, workspaceFromParams(params))
+export async function action({
+  context,
+  params,
+  request,
+}: Route.ActionArgs): Promise<SourcesActionData> {
+  return runSourcesAction(
+    request,
+    workspaceFromParams(params),
+    context.get(requestAuthContext).accessToken,
+  )
 }
 
 export async function clientAction({

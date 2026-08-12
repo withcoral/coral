@@ -14,10 +14,11 @@ import { errorMessage } from './utils'
 
 export async function loadOnboardingSampleQuery(
   request: Request,
+  accessToken: string | null,
   workspaceId: string,
 ): Promise<OnboardingSampleQueryResult> {
   try {
-    const response = await queryClientForRequest(request).executeSql(
+    const response = await queryClientForRequest(request, accessToken).executeSql(
       create(ExecuteSqlRequestSchema, {
         sql: ONBOARDING_SAMPLE_QUERY,
         workspace: create(WorkspaceSchema, { name: workspaceId }),
