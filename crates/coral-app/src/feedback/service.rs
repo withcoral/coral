@@ -17,7 +17,6 @@ use crate::workspaces::{WorkspaceAction, WorkspaceAuthorizer, WorkspaceName};
 pub(crate) struct FeedbackService {
     feedback: FeedbackManager,
     tasks: TaskManager,
-    workspace_authorizer: Option<WorkspaceAuthorizer>,
 }
 
 impl FeedbackService {
@@ -25,13 +24,7 @@ impl FeedbackService {
         Self {
             feedback,
             tasks: task_manager,
-            workspace_authorizer: None,
         }
-    }
-
-    pub(crate) fn with_authorizer(mut self, authorizer: WorkspaceAuthorizer) -> Self {
-        self.workspace_authorizer = Some(authorizer);
-        self
     }
 }
 

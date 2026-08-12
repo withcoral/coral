@@ -18,20 +18,11 @@ use crate::workspaces::{WorkspaceAction, WorkspaceAuthorizer, WorkspaceName};
 #[derive(Clone)]
 pub(crate) struct TaskService {
     task: TaskManager,
-    workspace_authorizer: Option<WorkspaceAuthorizer>,
 }
 
 impl TaskService {
     pub(crate) fn new(task: TaskManager) -> Self {
-        Self {
-            task,
-            workspace_authorizer: None,
-        }
-    }
-
-    pub(crate) fn with_authorizer(mut self, authorizer: WorkspaceAuthorizer) -> Self {
-        self.workspace_authorizer = Some(authorizer);
-        self
+        Self { task }
     }
 }
 
@@ -200,9 +191,12 @@ mod tests {
         );
         db.migrate().await.expect("migrate sqlite");
         let config_store = ConfigStore::new(layout.clone());
+        config_store
+            .create_legacy_workspace_entry_for_tests(&crate::workspaces::WorkspaceName::default())
+            .expect("create default test workspace");
         run_state_migrations(&db, &config_store, &layout)
             .await
-            .expect("import default workspace");
+            .expect("run state migrations");
         let task = TaskManager::new(TaskStore::new(Arc::clone(&db)));
         let service = TaskService::new(task).with_authorizer(WorkspaceAuthorizer::new(db));
         (dir, service)

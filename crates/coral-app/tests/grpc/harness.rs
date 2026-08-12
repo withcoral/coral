@@ -7,20 +7,16 @@ use coral_api::v1::{
     PaginationRequest, Source, SourceSecret, SourceVariable, TableSummary, ValidateSourceRequest,
     ValidateSourceResponse, catalog_item, import_source_response,
 };
+use coral_app::EngineExtensionsProvider;
 use coral_app::features::{Feature, FeatureOverrides};
-use coral_app::{
-    EngineExtensionsProvider, Principal, PrincipalKind, PrincipalProvider, PrincipalProviderError,
-};
 use coral_client::{
     AppClient, CatalogClient, FunctionClient, QueryClient, SearchClient, SourceClient,
     WorkspaceClient, batches_to_json_rows, decode_execute_sql_response, default_workspace,
     local::{RunningServer, ServerBuilder},
 };
 use serde_json::{Value, json};
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use tempfile::TempDir;
-use tonic::metadata::MetadataMap;
-use tonic::{Request, async_trait};
+use tonic::Request;
 
 pub(crate) struct GrpcHarness {
     temp_dir: TempDir,
@@ -28,35 +24,6 @@ pub(crate) struct GrpcHarness {
     local_trace_store_dir: Option<PathBuf>,
     app: AppClient,
     _server: RunningServer,
-}
-
-pub(crate) struct WorkspaceAccessControlHarness {
-    _temp_dir: TempDir,
-    owner_id: String,
-    member_id: String,
-    owner: AppClient,
-    member: AppClient,
-    _server: RunningServer,
-}
-
-#[derive(Debug)]
-struct MetadataPrincipalProvider;
-
-const TEST_PRINCIPAL_HEADER: &str = "x-coral-test-principal";
-
-#[async_trait]
-impl PrincipalProvider for MetadataPrincipalProvider {
-    async fn principal_for_metadata(
-        &self,
-        metadata: &MetadataMap,
-    ) -> Result<Principal, PrincipalProviderError> {
-        let user_id = metadata
-            .get(TEST_PRINCIPAL_HEADER)
-            .and_then(|value| value.to_str().ok())
-            .ok_or_else(|| PrincipalProviderError::unauthenticated("missing test principal"))?;
-        Principal::parse(user_id, PrincipalKind::User)
-            .map_err(|_error| PrincipalProviderError::unauthenticated("invalid test principal"))
-    }
 }
 
 pub(crate) struct FailingHttpFixture {
@@ -68,7 +35,13 @@ impl GrpcHarness {
     pub(crate) async fn new() -> Self {
         let temp_dir = TempDir::new().expect("temp dir");
         let config_dir = temp_dir.path().join("coral-config");
-        Self::start_with_parts(temp_dir, config_dir, FeatureOverrides::default()).await
+        Self::start_with_parts(temp_dir, config_dir, FeatureOverrides::default(), true).await
+    }
+
+    pub(crate) async fn new_empty() -> Self {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let config_dir = temp_dir.path().join("coral-config");
+        Self::start_with_parts(temp_dir, config_dir, FeatureOverrides::default(), false).await
     }
 
     pub(crate) async fn new_with_observed_values_search() -> Self {
@@ -76,12 +49,12 @@ impl GrpcHarness {
         let config_dir = temp_dir.path().join("coral-config");
         let mut feature_overrides = FeatureOverrides::default();
         feature_overrides.set(Feature::ObservedValuesSearch, true);
-        Self::start_with_parts(temp_dir, config_dir, feature_overrides).await
+        Self::start_with_parts(temp_dir, config_dir, feature_overrides, true).await
     }
 
     pub(crate) async fn start_with_config_dir(config_dir: PathBuf) -> Self {
         let temp_dir = TempDir::new().expect("temp dir");
-        Self::start_with_parts(temp_dir, config_dir, FeatureOverrides::default()).await
+        Self::start_with_parts(temp_dir, config_dir, FeatureOverrides::default(), true).await
     }
 
     pub(crate) async fn new_with_engine_extensions_provider(
@@ -94,6 +67,7 @@ impl GrpcHarness {
             config_dir,
             FeatureOverrides::default(),
             ServerBuilder::new().add_engine_extensions_provider(provider),
+            true,
         )
         .await
     }
@@ -102,12 +76,14 @@ impl GrpcHarness {
         temp_dir: TempDir,
         config_dir: PathBuf,
         feature_overrides: FeatureOverrides,
+        create_default_workspace: bool,
     ) -> Self {
         Self::start_with_builder(
             temp_dir,
             config_dir,
             feature_overrides,
             ServerBuilder::new(),
+            create_default_workspace,
         )
         .await
     }
@@ -117,6 +93,7 @@ impl GrpcHarness {
         config_dir: PathBuf,
         feature_overrides: FeatureOverrides,
         server_builder: ServerBuilder,
+        create_default_workspace: bool,
     ) -> Self {
         ensure_file_credentials_config(&config_dir);
         let server = server_builder
@@ -129,6 +106,19 @@ impl GrpcHarness {
         let app = AppClient::connect(server.endpoint_uri())
             .await
             .expect("connect client");
+        if create_default_workspace {
+            let result = app
+                .workspace_client()
+                .create_workspace(Request::new(coral_api::v1::CreateWorkspaceRequest {
+                    workspace: Some(default_workspace()),
+                }))
+                .await;
+            assert!(
+                result.is_ok()
+                    || result.is_err_and(|status| status.code() == tonic::Code::AlreadyExists),
+                "create default test workspace"
+            );
+        }
         Self {
             temp_dir,
             config_dir,
@@ -267,104 +257,6 @@ impl GrpcHarness {
         )
         .expect("query rows")
     }
-}
-
-impl WorkspaceAccessControlHarness {
-    pub(crate) async fn new() -> Self {
-        let temp_dir = TempDir::new().expect("temp dir");
-        let config_dir = temp_dir.path().join("coral-config");
-        ensure_file_credentials_config(&config_dir);
-        let migration_server = ServerBuilder::new()
-            .with_config_dir(&config_dir)
-            .start()
-            .await
-            .expect("start migration server");
-        migration_server
-            .shutdown()
-            .await
-            .expect("stop migration server");
-
-        let owner_id = uuid::Uuid::new_v4().to_string();
-        let member_id = uuid::Uuid::new_v4().to_string();
-        seed_users(
-            &config_dir,
-            [
-                (&owner_id, "owner-subject", "Owner"),
-                (&member_id, "member-subject", "Member"),
-            ],
-        )
-        .await;
-        let server = ServerBuilder::new()
-            .with_config_dir(config_dir)
-            .with_principal_provider(Arc::new(MetadataPrincipalProvider))
-            .start()
-            .await
-            .expect("start access-control server");
-        let owner = AppClient::connect_with_metadata(
-            server.endpoint_uri(),
-            [(TEST_PRINCIPAL_HEADER, owner_id.as_str())],
-        )
-        .await
-        .expect("connect owner client");
-        let member = AppClient::connect_with_metadata(
-            server.endpoint_uri(),
-            [(TEST_PRINCIPAL_HEADER, member_id.as_str())],
-        )
-        .await
-        .expect("connect member client");
-        Self {
-            _temp_dir: temp_dir,
-            owner_id,
-            member_id,
-            owner,
-            member,
-            _server: server,
-        }
-    }
-
-    pub(crate) fn owner(&self) -> AppClient {
-        self.owner.clone()
-    }
-
-    pub(crate) fn member(&self) -> AppClient {
-        self.member.clone()
-    }
-
-    pub(crate) fn owner_id(&self) -> &str {
-        &self.owner_id
-    }
-
-    pub(crate) fn member_id(&self) -> &str {
-        &self.member_id
-    }
-}
-
-async fn seed_users<'a>(
-    config_dir: &Path,
-    users: impl IntoIterator<Item = (&'a String, &'a str, &'a str)>,
-) {
-    let options = SqliteConnectOptions::new()
-        .filename(config_dir.join("coral.db"))
-        .create_if_missing(false);
-    let pool = SqlitePoolOptions::new()
-        .connect_with(options)
-        .await
-        .expect("open migrated database");
-    for (user_id, subject, display_name) in users {
-        sqlx::query(
-            "INSERT INTO users (
-                user_id, issuer, subject, display_name,
-                created_at_unix_nanos, last_login_at_unix_nanos
-            ) VALUES (?, 'test-issuer', ?, ?, 1, 1)",
-        )
-        .bind(user_id)
-        .bind(subject)
-        .bind(display_name)
-        .execute(&pool)
-        .await
-        .expect("insert test user");
-    }
-    pool.close().await;
 }
 
 fn ensure_file_credentials_config(config_dir: &Path) {

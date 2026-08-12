@@ -25,20 +25,13 @@ use crate::workspaces::{WorkspaceAction, WorkspaceAuthorizer, WorkspaceName};
 #[derive(Clone)]
 pub(crate) struct FunctionService {
     queries: QueryManager,
-    workspace_authorizer: Option<WorkspaceAuthorizer>,
 }
 
 impl FunctionService {
     pub(crate) fn new(query_manager: QueryManager) -> Self {
         Self {
             queries: query_manager,
-            workspace_authorizer: None,
         }
-    }
-
-    pub(crate) fn with_authorizer(mut self, authorizer: WorkspaceAuthorizer) -> Self {
-        self.workspace_authorizer = Some(authorizer);
-        self
     }
 }
 

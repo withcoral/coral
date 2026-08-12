@@ -58,7 +58,6 @@ use crate::workspaces::{WorkspaceAction, WorkspaceAuthorizer, WorkspaceName};
 pub(crate) struct SearchService {
     search: SearchManager,
     tasks: TaskManager,
-    workspace_authorizer: Option<WorkspaceAuthorizer>,
 }
 
 impl SearchService {
@@ -66,13 +65,7 @@ impl SearchService {
         Self {
             search: search_manager,
             tasks: task_manager,
-            workspace_authorizer: None,
         }
-    }
-
-    pub(crate) fn with_authorizer(mut self, authorizer: WorkspaceAuthorizer) -> Self {
-        self.workspace_authorizer = Some(authorizer);
-        self
     }
 }
 

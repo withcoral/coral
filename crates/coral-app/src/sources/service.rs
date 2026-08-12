@@ -61,7 +61,6 @@ pub(crate) struct SourceService {
     sources: SourceManager,
     queries: QueryManager,
     workspaces: WorkspaceManager,
-    workspace_authorizer: Option<WorkspaceAuthorizer>,
 }
 
 impl SourceService {
@@ -74,13 +73,7 @@ impl SourceService {
             sources: source_manager,
             queries: query_manager,
             workspaces: workspace_manager,
-            workspace_authorizer: None,
         }
-    }
-
-    pub(crate) fn with_authorizer(mut self, authorizer: WorkspaceAuthorizer) -> Self {
-        self.workspace_authorizer = Some(authorizer);
-        self
     }
 }
 

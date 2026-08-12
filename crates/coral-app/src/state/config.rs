@@ -232,14 +232,8 @@ impl From<&InstalledSource> for PersistedInstalledSource {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct WorkspaceCatalog(BTreeSet<WorkspaceName>);
-
-impl Default for WorkspaceCatalog {
-    fn default() -> Self {
-        Self(BTreeSet::from([WorkspaceName::default()]))
-    }
-}
 
 impl WorkspaceCatalog {
     pub(crate) fn list(&self) -> Vec<WorkspaceRecord> {
@@ -559,16 +553,6 @@ impl ConfigStore {
         self.load_config_unlocked()
     }
 
-    /// Reports whether this state directory is configured for shared use.
-    ///
-    /// An `[auth]` section is what makes a deployment multi-user, and it is the
-    /// signal that no principal — including the built-in local one — may reach
-    /// a workspace without a membership.
-    pub(crate) fn auth_is_configured(&self) -> Result<bool, AppError> {
-        let _lock = self.state_lock_shared()?;
-        Ok(read_config_document(&self.layout)?.get("auth").is_some())
-    }
-
     /// Loads the source catalog without taking the app state lock.
     ///
     /// Callers must already hold the state lock in shared or exclusive mode
@@ -631,11 +615,6 @@ impl ConfigStore {
         workspace_name: &WorkspaceName,
     ) -> Result<Option<DeletedWorkspace>, AppError> {
         self.update_config(|config| {
-            if workspace_name.is_default() {
-                return Err(AppError::FailedPrecondition(
-                    "default workspace cannot be removed".to_string(),
-                ));
-            }
             let removed = config.workspaces.remove(workspace_name);
             if removed {
                 let sources = config
@@ -1338,7 +1317,7 @@ mod tests {
     }
 
     #[test]
-    fn renders_empty_workspaces_as_explicit_tables() {
+    fn renders_only_explicitly_created_empty_workspaces() {
         let mut workspaces = WorkspaceCatalog::default();
         workspaces.insert(WorkspaceName::parse("work").expect("workspace"));
         let config = AppConfig {
@@ -1351,8 +1330,8 @@ mod tests {
 
         let raw = render_config(&PersistedAppConfig::from(&config), None);
 
-        assert!(raw.contains("[workspaces.default]"));
         assert!(raw.contains("[workspaces.work]"));
+        assert!(!raw.contains("[workspaces.default]"));
     }
 
     #[test]
