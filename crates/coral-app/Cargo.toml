@@ -65,11 +65,14 @@ coral-telemetry.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 apple-native-keyring-store.workspace = true
+memory-stats.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+memory-stats.workspace = true
 windows-native-keyring-store.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
+page_size.workspace = true
 zbus-secret-service-keyring-store.workspace = true
 
 [dev-dependencies]

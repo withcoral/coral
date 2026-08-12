@@ -8,6 +8,8 @@ use coral_engine::QueryMemoryOutcome;
 use opentelemetry::KeyValue;
 use opentelemetry::metrics::{Counter, Histogram, Meter, ObservableGauge};
 
+use super::process::{ProcessMemoryReader, SystemProcessMemoryReader};
+
 const QUERY_MEMORY_BUCKETS: [f64; 12] = [
     4_096.0,
     16_384.0,
@@ -31,6 +33,7 @@ pub(crate) struct Metrics {
     rows: Histogram<u64>,
     active_queries: Arc<AtomicU64>,
     _active_query_gauge: ObservableGauge<u64>,
+    _process_memory_gauge: ObservableGauge<u64>,
     datafusion_reserved_peak: Histogram<u64>,
     arrow_estimated_occupied_memory: Histogram<u64>,
     ipc_encoded_size: Histogram<u64>,
@@ -109,7 +112,7 @@ fn query_memory_attributes(outcome: QueryMemoryOutcome) -> [KeyValue; 2] {
 
 static METRICS: RwLock<Option<Metrics>> = RwLock::new(None);
 
-fn build_metrics(meter: &Meter) -> Metrics {
+fn build_metrics(meter: &Meter, process_memory: Arc<dyn ProcessMemoryReader>) -> Metrics {
     let active_queries = Arc::new(AtomicU64::new(0));
     let active_query_count = Arc::clone(&active_queries);
 
@@ -138,6 +141,16 @@ fn build_metrics(meter: &Meter) -> Metrics {
                 observer.observe(active_query_count.load(Ordering::Relaxed), &[]);
             })
             .build(),
+        _process_memory_gauge: meter
+            .u64_observable_gauge("coral.process.memory.resident")
+            .with_unit("By")
+            .with_description("Current process resident memory")
+            .with_callback(move |observer| {
+                if let Some(bytes) = process_memory.resident_bytes() {
+                    observer.observe(bytes, &[]);
+                }
+            })
+            .build(),
         datafusion_reserved_peak: meter
             .u64_histogram("coral.query.memory.datafusion_reserved_peak")
             .with_unit("By")
@@ -160,10 +173,14 @@ fn build_metrics(meter: &Meter) -> Metrics {
 }
 
 pub(crate) fn init(meter: &Meter) {
+    init_with_process_memory_reader(meter, Arc::new(SystemProcessMemoryReader::new()));
+}
+
+fn init_with_process_memory_reader(meter: &Meter, process_memory: Arc<dyn ProcessMemoryReader>) {
     let mut metrics = METRICS
         .write()
         .expect("metrics lock poisoned during initialization");
-    *metrics = Some(build_metrics(meter));
+    *metrics = Some(build_metrics(meter, process_memory));
 }
 
 pub(crate) fn init_global() {
@@ -190,7 +207,10 @@ pub(crate) fn metrics() -> Metrics {
         .expect("metrics lock poisoned during initialization");
     if metrics.is_none() {
         let meter = opentelemetry::global::meter("coral");
-        *metrics = Some(build_metrics(&meter));
+        *metrics = Some(build_metrics(
+            &meter,
+            Arc::new(SystemProcessMemoryReader::new()),
+        ));
     }
 
     metrics
@@ -200,9 +220,12 @@ pub(crate) fn metrics() -> Metrics {
 
 #[cfg(test)]
 pub(crate) mod test_support {
+    use std::sync::Arc;
+
     use opentelemetry::metrics::MeterProvider as _;
     use opentelemetry_sdk::metrics::{InMemoryMetricExporter, PeriodicReader, SdkMeterProvider};
 
+    use super::super::process::{ProcessMemoryReader, SystemProcessMemoryReader};
     use super::METRICS;
 
     std::thread_local! {
@@ -216,9 +239,9 @@ pub(crate) mod test_support {
         TEST_METRICS.with(|metrics| metrics.borrow().clone())
     }
 
-    fn install_provider(provider: SdkMeterProvider) {
+    fn install_provider(provider: SdkMeterProvider, process_memory: Arc<dyn ProcessMemoryReader>) {
         let meter = provider.meter("coral");
-        let metrics = super::build_metrics(&meter);
+        let metrics = super::build_metrics(&meter, process_memory);
         TEST_METRICS.with(|slot| {
             *slot.borrow_mut() = Some(metrics);
         });
@@ -228,11 +251,19 @@ pub(crate) mod test_support {
     }
 
     pub(crate) fn install_metrics_exporter() -> InMemoryMetricExporter {
+        install_metrics_exporter_with_process_memory_reader(Arc::new(
+            SystemProcessMemoryReader::new(),
+        ))
+    }
+
+    pub(crate) fn install_metrics_exporter_with_process_memory_reader(
+        process_memory: Arc<dyn ProcessMemoryReader>,
+    ) -> InMemoryMetricExporter {
         let exporter = InMemoryMetricExporter::default();
         let provider = SdkMeterProvider::builder()
             .with_reader(PeriodicReader::builder(exporter.clone()).build())
             .build();
-        install_provider(provider);
+        install_provider(provider, process_memory);
         exporter
     }
 
@@ -261,11 +292,33 @@ pub(crate) mod test_support {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
+    use std::sync::{Arc, Mutex};
+
     use coral_engine::QueryMemoryOutcome;
     use opentelemetry::{KeyValue, Value};
     use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData, ResourceMetrics};
 
     use super::{QUERY_MEMORY_BUCKETS, metrics};
+    use crate::telemetry::process::ProcessMemoryReader;
+
+    struct SequenceProcessMemoryReader {
+        samples: Mutex<VecDeque<Option<u64>>>,
+    }
+
+    impl SequenceProcessMemoryReader {
+        fn new(samples: impl IntoIterator<Item = Option<u64>>) -> Self {
+            Self {
+                samples: Mutex::new(samples.into_iter().collect()),
+            }
+        }
+    }
+
+    impl ProcessMemoryReader for SequenceProcessMemoryReader {
+        fn resident_bytes(&self) -> Option<u64> {
+            self.samples.try_lock().ok()?.pop_front().flatten()
+        }
+    }
 
     fn find_metric<'a>(
         metrics: &'a [ResourceMetrics],
@@ -288,6 +341,103 @@ mod tests {
     struct ExpectedMetricPoint<'a> {
         attributes: &'a [(&'a str, &'a str)],
         value: u64,
+    }
+
+    #[test]
+    fn process_memory_exports_fresh_bytes_alongside_active_query_count() {
+        super::test_support::reset_metrics();
+        let reader = Arc::new(SequenceProcessMemoryReader::new([Some(42)]));
+        let exporter =
+            super::test_support::install_metrics_exporter_with_process_memory_reader(reader);
+
+        super::test_support::flush_metrics();
+        let finished = exporter.get_finished_metrics().expect("finished metrics");
+        let collection = finished.last().expect("latest metric collection");
+
+        assert_gauge_point(
+            collection,
+            "coral.process.memory.resident",
+            "By",
+            "Current process resident memory",
+            42,
+        );
+        assert_gauge_point(
+            collection,
+            "coral.query.active",
+            "{queries}",
+            "Current query operations in flight",
+            0,
+        );
+    }
+
+    #[test]
+    fn process_memory_failure_after_success_omits_without_stale_replay() {
+        super::test_support::reset_metrics();
+        let reader = Arc::new(SequenceProcessMemoryReader::new([Some(42), None]));
+        let exporter =
+            super::test_support::install_metrics_exporter_with_process_memory_reader(reader);
+
+        super::test_support::flush_metrics();
+        let first = exporter.get_finished_metrics().expect("finished metrics");
+        assert_gauge_point(
+            first.last().expect("first metric collection"),
+            "coral.process.memory.resident",
+            "By",
+            "Current process resident memory",
+            42,
+        );
+
+        super::test_support::flush_metrics();
+        let finished = exporter.get_finished_metrics().expect("finished metrics");
+        let collection = finished.last().expect("latest metric collection");
+        assert_gauge_omitted(collection, "coral.process.memory.resident");
+        assert_gauge_point(
+            collection,
+            "coral.query.active",
+            "{queries}",
+            "Current query operations in flight",
+            0,
+        );
+    }
+
+    #[test]
+    fn process_memory_lock_contention_omits_only_process_observation() {
+        super::test_support::reset_metrics();
+        let reader = Arc::new(SequenceProcessMemoryReader::new([Some(42)]));
+        let exporter = super::test_support::install_metrics_exporter_with_process_memory_reader(
+            reader.clone(),
+        );
+        let _guard = reader.samples.lock().expect("reader lock");
+
+        super::test_support::flush_metrics();
+        let finished = exporter.get_finished_metrics().expect("finished metrics");
+        let collection = finished.last().expect("latest metric collection");
+        assert_gauge_omitted(collection, "coral.process.memory.resident");
+        assert_gauge_point(
+            collection,
+            "coral.query.active",
+            "{queries}",
+            "Current query operations in flight",
+            0,
+        );
+    }
+
+    #[test]
+    fn process_memory_preserves_measured_zero() {
+        super::test_support::reset_metrics();
+        let reader = Arc::new(SequenceProcessMemoryReader::new([Some(0)]));
+        let exporter =
+            super::test_support::install_metrics_exporter_with_process_memory_reader(reader);
+
+        super::test_support::flush_metrics();
+        let finished = exporter.get_finished_metrics().expect("finished metrics");
+        assert_gauge_point(
+            finished.last().expect("latest metric collection"),
+            "coral.process.memory.resident",
+            "By",
+            "Current process resident memory",
+            0,
+        );
     }
 
     #[test]
@@ -421,6 +571,47 @@ mod tests {
         let point = points.first().expect("active query gauge point");
         assert!(point.attributes().next().is_none());
         assert_eq!(point.value(), expected);
+    }
+
+    fn find_metric_in_collection<'a>(
+        metrics: &'a ResourceMetrics,
+        name: &str,
+    ) -> Option<&'a opentelemetry_sdk::metrics::data::Metric> {
+        metrics
+            .scope_metrics()
+            .flat_map(opentelemetry_sdk::metrics::data::ScopeMetrics::metrics)
+            .find(|metric| metric.name() == name)
+    }
+
+    fn assert_gauge_point(
+        metrics: &ResourceMetrics,
+        name: &str,
+        unit: &str,
+        description: &str,
+        expected: u64,
+    ) {
+        let metric = find_metric_in_collection(metrics, name)
+            .unwrap_or_else(|| panic!("metric {name} missing"));
+        assert_eq!(metric.unit(), unit);
+        assert_eq!(metric.description(), description);
+        let AggregatedMetrics::U64(MetricData::Gauge(gauge)) = metric.data() else {
+            panic!("metric {name} should be a u64 gauge");
+        };
+        let points = gauge.data_points().collect::<Vec<_>>();
+        assert_eq!(points.len(), 1, "metric {name} point count");
+        let point = points.first().expect("gauge point");
+        assert!(point.attributes().next().is_none());
+        assert_eq!(point.value(), expected);
+    }
+
+    fn assert_gauge_omitted(metrics: &ResourceMetrics, name: &str) {
+        let has_points = find_metric_in_collection(metrics, name).is_some_and(|metric| {
+            let AggregatedMetrics::U64(MetricData::Gauge(gauge)) = metric.data() else {
+                panic!("metric {name} should be a u64 gauge");
+            };
+            gauge.data_points().next().is_some()
+        });
+        assert!(!has_points, "metric {name} should omit its observation");
     }
 
     fn assert_query_memory_histogram(

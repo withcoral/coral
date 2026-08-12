@@ -130,13 +130,33 @@ Tracing events are bridged into OTLP logs via `opentelemetry-appender-tracing`. 
 
 ### Metrics
 
-Three query instruments are exported on a 5-second periodic reader:
+Metrics are exported on a 5-second periodic reader. Counters and histograms record completed operations; observable gauges are sampled when the exporter collects them.
 
-| Metric                   | Kind      | Unit        | Attributes                                      | Description                                            |
-| ------------------------ | --------- | ----------- | ----------------------------------------------- | ------------------------------------------------------ |
-| `coral.query.count`      | Counter   | `{queries}` | `status=ok\|error`, `operation=execute_sql\|explain_sql` | Total SQL execution and explain operations requested.  |
-| `coral.query.duration`   | Histogram | `s`         | `status=ok\|error`, `operation=execute_sql\|explain_sql` | SQL execution and explain latency in seconds.          |
-| `coral.query.rows`       | Histogram | `{rows}`    | `status=ok`, `operation=execute_sql`            | Rows returned per successful SQL execution.            |
+| Metric                                                       | Kind                 | Unit        | Attributes                                                   | Description                                                |
+| ------------------------------------------------------------ | -------------------- | ----------- | ------------------------------------------------------------ | ---------------------------------------------------------- |
+| `coral.query.count`                                          | Counter              | `{queries}` | `status=ok\|error`, `operation=execute_sql\|explain_sql\|list_tables\|list_catalog\|describe_table` | Completed query operations.                                |
+| `coral.query.duration`                                       | Histogram            | `s`         | `status=ok\|error`, `operation=execute_sql\|explain_sql\|list_tables\|list_catalog\|describe_table` | Query-operation latency in seconds.                        |
+| `coral.query.rows`                                           | Histogram            | `{rows}`    | `status=ok`, `operation=execute_sql\|list_tables\|list_catalog` | Rows returned per successful row-producing operation.      |
+| `coral.query.active`                                         | Observable gauge     | `{queries}` | none                                                         | Current query operations in flight; zero is reported when idle. |
+| `coral.process.memory.resident`                              | Observable gauge     | `By`        | none                                                         | Current resident memory of the Coral process.               |
+| `coral.query.memory.datafusion_reserved_peak`                | Histogram            | `By`        | `status=ok\|error`, `operation=execute_sql`                  | Peak DataFusion reservation for one top-level execution.    |
+| `coral.query.result.arrow.estimated_occupied_memory`         | Histogram            | `By`        | `status=ok`, `operation=execute_sql`                          | Estimated occupied memory of a successful Arrow result.     |
+| `coral.query.result.ipc.encoded_size`                        | Histogram            | `By`        | `status=ok`, `operation=execute_sql`                          | Exact encoded size of a successful Arrow IPC result.        |
+
+#### Interpret memory metrics separately
+
+These memory signals cover different scopes and are not additive. None of them can attribute a change in the process's resident memory to an individual query.
+
+- `coral.process.memory.resident` is a point-in-time process measurement. On Linux it is the resident set size read from `/proc/self/statm`; on macOS it is the Mach resident size; on Windows it is the process working set. Resident memory includes shared pages, so values are neither comparable across platforms nor a measure of the process's private memory. If a sample is unavailable—because the platform is unsupported, a read or parse fails, or a collection is already in progress—Coral skips that data point rather than repeating a stale value. A genuine zero is still reported.
+- `coral.query.memory.datafusion_reserved_peak` is the highest number of bytes reserved through DataFusion's memory pool during one top-level SQL execution, including primary and fallback attempts. It excludes unreserved decoding, HTTP or MCP bodies, result buffers after reservation release, Arrow IPC output, shared pools, allocator retention, and general runtime state.
+- `coral.query.result.arrow.estimated_occupied_memory` estimates the occupied memory of the successful Arrow result. Shared or sliced buffers can be counted more than once, so this is not an exact allocation measurement.
+- `coral.query.result.ipc.encoded_size` is the exact serialized payload length after Arrow IPC encoding finishes successfully. It measures output size, not live memory, and is omitted when encoding fails or the size cannot be represented in the metric.
+
+The process-residency and active-query gauges use the same exporter cadence, but independent callbacks collect them. Treat nearby points as context, not an atomic snapshot, and do not derive per-query memory cost by comparing the two.
+
+Reservation peaks are emitted for successful queries and for handled failures or cancellations after all tracked reservations are released. `status=error` combines handled errors and cancellations; no error-code attribute is exported. If a reservation leaks or the process terminates, no observation is recorded. The successful Arrow and IPC histograms use only `status=ok`. All three byte-valued query histograms use explicit byte boundaries at 4 KiB, 16 KiB, 64 KiB, 256 KiB, 1 MiB, 4 MiB, 16 MiB, 64 MiB, 256 MiB, 1 GiB, 4 GiB, and 16 GiB, plus an overflow bucket.
+
+These byte-valued query metrics contain no SQL, query IDs, trace IDs, task IDs, workspace names, users, sources, or tables. Span attributes on query traces can support approximate correlation with these metrics by time window when your backend and privacy policy allow it, but Coral does not emit exemplars or direct metric-to-trace links. `coral.query` spans can contain raw SQL whether they descend from a `coral.cli` root span, a `coral.mcp.*` server span, or another entry point, so review trace access and retention separately.
 
 ## Distributed tracing
 

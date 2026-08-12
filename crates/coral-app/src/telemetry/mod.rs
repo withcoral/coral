@@ -30,6 +30,7 @@ pub mod config;
 mod local_store;
 mod manager;
 pub mod metrics;
+pub(crate) mod process;
 pub(crate) mod service;
 
 use crate::bootstrap::AppError;
