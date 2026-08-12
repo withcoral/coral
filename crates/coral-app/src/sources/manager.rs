@@ -4042,9 +4042,10 @@ surface:
             matches!(error, crate::bootstrap::AppError::FailedPrecondition(ref message) if message.contains("retry the operation"))
         );
         assert!(
-            manager
-                .list_workspace_sources(&workspace_name)
-                .expect("list sources")
+            config_store
+                .load_config()
+                .expect("load config")
+                .workspace_sources(&workspace_name)
                 .is_empty()
         );
         let source_name = SourceName::parse("public_messages").expect("source");
@@ -4132,9 +4133,10 @@ surface:
         );
         fixture.token_server.await.expect("token server");
         assert!(
-            manager
-                .list_workspace_sources(&workspace_name)
-                .expect("list sources")
+            config_store
+                .load_config()
+                .expect("load config")
+                .workspace_sources(&workspace_name)
                 .is_empty()
         );
         let source_name = SourceName::parse("secured_messages").expect("source");
