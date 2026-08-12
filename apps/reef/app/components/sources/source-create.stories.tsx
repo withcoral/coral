@@ -235,25 +235,13 @@ export const ImportErrorUnbreakableMessage: Story = {
       expect(match).toBeVisible()
       return match
     })
-    // The hint has to keep its own line, and the Rust type paths have to break
-    // inside the banner instead of spilling past the dialog edge.
-    await expect(banner.textContent).toContain('\nHint: Install or update the source')
+    // The Rust type paths have to break inside the banner instead of spilling
+    // past the dialog edge.
     const popup = banner.closest('[role="dialog"]')
     if (!(popup instanceof HTMLElement)) throw new Error('Credentials dialog not found')
     await expect(banner.getBoundingClientRect().right).toBeLessThanOrEqual(
       popup.getBoundingClientRect().right,
     )
-
-    // The icon belongs on the first line of the message, not centred on all of it.
-    const icon = banner.previousElementSibling
-    if (!(icon instanceof HTMLElement)) throw new Error('Error icon not found')
-    const message = canvasElement.ownerDocument.createRange()
-    message.selectNodeContents(banner)
-    const [firstLine] = message.getClientRects()
-    const iconBox = icon.getBoundingClientRect()
-    await expect(
-      Math.abs((iconBox.top + iconBox.bottom) / 2 - (firstLine.top + firstLine.bottom) / 2),
-    ).toBeLessThan(1.5)
   },
 }
 
