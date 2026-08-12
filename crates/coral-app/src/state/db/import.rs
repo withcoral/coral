@@ -1442,14 +1442,18 @@ mod tests {
             .upsert_source(&workspace, &source, 7)
             .await
             .expect("write source without manifest row");
-        tx.state_migrations()
-            .try_claim(WORKSPACE_CATALOG_CUTOVER_ID, 7)
-            .await
-            .expect("claim workspace cutover");
-        tx.state_migrations()
-            .try_claim(&source_catalog_import_id(&layout), 7)
-            .await
-            .expect("claim source import");
+        assert!(
+            tx.state_migrations()
+                .try_claim(WORKSPACE_CATALOG_CUTOVER_ID, 7)
+                .await
+                .expect("mark workspace cutover complete")
+        );
+        assert!(
+            tx.state_migrations()
+                .try_claim(&source_catalog_import_id(&layout), 7)
+                .await
+                .expect("mark source import complete")
+        );
         tx.commit().await.expect("commit source");
 
         run_state_migrations(&db, &config_store, &layout)
@@ -1493,14 +1497,18 @@ mod tests {
             .upsert_source(&workspace, &source, 7)
             .await
             .expect("write source without manifest row");
-        tx.state_migrations()
-            .try_claim(WORKSPACE_CATALOG_CUTOVER_ID, 7)
-            .await
-            .expect("claim workspace cutover");
-        tx.state_migrations()
-            .try_claim(&source_catalog_import_id(&layout), 7)
-            .await
-            .expect("claim source import");
+        assert!(
+            tx.state_migrations()
+                .try_claim(WORKSPACE_CATALOG_CUTOVER_ID, 7)
+                .await
+                .expect("mark workspace cutover complete")
+        );
+        assert!(
+            tx.state_migrations()
+                .try_claim(&source_catalog_import_id(&layout), 7)
+                .await
+                .expect("mark source import complete")
+        );
         tx.commit().await.expect("commit source");
 
         run_state_migrations(&db, &config_store, &layout)
