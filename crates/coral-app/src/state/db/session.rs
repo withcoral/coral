@@ -120,6 +120,10 @@ pub(crate) trait DbRepos: DbSession + Sized {
         FeedbackReportsRepo::new(self)
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "credential runtime wires production consumers")
+    )]
     fn credential_documents(&mut self) -> CredentialDocumentsRepo<'_, Self> {
         CredentialDocumentsRepo::new(self)
     }
