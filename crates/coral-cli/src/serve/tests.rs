@@ -1,7 +1,9 @@
 use std::net::TcpListener;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use coral_api::v1::{CatalogItemKind, ListCatalogRequest, PaginationRequest};
+use coral_api::v1::{
+    CatalogItemKind, ListCatalogRequest, ListWorkspacesRequest, PaginationRequest,
+};
 use coral_client::default_workspace;
 use jsonwebtoken::jwk::{Jwk, ThumbprintHash};
 use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
@@ -264,16 +266,27 @@ async fn assert_grpc_authenticated(server: &RunningServer, token: &str) {
     )
     .await
     .expect("authenticated gRPC client");
-    authenticated
-        .catalog_client()
-        .list_catalog(Request::new(catalog_request()))
+    let response = authenticated
+        .workspace_client()
+        .list_workspaces(Request::new(ListWorkspacesRequest {}))
         .await
-        .expect("authenticated catalog call");
+        .expect("authenticated workspace listing")
+        .into_inner();
+    assert!(response.memberships.is_empty());
 }
 
-async fn assert_authenticated_data(server: &RunningServer, mcp_endpoint: &str, token: &str) {
+async fn assert_authenticated_surfaces(server: &RunningServer, mcp_endpoint: &str, token: &str) {
     assert_grpc_authenticated(server, token).await;
-    assert_catalog_tool(mcp_endpoint.to_string(), Some(token)).await;
+    let config =
+        StreamableHttpClientTransportConfig::with_uri(mcp_endpoint.to_string()).auth_header(token);
+    let client =
+        ().serve(StreamableHttpClientTransport::from_config(config))
+            .await
+            .expect("initialize authenticated MCP client");
+    client
+        .cancel()
+        .await
+        .expect("stop authenticated MCP client");
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -386,7 +399,7 @@ async fn auth_disabled_companion_serves_and_shuts_down() {
     let temp = TempDir::new().expect("temp dir");
     write_config(
         &temp,
-        "[trace_history]\nenabled = false\n\n[server.mcp_http]\nenabled = true\nbind = '127.0.0.1:0'\n",
+        "[trace_history]\nenabled = false\n\n[server.mcp_http]\nenabled = true\nbind = '127.0.0.1:0'\n\n[workspaces.default]\n",
     );
     let server = start(
         ServerBuilder::configured_standalone_grpc()
@@ -412,7 +425,7 @@ async fn companion_uses_supplied_mcp_options() {
     let temp = TempDir::new().expect("temp dir");
     write_config(
         &temp,
-        "[trace_history]\nenabled = false\n\n[server.mcp_http]\nenabled = true\nbind = '127.0.0.1:0'\n",
+        "[trace_history]\nenabled = false\n\n[server.mcp_http]\nenabled = true\nbind = '127.0.0.1:0'\n\n[workspaces.default]\n[workspaces.other]\n",
     );
     let server = start(
         ServerBuilder::configured_standalone_grpc()
@@ -420,6 +433,7 @@ async fn companion_uses_supplied_mcp_options() {
             .with_noop_feedback_uploads(),
         McpOptions {
             feedback_enabled: true,
+            workspace: Some(default_workspace()),
             ..McpOptions::default()
         },
     )
@@ -428,6 +442,56 @@ async fn companion_uses_supplied_mcp_options() {
     let mcp_addr = server.mcp_http_addr().expect("MCP HTTP endpoint");
     assert_feedback_tool(format!("http://{mcp_addr}/mcp")).await;
     server.shutdown().await.expect("shutdown composite server");
+}
+
+#[tokio::test]
+async fn auth_disabled_companion_guides_when_no_workspace_exists() {
+    let temp = TempDir::new().expect("temp dir");
+    write_config(
+        &temp,
+        "[trace_history]\nenabled = false\n\n[server.mcp_http]\nenabled = true\nbind = '127.0.0.1:0'\n",
+    );
+
+    let Err(error) = start(
+        ServerBuilder::configured_standalone_grpc()
+            .with_config_dir(temp.path())
+            .with_noop_feedback_uploads(),
+        McpOptions::default(),
+    )
+    .await
+    else {
+        panic!("empty local state must not choose a workspace");
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("no workspace is available; create one with `coral workspace create <name>`")
+    );
+}
+
+#[tokio::test]
+async fn auth_disabled_companion_guides_when_workspace_is_ambiguous() {
+    let temp = TempDir::new().expect("temp dir");
+    write_config(
+        &temp,
+        "[trace_history]\nenabled = false\n\n[server.mcp_http]\nenabled = true\nbind = '127.0.0.1:0'\n\n[workspaces.alpha]\n[workspaces.beta]\n",
+    );
+
+    let Err(error) = start(
+        ServerBuilder::configured_standalone_grpc()
+            .with_config_dir(temp.path())
+            .with_noop_feedback_uploads(),
+        McpOptions::default(),
+    )
+    .await
+    else {
+        panic!("ambiguous local state must not choose a workspace");
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("multiple workspaces are available; specify one with `--workspace <name>`")
+    );
 }
 
 /// The advertised protected-resource identifier and the minted token audience
@@ -547,7 +611,7 @@ async fn session_authenticated_companion_gates_grpc_and_mcp() {
     assert_grpc_rejects_unauthenticated(server.endpoint_uri()).await;
 
     let token = session_token(signing_key.as_ref(), &resource);
-    assert_authenticated_data(&server, &format!("{base}/mcp"), &token).await;
+    assert_authenticated_surfaces(&server, &format!("{base}/mcp"), &token).await;
 
     let reef_token = session_token(signing_key.as_ref(), REEF_RESOURCE);
     assert_grpc_authenticated(&server, &reef_token).await;
@@ -670,7 +734,7 @@ async fn session_failures_and_restart_are_fail_closed() {
     assert_eq!(expired_rejection, wrong_audience_rejection);
     assert_eq!(expired_rejection, malformed_rejection);
     assert_eq!(expired_rejection, forged_rejection);
-    assert_authenticated_data(&server, &mcp_endpoint, &valid).await;
+    assert_authenticated_surfaces(&server, &mcp_endpoint, &valid).await;
     server.shutdown().await.expect("first shutdown");
 
     let restarted = start(
@@ -685,7 +749,7 @@ async fn session_failures_and_restart_are_fail_closed() {
         "http://{}/mcp",
         restarted.mcp_http_addr().expect("restarted MCP endpoint")
     );
-    assert_authenticated_data(&restarted, &restarted_mcp, &valid).await;
+    assert_authenticated_surfaces(&restarted, &restarted_mcp, &valid).await;
     restarted.shutdown().await.expect("restarted shutdown");
 }
 

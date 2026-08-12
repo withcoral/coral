@@ -76,11 +76,13 @@ pub(crate) async fn start_ui_server(
 
 pub(crate) async fn start_standalone_server(
     feature_overrides: FeatureOverrides,
+    requested_workspace: Option<String>,
 ) -> Result<crate::serve::RunningServer, BootstrapError> {
     let features = FeatureStore::discover(None)?.load_with_overrides(&feature_overrides)?;
     let mcp_options = McpOptions {
         feedback_enabled: features.enabled(Feature::Feedback),
         observed_values_search_enabled: features.enabled(Feature::ObservedValuesSearch),
+        workspace: requested_workspace.map(coral_client::workspace),
         ..McpOptions::default()
     };
     let builder = configure_server_builder(

@@ -1544,14 +1544,13 @@ fn read_workspace_trace_ids(
 ) -> Result<HashSet<String>, TraceStoreError> {
     let mut spans = Vec::new();
     for file in files {
-        spans.extend(read_workspace_trace_records_file(&file.path, false)?);
+        spans.extend(read_workspace_trace_records_file(&file.path)?);
     }
     Ok(workspace_trace_ids(spans, workspace_name))
 }
 
 fn read_workspace_trace_records_file(
     path: &Path,
-    fail_on_malformed: bool,
 ) -> Result<Vec<TraceWorkspaceRecord>, TraceStoreError> {
     let file = File::open(path).map_err(|source| TraceStoreError::OpenFile {
         path: path.to_path_buf(),
@@ -1583,12 +1582,6 @@ fn read_workspace_trace_records_file(
         match serde_json::from_str::<TraceWorkspaceRecord>(trimmed) {
             Ok(record) => spans.push(record),
             Err(_source) if !complete_line => break,
-            Err(source) if fail_on_malformed => {
-                return Err(TraceStoreError::ReadFile {
-                    path: path.to_path_buf(),
-                    source: std::io::Error::new(std::io::ErrorKind::InvalidData, source),
-                });
-            }
             // Workspace trace cleanup is best-effort. A complete malformed line
             // cannot be attributed to a workspace, so preserve it during rewrite
             // instead of blocking deletion of config-owned workspace state.

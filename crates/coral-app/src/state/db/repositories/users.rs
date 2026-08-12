@@ -108,7 +108,11 @@ where
                 Expr::val(now_unix_nanos),
                 Expr::val(now_unix_nanos),
             ])
-            .on_conflict(OnConflict::column(Users::UserId).do_nothing().to_owned())
+            .on_conflict(
+                OnConflict::column(Users::UserId)
+                    .update_columns([Users::Issuer, Users::Subject, Users::DisplayName])
+                    .to_owned(),
+            )
             .to_owned();
         self.session.execute(statement).await
     }

@@ -43,9 +43,9 @@ use coral_api::v1::{
 use coral_app::StaticAssetsProvider;
 use coral_app::bootstrap::is_loopback_ip;
 use coral_client::{
-    AppClient, DEFAULT_WORKSPACE_ID, decode_execute_sql_response, format_batches_json,
-    format_batches_table, format_search_response_json, format_search_response_text,
-    manifest_input_from_proto, workspace as workspace_resource,
+    AppClient, decode_execute_sql_response, format_batches_json, format_batches_table,
+    format_search_response_json, format_search_response_text, manifest_input_from_proto,
+    workspace as workspace_resource,
 };
 use dialoguer::console::measure_text_width;
 use tonic::Request;
@@ -509,6 +509,22 @@ pub enum CliError {
     Internal(#[from] anyhow::Error),
 }
 
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum LocalWorkspaceSelectionError {
+    #[error("failed to list local workspaces: {0}")]
+    List(tonic::Status),
+    #[error("workspace list response omitted a workspace")]
+    MissingWorkspace,
+    #[error(
+        "no workspace is available; create one with `coral workspace create <name>` or specify one with `--workspace <name>` or `CORAL_WORKSPACE`"
+    )]
+    NoneAvailable,
+    #[error(
+        "multiple workspaces are available; specify one with `--workspace <name>` or `CORAL_WORKSPACE`"
+    )]
+    Ambiguous,
+}
+
 impl CliError {
     #[must_use]
     /// Returns stderr content for user-facing CLI failures.
@@ -555,16 +571,16 @@ impl Command {
     }
 
     fn uses_selected_workspace(&self) -> bool {
-        matches!(
-            self,
+        match self {
+            Command::Source(args) => !matches!(&args.command, SourceCommand::Lint { .. }),
             Command::Sql(_)
-                | Command::Search(_)
-                | Command::SearchIndex(_)
-                | Command::Source(_)
-                | Command::Function(_)
-                | Command::Onboard
-                | Command::McpStdio(_)
-        )
+            | Command::Search(_)
+            | Command::SearchIndex(_)
+            | Command::Function(_)
+            | Command::Onboard
+            | Command::McpStdio(_) => true,
+            _ => false,
+        }
     }
 
     fn apply_workspace_flag_presence(&mut self, present: bool) {
@@ -640,6 +656,12 @@ pub async fn run_from_env() -> Result<(), CliError> {
     } = Cli::parse();
     let workspace_flag_present = workspace_selection.workspace.is_some();
     command.apply_workspace_flag_presence(workspace_flag_present);
+    let requested_workspace = workspace_selection
+        .workspace
+        .or_else(|| env::workspace().filter(|value| !value.is_empty()));
+    if matches!(&command, Command::Onboard) {
+        source_ops::require_interactive().map_err(CliError::Internal)?;
+    }
     let feature_overrides = feature_overrides.into_overrides();
     let ctx = coral_app::RunContext {
         trace_parent: env::trace_parent(),
@@ -647,11 +669,6 @@ pub async fn run_from_env() -> Result<(), CliError> {
 
     match command.required_runtime() {
         RequiredRuntime::AppClient => {
-            let workspace = if command.uses_selected_workspace() {
-                selected_workspace(workspace_selection.workspace)
-            } else {
-                workspace_resource(DEFAULT_WORKSPACE_ID)
-            };
             let is_mcp_stdio = matches!(&command, Command::McpStdio(_));
             let bootstrap = bootstrap::bootstrap(bootstrap::BootstrapOptions {
                 enable_stderr_logs: command.enables_stderr_logs(),
@@ -660,6 +677,13 @@ pub async fn run_from_env() -> Result<(), CliError> {
             .await
             .map_err(anyhow::Error::from)?;
             let app = bootstrap.app.clone();
+            let workspace = if command.uses_selected_workspace() {
+                resolve_local_workspace(&app, requested_workspace)
+                    .await
+                    .map_err(anyhow::Error::from)?
+            } else {
+                Workspace::default()
+            };
             let result = if is_mcp_stdio {
                 run_app_command(app, command, Some(&ctx), &feature_overrides, &workspace).await
             } else {
@@ -681,21 +705,44 @@ pub async fn run_from_env() -> Result<(), CliError> {
         RequiredRuntime::None => {
             coral_app::run_with_context(
                 &ctx,
-                Box::pin(run_no_runtime_command(command, &feature_overrides)),
+                Box::pin(run_no_runtime_command(
+                    command,
+                    &feature_overrides,
+                    requested_workspace,
+                )),
             )
             .await
         }
     }
 }
 
-fn selected_workspace(cli_workspace: Option<String>) -> Workspace {
-    workspace_resource(selected_workspace_name(cli_workspace, env::workspace()))
-}
-
-fn selected_workspace_name(cli_workspace: Option<String>, env_workspace: Option<String>) -> String {
-    cli_workspace
-        .or_else(|| env_workspace.filter(|value| !value.is_empty()))
-        .unwrap_or_else(|| DEFAULT_WORKSPACE_ID.to_string())
+pub(crate) async fn resolve_local_workspace(
+    app: &AppClient,
+    requested_workspace: Option<String>,
+) -> Result<Workspace, LocalWorkspaceSelectionError> {
+    if let Some(name) = requested_workspace {
+        return Ok(workspace_resource(name));
+    }
+    let memberships = app
+        .workspace_client()
+        .list_workspaces(Request::new(ListWorkspacesRequest {}))
+        .await
+        .map_err(LocalWorkspaceSelectionError::List)?
+        .into_inner()
+        .memberships;
+    let mut workspaces = memberships
+        .into_iter()
+        .map(|membership| {
+            membership
+                .workspace
+                .ok_or(LocalWorkspaceSelectionError::MissingWorkspace)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    match workspaces.len() {
+        0 => Err(LocalWorkspaceSelectionError::NoneAvailable),
+        1 => Ok(workspaces.pop().expect("one workspace is present")),
+        _ => Err(LocalWorkspaceSelectionError::Ambiguous),
+    }
 }
 
 /// Returns the embedded Coral UI assets for the local server to serve.
@@ -748,8 +795,9 @@ async fn run_ui(
 
 async fn run_server(
     feature_overrides: coral_app::features::FeatureOverrides,
+    requested_workspace: Option<String>,
 ) -> Result<(), anyhow::Error> {
-    let server = bootstrap::start_standalone_server(feature_overrides).await?;
+    let server = bootstrap::start_standalone_server(feature_overrides, requested_workspace).await?;
     let endpoint = server.endpoint_uri().to_string();
 
     // An endpoint that does not parse back to an address is treated as exposed:
@@ -776,8 +824,7 @@ async fn run_server(
         wait_for_server_shutdown_signal(),
     )
     .await;
-    // The composite server's fields make this future large; box it so this frame stays small.
-    let shutdown = Box::pin(server.shutdown()).await;
+    let shutdown = server.shutdown().await;
     wait?;
     shutdown?;
     Ok(())
@@ -878,6 +925,7 @@ async fn wait_for_server_shutdown_signal() -> Result<(), std::io::Error> {
 async fn run_no_runtime_command(
     command: Command,
     feature_overrides: &coral_app::features::FeatureOverrides,
+    requested_workspace: Option<String>,
 ) -> Result<(), CliError> {
     match command {
         Command::Completion(args) => {
@@ -887,7 +935,7 @@ async fn run_no_runtime_command(
             Ok(())
         }
         Command::Features(args) => run_features(args, feature_overrides).map_err(Into::into),
-        Command::Server => Box::pin(run_server(feature_overrides.clone()))
+        Command::Server => Box::pin(run_server(feature_overrides.clone(), requested_workspace))
             .await
             .map_err(Into::into),
         #[cfg(feature = "embedded-ui")]
@@ -2090,35 +2138,13 @@ mod tests {
     }
 
     #[test]
-    fn selected_workspace_preserves_raw_name_for_app_validation() {
-        let workspace = super::selected_workspace(Some(" ../bad ".to_string()));
-
-        assert_eq!(workspace.name, " ../bad ");
-    }
-
-    #[test]
-    fn selected_workspace_preserves_former_confirmation_marker() {
-        let workspace = super::selected_workspace_name(
-            Some("__coral_current_workspace_confirmation__".to_string()),
-            None,
-        );
-
-        assert_eq!(workspace, "__coral_current_workspace_confirmation__");
-    }
-
-    #[test]
-    fn selected_workspace_treats_empty_env_value_as_unset() {
-        let workspace = super::selected_workspace_name(None, Some(String::new()));
-
-        assert_eq!(workspace, super::DEFAULT_WORKSPACE_ID);
-    }
-
-    #[test]
     fn only_workspace_scoped_commands_use_selected_workspace() {
         let sql = Cli::try_parse_from(["coral", "sql", "SELECT 1"]).expect("sql parses");
         let search =
             Cli::try_parse_from(["coral", "search", "github", "issues"]).expect("search parses");
         let source = Cli::try_parse_from(["coral", "source", "list"]).expect("source parses");
+        let lint = Cli::try_parse_from(["coral", "source", "lint", "manifest.yaml"])
+            .expect("source lint parses");
         let functions =
             Cli::try_parse_from(["coral", "functions", "list"]).expect("functions parses");
         let onboard = Cli::try_parse_from(["coral", "onboard"]).expect("onboard parses");
@@ -2129,6 +2155,7 @@ mod tests {
         assert!(sql.command.uses_selected_workspace());
         assert!(search.command.uses_selected_workspace());
         assert!(source.command.uses_selected_workspace());
+        assert!(!lint.command.uses_selected_workspace());
         assert!(functions.command.uses_selected_workspace());
         assert!(onboard.command.uses_selected_workspace());
         assert!(mcp.command.uses_selected_workspace());

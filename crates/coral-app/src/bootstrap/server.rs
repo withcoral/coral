@@ -65,7 +65,10 @@ use crate::search::service::SearchService;
 use crate::sources::manager::SourceManager;
 use crate::sources::materialization::SourceDiagnosticReporter;
 use crate::sources::service::SourceService;
-use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig, run_state_migrations};
+use crate::state::db::{
+    CoralDb, DatabaseConfig, ResolvedDatabaseConfig, SharedWorkspaceWarnings,
+    migrate_local_ownership_once, run_state_migrations, shared_workspace_warnings,
+};
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::task::manager::TaskManager;
 use crate::task::service::TaskService;
@@ -451,12 +454,20 @@ async fn start_components(builder: ServerBuilder) -> Result<RunningServer, AppEr
     let coral_db = init_database(&layout).await?;
     let config_store = ConfigStore::new(layout.clone());
     run_state_migrations(&coral_db, &config_store, &layout).await?;
+    let shared_warnings = match local_principal {
+        LocalPrincipalPolicy::ImplicitOwner => {
+            migrate_local_ownership_once(&coral_db).await?;
+            SharedWorkspaceWarnings::default()
+        }
+        LocalPrincipalPolicy::NoLocalPrincipal => shared_workspace_warnings(&coral_db).await?,
+    };
     let coral_db = Arc::new(coral_db);
     let authorization_server = session_auth
         .map(|settings| build_authorization_server(*settings, Arc::clone(&coral_db)).map(Box::new))
         .transpose()?;
     let (telemetry_config, active_trace_store) =
         init_server_telemetry(&layout, builder.config.enable_stderr_logs)?;
+    report_shared_workspace_warnings(&shared_warnings);
     let active_trace_store_dir = active_trace_store.as_ref().map(|store| store.dir.clone());
     let credential_config = CredentialStorageConfig::load(&layout)?;
     let credential_store =
@@ -540,6 +551,21 @@ async fn start_components(builder: ServerBuilder) -> Result<RunningServer, AppEr
     .await?;
     grpc.authorization_server = authorization_server;
     Ok(grpc)
+}
+
+fn report_shared_workspace_warnings(warnings: &SharedWorkspaceWarnings) {
+    if !warnings.ownerless.is_empty() {
+        tracing::warn!(
+            workspaces = warnings.ownerless.join(", "),
+            "workspaces have no owner and remain inaccessible until an owner is appointed"
+        );
+    }
+    if !warnings.local_only_owned.is_empty() {
+        tracing::warn!(
+            workspaces = warnings.local_only_owned.join(", "),
+            "workspaces are owned only by the local principal and remain inaccessible in shared mode"
+        );
+    }
 }
 
 fn build_authorization_server(
@@ -1627,6 +1653,44 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
                 .with_principal_provider(Arc::new(LocalPrincipalProvider))
                 .local_principal_policy(),
             LocalPrincipalPolicy::NoLocalPrincipal
+        );
+    }
+
+    #[tokio::test]
+    async fn explicit_principal_provider_does_not_claim_local_ownership_migration() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+        let server = ServerBuilder::new()
+            .with_config_dir(&config_dir)
+            .with_principal_provider(Arc::new(RejectingPrincipalProvider))
+            .start()
+            .await
+            .expect("start strict server");
+        server.shutdown().await.expect("shutdown strict server");
+
+        let layout = AppStateLayout::discover(Some(config_dir)).expect("layout");
+        let DatabaseConfig::Sqlite { path } = DatabaseConfig::load(&layout).expect("db config")
+        else {
+            panic!("default test database must be SQLite");
+        };
+        let db = CoralDb::open(ResolvedDatabaseConfig::Sqlite { path })
+            .await
+            .expect("open SQLite");
+        let mut session = &db;
+        assert!(
+            !session
+                .state_migrations()
+                .has_completed("local_workspace_ownership_v1")
+                .await
+                .expect("read migration marker")
+        );
+        assert!(
+            session
+                .users()
+                .get_by_user_id(crate::identity::LOCAL_PRINCIPAL_ID)
+                .await
+                .expect("read local user")
+                .is_none()
         );
     }
 
