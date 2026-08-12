@@ -56,7 +56,7 @@ impl UserManager {
         self.local_principal.validate_request_principal(principal)?;
         require_human(principal)?;
         let mut session = self.db.as_ref();
-        if !(principal.is_local() && self.local_principal.is_implicit_owner())
+        if (!principal.is_local() || !self.local_principal.is_implicit_owner())
             && !session
                 .workspace_members()
                 .workspaces_for_user_id(principal.id().as_str())
