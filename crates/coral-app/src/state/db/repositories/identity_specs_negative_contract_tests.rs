@@ -3,6 +3,7 @@ use tempfile::tempdir;
 
 use super::identity_specs::{IdentitySpecId, IdentitySpecKey};
 use super::identity_specs_contract_tests::{document, upsert_spec};
+use crate::bootstrap;
 use crate::state::db::schema::{IdentitySpecDocuments, IdentitySpecs};
 use crate::state::db::{CoralDb, DbError, DbRepos, ResolvedDatabaseConfig};
 use crate::workspaces::WorkspaceName;
@@ -16,6 +17,19 @@ async fn identity_spec_corruption_contract_holds_against_sqlite() {
     .await
     .expect("open sqlite");
     db.migrate().await.expect("migrate sqlite");
+    assert_identity_spec_corruption_contract(&db).await;
+}
+
+#[tokio::test]
+#[ignore = "set CORAL_TEST_POSTGRES_URL to run the shared corruption contract against Postgres"]
+async fn identity_spec_corruption_contract_on_postgres() {
+    let Some(url) = postgres_test_url() else {
+        return;
+    };
+    let db = CoralDb::open(ResolvedDatabaseConfig::Postgres { url })
+        .await
+        .expect("open postgres");
+    db.migrate().await.expect("migrate postgres");
     assert_identity_spec_corruption_contract(&db).await;
 }
 
@@ -279,4 +293,10 @@ fn zero_i64() -> SimpleExpr {
 
 fn scoped_key(workspace: &WorkspaceName, name: &str) -> IdentitySpecKey {
     IdentitySpecKey::workspace(workspace.clone(), name).expect("workspace key")
+}
+
+fn postgres_test_url() -> Option<String> {
+    bootstrap::env_var("CORAL_TEST_POSTGRES_URL")
+        .expect("read CORAL_TEST_POSTGRES_URL")
+        .filter(|value| !value.is_empty())
 }
