@@ -995,10 +995,10 @@ mod tests {
     /// document envelopes round-trip through a `BYTEA` column that `SQLite` stores
     /// under a different type affinity, so the tests above cannot stand in for this
     /// coverage. CI selects this test by the shared
-    /// `repository_round_trips_against_postgres` name filter.
+    /// `contract_on_postgres` name filter.
     #[tokio::test]
     #[ignore = "set CORAL_TEST_POSTGRES_URL to run the shared repository harness against Postgres"]
-    async fn identity_spec_repository_round_trips_against_postgres() {
+    async fn identity_spec_repository_contract_on_postgres() {
         let Some(url) = postgres_test_url() else {
             return;
         };
