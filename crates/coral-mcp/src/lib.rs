@@ -14,7 +14,7 @@
 //! The exposed MCP surface is intentionally small:
 //!
 //! - tools: `start_task`, `sql`, `search`, paginated `list_catalog`,
-//!   `describe_table`, `list_columns`, `end_task`, and optionally `feedback`
+//!   `describe`, `list_columns`, `end_task`, and optionally `feedback`
 //! - resources: `coral://guide`, `coral://tables`
 //!
 //! Protocol lifecycle and initialization should stay inside the SDK integration

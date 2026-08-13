@@ -228,6 +228,25 @@ fn raw_json_object(value: &Value) -> Map<String, Value> {
     value.as_object().cloned().expect("json object")
 }
 
+async fn describe_surface(
+    client: &RunningService<RoleClient, ()>,
+    task_id: &str,
+    schema: &str,
+    surface: &str,
+) -> Value {
+    let result = client
+        .call_tool(
+            CallToolRequestParams::new("describe").with_arguments(task_arguments(
+                task_id,
+                &json!({"schema": schema, "surface": surface}),
+            )),
+        )
+        .await
+        .expect("describe surface");
+    assert_eq!(result.is_error, Some(false));
+    result.structured_content.expect("structured describe")
+}
+
 async fn start_test_task(client: &RunningService<RoleClient, ()>) -> String {
     let result = client
         .call_tool(
@@ -621,7 +640,7 @@ async fn mcp_task_tools_persist_lifecycle_and_tag_follow_up_calls() {
             "add_function",
             "search",
             "list_catalog",
-            "describe_table",
+            "describe",
             "list_columns",
             "end_task"
         ]
@@ -631,7 +650,7 @@ async fn mcp_task_tools_persist_lifecycle_and_tag_follow_up_calls() {
         "add_function",
         "search",
         "list_catalog",
-        "describe_table",
+        "describe",
         "list_columns",
     ] {
         assert_tool_advertises_task_context(tool_by_name(&tools, name));
@@ -982,7 +1001,7 @@ async fn unknown_tool_name_is_caller_visible_but_not_exported_to_telemetry() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn mcp_sql_batch_preserves_tool_trace_context_across_spawned_queries() {
+async fn mcp_sql_batch_preserves_task_and_trace_context_across_spawned_queries() {
     let exporter = InMemorySpanExporter::default();
     let provider = SdkTracerProvider::builder()
         .with_simple_exporter(exporter.clone())
@@ -1044,6 +1063,11 @@ async fn mcp_sql_batch_preserves_tool_trace_context_across_spawned_queries() {
     let tool_span_id = tool_call.span_context.span_id();
     for query_span in query_spans {
         assert_eq!(
+            span_string_attribute(query_span, "task.id"),
+            Some(task_id.clone()),
+            "spawned SQL query should keep MCP task attribution"
+        );
+        assert_eq!(
             query_span.span_context.trace_id(),
             tool_trace_id,
             "spawned SQL query should remain in the MCP tool trace"
@@ -1085,7 +1109,7 @@ async fn mcp_task_tools_are_always_available() {
             "add_function",
             "search",
             "list_catalog",
-            "describe_table",
+            "describe",
             "list_columns",
             "end_task"
         ]
@@ -1095,7 +1119,7 @@ async fn mcp_task_tools_are_always_available() {
         "add_function",
         "search",
         "list_catalog",
-        "describe_table",
+        "describe",
         "list_columns",
     ] {
         assert_tool_advertises_task_context(tool_by_name(&tools, name));
@@ -1190,23 +1214,10 @@ async fn mcp_catalog_helpers_expose_coral_system_tables_from_sql_catalog() {
         expected_tables
     );
 
-    let described = client
-        .call_tool(
-            CallToolRequestParams::new("describe_table").with_arguments(task_arguments(
-                &task_id,
-                &json!({
-                    "schema": "coral",
-                    "table": "columns"
-                }),
-            )),
-        )
-        .await
-        .expect("describe system table")
-        .structured_content
-        .expect("structured describe");
-    assert_eq!(described["found"], true);
-    assert_eq!(described["name"], "coral.columns");
+    let described = describe_surface(client, &task_id, "coral", "columns").await;
+    assert_eq!(described["kind"], "table");
     assert_eq!(described["column_count"], 11);
+    assert!(described.get("name").is_none());
 
     let columns = client
         .call_tool(
@@ -1255,7 +1266,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
             "add_function",
             "search",
             "list_catalog",
-            "describe_table",
+            "describe",
             "list_columns",
             "end_task"
         ]
@@ -1323,7 +1334,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     let sql_tool = tool_by_name(&updated_tools, "sql");
     let search_tool = tool_by_name(&updated_tools, "search");
     let list_catalog_tool = tool_by_name(&updated_tools, "list_catalog");
-    let describe_table_tool = tool_by_name(&updated_tools, "describe_table");
+    let describe_tool = tool_by_name(&updated_tools, "describe");
     let list_columns_tool = tool_by_name(&updated_tools, "list_columns");
     assert!(
         sql_tool
@@ -1516,93 +1527,29 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     assert_eq!(universal_search["results"][0]["kind"], "table");
     assert_matches_output_schema(search_tool, &universal_search);
 
-    let described = client
-        .call_tool(
-            CallToolRequestParams::new("describe_table").with_arguments(task_arguments(
-                &task_id,
-                &json!({
-                    "schema": "local_messages",
-                    "table": "messages"
-                }),
-            )),
-        )
-        .await
-        .expect("describe table");
-    let described = described.structured_content.expect("structured content");
-    assert_eq!(described["found"], true);
-    assert_eq!(described["name"], "local_messages.messages");
+    let described = describe_surface(client, &task_id, "local_messages", "messages").await;
+    assert_eq!(described["kind"], "table");
     assert_eq!(described["column_count"], 3);
     assert!(described["columns_hint"].as_str().is_some());
     assert!(described["columns"].is_null());
-    assert_matches_output_schema(describe_table_tool, &described);
+    assert_matches_output_schema(describe_tool, &described);
 
-    let missing_table = client
-        .call_tool(
-            CallToolRequestParams::new("describe_table").with_arguments(task_arguments(
-                &task_id,
-                &json!({
-                    "schema": "local_messages",
-                    "table": "missing"
-                }),
-            )),
-        )
-        .await
-        .expect("describe missing table");
-    assert_eq!(missing_table.is_error, Some(false));
-    let missing_table = missing_table
-        .structured_content
-        .expect("structured content");
-    assert_eq!(missing_table["found"], false);
-    assert_eq!(missing_table["requested"]["schema"], "local_messages");
-    assert_eq!(missing_table["requested"]["table"], "missing");
-    assert_eq!(
-        missing_table["same_schema_tables"][0]["name"],
-        "local_messages.events"
-    );
-    assert_eq!(
-        missing_table["suggestions"][0]["name"],
-        "local_messages.events"
-    );
-    assert_eq!(missing_table["suggested_calls"][0]["tool"], "list_catalog");
-    assert_eq!(
-        missing_table["suggested_calls"][0]["arguments"]["schema"],
-        "local_messages"
-    );
-
-    let missing_schema = client
-        .call_tool(
-            CallToolRequestParams::new("describe_table").with_arguments(task_arguments(
-                &task_id,
-                &json!({
-                    "schema": "local_mesages",
-                    "table": "missing["
-                }),
-            )),
-        )
-        .await
-        .expect("describe missing schema");
-    assert_eq!(missing_schema.is_error, Some(false));
-    let missing_schema = missing_schema
-        .structured_content
-        .expect("structured content");
-    assert_eq!(missing_schema["found"], false);
-    assert!(
-        missing_schema["suggested_calls"][0]["arguments"]["schema"].is_null(),
-        "catalog suggestion should not constrain a missing schema"
-    );
+    let missing_table = describe_surface(client, &task_id, "local_messages", "missing").await;
+    assert_eq!(missing_table, json!({"kind": "missing"}));
+    assert_matches_output_schema(describe_tool, &missing_table);
 
     client
         .call_tool(
-            CallToolRequestParams::new("describe_table").with_arguments(task_arguments(
+            CallToolRequestParams::new("describe").with_arguments(task_arguments(
                 &task_id,
                 &json!({
                     "schema": "local_messages",
-                    "table": " "
+                    "surface": " "
                 }),
             )),
         )
         .await
-        .expect_err("blank table should fail");
+        .expect_err("blank surface should fail");
 
     let columns = client
         .call_tool(
@@ -1727,25 +1674,9 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
         )
         .await
         .expect("list columns for missing table");
-    let missing_columns = missing_columns
-        .structured_content
-        .expect("structured content");
-    assert_eq!(missing_columns["found"], false);
-    assert_eq!(missing_columns["requested"]["schema"], "local_messages");
-    assert_eq!(missing_columns["requested"]["table"], "missing");
-    assert_eq!(
-        missing_columns["same_schema_tables"][0]["name"],
-        "local_messages.events"
-    );
-    assert_eq!(
-        missing_columns["suggestions"][0]["name"],
-        "local_messages.events"
-    );
-    assert_eq!(
-        missing_columns["suggested_calls"][0]["arguments"]["schema"],
-        "local_messages"
-    );
-    assert_matches_output_schema(list_columns_tool, &missing_columns);
+    assert_eq!(missing_columns.is_error, Some(true));
+    assert_tool_error_text_contains(&missing_columns, "Column listing target was not found");
+    assert_tool_error_text_contains(&missing_columns, "table 'local_messages.missing' not found");
 
     let missing_columns_with_bad_pattern = client
         .call_tool(
@@ -1760,11 +1691,11 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
         )
         .await
         .expect("list columns for missing table with bad pattern");
-    let missing_columns_with_bad_pattern = missing_columns_with_bad_pattern
-        .structured_content
-        .expect("structured content");
-    assert_eq!(missing_columns_with_bad_pattern["found"], false);
-    assert_matches_output_schema(list_columns_tool, &missing_columns_with_bad_pattern);
+    assert_eq!(missing_columns_with_bad_pattern.is_error, Some(true));
+    assert_tool_error_text_contains(
+        &missing_columns_with_bad_pattern,
+        "table 'local_messages.missing' not found",
+    );
 
     client
         .call_tool(
@@ -1878,6 +1809,19 @@ async fn list_catalog_surfaces_table_functions() {
     );
     assert_matches_output_schema(catalog_tool, &functions);
 
+    let describe_tool = tool_by_name(&tools, "describe");
+    let described_function = describe_surface(client, &task_id, "searchy", "search_issues").await;
+    assert_eq!(described_function["kind"], "table_function");
+    assert_eq!(
+        described_function["arguments"][1]["values"],
+        json!(["lexical", "semantic", "hybrid"])
+    );
+    assert_eq!(
+        described_function["result_columns"][1]["column_name"],
+        "score"
+    );
+    assert_matches_output_schema(describe_tool, &described_function);
+
     let search_tool = tool_by_name(&tools, "search");
     let search = client
         .call_tool(
@@ -1900,6 +1844,9 @@ async fn list_catalog_surfaces_table_functions() {
         .find(|result| result["sql_reference"] == "searchy.lookup_issue")
         .expect("table function guide match");
     assert_eq!(function["kind"], "function");
+    assert_eq!(function["schema"], "searchy");
+    assert_eq!(function["surface"], "lookup_issue");
+    assert!(function.get("catalog").is_none());
     assert_eq!(function["arguments"]["number"], "Utf8");
     assert_eq!(
         function["guide"],
@@ -2099,7 +2046,7 @@ async fn factory_shares_configuration_and_task_guide_state_across_sessions() {
                 "add_function",
                 "search",
                 "list_catalog",
-                "describe_table",
+                "describe",
                 "list_columns",
                 "end_task",
                 "feedback"
@@ -2311,7 +2258,7 @@ async fn mcp_feedback_tool_persists_blocked_agent_report() {
             "add_function",
             "search",
             "list_catalog",
-            "describe_table",
+            "describe",
             "list_columns",
             "end_task",
             "feedback"

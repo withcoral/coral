@@ -1,6 +1,4 @@
-use crate::v4::ir::{
-    IrEntityCandidate, IrExecutionAttachment, IrOperation, McpExecutionAttachment,
-};
+use crate::v4::ir::{IrExecutionAttachment, IrOperation, McpExecutionAttachment};
 use crate::v4::wrapped_lists::{WrappedListInferenceContext, infer_wrapped_list_row_path};
 use crate::v4::{McpOperationPagination, OperationMetadata};
 
@@ -59,11 +57,7 @@ impl McpImporter<'_> {
             naming: None,
             inputs,
             output,
-            entity: Some(IrEntityCandidate {
-                name: operation_id.to_string(),
-                type_ref: format!("{operation_id}_row"),
-                identity_fields: Vec::new(),
-            }),
+            entity_name: Some(operation_id.to_string()),
             execution: IrExecutionAttachment::Mcp(McpExecutionAttachment {
                 tool_name: tool.name.clone(),
             }),

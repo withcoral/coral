@@ -31,11 +31,14 @@ export const input = style([
       '&:disabled::placeholder': {
         color: theme.content.disabled,
       },
-      '&:focus': {
+      '&:focus:not([data-invalid])': {
         borderColor: theme.input.stroke.focus,
       },
-      '&:hover:not(:focus):not(:disabled)': {
+      '&:hover:not(:focus):not(:disabled):not([data-invalid])': {
         borderColor: theme.input.stroke.hover,
+      },
+      '&[data-invalid]:not(:disabled)': {
+        borderColor: theme.input.stroke.error,
       },
     },
   },

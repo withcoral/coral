@@ -4,8 +4,8 @@
 )]
 
 use coral_api::v1::{
-    DescribeTableRequest, ListCatalogRequest, ListColumnsRequest, PaginationRequest,
-    SearchCatalogRequest, catalog_item,
+    DescribeCatalogSurfaceRequest, ListCatalogRequest, ListColumnsRequest, PaginationRequest,
+    SearchCatalogRequest, catalog_item, describe_catalog_surface_response,
 };
 use coral_client::default_workspace;
 use tonic::Request;
@@ -268,7 +268,7 @@ async fn list_columns_filters_required_columns_and_patterns() {
 }
 
 #[tokio::test]
-async fn describe_missing_table_returns_catalog_suggestions() {
+async fn describe_missing_surface_returns_missing() {
     let harness = GrpcHarness::new().await;
     harness
         .import_source(
@@ -280,29 +280,27 @@ async fn describe_missing_table_returns_catalog_suggestions() {
 
     let response = harness
         .catalog_client()
-        .describe_table(Request::new(DescribeTableRequest {
+        .describe_catalog_surface(Request::new(DescribeCatalogSurfaceRequest {
             workspace: Some(default_workspace()),
             catalog_name: String::new(),
             schema_name: "local_messages".to_string(),
-            table_name: "messeges".to_string(),
+            surface_name: "messeges".to_string(),
         }))
         .await
-        .expect("describe missing table")
+        .expect("describe missing surface")
         .into_inner();
 
-    assert!(response.table.is_none());
-    assert_eq!(response.available_schemas, vec!["coral", "local_messages"]);
-    assert_eq!(response.same_schema_tables.len(), 3);
-    assert_eq!(response.suggestions.len(), 3);
-    assert_eq!(response.suggestions[0].name, "events");
+    let Some(describe_catalog_surface_response::Result::Missing(_)) = response.result else {
+        panic!("expected missing surface");
+    };
 }
 
 #[tokio::test]
-async fn describe_missing_table_name_does_not_apply_regex_limits() {
+async fn describe_catalog_surface_returns_exact_table_function() {
     let harness = GrpcHarness::new().await;
     harness
         .import_source(
-            fixture_manifest_with_multiple_tables_yaml(harness.temp_path()),
+            fixture_manifest_with_functions_yaml(),
             Vec::new(),
             Vec::new(),
         )
@@ -310,19 +308,50 @@ async fn describe_missing_table_name_does_not_apply_regex_limits() {
 
     let response = harness
         .catalog_client()
-        .describe_table(Request::new(DescribeTableRequest {
+        .describe_catalog_surface(Request::new(DescribeCatalogSurfaceRequest {
             workspace: Some(default_workspace()),
             catalog_name: String::new(),
-            schema_name: "local_messages".to_string(),
-            table_name: "missing_table_".repeat(40),
+            schema_name: "searchy".to_string(),
+            surface_name: "lookup_issue".to_string(),
         }))
         .await
-        .expect("describe long missing table name")
+        .expect("describe exact table function")
         .into_inner();
 
-    assert!(response.table.is_none());
-    assert_eq!(response.same_schema_tables.len(), 3);
-    assert_eq!(response.suggestions.len(), 3);
+    let Some(describe_catalog_surface_response::Result::TableFunction(function)) = response.result
+    else {
+        panic!("expected table function");
+    };
+    assert_eq!(function.name, "lookup_issue");
+    assert_eq!(function.guide, "Use this function for exact issue lookup.");
+}
+
+#[tokio::test]
+async fn describe_catalog_surface_does_not_resolve_partial_function_name() {
+    let harness = GrpcHarness::new().await;
+    harness
+        .import_source(
+            fixture_manifest_with_functions_yaml(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await;
+
+    let response = harness
+        .catalog_client()
+        .describe_catalog_surface(Request::new(DescribeCatalogSurfaceRequest {
+            workspace: Some(default_workspace()),
+            catalog_name: String::new(),
+            schema_name: "searchy".to_string(),
+            surface_name: "lookup".to_string(),
+        }))
+        .await
+        .expect("describe missing catalog surface")
+        .into_inner();
+
+    let Some(describe_catalog_surface_response::Result::Missing(_)) = response.result else {
+        panic!("expected missing surface");
+    };
 }
 
 #[tokio::test]

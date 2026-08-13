@@ -85,7 +85,7 @@ fn query_stream_kind_for_tool(tool_name: Option<ToolName>) -> &'static str {
         Some(
             ToolName::AddFunction
             | ToolName::ListCatalog
-            | ToolName::DescribeTable
+            | ToolName::Describe
             | ToolName::ListColumns
             | ToolName::StartTask
             | ToolName::EndTask

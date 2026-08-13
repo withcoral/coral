@@ -48,7 +48,7 @@ impl OpenApiImporter<'_> {
         let mut diagnostics = Vec::new();
         let parameters = self.import_parameters(path_item, op_obj, &operation_id, &mut diagnostics);
         let request_body = self.import_request_body(op_obj, &operation_id, &mut diagnostics);
-        let (output, response, entity, pagination_context) =
+        let (output, response, entity_name, pagination_context) =
             self.import_response(path, op_obj, &operation_id, &mut diagnostics);
         let contract = detect_pagination_contract(self.document, &parameters, &pagination_context);
         let row_path = self.infer_row_path(
@@ -95,7 +95,7 @@ impl OpenApiImporter<'_> {
             naming,
             inputs: parameters,
             output,
-            entity,
+            entity_name,
             execution: IrExecutionAttachment::Rest(Box::new(RestExecutionAttachment {
                 method,
                 path_template: path.to_string(),
