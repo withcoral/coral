@@ -13,7 +13,7 @@ export function useNow({
   const [tickedAtMs, setTickedAtMs] = React.useState(0)
 
   const refresh = React.useCallback(() => {
-    setTickedAtMs(Date.now())
+    setTickedAtMs((previous) => Math.max(previous, Date.now()))
   }, [])
 
   // The later of the two, so a fresh seed is picked up even when nothing is ticking, and
@@ -37,6 +37,7 @@ export function useNow({
       next.setHours(next.getHours() + 1)
       next.setMinutes(0)
       next.setSeconds(0)
+      next.setMilliseconds(0)
 
       return Number(next) - Number(current)
     }
