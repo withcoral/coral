@@ -449,7 +449,9 @@ pub(crate) fn set_raw_feature_override(
         doc.insert("features", toml_edit::table());
     }
     let Some(feature_table) = doc.get_mut("features").and_then(Item::as_table_mut) else {
-        return Err(AppError::InvalidInput(
+        // The caller named a valid feature; the file on disk is what blocks the
+        // write, so this is server state rather than bad input.
+        return Err(AppError::FailedPrecondition(
             "unsupported [features] config; expected a table".to_string(),
         ));
     };

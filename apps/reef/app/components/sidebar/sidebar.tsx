@@ -74,10 +74,28 @@ export function Sidebar({
     { icon: 'Activity', label: 'Traces', paths: [tracesPath], to: tracesPath },
   ] satisfies NavItem[]
   const settingsPath = routePath('settings')
+  const mcpClientsPath = routePath('settingsMcpClients')
+  const runtimeFeaturesPath = routePath('settingsRuntimeFeatures')
   const isSettingsRoute = Boolean(useMatch({ end: false, path: settingsPath }))
-  const settingsNavItems: NavItem[] = desktop
-    ? [{ icon: 'Settings', label: 'MCP Clients', paths: [settingsPath], to: settingsPath }]
+  // MCP client configuration exists only in the Desktop shell. Runtime features
+  // are Coral config, so they are reachable from every build.
+  //
+  // Both address their own page. The section root belongs to the cog in the
+  // workspace menu, whose redirect picks a landing page per build; a link that
+  // names one page cannot borrow it, and `/settings` in `paths` would light both
+  // rows at once.
+  const mcpClientsNavItems: NavItem[] = desktop
+    ? [{ icon: 'Settings', label: 'MCP Clients', paths: [mcpClientsPath], to: mcpClientsPath }]
     : []
+  const settingsNavItems: NavItem[] = [
+    ...mcpClientsNavItems,
+    {
+      icon: 'Flag',
+      label: 'Features',
+      paths: [runtimeFeaturesPath],
+      to: runtimeFeaturesPath,
+    },
+  ]
   const navItems = isSettingsRoute ? settingsNavItems : workspaceNavItems
   const settingsHomeButton = (
     <ButtonContainer ariaLabel="Home" as={Link} size="22" to={routePath('home')} variant="bare">
