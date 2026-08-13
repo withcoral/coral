@@ -799,11 +799,42 @@ fn find_function<'a>(
     schema_name: &str,
     function_name: &str,
 ) -> Option<&'a TableFunctionInfo> {
-    catalog.table_functions.iter().find(|function| {
-        function.catalog_name.as_deref() == catalog_name
-            && function.schema_name == schema_name
-            && function.function_name == function_name
-    })
+    let matches_coordinate = |function: &&TableFunctionInfo| {
+        function.schema_name == schema_name && function.function_name == function_name
+    };
+    if let Some(catalog_name) = catalog_name {
+        return catalog.table_functions.iter().find(|function| {
+            function.catalog_name.as_deref() == Some(catalog_name)
+                && function.schema_name == schema_name
+                && function.function_name == function_name
+        });
+    }
+
+    // A missing catalog is still the canonical identity for default-catalog
+    // functions, so prefer that exact match before considering compatibility.
+    if let Some(function) = catalog
+        .table_functions
+        .iter()
+        .filter(matches_coordinate)
+        .find(|function| function.catalog_name.is_none())
+    {
+        return Some(function);
+    }
+
+    // A stale pre-catalog projection can omit the catalog while the current
+    // catalog has gained one. Recover only when the remaining coordinate is
+    // unique; choosing the first of multiple catalogs would return the wrong
+    // SQL identity.
+    let mut catalog_qualified_matches = catalog
+        .table_functions
+        .iter()
+        .filter(matches_coordinate)
+        .filter(|function| function.catalog_name.is_some());
+    let function = catalog_qualified_matches.next()?;
+    catalog_qualified_matches
+        .next()
+        .is_none()
+        .then_some(function)
 }
 
 fn catalog_query_failure(error: &QueryManagerError) -> ProviderFailure {
@@ -826,11 +857,75 @@ fn catalog_index_failure(error: &SqliteSearchError) -> ProviderFailure {
 mod tests {
     use std::collections::BTreeSet;
 
-    use coral_engine::{ColumnInfo, TableFunctionArgumentInfo, TableFunctionInfo, TableInfo};
+    use coral_engine::{
+        CatalogInfo, ColumnInfo, TableFunctionArgumentInfo, TableFunctionInfo, TableInfo,
+    };
     use coral_spec::SourceTableFunctionKind;
 
-    use super::{failed_sources_note, function_fields, table_fields};
-    use crate::search::result::{FieldRef, FieldRole, MatchEvidence};
+    use super::{failed_sources_note, function_fields, resolve_surface_id, table_fields};
+    use crate::search::result::{
+        FieldRef, FieldRole, MatchEvidence, SearchSurfaceId, SearchSurfaceKind,
+    };
+
+    #[test]
+    fn missing_cached_function_catalog_resolves_unique_current_identity() {
+        let catalog = CatalogInfo {
+            tables: Vec::new(),
+            table_functions: vec![function(Some("github_v4"), "issues", "search")],
+        };
+        let stale_id = SearchSurfaceId {
+            catalog_name: None,
+            schema_name: "issues".to_string(),
+            name: "search".to_string(),
+            kind: SearchSurfaceKind::TableFunction,
+        };
+
+        let resolved = resolve_surface_id(&catalog, &stale_id).expect("unique current function");
+
+        assert_eq!(resolved.catalog_name.as_deref(), Some("github_v4"));
+        assert_eq!(resolved.schema_name, "issues");
+        assert_eq!(resolved.name, "search");
+    }
+
+    #[test]
+    fn missing_cached_function_catalog_prefers_exact_default_catalog_match() {
+        let catalog = CatalogInfo {
+            tables: Vec::new(),
+            table_functions: vec![
+                function(None, "issues", "search"),
+                function(Some("github_v4"), "issues", "search"),
+            ],
+        };
+        let cached_id = SearchSurfaceId {
+            catalog_name: None,
+            schema_name: "issues".to_string(),
+            name: "search".to_string(),
+            kind: SearchSurfaceKind::TableFunction,
+        };
+
+        let resolved = resolve_surface_id(&catalog, &cached_id).expect("default-catalog function");
+
+        assert_eq!(resolved.catalog_name, None);
+    }
+
+    #[test]
+    fn missing_cached_function_catalog_does_not_guess_between_catalogs() {
+        let catalog = CatalogInfo {
+            tables: Vec::new(),
+            table_functions: vec![
+                function(Some("github_v4"), "issues", "search"),
+                function(Some("gitlab_v4"), "issues", "search"),
+            ],
+        };
+        let stale_id = SearchSurfaceId {
+            catalog_name: None,
+            schema_name: "issues".to_string(),
+            name: "search".to_string(),
+            kind: SearchSurfaceKind::TableFunction,
+        };
+
+        assert!(resolve_surface_id(&catalog, &stale_id).is_none());
+    }
 
     #[test]
     fn required_function_argument_does_not_count_as_omitted_evidence() {
@@ -919,6 +1014,25 @@ mod tests {
             failed_sources_note(&failed),
             "5 source(s) failed to load: alpha, bravo, charlie, and 2 more"
         );
+    }
+
+    fn function(
+        catalog_name: Option<&str>,
+        schema_name: &str,
+        function_name: &str,
+    ) -> TableFunctionInfo {
+        TableFunctionInfo {
+            catalog_name: catalog_name.map(ToString::to_string),
+            schema_name: schema_name.to_string(),
+            function_name: function_name.to_string(),
+            description: String::new(),
+            guide: String::new(),
+            require_guide_read: false,
+            arguments: Vec::new(),
+            result_columns: Vec::new(),
+            kind: SourceTableFunctionKind::Table,
+            search_limits: None,
+        }
     }
 
     fn argument(name: &str, required: bool) -> TableFunctionArgumentInfo {

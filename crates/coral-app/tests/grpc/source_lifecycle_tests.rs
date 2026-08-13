@@ -131,6 +131,10 @@ async fn installed_v4_openapi_uses_materialized_catalog_identities() {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "This lifecycle test verifies MCP query, catalog, legacy-name, and collision behavior together."
+)]
 async fn installed_v4_mcp_uses_public_catalog_identities() {
     let harness = GrpcHarness::new().await;
     let _server = harness.import_v4_mcp_catalog_fixture().await;
