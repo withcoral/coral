@@ -138,6 +138,11 @@ impl EnvelopeContext {
                 "envelope binding version must be positive".to_string(),
             ));
         }
+        if domain.contains('\0') {
+            return Err(CredentialsError::Crypto(
+                "envelope domain must not contain NUL".to_string(),
+            ));
+        }
         let binding_version_text = binding_version.to_string();
         let mut versioned_fields = Vec::with_capacity(fields.len() + 2);
         versioned_fields.push(binding_version_text.as_str());
@@ -147,6 +152,13 @@ impl EnvelopeContext {
             binding_version,
             encoded_aad: encode_aad_fields(domain, &versioned_fields),
         })
+    }
+
+    /// Bind a wrapped DEK to the same owner context as its encrypted payload.
+    pub(crate) fn dek_aad(&self, key_id: &str) -> Vec<u8> {
+        let mut aad = self.encoded_aad.clone();
+        encode_aad_field(&mut aad, key_id);
+        aad
     }
 }
 
@@ -317,7 +329,7 @@ fn decrypt_credential_document_bytes(
         credential_document_context(document.binding_version, workspace_name, source_name)?;
     validate_document_metadata(document, &context)?;
     let kek = key_provider.key(&document.key_id)?;
-    let dek = unwrap_credential_dek(document, &kek)?;
+    let dek = unwrap_credential_dek(document, &kek, &context)?;
 
     let mut ciphertext = Zeroizing::new(document.ciphertext.clone());
     match open(
@@ -346,19 +358,21 @@ fn decrypt_credential_document_bytes(
 fn unwrap_credential_dek(
     document: &EncryptedCredentialDocument,
     kek: &CredentialEncryptionKey,
+    context: &EnvelopeContext,
 ) -> Result<Zeroizing<[u8; KEY_LEN]>, CredentialsError> {
-    match unwrap_current_dek(document, kek, document.binding_version) {
+    match unwrap_current_dek(document, kek, context) {
         Ok(dek) => Ok(dek),
         Err(primary_error) if document.binding_version == LEGACY_CREDENTIAL_BINDING_VERSION => {
-            let mut legacy_dek = Zeroizing::new(document.wrapped_dek.clone());
-            match open(
-                &kek.bytes,
-                document.wrapped_dek_nonce.as_slice(),
-                &legacy_credential_dek_aad(&document.key_id),
-                legacy_dek.as_mut_slice(),
+            match unwrap_dek_with_aad(
+                document,
+                kek,
+                &legacy_length_prefixed_credential_dek_aad(&document.key_id),
             ) {
-                Ok(dek_plaintext) => validate_dek_plaintext(dek_plaintext),
-                Err(_) => Err(primary_error),
+                Ok(dek) => Ok(dek),
+                Err(_) => {
+                    unwrap_dek_with_aad(document, kek, &legacy_credential_dek_aad(&document.key_id))
+                        .map_err(|_legacy_error| primary_error)
+                }
             }
         }
         Err(error) => Err(error),
@@ -368,13 +382,21 @@ fn unwrap_credential_dek(
 fn unwrap_current_dek(
     document: &EncryptedEnvelopeDocument,
     kek: &CredentialEncryptionKey,
-    binding_version: i64,
+    context: &EnvelopeContext,
+) -> Result<Zeroizing<[u8; KEY_LEN]>, CredentialsError> {
+    unwrap_dek_with_aad(document, kek, &context.dek_aad(&document.key_id))
+}
+
+fn unwrap_dek_with_aad(
+    document: &EncryptedEnvelopeDocument,
+    kek: &CredentialEncryptionKey,
+    aad: &[u8],
 ) -> Result<Zeroizing<[u8; KEY_LEN]>, CredentialsError> {
     let mut dek = Zeroizing::new(document.wrapped_dek.clone());
     open(
         &kek.bytes,
         document.wrapped_dek_nonce.as_slice(),
-        &envelope_dek_aad(binding_version, &document.key_id),
+        aad,
         dek.as_mut_slice(),
     )
     .and_then(validate_dek_plaintext)
@@ -398,14 +420,14 @@ fn rewrap_dek(
     document: &EncryptedEnvelopeDocument,
     active_kek: &CredentialEncryptionKey,
     dek: &[u8; KEY_LEN],
-    binding_version: i64,
-) -> Result<Option<EncryptedEnvelopeDocument>, CredentialsError> {
+    context: &EnvelopeContext,
+) -> Result<EncryptedEnvelopeDocument, CredentialsError> {
     let wrapped_dek_nonce = random_array::<NONCE_LEN>()?;
     let mut wrapped_dek = Zeroizing::new(dek.to_vec());
     seal(
         &active_kek.bytes,
         &wrapped_dek_nonce,
-        &envelope_dek_aad(binding_version, active_kek.key_id()),
+        &context.dek_aad(active_kek.key_id()),
         &mut wrapped_dek,
     )?;
 
@@ -416,9 +438,8 @@ fn rewrap_dek(
         wrapped_dek_nonce.to_vec(),
         active_kek.key_id.clone(),
         document.algorithm.clone(),
-        document.binding_version,
+        context.binding_version,
     )
-    .map(Some)
     .map_err(|error| CredentialsError::Crypto(error.to_string()))
 }
 
@@ -461,7 +482,7 @@ pub(crate) fn seal_envelope_document(
     seal(
         &kek.bytes,
         &wrapped_dek_nonce,
-        &envelope_dek_aad(context.binding_version, kek.key_id()),
+        &context.dek_aad(kek.key_id()),
         &mut wrapped_dek,
     )?;
 
@@ -485,7 +506,7 @@ pub(crate) fn open_envelope_document(
 ) -> Result<Zeroizing<Vec<u8>>, CredentialsError> {
     validate_document_metadata(document, context)?;
     let kek = key_provider.key(&document.key_id)?;
-    let dek = unwrap_current_dek(document, &kek, context.binding_version)?;
+    let dek = unwrap_current_dek(document, &kek, context)?;
 
     let mut ciphertext = Zeroizing::new(document.ciphertext.clone());
     open(
@@ -506,7 +527,7 @@ pub(crate) fn rewrap_envelope_document(
     validate_document_metadata(document, context)?;
     let old_kek = key_provider.key(&document.key_id)?;
     let active_kek = key_provider.active_key()?;
-    let dek = unwrap_current_dek(document, &old_kek, context.binding_version)?;
+    let dek = unwrap_current_dek(document, &old_kek, context)?;
     let mut document_probe = Zeroizing::new(document.ciphertext.clone());
     open(
         &*dek,
@@ -518,7 +539,7 @@ pub(crate) fn rewrap_envelope_document(
         return Ok(None);
     }
 
-    rewrap_dek(document, &active_kek, &dek, context.binding_version)
+    rewrap_dek(document, &active_kek, &dek, context).map(Some)
 }
 
 fn seal(
@@ -593,8 +614,8 @@ fn legacy_credential_document_aad(
     .into_bytes()
 }
 
-fn envelope_dek_aad(binding_version: i64, key_id: &str) -> Vec<u8> {
-    let binding_version = binding_version.to_string();
+fn legacy_length_prefixed_credential_dek_aad(key_id: &str) -> Vec<u8> {
+    let binding_version = LEGACY_CREDENTIAL_BINDING_VERSION.to_string();
     encode_aad_fields("coral-credential-dek", &[binding_version.as_str(), key_id])
 }
 
@@ -607,11 +628,15 @@ fn encode_aad_fields(domain: &str, fields: &[&str]) -> Vec<u8> {
     aad.extend_from_slice(domain.as_bytes());
     aad.push(0);
     for field in fields {
-        let bytes = field.as_bytes();
-        aad.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
-        aad.extend_from_slice(bytes);
+        encode_aad_field(&mut aad, field);
     }
     aad
+}
+
+fn encode_aad_field(aad: &mut Vec<u8>, field: &str) {
+    let bytes = field.as_bytes();
+    aad.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
+    aad.extend_from_slice(bytes);
 }
 
 fn random_array<const N: usize>() -> Result<[u8; N], CredentialsError> {
