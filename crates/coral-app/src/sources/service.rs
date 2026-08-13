@@ -849,147 +849,42 @@ mod tests {
     use crate::workspaces::{MemberRole, WorkspaceAuthorizer};
 
     #[tokio::test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one scenario freezes authorization precedence for every source RPC"
-    )]
+    #[expect(clippy::needless_update, reason = "uniform request matrix")]
     async fn source_configuration_requires_manage() {
         let fixture = source_service_fixture().await;
         let workspace = workspace(&fixture.workspace);
+        macro_rules! manage_denied {
+            ($($principal:ident.$method:ident($request:ident $(, $field:ident: $value:expr)*) => $message:literal;)+) => {$({
+                let Err(status) = fixture
+                    .service
+                    .$method(authenticated(
+                        $request {
+                            workspace: Some(workspace.clone()),
+                            $($field: $value,)*
+                            ..Default::default()
+                        },
+                        &fixture.$principal,
+                    ))
+                    .await
+                else {
+                    panic!($message);
+                };
+                assert_manage_denied(&status);
+            })+};
+        }
 
-        assert_manage_denied(
-            &fixture
-                .service
-                .discover_sources(authenticated(
-                    DiscoverSourcesRequest {
-                        workspace: Some(workspace.clone()),
-                    },
-                    &fixture.member,
-                ))
-                .await
-                .expect_err("members cannot discover source setup metadata"),
-        );
-        assert_manage_denied(
-            &fixture
-                .service
-                .list_sources(authenticated(
-                    ListSourcesRequest {
-                        workspace: Some(workspace.clone()),
-                    },
-                    &fixture.member,
-                ))
-                .await
-                .expect_err("members cannot list source configuration"),
-        );
-        assert_manage_denied(
-            &fixture
-                .service
-                .get_source(authenticated(
-                    GetSourceRequest {
-                        workspace: Some(workspace.clone()),
-                        name: "sensitive".to_string(),
-                    },
-                    &fixture.member,
-                ))
-                .await
-                .expect_err("members cannot read configured values or secret names"),
-        );
-        assert_manage_denied(
-            &fixture
-                .service
-                .get_source_info(authenticated(
-                    GetSourceInfoRequest {
-                        workspace: Some(workspace.clone()),
-                        name: "github".to_string(),
-                    },
-                    &fixture.member,
-                ))
-                .await
-                .expect_err("members cannot read credential setup metadata"),
-        );
-        assert_manage_denied(
-            &fixture
-                .service
-                .create_bundled_source(authenticated(
-                    CreateBundledSourceRequest {
-                        workspace: Some(workspace.clone()),
-                        name: "invalid/name".to_string(),
-                        ..Default::default()
-                    },
-                    &fixture.member,
-                ))
-                .await
-                .expect_err("members cannot create bundled sources"),
-        );
-        let Err(denied) = fixture
-            .service
-            .create_bundled_source_with_o_auth(authenticated(
-                CreateBundledSourceWithOAuthRequest {
-                    workspace: Some(workspace.clone()),
-                    name: "invalid/name".to_string(),
-                    ..Default::default()
-                },
-                &fixture.member,
-            ))
-            .await
-        else {
-            panic!("members cannot start credential retrieval");
-        };
-        assert_manage_denied(&denied);
-        let Err(denied) = fixture
-            .service
-            .import_source(authenticated(
-                ImportSourceRequest {
-                    workspace: Some(workspace.clone()),
-                    manifest_yaml: "not: [valid".to_string(),
-                    ..Default::default()
-                },
-                &fixture.member,
-            ))
-            .await
-        else {
-            panic!("members cannot import sources");
-        };
-        assert_manage_denied(&denied);
-        assert_manage_denied(
-            &fixture
-                .service
-                .delete_source(authenticated(
-                    DeleteSourceRequest {
-                        workspace: Some(workspace.clone()),
-                        name: "invalid/name".to_string(),
-                    },
-                    &fixture.member,
-                ))
-                .await
-                .expect_err("members cannot delete sources"),
-        );
-        assert_manage_denied(
-            &fixture
-                .service
-                .validate_source(authenticated(
-                    ValidateSourceRequest {
-                        workspace: Some(workspace.clone()),
-                        name: "invalid/name".to_string(),
-                    },
-                    &fixture.member,
-                ))
-                .await
-                .expect_err("members cannot validate source configuration"),
-        );
-
-        assert_manage_denied(
-            &fixture
-                .service
-                .list_sources(authenticated(
-                    ListSourcesRequest {
-                        workspace: Some(workspace),
-                    },
-                    &fixture.owner_agent,
-                ))
-                .await
-                .expect_err("agent credential is denied even with an owner role"),
-        );
+        manage_denied! {
+            member.discover_sources(DiscoverSourcesRequest) => "members cannot discover source setup metadata";
+            member.list_sources(ListSourcesRequest) => "members cannot list source configuration";
+            member.get_source(GetSourceRequest, name: "sensitive".to_string()) => "members cannot read configured values or secret names";
+            member.get_source_info(GetSourceInfoRequest, name: "github".to_string()) => "members cannot read credential setup metadata";
+            member.create_bundled_source(CreateBundledSourceRequest, name: "invalid/name".to_string()) => "members cannot create bundled sources";
+            member.create_bundled_source_with_o_auth(CreateBundledSourceWithOAuthRequest, name: "invalid/name".to_string()) => "members cannot start credential retrieval";
+            member.import_source(ImportSourceRequest, manifest_yaml: "not: [valid".to_string()) => "members cannot import sources";
+            member.delete_source(DeleteSourceRequest, name: "invalid/name".to_string()) => "members cannot delete sources";
+            member.validate_source(ValidateSourceRequest, name: "invalid/name".to_string()) => "members cannot validate source configuration";
+            owner_agent.list_sources(ListSourcesRequest) => "agent credential is denied even with an owner role";
+        }
     }
 
     #[tokio::test]

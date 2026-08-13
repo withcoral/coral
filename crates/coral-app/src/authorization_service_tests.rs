@@ -39,172 +39,62 @@ use crate::task::service::TaskService;
 use crate::task::store::TaskStore;
 use crate::workspaces::{MemberRole, WorkspaceAuthorizer, WorkspaceManager, WorkspaceName};
 
-macro_rules! read_rpc {
-    ($fixture:ident.$service:ident.$method:ident($request:expr), $expected:expr) => {{
-        let request = $request;
-        assert_read(
-            $fixture
-                .$service
-                .$method(authenticated(request.clone(), &$fixture.member))
-                .await,
-            $fixture
-                .$service
-                .$method(authenticated(request, &$fixture.nonmember))
-                .await,
+macro_rules! rpc_matrix {
+    ($fixture:ident, $assertion:ident, $left:ident, $right:ident;
+        $($service:ident.$method:ident($request:ident $(, $field:ident: $value:expr)*) => $expected:expr;)+
+    ) => {$({
+        let request = $request {
+            workspace: Some($fixture.workspace.clone()),
+            $($field: $value,)*
+            ..Default::default()
+        };
+        $assertion(
+            $fixture.$service.$method(authenticated(request.clone(), &$fixture.$left)).await,
+            $fixture.$service.$method(authenticated(request, &$fixture.$right)).await,
             $expected,
         );
-    }};
-}
-
-macro_rules! manage_rpc {
-    ($fixture:ident.$service:ident.$method:ident($request:expr), $expected:expr) => {{
-        let request = $request;
-        assert_manage(
-            $fixture
-                .$service
-                .$method(authenticated(request.clone(), &$fixture.member))
-                .await,
-            $fixture
-                .$service
-                .$method(authenticated(request, &$fixture.owner))
-                .await,
-            $expected,
-        );
-    }};
+    })+};
 }
 
 #[tokio::test]
+#[expect(clippy::needless_update, reason = "uniform request matrix")]
 async fn read_rpcs_authorize_before_handler_work() {
     let fixture = service_authorization_fixture().await;
-    let workspace = Some(fixture.workspace.clone());
-    read_rpc!(
-        fixture.catalog.list_catalog(ListCatalogRequest {
-            workspace: workspace.clone(),
-            kind: 999,
-            ..Default::default()
-        }),
-        Some(Code::InvalidArgument)
-    );
-    read_rpc!(
-        fixture.catalog.search_catalog(SearchCatalogRequest {
-            workspace: workspace.clone(),
-            ..Default::default()
-        }),
-        Some(Code::InvalidArgument)
-    );
-    read_rpc!(
-        fixture
-            .catalog
-            .describe_catalog_surface(DescribeCatalogSurfaceRequest {
-                workspace: workspace.clone(),
-                ..Default::default()
-            }),
-        Some(Code::InvalidArgument)
-    );
-    read_rpc!(
-        fixture.catalog.list_columns(ListColumnsRequest {
-            workspace: workspace.clone(),
-            ..Default::default()
-        }),
-        Some(Code::InvalidArgument)
-    );
-    read_rpc!(
-        fixture.query.execute_sql(ExecuteSqlRequest {
-            workspace: workspace.clone(),
+    rpc_matrix!(
+        fixture, assert_read, member, nonmember;
+        catalog.list_catalog(ListCatalogRequest, kind: 999) => Some(Code::InvalidArgument);
+        catalog.search_catalog(SearchCatalogRequest) => Some(Code::InvalidArgument);
+        catalog.describe_catalog_surface(DescribeCatalogSurfaceRequest) => Some(Code::InvalidArgument);
+        catalog.list_columns(ListColumnsRequest) => Some(Code::InvalidArgument);
+        query.execute_sql(
+            ExecuteSqlRequest,
             sql: "SELECT 1".to_string(),
             guide_read_context: None,
             task_attribution: Some(TaskAttribution {
                 task_id: "invalid".to_string(),
                 intent: "invalid attribution".to_string(),
-            }),
-        }),
-        Some(Code::InvalidArgument)
-    );
-    read_rpc!(
-        fixture.query.explain_sql(ExplainSqlRequest {
-            workspace: workspace.clone(),
-            sql: "invalid-sql".to_string()
-        }),
-        Some(Code::InvalidArgument)
-    );
-    read_rpc!(
-        fixture.functions.list_functions(ListFunctionsRequest {
-            workspace: workspace.clone()
-        }),
-        None
-    );
-    read_rpc!(
-        fixture.search.search(SearchRequest {
-            workspace: workspace.clone(),
-            ..Default::default()
-        }),
-        Some(Code::InvalidArgument)
-    );
-    read_rpc!(
-        fixture.task.start_task(StartTaskRequest {
-            workspace: workspace.clone(),
-            ..Default::default()
-        }),
-        Some(Code::InvalidArgument)
-    );
-    read_rpc!(
-        fixture.task.end_task(EndTaskRequest {
-            workspace: workspace.clone(),
-            task_id: "invalid".to_string(),
-            ..Default::default()
-        }),
-        Some(Code::InvalidArgument)
-    );
-    read_rpc!(
-        fixture.feedback.submit_feedback(SubmitFeedbackRequest {
-            workspace,
-            ..Default::default()
-        }),
-        Some(Code::InvalidArgument)
+            })
+        ) => Some(Code::InvalidArgument);
+        query.explain_sql(ExplainSqlRequest, sql: "invalid-sql".to_string()) => Some(Code::InvalidArgument);
+        functions.list_functions(ListFunctionsRequest) => None;
+        search.search(SearchRequest) => Some(Code::InvalidArgument);
+        task.start_task(StartTaskRequest) => Some(Code::InvalidArgument);
+        task.end_task(EndTaskRequest, task_id: "invalid".to_string()) => Some(Code::InvalidArgument);
+        feedback.submit_feedback(SubmitFeedbackRequest) => Some(Code::InvalidArgument);
     );
 }
 
 #[tokio::test]
+#[expect(clippy::needless_update, reason = "uniform request matrix")]
 async fn manage_rpcs_authorize_before_handler_work() {
     let fixture = service_authorization_fixture().await;
-    let workspace = Some(fixture.workspace.clone());
-    manage_rpc!(
-        fixture.functions.add_function(AddFunctionRequest {
-            workspace: workspace.clone(),
-            ..Default::default()
-        }),
-        Some(Code::InvalidArgument)
-    );
-    manage_rpc!(
-        fixture.functions.delete_function(DeleteFunctionRequest {
-            workspace: workspace.clone(),
-            ..Default::default()
-        }),
-        Some(Code::InvalidArgument)
-    );
-    manage_rpc!(
-        fixture
-            .search
-            .rebuild_search_index(RebuildSearchIndexRequest {
-                workspace: workspace.clone(),
-                provider: 999,
-                ..Default::default()
-            }),
-        Some(Code::InvalidArgument)
-    );
-    manage_rpc!(
-        fixture.search.drain_search_queue(DrainSearchQueueRequest {
-            workspace: workspace.clone(),
-            budget_ms: 60_001,
-        }),
-        Some(Code::InvalidArgument)
-    );
-    manage_rpc!(
-        fixture.search.clear_search_data(ClearSearchDataRequest {
-            workspace,
-            ..Default::default()
-        }),
-        Some(Code::InvalidArgument)
+    rpc_matrix!(
+        fixture, assert_manage, member, owner;
+        functions.add_function(AddFunctionRequest) => Some(Code::InvalidArgument);
+        functions.delete_function(DeleteFunctionRequest) => Some(Code::InvalidArgument);
+        search.rebuild_search_index(RebuildSearchIndexRequest, provider: 999) => Some(Code::InvalidArgument);
+        search.drain_search_queue(DrainSearchQueueRequest, budget_ms: 60_001) => Some(Code::InvalidArgument);
+        search.clear_search_data(ClearSearchDataRequest) => Some(Code::InvalidArgument);
     );
 }
 

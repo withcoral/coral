@@ -12,6 +12,10 @@ lint:
     - COMMENT_ONEOF
     - COMMENT_RPC
     - COMMENT_SERVICE
+  # This vendored protocol must retain the canonical grpc.health.v1 names and
+  # enum values that Coral's tonic-health server exposes.
+  ignore:
+    - proto/grpc/health/v1/health.proto
 breaking:
   use:
     - FILE
