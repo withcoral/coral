@@ -39,6 +39,7 @@ jobs:
       ui-build: ${{ steps.filter.outputs.ui-build }}
       ui-tests: ${{ steps.filter.outputs.ui-tests }}
       reef-checks: ${{ steps.filter.outputs.reef-checks }}
+      reef-image: ${{ steps.filter.outputs.reef-image }}
       desktop-checks: ${{ steps.filter.outputs.desktop-checks }}
       proto-lint: ${{ steps.filter.outputs.proto-lint }}
       source-lint: ${{ steps.filter.outputs.source-lint }}
@@ -104,6 +105,31 @@ jobs:
               # Reef re-exports the desktop IPC bridge types, so a change there
               # can break the reef type-check.
               - 'apps/desktop/src/shared/types.ts'
+            reef-image:
+              - '.github/workflows/validate.yml'
+              - '.github/workflows/docker-aliases.yml'
+              - '.github/workflows/docker-publish.yml'
+              - '.github/workflows/reef-docker-publish.yml'
+              - '.github/workflows/release.yml'
+              - '.dockerignore'
+              - 'Makefile'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - 'rust-toolchain'
+              - 'crates/**'
+              - 'sources/core/**'
+              - 'docker/Dockerfile.local'
+              - 'docker/Dockerfile'
+              - 'docker/entrypoint.sh'
+              - 'docker/Dockerfile.reef'
+              - 'docker/entrypoint-reef.sh'
+              - 'docker/reef-smoke.sh'
+              - 'docker/reef-image.test.mjs'
+              - 'docker/reef-publish.test.mjs'
+              - 'apps/reef/**'
+              - 'apps/desktop/src/shared/types.ts'
+              - 'crates/coral-api/proto/**'
             desktop-checks:
               - '.github/workflows/validate.yml'
               - 'apps/desktop/**'
@@ -477,6 +503,34 @@ jobs:
       - name: Build Reef
         run: npm run build --prefix apps/reef
 
+      - name: Smoke production Reef server
+        run: npm run test:server --prefix apps/reef
+
+  reef-image:
+    name: Reef image
+    # Building the real Coral peer dominates this job. Give it a larger
+    # runner than the other jobs while Dockerfile.local's locked cache mounts
+    # retain registry, git, and target artifacts within the BuildKit builder.
+    runs-on: blacksmith-16vcpu-ubuntu-2404
+    needs: changes
+    if: ${{ needs.changes.outputs.reef-image == 'true' }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          cache-binary: false
+
+      - name: Check Reef image contract
+        run: node --test docker/reef-image.test.mjs docker/reef-publish.test.mjs
+
+      - name: Build and smoke linux/amd64 Coral and Reef images
+        run: |
+          make reef-docker-test DOCKER_IMAGE=coral:local REEF_DOCKER_IMAGE=reef:local
+          test "$(docker image inspect reef:local --format '{{.Os}}/{{.Architecture}}')" = linux/amd64
+
   desktop-checks:
     name: Desktop checks
     runs-on: blacksmith-4vcpu-ubuntu-2404
@@ -737,6 +791,7 @@ jobs:
         ui-build,
         ui-tests,
         reef-checks,
+        reef-image,
         desktop-checks,
         proto-lint,
         gha-security-audit-pr,
@@ -760,6 +815,7 @@ jobs:
           UI_BUILD_RESULT: ${{ needs.ui-build.result }}
           UI_TESTS_RESULT: ${{ needs.ui-tests.result }}
           REEF_CHECKS_RESULT: ${{ needs.reef-checks.result }}
+          REEF_IMAGE_RESULT: ${{ needs.reef-image.result }}
           DESKTOP_CHECKS_RESULT: ${{ needs.desktop-checks.result }}
           PROTO_LINT_RESULT: ${{ needs.proto-lint.result }}
           GHA_SECURITY_AUDIT_PR_RESULT: ${{ needs.gha-security-audit-pr.result }}
@@ -778,6 +834,7 @@ jobs:
             "ui-build:$UI_BUILD_RESULT"
             "ui-tests:$UI_TESTS_RESULT"
             "reef-checks:$REEF_CHECKS_RESULT"
+            "reef-image:$REEF_IMAGE_RESULT"
             "desktop-checks:$DESKTOP_CHECKS_RESULT"
             "proto-lint:$PROTO_LINT_RESULT"
             "gha-security-audit-pr:$GHA_SECURITY_AUDIT_PR_RESULT"
