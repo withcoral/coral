@@ -111,16 +111,15 @@ jobs:
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: blacksmith-4vcpu-ubuntu-2404
           - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
-            cross: true
+            os: blacksmith-4vcpu-ubuntu-2404-arm
           - target: x86_64-apple-darwin
-            os: macos-latest
+            os: blacksmith-6vcpu-macos-26
           - target: aarch64-apple-darwin
-            os: macos-latest
+            os: blacksmith-6vcpu-macos-26
           - target: x86_64-pc-windows-msvc
-            os: windows-latest
+            os: blacksmith-4vcpu-windows-2025
     runs-on: ${{ matrix.os }}
     env:
       TAG_NAME: ${{ needs.validate-release-ref.outputs.tag-name }}
@@ -141,17 +140,10 @@ jobs:
           path: apps/ui/dist
       # No Rust cache here — release builds must compile from a clean state
       # to guard against cache poisoning attacks.
-      - name: Install cross
-        if: matrix.cross
-        run: |
-          set -euo pipefail
-          cargo install cargo-binstall --locked
-          cargo binstall --no-confirm --force --disable-strategies compile cross@0.2.5
       - name: Build Unix
         if: runner.os != 'Windows'
         shell: bash
         env:
-          CROSS: ${{ matrix.cross }}
           HAS_UI: ${{ needs.build-ui.outputs.has-ui }}
           TARGET: ${{ matrix.target }}
         run: |
@@ -160,11 +152,7 @@ jobs:
             feature_args=(--features embedded-ui)
           fi
 
-          if [ "$CROSS" = "true" ]; then
-            cross build --locked --release --target "$TARGET" "${feature_args[@]}"
-          else
-            cargo build --locked --release --target "$TARGET" "${feature_args[@]}"
-          fi
+          cargo build --locked --release --target "$TARGET" "${feature_args[@]}"
 
       - name: Build Windows
         if: runner.os == 'Windows'
@@ -579,7 +567,7 @@ jobs:
       - validate-release-ref
       - coordinate-docker-aliases
     environment: release
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       contents: write
     outputs:
@@ -621,7 +609,7 @@ jobs:
       - promote-release
     if: needs.promote-release.outputs.promoted == 'true'
     environment: release
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       contents: read
     steps:
