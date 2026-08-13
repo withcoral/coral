@@ -938,7 +938,6 @@ mod tests {
                     shape: IrTypeShape::List {
                         item_type_ref: "item".to_string(),
                     },
-                    nullable: false,
                     description: String::new(),
                 },
                 IrType {
@@ -948,11 +947,9 @@ mod tests {
                             name: "items".to_string(),
                             type_ref: "item_list".to_string(),
                             required: true,
-                            nullable: false,
                             description: String::new(),
                         }],
                     },
-                    nullable: false,
                     description: String::new(),
                 },
             ],
@@ -1010,7 +1007,6 @@ mod tests {
         IrType {
             id: id.to_string(),
             shape: IrTypeShape::Object { fields: Vec::new() },
-            nullable: false,
             description: String::new(),
         }
     }

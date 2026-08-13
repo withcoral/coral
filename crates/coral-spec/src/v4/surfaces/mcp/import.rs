@@ -104,7 +104,6 @@ impl<'a> McpImporter<'a> {
         self.types.entry(id.clone()).or_insert_with(|| IrType {
             id: id.clone(),
             shape: IrTypeShape::Scalar(scalar),
-            nullable: true,
             description: String::new(),
         });
         id
@@ -921,12 +920,10 @@ surface:
         let id = field(list_fields, "id");
         assert_eq!(id.type_ref, "mcp_string");
         assert!(id.required);
-        assert!(!id.nullable);
         assert_eq!(id.description, "Item id");
         let count = field(list_fields, "count");
         assert_eq!(count.type_ref, "mcp_integer");
         assert!(!count.required);
-        assert!(count.nullable);
         assert!(list_fields.iter().any(|field| field.name == "raw"));
 
         let wrapped_items = operation(&ir, "wrapped_items");

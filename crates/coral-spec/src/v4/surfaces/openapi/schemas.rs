@@ -74,16 +74,11 @@ impl OpenApiImporter<'_> {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
-        let nullable = resolved
-            .get("nullable")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
         self.types.insert(
             type_id.clone(),
             IrType {
                 id: type_id.clone(),
                 shape: IrTypeShape::Json,
-                nullable,
                 description: description.clone(),
             },
         );
@@ -213,7 +208,6 @@ impl OpenApiImporter<'_> {
             IrType {
                 id: type_id.clone(),
                 shape,
-                nullable,
                 description,
             },
         );
@@ -384,7 +378,6 @@ impl OpenApiImporter<'_> {
                     name: name.clone(),
                     type_ref,
                     required: required.contains(name),
-                    nullable: true,
                     description: self.field_description(&schema),
                 }
             })

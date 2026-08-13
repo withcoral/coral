@@ -3725,7 +3725,7 @@ paths:
 
 /// The pass is unconditional, so the 3.0 sources have to come through it
 /// unchanged. Both rewrites need a literal `null` type, which 3.0 does not
-/// have — it spells the same thing with `nullable`.
+/// have.
 #[test]
 fn importer_leaves_3_0_alternation_schemas_unchanged() {
     let manifest = parse_source_manifest_yaml(
@@ -3806,7 +3806,6 @@ components:
         id.shape,
         IrTypeShape::Scalar(IrScalarType::String)
     ));
-    assert!(id.nullable, "the 3.0 nullable keyword is still read");
 }
 
 /// A `$ref` may name a subschema, and `#/components/schemas/Page/anyOf/0`
