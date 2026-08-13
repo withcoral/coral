@@ -1,4 +1,4 @@
-//! Heuristic inference of wrapped-list row paths for `OpenAPI` and MCP surfaces.
+//! Heuristic inference of wrapped-list row paths for OpenAPI and MCP surfaces.
 //!
 //! A "wrapped list" response wraps rows inside an envelope: the declared type is
 //! an object, but the rows live at a nested path such as `items` or

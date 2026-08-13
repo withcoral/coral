@@ -1,4 +1,4 @@
-//! Integration coverage for `OpenAPI` hydration.
+//! Integration coverage for OpenAPI hydration.
 
 #![allow(
     clippy::indexing_slicing,

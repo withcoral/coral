@@ -5,6 +5,54 @@ description: "Release notes for the Coral CLI, generated from [CHANGELOG.md](htt
 
 {/* AUTO-GENERATED — DO NOT EDIT. Run `make docs-generate` to update. */}
 
+## [0.10.0](https://github.com/withcoral/coral/compare/v0.9.0...v0.10.0) (2026-08-06)
+
+
+### ⚠ BREAKING CHANGES
+
+* **search:** return grouped catalog surfaces ([#2041](https://github.com/withcoral/coral/issues/2041))
+
+### Features
+
+* **app:** accept session tokens on served surfaces ([#1645](https://github.com/withcoral/coral/issues/1645)) ([29f41ed](https://github.com/withcoral/coral/commit/29f41ed20b08c0bd2c7e6c6fa206dad68a58a9a3))
+* **app:** add identity spec persistence schema ([#1521](https://github.com/withcoral/coral/issues/1521)) ([5e74c7b](https://github.com/withcoral/coral/commit/5e74c7bdad5feba2e6bee1b8c90546b1df1c20e6))
+* **app:** allow additional server auth audiences ([#2070](https://github.com/withcoral/coral/issues/2070)) ([25b9937](https://github.com/withcoral/coral/commit/25b9937d5401b05453b10891f2dd659713120179))
+* **app:** allow loopback OAuth client metadata ([#2071](https://github.com/withcoral/coral/issues/2071)) ([25bbc6c](https://github.com/withcoral/coral/commit/25bbc6c417395a9d6437dbb4cb7596fd653c0939))
+* **app:** confirm OAuth authorization redirects ([#1654](https://github.com/withcoral/coral/issues/1654)) ([e53bf47](https://github.com/withcoral/coral/commit/e53bf47575dafe9150d834b281dd13a00ed06b65))
+* **app:** connect DSL v4 database sources ([#1896](https://github.com/withcoral/coral/issues/1896)) ([ee29e3b](https://github.com/withcoral/coral/commit/ee29e3b1d5bdc67c5f9d2bc78386323acc68a5ef))
+* **app:** issue OAuth session tokens ([#1643](https://github.com/withcoral/coral/issues/1643)) ([b699b3d](https://github.com/withcoral/coral/commit/b699b3d164dae1dccc54fc7575fceae0f19fde0d))
+* **app:** mutate identity specs transactionally ([#1802](https://github.com/withcoral/coral/issues/1802)) ([a68541c](https://github.com/withcoral/coral/commit/a68541c8de7beefcacdeaf00df714d5045d6d08c))
+* **app:** persist identity spec documents with shared envelopes ([#1803](https://github.com/withcoral/coral/issues/1803)) ([f575c9d](https://github.com/withcoral/coral/commit/f575c9d14afc3fcd237602b03d9408e75d9e031c))
+* **app:** read identity specs from persistence ([#1801](https://github.com/withcoral/coral/issues/1801)) ([85ccb16](https://github.com/withcoral/coral/commit/85ccb161151cf076f2e7bd69f2eeae6280d1d93d))
+* **app:** require CIMD for OAuth clients ([#1655](https://github.com/withcoral/coral/issues/1655)) ([5f11f0e](https://github.com/withcoral/coral/commit/5f11f0ece208c2f9008409f9a63630bf1c05f6d3))
+* **app:** store OAuth authorization approvals ([#1653](https://github.com/withcoral/coral/issues/1653)) ([ec522d4](https://github.com/withcoral/coral/commit/ec522d438ec362187e7f71dfe7d04d547081fcd8))
+* **app:** validate OAuth client metadata documents ([#1649](https://github.com/withcoral/coral/issues/1649)) ([82dd70b](https://github.com/withcoral/coral/commit/82dd70b645812ca3348e08895f655137dafcb6af))
+* **catalog:** expose catalog-qualified table discovery ([#1894](https://github.com/withcoral/coral/issues/1894)) ([52ff0ac](https://github.com/withcoral/coral/commit/52ff0ac66c8f7bd92062770a4f5295432dea80a4))
+* **cli:** manage OAuth authorization server lifecycle ([#1647](https://github.com/withcoral/coral/issues/1647)) ([334df04](https://github.com/withcoral/coral/commit/334df048988cfdff7f25220672c5e5a93e35e5b8))
+* **database:** cache remote connection pools across queries ([#1928](https://github.com/withcoral/coral/issues/1928)) ([200ca5e](https://github.com/withcoral/coral/commit/200ca5e7af701e5eef39caedfe871777b35eae2e))
+* **engine:** add relational database catalog backend ([#1895](https://github.com/withcoral/coral/issues/1895)) ([521e5cb](https://github.com/withcoral/coral/commit/521e5cba695e6f4d462521f1f245a34538b93ddb))
+* **engine:** fetch database column metadata lazily ([#1929](https://github.com/withcoral/coral/issues/1929)) ([85f29b4](https://github.com/withcoral/coral/commit/85f29b4671a972e82686bc2c03efcb434c9bda11))
+* **reef:** link to onboarding from the sidebar ([#2047](https://github.com/withcoral/coral/issues/2047)) ([a6d7f3e](https://github.com/withcoral/coral/commit/a6d7f3e5b6d5ff5986e3590cf51d03ec2752a044))
+* **reef:** name what source discovery detected ([#2035](https://github.com/withcoral/coral/issues/2035)) ([229b5fb](https://github.com/withcoral/coral/commit/229b5fb2b9ecc7a6f41ed5e555da298a4f297adf))
+* **reef:** render typed Query Stream operations ([#1904](https://github.com/withcoral/coral/issues/1904)) ([a845a32](https://github.com/withcoral/coral/commit/a845a325bb77d3476371d20e6d36dc718bf15f63))
+* **release:** publish official Coral Docker image ([#2055](https://github.com/withcoral/coral/issues/2055)) ([97c4dac](https://github.com/withcoral/coral/commit/97c4dacb8e3c6b292a3a11a6bf77c29065831d97))
+* **search:** return grouped catalog surfaces ([#2041](https://github.com/withcoral/coral/issues/2041)) ([0b92836](https://github.com/withcoral/coral/commit/0b928362b6637e769e42aafb0a6b99c52e12f5be))
+* **spec:** add relational database runtime models ([#1927](https://github.com/withcoral/coral/issues/1927)) ([4152dbe](https://github.com/withcoral/coral/commit/4152dbee9393d9d5ff9049942cad6780653e1579))
+* **telemetry:** mark user-visible operations ([#1901](https://github.com/withcoral/coral/issues/1901)) ([a063697](https://github.com/withcoral/coral/commit/a063697de1b926201b65283b969202a1b204c100))
+* **traces:** add bounded Query Stream listing ([#2053](https://github.com/withcoral/coral/issues/2053)) ([bdd2e32](https://github.com/withcoral/coral/commit/bdd2e32972676761b22a70f5c3443b71b2a3e4c2))
+* **traces:** project Query Stream operation summaries ([#1876](https://github.com/withcoral/coral/issues/1876)) ([937f55e](https://github.com/withcoral/coral/commit/937f55ee2eb1dbb9e20e1a430a00e5c9a87fc098))
+
+
+### Bug Fixes
+
+* **app:** accept ephemeral loopback ports on OAuth redirect URIs ([#2084](https://github.com/withcoral/coral/issues/2084)) ([be762b8](https://github.com/withcoral/coral/commit/be762b8389c2a7f474db36c0146ffca58a143a50))
+* **search:** fail sources whose runtime component identity diverges ([#2078](https://github.com/withcoral/coral/issues/2078)) ([dd5f05b](https://github.com/withcoral/coral/commit/dd5f05bfe359de2d9c09e2391f34ea175523a812))
+
+
+### Performance Improvements
+
+* **app:** cache OIDC provider discovery documents ([#2002](https://github.com/withcoral/coral/issues/2002)) ([a764856](https://github.com/withcoral/coral/commit/a7648562a9335fe79410bf59e01cd8a66f66f314))
+
 ## [0.9.0](https://github.com/withcoral/coral/compare/v0.8.3...v0.9.0) (2026-07-31)
 
 

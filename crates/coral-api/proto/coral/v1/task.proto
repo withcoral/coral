@@ -48,6 +48,14 @@ message Task {
   string task_id = 1;
 }
 
+// Attributes one operation to a task.
+message TaskAttribution {
+  // Task that contains the operation.
+  string task_id = 1;
+  // Natural-language description of this operation's purpose.
+  string intent = 2;
+}
+
 // A task end event.
 message TaskEnd {
   // Ended task id.

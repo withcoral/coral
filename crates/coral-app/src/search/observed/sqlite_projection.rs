@@ -94,7 +94,6 @@ pub(crate) struct ObservedValuesSearchHits {
 #[derive(Debug)]
 struct ObservedQueueJobRow {
     id: i64,
-    owner_source_name: String,
     source_name: String,
     source_scope_id: String,
     surface_kind: ObservedValuesSurfaceKind,
@@ -107,7 +106,6 @@ struct ObservedQueueJobRow {
 #[derive(Debug)]
 struct RawObservedQueueJobRow {
     id: i64,
-    owner_source_name: String,
     source_name: String,
     source_scope_id: String,
     surface_kind: String,
@@ -143,7 +141,6 @@ pub(crate) enum ObservedFtsRebuildPhase {
 struct CanonicalObservedFtsRow {
     rowid: i64,
     workspace: String,
-    owner_source_name: String,
     source_name: String,
     source_scope_id: String,
     surface_kind: String,
@@ -159,7 +156,6 @@ impl CanonicalObservedFtsRow {
     fn payload_bytes(&self) -> usize {
         self.workspace
             .len()
-            .saturating_add(self.owner_source_name.len())
             .saturating_add(self.source_name.len())
             .saturating_add(self.source_scope_id.len())
             .saturating_add(self.surface_kind.len())
@@ -176,7 +172,6 @@ impl CanonicalObservedFtsRow {
 struct RawObservedFtsRow {
     rowid: i64,
     workspace: Value,
-    owner_source_name: Value,
     source_name: Value,
     source_scope_id: Value,
     surface_kind: Value,
@@ -190,7 +185,6 @@ struct RawObservedFtsRow {
 impl RawObservedFtsRow {
     fn payload_bytes(&self) -> usize {
         observed_fts_value_payload_bytes(&self.workspace)
-            .saturating_add(observed_fts_value_payload_bytes(&self.owner_source_name))
             .saturating_add(observed_fts_value_payload_bytes(&self.source_name))
             .saturating_add(observed_fts_value_payload_bytes(&self.source_scope_id))
             .saturating_add(observed_fts_value_payload_bytes(&self.surface_kind))
@@ -221,7 +215,6 @@ impl RawObservedQueueJobRow {
     fn decode(self) -> Result<ObservedQueueJobRow, (i64, String)> {
         let Self {
             id,
-            owner_source_name,
             source_name,
             source_scope_id,
             surface_kind: surface_kind_raw,
@@ -238,7 +231,6 @@ impl RawObservedQueueJobRow {
         };
         Ok(ObservedQueueJobRow {
             id,
-            owner_source_name,
             source_name,
             source_scope_id,
             surface_kind,
@@ -578,7 +570,7 @@ fn next_raw_observed_fts_rows(
     max_batch_payload_bytes: usize,
 ) -> Result<Vec<RawObservedFtsRow>, SqliteSearchError> {
     let first_sql = "
-        SELECT rowid, workspace, owner_source_name, source_name, source_scope_id,
+        SELECT rowid, workspace, source_name, source_scope_id,
                surface_kind, surface_name, column_name, value_key, display_value, search_text
         FROM observed_values_fts
         WHERE rowid >= ?1 AND rowid <= ?2
@@ -586,7 +578,7 @@ fn next_raw_observed_fts_rows(
         LIMIT ?3
         ";
     let next_sql = "
-        SELECT rowid, workspace, owner_source_name, source_name, source_scope_id,
+        SELECT rowid, workspace, source_name, source_scope_id,
                surface_kind, surface_name, column_name, value_key, display_value, search_text
         FROM observed_values_fts
         WHERE rowid > ?1 AND rowid <= ?2
@@ -631,15 +623,14 @@ fn raw_observed_fts_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawObserved
     Ok(RawObservedFtsRow {
         rowid: row.get(0)?,
         workspace: row.get(1)?,
-        owner_source_name: row.get(2)?,
-        source_name: row.get(3)?,
-        source_scope_id: row.get(4)?,
-        surface_kind: row.get(5)?,
-        surface_name: row.get(6)?,
-        column_name: row.get(7)?,
-        value_key: row.get(8)?,
-        display_value: row.get(9)?,
-        search_text: row.get(10)?,
+        source_name: row.get(2)?,
+        source_scope_id: row.get(3)?,
+        surface_kind: row.get(4)?,
+        surface_name: row.get(5)?,
+        column_name: row.get(6)?,
+        value_key: row.get(7)?,
+        display_value: row.get(8)?,
+        search_text: row.get(9)?,
     })
 }
 
@@ -650,7 +641,7 @@ fn raw_observed_fts_row_by_rowid(
     connection
         .query_row(
             "
-            SELECT rowid, workspace, owner_source_name, source_name, source_scope_id,
+            SELECT rowid, workspace, source_name, source_scope_id,
                    surface_kind, surface_name, column_name, value_key, display_value, search_text
             FROM observed_values_fts
             WHERE rowid = ?1
@@ -670,7 +661,7 @@ fn next_canonical_observed_rows(
     max_batch_payload_bytes: usize,
 ) -> Result<Vec<CanonicalObservedFtsRow>, SqliteSearchError> {
     let first_sql = "
-        SELECT rowid, workspace, owner_source_name, source_name, source_scope_id,
+        SELECT rowid, workspace, source_name, source_scope_id,
                surface_kind, surface_name, column_name, value_key, display_value,
                search_text, last_observed_at
         FROM observed_values
@@ -679,7 +670,7 @@ fn next_canonical_observed_rows(
         LIMIT ?3
         ";
     let next_sql = "
-        SELECT rowid, workspace, owner_source_name, source_name, source_scope_id,
+        SELECT rowid, workspace, source_name, source_scope_id,
                surface_kind, surface_name, column_name, value_key, display_value,
                search_text, last_observed_at
         FROM observed_values
@@ -727,16 +718,15 @@ fn canonical_observed_fts_row(
     Ok(CanonicalObservedFtsRow {
         rowid: row.get(0)?,
         workspace: row.get(1)?,
-        owner_source_name: row.get(2)?,
-        source_name: row.get(3)?,
-        source_scope_id: row.get(4)?,
-        surface_kind: row.get(5)?,
-        surface_name: row.get(6)?,
-        column_name: row.get(7)?,
-        value_key: row.get(8)?,
-        display_value: row.get(9)?,
-        search_text: row.get(10)?,
-        last_observed_at: row.get(11)?,
+        source_name: row.get(2)?,
+        source_scope_id: row.get(3)?,
+        surface_kind: row.get(4)?,
+        surface_name: row.get(5)?,
+        column_name: row.get(6)?,
+        value_key: row.get(7)?,
+        display_value: row.get(8)?,
+        search_text: row.get(9)?,
+        last_observed_at: row.get(10)?,
     })
 }
 
@@ -747,7 +737,7 @@ fn canonical_observed_row_by_rowid(
     connection
         .query_row(
             "
-            SELECT rowid, workspace, owner_source_name, source_name, source_scope_id,
+            SELECT rowid, workspace, source_name, source_scope_id,
                    surface_kind, surface_name, column_name, value_key, display_value,
                    search_text, last_observed_at
             FROM observed_values
@@ -766,7 +756,6 @@ fn canonical_observed_row_for_fts_key(
 ) -> Result<Option<CanonicalObservedFtsRow>, SqliteSearchError> {
     let (
         Some(workspace),
-        Some(owner_source_name),
         Some(source_name),
         Some(source_scope_id),
         Some(surface_kind),
@@ -775,7 +764,6 @@ fn canonical_observed_row_for_fts_key(
         Some(value_key),
     ) = (
         observed_fts_text(&fts.workspace),
-        observed_fts_text(&fts.owner_source_name),
         observed_fts_text(&fts.source_name),
         observed_fts_text(&fts.source_scope_id),
         observed_fts_text(&fts.surface_kind),
@@ -789,22 +777,20 @@ fn canonical_observed_row_for_fts_key(
     connection
         .query_row(
             "
-            SELECT rowid, workspace, owner_source_name, source_name, source_scope_id,
+            SELECT rowid, workspace, source_name, source_scope_id,
                    surface_kind, surface_name, column_name, value_key, display_value,
                    search_text, last_observed_at
             FROM observed_values
             WHERE workspace = ?1
-              AND owner_source_name = ?2
-              AND source_name = ?3
-              AND source_scope_id = ?4
-              AND surface_kind = ?5
-              AND surface_name = ?6
-              AND column_name = ?7
-              AND value_key = ?8
+              AND source_name = ?2
+              AND source_scope_id = ?3
+              AND surface_kind = ?4
+              AND surface_name = ?5
+              AND column_name = ?6
+              AND value_key = ?7
             ",
             params![
                 workspace,
-                owner_source_name,
                 source_name,
                 source_scope_id,
                 surface_kind,
@@ -830,7 +816,6 @@ fn observed_fts_content_matches_canonical(
     canonical: &CanonicalObservedFtsRow,
 ) -> bool {
     observed_fts_text(&fts.workspace) == Some(canonical.workspace.as_str())
-        && observed_fts_text(&fts.owner_source_name) == Some(canonical.owner_source_name.as_str())
         && observed_fts_text(&fts.source_name) == Some(canonical.source_name.as_str())
         && observed_fts_text(&fts.source_scope_id) == Some(canonical.source_scope_id.as_str())
         && observed_fts_text(&fts.surface_kind) == Some(canonical.surface_kind.as_str())
@@ -857,14 +842,14 @@ fn observed_fts_value_payload_bytes(value: &Value) -> usize {
     }
 }
 
-fn observed_owner_failed(
+fn observed_source_failed(
     connection: &Connection,
-    owner_source_name: &str,
+    source_name: &str,
 ) -> Result<bool, SqliteSearchError> {
     connection
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM observed_policy_failed_sources WHERE owner_source_name = ?1)",
-            params![owner_source_name],
+            "SELECT EXISTS(SELECT 1 FROM observed_policy_failed_sources WHERE source_name = ?1)",
+            params![source_name],
             |row| row.get(0),
         )
         .map_err(SqliteSearchError::from)
@@ -880,15 +865,13 @@ fn canonical_observed_scope_is_live(
             SELECT EXISTS(
                 SELECT 1
                 FROM observed_live_source_scopes
-                WHERE owner_source_name = ?1
-                  AND source_name = ?2
-                  AND source_scope_id = ?3
-                  AND surface_kind = ?4
-                  AND surface_name = ?5
+                WHERE source_name = ?1
+                  AND source_scope_id = ?2
+                  AND surface_kind = ?3
+                  AND surface_name = ?4
             )
             ",
             params![
-                &canonical.owner_source_name,
                 &canonical.source_name,
                 &canonical.source_scope_id,
                 &canonical.surface_kind,
@@ -899,14 +882,14 @@ fn canonical_observed_scope_is_live(
         .map_err(SqliteSearchError::from)
 }
 
-fn raw_observed_fts_owner_failed(
+fn raw_observed_fts_source_failed(
     connection: &Connection,
     fts: &RawObservedFtsRow,
 ) -> Result<bool, SqliteSearchError> {
-    let Some(owner_source_name) = observed_fts_text(&fts.owner_source_name) else {
+    let Some(source_name) = observed_fts_text(&fts.source_name) else {
         return Ok(false);
     };
-    observed_owner_failed(connection, owner_source_name)
+    observed_source_failed(connection, source_name)
 }
 
 fn canonical_observed_row_is_retrievable_at_cutoff(
@@ -916,7 +899,7 @@ fn canonical_observed_row_is_retrievable_at_cutoff(
     canonical: &CanonicalObservedFtsRow,
 ) -> Result<bool, SqliteSearchError> {
     Ok(canonical.workspace == workspace_name.as_str()
-        && !observed_owner_failed(connection, &canonical.owner_source_name)?
+        && !observed_source_failed(connection, &canonical.source_name)?
         && canonical_observed_scope_is_live(connection, canonical)?
         && canonical.last_observed_at.as_str() >= retention_cutoff)
 }
@@ -1084,7 +1067,7 @@ fn observed_fts_cleanup_decision(
     retention_cutoff: &str,
     fts: &RawObservedFtsRow,
 ) -> Result<ObservedFtsCleanupDecision, SqliteSearchError> {
-    if raw_observed_fts_owner_failed(connection, fts)? {
+    if raw_observed_fts_source_failed(connection, fts)? {
         return Ok(ObservedFtsCleanupDecision::PRESERVE);
     }
     match observed_fts_text(&fts.workspace) {
@@ -1096,7 +1079,7 @@ fn observed_fts_cleanup_decision(
     let target_canonical = canonical_observed_row_by_rowid(connection, fts.rowid)?;
     if let Some(target_canonical) = target_canonical.as_ref()
         && (target_canonical.workspace != workspace_name.as_str()
-            || observed_owner_failed(connection, &target_canonical.owner_source_name)?)
+            || observed_source_failed(connection, &target_canonical.source_name)?)
     {
         return Ok(ObservedFtsCleanupDecision::PRESERVE);
     }
@@ -1107,7 +1090,7 @@ fn observed_fts_cleanup_decision(
         });
     };
     if canonical.workspace != workspace_name.as_str()
-        || observed_owner_failed(connection, &canonical.owner_source_name)?
+        || observed_source_failed(connection, &canonical.source_name)?
     {
         return Ok(ObservedFtsCleanupDecision::PRESERVE);
     }
@@ -1280,7 +1263,7 @@ fn canonical_observed_mutation(
     fts: Option<&RawObservedFtsRow>,
 ) -> Result<CanonicalObservedMutation, SqliteSearchError> {
     if canonical.workspace != workspace_name.as_str()
-        || observed_owner_failed(connection, &canonical.owner_source_name)?
+        || observed_source_failed(connection, &canonical.source_name)?
     {
         return Ok(CanonicalObservedMutation {
             delete_fts: false,
@@ -1290,7 +1273,7 @@ fn canonical_observed_mutation(
     }
     let protected_fts = match fts {
         Some(fts) => {
-            raw_observed_fts_owner_failed(connection, fts)?
+            raw_observed_fts_source_failed(connection, fts)?
                 || observed_fts_text(&fts.workspace)
                     .is_some_and(|workspace| workspace != workspace_name.as_str())
                 || raw_observed_fts_is_valid_unrelated_occupant(
@@ -1370,7 +1353,6 @@ fn insert_aligned_observed_fts_row(
         INSERT INTO observed_values_fts (
             rowid,
             workspace,
-            owner_source_name,
             source_name,
             source_scope_id,
             surface_kind,
@@ -1379,12 +1361,11 @@ fn insert_aligned_observed_fts_row(
             value_key,
             display_value,
             search_text
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
         ",
         params![
             canonical.rowid,
             &canonical.workspace,
-            &canonical.owner_source_name,
             &canonical.source_name,
             &canonical.source_scope_id,
             &canonical.surface_kind,
@@ -1564,7 +1545,6 @@ fn search_observed_values_fts(
         FROM observed_values_fts f
         JOIN observed_values v
             ON v.workspace = f.workspace
-            AND v.owner_source_name = f.owner_source_name
             AND v.source_name = f.source_name
             AND v.source_scope_id = f.source_scope_id
             AND v.surface_kind = f.surface_kind
@@ -1572,8 +1552,7 @@ fn search_observed_values_fts(
             AND v.column_name = f.column_name
             AND v.value_key = f.value_key
         JOIN observed_live_source_scopes s
-            ON s.owner_source_name = v.owner_source_name
-            AND s.source_name = v.source_name
+            ON s.source_name = v.source_name
             AND s.source_scope_id = v.source_scope_id
             AND s.surface_kind = v.surface_kind
             AND s.surface_name = v.surface_name
@@ -1626,8 +1605,7 @@ fn search_observed_values_short_terms(
             v.observation_count
         FROM observed_values v
         JOIN observed_live_source_scopes s
-            ON s.owner_source_name = v.owner_source_name
-            AND s.source_name = v.source_name
+            ON s.source_name = v.source_name
             AND s.source_scope_id = v.source_scope_id
             AND s.surface_kind = v.surface_kind
             AND s.surface_name = v.surface_name
@@ -1697,8 +1675,7 @@ where
         }
     };
 
-    let current_generation =
-        observed_generations(&transaction, workspace_name, &job.owner_source_name)?;
+    let current_generation = observed_generations(&transaction, workspace_name, &job.source_name)?;
     let job_generation = ObservedValuesEpoch {
         workspace_generation: job.workspace_generation,
         source_generation: job.source_generation,
@@ -1798,7 +1775,6 @@ fn upsert_observed_value(
             "
         INSERT INTO observed_values (
             workspace,
-            owner_source_name,
             source_name,
             source_scope_id,
             surface_kind,
@@ -1823,16 +1799,14 @@ fn upsert_observed_value(
             ?7,
             ?8,
             ?9,
-            ?10,
             strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
             strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
             1,
-            ?11,
-            ?12
+            ?10,
+            ?11
         )
         ON CONFLICT(
             workspace,
-            owner_source_name,
             source_name,
             source_scope_id,
             surface_kind,
@@ -1850,7 +1824,6 @@ fn upsert_observed_value(
         ",
             params![
                 workspace_name.as_str(),
-                &job.owner_source_name,
                 &job.source_name,
                 &job.source_scope_id,
                 job.surface_kind.as_str(),
@@ -1880,7 +1853,6 @@ fn refresh_observed_fts_row(
         INSERT INTO observed_values_fts (
             rowid,
             workspace,
-            owner_source_name,
             source_name,
             source_scope_id,
             surface_kind,
@@ -1890,12 +1862,11 @@ fn refresh_observed_fts_row(
             display_value,
             search_text
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
         ",
         params![
             canonical_rowid,
             workspace_name.as_str(),
-            &job.owner_source_name,
             &job.source_name,
             &job.source_scope_id,
             job.surface_kind.as_str(),
@@ -1919,17 +1890,15 @@ fn delete_observed_fts_rows_for_projection_key(
         "
         DELETE FROM observed_values_fts
         WHERE workspace = ?1
-          AND owner_source_name = ?2
-          AND source_name = ?3
-          AND source_scope_id = ?4
-          AND surface_kind = ?5
-          AND surface_name = ?6
-          AND column_name = ?7
-          AND value_key = ?8
+          AND source_name = ?2
+          AND source_scope_id = ?3
+          AND surface_kind = ?4
+          AND surface_name = ?5
+          AND column_name = ?6
+          AND value_key = ?7
         ",
         params![
             workspace_name.as_str(),
-            &job.owner_source_name,
             &job.source_name,
             &job.source_scope_id,
             job.surface_kind.as_str(),
@@ -1951,7 +1920,6 @@ fn next_queue_job(
             "
             SELECT
                 id,
-                owner_source_name,
                 source_name,
                 source_scope_id,
                 surface_kind,
@@ -1982,14 +1950,13 @@ fn observed_queue_job_from_row(
 ) -> rusqlite::Result<RawObservedQueueJobRow> {
     Ok(RawObservedQueueJobRow {
         id: row.get(0)?,
-        owner_source_name: row.get(1)?,
-        source_name: row.get(2)?,
-        source_scope_id: row.get(3)?,
-        surface_kind: row.get(4)?,
-        surface_name: row.get(5)?,
-        workspace_generation: row.get(6)?,
-        source_generation: row.get(7)?,
-        payload_json: row.get(8)?,
+        source_name: row.get(1)?,
+        source_scope_id: row.get(2)?,
+        surface_kind: row.get(3)?,
+        surface_name: row.get(4)?,
+        workspace_generation: row.get(5)?,
+        source_generation: row.get(6)?,
+        payload_json: row.get(7)?,
     })
 }
 
@@ -2017,7 +1984,7 @@ fn observed_search_hit_from_row(
 fn observed_generations(
     connection: &Connection,
     workspace_name: &WorkspaceName,
-    owner_source_name: &str,
+    source_name: &str,
 ) -> Result<ObservedValuesEpoch, SqliteSearchError> {
     let workspace_generation = connection
         .query_row(
@@ -2038,7 +2005,7 @@ fn observed_generations(
             FROM observed_source_generations
             WHERE workspace = ?1 AND source_name = ?2
             ",
-            params![workspace_name.as_str(), owner_source_name],
+            params![workspace_name.as_str(), source_name],
             |row| row.get(0),
         )
         .optional()?
@@ -2185,13 +2152,11 @@ fn prepare_live_scope_table(
     connection.execute_batch(
         "
         CREATE TEMP TABLE IF NOT EXISTS observed_live_source_scopes (
-            owner_source_name TEXT NOT NULL,
             source_name TEXT NOT NULL,
             source_scope_id TEXT NOT NULL,
             surface_kind TEXT NOT NULL,
             surface_name TEXT NOT NULL,
             PRIMARY KEY (
-                owner_source_name,
                 source_name,
                 source_scope_id,
                 surface_kind,
@@ -2204,18 +2169,16 @@ fn prepare_live_scope_table(
     let mut statement = connection.prepare(
         "
         INSERT OR IGNORE INTO observed_live_source_scopes (
-            owner_source_name,
             source_name,
             source_scope_id,
             surface_kind,
             surface_name
         )
-        VALUES (?1, ?2, ?3, ?4, ?5)
+        VALUES (?1, ?2, ?3, ?4)
         ",
     )?;
     for scope in policy.live_scopes() {
         statement.execute(params![
-            &scope.owner_source_name,
             &scope.source_name,
             &scope.source_scope_id,
             scope.surface_kind.as_str(),
@@ -2232,19 +2195,19 @@ fn prepare_failed_source_table(
     connection.execute_batch(
         "
         CREATE TEMP TABLE IF NOT EXISTS observed_policy_failed_sources (
-            owner_source_name TEXT NOT NULL PRIMARY KEY
+            source_name TEXT NOT NULL PRIMARY KEY
         ) WITHOUT ROWID;
         DELETE FROM observed_policy_failed_sources;
         ",
     )?;
     let mut statement = connection.prepare(
         "
-        INSERT OR IGNORE INTO observed_policy_failed_sources (owner_source_name)
+        INSERT OR IGNORE INTO observed_policy_failed_sources (source_name)
         VALUES (?1)
         ",
     )?;
     for failure in policy.failed_sources() {
-        statement.execute(params![&failure.owner_source_name])?;
+        statement.execute(params![&failure.source_name])?;
     }
     Ok(())
 }
@@ -2287,7 +2250,7 @@ fn purgeable_observed_value_count(
             AND NOT EXISTS (
                 SELECT 1
                 FROM observed_policy_failed_sources failed
-                WHERE failed.owner_source_name = v.owner_source_name
+                WHERE failed.source_name = v.source_name
             )
         ",
         params![workspace_name.as_str()],
@@ -2310,7 +2273,7 @@ fn stale_observed_value_count_at_cutoff(
             AND NOT EXISTS (
                 SELECT 1
                 FROM observed_policy_failed_sources failed
-                WHERE failed.owner_source_name = v.owner_source_name
+                WHERE failed.source_name = v.source_name
             )
         ",
         params![workspace_name.as_str(), retention_cutoff],
@@ -2329,8 +2292,7 @@ fn eligible_observed_value_count(
         SELECT COUNT(*)
         FROM observed_values v
         JOIN observed_live_source_scopes s
-            ON s.owner_source_name = v.owner_source_name
-            AND s.source_name = v.source_name
+            ON s.source_name = v.source_name
             AND s.source_scope_id = v.source_scope_id
             AND s.surface_kind = v.surface_kind
             AND s.surface_name = v.surface_name
@@ -2353,8 +2315,7 @@ fn eligible_observed_value_count_at_cutoff(
         SELECT COUNT(*)
         FROM observed_values v
         JOIN observed_live_source_scopes s
-            ON s.owner_source_name = v.owner_source_name
-            AND s.source_name = v.source_name
+            ON s.source_name = v.source_name
             AND s.source_scope_id = v.source_scope_id
             AND s.surface_kind = v.surface_kind
             AND s.surface_name = v.surface_name
@@ -2571,7 +2532,7 @@ mod tests {
         store
             .enqueue_if_current(
                 &workspace,
-                &test_job_with_identity("github", "github", "old-scope", "old value"),
+                &test_job_with_identity("github", "old-scope", "old value"),
                 epoch,
             )
             .expect("enqueue old observation");
@@ -2590,7 +2551,7 @@ mod tests {
         store
             .enqueue_if_current(
                 &workspace,
-                &test_job_with_identity("github", "github", "fresh-scope", "fresh value"),
+                &test_job_with_identity("github", "fresh-scope", "fresh value"),
                 epoch,
             )
             .expect("enqueue fresh observation");
@@ -2639,7 +2600,7 @@ mod tests {
         let workspace = WorkspaceName::default();
         let store = SqliteObservedValuesStore::new(layout.clone());
         let epoch = store.capture_epoch(&workspace, "github").expect("epoch");
-        let mut poison = test_job_with_identity("github", "github", "bad-scope", "Bad value");
+        let mut poison = test_job_with_identity("github", "bad-scope", "Bad value");
         poison.payload_json = "{not-json".to_string();
         store
             .enqueue_if_current(&workspace, &poison, epoch)
@@ -2647,7 +2608,7 @@ mod tests {
         store
             .enqueue_if_current(
                 &workspace,
-                &test_job_with_identity("github", "github", "good-scope", "Good value"),
+                &test_job_with_identity("github", "good-scope", "Good value"),
                 epoch,
             )
             .expect("enqueue valid job");
@@ -2686,7 +2647,7 @@ mod tests {
         let workspace = WorkspaceName::default();
         let store = SqliteObservedValuesStore::new(layout.clone());
         let epoch = store.capture_epoch(&workspace, "github").expect("epoch");
-        let mut poison = test_job_with_identity("github", "github", "bad-scope", "Bad value");
+        let mut poison = test_job_with_identity("github", "bad-scope", "Bad value");
         poison.payload_json = "{not-json".to_string();
         store
             .enqueue_if_current(&workspace, &poison, epoch)
@@ -2706,7 +2667,7 @@ mod tests {
         store
             .enqueue_if_current(
                 &workspace,
-                &test_job_with_identity("github", "github", "good-scope", "Good value"),
+                &test_job_with_identity("github", "good-scope", "Good value"),
                 epoch,
             )
             .expect("enqueue active job");
@@ -2741,14 +2702,14 @@ mod tests {
         store
             .enqueue_if_current(
                 &workspace,
-                &test_job_with_identity("github", "github", "bad-scope", "Bad value"),
+                &test_job_with_identity("github", "bad-scope", "Bad value"),
                 epoch,
             )
             .expect("enqueue malformed job");
         store
             .enqueue_if_current(
                 &workspace,
-                &test_job_with_identity("github", "github", "good-scope", "Good value"),
+                &test_job_with_identity("github", "good-scope", "Good value"),
                 epoch,
             )
             .expect("enqueue valid job");
@@ -2793,63 +2754,44 @@ mod tests {
     }
 
     #[test]
-    fn multi_surface_retrieval_preserves_owner_and_query_schemas() {
+    fn independent_sources_are_retrieved_and_cleared_in_isolation() {
         let temp = tempdir().expect("tempdir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
         let workspace = WorkspaceName::default();
         let store = SqliteObservedValuesStore::new(layout.clone());
-        enqueue_multi_surface_identity_fixture(&store, &workspace);
+        enqueue_independent_source_fixture(&store, &workspace);
 
         let backing = SqliteSearchStore::open_workspace(&layout, &workspace).expect("store");
-        let mut connection = backing.connect_for_test().expect("connection");
-        let result = drain_observed_queue(
-            &mut connection,
-            &workspace,
-            ObservedValuesDrainBudget::new(10, Duration::from_secs(1)),
-            |_| Ok(false),
-            |_, _| Ok(ObservedValuesProjectionReclamation::default()),
-        )
-        .expect("drain");
-        assert_eq!(result.queue_jobs_processed, 1);
-        assert_eq!(result.canonical_rows_upserted, 1);
-        assert_eq!(result.fts_rows_written, 1);
+        let connection = backing.connect_for_test().expect("connection");
 
-        let canonical_identities = identity_rows(
+        let canonical_sources = source_rows(
             &connection,
-            "SELECT owner_source_name, source_name FROM observed_values \
+            "SELECT source_name FROM observed_values \
              WHERE workspace = ?1 ORDER BY source_name",
             &workspace,
         );
-        let searched_identities = identity_rows(
+        let searched_sources = source_rows(
             &connection,
-            "SELECT owner_source_name, source_name FROM observed_values_fts \
+            "SELECT source_name FROM observed_values_fts \
              WHERE workspace = ?1 AND observed_values_fts MATCH 'payment' \
              ORDER BY source_name",
             &workspace,
         );
-        let expected = vec![
-            ("github_v4".to_string(), "github_v4_mcp".to_string()),
-            ("github_v4".to_string(), "github_v4_rest".to_string()),
-            ("other_owner".to_string(), "github_v4_rest".to_string()),
-        ];
-        assert_eq!(canonical_identities, expected);
-        assert_eq!(searched_identities, expected);
+        let expected = vec!["github_mcp_v4".to_string(), "github_v4".to_string()];
+        assert_eq!(canonical_sources, expected);
+        assert_eq!(searched_sources, expected);
 
         let policy = ObservedValuesRetrievalPolicy::new(
-            [
-                ("github_v4_rest", "rest-scope"),
-                ("github_v4_mcp", "mcp-scope"),
-            ]
-            .into_iter()
-            .map(|(source_name, source_scope_id)| ObservedValuesLiveScope {
-                owner_source_name: "github_v4".to_string(),
-                source_name: source_name.to_string(),
-                source_scope_id: source_scope_id.to_string(),
-                surface_kind: ObservedValuesSurfaceKind::Table,
-                surface_name: "issues".to_string(),
-            })
-            .collect(),
+            [("github_v4", "rest-scope"), ("github_mcp_v4", "mcp-scope")]
+                .into_iter()
+                .map(|(source_name, source_scope_id)| ObservedValuesLiveScope {
+                    source_name: source_name.to_string(),
+                    source_scope_id: source_scope_id.to_string(),
+                    surface_kind: ObservedValuesSurfaceKind::Table,
+                    surface_name: "issues".to_string(),
+                })
+                .collect(),
             30,
         );
         let hits = search_observed_values(
@@ -2859,25 +2801,31 @@ mod tests {
             10,
             &policy,
         )
-        .expect("search both runtime schemas");
+        .expect("search both installed sources");
         let mut result_schemas = hits
             .hits
             .iter()
             .map(|hit| hit.source_name.as_str())
             .collect::<Vec<_>>();
         result_schemas.sort_unstable();
-        assert_eq!(result_schemas, ["github_v4_mcp", "github_v4_rest"]);
-        assert!(
-            hits.hits
-                .iter()
-                .all(|hit| hit.display_value != "Other payment outage")
-        );
+        assert_eq!(result_schemas, ["github_mcp_v4", "github_v4"]);
 
+        // The REST and MCP interfaces of one provider are independent sources:
+        // clearing one must leave the other completely intact.
         let cleared = store
             .clear_source_and_advance_epoch(&workspace, "github_v4")
-            .expect("clear logical source owner");
-        assert_eq!(cleared.values, 2);
-        assert_eq!(cleared.fts_rows, 2);
+            .expect("clear one installed source");
+        assert_eq!(cleared.values, 1);
+        assert_eq!(cleared.fts_rows, 1);
+        assert_eq!(
+            source_rows(
+                &connection,
+                "SELECT source_name FROM observed_values \
+                 WHERE workspace = ?1 ORDER BY source_name",
+                &workspace,
+            ),
+            ["github_mcp_v4".to_string()]
+        );
     }
 
     #[test]
@@ -2909,7 +2857,6 @@ mod tests {
 
         let policy = ObservedValuesRetrievalPolicy::new(
             vec![ObservedValuesLiveScope {
-                owner_source_name: "github".to_string(),
                 source_name: "github".to_string(),
                 source_scope_id: "eu".to_string(),
                 surface_kind: ObservedValuesSurfaceKind::Table,
@@ -2930,7 +2877,6 @@ mod tests {
     fn retention_modifier_formats_sqlite_datetime_modifier() {
         let policy = ObservedValuesRetrievalPolicy::new(
             vec![ObservedValuesLiveScope {
-                owner_source_name: "github".to_string(),
                 source_name: "github".to_string(),
                 source_scope_id: "scope".to_string(),
                 surface_kind: ObservedValuesSurfaceKind::Table,
@@ -2943,18 +2889,16 @@ mod tests {
     }
 
     fn test_job() -> ObservedValuesQueueJob {
-        test_job_with_identity("github", "github", "scope", "Payment outage")
+        test_job_with_identity("github", "scope", "Payment outage")
     }
 
     fn test_job_with_identity(
-        owner_source_name: &str,
         source_name: &str,
         source_scope_id: &str,
         display_value: &str,
     ) -> ObservedValuesQueueJob {
         let value_key = display_value.to_ascii_lowercase().replace(' ', "-");
         ObservedValuesQueueJob {
-            owner_source_name: owner_source_name.to_string(),
             source_name: source_name.to_string(),
             source_scope_id: source_scope_id.to_string(),
             surface_kind: ObservedValuesSurfaceKind::Table,
@@ -2965,67 +2909,44 @@ mod tests {
         }
     }
 
-    fn enqueue_multi_surface_identity_fixture(
+    fn enqueue_independent_source_fixture(
         store: &SqliteObservedValuesStore,
         workspace: &WorkspaceName,
     ) {
-        let generation = store
-            .capture_epoch(workspace, "github_v4")
-            .expect("owner generation");
         for (source_name, source_scope_id, display_value) in [
-            ("github_v4_rest", "rest-scope", "REST payment outage"),
-            ("github_v4_mcp", "mcp-scope", "MCP payment outage"),
+            ("github_v4", "rest-scope", "REST payment outage"),
+            ("github_mcp_v4", "mcp-scope", "MCP payment outage"),
         ] {
+            let generation = store
+                .capture_epoch(workspace, source_name)
+                .expect("source generation");
             store
                 .enqueue_if_current(
                     workspace,
-                    &test_job_with_identity(
-                        "github_v4",
-                        source_name,
-                        source_scope_id,
-                        display_value,
-                    ),
+                    &test_job_with_identity(source_name, source_scope_id, display_value),
                     generation,
                 )
-                .expect("enqueue component observation");
+                .expect("enqueue source observation");
         }
-        let first_drain = store
+        let drained = store
             .drain_queue(
                 workspace,
                 ObservedValuesDrainBudget::new(10, Duration::from_secs(1)),
             )
-            .expect("drain component observations");
-        assert_eq!(first_drain.queue_jobs_processed, 2);
-
-        let other_owner_generation = store
-            .capture_epoch(workspace, "other_owner")
-            .expect("other owner generation");
-        store
-            .enqueue_if_current(
-                workspace,
-                &test_job_with_identity(
-                    "other_owner",
-                    "github_v4_rest",
-                    "rest-scope",
-                    "Other payment outage",
-                ),
-                other_owner_generation,
-            )
-            .expect("enqueue same runtime scope for another owner");
+            .expect("drain source observations");
+        assert_eq!(drained.queue_jobs_processed, 2);
     }
 
-    fn identity_rows(
+    fn source_rows(
         connection: &rusqlite::Connection,
         sql: &str,
         workspace: &WorkspaceName,
-    ) -> Vec<(String, String)> {
-        let mut statement = connection.prepare(sql).expect("identity query");
+    ) -> Vec<String> {
+        let mut statement = connection.prepare(sql).expect("source query");
         let rows = statement
-            .query_map(params![workspace.as_str()], |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            })
-            .expect("query identity rows");
+            .query_map(params![workspace.as_str()], |row| row.get(0))
+            .expect("query source rows");
         rows.collect::<Result<Vec<_>, _>>()
-            .expect("collect identity rows")
+            .expect("collect source rows")
     }
 }

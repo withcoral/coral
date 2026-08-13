@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use super::{
-    arguments::required_string_argument,
+    arguments::{reject_unknown_arguments, required_string_argument},
     schema::{tool_input_schema, tool_output_schema},
     tool_names::ToolName,
 };
@@ -197,25 +197,6 @@ fn required_task_status_argument(
             None,
         )),
     }
-}
-
-fn reject_unknown_arguments(
-    arguments: Option<&Map<String, Value>>,
-    allowed: &[&str],
-) -> Result<(), ErrorData> {
-    let Some(arguments) = arguments else {
-        return Ok(());
-    };
-    if let Some(key) = arguments
-        .keys()
-        .find(|key| !allowed.contains(&key.as_str()))
-    {
-        return Err(ErrorData::invalid_params(
-            format!("unknown argument '{key}'"),
-            None,
-        ));
-    }
-    Ok(())
 }
 
 pub(crate) fn required_tool_intent_argument(

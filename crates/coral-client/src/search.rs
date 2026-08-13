@@ -63,6 +63,10 @@ enum SearchResultValue<'a> {
 struct TableResultValue<'a> {
     kind: &'static str,
     sql_reference: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    catalog: Option<&'a str>,
+    schema: &'a str,
+    surface: &'a str,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     providers: Vec<&'static str>,
     description: &'a str,
@@ -83,6 +87,10 @@ struct TableResultValue<'a> {
 struct FunctionResultValue<'a> {
     kind: &'static str,
     sql_reference: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    catalog: Option<&'a str>,
+    schema: &'a str,
+    surface: &'a str,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     providers: Vec<&'static str>,
     description: &'a str,
@@ -117,6 +125,9 @@ impl<'a> From<&'a SearchResult> for SearchResultValue<'a> {
             Some(search_result::Shape::Table(table)) => Self::Table(TableResultValue {
                 kind: "table",
                 sql_reference,
+                catalog: optional_catalog_name(&entry.catalog_name),
+                schema: &entry.schema_name,
+                surface: &entry.name,
                 providers: result_provider_names(result),
                 description: &result.description,
                 guide: &result.guide,
@@ -128,6 +139,9 @@ impl<'a> From<&'a SearchResult> for SearchResultValue<'a> {
             Some(search_result::Shape::Function(function)) => Self::Function(FunctionResultValue {
                 kind: "function",
                 sql_reference,
+                catalog: optional_catalog_name(&entry.catalog_name),
+                schema: &entry.schema_name,
+                surface: &entry.name,
                 providers: result_provider_names(result),
                 description: &result.description,
                 guide: &result.guide,
@@ -639,6 +653,12 @@ mod tests {
             result.get("sql_reference").and_then(Value::as_str),
             Some("github.repo_action_jobs")
         );
+        assert!(result.get("catalog").is_none());
+        assert_eq!(result.get("schema").and_then(Value::as_str), Some("github"));
+        assert_eq!(
+            result.get("surface").and_then(Value::as_str),
+            Some("repo_action_jobs")
+        );
         assert_eq!(
             result.pointer("/fields/conclusion").and_then(Value::as_str),
             Some("Utf8")
@@ -713,6 +733,12 @@ mod tests {
 
         let result = first_result(&value);
         assert_eq!(result.get("kind").and_then(Value::as_str), Some("function"));
+        assert!(result.get("catalog").is_none());
+        assert_eq!(result.get("schema").and_then(Value::as_str), Some("github"));
+        assert_eq!(
+            result.get("surface").and_then(Value::as_str),
+            Some("search_issues")
+        );
         assert_eq!(
             result.pointer("/arguments/query").and_then(Value::as_str),
             Some("Utf8")
@@ -772,6 +798,10 @@ mod tests {
                 .get("sql_reference")
                 .and_then(Value::as_str),
             Some("warehouse.analytics.events")
+        );
+        assert_eq!(
+            first_result(&value).get("catalog").and_then(Value::as_str),
+            Some("warehouse")
         );
     }
 }
