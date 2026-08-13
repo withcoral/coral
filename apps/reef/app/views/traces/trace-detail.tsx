@@ -9,6 +9,7 @@ import { Typography } from '@/wax/components/typography'
 import { EmptyPage } from '@/components/empty-page'
 import { QueryDetailSummary } from '@/components/query-detail'
 import { TraceStatus } from '@/generated/coral/v1/traces_pb'
+import { formatDuration, formatDurationFromNanos, nanosToMs } from '@/utils/format-time'
 
 import * as s from './traces.css'
 import { HttpSpanDetail } from './http-span-detail'
@@ -17,11 +18,8 @@ import type { TracesOutletContext } from './traces-index'
 import { routePath } from '@/routing/routemap'
 import { useTimelineTree, type TimelineRow } from './use-timeline-tree'
 import {
-  formatDuration,
-  formatDurationFromNanos,
   formatRows,
   isHttpSpan,
-  nanosToMs,
   operationCodeLanguage,
   operationDetailLabel,
   operationDetailText,
