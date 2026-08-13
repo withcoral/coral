@@ -6,8 +6,9 @@ import {
   type SourceInfo,
   type SourceInputSpec,
 } from '@/generated/coral/v1/sources_pb'
+import { SOURCE_PRESETS, type SourcePreset } from '@/lib/source-presets'
 
-export type SourceOriginLabel = 'bundled' | 'imported' | 'unknown'
+export type SourceOriginLabel = 'bundled' | 'imported' | 'preset' | 'unknown'
 
 export interface CatalogSourceBinding {
   key: string
@@ -80,6 +81,18 @@ export interface CatalogEntry {
   origin: SourceOriginLabel
   inputSpecs?: CatalogSourceInputSpec[]
   source?: CatalogSource
+  /**
+   * Present only on preset sources — entries synthesized from SOURCE_PRESETS
+   * rather than returned by the backend. Carries the spec URL the create flow
+   * needs; its presence is what routes a card to the create flow instead of the
+   * bundled install dialog.
+   */
+  preset?: CatalogPreset
+}
+
+export interface CatalogPreset {
+  specUrl: string
+  surfaceType: SourcePreset['surfaceType']
 }
 
 export function originLabel(origin: SourceOrigin): SourceOriginLabel {
@@ -88,7 +101,11 @@ export function originLabel(origin: SourceOrigin): SourceOriginLabel {
   return 'unknown'
 }
 
-export function catalogEntries(discovered: SourceInfo[], installed: Source[]): CatalogEntry[] {
+export function catalogEntries(
+  discovered: SourceInfo[],
+  installed: Source[],
+  presets: readonly SourcePreset[] = SOURCE_PRESETS,
+): CatalogEntry[] {
   const entries = new Map<string, CatalogEntry>()
   for (const info of discovered) {
     entries.set(info.name, toCatalogEntry(info))
@@ -113,7 +130,28 @@ export function catalogEntries(discovered: SourceInfo[], installed: Source[]): C
       version: source.version,
     })
   }
+
+  // Bundled and installed sources both claimed their names above, so this single
+  // guard is what makes curated win: a preset only surfaces for a name nothing
+  // else provides. It also retires a preset the moment the user installs it, and
+  // would retire one permanently if its manifest were promoted into sources/core.
+  for (const preset of presets) {
+    if (entries.has(preset.name)) continue
+    entries.set(preset.name, toPresetCatalogEntry(preset))
+  }
+
   return [...entries.values()]
+}
+
+function toPresetCatalogEntry(preset: SourcePreset): CatalogEntry {
+  return {
+    description: preset.description,
+    installed: false,
+    name: preset.name,
+    origin: 'preset',
+    preset: { specUrl: preset.specUrl, surfaceType: preset.surfaceType },
+    version: '',
+  }
 }
 
 export function toCatalogSource(source: Source): CatalogSource {

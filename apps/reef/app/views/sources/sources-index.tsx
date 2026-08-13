@@ -7,6 +7,7 @@ import { Text as ButtonText } from '@/wax/components/button/text'
 import { KeyboardShortcut } from '@/wax/components/keyboard-shortcut'
 
 import { SourceCatalogSurface } from '@/components/sources'
+import { sourceCreatePath } from '@/lib/source-presets'
 import type { CatalogEntry } from '@/lib/sources'
 import { routePath } from '@/routing/routemap'
 
@@ -41,7 +42,15 @@ export function SourcesIndex({
         entries={entries}
         errorMessage={loadError}
         getEntryTo={(entry) =>
-          routePath('workspaceSource', { sourceName: entry.name, workspaceId })
+          entry.preset
+            ? // Presets have no manifest to install by name, so they skip the
+              // source detail route and open the create flow with the spec
+              // prefilled.
+              sourceCreatePath(routePath('workspaceSourceInstall', { workspaceId }), {
+                name: entry.name,
+                preset: entry.preset,
+              })
+            : routePath('workspaceSource', { sourceName: entry.name, workspaceId })
         }
         headerAction={
           <ButtonContainer

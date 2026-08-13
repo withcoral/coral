@@ -12,6 +12,8 @@ import { Typography } from '@/wax/components/typography'
 
 import { OAuthProgressDialog } from '@/components/sources/install/oauth-progress-dialog'
 import { oauthActionLabel, useOAuthInstallFlow } from '@/lib/source-oauth-install-flow'
+import type { SourceCreatePrefill } from '@/lib/source-presets'
+import { isHttpsUrl } from '@/lib/urls'
 import type { SourcesActionData } from '@/routes/sources-action'
 import type {
   SourceDetectedAuth,
@@ -61,6 +63,16 @@ const EMPTY_DRAFT: Draft = {
 
 const STEP_COUNT = 3
 
+function draftFromPrefill(prefill: SourceCreatePrefill | null): Draft {
+  if (!prefill) return EMPTY_DRAFT
+  return {
+    ...EMPTY_DRAFT,
+    ...(prefill.name ? { name: prefill.name } : {}),
+    ...(prefill.surfaceType ? { surfaceType: prefill.surfaceType } : {}),
+    url: prefill.url,
+  }
+}
+
 export function SourceCreateDialog({
   actionData,
   discoveryPath,
@@ -70,6 +82,7 @@ export function SourceCreateDialog({
   open,
   openAuthorization = (url) => window.open(url, '_blank', 'noopener,noreferrer'),
   onOpenChange,
+  prefill = null,
 }: {
   actionData: SourcesActionData
   discoveryPath: string
@@ -79,6 +92,8 @@ export function SourceCreateDialog({
   open: boolean
   openAuthorization?: (url: string) => unknown
   onOpenChange: (open: boolean) => void
+  /** Seeds the URL step when the flow was opened from a preset card. */
+  prefill?: SourceCreatePrefill | null
 }) {
   const requestCancelRef = useRef<() => void>(() => onOpenChange(false))
 
@@ -101,6 +116,7 @@ export function SourceCreateDialog({
               onOAuthImportComplete={onOAuthImportComplete}
               onCancel={() => onOpenChange(false)}
               openAuthorization={openAuthorization}
+              prefill={prefill}
               requestCancelRef={requestCancelRef}
             />
           ) : null}
@@ -118,6 +134,7 @@ function SourceCreateDialogContent({
   onOAuthImportComplete,
   onCancel,
   openAuthorization,
+  prefill,
   requestCancelRef,
 }: {
   actionData: SourcesActionData
@@ -127,10 +144,11 @@ function SourceCreateDialogContent({
   onOAuthImportComplete?: (name: string, signal: AbortSignal) => Promise<void> | void
   onCancel: () => void
   openAuthorization: (url: string) => unknown
+  prefill: SourceCreatePrefill | null
   requestCancelRef: RefObject<() => void>
 }) {
   const [step, setStep] = useState(0)
-  const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT)
+  const [draft, setDraft] = useState<Draft>(() => draftFromPrefill(prefill))
   const [confirmingCancel, setConfirmingCancel] = useState(false)
   const formId = useId()
   const discovery = useFetcher<SourceDiscoveryData>()
@@ -172,7 +190,12 @@ function SourceCreateDialogContent({
       baseUrl: result.serverUrl || current.baseUrl,
       description: result.description || current.description,
       headerName: result.auth.headerName || current.headerName,
-      name: result.name,
+      // A preset seeded the name, and the catalog promised it: dedupe, categories
+      // and provider logos all key on it, so a name derived from `info.title`
+      // ("Figma API" -> figma_api) would orphan the preset card and lose the logo.
+      // A typed URL leaves the name empty at step 0, so discovery still wins there,
+      // and editing the URL resets the draft, which clears a preset name.
+      name: current.name || result.name,
       surfaceType:
         result.format === 'mcp'
           ? 'mcp'
@@ -190,6 +213,19 @@ function SourceCreateDialogContent({
     )
   const inspectUrl = () =>
     discovery.load(`${discoveryPath}?url=${encodeURIComponent(draft.url.trim())}`)
+
+  // A prefilled URL came from a preset card, so the user has already made the
+  // choice the URL step asks for. Run discovery for them rather than making them
+  // press Next on a field they did not fill in. The merge effect above then
+  // advances to step 1 exactly as it does for a typed URL. Loads from the prefill
+  // rather than through inspectUrl() so the effect does not depend on the draft.
+  const autoInspected = useRef(false)
+  useEffect(() => {
+    const prefilledUrl = prefill?.url
+    if (autoInspected.current || !prefilledUrl) return
+    autoInspected.current = true
+    discovery.load(`${discoveryPath}?url=${encodeURIComponent(prefilledUrl)}`)
+  }, [discovery, discoveryPath, prefill?.url])
   const requestCancel = () => {
     if (draftIsDirty(draft)) {
       setConfirmingCancel(true)
@@ -775,14 +811,6 @@ function draftIsDirty(draft: Draft): boolean {
 
 function sourceNameIsValid(name: string): boolean {
   return sourceNameValidationError(name) === null
-}
-
-function isHttpsUrl(value: string): boolean {
-  try {
-    return new URL(value.trim()).protocol === 'https:'
-  } catch {
-    return false
-  }
 }
 
 /** Base URLs also allow http:// so sources can point at a local API. */

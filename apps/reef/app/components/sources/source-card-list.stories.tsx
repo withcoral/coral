@@ -28,6 +28,14 @@ const entries: CatalogEntry[] = [
     origin: 'imported',
     version: '0.1.0',
   },
+  {
+    description: 'Query projects, branches, databases, and endpoints from Neon.',
+    installed: false,
+    name: 'neon',
+    origin: 'preset',
+    preset: { specUrl: 'https://neon.tech/api_spec/release/v2.json', surfaceType: 'openapi' },
+    version: '',
+  },
 ]
 
 const meta = {

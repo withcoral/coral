@@ -22,6 +22,9 @@ const PROVIDER_ICONS: Record<string, string> = {
   google_calendar: '/images/providers/google_calendar.svg',
   google_contacts: '/images/providers/google.svg',
   google_drive: '/images/providers/google.svg',
+  cloudflare: '/images/providers/cloudflare.png',
+  digitalocean: '/images/providers/digitalocean.svg',
+  vercel: '/images/providers/vercel.png',
 
   // Atlassian suite
   atlassian: '/images/providers/atlassian.svg',
@@ -30,6 +33,7 @@ const PROVIDER_ICONS: Record<string, string> = {
   jira: '/images/providers/jira.svg',
 
   // Observability
+  axiom: '/images/providers/axiom.png',
   datadog: '/images/providers/datadog.svg',
   grafana: '/images/providers/grafana.svg',
   loki: '/images/providers/grafana.svg',
@@ -55,6 +59,17 @@ const PROVIDER_ICONS: Record<string, string> = {
   clickhouse_mcp: '/images/providers/Clickhouse.png',
   elastic: '/images/providers/elastic.png',
   elasticsearch: '/images/providers/elastic.png',
+  neon: '/images/providers/neon.svg',
+
+  // Agent tooling — retrieval, crawling, docs and browser automation
+  browserbase: '/images/providers/browserbase.svg',
+  context7: '/images/providers/context7.png',
+  deepwiki: '/images/providers/deepwiki.png',
+  exa: '/images/providers/exa.png',
+  firecrawl: '/images/providers/firecrawl.png',
+
+  // Communications
+  resend: '/images/providers/resend.png',
 
   // LLM providers
   claude: '/images/providers/claude_code.svg',
@@ -63,20 +78,26 @@ const PROVIDER_ICONS: Record<string, string> = {
   xai: '/images/providers/xai.svg',
 
   // Project / product
+  asana: '/images/providers/asana.png',
   clickup: '/images/providers/clickup.svg',
+  figma: '/images/providers/figma.svg',
   intercom: '/images/providers/intercom.svg',
   launchdarkly: '/images/providers/launchdarkly.svg',
   linear: '/images/providers/linear.svg',
   notion: '/images/providers/notion.svg',
   posthog: '/images/providers/posthog.svg',
   slack: '/images/providers/slack.svg',
+  spotify: '/images/providers/spotify.png',
   stripe: '/images/providers/stripe.svg',
+  val_town: '/images/providers/val_town.svg',
   wandb: '/images/providers/wandb.svg',
 }
 
 // These icons need to be inverted to look nice in dark mode. Usually means they are all black (e.g. GitHub), so
 // inverting them makes them white.
-const DARK_MODE_INVERT_PROVIDER_ICONS = new Set(['codex', 'github', 'notion', 'openai'])
+// Leave self-inverting assets out of this set: digitalocean.svg and neon.svg carry
+// their own `prefers-color-scheme` rule, so inverting them again undoes their work.
+const DARK_MODE_INVERT_PROVIDER_ICONS = new Set(['codex', 'github', 'notion', 'openai', 'val_town'])
 
 export function providerIcon(key: string): string | null {
   return PROVIDER_ICONS[key.toLowerCase()] ?? null

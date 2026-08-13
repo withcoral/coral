@@ -13,11 +13,25 @@ export const SOURCE_CATEGORY_ORDER: SourceCategory[] = [
   { key: 'analytics', label: 'Analytics' },
   { key: 'business', label: 'Business' },
   { key: 'ai-ml', label: 'AI/ML' },
+  // Last because it is the least central to the product. Empty categories are
+  // dropped in groupSourceCatalogSections, so this only shows once a media source
+  // is in the catalog.
+  { key: 'media', label: 'Media' },
 ]
 
 const SOURCE_CATEGORY: Record<string, string> = {
+  asana: 'project-management',
+  axiom: 'observability',
+  browserbase: 'ai-ml',
   clickup: 'project-management',
   claude: 'ai-ml',
+  cloudflare: 'developer-tools',
+  context7: 'ai-ml',
+  deepwiki: 'ai-ml',
+  digitalocean: 'developer-tools',
+  exa: 'ai-ml',
+  figma: 'developer-tools',
+  firecrawl: 'ai-ml',
   cloudwatch_logs: 'observability',
   cloudwatch_metrics: 'observability',
   codex: 'ai-ml',
@@ -32,14 +46,20 @@ const SOURCE_CATEGORY: Record<string, string> = {
   jira: 'project-management',
   launchdarkly: 'developer-tools',
   linear: 'project-management',
+  neon: 'developer-tools',
   notion: 'knowledge',
+  openai: 'ai-ml',
   openobserve: 'observability',
   pagerduty: 'incident-management',
   posthog: 'analytics',
+  resend: 'communication',
   sentry: 'observability',
   slack: 'communication',
+  spotify: 'media',
   statusgator: 'observability',
   stripe: 'business',
+  val_town: 'developer-tools',
+  vercel: 'developer-tools',
   wandb: 'ai-ml',
 }
 
