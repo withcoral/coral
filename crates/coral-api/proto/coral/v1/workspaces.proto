@@ -35,10 +35,12 @@ message WorkspaceMembership {
 // Lists workspaces visible to the current user.
 message ListWorkspacesRequest {}
 
-// Returns the current user's workspace memberships.
+// Returns the current user's visible workspaces and memberships.
 message ListWorkspacesResponse {
+  // Visible workspace resources, retained for compatibility.
+  repeated Workspace workspaces = 1;
   // Visible workspaces and the current user's role in each.
-  repeated WorkspaceMembership memberships = 1;
+  repeated WorkspaceMembership memberships = 2;
 }
 
 // Creates one workspace owned by the current user.

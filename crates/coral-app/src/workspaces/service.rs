@@ -66,7 +66,7 @@ impl WorkspaceServiceApi for WorkspaceService {
         let principal = request_context(&request)?.principal().clone();
         let workspaces = self.workspaces.clone();
         instrument_grpc(span, async move {
-            let memberships = workspaces
+            let memberships: Vec<_> = workspaces
                 .list_workspaces_for(&principal)
                 .await
                 .map_err(app_status)?
@@ -76,7 +76,14 @@ impl WorkspaceServiceApi for WorkspaceService {
                     role: member_role_to_proto(role) as i32,
                 })
                 .collect();
-            Ok(Response::new(ListWorkspacesResponse { memberships }))
+            let workspaces = memberships
+                .iter()
+                .filter_map(|membership| membership.workspace.clone())
+                .collect();
+            Ok(Response::new(ListWorkspacesResponse {
+                workspaces,
+                memberships,
+            }))
         })
         .await
     }
