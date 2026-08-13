@@ -1,7 +1,8 @@
-import type { ColumnDef } from '@/lib/schema-explorer'
 import { SchemaTableError, SchemaTableView } from '@/views/schema-explorer/schema-table'
 
-export function SchemaTableRoute({ loaderData }: { loaderData: { columns: ColumnDef[] } }) {
+import type { SchemaTableRouteData } from './schema-table-loader.server'
+
+export function SchemaTableRoute({ loaderData }: { loaderData: SchemaTableRouteData }) {
   return <SchemaTableView columns={loaderData.columns} />
 }
 
