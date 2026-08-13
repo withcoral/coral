@@ -16,8 +16,8 @@ use std::time::Duration;
 use std::{fs, io};
 
 use coral_api::v1::{
-    ExecuteSqlRequest, ImportSourceRequest, ListSourcesResponse, Source, SourceCredentialStorage,
-    SourceOrigin, Workspace, import_source_response,
+    CreateWorkspaceRequest, ExecuteSqlRequest, ImportSourceRequest, ListSourcesResponse, Source,
+    SourceCredentialStorage, SourceOrigin, Workspace, import_source_response,
 };
 use coral_app::{ServerBuilder, shutdown_tracing};
 use coral_client::{AppClient, default_workspace};
@@ -538,6 +538,11 @@ storage = "file"
         .start()
         .await?;
     let app = AppClient::connect(server.endpoint_uri()).await?;
+    app.workspace_client()
+        .create_workspace(Request::new(CreateWorkspaceRequest {
+            workspace: Some(default_workspace()),
+        }))
+        .await?;
     import_real_fixture_source(&app, write_real_fixture_manifest(temp.path())?).await?;
     let sql = "SELECT text FROM local_messages.messages ORDER BY text";
     app.query_client()
