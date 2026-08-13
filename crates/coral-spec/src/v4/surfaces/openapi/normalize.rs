@@ -154,6 +154,11 @@ fn annotates(key: &str) -> bool {
                 | "default"
                 | "deprecated"
                 | "description"
+                // Says which of a union's variants applies to a payload. A
+                // union that reduces to one declared variant has nothing left
+                // to choose between, so the mapping describes the shape being
+                // promoted rather than constraining it further.
+                | "discriminator"
                 | "example"
                 | "examples"
                 | "externalDocs"
@@ -304,6 +309,18 @@ mod tests {
                 "description": "The owner, if assigned.",
                 "title": "Owner",
                 "x-oai-meta": {"name": "owner"},
+            })
+        );
+        // A discriminator beside a union that reduces to one variant has
+        // nothing left to choose between, so it does not block the unwrap.
+        assert_eq!(
+            normalized(json!({
+                "discriminator": {"propertyName": "kind"},
+                "oneOf": [{"$ref": "#/components/schemas/user"}, {"type": "null"}],
+            })),
+            json!({
+                "$ref": "#/components/schemas/user",
+                "discriminator": {"propertyName": "kind"},
             })
         );
         // The sibling annotates the field at this site; the variant only
