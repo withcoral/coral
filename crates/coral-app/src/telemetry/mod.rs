@@ -99,7 +99,8 @@ pub(crate) fn app_error_type(error: &AppError) -> &'static str {
     }
 }
 
-/// Records a span attribute only when Coral owns an installed local trace store.
+/// Records a span attribute only when the span belongs to Coral's subscriber
+/// with an installed local trace store.
 ///
 /// The field must also use the local-only prefix so Coral's OTLP exporter strips
 /// it when local trace history and OTLP export are enabled together.
@@ -116,11 +117,10 @@ pub(crate) fn record_local_only_span_attribute(
     if !is_local_only {
         return;
     }
-    let local_trace_store_is_installed = INIT
-        .get()
-        .and_then(|state| state.as_ref().ok())
-        .is_some_and(|state| state.local_trace_store.is_some());
-    if local_trace_store_is_installed {
+    let span_belongs_to_local_trace_subscriber = span
+        .with_subscriber(|(_id, dispatch)| dispatch.is::<LocalTraceAttributeMarkerLayer>())
+        .unwrap_or(false);
+    if span_belongs_to_local_trace_subscriber {
         span.set_attribute(field, value.to_owned());
     }
 }
@@ -141,6 +141,15 @@ impl InstalledLocalTraceStore {
 struct TracingInitState {
     local_trace_store: Option<InstalledLocalTraceStore>,
 }
+
+/// Marks the exact Coral subscriber allowed to receive local-only attributes.
+///
+/// Process-global initialization state is insufficient here because a scoped
+/// subscriber can override the global subscriber for one thread or future.
+#[derive(Debug)]
+struct LocalTraceAttributeMarkerLayer;
+
+impl<S> tracing_subscriber::Layer<S> for LocalTraceAttributeMarkerLayer where S: tracing::Subscriber {}
 
 #[derive(Debug)]
 struct TargetFilteringSpanExporter<E> {
@@ -603,6 +612,8 @@ fn try_init_tracing(
 
     let local_trace_store = configured_local_trace_store(config, internal_trace_store_dir);
     let internal_trace_store_enabled = local_trace_store.is_some();
+    let local_trace_attribute_marker_layer =
+        internal_trace_store_enabled.then_some(LocalTraceAttributeMarkerLayer);
     let should_export_traces = endpoint.is_some() || internal_trace_store_enabled;
     let mut trace_filter_error = None;
     let otel_trace_layer = if should_export_traces {
@@ -667,6 +678,7 @@ fn try_init_tracing(
     });
 
     if let Err(error) = Registry::default()
+        .with(local_trace_attribute_marker_layer)
         .with(stderr_layer)
         .with(otel_trace_layer)
         .with(otel_log_layer)
@@ -755,9 +767,11 @@ mod tests {
 
     use super::{
         DEFAULT_LOCAL_TRACE_FILTER, DEFAULT_LOG_FILTER, DEFAULT_TRACE_FILTER,
-        LOCAL_TRACE_EXCLUDED_RPC_SERVICES, OTLP_STRIPPED_SPAN_ATTRIBUTE_PREFIXES,
-        OTLP_TRACE_DENIED_TARGETS, TargetFilteringSpanExporter, app_error_type, build_log_filter,
-        build_trace_targets, normalize_otlp_endpoint, parse_headers, trace_layer_filter,
+        LOCAL_TRACE_EXCLUDED_RPC_SERVICES, LocalTraceAttributeMarkerLayer,
+        OTLP_STRIPPED_SPAN_ATTRIBUTE_PREFIXES, OTLP_TRACE_DENIED_TARGETS,
+        TargetFilteringSpanExporter, app_error_type, build_log_filter, build_trace_targets,
+        normalize_otlp_endpoint, parse_headers, record_local_only_span_attribute,
+        trace_layer_filter,
     };
 
     #[test]
@@ -1051,6 +1065,45 @@ mod tests {
         assert!(!format!("{span:?}").contains("LOCAL_ONLY_EVENT_SENTINEL"));
         assert!(!format!("{span:?}").contains("LOCAL_ONLY_LINK_SENTINEL"));
         provider.shutdown().expect("provider shutdown");
+    }
+
+    #[test]
+    fn local_only_attributes_require_coral_local_trace_subscriber() {
+        assert!(!subscriber_captures_local_only_attribute(None));
+        assert!(subscriber_captures_local_only_attribute(Some(
+            LocalTraceAttributeMarkerLayer
+        )));
+    }
+
+    fn subscriber_captures_local_only_attribute(
+        marker_layer: Option<LocalTraceAttributeMarkerLayer>,
+    ) -> bool {
+        let memory = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(memory.clone())
+            .build();
+        let tracer = provider.tracer("local-only-subscriber-test");
+        let subscriber = tracing_subscriber::Registry::default()
+            .with(marker_layer)
+            .with(tracing_opentelemetry::layer().with_tracer(tracer));
+
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!("search", public = "kept");
+            record_local_only_span_attribute(
+                &span,
+                coral_telemetry::QUERY_STREAM_SEARCH_QUERY_ATTRIBUTE,
+                "LOCAL_ONLY_SENTINEL",
+            );
+        });
+        provider.force_flush().expect("flush spans");
+
+        let spans = memory.get_finished_spans().expect("finished spans");
+        let span = spans.first().expect("captured span");
+        let captured = span.attributes.iter().any(|attribute| {
+            attribute.key.as_str() == coral_telemetry::QUERY_STREAM_SEARCH_QUERY_ATTRIBUTE
+        });
+        provider.shutdown().expect("provider shutdown");
+        captured
     }
 
     #[test]

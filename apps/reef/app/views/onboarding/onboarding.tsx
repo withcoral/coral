@@ -3,7 +3,7 @@ import { Await, useNavigate, useNavigation, useRevalidator } from 'react-router'
 
 import type { SourcesActionData } from '@/routes/sources-action'
 
-import { useDesktopMcpClients } from '@/components/mcp-clients-list'
+import type { McpClientsConnectionState } from '@/components/mcp-clients-list'
 import { OnboardingNextStepsPage } from '@/components/onboarding/onboarding-next-steps-page'
 import { OnboardingSampleQueryPage } from '@/components/onboarding/onboarding-sample-query-page'
 import type { SampleQueryLoadState } from '@/components/onboarding/onboarding-sample-query-page'
@@ -19,6 +19,7 @@ import { ToastContainer } from '@/wax/components/toast'
 export function OnboardingView({
   actionData,
   loaderData,
+  mcpClients,
 }: {
   actionData: SourcesActionData
   loaderData: {
@@ -30,6 +31,7 @@ export function OnboardingView({
     workspaceId: string
     workspaces: ReadonlyArray<{ name: string }>
   }
+  mcpClients: McpClientsConnectionState
 }) {
   const navigate = useNavigate()
   const { step } = loaderData
@@ -84,6 +86,7 @@ export function OnboardingView({
     case 'next-steps':
       return (
         <OnboardingNextStepsStep
+          mcpClients={mcpClients}
           onContinue={() =>
             navigate(routePath('workspaceSources', { workspaceId: loaderData.workspaceId }))
           }
@@ -100,18 +103,18 @@ export function OnboardingView({
 }
 
 function OnboardingNextStepsStep({
+  mcpClients,
   onContinue,
   runtime,
   step,
   workspaces,
 }: {
+  mcpClients: McpClientsConnectionState
   onContinue: () => void
   runtime: 'desktop' | 'web'
   step: OnboardingStepState
   workspaces: ReadonlyArray<{ name: string }>
 }) {
-  const mcpClients = useDesktopMcpClients(runtime === 'desktop')
-
   return (
     <>
       {runtime === 'desktop' ? (
