@@ -726,6 +726,7 @@ impl Default for MockServerConfig {
                     workspace: Some(workspace()),
                     role: WorkspaceRole::Owner as i32,
                 }],
+                ..Default::default()
             }),
             validate_source: MockResult::ok(mock_validate_response()),
             delete_source: MockResult::ok(()),
