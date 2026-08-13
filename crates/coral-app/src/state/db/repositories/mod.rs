@@ -5,3 +5,6 @@ pub(crate) mod tasks;
 pub(crate) mod users;
 pub(crate) mod workspace_members;
 pub(crate) mod workspaces;
+
+#[cfg(test)]
+mod identity_specs_contract_tests;
