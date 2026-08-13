@@ -116,6 +116,7 @@ async fn emit_test_telemetry(endpoint_uri: &str) {
             workspace: Some(default_workspace()),
             sql: "SELECT 1 AS loopback_value".to_string(),
             guide_read_context: None,
+            task_attribution: None,
         }))
         .await
         .expect("execute loopback query")

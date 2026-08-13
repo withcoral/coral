@@ -253,9 +253,9 @@ fn projection_entity_name(operation: &IrOperation, is_search: bool) -> String {
     if is_search && let Some(search_entity) = search_entity_from_path(operation) {
         return search_entity;
     }
-    operation.entity.as_ref().map_or_else(
+    operation.entity_name.as_deref().map_or_else(
         || normalize_identifier(&operation.id, "projection"),
-        |entity| normalize_entity_identifier(&entity.name),
+        normalize_entity_identifier,
     )
 }
 

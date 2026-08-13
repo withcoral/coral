@@ -359,6 +359,7 @@ async fn run_first_query(
             workspace: Some(workspace.clone()),
             sql: sql.to_string(),
             guide_read_context: None,
+            task_attribution: None,
         }))
         .await?
         .into_inner();

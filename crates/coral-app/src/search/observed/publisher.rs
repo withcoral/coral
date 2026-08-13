@@ -147,10 +147,10 @@ impl SearchObservationHandle {
     pub(crate) fn clear_source(
         &self,
         workspace_name: &WorkspaceName,
-        owner_source_name: &str,
+        source_name: &str,
     ) -> Result<(), AppError> {
         self.store
-            .clear_source_and_advance_epoch(workspace_name, owner_source_name)
+            .clear_source_and_advance_epoch(workspace_name, source_name)
             .map(|_result| ())
             .map_err(|error| observed_values_store_error(&error))
     }
@@ -216,7 +216,6 @@ impl SourceScanObservedValuesPublisher {
                 tracing::debug!(
                     workspace = %self.workspace_name.as_str(),
                     source = %scope.source_name,
-                    source_owner = %scope.owner_source_name,
                     surface = %observation.surface_name,
                     "dropping observed-values source-scan observation because writer queue is full"
                 );
@@ -226,7 +225,6 @@ impl SourceScanObservedValuesPublisher {
                 tracing::debug!(
                     workspace = %self.workspace_name.as_str(),
                     source = %scope.source_name,
-                    source_owner = %scope.owner_source_name,
                     surface = %observation.surface_name,
                     "dropping observed-values source-scan observation because writer is stopped"
                 );
@@ -265,7 +263,6 @@ impl SourceScanObservedValuesPublisher {
         };
         permit.send(ObservedValuesWrite {
             workspace_name: self.workspace_name.clone(),
-            owner_source_name: scope.owner_source_name.clone(),
             source_name: scope.source_name.clone(),
             source_scope_id: scope.source_scope_id.clone(),
             surface_kind,
@@ -486,16 +483,11 @@ mod tests {
         }
 
         // Only the coherent source registered a surface, so only its
-        // observation is captured; the divergent package writes nothing, and
-        // failing it does not abort capture for its neighbour.
+        // observation is captured; the divergent package writes nothing.
         let identities = wait_for_source_identities(&layout, &workspace, 1);
         assert_eq!(
             identities,
-            [(
-                "github_mcp_v4".to_string(),
-                "github_mcp_v4".to_string(),
-                "list_issues".to_string(),
-            )]
+            [("github_mcp_v4".to_string(), "list_issues".to_string())]
         );
     }
 
@@ -510,6 +502,60 @@ mod tests {
         // this error into a per-source load failure.
         assert!(error.to_string().contains("github_v4"));
         assert!(error.to_string().contains("github_v4_rest"));
+    }
+
+    #[test]
+    fn independent_sources_are_captured_and_cleared_in_isolation() {
+        let temp = tempdir().expect("tempdir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        let workspace = WorkspaceName::default();
+        let handle = SearchObservationHandle::new(layout.clone());
+        let rest = single_component_query_source("github_v4");
+        let mcp = single_component_query_source("github_mcp_v4");
+        let extensions = handle.extensions_for(
+            &workspace,
+            &[
+                SearchObservationSource::for_test(&rest),
+                SearchObservationSource::for_test(&mcp),
+            ],
+        );
+        let publisher = extensions
+            .source_observation_publishers
+            .first()
+            .expect("publisher");
+        let batch = title_batch();
+
+        for source_name in ["github_v4", "github_mcp_v4"] {
+            publisher.publish_source_scan(SourceScanObservation {
+                source_name,
+                surface_kind: SourceObservationSurfaceKind::Table,
+                surface_name: "list_issues",
+                batch: &batch,
+            });
+        }
+
+        let identities = wait_for_source_identities(&layout, &workspace, 2);
+        assert_eq!(
+            identities,
+            [
+                ("github_v4".to_string(), "list_issues".to_string()),
+                ("github_mcp_v4".to_string(), "list_issues".to_string()),
+            ]
+        );
+
+        // The REST and MCP interfaces are separate installed sources: clearing
+        // one leaves the other's queued observation untouched.
+        let store = SqliteObservedValuesStore::new(layout.clone());
+        store
+            .clear_source_and_advance_epoch(&workspace, "github_v4")
+            .expect("clear one installed source");
+        assert_eq!(
+            store
+                .queue_source_identities(&workspace)
+                .expect("queue identities"),
+            [("github_mcp_v4".to_string(), "list_issues".to_string())]
+        );
     }
 
     #[test]
@@ -644,9 +690,9 @@ tables:
         )
     }
 
-    /// Package in the pre-#1791 shape: components named differently from the
-    /// package that carries them. Unreachable through the sources domain, which
-    /// is exactly what the tripwire defends against.
+    /// Synthetic package in the pre-#1791 shape: components named differently
+    /// from the package that carries them. Unreachable through the sources
+    /// domain, which is exactly what the tripwire defends against.
     fn divergent_component_query_source() -> QuerySource {
         QuerySource::from_runtime_components(
             RuntimeSourcePackage {
@@ -734,7 +780,7 @@ tables:
         layout: &AppStateLayout,
         workspace: &WorkspaceName,
         expected_count: usize,
-    ) -> Vec<(String, String, String)> {
+    ) -> Vec<(String, String)> {
         let store = SqliteObservedValuesStore::new(layout.clone());
         for _ in 0..100 {
             let identities = store

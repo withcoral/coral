@@ -21,6 +21,7 @@ use coral_client::default_workspace;
 use coral_engine::{
     EngineExtensions, QuerySource, SourceDecorator, SourceDecoratorError, SourceTables,
 };
+use rusqlite::OptionalExtension as _;
 use serde_json::json;
 use tonic::{Code, Request};
 use wiremock::matchers::{method, path};
@@ -1372,6 +1373,76 @@ async fn source_scoped_all_clear_does_not_load_manifest_and_bumps_generation() {
 }
 
 #[tokio::test]
+async fn source_scoped_clear_leaves_the_other_installed_source_intact() {
+    // `github_v4` and `github_mcp_v4` are the two-interfaces-one-provider shape
+    // that #1791 made two independent sources. Clearing one must not disturb
+    // the other, all the way out through the public RPC.
+    let harness = GrpcHarness::new_with_observed_values_search().await;
+    for source_name in ["github_v4", "github_mcp_v4"] {
+        harness
+            .import_source(
+                named_searchable_manifest_yaml(source_name),
+                Vec::new(),
+                Vec::new(),
+            )
+            .await;
+    }
+    harness
+        .search_client()
+        .rebuild_search_index(Request::new(RebuildSearchIndexRequest {
+            workspace: Some(default_workspace()),
+            provider: SearchIndexProvider::Catalog as i32,
+            force: false,
+        }))
+        .await
+        .expect("seed catalog projection");
+    let sqlite_path = harness
+        .config_dir()
+        .join("workspaces/default/search/search.sqlite3");
+    let initial_cleared = source_generation(&sqlite_path, "github_v4");
+    let initial_untouched = source_generation(&sqlite_path, "github_mcp_v4");
+
+    let clear = harness
+        .search_client()
+        .clear_search_data(Request::new(ClearSearchDataRequest {
+            workspace: Some(default_workspace()),
+            scope: SearchDataScope::All as i32,
+            target: Some(SearchClearTarget {
+                target: Some(search_clear_target::Target::SourceName(
+                    "github_v4".to_string(),
+                )),
+            }),
+        }))
+        .await
+        .expect("source-scoped clear")
+        .into_inner();
+
+    assert_eq!(clear.results.len(), 2);
+    assert_eq!(
+        source_generation(&sqlite_path, "github_v4"),
+        initial_cleared + 1
+    );
+    assert_eq!(
+        source_generation(&sqlite_path, "github_mcp_v4"),
+        initial_untouched,
+        "clearing github_v4 must not advance the github_mcp_v4 epoch"
+    );
+    let connection = rusqlite::Connection::open(&sqlite_path).expect("open search sqlite");
+    let surviving_catalog_sources: Vec<String> = connection
+        .prepare(
+            "SELECT DISTINCT source_name FROM catalog_documents \
+             WHERE workspace = 'default' AND source_name IN ('github_v4', 'github_mcp_v4') \
+             ORDER BY source_name",
+        )
+        .expect("prepare catalog sources")
+        .query_map([], |row| row.get(0))
+        .expect("query catalog sources")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("collect catalog sources");
+    assert_eq!(surviving_catalog_sources, ["github_mcp_v4"]);
+}
+
+#[tokio::test]
 async fn search_table_preview_columns_do_not_inherit_table_matched_fields() {
     let harness = GrpcHarness::new().await;
     harness
@@ -1725,9 +1796,26 @@ fn catalog_clear_detail(
         .expect("catalog clear detail")
 }
 
+fn source_generation(sqlite_path: &std::path::Path, source_name: &str) -> i64 {
+    rusqlite::Connection::open(sqlite_path)
+        .expect("open search sqlite")
+        .query_row(
+            "SELECT generation FROM observed_source_generations WHERE workspace = 'default' AND source_name = ?1",
+            [source_name],
+            |row| row.get(0),
+        )
+        .optional()
+        .expect("source generation query")
+        .unwrap_or(0)
+}
+
 fn searchable_manifest_yaml() -> String {
+    named_searchable_manifest_yaml("searchable")
+}
+
+fn named_searchable_manifest_yaml(source_name: &str) -> String {
     manifest_yaml(&json!({
-        "name": "searchable",
+        "name": source_name,
         "version": "0.1.0",
         "dsl_version": 3,
         "backend": "http",
