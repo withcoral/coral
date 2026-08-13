@@ -13,6 +13,10 @@ path = "src/main.rs"
 [lints]
 workspace = true
 
+[features]
+# Repository-only recovery commands; deliberately excluded from default xtask and every shipped Coral binary.
+admin = ["dep:coral-app", "dep:tokio"]
+
 [dependencies]
 anyhow.workspace = true
 base64.workspace = true
@@ -31,6 +35,8 @@ jsonschema.workspace = true
 reqwest.workspace = true
 
 coral-spec.workspace = true
+coral-app = { workspace = true, features = ["admin"], optional = true }
+tokio = { workspace = true, optional = true }
 
 [dev-dependencies]
 assert_cmd.workspace = true

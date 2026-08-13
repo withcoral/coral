@@ -21,6 +21,15 @@ impl CoralDb {
         }
     }
 
+    /// Opens existing state without creating or repairing filesystem state.
+    #[cfg(feature = "admin")]
+    pub(crate) async fn open_existing(config: ResolvedDatabaseConfig) -> Result<Self, DbError> {
+        match config {
+            ResolvedDatabaseConfig::Sqlite { path } => open_existing_sqlite(&path).await,
+            ResolvedDatabaseConfig::Postgres { url } => open_postgres(&url).await,
+        }
+    }
+
     pub(crate) async fn begin(&self) -> Result<CoralTx<'_>, DbError> {
         CoralTx::begin(&self.backend).await
     }
@@ -50,6 +59,17 @@ async fn open_sqlite(path: &Path) -> Result<CoralDb, DbError> {
         .ok_or_else(|| DbError::MissingDatabaseParent(path.to_path_buf()))?;
     storage_fs::ensure_file_private(path)?;
 
+    let options = SqliteConnectOptions::new()
+        .filename(path)
+        .create_if_missing(false);
+    let pool = SqlitePoolOptions::new().connect_with(options).await?;
+    Ok(CoralDb {
+        backend: CoralDbBackend::Sqlite(SqliteCoralDb { pool }),
+    })
+}
+
+#[cfg(feature = "admin")]
+async fn open_existing_sqlite(path: &Path) -> Result<CoralDb, DbError> {
     let options = SqliteConnectOptions::new()
         .filename(path)
         .create_if_missing(false);

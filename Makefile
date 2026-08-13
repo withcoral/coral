@@ -207,7 +207,7 @@ postgres-tests: $(POSTGRES_TESTS_PREREQS)
 	fi; \
 	trap cleanup EXIT INT TERM; \
 	echo "Running Postgres tests against $$url"; \
-	CORAL_TEST_POSTGRES_URL="$$url" cargo test --locked -p coral-app --lib \
+	CORAL_TEST_POSTGRES_URL="$$url" cargo test --locked -p coral-app --lib --features admin \
 	  contract_on_postgres \
 	  -- --ignored; \
 	CORAL_TEST_POSTGRES_URL="$$url" cargo test --locked -p coral-app \

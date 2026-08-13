@@ -34,6 +34,8 @@ use clap::{Parser, Subcommand};
 #[cfg(test)]
 use assert_cmd as _;
 
+#[cfg(feature = "admin")]
+mod admin;
 mod benchmarks;
 mod detect;
 mod docs;
@@ -78,6 +80,9 @@ enum Command {
     OpenapiHydrate(openapi::HydrateArgs),
     /// Report inferred row paths and pagination contracts for v4 sources.
     V4MetadataReport(metadata_report::Args),
+    /// Run repository-only workspace recovery against persisted state.
+    #[cfg(feature = "admin")]
+    WorkspaceAdmin(admin::Args),
 }
 
 #[derive(Debug, clap::Args)]
@@ -131,5 +136,7 @@ fn run(command: &Command) -> Result<bool> {
         Command::ReleaseDesktopMacosPackage(args) => release::desktop_macos_package(args),
         Command::OpenapiHydrate(args) => openapi::hydrate(args),
         Command::V4MetadataReport(args) => metadata_report::run(args),
+        #[cfg(feature = "admin")]
+        Command::WorkspaceAdmin(args) => admin::run(args),
     }
 }

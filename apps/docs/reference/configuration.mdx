@@ -107,8 +107,29 @@ warning that names those workspaces. Keep the warning: it identifies a state
 that needs operator attention, not an alternate access path.
 
 The gRPC API is Coral's internal contract boundary. It is not a supported
-end-user workspace-administration surface, and this release does not document
-a public recovery or membership-management workflow.
+end-user workspace-administration or recovery surface.
+
+### Repository recovery tool
+
+The repository contains an off-by-default tool for recovering a legacy workspace with no non-local owner and for rebinding identities after an issuer rename. It is absent from shipped `coral` and default `xtask` builds. Use a checkout matching the deployment and back up first. Database possession is the authority: SQLite requires state-directory access; Postgres uses `[database].url_env` without a host-locality guarantee. The tool opens existing state without migrations or startup repair. Start the upgraded shared server, have the intended owner sign in once, then run:
+
+```shellscript
+cargo run -p xtask --features admin -- workspace-admin list-workspaces --state-dir /path/to/coral-state
+cargo run -p xtask --features admin -- workspace-admin list-users --state-dir /path/to/coral-state
+cargo run -p xtask --features admin -- workspace-admin set-owner --state-dir /path/to/coral-state --workspace work --user 00000000-0000-4000-8000-000000000000
+```
+
+`list-users` withholds provider subjects unless `--show-subjects` is explicit. `set-owner` adds or promotes an existing identity, preserves other memberships, refuses `coral:local`, and takes effect on the next request. State-directory precedence is `--state-dir`, then `CORAL_CONFIG_DIR`, then Coral's [local state directory](/getting-started/installation#local-state).
+
+#### Rebinding a renamed issuer
+
+For an issuer rename, verify stable subjects, stop Coral, back up, and note the expected affected-user count. Then run:
+
+```shellscript
+cargo run -p xtask --features admin -- workspace-admin rebind-issuer --state-dir /path/to/coral-state --from https://old.example --to https://new.example
+```
+
+Compare the count, update `[auth]`, restart, and test a login. Rebinding preserves internal IDs and memberships and excludes `coral:local`. Do not rebind when subjects changed, because the tool cannot prove identity continuity.
 
 ### Sign-in configuration
 

@@ -41,6 +41,8 @@
     )
 )]
 
+#[cfg(feature = "admin")]
+pub mod admin;
 mod auth;
 #[cfg(test)]
 mod authorization_service_tests;

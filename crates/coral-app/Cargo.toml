@@ -10,6 +10,8 @@ publish = false
 workspace = true
 
 [features]
+# Repository-only operator recovery over persisted state. Shipped Coral builds must leave this off because database possession is the authorization boundary.
+admin = []
 # Test-only session-token minting for sibling crates' integration tests.
 # Production builds must leave this off.
 test-session-tokens = []

@@ -117,6 +117,22 @@ where
         self.session.execute(statement).await
     }
 
+    /// Rebinds non-local identities from one provider issuer to another.
+    #[cfg(feature = "admin")]
+    pub(crate) async fn rebind_issuer(
+        &mut self,
+        from_issuer: &str,
+        to_issuer: &str,
+    ) -> Result<u64, DbError> {
+        let statement = Query::update()
+            .table(Users::Table)
+            .value(Users::Issuer, to_issuer.to_string())
+            .and_where(Expr::col(Users::Issuer).eq(from_issuer))
+            .and_where(Expr::col(Users::UserId).ne(LOCAL_PRINCIPAL_ID))
+            .to_owned();
+        self.session.execute_rows_affected(statement).await
+    }
+
     #[cfg(test)]
     pub(crate) async fn insert_for_test(&mut self, record: &UserRecord) -> Result<(), DbError> {
         let statement = Query::insert()
