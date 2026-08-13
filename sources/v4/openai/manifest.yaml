@@ -1,4 +1,4 @@
-name: openai
+name: openai_v4
 dsl_version: 4
 inputs:
   OPENAI_API_KEY:
