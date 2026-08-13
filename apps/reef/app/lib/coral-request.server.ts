@@ -10,16 +10,16 @@ import { createGrpcWebTransport } from '@connectrpc/connect-web'
 
 import { reefAuthConfig } from '@/auth/config.server'
 import { CatalogService } from '@/generated/coral/v1/catalog_pb'
+import { FeatureService } from '@/generated/coral/v1/features_pb'
 import { FunctionService } from '@/generated/coral/v1/functions_pb'
 import { QueryService } from '@/generated/coral/v1/query_pb'
 import { SourceService } from '@/generated/coral/v1/sources_pb'
 import { TraceService } from '@/generated/coral/v1/traces_pb'
 import { WorkspaceService } from '@/generated/coral/v1/workspaces_pb'
+import { Health } from '@/generated/grpc/health/v1/health_pb'
 import { expiredSessionRedirect } from '@/auth/response.server'
 
-import { DEFAULT_DEV_CORAL_ENDPOINT } from './constants'
-import { isExplicitLoopbackUrl } from './loopback.server'
-import { isLocalDevOrigin, trimTrailingSlash } from './utils'
+import { resolveCoralEndpoint } from './coral-endpoint.server'
 
 export function sourceClientForRequest(request: Request, accessToken: string | null) {
   return createClient(SourceService, coralTransportForRequest(request, accessToken))
@@ -31,6 +31,10 @@ export function workspaceClientForRequest(request: Request, accessToken: string 
 
 export function catalogClientForRequest(request: Request, accessToken: string | null) {
   return createClient(CatalogService, coralTransportForRequest(request, accessToken))
+}
+
+export function featureClientForRequest(request: Request, accessToken: string | null) {
+  return createClient(FeatureService, coralTransportForRequest(request, accessToken))
 }
 
 export function functionClientForRequest(request: Request, accessToken: string | null) {
@@ -45,21 +49,34 @@ export function traceClientForRequest(request: Request, accessToken: string | nu
   return createClient(TraceService, coralTransportForRequest(request, accessToken))
 }
 
-export function coralEndpointForRequest(request: Request): string {
-  const configured = process.env.CORAL_ENDPOINT?.trim()
-  if (configured) return trimTrailingSlash(configured)
+/** Public readiness uses Coral's unauthenticated health service, never a user's bearer token. */
+export function healthClientForRequest(request: Request) {
+  return createClient(Health, coralHealthTransportForRequest(request))
+}
 
-  if (process.env.NODE_ENV === 'production') {
-    throw new Error('CORAL_ENDPOINT must be set in production')
-  }
+function coralHealthTransportForRequest(request: Request) {
+  const authMode = reefAuthConfig().mode
+  const endpoint = resolveCoralEndpoint({
+    authenticated: authMode !== 'disabled',
+    request,
+  })
+  const { baseUrl } = endpoint
+  if (authMode === 'disabled') return createGrpcWebTransport({ baseUrl })
 
-  const url = new URL(request.url)
-  if (isLocalDevOrigin(url)) return DEFAULT_DEV_CORAL_ENDPOINT
-  return url.origin
+  warnAuthenticatedCleartext(endpoint.authenticatedCleartextOrigin)
+  return createGrpcTransport({
+    baseUrl,
+    sessionManager: coralSessionManager(new URL(baseUrl)),
+  })
 }
 
 function coralTransportForRequest(request: Request, accessToken: string | null) {
-  const baseUrl = coralEndpointForRequest(request)
+  const authMode = reefAuthConfig().mode
+  const endpoint = resolveCoralEndpoint({
+    authenticated: authMode !== 'disabled' || accessToken !== null,
+    request,
+  })
+  const { baseUrl } = endpoint
   if (!accessToken) {
     // The transport follows the deployment topology, not whether a token
     // happened to be threaded here. `coral ui` — the Desktop sidecar, and the
@@ -71,30 +88,32 @@ function coralTransportForRequest(request: Request, accessToken: string | null) 
     // loader runs, so a null token in `required` mode is a caller that dropped
     // it. Falling through would send anonymous RPCs to a hosted Coral and
     // surface the result as an opaque transport error rather than an auth one.
-    if (reefAuthConfig().mode !== 'disabled') {
+    if (authMode !== 'disabled') {
       throw new Error('Coral authentication is required but this request carried no access token')
     }
 
     return createGrpcWebTransport({ baseUrl })
   }
 
-  const endpoint = new URL(baseUrl)
-  if (
-    endpoint.protocol !== 'https:' &&
-    !(endpoint.protocol === 'http:' && isExplicitLoopbackUrl(endpoint))
-  ) {
-    throw new Error(
-      'CORAL_ENDPOINT must use HTTPS or explicit-loopback HTTP when Coral authentication is enabled',
-    )
-  }
+  warnAuthenticatedCleartext(endpoint.authenticatedCleartextOrigin)
 
   return redirectUnauthenticatedTransport(
     request,
     createGrpcTransport({
       baseUrl,
       interceptors: [bearerAuthInterceptor(accessToken)],
-      sessionManager: coralSessionManager(endpoint),
+      sessionManager: coralSessionManager(new URL(baseUrl)),
     }),
+  )
+}
+
+const warnedCleartextOrigins = new Set<string>()
+
+function warnAuthenticatedCleartext(origin: string | null): void {
+  if (!origin || warnedCleartextOrigins.has(origin)) return
+  warnedCleartextOrigins.add(origin)
+  console.warn(
+    `REEF_ALLOW_INSECURE_CORAL_ENDPOINT sends Coral bearer tokens over cleartext HTTP to ${origin}; trust the entire Reef-to-Coral network path.`,
   )
 }
 
