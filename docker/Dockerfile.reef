@@ -1,0 +1,35 @@
+# Reef is compiled on the build platform. The target runtime stage is COPY-only,
+# so image assembly never executes target-architecture code.
+FROM --platform=$BUILDPLATFORM node:24.15.0-trixie-slim AS build
+WORKDIR /src
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+ENV CORAL_DESKTOP_APP="" VITE_CORAL_DESKTOP_APP=""
+COPY apps/reef/package.json apps/reef/package-lock.json ./apps/reef/
+RUN npm ci --prefix apps/reef
+COPY crates/coral-api/proto ./crates/coral-api/proto
+COPY apps/desktop/src/shared/types.ts ./apps/desktop/src/shared/types.ts
+COPY apps/reef ./apps/reef
+RUN npm run build --prefix apps/reef
+
+FROM --platform=$BUILDPLATFORM node:24.15.0-trixie-slim AS deps
+WORKDIR /app
+COPY apps/reef/package.json apps/reef/package-lock.json ./
+RUN npm ci --omit=dev
+
+FROM node:24.15.0-trixie-slim
+ARG REEF_VERSION
+ARG REEF_REVISION
+WORKDIR /app
+ENV NODE_ENV=production PORT=3000
+LABEL org.opencontainers.image.source="https://github.com/withcoral/coral" \
+      org.opencontainers.image.version="$REEF_VERSION" \
+      org.opencontainers.image.revision="$REEF_REVISION"
+COPY --from=deps /app/node_modules ./node_modules
+COPY --from=build /src/apps/reef/build ./build
+COPY --from=build /src/apps/reef/package.json ./package.json
+COPY apps/reef/server.js ./server.js
+COPY --chown=0:0 --chmod=0755 docker/entrypoint-reef.sh /usr/local/bin/entrypoint-reef.sh
+USER node
+EXPOSE 3000
+HEALTHCHECK --interval=2s --timeout=2s --retries=15 CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"
+ENTRYPOINT ["/usr/local/bin/entrypoint-reef.sh"]

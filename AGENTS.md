@@ -46,7 +46,9 @@
 - UI changes must pass `npm run check --prefix apps/ui` (oxfmt + oxlint) before submitting.
 - Reef changes must pass `npm run check --prefix apps/reef`,
   `npm run typecheck --prefix apps/reef`, `npm test --prefix apps/reef`, and
-  `npm run build --prefix apps/reef` before submitting.
+  `npm run build --prefix apps/reef`, followed by
+  `npm run test:server --prefix apps/reef`, before submitting. The production
+  server smoke test consumes the build output and runs on every Reef CI job.
 - Desktop changes must pass `npm run check --prefix apps/desktop` and
   `npm test --prefix apps/desktop` before submitting.
 - Keep Reef Vitest coverage Node-only and focused on atomic deterministic
@@ -85,9 +87,18 @@
 - Use `make docker-build` to compile the current checkout in a native Linux
   BuildKit stage and package that binary as `coral:local`. Set
   `DOCKER_IMAGE=coral:test` to change the local tag or `DOCKER_NO_CACHE=1` to
-  bypass Docker layer caching. Keep the exported-binary layout, runtime
-  platform, and provenance settings aligned with the `docker-publish`
-  workflow; local builds must not download a published Coral binary.
+  bypass Docker layer caching. Keep the exported-binary layout and runtime
+  platform aligned with the `docker-publish` workflow; local Docker-exporter
+  loads disable provenance because that exporter cannot load attestation
+  manifests. Local builds must not download a published Coral binary.
+- Use `make reef-docker-build` to build Reef from the current checkout and
+  `make reef-docker-smoke` to test already-built Coral and Reef images. Use the
+  self-contained `make reef-docker-test` to build both images and run the
+  topology/configuration matrix. Reef's runtime stage must remain COPY-only and
+  non-root; build and dependency stages run on the build platform. Local builds
+  follow the Docker daemon's architecture, while CI builds and verifies
+  linux/amd64 only. TLS termination belongs to the operator and is
+  not provisioned by the image or its smoke harness.
 - Keep adapters thin. If CLI or MCP behavior gets complex, move it inward.
 - Keep server topology orchestration private to `coral-cli` while CLI commands
   are its only consumers. Do not extract the orchestration into a shared

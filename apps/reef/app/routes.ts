@@ -3,8 +3,10 @@ import { type RouteConfig, index, layout, route } from '@react-router/dev/routes
 import { routePattern } from './routing/routemap'
 
 export default [
-  // Public auth resources: Coral needs CIMD before authorization, and the
-  // browser needs login/callback/logout outside the session boundary.
+  // Public resources: health probes must not cross the session boundary; Coral
+  // needs CIMD before authorization; and the browser needs auth routes outside it.
+  route('healthz', 'routes/healthz.ts'),
+  route('readyz', 'routes/readyz.ts'),
   route('.well-known/oauth-client', 'routes/oauth-client-metadata.ts'),
   route(routePattern('login'), 'routes/login.tsx'),
   route('auth/callback', 'routes/auth.callback.tsx'),
@@ -33,7 +35,11 @@ export default [
       route(routePattern('workspaceTraces'), 'routes/traces.tsx', [
         route(':traceId', 'routes/trace-detail.tsx'),
       ]),
-      route(routePattern('settings'), 'routes/settings.tsx'),
+      route(routePattern('settings'), 'routes/settings.tsx', [
+        index('routes/settings/index.ts'),
+        route('mcp-clients', 'routes/settings/mcp-clients.tsx'),
+        route('runtime-features', 'routes/settings/runtime-features.tsx'),
+      ]),
     ]),
   ]),
 ] satisfies RouteConfig

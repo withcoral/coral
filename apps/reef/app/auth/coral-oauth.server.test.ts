@@ -19,6 +19,15 @@ const metadata = {
   issuer: AUTH_ISSUER,
   token_endpoint: `${AUTH_ISSUER}/token`,
 }
+const untrustedEndpointCases = [
+  ['lookalike host', 'https://coral.example.test.attacker.test/oauth'],
+  ['alternate port', 'https://coral.example.test:444/oauth'],
+  ['scheme change', 'http://coral.example.test/oauth'],
+  ['credentials', 'https://user:password@coral.example.test/oauth'],
+  ['relative URL', '/oauth'],
+  ['malformed URL', 'not a URL'],
+  ['non-HTTP URL', 'ftp://coral.example.test/oauth'],
+] as const
 
 describe('Coral OAuth adapter', () => {
   beforeEach(() => {
@@ -259,11 +268,100 @@ describe('Coral OAuth adapter', () => {
   })
 
   it('rejects metadata for a different issuer', async () => {
-    mockFetch(jsonResponse({ ...metadata, issuer: 'https://attacker.example' }))
+    mockFetch(
+      jsonResponse({
+        ...metadata,
+        authorization_endpoint: 'not a URL',
+        issuer: 'https://attacker.example',
+      }),
+    )
 
     await expect(
       startCoralOAuthLogin(new Request('https://reef.example.test/login'), config),
     ).rejects.toThrow('metadata issuer does not match')
+  })
+
+  it.each(untrustedEndpointCases)(
+    'rejects an untrusted authorization endpoint using a %s',
+    async (_, endpoint) => {
+      const fetch = mockFetch(jsonResponse({ ...metadata, authorization_endpoint: endpoint }))
+
+      await expect(
+        startCoralOAuthLogin(new Request('https://reef.example.test/login'), config),
+      ).rejects.toThrow('authorization_endpoint must be an absolute same-origin HTTP(S) URL')
+      expect(fetch).toHaveBeenCalledTimes(1)
+    },
+  )
+
+  it.each(untrustedEndpointCases)(
+    'rejects an untrusted token endpoint using a %s',
+    async (_, endpoint) => {
+      const fetch = mockFetch(
+        jsonResponse(metadata),
+        jsonResponse({ ...metadata, token_endpoint: endpoint }),
+      )
+      const login = await startCoralOAuthLogin(
+        new Request('https://reef.example.test/login'),
+        config,
+      )
+      const state = new URL(login.headers.get('location') ?? '').searchParams.get('state')
+
+      await expect(
+        completeCoralOAuthLogin(
+          new Request(`https://reef.example.test/auth/callback?code=abc&state=${state}`, {
+            headers: { cookie: cookieHeader(login, oauthCookieName(config)) },
+          }),
+          config,
+        ),
+      ).rejects.toThrow('token_endpoint must be an absolute same-origin HTTP(S) URL')
+      expect(fetch).toHaveBeenCalledTimes(2)
+    },
+  )
+
+  it('rejects a token endpoint redirect without retaining OAuth state', async () => {
+    const attackerEndpoint = 'https://attacker.example/token'
+    const metadataEndpoint = `${AUTH_ISSUER}/.well-known/oauth-authorization-server`
+    const fetch = vi.fn<typeof globalThis.fetch>()
+    fetch.mockImplementation(async (input, init) => {
+      const url = input instanceof Request ? input.url : input.toString()
+      if (url === metadataEndpoint) return jsonResponse(metadata)
+      if (url === metadata.token_endpoint) {
+        if (init?.redirect === 'manual') {
+          return new Response(null, {
+            headers: { location: attackerEndpoint },
+            status: 307,
+          })
+        }
+        return fetch(attackerEndpoint, init)
+      }
+      if (url === attackerEndpoint) {
+        return jsonResponse({ access_token: 'stolen-token', expires_in: 3600 })
+      }
+      throw new Error(`unexpected fetch to ${url}`)
+    })
+    vi.stubGlobal('fetch', fetch)
+
+    const login = await startCoralOAuthLogin(new Request('https://reef.example.test/login'), config)
+    const state = new URL(login.headers.get('location') ?? '').searchParams.get('state')
+
+    const error = await completeCoralOAuthLogin(
+      new Request(`https://reef.example.test/auth/callback?code=abc&state=${state}`, {
+        headers: { cookie: cookieHeader(login, oauthCookieName(config)) },
+      }),
+      config,
+    ).catch((caught: unknown) => caught)
+
+    expect(error).toBeInstanceOf(Response)
+    expect((error as Response).status).toBe(400)
+    await expect((error as Response).text()).resolves.toBe(
+      'Coral OAuth token exchange failed with HTTP 307',
+    )
+    expect((error as Response).headers.get('Set-Cookie')).toContain('Max-Age=0')
+    expect(fetch.mock.calls.map(([input]) => input.toString())).toEqual([
+      metadataEndpoint,
+      metadataEndpoint,
+      metadata.token_endpoint,
+    ])
   })
 
   it('requires a positive standards-based token expiry', async () => {
