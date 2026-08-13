@@ -1524,6 +1524,7 @@ mod tests {
         EngineExtensions, QueryExecutionProvenance, QueryTableFunctionUsage, QueryTableUsage,
         ResolvedQueryResources, SourceDecorator, SourceDecoratorError,
         SourceInputResolutionContext, SourceInputResolver, SourceInputResolverError, SourceTables,
+        TableFunctionInfo,
     };
     use coral_spec::parse_source_manifest_yaml;
     use coral_spec::v4::ProjectionCatalog;
@@ -1555,6 +1556,46 @@ mod tests {
         let second = required_guide_id(Some("archive"), "public", "events", "Filter by event id.");
 
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn required_guides_match_table_functions_by_catalog() {
+        let function = |catalog_name: &str, guide: &str| TableFunctionInfo {
+            catalog_name: Some(catalog_name.to_string()),
+            schema_name: "public".to_string(),
+            function_name: "search_events".to_string(),
+            description: String::new(),
+            guide: guide.to_string(),
+            require_guide_read: true,
+            arguments: Vec::new(),
+            result_columns: Vec::new(),
+            kind: coral_spec::SourceTableFunctionKind::Table,
+            search_limits: None,
+        };
+        let catalog = CatalogInfo {
+            tables: Vec::new(),
+            table_functions: vec![
+                function("primary", "Use the primary catalog."),
+                function("archive", "Use the archive catalog."),
+            ],
+        };
+        let resources = ResolvedQueryResources::new(
+            vec!["archive".to_string()],
+            Vec::new(),
+            vec![QueryTableFunctionUsage::new(
+                "archive",
+                Some("archive"),
+                "public",
+                "search_events",
+            )],
+        );
+
+        let guides = required_query_guides(&catalog, &resources);
+
+        assert_eq!(guides.len(), 1);
+        let guide = guides.first().expect("required archive guide");
+        assert_eq!(guide.catalog_name.as_deref(), Some("archive"));
+        assert_eq!(guide.guide, "Use the archive catalog.");
     }
 
     #[test]
