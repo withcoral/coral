@@ -1,11 +1,11 @@
-#[cfg(test)]
+#[cfg(any(test, feature = "test-session-tokens"))]
 use sea_query::ExprTrait;
 use sea_query::{Expr, OnConflict, Query};
 
 use crate::state::db::schema::AppStateMigrations;
 use crate::state::db::{CoralTx, DbError, DbSession};
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-session-tokens"))]
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
 pub(crate) struct StateMigrationRecord {
     pub(crate) id: String,
@@ -24,12 +24,12 @@ where
         Self { session }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-session-tokens"))]
     pub(crate) async fn has_completed(&mut self, id: &str) -> Result<bool, DbError> {
         Ok(self.get(id).await?.is_some())
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-session-tokens"))]
     async fn get(&mut self, id: &str) -> Result<Option<StateMigrationRecord>, DbError> {
         let statement = Query::select()
             .columns([
