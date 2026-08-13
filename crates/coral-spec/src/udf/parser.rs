@@ -2,7 +2,11 @@ use serde::Deserialize;
 
 use crate::{ManifestError, Result};
 
-use super::model::{FunctionCoralSqlImplementationSpec, FunctionImplementationSpec, FunctionSpec};
+use super::model::{
+    FunctionCoralSqlImplementationSpec, FunctionDeclaredArgument, FunctionDeclaredResultColumn,
+    FunctionImplementationSpec, FunctionLanguage, FunctionSpec,
+    FunctionTypeScriptImplementationSpec,
+};
 use super::validation::validate_raw_function;
 
 #[derive(Debug, Deserialize)]
@@ -14,6 +18,18 @@ pub(super) struct RawFunctionFrontmatter {
     pub(super) description: String,
     #[serde(default)]
     pub(super) guide: String,
+    #[serde(default)]
+    pub(super) language: FunctionLanguage,
+    pub(super) signature: Option<RawFunctionSignature>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub(super) struct RawFunctionSignature {
+    #[serde(default)]
+    pub(super) arguments: Vec<FunctionDeclaredArgument>,
+    #[serde(default)]
+    pub(super) result_columns: Vec<FunctionDeclaredResultColumn>,
 }
 
 #[derive(Debug)]
@@ -22,28 +38,41 @@ pub(super) struct RawFunctionSpec {
     pub(super) implementation: FunctionImplementationSpec,
 }
 
-/// Parses and statically validates one function SQL artifact.
+/// Parses and statically validates one function artifact.
 ///
 /// # Errors
 ///
-/// Returns [`ManifestError`] when the frontmatter cannot be parsed, the SQL
-/// body is empty, or the artifact violates function-local invariants.
-pub fn parse_function_sql(raw: &str) -> Result<FunctionSpec> {
-    let (frontmatter, sql) = split_frontmatter(raw)?;
+/// Returns [`ManifestError`] when the frontmatter cannot be parsed, the body is
+/// empty, or the artifact violates function-local invariants.
+pub fn parse_function_artifact(raw: &str) -> Result<FunctionSpec> {
+    let (frontmatter, body) = split_frontmatter(raw)?;
     let frontmatter: RawFunctionFrontmatter =
         serde_yaml::from_str(frontmatter).map_err(|error| {
             ManifestError::validation(format!(
                 "function artifact SQL comment frontmatter is invalid: {error}"
             ))
         })?;
+    let implementation = match frontmatter.language {
+        FunctionLanguage::Sql => {
+            FunctionImplementationSpec::CoralSql(FunctionCoralSqlImplementationSpec {
+                query: body.trim().to_string(),
+            })
+        }
+        FunctionLanguage::TypeScript => {
+            FunctionImplementationSpec::TypeScript(FunctionTypeScriptImplementationSpec {
+                source: body.trim().to_string(),
+            })
+        }
+    };
     validate_raw_function(RawFunctionSpec {
         frontmatter,
-        implementation: FunctionImplementationSpec {
-            coral_sql: FunctionCoralSqlImplementationSpec {
-                query: sql.trim().to_string(),
-            },
-        },
+        implementation,
     })
+}
+
+/// Compatibility wrapper for callers that still use the SQL-specific name.
+pub fn parse_function_sql(raw: &str) -> Result<FunctionSpec> {
+    parse_function_artifact(raw)
 }
 
 fn split_frontmatter(raw: &str) -> Result<(&str, &str)> {
@@ -67,7 +96,9 @@ fn split_frontmatter(raw: &str) -> Result<(&str, &str)> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_function_sql;
+    use crate::{FunctionImplementationSpec, ManifestDataType};
+
+    use super::{parse_function_artifact, parse_function_sql};
 
     #[derive(Clone, Copy)]
     enum ExpectedError {
@@ -88,6 +119,28 @@ from github.pulls(owner => $owner, repo => $repo)
 "
     }
 
+    fn valid_typescript_function() -> &'static str {
+        r"/*
+name: review_summary
+schema: functions
+description: Summarize a pull request review queue.
+language: typescript
+signature:
+  arguments:
+    - name: owner
+      data_type: Utf8
+  result_columns:
+    - name: title
+      data_type: Utf8
+      nullable: true
+*/
+
+export async function run(owner: string): Promise<string> {
+  return `queue for ${owner}`;
+}
+"
+    }
+
     fn function_with(replacements: &[(&str, &str)]) -> String {
         let mut artifact = valid_function().to_string();
         for (from, to) in replacements {
@@ -101,7 +154,7 @@ from github.pulls(owner => $owner, repo => $repo)
     }
 
     fn assert_function_error(name: &str, artifact: &str, expected: ExpectedError) {
-        let error = parse_function_sql(artifact).unwrap_err();
+        let error = parse_function_artifact(artifact).unwrap_err();
         match expected {
             ExpectedError::Exact(message) => assert_eq!(error.to_string(), message, "{name}"),
             ExpectedError::Contains(message) => {
@@ -118,18 +171,35 @@ from github.pulls(owner => $owner, repo => $repo)
         let function = parse_function_sql(valid_function()).expect("function should parse");
 
         assert_eq!(function.name(), "github_review_queue");
+        assert_eq!(function.group(), "functions");
         assert_eq!(function.schema(), "functions");
         assert_eq!(
             function.guide(),
             "Use this function for review queue lookups."
         );
-        assert!(
-            function
-                .implementation()
-                .coral_sql
-                .query
-                .contains("github.pulls")
-        );
+        let FunctionImplementationSpec::CoralSql(implementation) = function.implementation() else {
+            panic!("SQL artifact should produce a Coral SQL implementation");
+        };
+        assert!(implementation.query.contains("github.pulls"));
+    }
+
+    #[test]
+    fn parse_function_artifact_selects_typescript_and_declared_signature() {
+        let function = parse_function_artifact(valid_typescript_function())
+            .expect("TypeScript function should parse");
+
+        let FunctionImplementationSpec::TypeScript(implementation) = function.implementation()
+        else {
+            panic!("TypeScript artifact should produce a TypeScript implementation");
+        };
+        assert!(implementation.source.contains("export async function run"));
+        let signature = function.declared_signature().expect("declared signature");
+        assert_eq!(signature.arguments.len(), 1);
+        assert_eq!(signature.arguments[0].name, "owner");
+        assert_eq!(signature.arguments[0].data_type, ManifestDataType::Utf8);
+        assert_eq!(signature.result_columns.len(), 1);
+        assert_eq!(signature.result_columns[0].name, "title");
+        assert!(signature.result_columns[0].nullable);
     }
 
     #[test]
@@ -195,7 +265,10 @@ from github.pulls(owner => $owner, repo => $repo)
     #[test]
     fn parse_function_sql_preserves_body_after_frontmatter_comment() {
         let function = parse_function_sql(valid_function()).expect("function should parse");
-        let query = &function.implementation().coral_sql.query;
+        let FunctionImplementationSpec::CoralSql(implementation) = function.implementation() else {
+            panic!("SQL artifact should produce a Coral SQL implementation");
+        };
+        let query = &implementation.query;
 
         assert!(
             query.starts_with("select title"),
@@ -203,6 +276,70 @@ from github.pulls(owner => $owner, repo => $repo)
         );
         assert!(!query.contains("github_review_queue"));
         assert!(!query.contains("*/"));
+    }
+
+    #[test]
+    fn parse_function_artifact_rejects_typescript_without_declared_signature() {
+        let artifact = function_with(&[(
+            "description: GitHub PR review queue",
+            "language: typescript\ndescription: GitHub PR review queue",
+        )]);
+
+        assert_function_error(
+            "missing TypeScript signature",
+            &artifact,
+            ExpectedError::Exact(
+                "function 'github_review_queue' TypeScript implementation requires a declared signature",
+            ),
+        );
+    }
+
+    #[test]
+    fn parse_function_artifact_rejects_duplicate_declared_names() {
+        let duplicate_arguments = function_with(&[(
+            "description: GitHub PR review queue",
+            "signature:\n  arguments:\n    - name: owner\n      data_type: Utf8\n    - name: owner\n      data_type: Int64\n  result_columns:\n    - name: title\n      data_type: Utf8",
+        )]);
+        let duplicate_columns = function_with(&[(
+            "description: GitHub PR review queue",
+            "signature:\n  result_columns:\n    - name: title\n      data_type: Utf8\n    - name: title\n      data_type: Int64",
+        )]);
+
+        assert_function_error(
+            "duplicate argument",
+            &duplicate_arguments,
+            ExpectedError::Exact(
+                "function 'github_review_queue' declares argument 'owner' more than once",
+            ),
+        );
+        assert_function_error(
+            "duplicate result column",
+            &duplicate_columns,
+            ExpectedError::Exact(
+                "function 'github_review_queue' declares result column 'title' more than once",
+            ),
+        );
+    }
+
+    #[test]
+    fn parse_function_artifact_rejects_empty_typescript_body_and_unknown_language() {
+        let empty_body = valid_typescript_function().replace(
+            "export async function run(owner: string): Promise<string> {\n  return `queue for ${owner}`;\n}",
+            "   ",
+        );
+        let unknown_language =
+            function_with(&[("description: GitHub PR review queue", "language: python")]);
+
+        assert_function_error(
+            "empty TypeScript body",
+            &empty_body,
+            ExpectedError::Exact("function 'review_summary' TypeScript body must not be empty"),
+        );
+        assert_function_error(
+            "unknown language",
+            &unknown_language,
+            ExpectedError::Contains("function artifact SQL comment frontmatter is invalid"),
+        );
     }
 
     #[test]

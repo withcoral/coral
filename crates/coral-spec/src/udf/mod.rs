@@ -9,5 +9,9 @@ mod model;
 mod parser;
 mod validation;
 
-pub use model::{FunctionCoralSqlImplementationSpec, FunctionImplementationSpec, FunctionSpec};
-pub use parser::parse_function_sql;
+pub use model::{
+    FunctionCoralSqlImplementationSpec, FunctionDeclaredArgument, FunctionDeclaredResultColumn,
+    FunctionDeclaredSignature, FunctionImplementationSpec, FunctionLanguage, FunctionSpec,
+    FunctionTypeScriptImplementationSpec,
+};
+pub use parser::{parse_function_artifact, parse_function_sql};

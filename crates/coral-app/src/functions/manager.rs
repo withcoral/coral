@@ -5,13 +5,13 @@ use std::future::Future;
 use std::sync::Arc;
 
 use coral_engine::{PreparedQueryRuntime, QueryRuntimeConfig, QuerySource, UdfRuntimeDefinition};
-use coral_spec::{FunctionSpec, parse_function_sql};
+use coral_spec::{FunctionSpec, parse_function_artifact as parse_authored_function_artifact};
 
 use crate::bootstrap::AppError;
 use crate::functions::model::{FunctionName, FunctionWriteSurface, InstalledFunction};
 use crate::functions::runtime::{
     infer_runtime_function, infer_runtime_functions, infer_runtime_functions_in_prepared_runtime,
-    runtime_function_without_signature,
+    lower_runtime_function_without_signature,
 };
 use crate::functions::store::{FsFunctionArtifactStore, FunctionArtifactStore};
 use crate::functions::validation::{
@@ -96,14 +96,14 @@ impl FunctionManager {
     pub(crate) fn install_validated_user_function(
         &self,
         workspace_name: &WorkspaceName,
-        raw_sql: &str,
+        artifact: &str,
         runtime_function: &UdfRuntimeDefinition,
     ) -> Result<InstalledFunction, AppError> {
-        let function_name = validated_function_name(raw_sql, runtime_function)?;
+        let function_name = validated_function_name(artifact, runtime_function)?;
         self.install_user_function_artifact(
             workspace_name,
             &function_name,
-            raw_sql,
+            artifact,
             FunctionInstallMode::ReplaceExisting,
             FunctionWriteSurface::Unknown,
         )?;
@@ -116,23 +116,23 @@ impl FunctionManager {
     pub(crate) async fn install_validated_user_function_if_unchanged(
         &self,
         workspace_name: &WorkspaceName,
-        raw_sql: &str,
+        artifact: &str,
         runtime_function: &UdfRuntimeDefinition,
         revision: WorkspaceLifecycleRevision,
         mode: FunctionInstallMode,
         write_surface: FunctionWriteSurface,
     ) -> Result<ValidatedFunctionInstall, AppError> {
-        let function_name = validated_function_name(raw_sql, runtime_function)?;
+        let function_name = validated_function_name(artifact, runtime_function)?;
         let manager = self.clone();
         let operation_workspace_name = workspace_name.clone();
-        let raw_sql = raw_sql.to_string();
+        let artifact = artifact.to_string();
         let Some(replaced) = self
             .lifecycle_lock
             .run_blocking_workspace_write_if_unchanged(revision, workspace_name, move || {
                 manager.install_user_function_artifact_with_lifecycle_lock(
                     &operation_workspace_name,
                     &function_name,
-                    &raw_sql,
+                    &artifact,
                     mode,
                     write_surface,
                 )
@@ -149,7 +149,7 @@ impl FunctionManager {
         &self,
         workspace_name: &WorkspaceName,
         function_name: &FunctionName,
-        raw_sql: &str,
+        artifact: &str,
         mode: FunctionInstallMode,
         write_surface: FunctionWriteSurface,
     ) -> Result<bool, AppError> {
@@ -157,7 +157,7 @@ impl FunctionManager {
         self.install_user_function_artifact_with_lifecycle_lock(
             workspace_name,
             function_name,
-            raw_sql,
+            artifact,
             mode,
             write_surface,
         )
@@ -167,7 +167,7 @@ impl FunctionManager {
         &self,
         workspace_name: &WorkspaceName,
         function_name: &FunctionName,
-        raw_sql: &str,
+        artifact: &str,
         mode: FunctionInstallMode,
         write_surface: FunctionWriteSurface,
     ) -> Result<bool, AppError> {
@@ -191,7 +191,7 @@ impl FunctionManager {
 
         let previous_artifact =
             self.artifacts
-                .write_user_function_artifact(workspace_name, function_name, raw_sql)?;
+                .write_user_function_artifact(workspace_name, function_name, artifact)?;
         let replaced = match self
             .config_store
             .upsert_function_unlocked(workspace_name, installed)
@@ -214,14 +214,14 @@ impl FunctionManager {
         Ok(replaced)
     }
 
-    pub(crate) async fn validate_user_function_sql(
+    pub(crate) async fn validate_user_function_artifact(
         &self,
         workspace_name: &WorkspaceName,
         selected_sources: &[QuerySource],
         mut runtime_config: impl FnMut() -> Result<QueryRuntimeConfig, AppError>,
-        raw_sql: &str,
+        artifact: &str,
     ) -> Result<UdfRuntimeDefinition, AppError> {
-        let function = parse_function_sql(raw_sql).map_err(|error| {
+        let function = parse_authored_function_artifact(artifact).map_err(|error| {
             AppError::InvalidInput(format!("function validation failed: {error}"))
         })?;
         let function_name = FunctionName::parse(function.name())?;
@@ -232,7 +232,7 @@ impl FunctionManager {
             &mut sql_publish_targets,
         )?;
         let runtime_function =
-            infer_runtime_function(selected_sources, runtime_config()?, &function).await?;
+            infer_runtime_function(selected_sources, &mut runtime_config, &function).await?;
         record_sql_publish_target(&runtime_function, &mut sql_publish_targets)?;
         Ok(runtime_function)
     }
@@ -304,7 +304,17 @@ impl FunctionManager {
                     continue;
                 }
             };
-            let runtime_function = runtime_function_without_signature(&spec);
+            let runtime_function = match lower_runtime_function_without_signature(&spec) {
+                Ok(runtime_function) => runtime_function,
+                Err(error) => {
+                    candidates.push(FunctionCandidate::Listing(invalid_listing(
+                        artifact.name,
+                        artifact.write_surface,
+                        error.to_string(),
+                    )));
+                    continue;
+                }
+            };
             let unchecked_source_schemas =
                 unchecked_source_publish_schemas(&runtime_function, &checked_source_schemas);
             if !unchecked_source_schemas.is_empty() {
@@ -460,7 +470,17 @@ impl FunctionManager {
                     continue;
                 }
             };
-            let runtime_function = runtime_function_without_signature(&spec);
+            let runtime_function = match lower_runtime_function_without_signature(&spec) {
+                Ok(runtime_function) => runtime_function,
+                Err(error) => {
+                    tracing::warn!(
+                        function = %artifact.name,
+                        detail = %error,
+                        "ignoring unsupported installed function during publish collision validation"
+                    );
+                    continue;
+                }
+            };
             record_sql_publish_target(&runtime_function, publish_targets)?;
         }
         Ok(())
@@ -468,10 +488,10 @@ impl FunctionManager {
 }
 
 fn validated_function_name(
-    raw_sql: &str,
+    artifact: &str,
     runtime_function: &UdfRuntimeDefinition,
 ) -> Result<FunctionName, AppError> {
-    let function = parse_function_sql(raw_sql)
+    let function = parse_authored_function_artifact(artifact)
         .map_err(|error| AppError::InvalidInput(format!("function validation failed: {error}")))?;
     let function_name = FunctionName::parse(function.name())?;
     if function_name.as_str() != runtime_function.name {
@@ -484,12 +504,12 @@ fn validated_function_name(
 }
 
 fn parse_function_artifact(artifact: &FunctionArtifact) -> Result<FunctionSpec, String> {
-    let raw_sql = match &artifact.content {
-        FunctionArtifactContent::Sql(raw_sql) => raw_sql,
+    let content = match &artifact.content {
+        FunctionArtifactContent::Sql(content) => content,
         FunctionArtifactContent::Unavailable(error) => return Err(error.clone()),
     };
-    let spec =
-        parse_function_sql(raw_sql).map_err(|error| format!("function is invalid: {error}"))?;
+    let spec = parse_authored_function_artifact(content)
+        .map_err(|error| format!("function is invalid: {error}"))?;
     let declared_name = FunctionName::parse(spec.name()).map_err(|error| error.to_string())?;
     if declared_name != artifact.name {
         return Err(format!(
@@ -580,9 +600,32 @@ select 1 as id
         )
     }
 
-    fn validated_function(raw_sql: &str) -> UdfRuntimeDefinition {
-        let spec = parse_function_sql(raw_sql).expect("function spec");
-        runtime_function_without_signature(&spec)
+    fn typescript_function(name: &str) -> String {
+        format!(
+            r"/*
+name: {name}
+schema: functions
+description: Test TypeScript function
+language: typescript
+signature:
+  arguments:
+    - name: owner
+      data_type: Utf8
+  result_columns:
+    - name: title
+      data_type: Utf8
+*/
+
+export async function run(owner: string): Promise<string> {{
+  return `queue for ${{owner}}`;
+}}
+"
+        )
+    }
+
+    fn validated_function(artifact: &str) -> UdfRuntimeDefinition {
+        let spec = parse_authored_function_artifact(artifact).expect("function spec");
+        lower_runtime_function_without_signature(&spec).expect("supported function")
     }
 
     #[derive(Clone)]
@@ -698,6 +741,94 @@ select 1 as id
         assert_eq!(runtime_builds.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
+    #[test]
+    fn sql_lowering_uses_generic_group_as_sql_schema() {
+        let artifact = function_sql_with_publish("review_queue", "github.review_queue");
+        let spec = parse_authored_function_artifact(&artifact).expect("function spec");
+
+        let definition =
+            lower_runtime_function_without_signature(&spec).expect("SQL lowering should succeed");
+
+        assert_eq!(spec.group(), "github");
+        assert_eq!(definition.publish.table_function.schema, "github");
+        assert_eq!(definition.publish.table_function.name, "review_queue");
+    }
+
+    #[tokio::test]
+    async fn unsupported_function_does_not_enter_inference_or_persistence() {
+        let (_temp, layout, config_store, manager) = fixture();
+        let workspace = workspace();
+        let artifact = typescript_function("review_queue");
+        let runtime_builds = std::sync::atomic::AtomicUsize::new(0);
+
+        let error = manager
+            .validate_user_function_artifact(
+                &workspace,
+                &[],
+                || {
+                    runtime_builds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Ok(QueryRuntimeConfig::default())
+                },
+                &artifact,
+            )
+            .await
+            .expect_err("TypeScript should be rejected before inference");
+
+        assert!(
+            error
+                .to_string()
+                .contains("no TypeScript executor is available")
+        );
+        assert_eq!(runtime_builds.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(
+            config_store
+                .list_workspace_functions(&workspace)
+                .expect("list inventory")
+                .is_empty()
+        );
+        let function_name = FunctionName::parse("review_queue").expect("function name");
+        assert!(!layout.function_dir(&workspace, &function_name).exists());
+    }
+
+    #[tokio::test]
+    async fn manually_present_unsupported_function_is_invalid_without_inference() {
+        let (_temp, _layout, config_store, manager) = fixture();
+        let workspace = workspace();
+        let function_name = FunctionName::parse("review_queue").expect("function name");
+        manager
+            .install_user_function_artifact(
+                &workspace,
+                &function_name,
+                &typescript_function("review_queue"),
+                FunctionInstallMode::ReplaceExisting,
+                FunctionWriteSurface::Unknown,
+            )
+            .expect("manually install artifact");
+        let runtime_builds = std::sync::atomic::AtomicUsize::new(0);
+
+        let listed = manager
+            .list_functions(&workspace, &[], || {
+                runtime_builds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(QueryRuntimeConfig::default())
+            })
+            .await
+            .expect("list functions");
+
+        assert_eq!(runtime_builds.load(std::sync::atomic::Ordering::SeqCst), 0);
+        let listing = listed.first().expect("installed function remains visible");
+        let FunctionRuntimeStatus::Invalid(error) = &listing.runtime else {
+            panic!("unsupported function should be invalid");
+        };
+        assert!(error.contains("no TypeScript executor is available"));
+        assert_eq!(
+            config_store
+                .list_workspace_functions(&workspace)
+                .expect("list inventory")
+                .len(),
+            1
+        );
+    }
+
     #[tokio::test]
     async fn list_functions_keeps_runtime_invalid_artifacts_visible() {
         let (_temp, layout, _config_store, manager) = fixture();
@@ -765,7 +896,7 @@ select 1 as id
             .expect("remove existing artifact");
 
         let validated = manager
-            .validate_user_function_sql(
+            .validate_user_function_artifact(
                 &workspace,
                 &[],
                 || Ok(QueryRuntimeConfig::default()),

@@ -890,21 +890,21 @@ impl QueryManager {
     pub(crate) async fn validate_udf_sql(
         &self,
         workspace_name: &WorkspaceName,
-        raw_sql: &str,
+        artifact: &str,
     ) -> Result<UdfRuntimeDefinition, QueryManagerError> {
         self.require_workspace(workspace_name)
             .await
             .map_err(QueryManagerError::App)?;
         let _lifecycle_snapshot = self.lifecycle_lock.snapshot_async().await;
         let (loaded_sources, config) = self.load_function_validation_sources(workspace_name)?;
-        self.validate_udf_sql_against_snapshot(workspace_name, raw_sql, &loaded_sources, &config)
+        self.validate_udf_sql_against_snapshot(workspace_name, artifact, &loaded_sources, &config)
             .await
     }
 
     pub(crate) async fn add_user_function(
         &self,
         workspace_name: &WorkspaceName,
-        raw_sql: &str,
+        artifact: &str,
         mode: FunctionInstallMode,
         write_surface: FunctionWriteSurface,
     ) -> Result<AddedUserFunction, QueryManagerError> {
@@ -922,7 +922,7 @@ impl QueryManager {
             let runtime_function = self
                 .validate_udf_sql_against_snapshot(
                     workspace_name,
-                    raw_sql,
+                    artifact,
                     &loaded_sources,
                     &config,
                 )
@@ -931,7 +931,7 @@ impl QueryManager {
                 .function_manager
                 .install_validated_user_function_if_unchanged(
                     workspace_name,
-                    raw_sql,
+                    artifact,
                     &runtime_function,
                     revision,
                     mode,
@@ -991,13 +991,13 @@ impl QueryManager {
     async fn validate_udf_sql_against_snapshot(
         &self,
         workspace_name: &WorkspaceName,
-        raw_sql: &str,
+        artifact: &str,
         loaded_sources: &[LoadedQuerySource],
         config: &AppConfig,
     ) -> Result<UdfRuntimeDefinition, QueryManagerError> {
         let sources = query_sources_from_loaded(loaded_sources);
         self.function_manager
-            .validate_user_function_sql(
+            .validate_user_function_artifact(
                 workspace_name,
                 &sources,
                 || {
@@ -1007,7 +1007,7 @@ impl QueryManager {
                         config,
                     )
                 },
-                raw_sql,
+                artifact,
             )
             .await
             .map_err(QueryManagerError::App)

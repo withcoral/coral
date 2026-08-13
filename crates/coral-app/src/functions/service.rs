@@ -51,8 +51,9 @@ impl FunctionServiceApi for FunctionService {
                 FunctionInstallMode::ReplaceExisting
             };
             let write_surface = function_write_surface_from_proto(inner.write_surface);
+            let artifact = inner.sql;
             let added = queries
-                .add_user_function(&workspace_name, &inner.sql, mode, write_surface)
+                .add_user_function(&workspace_name, &artifact, mode, write_surface)
                 .await
                 .map_err(query_status)?;
             Ok(Response::new(AddFunctionResponse {

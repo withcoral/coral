@@ -202,6 +202,66 @@ async fn untyped_function_is_not_persisted() {
 }
 
 #[tokio::test]
+async fn typescript_function_is_rejected_without_persistence() {
+    let harness = GrpcHarness::new().await;
+    let artifact = r"/*
+name: review_summary
+schema: functions
+description: Summarize a review queue.
+language: typescript
+signature:
+  arguments:
+    - name: owner
+      data_type: Utf8
+  result_columns:
+    - name: title
+      data_type: Utf8
+*/
+
+export async function run(owner: string): Promise<string> {
+  return `queue for ${owner}`;
+}
+";
+
+    let error = harness
+        .function_client()
+        .add_function(Request::new(AddFunctionRequest {
+            workspace: Some(default_workspace()),
+            sql: artifact.to_string(),
+            fail_if_exists: false,
+            write_surface: FunctionWriteSurface::Cli as i32,
+        }))
+        .await
+        .expect_err("TypeScript function should be rejected");
+
+    assert_eq!(error.code(), tonic::Code::FailedPrecondition);
+    assert!(
+        error
+            .message()
+            .contains("no TypeScript executor is available")
+    );
+    let functions = harness
+        .function_client()
+        .list_functions(Request::new(ListFunctionsRequest {
+            workspace: Some(default_workspace()),
+        }))
+        .await
+        .expect("list functions")
+        .into_inner()
+        .functions;
+    assert!(functions.is_empty());
+    let config_raw =
+        fs::read_to_string(harness.config_dir().join("config.toml")).expect("read config");
+    assert!(!config_raw.contains("review_summary"));
+    assert!(
+        !harness
+            .config_dir()
+            .join("workspaces/default/functions/review_summary")
+            .exists()
+    );
+}
+
+#[tokio::test]
 async fn create_only_preserves_an_existing_function_and_legacy_add_replaces_it() {
     let harness = GrpcHarness::new().await;
     let workspace = default_workspace();

@@ -9,12 +9,13 @@ use crate::bootstrap::AppError;
 
 pub(crate) async fn infer_runtime_function(
     selected_sources: &[QuerySource],
-    runtime_config: QueryRuntimeConfig,
+    mut runtime_config: impl FnMut() -> Result<QueryRuntimeConfig, AppError>,
     spec: &FunctionSpec,
 ) -> Result<UdfRuntimeDefinition, AppError> {
-    let runtime_function = runtime_function_without_signature(spec);
+    let runtime_function = lower_runtime_function_without_signature(spec)?;
     let mut results =
-        infer_runtime_functions(selected_sources, runtime_config, vec![runtime_function]).await?;
+        infer_runtime_functions(selected_sources, runtime_config()?, vec![runtime_function])
+            .await?;
     results.pop().ok_or_else(|| {
         AppError::FailedPrecondition("function runtime validation returned no result".to_string())
     })?
@@ -79,15 +80,22 @@ fn runtime_validation_error(error: &coral_engine::CoreError) -> AppError {
     AppError::FailedPrecondition(format!("function failed runtime validation: {error}"))
 }
 
-pub(crate) fn runtime_function_without_signature(spec: &FunctionSpec) -> UdfRuntimeDefinition {
-    UdfRuntimeDefinition {
-        name: spec.name().to_string(),
-        description: spec.description().to_string(),
-        arguments: Vec::new(),
-        implementation: runtime_implementation(spec.implementation()),
-        publish: runtime_publish(spec),
-        result_columns: Vec::new(),
-        source_names: Vec::new(),
+pub(crate) fn lower_runtime_function_without_signature(
+    spec: &FunctionSpec,
+) -> Result<UdfRuntimeDefinition, AppError> {
+    match spec.implementation() {
+        FunctionImplementationSpec::CoralSql(implementation) => Ok(UdfRuntimeDefinition {
+            name: spec.name().to_string(),
+            description: spec.description().to_string(),
+            arguments: Vec::new(),
+            implementation: UdfRuntimeImplementation::CoralSql {
+                query: implementation.query.clone(),
+            },
+            publish: runtime_publish(spec),
+            result_columns: Vec::new(),
+            source_names: Vec::new(),
+        }),
+        FunctionImplementationSpec::TypeScript(_) => Err(unsupported_typescript_error()),
     }
 }
 
@@ -98,19 +106,20 @@ fn runtime_sql_definition(function: &UdfRuntimeDefinition) -> UdfRuntimeSqlDefin
     }
 }
 
-fn runtime_implementation(spec: &FunctionImplementationSpec) -> UdfRuntimeImplementation {
-    UdfRuntimeImplementation::CoralSql {
-        query: spec.coral_sql.query.clone(),
-    }
-}
-
 fn runtime_publish(spec: &FunctionSpec) -> UdfRuntimePublish {
     UdfRuntimePublish {
         table_function: UdfRuntimeTableFunctionPublish {
-            schema: spec.schema().to_string(),
+            schema: spec.group().to_string(),
             name: spec.name().to_string(),
             description: String::new(),
             guide: spec.guide().to_string(),
         },
     }
+}
+
+fn unsupported_typescript_error() -> AppError {
+    AppError::FailedPrecondition(
+        "TypeScript functions are not supported by this Coral build because no TypeScript executor is available"
+            .to_string(),
+    )
 }

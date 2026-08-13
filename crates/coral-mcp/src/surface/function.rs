@@ -186,7 +186,7 @@ pub(crate) fn function_added_value(function: &Function) -> Result<Value, tonic::
 
 #[cfg(test)]
 mod tests {
-    use coral_spec::parse_function_sql;
+    use coral_spec::{FunctionImplementationSpec, parse_function_artifact};
 
     use super::{AddFunctionArguments, render_function_artifact};
 
@@ -222,13 +222,16 @@ select cast($owner as VARCHAR) as owner
         let description = "Owner's */ queue\nwith \\ paths";
         let artifact = render_function_artifact(&arguments(description))
             .expect("function artifact should render");
-        let function = parse_function_sql(&artifact).expect("rendered artifact should parse");
+        let function = parse_function_artifact(&artifact).expect("rendered artifact should parse");
 
         assert_eq!(function.name(), "open_prs");
         assert_eq!(function.schema(), "functions");
         assert_eq!(function.description(), description);
+        let FunctionImplementationSpec::CoralSql(implementation) = function.implementation() else {
+            panic!("MCP artifact should produce a Coral SQL implementation");
+        };
         assert_eq!(
-            function.implementation().coral_sql.query,
+            implementation.query,
             "select cast($owner as VARCHAR) as owner"
         );
     }
