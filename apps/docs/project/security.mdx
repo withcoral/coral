@@ -3,15 +3,16 @@ title: "Security model"
 description: "Coral's intended threat model for the current release."
 ---
 
-Coral is designed as a local data-access layer for a trusted user and the agents
-or scripts that user chooses to run. It does not send your source configuration,
-usage history, or query results to a Coral-hosted service. Source credentials
-are used locally and sent to the upstream providers you configure when a query
-requires them.
+Coral is designed as a local data-access layer. It supports a trusted
+single-user deployment and an authenticated shared deployment. It does not send
+your source configuration, usage history, or query results to a Coral-hosted
+service. Source credentials are used locally and sent to the upstream providers
+you configure when a query requires them.
 
 ## Intended threat model
 
-This release is intended for single-user local use:
+In trusted single-user mode, Coral assumes the machine's local principal is the
+operator:
 
 - You install and run the `coral` binary on your own macOS, Linux, or x86_64
   Windows machine.
@@ -22,7 +23,32 @@ This release is intended for single-user local use:
   `CORAL_CONFIG_DIR`. Source secrets default to OS credential storage when the
   local keychain is usable, with plaintext file storage available as fallback.
 - CLI and MCP queries run through the same local runtime. The internal gRPC
-  server binds to loopback, and the MCP server uses stdio transport.
+  server binds to loopback by default, and the MCP server can use stdio.
+
+This mode uses the `ImplicitOwner` local-principal policy. It is appropriate
+only when the host user and local processes are one trusted administrative
+boundary.
+
+## Authenticated shared deployments
+
+Configuring `[auth]` creates a different boundary. The local principal is
+disabled under the `NoLocalPrincipal` policy; host access is not a privileged
+identity. Sign-in identifies a user; Coral then authorizes each request against
+the target workspace's explicit membership. Sign-in alone does not
+create a personal workspace and does not grant a host-wide superuser role.
+
+Owners can read and manage a workspace, including membership. Members can read
+workspace data but cannot manage it. An authenticated caller can access a
+workspace's data only when the caller is a member of that workspace. In shared mode,
+membership listings and workspace-scoped data access omit workspaces with no
+non-local owner, including workspaces whose only owner is the local principal;
+Coral warns about them at startup.
+
+The native gRPC service is an internal contract boundary, not a public
+administration API. Do not expose a direct gRPC membership workflow to users.
+Keep its authenticated hop private. If the transport uses h2c, bearer tokens
+travel without transport encryption, so use trusted loopback/private networking
+or terminate TLS before that hop.
 
 Coral reduces data exposure by keeping execution local and by exposing a narrow
 MCP surface: `sql`, `add_function`, `search`, `list_catalog`, `describe`,
@@ -55,6 +81,9 @@ trust boundary:
   paths.
 - MCP clients can query installed sources, but they do not receive raw stored
   secret values through the discovery tables or resources.
+- Authenticated MCP clients are authorized against one configured workspace and
+  exact membership. They never fall back to a personal, default, first-listed,
+  or alternate workspace.
 
 ## Secret storage configuration
 
@@ -85,8 +114,12 @@ already be able to read local files your OS account can read, such as shell
 config, project files, or SSH configuration. Coral adds access to the sources
 you configure; it does not make an otherwise untrusted local agent safe.
 
-- A connected MCP client can ask Coral to query any source you have installed.
-- A connected MCP client can install or replace persistent function artifacts in the selected workspace through `add_function`.
+- In trusted local mode, a connected MCP client can ask Coral to query any
+  source installed in its selected workspace.
+- In shared mode, a connected MCP client can access only the one configured
+  workspace and only when its authenticated identity is a member.
+- An MCP client can install persistent function artifacts only when
+  its workspace role permits management.
 - A source token can access whatever the upstream provider allows for that
   token, so prefer read-only and least-privilege credentials.
 - A custom source spec can direct Coral to make HTTP requests or read local file
@@ -109,6 +142,11 @@ you configure; it does not make an otherwise untrusted local agent safe.
   `auth`, and file `location` fields.
 - Configure `coral mcp-stdio` only in MCP clients you are comfortable allowing
   to query your installed sources.
+- Keep auth-disabled network listeners on loopback. A non-loopback listener
+  without authentication makes Coral and its configured sources reachable to
+  the network path.
+- For authenticated deployments, protect bearer tokens on every private hop:
+  do not use untrusted cleartext h2c transport.
 
 Report suspected vulnerabilities privately through the project's
 [security policy](https://github.com/withcoral/coral/blob/main/SECURITY.md).

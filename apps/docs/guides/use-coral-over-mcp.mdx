@@ -239,7 +239,15 @@ If an answer needs data from multiple connected sources, ask the agent to combin
 
 ## Workspaces
 
-By default, `coral mcp-stdio` uses your default Coral workspace. If you use a named workspace, add `--workspace <name>` to the server args in your MCP config. For JSON-style clients, that looks like:
+A fresh Coral state has no workspaces. For local stdio MCP, Coral selects an
+explicit `--workspace <name>`, then a non-empty `CORAL_WORKSPACE`, then the
+sole local workspace. If there are zero or multiple local workspaces without a
+selector, it fails instead of choosing a default or first workspace. `default`
+and `default-*` are ordinary explicit names.
+
+For predictable MCP configuration, set `--workspace <name>` in the client
+configuration whenever you use more than one workspace. For JSON-style clients,
+that looks like:
 
 ```json
 {
@@ -251,6 +259,14 @@ By default, `coral mcp-stdio` uses your default Coral workspace. If you use a na
   }
 }
 ```
+
+In an authenticated shared deployment, MCP is configured for exactly one
+workspace. Session initialization requires exact membership in that workspace,
+and subsequent workspace operations continue to use the authenticated caller's
+live authorization. Coral does not fall back to another, personal, or host-admin
+workspace. The server's gRPC hop is internal and not a user-facing
+administration interface. Keep any h2c hop that carries bearer tokens on
+trusted loopback/private networking or behind TLS termination.
 
 ## Troubleshooting
 

@@ -45,31 +45,93 @@ export CORAL_DATABASE_URL="postgres://coral:secret@db.example.com:5432/coral?ssl
 
 ## Workspaces
 
-Workspace metadata is stored under `[workspaces]`. The `default` workspace
-exists automatically, and additional workspaces can be managed with
-`coral workspace`.
+A fresh Coral state has no workspaces. Create one explicitly before adding
+sources:
 
-```toml
-[workspaces.default]
-
-[workspaces.work]
-
-[workspaces.work.sources.github]
-version = "1.0.0"
-variables = {}
-secrets = ["GITHUB_TOKEN"]
-origin = "bundled"
+```shellscript
+coral workspace create work
 ```
 
-An empty workspace is represented by an explicit `[workspaces.<name>]` table.
-Installed sources for that workspace live under
-`[workspaces.<name>.sources.<source>]`.
+Workspace names are ordinary names. In particular, `default` and names that
+start with `default-` are neither created automatically nor reserved or
+protected. Do not rely on any particular name as an implicit fallback in
+scripts or deployment configuration.
 
-There is no separate active-workspace key in `config.toml`; use
-`CORAL_WORKSPACE` for a shell default or `--workspace <NAME>` for one command.
-Source specs imported from files and source credential material remain scoped
-to the source installation in a workspace. Reusable global source specs and
-reusable credential references are not config objects today.
+Workspace records and membership live in Coral's configured database. Coral
+keeps installed-source metadata and non-secret source variables in its local
+state. Use `coral workspace` and `coral source` to manage that state instead of
+editing workspace entries by hand. Source credentials remain scoped to the
+workspace that owns their source installation.
+
+There is no persisted active-workspace setting. For local CLI commands, Coral
+selects a workspace in this order:
+
+1. An explicit `--workspace <NAME>` flag.
+2. A non-empty `CORAL_WORKSPACE` environment variable.
+3. The sole local workspace, if exactly one exists.
+
+When there are zero or multiple local workspaces and neither selector is set,
+the command fails with guidance. It never chooses `default`, the first listed
+workspace, or another fallback.
+
+Workspace selection is separate from authorization. A local selector names the
+workspace a CLI command requests; it does not grant access. For authenticated
+MCP HTTP, the server is configured for one workspace and evaluates the caller's
+membership for that workspace. A client cannot use an environment variable,
+flag, or omitted selector to make the server route the request to another
+workspace.
+
+## Access mode and workspace membership
+
+Without `[auth]`, Coral runs as a trusted single-user deployment. Its local
+principal uses the `ImplicitOwner` policy: it can create and administer local
+workspaces, and it is treated as an owner for local workspace access.
+
+Adding `[auth]` switches the server to an authenticated shared deployment.
+The local principal then uses the `NoLocalPrincipal` policy and is rejected;
+being on the host does not grant access. A successful sign-in establishes an
+identity only. It does not create a personal workspace, grant host-wide
+superuser access, or make the signed-in person a member of any workspace.
+
+Each shared workspace is access-controlled by its explicit membership:
+
+| Role | Access |
+| --- | --- |
+| Owner | Read workspace data and manage the workspace, including its membership. |
+| Member | Read workspace data only. |
+
+Every newly created shared workspace is explicitly creator-owned. In shared
+mode, a workspace with no non-local owner is omitted from membership listings
+and workspace-scoped access and remains inaccessible. Coral emits a startup
+warning that names those workspaces. Keep the warning: it identifies a state
+that needs operator attention, not an alternate access path.
+
+The gRPC API is Coral's internal contract boundary. It is not a supported
+end-user workspace-administration surface, and this release does not document
+a public recovery or membership-management workflow.
+
+### Sign-in configuration
+
+`[auth]` configures how Coral validates a sign-in; it is not a workspace access
+list. The deployment owns the following configuration:
+
+- `[auth.authorization_server]` names the issuer Coral exposes to its clients.
+- `[auth.provider]` identifies the upstream OpenID Connect provider, client,
+  callback, and provider-secret location.
+- `[auth.session]` supplies the session-signing key from a file or environment
+  variable.
+- `[server.mcp_http]` identifies the public MCP resource when authenticated MCP
+  HTTP is enabled.
+
+The authorization-server issuer and the provider callback must describe the
+same public origin. Store private key and provider-secret material outside
+`config.toml`. Authentication config maps a successful sign-in to an identity;
+membership remains the separate authorization decision described above.
+
+Do not treat this configuration as a bootstrap shortcut. It does not seed a
+workspace, assign an owner, or promote the machine running Coral. If shared
+state has inaccessible workspaces, preserve the startup warning; do not invent
+a gRPC or database-editing procedure as a user-access workaround.
 
 ## Server
 
@@ -81,9 +143,15 @@ The long-running `coral server` command reads its native gRPC bind address from
 bind_addr = "127.0.0.1:14555"
 ```
 
-<Warning>
-  The native gRPC server does not authenticate clients. A non-loopback bind exposes Coral and its configured sources to any client that can reach the port. Protect access with a trusted network boundary or authenticating proxy.
-</Warning>
+Without `[auth]`, the native gRPC listener does not authenticate clients. A
+non-loopback bind exposes Coral and its configured sources to anyone who can
+reach the port. Keep that listener on loopback or behind a trusted network
+boundary.
+
+With `[auth]`, gRPC is authenticated on Coral's private hop. It is still an
+internal service boundary, not a public administration API. If that hop uses
+cleartext HTTP/2 (h2c), bearer tokens remain exposed to the transport path;
+use trusted loopback/private networking or terminate TLS before the h2c hop.
 
 MCP Streamable HTTP is disabled by default. Enable its companion listener under
 `[server.mcp_http]`:
@@ -94,7 +162,10 @@ enabled = true
 bind = "127.0.0.1:14556"
 ```
 
-The unauthenticated MCP listener is restricted to loopback addresses.
+Without `[auth]`, the MCP listener is restricted to loopback addresses. With
+`[auth]`, configure the listener's public URL as the authenticated MCP resource
+and place any non-loopback listener behind TLS. Do not send bearer tokens over
+an untrusted cleartext h2c path.
 
 ## Runtime features
 

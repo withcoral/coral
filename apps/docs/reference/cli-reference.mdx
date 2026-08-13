@@ -20,8 +20,9 @@ These flags do not edit `config.toml`. Use `coral features enable <FEATURE>` or
 
 ## Global workspace selection
 
-Commands that operate on local source state target the `default` workspace
-unless you select another workspace.
+Commands that operate on local source state do not assume a `default`
+workspace. A fresh Coral state has no workspaces, and `default` and
+`default-*` are ordinary explicit names.
 
 ```shellscript
 coral --workspace work source list
@@ -30,9 +31,11 @@ coral mcp-stdio --workspace work
 CORAL_WORKSPACE=work coral sql "select * from coral.tables"
 ```
 
-The `--workspace <NAME>` flag overrides `CORAL_WORKSPACE` for that process.
-Coral does not persist a separate active-workspace setting; set
-`CORAL_WORKSPACE` in your shell when you want a default for repeated commands.
+The `--workspace <NAME>` flag overrides a non-empty `CORAL_WORKSPACE` for that
+process. If neither is set, Coral uses the sole local workspace only when there
+is exactly one. Zero or multiple workspaces is an error that asks you to create
+or select one; Coral never chooses a first, default, or alternate workspace.
+Coral does not persist a separate active-workspace setting.
 
 ## `coral sql`
 
@@ -304,7 +307,8 @@ coral source remove github
 
 ## `coral workspace`
 
-Manage local workspaces. Workspaces isolate installed source metadata and
+Manage local workspaces. A new Coral state is empty; use this command to create
+the first workspace. Workspaces isolate installed source metadata and
 workspace-scoped artifacts such as source manifests, local credential material,
 feedback reports, and workspace-attributed local trace history.
 
@@ -323,7 +327,9 @@ coral workspace list
 
 ### `coral workspace create <NAME>`
 
-Create an empty workspace.
+Create an empty workspace. In trusted local mode, the local principal creates
+and owns it. A shared deployment does not turn the host CLI into an implicit
+administrator.
 
 ```shellscript
 coral workspace create work
@@ -340,7 +346,7 @@ workspace configured.
 coral workspace remove work
 ```
 
-The `default` workspace cannot be removed.
+Names such as `default` and `default-*` have no special deletion behavior.
 
 ## `coral functions`
 
@@ -486,20 +492,35 @@ coral ui --no-open
 ## `coral server`
 
 Start a long-running native gRPC server. Coral prints the selected endpoint and
-a `CORAL_ENDPOINT` hint for clients, then runs until you press `Ctrl-C` or send
-`SIGTERM` on Unix. When `[server.mcp_http]` is enabled, it also prints the bound
-MCP Streamable HTTP endpoint.
+a `CORAL_ENDPOINT` hint for internal clients, then runs until you press
+`Ctrl-C` or send `SIGTERM` on Unix. When `[server.mcp_http]` is enabled, it
+also prints the bound MCP Streamable HTTP endpoint.
 
 ```shellscript
 coral server
 ```
+
+For authenticated shared MCP HTTP, start the server with the one workspace it
+will serve:
+
+```shellscript
+coral server --workspace work
+```
+
+The selector pins every shared MCP session to `work`; it does not grant callers
+access. A caller still needs explicit membership, and Coral does not fall back
+to another workspace.
 
 The bind address comes from `[server].bind_addr`. Without a `[server]` section,
 Coral uses an ephemeral port on `127.0.0.1`. See
 [Configuration](/reference/configuration#server).
 
 <Warning>
-  The native gRPC server does not authenticate clients. A non-loopback bind exposes Coral and its configured sources to any client that can reach the port. Protect access with a trusted network boundary or authenticating proxy.
+  Without `[auth]`, a non-loopback gRPC bind exposes Coral and its configured
+  sources to anyone who can reach the port. With `[auth]`, gRPC is protected on
+  the private hop, but cleartext h2c bearer traffic still requires trusted
+  loopback/private networking or TLS termination. gRPC is not a user-facing
+  administration workflow.
 </Warning>
 
 ## `coral mcp-stdio`
@@ -512,6 +533,12 @@ coral mcp-stdio --workspace work
 ```
 
 This command is intended to be launched by an MCP-capable client rather than used directly in an interactive shell.
+
+This stdio command uses the local workspace-selection rules. Set `--workspace`
+whenever the local state contains more than one workspace. The authenticated
+shared MCP HTTP listener follows the server pinning described above. It never
+chooses a first/default/alternate workspace or falls back to a personal
+workspace or host-level privilege.
 
 By default, this server exposes:
 
