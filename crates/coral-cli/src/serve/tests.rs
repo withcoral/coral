@@ -300,11 +300,16 @@ async fn prepare_authenticated_workspace(
     signing_key: &[u8],
     workspace: &str,
 ) -> (String, String) {
-    let identity =
-        coral_app::test_session_tokens::persist_test_login_identity(temp.path(), "alice")
-            .await
-            .expect("persist test login identity");
-    let token = session_token_for_subject(signing_key, SESSION_RESOURCE, &identity);
+    let identity = coral_app::test_session_tokens::persist_test_login_identity(
+        temp.path(),
+        "https://accounts.example",
+        "alice",
+        None,
+        "unused-test-attribution",
+    )
+    .await
+    .expect("persist test login identity");
+    let token = session_token_for_subject(signing_key, SESSION_RESOURCE, &identity.user_id);
     let client = connect_with_loopback_bearer(
         server.endpoint_uri(),
         BearerToken::new(&token).expect("bearer token"),
@@ -320,7 +325,7 @@ async fn prepare_authenticated_workspace(
         }))
         .await
         .expect("create authenticated workspace");
-    (token, identity)
+    (token, identity.user_id)
 }
 
 async fn authenticated_mcp_client(endpoint: &str, token: &str) -> RunningService<RoleClient, ()> {
@@ -717,10 +722,15 @@ async fn established_authenticated_mcp_session_observes_membership_revocation() 
     let (token, user_id) =
         prepare_authenticated_workspace(&temp, &server, signing_key.as_ref(), SHARED_WORKSPACE)
             .await;
-    let successor =
-        coral_app::test_session_tokens::persist_test_login_identity(temp.path(), "successor")
-            .await
-            .expect("persist successor identity");
+    let successor = coral_app::test_session_tokens::persist_test_login_identity(
+        temp.path(),
+        "https://accounts.example",
+        "successor",
+        None,
+        "unused-test-attribution",
+    )
+    .await
+    .expect("persist successor identity");
     let app = connect_with_loopback_bearer(
         server.endpoint_uri(),
         BearerToken::new(&token).expect("bearer token"),
@@ -731,7 +741,7 @@ async fn established_authenticated_mcp_session_observes_membership_revocation() 
         .add_workspace_member(Request::new(AddWorkspaceMemberRequest {
             workspace: Some(shared_workspace()),
             member: Some(WorkspaceMember {
-                user_id: successor,
+                user_id: successor.user_id,
                 role: WorkspaceRole::Owner as i32,
                 display_name: String::new(),
             }),

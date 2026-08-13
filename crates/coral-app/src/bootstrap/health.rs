@@ -91,17 +91,12 @@ impl EngineReadiness {
         }
     }
 
-    /// Reports readiness by resolving the default workspace's catalog, the same
-    /// work the auth-disabled readiness probe drives through `ListCatalog`.
     pub(super) fn from_query_manager(queries: QueryManager) -> Self {
         Self::new(Arc::new(move || {
             let catalog = CatalogDiscovery::new(queries.clone());
             Box::pin(async move {
                 readiness_from_catalog(
                     catalog
-                        // Neither the catalog nor the schema is filtered: the
-                        // probe asks the same unqualified question `ListCatalog`
-                        // does.
                         .catalog_info(
                             &WorkspaceName::default(),
                             None,
@@ -210,21 +205,10 @@ impl EngineReadiness {
 
 /// Turns one catalog resolution into a readiness answer.
 ///
-/// A rejection is not automatically an unready instance. The auth-disabled
-/// `/readyz` asks the identical question through `ListCatalog` and classifies
-/// the answer with `catalog_rejection_is_reachable` in coral-mcp's `http`
-/// module, which deliberately reads request-shaped codes — a missing default
-/// workspace, two sources claiming one runtime schema — as proof the engine is
-/// reachable. Those faults are instance-wide and therefore identical on every
-/// replica, so calling them unready here would pull a whole fleet out of
-/// rotation for a condition the other surface reports as reachable. The two
-/// predicates must
-/// stay in step: change one and change the other.
+/// A rejection is not automatically an unready instance.
 fn readiness_from_catalog<T>(outcome: Result<T, QueryManagerError>) -> bool {
     match outcome {
         Ok(_) => true,
-        // Reuse the data plane's mapping so the code classified here is the
-        // same one `/readyz` would have seen over the wire.
         Err(error) => !matches!(
             query_status(error).code(),
             tonic::Code::Cancelled
@@ -503,9 +487,6 @@ mod tests {
 
     #[test]
     fn instance_wide_catalog_rejections_still_report_ready() {
-        // Each of these is identical on every replica, so reporting unready
-        // would empty the fleet for a rejection the auth-disabled `/readyz`
-        // reports as reachable.
         for error in [
             AppError::WorkspaceNotFound("default".to_string()),
             AppError::InvalidInput(
