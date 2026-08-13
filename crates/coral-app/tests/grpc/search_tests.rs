@@ -357,7 +357,7 @@ async fn v4_search_keeps_complete_sql_identity_and_reinstall_clears_source_owned
         .expect("count source-owned catalog documents");
     let observed_values: i64 = connection
         .query_row(
-            "SELECT COUNT(*) FROM observed_values WHERE workspace = 'default' AND owner_source_name = 'openapi_v4'",
+            "SELECT COUNT(*) FROM observed_values WHERE workspace = 'default' AND source_name = 'openapi_v4'",
             [],
             |row| row.get(0),
         )
@@ -378,7 +378,7 @@ async fn v4_search_keeps_complete_sql_identity_and_reinstall_clears_source_owned
         .expect("count catalog documents after reinstall");
     let observed_values: i64 = connection
         .query_row(
-            "SELECT COUNT(*) FROM observed_values WHERE workspace = 'default' AND owner_source_name = 'openapi_v4'",
+            "SELECT COUNT(*) FROM observed_values WHERE workspace = 'default' AND source_name = 'openapi_v4'",
             [],
             |row| row.get(0),
         )
