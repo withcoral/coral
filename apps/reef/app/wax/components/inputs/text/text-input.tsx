@@ -12,6 +12,7 @@ export interface TextInputProps {
   disabled?: boolean
   icon?: IconName
   id?: string
+  invalid?: boolean
   name?: string
   onBlur?: () => void
   onChange?: (value: string) => void
@@ -31,6 +32,7 @@ export function TextInput({
   disabled,
   icon,
   id,
+  invalid,
   name,
   onBlur,
   onChange,
@@ -47,7 +49,7 @@ export function TextInput({
   }
 
   return (
-    <Field.Root disabled={disabled}>
+    <Field.Root disabled={disabled} invalid={invalid}>
       <div className={styles.container}>
         {icon && (
           <Icon

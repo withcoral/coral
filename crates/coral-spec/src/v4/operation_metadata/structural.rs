@@ -193,13 +193,5 @@ fn validate_ir_operation(
         &format!("operation '{}' output", operation.id),
         operation.output.cardinality == OutputCardinality::None,
     )?;
-    if let Some(entity) = &operation.entity {
-        validate_type_ref(
-            types,
-            &entity.type_ref,
-            &format!("operation '{}' entity", operation.id),
-            false,
-        )?;
-    }
     Ok(())
 }

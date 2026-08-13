@@ -8,7 +8,7 @@ tables and table functions.
 
 ## Status
 
-This is a preview DSL v4 source. The full Microsoft Graph `OpenAPI`
+This is a preview DSL v4 source. The full Microsoft Graph OpenAPI
 descriptor is about 38 MB and produces a large generated catalog, so `source
 add` can take longer than curated sources.
 

@@ -20,6 +20,11 @@ const DISCOVERY = {
   url: 'https://weather.example/openapi.yaml',
 }
 
+// Shaped like a real materialize failure: a Connect status prefix, unbreakable
+// Rust type paths, and the server's newline-separated `Hint:` line.
+const UNBREAKABLE_IMPORT_ERROR = `[unavailable] unavailable: failed to materialize source 'axiom': failed precondition: MCP HTTP server for source \`axiom\` returned a message error Transport [rmcp::transport::worker::WorkerTransport<rmcp::transport::streamable_http_client::StreamableHttpClientWorker>] error: Auth required, when send initialize request
+Hint: Install or update the source with the required OAuth or bearer credentials, then retry the query.`
+
 const SourceCreateStoryContext = createContext<SourceCreateDialogProps | null>(null)
 const SourceCreateRoutesStub = createRoutesStub([
   {
@@ -203,6 +208,40 @@ export const ImportError: Story = {
         within(credentialsDialog).getByText('The OpenAPI descriptor could not be loaded.'),
       ).toBeVisible()
     })
+  },
+}
+
+export const ImportErrorUnbreakableMessage: Story = {
+  args: {
+    actionData: {
+      intent: 'import',
+      message: UNBREAKABLE_IMPORT_ERROR,
+      name: 'weather_api',
+      status: 'error',
+    },
+  },
+  name: 'Import error with unbreakable message',
+  play: async ({ canvasElement, userEvent }) => {
+    const page = within(canvasElement.ownerDocument.body)
+
+    await userEvent.type(page.getByLabelText('Source URL'), DISCOVERY.url)
+    await userEvent.click(page.getByRole('button', { name: 'Next' }))
+    await waitFor(() => expect(page.getByLabelText('Name')).toHaveValue('weather_api'))
+    await userEvent.click(page.getByRole('button', { name: 'Next' }))
+
+    await waitFor(() => expect(activeDialogCount(canvasElement.ownerDocument)).toBe(3))
+    const banner = await waitFor(() => {
+      const match = page.getByText(/failed to materialize source 'axiom'/)
+      expect(match).toBeVisible()
+      return match
+    })
+    // The Rust type paths have to break inside the banner instead of spilling
+    // past the dialog edge.
+    const popup = banner.closest('[role="dialog"]')
+    if (!(popup instanceof HTMLElement)) throw new Error('Credentials dialog not found')
+    await expect(banner.getBoundingClientRect().right).toBeLessThanOrEqual(
+      popup.getBoundingClientRect().right,
+    )
   },
 }
 

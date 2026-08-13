@@ -60,18 +60,18 @@ impl ObservedValuesLiveScopeLoader {
         let mut live_scopes = Vec::new();
         let mut failed_sources = Vec::new();
         for source in sources {
-            let owner_source_name = source.name.as_str().to_string();
+            let source_name = source.name.as_str().to_string();
             match self.load_source_scopes(workspace_name, &source) {
                 Ok(source_scopes) => live_scopes.extend(source_scopes),
                 Err(error) => {
                     tracing::debug!(
                         workspace = %workspace_name,
-                        source = %owner_source_name,
+                        source = %source_name,
                         error = %error,
                         "skipping observed-value live scope for source"
                     );
                     failed_sources.push(ObservedValuesLiveScopeLoadFailure {
-                        owner_source_name,
+                        source_name,
                         message: error.to_string(),
                     });
                 }
@@ -177,8 +177,8 @@ mod tests {
         assert_eq!(second.live_scopes.len(), 1);
         let first_scope = first.live_scopes.first().expect("first live scope");
         let second_scope = second.live_scopes.first().expect("second live scope");
-        assert_eq!(first_scope.owner_source_name, "github");
         assert_eq!(first_scope.source_name, "github");
+        assert_eq!(second_scope.source_name, "github");
         assert_eq!(first_scope.surface_kind, ObservedValuesSurfaceKind::Table);
         assert_eq!(first_scope.surface_name, "issues");
         assert_ne!(first_scope.source_scope_id, second_scope.source_scope_id);
@@ -310,7 +310,7 @@ mod tests {
         assert_eq!(live_scope.source_name, "github");
         assert_eq!(load.failed_sources.len(), 1);
         let failed_source = load.failed_sources.first().expect("failed source");
-        assert_eq!(failed_source.owner_source_name, "broken");
+        assert_eq!(failed_source.source_name, "broken");
     }
 
     fn install_source(

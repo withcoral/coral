@@ -19,7 +19,6 @@ const SELECT_STALE_OBSERVED_VALUE_KEYS_SQL: &str = "
         rowid,
         last_observed_at,
         observation_count,
-        owner_source_name,
         source_name,
         source_scope_id,
         surface_kind,
@@ -38,7 +37,6 @@ const SELECT_OLDEST_OBSERVED_VALUE_KEYS_SQL: &str = "
         rowid,
         last_observed_at,
         observation_count,
-        owner_source_name,
         source_name,
         source_scope_id,
         surface_kind,
@@ -97,7 +95,6 @@ struct ObservedValueKey {
     canonical_rowid: i64,
     last_observed_at: String,
     observation_count: i64,
-    owner_source_name: String,
     source_name: String,
     source_scope_id: String,
     surface_kind: String,
@@ -300,13 +297,12 @@ fn observed_value_key_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Obse
         canonical_rowid: row.get(0)?,
         last_observed_at: row.get(1)?,
         observation_count: row.get(2)?,
-        owner_source_name: row.get(3)?,
-        source_name: row.get(4)?,
-        source_scope_id: row.get(5)?,
-        surface_kind: row.get(6)?,
-        surface_name: row.get(7)?,
-        column_name: row.get(8)?,
-        value_key: row.get(9)?,
+        source_name: row.get(3)?,
+        source_scope_id: row.get(4)?,
+        surface_kind: row.get(5)?,
+        surface_name: row.get(6)?,
+        column_name: row.get(7)?,
+        value_key: row.get(8)?,
     })
 }
 
@@ -408,20 +404,18 @@ fn delete_canonical_observed_value_key(
             DELETE FROM observed_values
             WHERE rowid = ?1
               AND workspace = ?2
-              AND owner_source_name = ?3
-              AND source_name = ?4
-              AND source_scope_id = ?5
-              AND surface_kind = ?6
-              AND surface_name = ?7
-              AND column_name = ?8
-              AND value_key = ?9
-              AND last_observed_at = ?10
-              AND observation_count = ?11
+              AND source_name = ?3
+              AND source_scope_id = ?4
+              AND surface_kind = ?5
+              AND surface_name = ?6
+              AND column_name = ?7
+              AND value_key = ?8
+              AND last_observed_at = ?9
+              AND observation_count = ?10
             ",
             params![
                 key.canonical_rowid,
                 workspace_name.as_str(),
-                &key.owner_source_name,
                 &key.source_name,
                 &key.source_scope_id,
                 &key.surface_kind,
@@ -445,19 +439,17 @@ fn stage_governance_delete_key(
             "
             INSERT INTO temp.{GOVERNANCE_DELETE_KEYS_TABLE} (
                 workspace,
-                owner_source_name,
                 source_name,
                 source_scope_id,
                 surface_kind,
                 surface_name,
                 column_name,
                 value_key
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
             "
         ),
         params![
             workspace_name.as_str(),
-            &key.owner_source_name,
             &key.source_name,
             &key.source_scope_id,
             &key.surface_kind,
@@ -478,7 +470,6 @@ fn delete_staged_fts_rows(transaction: &Transaction<'_>) -> Result<(), SqliteSea
                 SELECT 1
                 FROM temp.{GOVERNANCE_DELETE_KEYS_TABLE} AS deletion
                 WHERE deletion.workspace = observed_values_fts.workspace
-                  AND deletion.owner_source_name = observed_values_fts.owner_source_name
                   AND deletion.source_name = observed_values_fts.source_name
                   AND deletion.source_scope_id = observed_values_fts.source_scope_id
                   AND deletion.surface_kind = observed_values_fts.surface_kind
@@ -498,7 +489,6 @@ fn ensure_governance_delete_keys_table(connection: &Connection) -> Result<(), Sq
         "
         CREATE TEMP TABLE IF NOT EXISTS {GOVERNANCE_DELETE_KEYS_TABLE} (
             workspace TEXT NOT NULL,
-            owner_source_name TEXT NOT NULL,
             source_name TEXT NOT NULL,
             source_scope_id TEXT NOT NULL,
             surface_kind TEXT NOT NULL,
@@ -507,7 +497,6 @@ fn ensure_governance_delete_keys_table(connection: &Connection) -> Result<(), Sq
             value_key TEXT NOT NULL,
             PRIMARY KEY (
                 workspace,
-                owner_source_name,
                 source_name,
                 source_scope_id,
                 surface_kind,
@@ -629,15 +618,15 @@ mod tests {
     fn stale_row_cap_reports_budget_exhaustion_with_time_remaining() {
         let mut connection = observed_values_connection();
         let workspace = WorkspaceName::default();
-        for (owner, value_key, last_observed_at) in [
-            ("owner-a", "first", "2000-01-01T00:00:00.000Z"),
-            ("owner-b", "second", "2001-01-01T00:00:00.000Z"),
-            ("owner-c", "third", "2002-01-01T00:00:00.000Z"),
+        for (source_name, value_key, last_observed_at) in [
+            ("source-a", "first", "2000-01-01T00:00:00.000Z"),
+            ("source-b", "second", "2001-01-01T00:00:00.000Z"),
+            ("source-c", "third", "2002-01-01T00:00:00.000Z"),
         ] {
             insert_observed_value(
                 &connection,
                 &workspace,
-                owner,
+                source_name,
                 value_key,
                 last_observed_at,
                 1,
@@ -664,15 +653,15 @@ mod tests {
     fn eviction_row_cap_reports_budget_exhaustion_while_observed_work_remains() {
         let mut connection = observed_values_connection();
         let workspace = WorkspaceName::default();
-        for (owner, value_key) in [
-            ("owner-a", "first"),
-            ("owner-b", "second"),
-            ("owner-c", "third"),
+        for (source_name, value_key) in [
+            ("source-a", "first"),
+            ("source-b", "second"),
+            ("source-c", "third"),
         ] {
             insert_observed_value(
                 &connection,
                 &workspace,
-                owner,
+                source_name,
                 value_key,
                 "9999-01-01T00:00:00.000Z",
                 1,
@@ -737,7 +726,7 @@ mod tests {
                 SET display_value = 'fresh',
                     search_text = 'fresh',
                     observation_count = observation_count + 1
-                WHERE workspace = ?1 AND owner_source_name = 'github'
+                WHERE workspace = ?1 AND source_name = 'github'
                 ",
                 params![workspace.as_str()],
             )
@@ -747,7 +736,7 @@ mod tests {
                 "
                 UPDATE observed_values_fts
                 SET display_value = 'fresh', search_text = 'fresh'
-                WHERE workspace = ?1 AND owner_source_name = 'github'
+                WHERE workspace = ?1 AND source_name = 'github'
                 ",
                 params![workspace.as_str()],
             )
@@ -776,15 +765,15 @@ mod tests {
     fn governance_deletes_a_batch_from_canonical_and_fts_once() {
         let mut connection = observed_values_connection();
         let workspace = WorkspaceName::default();
-        for (owner, value_key, last_observed_at) in [
-            ("owner-a", "first", "2020-01-01T00:00:00.000Z"),
-            ("owner-b", "second", "2021-01-01T00:00:00.000Z"),
-            ("owner-c", "third", "2022-01-01T00:00:00.000Z"),
+        for (source_name, value_key, last_observed_at) in [
+            ("source-a", "first", "2020-01-01T00:00:00.000Z"),
+            ("source-b", "second", "2021-01-01T00:00:00.000Z"),
+            ("source-c", "third", "2022-01-01T00:00:00.000Z"),
         ] {
             insert_observed_value(
                 &connection,
                 &workspace,
-                owner,
+                source_name,
                 value_key,
                 last_observed_at,
                 1,
@@ -814,7 +803,7 @@ mod tests {
             .execute_batch(include_str!("../migrations/0002_observed_values.sql"))
             .expect("v2 observed-values schema");
         let workspace = WorkspaceName::default();
-        seed_legacy_fts_tombstones(&connection);
+        seed_legacy_v2_fts_tombstones(&connection);
         connection
             .execute_batch(include_str!(
                 "../migrations/0003_observed_values_governance.sql"
@@ -908,17 +897,17 @@ mod tests {
     fn observed_values_connection() -> Connection {
         let connection = Connection::open_in_memory().expect("connection");
         connection
-            .execute_batch(include_str!("../migrations/0002_observed_values.sql"))
-            .expect("observed-values schema");
-        connection
             .execute_batch(include_str!(
-                "../migrations/0003_observed_values_governance.sql"
+                "../migrations/0005_observed_source_identity.sql"
             ))
-            .expect("observed-values governance schema");
+            .expect("observed-values schema");
         connection
     }
 
-    fn seed_legacy_fts_tombstones(connection: &Connection) {
+    /// Historical fixture: writes rows in the pre-#1791 owner/component shape
+    /// against the v2 schema, which is the point of the test that uses it --
+    /// FTS pages written before `secure-delete` was enabled in v3.
+    fn seed_legacy_v2_fts_tombstones(connection: &Connection) {
         connection
             .execute_batch(
                 "
@@ -985,7 +974,7 @@ mod tests {
     fn insert_observed_value(
         connection: &Connection,
         workspace: &WorkspaceName,
-        owner_source_name: &str,
+        source_name: &str,
         value_key: &str,
         last_observed_at: &str,
         observation_count: i64,
@@ -995,7 +984,6 @@ mod tests {
                 "
                 INSERT INTO observed_values (
                     workspace,
-                    owner_source_name,
                     source_name,
                     source_scope_id,
                     surface_kind,
@@ -1010,13 +998,13 @@ mod tests {
                     source_generation,
                     workspace_generation
                 ) VALUES (
-                    ?1, ?2, 'shared-schema', 'scope', 'table', 'issues', 'title',
+                    ?1, ?2, 'scope', 'table', 'issues', 'title',
                     ?3, ?3, ?3, ?4, ?4, ?5, 0, 0
                 )
                 ",
                 params![
                     workspace.as_str(),
-                    owner_source_name,
+                    source_name,
                     value_key,
                     last_observed_at,
                     observation_count,
@@ -1028,7 +1016,6 @@ mod tests {
                 "
                 INSERT INTO observed_values_fts (
                     workspace,
-                    owner_source_name,
                     source_name,
                     source_scope_id,
                     surface_kind,
@@ -1037,9 +1024,9 @@ mod tests {
                     value_key,
                     display_value,
                     search_text
-                ) VALUES (?1, ?2, 'shared-schema', 'scope', 'table', 'issues', 'title', ?3, ?3, ?3)
+                ) VALUES (?1, ?2, 'scope', 'table', 'issues', 'title', ?3, ?3, ?3)
                 ",
-                params![workspace.as_str(), owner_source_name, value_key],
+                params![workspace.as_str(), source_name, value_key],
             )
             .expect("insert FTS observed value");
     }
