@@ -14,6 +14,7 @@ use axum::body::Body as AxumBody;
 use axum::extract::Request as AxumRequest;
 use axum::response::Response as AxumResponse;
 use coral_api::v1::catalog_service_server::CatalogServiceServer;
+use coral_api::v1::feature_service_server::FeatureServiceServer;
 use coral_api::v1::feedback_service_server::FeedbackServiceServer;
 use coral_api::v1::function_service_server::FunctionServiceServer;
 use coral_api::v1::query_service_server::QueryServiceServer;
@@ -49,7 +50,8 @@ use crate::catalog::discovery::CatalogDiscovery;
 use crate::catalog::service::CatalogService;
 use crate::credentials::config::CredentialStorageConfig;
 use crate::credentials::{CredentialManager, CredentialStore};
-use crate::features::{Feature, FeatureOverrides, FeatureStore};
+use crate::features::service::FeatureService;
+use crate::features::{Feature, FeatureOverrides, FeatureStore, Features};
 use crate::feedback::manager::FeedbackManager;
 use crate::feedback::publisher::{
     FeedbackPublisher, HostedFeedbackPublisher, NoopFeedbackPublisher,
@@ -450,8 +452,8 @@ async fn start_components(builder: ServerBuilder) -> Result<RunningServer, AppEr
     let mode = builder.config.resolved_mode(&layout)?;
     let grpc_listener = builder.config.grpc_listener.clone();
     layout.ensure()?;
-    let features = FeatureStore::from_layout(layout.clone())
-        .load_with_overrides(&builder.config.feature_overrides)?;
+    let feature_store = FeatureStore::from_layout(layout.clone());
+    let features = feature_store.load_with_overrides(&builder.config.feature_overrides)?;
     let coral_db = init_database(&layout).await?;
     let config_store = ConfigStore::new(layout.clone());
     run_state_migrations(&coral_db, &config_store, &layout).await?;
@@ -470,9 +472,8 @@ async fn start_components(builder: ServerBuilder) -> Result<RunningServer, AppEr
         init_server_telemetry(&layout, builder.config.enable_stderr_logs)?;
     report_shared_workspace_warnings(&shared_warnings);
     let active_trace_store_dir = active_trace_store.as_ref().map(|store| store.dir.clone());
-    let credential_config = CredentialStorageConfig::load(&layout)?;
-    let credential_store =
-        CredentialStore::with_preference(layout.clone(), credential_config.storage);
+    let storage = CredentialStorageConfig::load(&layout)?;
+    let credential_store = CredentialStore::with_preference(layout.clone(), storage.storage);
     let credential_manager = CredentialManager::new(credential_store);
     let workspace_lifecycle_lock = WorkspaceLifecycleLock::default();
     let workspace_pool_registry = Arc::new(WorkspacePoolRegistry::default());
@@ -499,7 +500,6 @@ async fn start_components(builder: ServerBuilder) -> Result<RunningServer, AppEr
     .with_pool_registry(Arc::clone(&workspace_pool_registry));
     let feedback_manager =
         FeedbackManager::with_publisher(layout.clone(), builder.config.feedback_publisher);
-    let task_manager = TaskManager::new(TaskStore::new(Arc::clone(&coral_db)));
     let query_runtime_context = env.query_runtime_context().with_body_capture_max_bytes(
         telemetry_config
             .trace_history
@@ -542,7 +542,9 @@ async fn start_components(builder: ServerBuilder) -> Result<RunningServer, AppEr
             search: search_manager,
             search_observations,
             feedback: feedback_manager,
-            task: task_manager,
+            task: TaskManager::new(TaskStore::new(Arc::clone(&coral_db))),
+            feature_store,
+            active_features: features,
         },
         trace_components,
         principal_provider,
@@ -797,23 +799,18 @@ struct ServerDependencies {
     search_observations: Option<SearchObservationHandle>,
     feedback: FeedbackManager,
     task: TaskManager,
+    feature_store: FeatureStore,
+    // The resolution `start` performed, carried forward so the feature service
+    // can report what this server is running rather than only what config says.
+    active_features: Features,
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "the server composition root wires every application service"
-)]
-async fn start_server(
+/// Builds the gRPC routes for every application service, and returns the query
+/// manager the health service reads readiness from.
+fn application_routes(
     dependencies: ServerDependencies,
-    trace_components: TraceServerComponents,
-    principal_provider: Arc<dyn PrincipalProvider>,
-    mode: ServerMode,
-    grpc_listener: Option<Arc<std::net::TcpListener>>,
-) -> Result<RunningServer, AppError> {
-    let TraceServerComponents {
-        manager: trace_manager,
-        local_trace_store_dir,
-    } = trace_components;
+    trace_manager: Option<TraceManager>,
+) -> (Routes, QueryManager) {
     let ServerDependencies {
         db,
         local_principal,
@@ -824,6 +821,8 @@ async fn start_server(
         search_observations,
         feedback,
         task,
+        feature_store,
+        active_features,
     } = dependencies;
     let (source, query) = match search_observations.as_ref() {
         Some(search_observations) => (
@@ -850,14 +849,14 @@ async fn start_server(
         CatalogService::new(query.clone(), task.clone(), workspace_authorizer.clone());
     let function_service = FunctionService::new(query.clone(), workspace_authorizer.clone());
     let query_service = QueryService::new(query, task.clone(), workspace_authorizer.clone());
-    let search_service =
-        SearchService::new(search.clone(), task.clone(), workspace_authorizer.clone());
+    let search_service = SearchService::new(search, task.clone(), workspace_authorizer.clone());
     let feedback_service =
         FeedbackService::new(feedback, task.clone(), workspace_authorizer.clone());
+    let feature_service = FeatureService::new(feature_store, active_features, local_principal);
     let task_service = TaskService::new(task, workspace_authorizer.clone());
     let trace_service =
         trace_manager.map(|manager| TraceService::new(manager, workspace_authorizer));
-    let mut application_routes = Routes::default()
+    let mut routes = Routes::default()
         .add_service(
             SourceServiceServer::new(source_service)
                 .max_encoding_message_size(SOURCE_RESPONSE_MAX_MESSAGE_SIZE),
@@ -869,6 +868,7 @@ async fn start_server(
                 .max_encoding_message_size(CATALOG_RESPONSE_MAX_MESSAGE_SIZE),
         )
         .add_service(FeedbackServiceServer::new(feedback_service))
+        .add_service(FeatureServiceServer::new(feature_service))
         .add_service(FunctionServiceServer::new(function_service))
         .add_service(TaskServiceServer::new(task_service))
         .add_service(
@@ -880,11 +880,29 @@ async fn start_server(
                 .max_encoding_message_size(SEARCH_RESPONSE_MAX_MESSAGE_SIZE),
         );
     if let Some(trace_service) = trace_service {
-        application_routes = application_routes.add_service(
+        routes = routes.add_service(
             TraceServiceServer::new(trace_service)
                 .max_encoding_message_size(TRACE_RESPONSE_MAX_MESSAGE_SIZE),
         );
     }
+    (routes, health_queries)
+}
+
+async fn start_server(
+    dependencies: ServerDependencies,
+    trace_components: TraceServerComponents,
+    principal_provider: Arc<dyn PrincipalProvider>,
+    mode: ServerMode,
+    grpc_listener: Option<Arc<std::net::TcpListener>>,
+) -> Result<RunningServer, AppError> {
+    let TraceServerComponents {
+        manager: trace_manager,
+        local_trace_store_dir,
+    } = trace_components;
+    // `RunningServer` owns both for shutdown; the routes only borrow them.
+    let search = dependencies.search.clone();
+    let search_observations = dependencies.search_observations.clone();
+    let (application_routes, health_queries) = application_routes(dependencies, trace_manager);
     let routes = Routes::from(
         application_routes
             .into_axum_router()
@@ -1157,6 +1175,7 @@ mod tests {
     use std::task::Poll;
     use std::time::Duration;
 
+    use coral_api::v1::feature_service_client::FeatureServiceClient;
     use coral_api::v1::query_service_client::QueryServiceClient;
     use coral_api::v1::source_service_client::SourceServiceClient;
     use coral_api::v1::task_service_client::TaskServiceClient;
@@ -1165,9 +1184,9 @@ mod tests {
     use coral_api::v1::workspace_service_client::WorkspaceServiceClient;
     use coral_api::v1::{
         CreateWorkspaceRequest, EndTaskRequest, ExecuteSqlRequest, GetCurrentUserRequest,
-        ImportSourceRequest, ImportSourceResponse, ListSourcesRequest, ListTracesRequest,
-        ListUsersRequest, ListWorkspacesRequest, StartTaskRequest, TaskStatus, TraceView,
-        Workspace, import_source_response,
+        ImportSourceRequest, ImportSourceResponse, ListFeaturesRequest, ListSourcesRequest,
+        ListTracesRequest, ListUsersRequest, ListWorkspacesRequest, StartTaskRequest, TaskStatus,
+        TraceView, Workspace, import_source_response,
     };
     use coral_api::{HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE};
     use coral_engine::QueryRuntimeContext;
@@ -1186,7 +1205,7 @@ mod tests {
     use crate::bootstrap::AppError;
     use crate::catalog::discovery::CatalogDiscovery;
     use crate::credentials::{CredentialManager, CredentialStore};
-    use crate::features::{Feature, FeatureOverrides};
+    use crate::features::{Feature, FeatureOverrides, FeatureStore, Features};
     use crate::feedback::manager::FeedbackManager;
     use crate::query::manager::QueryManager;
     use crate::search::manager::SearchManager;
@@ -2172,6 +2191,8 @@ backend = "unsupported"
                 search_observations: Some(search_observations),
                 feedback: feedback_manager,
                 task: task_manager,
+                feature_store: FeatureStore::from_layout(layout.clone()),
+                active_features: Features::default(),
             },
             TraceServerComponents {
                 manager: Some(trace_manager),
@@ -2190,7 +2211,14 @@ backend = "unsupported"
             .expect("connect");
         let mut user_client = UserServiceClient::new(channel.clone());
         let mut workspace_client = WorkspaceServiceClient::new(channel.clone());
+        let mut feature_client = FeatureServiceClient::new(channel.clone());
         let mut trace_client = TraceServiceClient::new(channel);
+
+        let error = feature_client
+            .list_features(Request::new(ListFeaturesRequest {}))
+            .await
+            .expect_err("federated principal cannot list runtime features");
+        assert_eq!(error.code(), Code::PermissionDenied);
 
         let current = user_client
             .get_current_user(Request::new(GetCurrentUserRequest {}))
@@ -2663,6 +2691,8 @@ tables:
                 search_observations: Some(search_observations),
                 feedback: feedback_manager,
                 task: task_manager,
+                feature_store: FeatureStore::from_layout(layout.clone()),
+                active_features: Features::default(),
             },
             TraceServerComponents::default(),
             Arc::new(LocalPrincipalProvider),
@@ -2794,6 +2824,8 @@ tables:
                 search_observations: Some(search_observations),
                 feedback: feedback_manager,
                 task: task_manager,
+                feature_store: FeatureStore::from_layout(layout.clone()),
+                active_features: Features::default(),
             },
             TraceServerComponents::default(),
             Arc::new(LocalPrincipalProvider),
@@ -2925,6 +2957,8 @@ tables:
                 search_observations: Some(search_observations),
                 feedback: feedback_manager,
                 task: task_manager,
+                feature_store: FeatureStore::from_layout(layout.clone()),
+                active_features: Features::default(),
             },
             TraceServerComponents::default(),
             Arc::new(LocalPrincipalProvider),
