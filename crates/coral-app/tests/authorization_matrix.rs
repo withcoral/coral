@@ -12,6 +12,7 @@ use std::fs;
 enum Access {
     Read,
     Manage,
+    LocalHostControl,
     SelfScoped,
     AnyAuthenticatedHuman,
     OwnerOfAnyWorkspace,
@@ -27,6 +28,14 @@ const AUTHORIZATION_MATRIX: &[(&str, Access)] = &[
     ),
     ("coral.v1.CatalogService/ListColumns", Access::Read),
     ("coral.v1.FeedbackService/SubmitFeedback", Access::Read),
+    (
+        "coral.v1.FeatureService/ListFeatures",
+        Access::LocalHostControl,
+    ),
+    (
+        "coral.v1.FeatureService/SetFeature",
+        Access::LocalHostControl,
+    ),
     ("coral.v1.FunctionService/AddFunction", Access::Manage),
     ("coral.v1.FunctionService/ListFunctions", Access::Read),
     ("coral.v1.FunctionService/DeleteFunction", Access::Manage),

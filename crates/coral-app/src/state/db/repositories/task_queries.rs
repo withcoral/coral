@@ -237,7 +237,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "set CORAL_TEST_POSTGRES_URL to run the shared repository harness against Postgres"]
-    async fn task_query_repository_round_trips_against_postgres() {
+    async fn task_query_repository_contract_on_postgres() {
         let Some(url) = bootstrap::env_var("CORAL_TEST_POSTGRES_URL")
             .expect("read CORAL_TEST_POSTGRES_URL")
             .filter(|value| !value.is_empty())

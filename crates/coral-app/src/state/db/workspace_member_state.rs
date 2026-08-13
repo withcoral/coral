@@ -95,7 +95,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "set CORAL_TEST_POSTGRES_URL to run the shared state harness against Postgres"]
-    async fn workspace_member_state_repository_round_trips_against_postgres() {
+    async fn workspace_member_state_repository_contract_on_postgres() {
         let Some(url) = postgres_test_url() else {
             return;
         };
