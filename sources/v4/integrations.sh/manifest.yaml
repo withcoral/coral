@@ -1,4 +1,4 @@
-name: integrations_sh
+name: integrations_sh_v4
 dsl_version: 4
 surface:
   type: openapi
