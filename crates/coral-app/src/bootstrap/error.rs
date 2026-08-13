@@ -42,15 +42,7 @@ pub enum AppError {
     /// A requested workspace already exists in config.
     #[error("workspace '{0}' already exists")]
     WorkspaceAlreadyExists(String),
-    /// A workspace member already exists with a different role.
-    #[error("user '{user_id}' already has a different role in workspace '{workspace}'")]
-    WorkspaceMemberRoleConflict {
-        /// Workspace containing the existing membership.
-        workspace: String,
-        /// User whose existing membership has the conflicting role.
-        user_id: String,
-    },
-    /// Removing this member would leave a workspace without an owner.
+    /// Removing or demoting this member would leave a workspace without an owner.
     #[error("workspace '{0}' must retain at least one owner")]
     LastWorkspaceOwner(String),
     /// Caller-supplied input was invalid.
@@ -321,9 +313,9 @@ fn app_code(error: &AppError) -> Code {
         | AppError::FunctionNotFound(_)
         | AppError::WorkspaceNotFound(_)
         | AppError::UserNotFound(_) => Code::NotFound,
-        AppError::FunctionAlreadyExists(_)
-        | AppError::WorkspaceAlreadyExists(_)
-        | AppError::WorkspaceMemberRoleConflict { .. } => Code::AlreadyExists,
+        AppError::FunctionAlreadyExists(_) | AppError::WorkspaceAlreadyExists(_) => {
+            Code::AlreadyExists
+        }
         AppError::InvalidInput(_) => Code::InvalidArgument,
         AppError::FailedPrecondition(_)
         | AppError::LastWorkspaceOwner(_)
@@ -394,13 +386,6 @@ mod tests {
                 Code::NotFound,
             ),
             (AppError::IssuerMismatch, Code::FailedPrecondition),
-            (
-                AppError::WorkspaceMemberRoleConflict {
-                    workspace: "work".to_string(),
-                    user_id: "user-id".to_string(),
-                },
-                Code::AlreadyExists,
-            ),
             (
                 AppError::LastWorkspaceOwner("work".to_string()),
                 Code::FailedPrecondition,

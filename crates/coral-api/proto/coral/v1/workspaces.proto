@@ -77,17 +77,17 @@ message ListWorkspaceMembersResponse {
   repeated WorkspaceMember members = 1;
 }
 
-// Adds one user to a workspace.
+// Adds a workspace member or moves an existing workspace membership to the desired role.
 message AddWorkspaceMemberRequest {
   // Workspace to modify.
   Workspace workspace = 1;
-  // User and role to add. The display name is ignored.
+  // User and desired role. The display name is ignored.
   WorkspaceMember member = 2;
 }
 
-// Returns the added or existing identical membership.
+// Returns the resulting workspace membership.
 message AddWorkspaceMemberResponse {
-  // Added workspace member.
+  // Resulting workspace member.
   WorkspaceMember member = 1;
 }
 
@@ -112,7 +112,7 @@ service WorkspaceService {
   rpc DeleteWorkspace(DeleteWorkspaceRequest) returns (DeleteWorkspaceResponse);
   // Lists members of one workspace.
   rpc ListWorkspaceMembers(ListWorkspaceMembersRequest) returns (ListWorkspaceMembersResponse);
-  // Adds one user to a workspace.
+  // Adds a workspace member or moves an existing workspace membership to the desired role.
   rpc AddWorkspaceMember(AddWorkspaceMemberRequest) returns (AddWorkspaceMemberResponse);
   // Removes one user from a workspace.
   rpc RemoveWorkspaceMember(RemoveWorkspaceMemberRequest) returns (RemoveWorkspaceMemberResponse);

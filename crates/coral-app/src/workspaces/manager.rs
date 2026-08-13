@@ -252,13 +252,12 @@ impl WorkspaceManager {
             )
             .await?
         {
-            AddMemberOutcome::Added(member) | AddMemberOutcome::ExistingSameRole(member) => {
-                Ok(member)
+            AddMemberOutcome::Added(member)
+            | AddMemberOutcome::ExistingSameRole(member)
+            | AddMemberOutcome::RoleUpdated(member) => Ok(member),
+            AddMemberOutcome::LastOwnerProtected => {
+                Err(AppError::LastWorkspaceOwner(workspace_name.to_string()))
             }
-            AddMemberOutcome::RoleConflict => Err(AppError::WorkspaceMemberRoleConflict {
-                workspace: workspace_name.to_string(),
-                user_id: user_id.to_string(),
-            }),
             AddMemberOutcome::WorkspaceNotFound => {
                 Err(AppError::WorkspaceNotFound(workspace_name.to_string()))
             }
@@ -561,7 +560,7 @@ mod tests {
                 principal,
             ))
             .await
-            .map(|response| response.into_inner().member.expect("added member"))
+            .map(|response| response.into_inner().member.expect("resulting member"))
     }
 
     async fn seed_concealed_workspaces(mut db: &CoralDb, member_id: &str) {
@@ -583,6 +582,30 @@ mod tests {
             .add_member("local-only", member_id, MemberRole::Member, 1)
             .await
             .expect("seed local-only member");
+    }
+
+    async fn assert_role_moves(
+        service: &WorkspaceService,
+        (owner, member): (&Principal, &Principal),
+        member_record: &impl Fn(i32) -> WorkspaceMember,
+    ) -> Result<(), tonic::Status> {
+        let owner_role = WorkspaceRole::Owner as i32;
+        let member_role = WorkspaceRole::Member as i32;
+        let promoted = add_member(service, owner, Some(member_record(owner_role))).await?;
+        assert_eq!(promoted.role, owner_role);
+        list_members(service, member).await?;
+        let demoted = add_member(service, owner, Some(member_record(member_role))).await?;
+        assert_eq!(demoted.role, member_role);
+        let access = list_members(service, member).await;
+        let error = access.expect_err("next request sees demotion");
+        assert_eq!(error.code(), Code::PermissionDenied);
+        let mut owner_record = member_record(member_role);
+        owner_record.user_id = owner.id().to_string();
+        let error = add_member(service, owner, Some(owner_record))
+            .await
+            .expect_err("sole owner demotion must fail");
+        assert_eq!(error.code(), Code::FailedPrecondition);
+        Ok(())
     }
 
     #[tokio::test]
@@ -658,14 +681,8 @@ mod tests {
             (added.user_id, added.role),
             (member_id.clone(), member_role)
         );
-        let error = add_member(
-            &service,
-            &owner,
-            Some(member_record(WorkspaceRole::Owner as i32)),
-        )
-        .await
-        .expect_err("changing a member role must fail");
-        assert_eq!(error.code(), Code::AlreadyExists);
+        let moves = assert_role_moves(&service, (&owner, &member), &member_record).await;
+        moves.expect("role moves");
         seed_concealed_workspaces(&db, &member_id).await;
         let memberships = service
             .list_workspaces(request(ListWorkspacesRequest {}, &member))

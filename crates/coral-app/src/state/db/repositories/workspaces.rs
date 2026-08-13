@@ -167,8 +167,7 @@ impl WorkspacesRepo<'_, &CoralDb> {
             .role_for_user_id(workspace_id, user_id)
             .await?
         {
-            tx.rollback().await?;
-            return Ok(existing_add_outcome(user, existing_role, role));
+            return update_existing_member(tx, workspace_id, user, existing_role, role).await;
         }
         match tx
             .workspace_members()
@@ -189,7 +188,7 @@ impl WorkspacesRepo<'_, &CoralDb> {
                 else {
                     return Err(error);
                 };
-                Ok(existing_add_outcome(user, existing_role, role))
+                existing_add_outcome(user, existing_role, role)
             }
             Err(error) => Err(error),
         }
@@ -282,15 +281,58 @@ impl WorkspacesRepo<'_, CoralTx<'_>> {
     }
 }
 
+async fn update_existing_member(
+    mut tx: CoralTx<'_>,
+    workspace_id: &str,
+    user: UserRecord,
+    existing_role: MemberRole,
+    requested_role: MemberRole,
+) -> Result<AddMemberOutcome, DbError> {
+    if existing_role == requested_role {
+        tx.rollback().await?;
+        return Ok(AddMemberOutcome::ExistingSameRole(member_view(
+            user,
+            requested_role,
+        )));
+    }
+    if existing_role == MemberRole::Owner
+        && requested_role == MemberRole::Member
+        && tx.workspace_members().owner_count(workspace_id).await? <= 1
+    {
+        tx.rollback().await?;
+        return Ok(AddMemberOutcome::LastOwnerProtected);
+    }
+    if !tx
+        .workspace_members()
+        .update_role(workspace_id, &user.user_id, requested_role)
+        .await?
+    {
+        tx.rollback().await?;
+        return Err(DbError::CorruptData(
+            "workspace membership disappeared after a locked read".to_string(),
+        ));
+    }
+    tx.commit().await?;
+    Ok(AddMemberOutcome::RoleUpdated(member_view(
+        user,
+        requested_role,
+    )))
+}
+
 fn existing_add_outcome(
     user: UserRecord,
     existing_role: MemberRole,
     requested_role: MemberRole,
-) -> AddMemberOutcome {
+) -> Result<AddMemberOutcome, DbError> {
     if existing_role == requested_role {
-        AddMemberOutcome::ExistingSameRole(member_view(user, existing_role))
+        Ok(AddMemberOutcome::ExistingSameRole(member_view(
+            user,
+            existing_role,
+        )))
     } else {
-        AddMemberOutcome::RoleConflict
+        Err(DbError::CorruptData(
+            "different-role membership became visible after a locked read".to_string(),
+        ))
     }
 }
 

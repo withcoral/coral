@@ -109,6 +109,8 @@ that needs operator attention, not an alternate access path.
 The gRPC API is Coral's internal contract boundary. It is not a supported
 end-user workspace-administration or recovery surface.
 
+Adding an existing member with the same role is idempotent; requesting a different role atomically moves the membership to that role. Coral refuses to demote or remove the sole owner.
+
 ### Repository recovery tool
 
 The repository contains an off-by-default tool for recovering a legacy workspace with no non-local owner and for rebinding identities after an issuer rename. It is absent from shipped `coral` and default `xtask` builds. Use a checkout matching the deployment and back up first. Database possession is the authority: SQLite requires state-directory access; Postgres uses `[database].url_env` without a host-locality guarantee. The tool opens existing state without migrations or startup repair. Start the upgraded shared server, have the intended owner sign in once, then run:

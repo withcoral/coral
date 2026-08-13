@@ -17,7 +17,8 @@ pub(crate) struct WorkspaceMemberView {
 pub(crate) enum AddMemberOutcome {
     Added(WorkspaceMemberView),
     ExistingSameRole(WorkspaceMemberView),
-    RoleConflict,
+    RoleUpdated(WorkspaceMemberView),
+    LastOwnerProtected,
     WorkspaceNotFound,
     UserNotFound,
 }
@@ -74,12 +75,15 @@ impl CoralDb {
 }
 #[cfg(test)]
 mod tests {
+    use sea_query::{Expr, ExprTrait, Query};
     use tempfile::tempdir;
 
     use super::{AddMemberOutcome, RemoveMemberOutcome};
     use crate::bootstrap;
     use crate::state::AppStateLayout;
+    use crate::state::db::DbSession;
     use crate::state::db::repositories::users::UpsertLoginOutcome;
+    use crate::state::db::schema::WorkspaceMembers;
     use crate::state::db::{
         CoralDb, DatabaseConfig, DbRepos, ResolvedDatabaseConfig, WorkspaceCreationOutcome,
     };
@@ -188,6 +192,16 @@ mod tests {
                 .count(),
             1
         );
+        let workspace = identical_add_workspace_id.as_str();
+        let user = member_id.as_str();
+        let identical_before = membership(db, workspace, user).await;
+        let identical = add(db, workspace, user, MemberRole::Member).await;
+        assert!(matches!(identical, AddMemberOutcome::ExistingSameRole(_)));
+        assert_eq!(
+            membership(db, workspace, user).await,
+            identical_before,
+            "an identical add must not rewrite the membership"
+        );
         assert_eq!(
             outcomes
                 .iter()
@@ -227,27 +241,17 @@ mod tests {
             member_add.expect("member-role add"),
             owner_add.expect("owner-role add"),
         ];
-        let added_role = outcomes
+        let settled_role = outcomes
             .iter()
             .find_map(|outcome| match outcome {
-                AddMemberOutcome::Added(member) => Some(member.role),
-                AddMemberOutcome::ExistingSameRole(_)
-                | AddMemberOutcome::RoleConflict
-                | AddMemberOutcome::WorkspaceNotFound
-                | AddMemberOutcome::UserNotFound => None,
+                AddMemberOutcome::RoleUpdated(member) => Some(member.role),
+                _ => None,
             })
-            .expect("one conflicting add must win");
+            .expect("one serialized different-role add must update the membership");
         assert_eq!(
             outcomes
                 .iter()
                 .filter(|outcome| matches!(outcome, AddMemberOutcome::Added(_)))
-                .count(),
-            1
-        );
-        assert_eq!(
-            outcomes
-                .iter()
-                .filter(|outcome| matches!(outcome, AddMemberOutcome::RoleConflict))
                 .count(),
             1
         );
@@ -257,9 +261,29 @@ mod tests {
                 .workspace_members()
                 .role_for_user_id(&conflicting_add_workspace_id, &conflicting_member_id)
                 .await
-                .expect("read role after conflicting adds"),
-            Some(added_role),
-            "the losing conflicting add must not mutate the winning role"
+                .expect("read role after different-role adds"),
+            Some(settled_role)
+        );
+        let created_at = membership(db, &conflicting_add_workspace_id, &conflicting_member_id)
+            .await
+            .expect("membership after different-role adds")
+            .1;
+        let workspace = conflicting_add_workspace_id.as_str();
+        let user = conflicting_member_id.as_str();
+        let other_role = match settled_role {
+            MemberRole::Owner => MemberRole::Member,
+            MemberRole::Member => MemberRole::Owner,
+        };
+        for role in [other_role, settled_role] {
+            assert!(matches!(
+                add(db, workspace, user, role).await,
+                AddMemberOutcome::RoleUpdated(member) if member.role == role
+            ));
+        }
+        assert_eq!(
+            membership(db, workspace, user).await,
+            Some((settled_role, created_at)),
+            "role moves must preserve membership identity and creation time"
         );
 
         let owner_removal_workspace_id = format!("owner-removal-{suffix}");
@@ -271,6 +295,9 @@ mod tests {
                 .expect("create owner-removal workspace"),
             WorkspaceCreationOutcome::Created
         );
+        let workspace = owner_removal_workspace_id.as_str();
+        let demotion = add(db, workspace, &owner_id, MemberRole::Member).await;
+        assert_eq!(demotion, AddMemberOutcome::LastOwnerProtected);
         let mut session = db;
         assert!(matches!(
             session
@@ -279,49 +306,79 @@ mod tests {
                     &owner_removal_workspace_id,
                     &other_owner_id,
                     MemberRole::Owner,
-                    31,
+                    32,
                 )
                 .await
                 .expect("add owner"),
             AddMemberOutcome::Added(_)
         ));
 
-        let mut first_remove_session = db;
-        let mut second_remove_session = db;
-        let mut first_remove_workspaces = first_remove_session.workspaces();
-        let mut second_remove_workspaces = second_remove_session.workspaces();
         let (first, second) = tokio::join!(
-            first_remove_workspaces.remove_member(&owner_removal_workspace_id, &owner_id),
-            second_remove_workspaces.remove_member(&owner_removal_workspace_id, &other_owner_id),
+            add(db, workspace, &owner_id, MemberRole::Member),
+            add(db, workspace, &other_owner_id, MemberRole::Member),
         );
-        let outcomes = [
-            first.expect("remove first owner"),
-            second.expect("remove second owner"),
-        ];
-        assert_eq!(
-            outcomes
-                .iter()
-                .filter(|outcome| matches!(outcome, RemoveMemberOutcome::Removed))
-                .count(),
-            1
+        assert!(matches!(
+            (first, second),
+            (
+                AddMemberOutcome::RoleUpdated(_),
+                AddMemberOutcome::LastOwnerProtected
+            ) | (
+                AddMemberOutcome::LastOwnerProtected,
+                AddMemberOutcome::RoleUpdated(_)
+            )
+        ));
+        for user_id in [&owner_id, &other_owner_id] {
+            add(db, workspace, user_id, MemberRole::Owner).await;
+        }
+        let mut remove_session = db;
+        let mut remove_workspaces = remove_session.workspaces();
+        let (demote, remove) = tokio::join!(
+            add(db, workspace, &owner_id, MemberRole::Member),
+            remove_workspaces.remove_member(workspace, &other_owner_id),
         );
-        assert_eq!(
-            outcomes
-                .iter()
-                .filter(|outcome| matches!(outcome, RemoveMemberOutcome::LastOwnerProtected))
-                .count(),
-            1
-        );
-        let mut tx = db.begin().await.expect("begin owner verification tx");
-        assert_eq!(
-            tx.workspace_members()
-                .owner_count(&owner_removal_workspace_id)
-                .await
-                .expect("count remaining owners"),
-            1,
-            "concurrent owner removals must preserve exactly one owner"
-        );
-        tx.rollback().await.expect("rollback owner verification tx");
+        assert!(matches!(
+            (demote, remove.expect("remove owner during mixed move")),
+            (
+                AddMemberOutcome::RoleUpdated(_),
+                RemoveMemberOutcome::LastOwnerProtected
+            ) | (
+                AddMemberOutcome::LastOwnerProtected,
+                RemoveMemberOutcome::Removed
+            )
+        ));
+    }
+
+    async fn add(
+        db: &CoralDb,
+        workspace_id: &str,
+        user_id: &str,
+        role: MemberRole,
+    ) -> AddMemberOutcome {
+        let mut session = db;
+        session
+            .workspaces()
+            .add_member(workspace_id, user_id, role, 99)
+            .await
+            .expect("add or update member")
+    }
+
+    async fn membership(
+        db: &CoralDb,
+        workspace_id: &str,
+        user_id: &str,
+    ) -> Option<(MemberRole, i64)> {
+        let statement = Query::select()
+            .columns([WorkspaceMembers::Role, WorkspaceMembers::CreatedAtUnixNanos])
+            .from(WorkspaceMembers::Table)
+            .and_where(Expr::col(WorkspaceMembers::WorkspaceId).eq(workspace_id))
+            .and_where(Expr::col(WorkspaceMembers::UserId).eq(user_id))
+            .to_owned();
+        let mut session = db;
+        let row: Option<(String, i64)> = session
+            .fetch_optional(statement)
+            .await
+            .expect("read membership state");
+        row.map(|(role, created_at)| (MemberRole::parse(&role).expect("valid role"), created_at))
     }
 
     async fn create_user(db: &CoralDb, suffix: &str) -> String {

@@ -163,6 +163,21 @@ impl WorkspaceMembersRepo<'_, CoralTx<'_>> {
         self.session.execute(statement).await
     }
 
+    pub(crate) async fn update_role(
+        &mut self,
+        workspace_id: &str,
+        user_id: &str,
+        role: MemberRole,
+    ) -> Result<bool, DbError> {
+        let statement = Query::update()
+            .table(WorkspaceMembers::Table)
+            .value(WorkspaceMembers::Role, role.as_str())
+            .and_where(Expr::col(WorkspaceMembers::WorkspaceId).eq(workspace_id))
+            .and_where(Expr::col(WorkspaceMembers::UserId).eq(user_id))
+            .to_owned();
+        Ok(self.session.execute_rows_affected(statement).await? == 1)
+    }
+
     pub(crate) async fn delete(
         &mut self,
         workspace_id: &str,
