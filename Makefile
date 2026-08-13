@@ -188,7 +188,7 @@ postgres-tests: $(POSTGRES_TESTS_PREREQS)
 	trap cleanup EXIT INT TERM; \
 	echo "Running Postgres tests against $$url"; \
 	CORAL_TEST_POSTGRES_URL="$$url" cargo test --locked -p coral-app --lib \
-	  repository_round_trips_against_postgres \
+	  contract_on_postgres \
 	  -- --ignored; \
 	CORAL_TEST_POSTGRES_URL="$$url" cargo test --locked -p coral-app \
 	  --test postgres_database_tests \

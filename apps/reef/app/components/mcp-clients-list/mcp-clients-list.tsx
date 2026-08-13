@@ -22,6 +22,11 @@ export interface McpClientsListProps {
   readonly workspaces: ReadonlyArray<{ name: string }>
 }
 
+export type McpClientsConnectionState = Pick<
+  McpClientsListProps,
+  'clients' | 'error' | 'loading' | 'onWorkspaceChange' | 'pendingClientIds'
+>
+
 export function McpClientsList({
   clients,
   error,
