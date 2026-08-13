@@ -41,7 +41,7 @@ const MAX_DESCRIPTOR_BYTES: u64 = 64 * 1024 * 1024;
 /// Timeout for descriptor fetches.
 const FETCH_TIMEOUT: Duration = Duration::from_mins(2);
 
-/// Every `PaginationSpec` field the `OpenAPI` importer can populate, plus the
+/// Every `PaginationSpec` field the OpenAPI importer can populate, plus the
 /// row path and the lookup-key allowlist.
 ///
 /// The narrower set this started with hid real inference changes: swapping the
@@ -159,7 +159,7 @@ fn escape_csv_field(field: &str) -> String {
     }
 }
 
-/// Import every v4 `OpenAPI` source under `--sources` and write the report.
+/// Import every v4 OpenAPI source under `--sources` and write the report.
 pub(crate) fn run(args: &Args) -> Result<bool> {
     let manifests = load_catalog_manifests(&args.sources)
         .with_context(|| format!("loading manifests from {}", args.sources.display()))?;

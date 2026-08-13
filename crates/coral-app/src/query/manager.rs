@@ -6,11 +6,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use coral_engine::{
-    CatalogInfo, CoralQuery, CoreError, DescribeTableInfo, PreparedQueryRuntime, QueryExecution,
-    QueryExecutionProvenance, QueryPlan, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,
-    ResolvedQueryResources, SourceDecorator, SourceDecoratorError, SourceFailurePolicy,
-    SourceInputResolver, SourceTables, SourceValidationReport, StatusCode, TableInfo,
-    UdfRuntimeDefinition,
+    CatalogInfo, CoralQuery, CoreError, DescribeCatalogSurfaceInfo, PreparedQueryRuntime,
+    QueryExecution, QueryExecutionProvenance, QueryPlan, QueryRuntimeConfig, QueryRuntimeContext,
+    QuerySource, ResolvedQueryResources, SourceDecorator, SourceDecoratorError,
+    SourceFailurePolicy, SourceInputResolver, SourceTables, SourceValidationReport, StatusCode,
+    TableInfo, UdfRuntimeDefinition,
 };
 use coral_spec::{ManifestInputKind, ManifestInputSpec};
 use opentelemetry::trace::Status as OtelStatus;
@@ -40,6 +40,9 @@ use crate::sources::runtime_package::{
 };
 use crate::sources::{SourceName, ensure_database_source_feature_enabled};
 use crate::state::{AppConfig, AppStateLayout, ConfigStore};
+use crate::task::activity::{
+    PendingTaskQuery, TaskActivityRecorder, TaskQueryRelation, TaskQueryStatus,
+};
 use crate::task::id::TaskId;
 use crate::telemetry::app_error_type;
 use crate::workspaces::{
@@ -188,6 +191,7 @@ pub(crate) struct QueryManager {
     search_observations: Option<SearchObservationHandle>,
     pool_registry: Arc<WorkspacePoolRegistry>,
     database_sources_enabled: bool,
+    task_activity: Option<TaskActivityRecorder>,
 }
 
 impl QueryManager {
@@ -265,11 +269,17 @@ impl QueryManager {
             search_observations: None,
             pool_registry,
             database_sources_enabled: false,
+            task_activity: None,
         }
     }
 
     pub(crate) fn with_database_sources_enabled(mut self, enabled: bool) -> Self {
         self.database_sources_enabled = enabled;
+        self
+    }
+
+    pub(crate) fn with_task_activity_recorder(mut self, recorder: TaskActivityRecorder) -> Self {
+        self.task_activity = Some(recorder);
         self
     }
 
@@ -421,17 +431,17 @@ impl QueryManager {
         .await
     }
 
-    pub(crate) async fn describe_table(
+    pub(crate) async fn describe_catalog_surface(
         &self,
         workspace_name: &WorkspaceName,
         catalog_name: Option<&str>,
         schema_name: &str,
-        table_name: &str,
+        surface_name: &str,
         attribution: &QueryAttribution,
-    ) -> Result<DescribeTableInfo, QueryManagerError> {
-        let trace_sql = describe_table_trace_sql(catalog_name, schema_name, table_name);
+    ) -> Result<DescribeCatalogSurfaceInfo, QueryManagerError> {
+        let trace_sql = describe_catalog_surface_trace_sql(catalog_name, schema_name, surface_name);
         run_query_operation(
-            QueryOperation::DescribeTable,
+            QueryOperation::DescribeCatalogSurface,
             workspace_name,
             &trace_sql,
             attribution.task_id.as_ref(),
@@ -440,21 +450,27 @@ impl QueryManager {
                     .load_query_sources(workspace_name)
                     .await
                     .map_err(QueryManagerError::App)?;
+                let failure_recorder = CatalogFailureRecorder::default();
                 let runtime = self
-                    .prepared_runtime_with_udfs(
+                    .prepared_catalog_runtime_with_udfs(
                         workspace_name,
                         &source_load.loaded,
                         &config,
-                        CredentialResolutionMode::Refreshing,
-                        SourceObservationMode::Disabled,
+                        failure_recorder,
                     )
                     .await?;
                 runtime
-                    .describe_table(catalog_name, schema_name, table_name)
+                    .describe_catalog_surface(catalog_name, schema_name, surface_name)
                     .await
                     .map_err(QueryManagerError::Core)
             },
-            |_| None,
+            |result| {
+                Some(match result {
+                    DescribeCatalogSurfaceInfo::Table(_)
+                    | DescribeCatalogSurfaceInfo::TableFunction(_) => 1,
+                    DescribeCatalogSurfaceInfo::Missing => 0,
+                })
+            },
             |_, _| {},
         )
         .await
@@ -467,9 +483,12 @@ impl QueryManager {
         shown_guide_ids: Option<&HashSet<String>>,
         attribution: &QueryAttribution,
     ) -> Result<ExecuteSqlOutcome, QueryManagerError> {
+        let pending_activity =
+            pending_task_query(workspace_name, attribution, self.task_activity.as_ref());
+
         // Keep the database-enabled operation future off this async state machine: on Linux it
         // exceeds Clippy's `large_futures` threshold when awaited inline.
-        Box::pin(run_query_operation(
+        let result = Box::pin(run_query_operation(
             QueryOperation::ExecuteSql,
             workspace_name,
             sql,
@@ -527,7 +546,10 @@ impl QueryManager {
                 }
             },
         ))
-        .await
+        .await;
+
+        record_task_query(pending_activity, sql, &result).await;
+        result
     }
 
     pub(crate) async fn explain_sql(
@@ -1058,6 +1080,89 @@ impl QueryManager {
     }
 }
 
+fn pending_task_query<'a>(
+    workspace: &'a WorkspaceName,
+    attribution: &'a QueryAttribution,
+    recorder: Option<&TaskActivityRecorder>,
+) -> Option<PendingTaskQuery<'a>> {
+    let Some(recorder) = recorder else {
+        tracing::debug!("task query activity recorder is not configured");
+        return None;
+    };
+    let (Some(task_id), Some(intent)) = (attribution.task_id, attribution.tool_intent.as_deref())
+    else {
+        tracing::debug!(
+            task.id.present = attribution.task_id.is_some(),
+            task.intent.present = attribution.tool_intent.is_some(),
+            "task query activity requires a task ID and tool intent"
+        );
+        return None;
+    };
+    match recorder.begin_query(workspace, task_id, intent) {
+        Ok(pending) => Some(pending),
+        Err(error) => {
+            crate::telemetry::metrics::metrics()
+                .record_task_query_recording(Some(error.error_type()));
+            tracing::warn!(
+                task.id = %task_id,
+                error = %error,
+                "could not timestamp task query activity"
+            );
+            None
+        }
+    }
+}
+
+async fn record_task_query(
+    pending: Option<PendingTaskQuery<'_>>,
+    sql: &str,
+    result: &Result<ExecuteSqlOutcome, QueryManagerError>,
+) {
+    let Some(pending) = pending else {
+        return;
+    };
+    let (status, relations) = match result {
+        Ok(ExecuteSqlOutcome::GuideRequired(_)) => return,
+        Ok(ExecuteSqlOutcome::Executed(execution)) => (
+            TaskQueryStatus::Success,
+            task_query_relations(execution.provenance()),
+        ),
+        Err(_) => (TaskQueryStatus::Error, Vec::new()),
+    };
+    let task_id = pending.task_id();
+    let query_id = pending.id();
+    match pending.finish(sql, status, &relations).await {
+        Ok(()) => crate::telemetry::metrics::metrics().record_task_query_recording(None),
+        Err(error) => {
+            crate::telemetry::metrics::metrics()
+                .record_task_query_recording(Some(error.error_type()));
+            tracing::warn!(
+                task.id = %task_id,
+                task.query.id = %query_id,
+                error = %error,
+                "could not record task query activity"
+            );
+        }
+    }
+}
+
+fn task_query_relations(provenance: &QueryExecutionProvenance) -> Vec<TaskQueryRelation<'_>> {
+    provenance
+        .tables()
+        .iter()
+        .map(|table| {
+            TaskQueryRelation::table(
+                table.catalog_name(),
+                table.schema_name(),
+                table.table_name(),
+            )
+        })
+        .chain(provenance.table_functions().iter().map(|function| {
+            TaskQueryRelation::table_function(function.schema_name(), function.function_name())
+        }))
+        .collect()
+}
+
 fn required_query_guides(
     catalog: &CatalogInfo,
     resources: &ResolvedQueryResources,
@@ -1112,7 +1217,7 @@ enum QueryOperation {
     ExplainSql,
     ListTables,
     ListCatalog,
-    DescribeTable,
+    DescribeCatalogSurface,
 }
 
 #[derive(Clone, Copy)]
@@ -1128,7 +1233,7 @@ impl QueryOperation {
             Self::ExplainSql => "explain_sql",
             Self::ListTables => "list_tables",
             Self::ListCatalog => "list_catalog",
-            Self::DescribeTable => "describe_table",
+            Self::DescribeCatalogSurface => "describe_catalog_surface",
         }
     }
 }
@@ -1161,14 +1266,14 @@ fn list_catalog_trace_sql(catalog_filter: Option<&str>, schema_filter: Option<&s
     }
 }
 
-fn describe_table_trace_sql(
+fn describe_catalog_surface_trace_sql(
     catalog_name: Option<&str>,
     schema_name: &str,
-    table_name: &str,
+    surface_name: &str,
 ) -> String {
     catalog_name.map_or_else(
-        || format!("DESCRIBE TABLE {schema_name}.{table_name}"),
-        |catalog| format!("DESCRIBE TABLE {catalog}.{schema_name}.{table_name}"),
+        || format!("DESCRIBE CATALOG SURFACE {schema_name}.{surface_name}"),
+        |catalog| format!("DESCRIBE CATALOG SURFACE {catalog}.{schema_name}.{surface_name}"),
     )
 }
 
@@ -1398,6 +1503,7 @@ mod tests {
     use crate::sources::manager::{ImportSourceCommand, SourceBindings, SourceManager};
     use crate::sources::model::SourceOrigin;
     use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig, run_state_migrations};
+    use crate::task::activity::TaskActivityRecorder;
     use crate::task::manager::TaskManager;
     use crate::task::store::TaskStore;
 
@@ -1432,7 +1538,8 @@ mod tests {
             runtime_context,
             layout,
             providers,
-        );
+        )
+        .with_task_activity_recorder(TaskActivityRecorder::new(Arc::clone(&db)));
         QueryManagerFixture {
             _temp: temp,
             manager,
@@ -1606,6 +1713,7 @@ mod tests {
             }),
             sql: "SELECT 1".to_string(),
             guide_read_context: None,
+            task_attribution: None,
         });
         request.extensions_mut().insert(request_context);
 
@@ -1636,6 +1744,231 @@ mod tests {
         assert_eq!(
             span_attr(query_span, coral_telemetry::QUERY_STREAM_NAME_ATTRIBUTE),
             Some("execute_sql".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_sql_records_task_attribution_from_request_body() {
+        use coral_api::v1::query_service_server::QueryService as QueryServiceApi;
+        use coral_api::v1::{ExecuteSqlRequest, TaskAttribution, Workspace};
+        use tonic::Request;
+
+        use crate::query::service::QueryService;
+
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
+        let (tasks, request_context, task_id) = active_task_context(&fixture.db).await;
+        let service = QueryService::new(
+            fixture.manager.clone(),
+            tasks,
+            crate::workspaces::WorkspaceAuthorizer::trusting_local_principal(Arc::clone(
+                &fixture.db,
+            )),
+        );
+        let mut request = Request::new(ExecuteSqlRequest {
+            workspace: Some(Workspace {
+                name: WorkspaceName::default().as_str().to_string(),
+            }),
+            sql: "SELECT 1".to_string(),
+            guide_read_context: None,
+            task_attribution: Some(TaskAttribution {
+                task_id: task_id.clone(),
+                intent: "Check renewal risk".to_string(),
+            }),
+        });
+        request
+            .extensions_mut()
+            .insert(RequestContext::new(request_context.principal().clone()));
+
+        service.execute_sql(request).await.expect("execute SQL");
+
+        let recorded = fixture
+            .db
+            .task_query_state()
+            .list_for_workspace(WorkspaceName::default().as_str())
+            .await
+            .expect("load task query activity");
+        let record = recorded.first().expect("recorded task query");
+        assert_eq!(record.task_id, task_id);
+        assert_eq!(record.intent, "Check renewal risk");
+        assert_eq!(record.sql, "SELECT 1");
+        assert_eq!(record.status, "success");
+    }
+
+    #[tokio::test]
+    async fn execute_sql_records_success_and_error_task_activity() {
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
+        let (tasks, request_context, task_id) = active_task_context(&fixture.db).await;
+        let workspace = WorkspaceName::default();
+        let attribution = QueryAttribution::new(
+            tasks
+                .validate_attribution(&workspace, request_context.task_id())
+                .await
+                .expect("active task"),
+        )
+        .with_tool_intent(Some("Check renewal risk"));
+
+        let success = fixture
+            .manager
+            .execute_sql(&workspace, "SELECT 1", None, &attribution)
+            .await
+            .expect("successful SQL");
+        assert!(matches!(success, ExecuteSqlOutcome::Executed(_)));
+        let invalid = fixture
+            .manager
+            .execute_sql(&workspace, "SELECT FROM", None, &attribution)
+            .await;
+        assert!(invalid.is_err(), "invalid SQL should fail");
+        fixture
+            .manager
+            .execute_sql(
+                &workspace,
+                "SELECT 2",
+                None,
+                &QueryAttribution::new(request_context.task_id()),
+            )
+            .await
+            .expect("task-ID-only SQL remains supported");
+
+        let recorded = fixture
+            .db
+            .task_query_state()
+            .list_for_workspace(workspace.as_str())
+            .await
+            .expect("load recorded task activity");
+        assert_eq!(recorded.len(), 2);
+        for (sql, status) in [("SELECT 1", "success"), ("SELECT FROM", "error")] {
+            let record = recorded
+                .iter()
+                .find(|record| record.sql == sql)
+                .unwrap_or_else(|| panic!("recorded SQL '{sql}'"));
+            assert_eq!(record.task_id, task_id);
+            assert_eq!(record.intent, "Check renewal risk");
+            assert_eq!(record.status, status);
+        }
+    }
+
+    #[tokio::test]
+    async fn successful_task_activity_records_resolved_relations() {
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
+        let (tasks, request_context, _) = active_task_context(&fixture.db).await;
+        let workspace = WorkspaceName::default();
+        let attribution = QueryAttribution::new(
+            tasks
+                .validate_attribution(&workspace, request_context.task_id())
+                .await
+                .expect("active task"),
+        )
+        .with_tool_intent(Some("Compare workflow sources"));
+        let pending = pending_task_query(
+            &workspace,
+            &attribution,
+            fixture.manager.task_activity.as_ref(),
+        )
+        .expect("pending task query");
+        let resources = ResolvedQueryResources::new(
+            vec!["github".to_string()],
+            vec![QueryTableUsage::new(
+                "github",
+                Some("github"),
+                "actions",
+                "runs",
+            )],
+            vec![QueryTableFunctionUsage::new(
+                "github",
+                "github",
+                "search_runs",
+            )],
+        );
+        let execution = QueryExecution::new(
+            Arc::new(arrow::datatypes::Schema::empty()),
+            Vec::new(),
+            "SELECT * FROM github.actions.runs",
+            resources,
+        );
+        let result = Ok(ExecuteSqlOutcome::Executed(execution));
+
+        record_task_query(Some(pending), "SELECT * FROM github.actions.runs", &result).await;
+
+        let queries = fixture
+            .db
+            .task_query_state()
+            .list_for_workspace(workspace.as_str())
+            .await
+            .expect("list task queries");
+        let query = queries.first().expect("recorded task query");
+        assert_eq!(
+            fixture
+                .db
+                .task_query_state()
+                .list_relations_for_query(&query.id)
+                .await
+                .expect("list task query relations"),
+            vec![
+                crate::state::db::TaskQueryRelationRecord {
+                    query_id: query.id.clone(),
+                    relation_kind: "table".to_string(),
+                    catalog_name: Some("github".to_string()),
+                    schema_name: "actions".to_string(),
+                    relation_name: "runs".to_string(),
+                },
+                crate::state::db::TaskQueryRelationRecord {
+                    query_id: query.id.clone(),
+                    relation_kind: "table_function".to_string(),
+                    catalog_name: None,
+                    schema_name: "github".to_string(),
+                    relation_name: "search_runs".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn task_activity_write_failure_does_not_change_the_sql_result() {
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
+        let workspace = WorkspaceName::default();
+        let task_id = TaskId::parse(&uuid::Uuid::new_v4().to_string()).expect("task id");
+        let attribution = QueryAttribution::new(Some(task_id))
+            .with_tool_intent(Some("Exercise non-fatal activity writes"));
+
+        let outcome = fixture
+            .manager
+            .execute_sql(&workspace, "SELECT 1", None, &attribution)
+            .await
+            .expect("activity persistence must not change SQL success");
+
+        assert!(matches!(outcome, ExecuteSqlOutcome::Executed(_)));
+    }
+
+    #[tokio::test]
+    async fn oversized_sql_executes_without_task_activity_record() {
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
+        let (tasks, request_context, _) = active_task_context(&fixture.db).await;
+        let workspace = WorkspaceName::default();
+        let attribution = QueryAttribution::new(
+            tasks
+                .validate_attribution(&workspace, request_context.task_id())
+                .await
+                .expect("active task"),
+        )
+        .with_tool_intent(Some("Exercise SQL recording limit"));
+        let sql = format!("SELECT 1 /*{}*/", "x".repeat(64 * 1024));
+
+        let outcome = fixture
+            .manager
+            .execute_sql(&workspace, &sql, None, &attribution)
+            .await
+            .expect("SQL size limit must not change query success");
+
+        assert!(matches!(outcome, ExecuteSqlOutcome::Executed(_)));
+        assert!(
+            fixture
+                .db
+                .task_query_state()
+                .list_for_workspace(workspace.as_str())
+                .await
+                .expect("list task activity")
+                .is_empty(),
+            "oversized SQL should not be stored"
         );
     }
 
@@ -1794,8 +2127,8 @@ mod tests {
     ) {
         use coral_api::v1::catalog_service_server::CatalogService as CatalogServiceApi;
         use coral_api::v1::{
-            DescribeTableRequest, ListCatalogRequest, ListColumnsRequest, PaginationRequest,
-            SearchCatalogRequest,
+            DescribeCatalogSurfaceRequest, ListCatalogRequest, ListColumnsRequest,
+            PaginationRequest, SearchCatalogRequest,
         };
 
         let _list_catalog_result = service
@@ -1830,14 +2163,14 @@ mod tests {
                 },
             ))
             .await;
-        let _describe_table_result = service
-            .describe_table(tagged_catalog_request(
+        let _describe_surface_result = service
+            .describe_catalog_surface(tagged_catalog_request(
                 request_context,
-                DescribeTableRequest {
+                DescribeCatalogSurfaceRequest {
                     workspace: Some(default_workspace_proto()),
                     catalog_name: String::new(),
                     schema_name: "coral".to_string(),
-                    table_name: "tables".to_string(),
+                    surface_name: "tables".to_string(),
                 },
             ))
             .await;
@@ -1907,7 +2240,7 @@ mod tests {
         assert!(
             operations
                 .iter()
-                .any(|operation| operation == "describe_table")
+                .any(|operation| operation == "describe_catalog_surface")
         );
         assert!(
             operations
@@ -2200,6 +2533,14 @@ tables:
             fixture.manager.layout.clone(),
         );
         let workspace_name = WorkspaceName::default();
+        let (tasks, request_context, _) = active_task_context(&fixture.db).await;
+        let attribution = QueryAttribution::new(
+            tasks
+                .validate_attribution(&workspace_name, request_context.task_id())
+                .await
+                .expect("active task"),
+        )
+        .with_tool_intent(Some("Read guided items"));
         source_manager
             .import_source(
                 &workspace_name,
@@ -2215,12 +2556,7 @@ tables:
         let sql = "SELECT id FROM changing_guidance.items";
         let initial = fixture
             .manager
-            .execute_sql(
-                &workspace_name,
-                sql,
-                Some(&HashSet::new()),
-                &QueryAttribution::default(),
-            )
+            .execute_sql(&workspace_name, sql, Some(&HashSet::new()), &attribution)
             .await
             .expect("require initial guide");
         let ExecuteSqlOutcome::GuideRequired(initial) = initial else {
@@ -2258,12 +2594,7 @@ tables:
 
         let current = fixture
             .manager
-            .execute_sql(
-                &workspace_name,
-                sql,
-                Some(&shown_initial),
-                &QueryAttribution::default(),
-            )
+            .execute_sql(&workspace_name, sql, Some(&shown_initial), &attribution)
             .await
             .expect("require changed guide");
         let ExecuteSqlOutcome::GuideRequired(current) = current else {
@@ -2284,12 +2615,7 @@ tables:
         let shown_current = HashSet::from([current.guide_id.clone()]);
         let executed = fixture
             .manager
-            .execute_sql(
-                &workspace_name,
-                sql,
-                Some(&shown_current),
-                &QueryAttribution::default(),
-            )
+            .execute_sql(&workspace_name, sql, Some(&shown_current), &attribution)
             .await
             .expect("execute after showing changed guide");
         assert!(matches!(executed, ExecuteSqlOutcome::Executed(_)));
@@ -2300,6 +2626,17 @@ tables:
                 .expect("request recording")
                 .len(),
             provider_requests_before + 1
+        );
+        let recorded = fixture
+            .db
+            .task_query_state()
+            .list_for_workspace(workspace_name.as_str())
+            .await
+            .expect("load task query activity");
+        assert_eq!(recorded.len(), 1, "GuideRequired must not record activity");
+        assert_eq!(
+            recorded.first().expect("recorded task query").status,
+            "success"
         );
     }
 

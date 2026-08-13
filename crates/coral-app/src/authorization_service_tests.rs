@@ -7,10 +7,11 @@ use coral_api::v1::query_service_server::QueryService as QueryServiceApi;
 use coral_api::v1::search_service_server::SearchService as SearchServiceApi;
 use coral_api::v1::task_service_server::TaskService as TaskServiceApi;
 use coral_api::v1::{
-    AddFunctionRequest, ClearSearchDataRequest, DeleteFunctionRequest, DescribeTableRequest,
-    DrainSearchQueueRequest, EndTaskRequest, ExecuteSqlRequest, ExplainSqlRequest,
-    ListCatalogRequest, ListColumnsRequest, ListFunctionsRequest, RebuildSearchIndexRequest,
-    SearchCatalogRequest, SearchRequest, StartTaskRequest, SubmitFeedbackRequest, Workspace,
+    AddFunctionRequest, ClearSearchDataRequest, DeleteFunctionRequest,
+    DescribeCatalogSurfaceRequest, DrainSearchQueueRequest, EndTaskRequest, ExecuteSqlRequest,
+    ExplainSqlRequest, ListCatalogRequest, ListColumnsRequest, ListFunctionsRequest,
+    RebuildSearchIndexRequest, SearchCatalogRequest, SearchRequest, StartTaskRequest,
+    SubmitFeedbackRequest, TaskAttribution, Workspace,
 };
 use coral_engine::QueryRuntimeContext;
 use tempfile::TempDir;
@@ -92,10 +93,12 @@ async fn read_rpcs_authorize_before_handler_work() {
         Some(Code::InvalidArgument)
     );
     read_rpc!(
-        fixture.catalog.describe_table(DescribeTableRequest {
-            workspace: workspace.clone(),
-            ..Default::default()
-        }),
+        fixture
+            .catalog
+            .describe_catalog_surface(DescribeCatalogSurfaceRequest {
+                workspace: workspace.clone(),
+                ..Default::default()
+            }),
         Some(Code::InvalidArgument)
     );
     read_rpc!(
@@ -108,8 +111,12 @@ async fn read_rpcs_authorize_before_handler_work() {
     read_rpc!(
         fixture.query.execute_sql(ExecuteSqlRequest {
             workspace: workspace.clone(),
-            sql: "invalid-sql".to_string(),
-            ..Default::default()
+            sql: "SELECT 1".to_string(),
+            guide_read_context: None,
+            task_attribution: Some(TaskAttribution {
+                task_id: "invalid".to_string(),
+                intent: "invalid attribution".to_string(),
+            }),
         }),
         Some(Code::InvalidArgument)
     );

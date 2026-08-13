@@ -81,7 +81,7 @@ pub use composition::{
 };
 pub use contracts::{
     CatalogInfo, ColumnInfo, CoreError, DependentJoinConfig, DependentJoinSourceConfig,
-    DescribeTableInfo, EffectiveDependentJoinConfig, MemorySize, QueryExecution,
+    DescribeCatalogSurfaceInfo, EffectiveDependentJoinConfig, MemorySize, QueryExecution,
     QueryExecutionProvenance, QueryMemoryConfig, QueryParameterValue, QueryParameters, QueryPlan,
     QueryRuntimeConfig, QueryRuntimeContext, QuerySource, QueryTableFunctionUsage, QueryTableUsage,
     QueryTestFailure, QueryTestResult, QueryTestSuccess, ResolvedQueryResources,
@@ -161,20 +161,20 @@ impl PreparedQueryRuntime {
         Box::pin(self.inner.catalog_info(catalog_filter, schema_filter)).await
     }
 
-    /// Describes one table from this prepared runtime.
+    /// Resolves one table or table function from this prepared runtime.
     ///
     /// # Errors
     ///
     /// Returns [`CoreError`] if live catalog metadata cannot be collected.
-    pub async fn describe_table(
+    pub async fn describe_catalog_surface(
         &self,
         catalog_name: Option<&str>,
         schema_name: &str,
-        table_name: &str,
-    ) -> Result<DescribeTableInfo, CoreError> {
+        surface_name: &str,
+    ) -> Result<DescribeCatalogSurfaceInfo, CoreError> {
         Box::pin(
             self.inner
-                .describe_table(catalog_name, schema_name, table_name),
+                .describe_catalog_surface(catalog_name, schema_name, surface_name),
         )
         .await
     }
@@ -359,26 +359,25 @@ impl CoralQuery {
             .await
     }
 
-    /// Describes one table or returns lightweight table metadata for missing-table help.
+    /// Resolves one table or table function, or returns a missing result.
     ///
-    /// This builds the runtime once, clones only the matched table on exact
-    /// hits, and clones lightweight table metadata when the table is missing.
+    /// This builds the runtime once and returns only an exact match.
     ///
     /// # Errors
     ///
     /// Returns [`CoreError`] if credential resolution fails, if any validated
     /// source spec cannot be compiled, or if the underlying query runtime
     /// cannot be built.
-    pub async fn describe_table(
+    pub async fn describe_catalog_surface(
         sources: &[QuerySource],
         runtime: QueryRuntimeConfig,
         catalog_name: Option<&str>,
         schema_name: &str,
-        table_name: &str,
-    ) -> Result<DescribeTableInfo, CoreError> {
+        surface_name: &str,
+    ) -> Result<DescribeCatalogSurfaceInfo, CoreError> {
         Self::prepare(sources, runtime)
             .await?
-            .describe_table(catalog_name, schema_name, table_name)
+            .describe_catalog_surface(catalog_name, schema_name, surface_name)
             .await
     }
 

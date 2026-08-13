@@ -210,9 +210,9 @@ impl ObservedValuesProvider {
                 .store
                 .clear_workspace_and_advance_epoch(request.workspace_name)
                 .map_err(|error| observed_sqlite_app_error(&error))?,
-            SearchClearTarget::Source(owner_source_name) => self
+            SearchClearTarget::Source(source_name) => self
                 .store
-                .clear_source_and_advance_epoch(request.workspace_name, owner_source_name.as_str())
+                .clear_source_and_advance_epoch(request.workspace_name, source_name.as_str())
                 .map_err(|error| observed_sqlite_app_error(&error))?,
         };
         Ok(SearchProviderClearOutcome {
@@ -507,9 +507,9 @@ fn observed_policy_load_failure_note(policy: &ObservedValuesRetrievalPolicy) -> 
     if !policy.has_load_failures() {
         return None;
     }
-    let owner_source_names = policy.failed_owner_source_names().join(", ");
+    let source_names = policy.failed_source_names().join(", ");
     Some(format!(
-        "observed value search skipped {} source(s) whose live scopes could not be loaded: {owner_source_names}",
+        "observed value search skipped {} source(s) whose live scopes could not be loaded: {source_names}",
         policy.failed_source_count()
     ))
 }
@@ -740,8 +740,8 @@ fn observed_rebuild_note(
     if policy.has_load_failures() {
         note.push_str("; skipped ");
         note.push_str(&policy.failed_source_count().to_string());
-        note.push_str(" owner source(s) whose live scopes could not be loaded: ");
-        note.push_str(&policy.failed_owner_source_names().join(", "));
+        note.push_str(" source(s) whose live scopes could not be loaded: ");
+        note.push_str(&policy.failed_source_names().join(", "));
     }
     note
 }

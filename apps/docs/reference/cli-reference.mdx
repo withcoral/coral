@@ -521,12 +521,17 @@ By default, this server exposes:
 | Tool     | `add_function`   | Create a reusable table function in the current workspace |
 | Tool     | `search`         | Find relevant catalog entries and, when enabled, locally observed values |
 | Tool     | `list_catalog`   | List database tables and table functions with pagination |
-| Tool     | `describe_table` | Show compact metadata for one database table |
+| Tool     | `describe`       | Describe one database table or table function |
 | Tool     | `list_columns`   | List columns for one database table with pagination |
 | Resource | `coral://guide`  | Database workflow guide for agents |
 | Resource | `coral://tables` | JSON summaries of query-visible database tables, including Coral catalog tables and required filters |
 
 `add_function` accepts `schema`, `name`, `description`, and one read-only SQL query. Values such as `$owner` in the query become required named arguments. It never overwrites an existing function, and Coral validates the function before saving it.
+
+`describe` accepts `schema` and a bare `surface` name. Add `catalog` for a
+three-part table. Coral resolves whether the surface is a table or table
+function. An exact result returns the surface kind and metadata without
+repeating the requested target. A missing result returns `kind: missing`.
 
 When the `feedback` feature is enabled, the server also exposes a non-read-only `feedback` tool for blocked-agent reports. Feedback reports are stored locally and anonymous copies may be uploaded to Coral.
 
@@ -536,7 +541,7 @@ for one MCP server process with
 `coral --enable-observed-values-search mcp-stdio`.
 
 Discovery helpers include the `coral` system schema, so `search`,
-`list_catalog`, `describe_table`, `list_columns`, and `coral://tables` can
+`list_catalog`, `describe`, `list_columns`, and `coral://tables` can
 discover `coral.tables`, `coral.columns`, `coral.filters`,
 `coral.table_functions`, and `coral.inputs`.
 
