@@ -109,10 +109,18 @@ jobs:
               - '.github/workflows/validate.yml'
               - '.dockerignore'
               - 'Makefile'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - 'rust-toolchain'
+              - 'crates/**'
+              - 'sources/core/**'
+              - 'docker/Dockerfile.local'
+              - 'docker/Dockerfile'
+              - 'docker/entrypoint.sh'
               - 'docker/Dockerfile.reef'
               - 'docker/entrypoint-reef.sh'
               - 'docker/reef-smoke.sh'
-              - 'docker/reef-smoke-nginx.conf'
               - 'docker/reef-image.test.mjs'
               - 'apps/reef/**'
               - 'apps/desktop/src/shared/types.ts'
@@ -495,9 +503,9 @@ jobs:
 
   reef-image:
     name: Reef image
-    # Building the real Coral peer dominates this job. Match Rust-heavy CI
-    # capacity while Dockerfile.local's locked cache mounts retain registry,
-    # git, and target artifacts within the BuildKit builder.
+    # Building the real Coral peer dominates this job. Give it a larger
+    # runner than the other jobs while Dockerfile.local's locked cache mounts
+    # retain registry, git, and target artifacts within the BuildKit builder.
     runs-on: blacksmith-16vcpu-ubuntu-2404
     needs: changes
     if: ${{ needs.changes.outputs.reef-image == 'true' }}
@@ -513,14 +521,10 @@ jobs:
       - name: Check Reef image contract
         run: node --test docker/reef-image.test.mjs
 
-      - name: Build linux/amd64 Coral and Reef images
+      - name: Build and smoke linux/amd64 Coral and Reef images
         run: |
-          make docker-build DOCKER_IMAGE=coral:local
-          make reef-docker-build REEF_DOCKER_IMAGE=reef:local
+          make reef-docker-test DOCKER_IMAGE=coral:local REEF_DOCKER_IMAGE=reef:local
           test "$(docker image inspect reef:local --format '{{.Os}}/{{.Architecture}}')" = linux/amd64
-
-      - name: Smoke Reef against real Coral topologies
-        run: make reef-docker-smoke
 
   desktop-checks:
     name: Desktop checks

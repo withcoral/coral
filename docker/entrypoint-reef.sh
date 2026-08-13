@@ -22,6 +22,13 @@ trap 'exit 143' TERM
   'REEF_AUTH_MODE is required.' \
   'Set REEF_AUTH_MODE=required or REEF_AUTH_MODE=disabled.'
 
+REEF_AUTH_MODE=$(
+  printf '%s' "$REEF_AUTH_MODE" \
+    | tr '[:upper:]' '[:lower:]' \
+    | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'
+)
+export REEF_AUTH_MODE
+
 case "$REEF_AUTH_MODE" in
   required)
     [ -n "${REEF_SESSION_SECRET:-}" ] || fatal \
@@ -38,15 +45,15 @@ case "$REEF_AUTH_MODE" in
     echo 'reef-entrypoint: WARNING: REEF_AUTH_MODE=disabled serves the Coral console with no' >&2
     echo 'reef-entrypoint: login at all — anyone who can reach this port can read every source' >&2
     echo 'reef-entrypoint: and POST new source credentials. It ALSO selects Reef’s gRPC-Web' >&2
-    echo 'reef-entrypoint: transport, which `coral server` does not serve (it installs neither' >&2
-    echo 'reef-entrypoint: GrpcWebLayer nor accept_http1 — see coral-app/src/bootstrap/server.rs' >&2
-    echo 'reef-entrypoint: :777-784 and :817-847), so without a gRPC-Web-capable proxy in front' >&2
-    echo 'reef-entrypoint: of Coral every page in this container will fail to load data.' >&2
-    echo 'reef-entrypoint: Set REEF_AUTH_MODE=required unless you know you have both.' >&2
+    echo 'reef-entrypoint: transport, while standalone `coral server` serves native gRPC.' >&2
+    echo 'reef-entrypoint: Without a gRPC-Web-capable proxy in front of Coral,' >&2
+    echo 'reef-entrypoint: every page this container serves will fail to load data.' >&2
+    echo 'reef-entrypoint: Set REEF_AUTH_MODE=required unless you know you have both' >&2
+    echo 'reef-entrypoint: a trusted network and such a proxy.' >&2
     ;;
   *)
     fatal 'REEF_AUTH_MODE must be required or disabled.' \
-      'Set one of the documented values exactly.'
+      'Set one of the documented values.'
     ;;
 esac
 

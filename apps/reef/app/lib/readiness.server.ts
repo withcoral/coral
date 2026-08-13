@@ -1,20 +1,23 @@
 import { create } from '@bufbuild/protobuf'
-import { createClient } from '@connectrpc/connect'
-import { createGrpcTransport } from '@connectrpc/connect-node'
+import { Code, ConnectError } from '@connectrpc/connect'
 
-import { CatalogService, ListCatalogRequestSchema } from '@/generated/coral/v1/catalog_pb'
-import { WorkspaceSchema } from '@/generated/coral/v1/resources_pb'
+import {
+  HealthCheckRequestSchema,
+  HealthCheckResponse_ServingStatus,
+} from '@/generated/grpc/health/v1/health_pb'
 
-import { resolveCoralEndpoint } from './coral-endpoint.server'
+import { healthClientForRequest } from './coral-request.server'
+
+const CORAL_READINESS_SERVICE = 'coral.readiness'
 
 export async function assertCoralReady(request: Request): Promise<void> {
-  const endpoint = resolveCoralEndpoint({ authenticated: true, request })
-  const catalog = createClient(CatalogService, createGrpcTransport({ baseUrl: endpoint.baseUrl }))
-
-  await catalog.listCatalog(
-    create(ListCatalogRequestSchema, {
-      workspace: create(WorkspaceSchema, { name: 'default' }),
-    }),
+  const health = healthClientForRequest(request)
+  const response = await health.check(
+    create(HealthCheckRequestSchema, { service: CORAL_READINESS_SERVICE }),
     { signal: request.signal },
   )
+
+  if (response.status !== HealthCheckResponse_ServingStatus.SERVING) {
+    throw new ConnectError('Coral reported that its engine is not ready', Code.Unavailable)
+  }
 }

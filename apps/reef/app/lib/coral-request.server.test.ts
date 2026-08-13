@@ -27,6 +27,7 @@ vi.mock('@connectrpc/connect-web', () => ({
 import {
   catalogClientForRequest,
   functionClientForRequest,
+  healthClientForRequest,
   queryClientForRequest,
   sourceClientForRequest,
   traceClientForRequest,
@@ -103,6 +104,35 @@ describe('request-scoped Coral transport authentication', () => {
     }
     expect(transportMocks.createGrpcWebTransport).toHaveBeenCalledTimes(clientFactories.length)
     expect(transportMocks.createGrpcTransport).not.toHaveBeenCalled()
+  })
+
+  it('uses gRPC-Web for unauthenticated health checks in local and Desktop mode', () => {
+    vi.stubEnv('REEF_AUTH_MODE', 'disabled')
+    vi.stubEnv('CORAL_ENDPOINT', 'http://127.0.0.1:50051')
+
+    const transport = healthClientForRequest(request) as unknown as GrpcWebTransportOptions
+
+    expect(transport).toEqual({ baseUrl: 'http://127.0.0.1:50051' })
+    expect(transportMocks.createGrpcWebTransport).toHaveBeenCalledOnce()
+    expect(transportMocks.createGrpcTransport).not.toHaveBeenCalled()
+  })
+
+  it('reuses one native HTTP/2 session for hosted health checks without a bearer token', () => {
+    vi.stubEnv('REEF_AUTH_MODE', 'required')
+    vi.stubEnv('REEF_AUTH_ISSUER', 'https://auth.example.test')
+    vi.stubEnv('REEF_PUBLIC_URL', 'https://reef.example.test')
+    vi.stubEnv('REEF_SESSION_SECRET', '0123456789abcdef0123456789abcdef')
+    vi.stubEnv('CORAL_ENDPOINT', 'https://health.coral.example.test')
+
+    const first = healthClientForRequest(request) as unknown as GrpcTransportOptions
+    const second = healthClientForRequest(request) as unknown as GrpcTransportOptions
+
+    expect(first.baseUrl).toBe('https://health.coral.example.test')
+    expect(first.interceptors).toBeUndefined()
+    expect(first.sessionManager).toBe(second.sessionManager)
+    expect(transportMocks.Http2SessionManager).toHaveBeenCalledOnce()
+    expect(transportMocks.createGrpcTransport).toHaveBeenCalledTimes(2)
+    expect(transportMocks.createGrpcWebTransport).not.toHaveBeenCalled()
   })
 
   it.each([

@@ -6,15 +6,12 @@ CORAL_IMAGE=${CORAL_IMAGE:-coral:local}
 prefix="reef-smoke-$$"
 reef="$prefix-reef"
 coral="$prefix-coral"
-proxy="$prefix-proxy"
 network="$prefix-net"
 secret=reef-smoke-session-secret-0123456789abcdef
-tls_dir=
 
 cleanup() {
-  docker rm -f "$reef" "$coral" "$proxy" >/dev/null 2>&1 || true
+  docker rm -f "$reef" "$coral" >/dev/null 2>&1 || true
   docker network rm "$network" >/dev/null 2>&1 || true
-  [ -z "$tls_dir" ] || rm -rf "$tls_dir"
 }
 
 wait_for_coral() {
@@ -49,6 +46,19 @@ wait_for_health() {
     status=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$container")
     [ "$status" = healthy ] && return 0
     [ "$status" = exited ] && break
+    attempts=$((attempts + 1))
+    sleep 1
+  done
+  docker logs "$container" >&2 || true
+  return 1
+}
+
+wait_for_exit() {
+  container=$1
+  attempts=0
+  while [ "$attempts" -lt 10 ]; do
+    status=$(docker inspect --format '{{.State.Status}}' "$container")
+    [ "$status" = exited ] && return 0
     attempts=$((attempts + 1))
     sleep 1
   done
@@ -100,41 +110,26 @@ docker stop "$coral" >/dev/null
 docker rm -f "$reef" "$coral" >/dev/null
 docker network rm "$network" >/dev/null
 
-# C: a real TLS terminator proxies HTTP/2 gRPC to Coral.
-tls_dir=$(mktemp -d)
-openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
-  -subj /CN=coral-tls -addext subjectAltName=DNS:coral-tls \
-  -keyout "$tls_dir/key.pem" -out "$tls_dir/cert.pem" >/dev/null 2>&1
-docker network create "$network" >/dev/null
-docker run -d --name "$coral" --network "$network" --network-alias coral "$CORAL_IMAGE" >/dev/null
-wait_for_coral
-docker run -d --name "$proxy" --network "$network" --network-alias coral-tls \
-  -v "$(pwd)/docker/reef-smoke-nginx.conf:/etc/nginx/nginx.conf:ro" \
-  -v "$tls_dir:/tls:ro" nginx:alpine >/dev/null
-run_required "$reef" https://coral-tls:443 --network "$network" -p 127.0.0.1::3000 \
-  -e NODE_EXTRA_CA_CERTS=/tls/cert.pem -v "$tls_dir:/tls:ro"
-assert_ready "$reef"
-docker rm -f "$reef" "$proxy" "$coral" >/dev/null
-docker network rm "$network" >/dev/null
-
-# Invalid cleartext config fails before listen and reports the named cause.
-docker run --read-only --name "$reef" \
+# Invalid cleartext config fails before listening and reports the named cause.
+docker run -d --read-only --name "$reef" \
   -e CORAL_ENDPOINT=http://coral.invalid:14555 \
   -e REEF_AUTH_MODE=required \
   -e REEF_SESSION_SECRET="$secret" \
   -e REEF_AUTH_ISSUER=http://127.0.0.1:9080 \
   -e REEF_PUBLIC_URL=http://127.0.0.1:3000 \
-  "$REEF_IMAGE" >/dev/null 2>&1 && {
-    echo 'invalid cleartext config unexpectedly started' >&2
-    exit 1
-  }
+  "$REEF_IMAGE" >/dev/null
+wait_for_exit "$reef" || {
+  echo 'invalid cleartext config unexpectedly stayed running' >&2
+  exit 1
+}
+[ "$(docker inspect --format '{{.State.ExitCode}}' "$reef")" -ne 0 ]
 docker logs "$reef" 2>&1 | grep -F 'CORAL_ENDPOINT must use HTTPS or explicit-loopback HTTP' >/dev/null
 docker rm "$reef" >/dev/null
 
-# Auth-disabled mode is legal, noisy, and remains live.
+# Auth-disabled mode is legal and noisy, and the container stays live.
 docker run -d --read-only --name "$reef" \
   -e CORAL_ENDPOINT=http://127.0.0.1:14555 \
-  -e REEF_AUTH_MODE=disabled \
+  -e REEF_AUTH_MODE=' DISABLED ' \
   "$REEF_IMAGE" >/dev/null
 wait_for_health "$reef"
 docker logs "$reef" 2>&1 | grep -F 'WARNING: REEF_AUTH_MODE=disabled' >/dev/null

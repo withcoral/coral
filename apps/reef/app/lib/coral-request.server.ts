@@ -15,6 +15,7 @@ import { QueryService } from '@/generated/coral/v1/query_pb'
 import { SourceService } from '@/generated/coral/v1/sources_pb'
 import { TraceService } from '@/generated/coral/v1/traces_pb'
 import { WorkspaceService } from '@/generated/coral/v1/workspaces_pb'
+import { Health } from '@/generated/grpc/health/v1/health_pb'
 import { expiredSessionRedirect } from '@/auth/response.server'
 
 import { resolveCoralEndpoint } from './coral-endpoint.server'
@@ -41,6 +42,27 @@ export function queryClientForRequest(request: Request, accessToken: string | nu
 
 export function traceClientForRequest(request: Request, accessToken: string | null) {
   return createClient(TraceService, coralTransportForRequest(request, accessToken))
+}
+
+/** Public readiness uses Coral's unauthenticated health service, never a user's bearer token. */
+export function healthClientForRequest(request: Request) {
+  return createClient(Health, coralHealthTransportForRequest(request))
+}
+
+function coralHealthTransportForRequest(request: Request) {
+  const authMode = reefAuthConfig().mode
+  const endpoint = resolveCoralEndpoint({
+    authenticated: authMode !== 'disabled',
+    request,
+  })
+  const { baseUrl } = endpoint
+  if (authMode === 'disabled') return createGrpcWebTransport({ baseUrl })
+
+  warnAuthenticatedCleartext(endpoint.authenticatedCleartextOrigin)
+  return createGrpcTransport({
+    baseUrl,
+    sessionManager: coralSessionManager(new URL(baseUrl)),
+  })
 }
 
 function coralTransportForRequest(request: Request, accessToken: string | null) {

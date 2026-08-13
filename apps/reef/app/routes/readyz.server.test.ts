@@ -1,18 +1,14 @@
 import { ConnectError, Code } from '@connectrpc/connect'
+import { HealthCheckResponse_ServingStatus } from '@/generated/grpc/health/v1/health_pb'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const transportMocks = vi.hoisted(() => ({
-  createClient: vi.fn(),
-  createGrpcTransport: vi.fn((options) => options),
-  listCatalog: vi.fn(),
+const healthMocks = vi.hoisted(() => ({
+  check: vi.fn(),
+  healthClientForRequest: vi.fn(),
 }))
 
-vi.mock('@connectrpc/connect', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@connectrpc/connect')>()),
-  createClient: transportMocks.createClient,
-}))
-vi.mock('@connectrpc/connect-node', () => ({
-  createGrpcTransport: transportMocks.createGrpcTransport,
+vi.mock('@/lib/coral-request.server', () => ({
+  healthClientForRequest: healthMocks.healthClientForRequest,
 }))
 
 import { assertCoralReady } from '@/lib/readiness.server'
@@ -21,40 +17,45 @@ import { loader } from './readyz'
 
 describe('readiness route', () => {
   beforeEach(() => {
-    vi.stubEnv('CORAL_ENDPOINT', 'https://coral.example.test')
-    transportMocks.createClient.mockReturnValue({ listCatalog: transportMocks.listCatalog })
-    transportMocks.createGrpcTransport.mockClear()
-    transportMocks.listCatalog.mockReset()
+    healthMocks.healthClientForRequest.mockReturnValue({ check: healthMocks.check })
+    healthMocks.healthClientForRequest.mockClear()
+    healthMocks.check.mockReset()
   })
 
   afterEach(() => vi.unstubAllEnvs())
 
-  it('returns ready only after ListCatalog succeeds against the configured Coral endpoint', async () => {
-    transportMocks.listCatalog.mockResolvedValue({ items: [] })
+  it('returns ready only when Coral reports its engine health as serving', async () => {
+    healthMocks.check.mockResolvedValue({ status: HealthCheckResponse_ServingStatus.SERVING })
     const request = new Request('http://attacker.example.test/readyz')
 
     const response = await loader({ request } as never)
 
-    expect(transportMocks.createGrpcTransport).toHaveBeenCalledWith({
-      baseUrl: 'https://coral.example.test',
-    })
-    expect(transportMocks.listCatalog).toHaveBeenCalledWith(
-      expect.objectContaining({ workspace: expect.objectContaining({ name: 'default' }) }),
+    expect(healthMocks.healthClientForRequest).toHaveBeenCalledWith(request)
+    expect(healthMocks.check).toHaveBeenCalledWith(
+      expect.objectContaining({ service: 'coral.readiness' }),
       { signal: request.signal },
     )
     await expect(response.json()).resolves.toEqual({ coral: 'reachable', status: 'ok' })
   })
 
-  it('propagates an upstream ListCatalog failure instead of reporting ready', async () => {
+  it('rejects a non-serving engine status', async () => {
+    healthMocks.check.mockResolvedValue({ status: HealthCheckResponse_ServingStatus.NOT_SERVING })
+
+    await expect(
+      loader({ request: new Request('http://reef.test/readyz') } as never),
+    ).rejects.toEqual(expect.objectContaining({ code: Code.Unavailable }))
+  })
+
+  it('propagates an upstream health-check failure instead of reporting ready', async () => {
     const upstream = new ConnectError('Coral unavailable', Code.Unavailable)
-    transportMocks.listCatalog.mockRejectedValue(upstream)
+    healthMocks.check.mockRejectedValue(upstream)
 
     await expect(loader({ request: new Request('http://reef.test/readyz') } as never)).rejects.toBe(
       upstream,
     )
   })
 
-  it('keeps the route adapter wired to the server-only readiness implementation', () => {
+  it('keeps the server-only readiness implementation importable', () => {
     expect(assertCoralReady).toBeTypeOf('function')
   })
 })
