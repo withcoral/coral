@@ -955,25 +955,31 @@ mod tests {
 
     #[test]
     fn annotation_insensitive_object_shape_merge_keeps_metadata() {
-        let mut target = direct_json_object_shape(SchemaRoot::new(&Value::Null), &json!({
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": ["string", "null"],
-                    "title": "Query"
+        let mut target = direct_json_object_shape(
+            SchemaRoot::new(&Value::Null),
+            &json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": ["string", "null"],
+                        "title": "Query"
+                    }
                 }
-            }
-        }));
-        let source = direct_json_object_shape(SchemaRoot::new(&Value::Null), &json!({
-            "type": "object",
-            "required": ["query"],
-            "properties": {
-                "query": {
-                    "type": ["null", "string"],
-                    "description": "Search query"
+            }),
+        );
+        let source = direct_json_object_shape(
+            SchemaRoot::new(&Value::Null),
+            &json!({
+                "type": "object",
+                "required": ["query"],
+                "properties": {
+                    "query": {
+                        "type": ["null", "string"],
+                        "description": "Search query"
+                    }
                 }
-            }
-        }));
+            }),
+        );
 
         merge_json_object_shape_annotation_insensitive(&mut target, source, 0, 100).expect("merge");
 
@@ -988,68 +994,80 @@ mod tests {
 
     #[test]
     fn annotation_insensitive_object_shape_merge_ignores_nested_schema_annotations() {
-        let mut target = direct_json_object_shape(SchemaRoot::new(&Value::Null), &json!({
-            "type": "object",
-            "properties": {
-                "filter": {
-                    "type": "object",
-                    "properties": {
-                        "status": {
-                            "type": "string",
-                            "description": "Public status"
+        let mut target = direct_json_object_shape(
+            SchemaRoot::new(&Value::Null),
+            &json!({
+                "type": "object",
+                "properties": {
+                    "filter": {
+                        "type": "object",
+                        "properties": {
+                            "status": {
+                                "type": "string",
+                                "description": "Public status"
+                            }
                         }
                     }
                 }
-            }
-        }));
-        let source = direct_json_object_shape(SchemaRoot::new(&Value::Null), &json!({
-            "type": "object",
-            "properties": {
-                "filter": {
-                    "type": "object",
-                    "properties": {
-                        "status": {
-                            "type": "string",
-                            "description": "Internal workflow state"
+            }),
+        );
+        let source = direct_json_object_shape(
+            SchemaRoot::new(&Value::Null),
+            &json!({
+                "type": "object",
+                "properties": {
+                    "filter": {
+                        "type": "object",
+                        "properties": {
+                            "status": {
+                                "type": "string",
+                                "description": "Internal workflow state"
+                            }
                         }
                     }
                 }
-            }
-        }));
+            }),
+        );
 
         merge_json_object_shape_annotation_insensitive(&mut target, source, 0, 100).expect("merge");
     }
 
     #[test]
     fn annotation_insensitive_object_shape_merge_keeps_const_values_opaque() {
-        let mut target = direct_json_object_shape(SchemaRoot::new(&Value::Null), &json!({
-            "type": "object",
-            "properties": {
-                "filter": {
-                    "type": "object",
-                    "properties": {
-                        "status": {
-                            "const": {
-                                "description": "open"
+        let mut target = direct_json_object_shape(
+            SchemaRoot::new(&Value::Null),
+            &json!({
+                "type": "object",
+                "properties": {
+                    "filter": {
+                        "type": "object",
+                        "properties": {
+                            "status": {
+                                "const": {
+                                    "description": "open"
+                                }
                             }
                         }
                     }
                 }
-            }
-        }));
-        let source = direct_json_object_shape(SchemaRoot::new(&Value::Null), &json!({
-            "type": "object",
-            "properties": {
-                "filter": {
-                    "type": "object",
-                    "properties": {
-                        "status": {
-                            "const": {}
+            }),
+        );
+        let source = direct_json_object_shape(
+            SchemaRoot::new(&Value::Null),
+            &json!({
+                "type": "object",
+                "properties": {
+                    "filter": {
+                        "type": "object",
+                        "properties": {
+                            "status": {
+                                "const": {}
+                            }
                         }
                     }
                 }
-            }
-        }));
+            }),
+        );
 
         assert_eq!(
             merge_json_object_shape_annotation_insensitive(&mut target, source, 0, 100),
@@ -1061,36 +1079,42 @@ mod tests {
 
     #[test]
     fn annotation_insensitive_object_shape_merge_keeps_enum_values_opaque() {
-        let mut target = direct_json_object_shape(SchemaRoot::new(&Value::Null), &json!({
-            "type": "object",
-            "properties": {
-                "filter": {
-                    "type": "object",
-                    "properties": {
-                        "status": {
-                            "enum": [
-                                {"description": "open"}
-                            ]
+        let mut target = direct_json_object_shape(
+            SchemaRoot::new(&Value::Null),
+            &json!({
+                "type": "object",
+                "properties": {
+                    "filter": {
+                        "type": "object",
+                        "properties": {
+                            "status": {
+                                "enum": [
+                                    {"description": "open"}
+                                ]
+                            }
                         }
                     }
                 }
-            }
-        }));
-        let source = direct_json_object_shape(SchemaRoot::new(&Value::Null), &json!({
-            "type": "object",
-            "properties": {
-                "filter": {
-                    "type": "object",
-                    "properties": {
-                        "status": {
-                            "enum": [
-                                {}
-                            ]
+            }),
+        );
+        let source = direct_json_object_shape(
+            SchemaRoot::new(&Value::Null),
+            &json!({
+                "type": "object",
+                "properties": {
+                    "filter": {
+                        "type": "object",
+                        "properties": {
+                            "status": {
+                                "enum": [
+                                    {}
+                                ]
+                            }
                         }
                     }
                 }
-            }
-        }));
+            }),
+        );
 
         assert_eq!(
             merge_json_object_shape_annotation_insensitive(&mut target, source, 0, 100),
@@ -1102,26 +1126,32 @@ mod tests {
 
     #[test]
     fn annotation_insensitive_object_shape_merge_keeps_unknown_keyword_values_opaque() {
-        let mut target = direct_json_object_shape(SchemaRoot::new(&Value::Null), &json!({
-            "type": "object",
-            "properties": {
-                "filter": {
-                    "type": "object",
-                    "x-coral-metadata": {
-                        "description": "left"
+        let mut target = direct_json_object_shape(
+            SchemaRoot::new(&Value::Null),
+            &json!({
+                "type": "object",
+                "properties": {
+                    "filter": {
+                        "type": "object",
+                        "x-coral-metadata": {
+                            "description": "left"
+                        }
                     }
                 }
-            }
-        }));
-        let source = direct_json_object_shape(SchemaRoot::new(&Value::Null), &json!({
-            "type": "object",
-            "properties": {
-                "filter": {
-                    "type": "object",
-                    "x-coral-metadata": {}
+            }),
+        );
+        let source = direct_json_object_shape(
+            SchemaRoot::new(&Value::Null),
+            &json!({
+                "type": "object",
+                "properties": {
+                    "filter": {
+                        "type": "object",
+                        "x-coral-metadata": {}
+                    }
                 }
-            }
-        }));
+            }),
+        );
 
         assert_eq!(
             merge_json_object_shape_annotation_insensitive(&mut target, source, 0, 100),
@@ -1133,74 +1163,86 @@ mod tests {
 
     #[test]
     fn annotation_insensitive_object_shape_merge_recurses_into_schema_dependencies() {
-        let mut target = direct_json_object_shape(SchemaRoot::new(&Value::Null), &json!({
-            "type": "object",
-            "properties": {
-                "filter": {
-                    "type": "object",
-                    "dependencies": {
-                        "status": {
-                            "type": "object",
-                            "properties": {
-                                "reason": {
-                                    "type": "string",
-                                    "description": "Public reason"
+        let mut target = direct_json_object_shape(
+            SchemaRoot::new(&Value::Null),
+            &json!({
+                "type": "object",
+                "properties": {
+                    "filter": {
+                        "type": "object",
+                        "dependencies": {
+                            "status": {
+                                "type": "object",
+                                "properties": {
+                                    "reason": {
+                                        "type": "string",
+                                        "description": "Public reason"
+                                    }
                                 }
-                            }
-                        },
-                        "owner": ["team"]
+                            },
+                            "owner": ["team"]
+                        }
                     }
                 }
-            }
-        }));
-        let source = direct_json_object_shape(SchemaRoot::new(&Value::Null), &json!({
-            "type": "object",
-            "properties": {
-                "filter": {
-                    "type": "object",
-                    "dependencies": {
-                        "status": {
-                            "type": "object",
-                            "properties": {
-                                "reason": {
-                                    "type": "string",
-                                    "description": "Internal reason"
+            }),
+        );
+        let source = direct_json_object_shape(
+            SchemaRoot::new(&Value::Null),
+            &json!({
+                "type": "object",
+                "properties": {
+                    "filter": {
+                        "type": "object",
+                        "dependencies": {
+                            "status": {
+                                "type": "object",
+                                "properties": {
+                                    "reason": {
+                                        "type": "string",
+                                        "description": "Internal reason"
+                                    }
                                 }
-                            }
-                        },
-                        "owner": ["team"]
+                            },
+                            "owner": ["team"]
+                        }
                     }
                 }
-            }
-        }));
+            }),
+        );
 
         merge_json_object_shape_annotation_insensitive(&mut target, source, 0, 100).expect("merge");
     }
 
     #[test]
     fn annotation_insensitive_object_shape_merge_reports_depth_exceeded() {
-        let mut target = direct_json_object_shape(SchemaRoot::new(&Value::Null), &json!({
-            "type": "object",
-            "properties": {
-                "filter": {
-                    "type": "object",
-                    "properties": {
-                        "value": {"type": "string"}
+        let mut target = direct_json_object_shape(
+            SchemaRoot::new(&Value::Null),
+            &json!({
+                "type": "object",
+                "properties": {
+                    "filter": {
+                        "type": "object",
+                        "properties": {
+                            "value": {"type": "string"}
+                        }
                     }
                 }
-            }
-        }));
-        let source = direct_json_object_shape(SchemaRoot::new(&Value::Null), &json!({
-            "type": "object",
-            "properties": {
-                "filter": {
-                    "type": "object",
-                    "properties": {
-                        "value": {"type": "string"}
+            }),
+        );
+        let source = direct_json_object_shape(
+            SchemaRoot::new(&Value::Null),
+            &json!({
+                "type": "object",
+                "properties": {
+                    "filter": {
+                        "type": "object",
+                        "properties": {
+                            "value": {"type": "string"}
+                        }
                     }
                 }
-            }
-        }));
+            }),
+        );
 
         assert_eq!(
             merge_json_object_shape_annotation_insensitive(&mut target, source, 0, 1),
