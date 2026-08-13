@@ -10,6 +10,7 @@ use anyhow::{Context, Result, bail};
 use serde_json::Value;
 
 const DEFAULT_SQL: &str = "select * from coral.tables";
+const PERF_WORKSPACE: &str = "perf";
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct Args {
@@ -51,6 +52,7 @@ pub(crate) fn run(args: &Args) -> Result<bool> {
     )
     .with_context(|| format!("writing {}", config_dir.join("config.toml").display()))?;
 
+    create_perf_workspace(&coral_bin, &config_dir)?;
     install_github_source(&coral_bin, &config_dir, &args.github_token)?;
     run_coral_sql(&coral_bin, &config_dir)?;
 
@@ -113,10 +115,23 @@ fn ensure_executable(path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn create_perf_workspace(coral_bin: &Path, config_dir: &Path) -> Result<()> {
+    let status = Command::new(coral_bin)
+        .args(["workspace", "create", PERF_WORKSPACE])
+        .env("CORAL_CONFIG_DIR", config_dir)
+        .status()
+        .with_context(|| format!("running {} workspace create", coral_bin.display()))?;
+    if !status.success() {
+        bail!("failed to create performance-check workspace");
+    }
+    Ok(())
+}
+
 fn install_github_source(coral_bin: &Path, config_dir: &Path, github_token: &str) -> Result<()> {
     let output = Command::new(coral_bin)
         .args(["source", "add", "github"])
         .env("CORAL_CONFIG_DIR", config_dir)
+        .env("CORAL_WORKSPACE", PERF_WORKSPACE)
         .env("GITHUB_TOKEN", github_token)
         .output()
         .with_context(|| format!("running {} source add github", coral_bin.display()))?;
@@ -138,6 +153,7 @@ fn run_coral_sql(coral_bin: &Path, config_dir: &Path) -> Result<()> {
     let status = Command::new(coral_bin)
         .args(["sql", DEFAULT_SQL])
         .env("CORAL_CONFIG_DIR", config_dir)
+        .env("CORAL_WORKSPACE", PERF_WORKSPACE)
         .stdout(Stdio::null())
         .status()
         .with_context(|| format!("running {} sql", coral_bin.display()))?;
@@ -175,6 +191,7 @@ fn run_hyperfine(
             &command,
         ])
         .env("CORAL_CONFIG_DIR", config_dir)
+        .env("CORAL_WORKSPACE", PERF_WORKSPACE)
         .status()
         .context("running hyperfine")?;
     if !status.success() {
