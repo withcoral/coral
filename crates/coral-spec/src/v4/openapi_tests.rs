@@ -3743,3 +3743,78 @@ components:
     ));
     assert!(id.nullable, "the 3.0 nullable keyword is still read");
 }
+
+/// A `$ref` may name a subschema, and `#/components/schemas/Page/anyOf/0`
+/// resolves through `root.pointer` like any other pointer. Normalizing the
+/// document in place would delete the `anyOf` this one ends in, so the
+/// reference would stop resolving and the response would import as one opaque
+/// JSON column — a table losing its columns because of a rewrite aimed at a
+/// different schema. Reading normalizes instead, and leaves the tree alone.
+#[test]
+fn importer_resolves_a_ref_that_points_into_a_nullable_union() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: pointer_ref
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.1.0
+components:
+  schemas:
+    Page:
+      anyOf:
+        - type: object
+          properties:
+            items:
+              type: array
+              items: {type: string}
+            next_cursor: {type: [string, 'null']}
+        - type: 'null'
+paths:
+  /pages:
+    get:
+      operationId: pages/get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Page/anyOf/0'
+"
+        .as_bytes(),
+    )
+    .expect("import");
+
+    let operation = ir.operations.first().expect("operation");
+    assert_eq!(operation.output.cardinality, OutputCardinality::Singleton);
+    let row_type = ir
+        .types
+        .iter()
+        .find(|ty| ty.id == operation.output.type_ref)
+        .expect("row type");
+    let IrTypeShape::Object { fields } = &row_type.shape else {
+        panic!("the response should import as an object: {row_type:?}");
+    };
+    assert_eq!(
+        fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        ["items", "next_cursor"]
+    );
+    assert!(
+        operation.diagnostics.is_empty(),
+        "{:?}",
+        operation.diagnostics
+    );
+}

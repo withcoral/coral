@@ -1,4 +1,5 @@
 use crate::v4::ir::{IrExecutionAttachment, IrOperation, McpExecutionAttachment};
+use crate::v4::surfaces::json_schema::SchemaRoot;
 use crate::v4::wrapped_lists::{WrappedListInferenceContext, infer_wrapped_list_row_path};
 use crate::v4::{McpOperationPagination, OperationMetadata};
 
@@ -33,7 +34,7 @@ impl McpImporter<'_> {
             infer_wrapped_list_row_path(WrappedListInferenceContext {
                 operation_name: &tool.name,
                 paginated_operation: contracts.is_paginated(),
-                schema_root: schema,
+                schema_root: SchemaRoot::new(schema),
                 response_schema: schema,
             })
         });

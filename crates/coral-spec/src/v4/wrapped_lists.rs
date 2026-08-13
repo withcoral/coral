@@ -26,7 +26,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::Value;
 
 use crate::v4::surfaces::json_schema::{
-    JsonSchemaWalkError, json_schema_type_contains, merged_all_of_object_view,
+    JsonSchemaWalkError, SchemaRoot, json_schema_type_contains, merged_all_of_object_view,
     schema_uses_alternation, with_resolved_json_schema,
 };
 
@@ -115,8 +115,10 @@ pub(in crate::v4) struct WrappedListInferenceContext<'a> {
     /// that the vocabulary of pagination parameter names lives with the
     /// detectors that own it rather than being predicted here.
     pub(in crate::v4) paginated_operation: bool,
-    /// Document the response schema was taken from, used to resolve `$ref`.
-    pub(in crate::v4) schema_root: &'a Value,
+    /// The document the response schema was taken from, used to resolve
+    /// `$ref` and to read each schema in the spelling this surface's readers
+    /// understand.
+    pub(in crate::v4) schema_root: SchemaRoot<'a>,
     pub(in crate::v4) response_schema: &'a Value,
 }
 
@@ -147,14 +149,14 @@ pub(in crate::v4) fn infer_wrapped_list_row_path(
 /// `{success, results: {data: [...]}, pagination}` shape — but deliberately not
 /// the sole-array fallback, which would let a nested resource's only array child
 /// inherit its parent's envelope evidence.
-fn candidate_row_path<'a>(
-    root: &'a Value,
-    schema: &'a Value,
+fn candidate_row_path(
+    root: SchemaRoot<'_>,
+    schema: &Value,
     paginated_operation: bool,
     inherited_evidence: bool,
     resolving_refs: &mut BTreeSet<String>,
     depth: usize,
-) -> Result<Option<Vec<String>>, JsonSchemaWalkError<'a>> {
+) -> Result<Option<Vec<String>>, JsonSchemaWalkError> {
     with_resolved_json_schema(
         root,
         schema,
@@ -239,7 +241,7 @@ fn candidate_row_path<'a>(
 /// A single agreeing name-and-type pair is enough: providers rarely put a
 /// `has_more` boolean or a `next_cursor` string on a plain resource.
 fn has_envelope_evidence(
-    root: &Value,
+    root: SchemaRoot<'_>,
     properties: &BTreeMap<String, Value>,
     resolving_refs: &mut BTreeSet<String>,
     depth: usize,
@@ -274,7 +276,7 @@ fn is_metadata_name(name: &str) -> bool {
 /// outright. An alternation never counts — a property that is one of several
 /// shapes has no single type to check against.
 fn schema_has_type(
-    root: &Value,
+    root: SchemaRoot<'_>,
     schema: &Value,
     resolving_refs: &mut BTreeSet<String>,
     depth: usize,
@@ -318,13 +320,15 @@ fn normalized_name(name: &str) -> String {
 mod tests {
     use serde_json::{Value, json};
 
+    use crate::v4::surfaces::json_schema::SchemaRoot;
+
     use super::{WrappedListInferenceContext, infer_wrapped_list_row_path};
 
     fn row_path(schema: &Value, paginated_operation: bool) -> Vec<String> {
         infer_wrapped_list_row_path(WrappedListInferenceContext {
             operation_name: "list_things",
             paginated_operation,
-            schema_root: schema,
+            schema_root: SchemaRoot::new(schema),
             response_schema: schema,
         })
     }

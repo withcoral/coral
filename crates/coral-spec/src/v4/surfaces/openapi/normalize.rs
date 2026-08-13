@@ -18,11 +18,16 @@
 //! {type: "null"}]` fails row-path inference and collapses the whole relation
 //! to a single JSON row.
 //!
-//! Normalizing the document once, before import, fixes every consumer at once:
-//! the same parsed value is threaded into schema import, response
-//! classification, row-path inference, cursor detection, and the validation
-//! fingerprints. The alternative — teaching each reader both spellings — means
-//! relaxing `schema_uses_alternation`, which the MCP importer shares.
+//! Applied as each schema is read rather than to the document up front. The
+//! parsed document stays exactly as the provider published it, which keeps
+//! every `$ref` resolvable: a pointer may name a subschema —
+//! `#/components/schemas/Page/anyOf/0` is legal, and `resolve_local_ref` serves
+//! it — and rewriting the tree in place would leave that pointer dangling, so
+//! the column it describes would import as opaque JSON or the operation would
+//! be dropped. Reading through [`SchemaRoot`](crate::v4::surfaces::json_schema::SchemaRoot)
+//! costs a clone only where a schema actually needs rewriting, and confines the
+//! rewrite to schema positions: an `example` or `default` payload is never
+//! walked, so a sample that merely looks like a schema is never mangled.
 //!
 //! Only unions that reduce to exactly one declared shape are rewritten. A
 //! genuine choice between shapes still reads as alternation, because it still
@@ -30,33 +35,57 @@
 
 use serde_json::{Map, Value};
 
-/// Collapses every nullable-union spelling in `value` into the shape it wraps.
+/// Ceiling on re-applying the rewrites to one schema.
 ///
-/// Applied unconditionally rather than to 3.1 documents alone. Both rewrites
-/// require a literal `null` type, which 3.0 does not have — it spells the same
-/// thing with `nullable` — so this is a no-op on a valid 3.0 document, and the
-/// existing 3.0 suite exercises the pass for free. A 3.0-labelled document that
-/// smuggles in a 3.1 spelling is fixed rather than misread, which is the same
-/// tolerance the importer already extends in the other direction by reading
-/// `nullable` out of 3.1 documents.
-pub(super) fn normalize_nullable_unions(value: &mut Value) {
-    match value {
-        Value::Object(object) => {
-            // Children first, so a promoted variant is already normalized and a
-            // second pass over the tree is never needed.
-            for child in object.values_mut() {
-                normalize_nullable_unions(child);
-            }
-            unwrap_nullable_union(object);
-            drop_null_from_type_array(object);
-        }
-        Value::Array(items) => {
-            for item in items {
-                normalize_nullable_unions(item);
-            }
-        }
-        _ => {}
+/// Each pass consumes one level of nesting the document actually declares — a
+/// union whose variant is itself a union — so this only bounds how much of that
+/// nesting is followed, and is never reached by a schema anyone writes.
+const MAX_NORMALIZE_PASSES: usize = 8;
+
+/// The schema as the importer's readers should see it, or `None` when it is
+/// already in a spelling they read.
+///
+/// `None` is the answer for almost every schema in every document, which is
+/// what makes reading through this affordable: the check costs two key lookups,
+/// and nothing is cloned unless a rewrite applies.
+///
+/// Applied to 3.0 documents as well as 3.1. Both rewrites require a literal
+/// `null` type, which 3.0 does not have — it spells the same thing with
+/// `nullable` — so this answers `None` for every schema in a valid 3.0
+/// document, and the existing 3.0 suite exercises it for free. A 3.0-labelled
+/// document that smuggles in a 3.1 spelling is read rather than misread, which
+/// is the same tolerance the importer already extends in the other direction by
+/// reading `nullable` out of 3.1 documents.
+pub(crate) fn normalized_schema(schema: &Value) -> Option<Value> {
+    let object = schema.as_object()?;
+    if !carries_a_rewritable_keyword(object) {
+        return None;
     }
+    let mut object = object.clone();
+    let mut rewritten = false;
+    // A promoted variant can carry a union of its own. The document-wide pass
+    // this replaced normalized children first and never had to look twice;
+    // reading one schema at a time, the second look happens here.
+    for _ in 0..MAX_NORMALIZE_PASSES {
+        let unwrapped = unwrap_nullable_union(&mut object);
+        let collapsed = drop_null_from_type_array(&mut object);
+        if !(unwrapped || collapsed) {
+            break;
+        }
+        rewritten = true;
+    }
+    rewritten.then(|| Value::Object(object))
+}
+
+/// Whether the schema declares a keyword either rewrite could act on.
+///
+/// Deliberately loose — it answers "worth looking at", not "will change" — so
+/// that the common answer costs three key lookups and no clone. A schema that
+/// passes here and then turns out to need nothing is reported as unchanged.
+fn carries_a_rewritable_keyword(object: &Map<String, Value>) -> bool {
+    object.get("type").is_some_and(Value::is_array)
+        || object.contains_key("anyOf")
+        || object.contains_key("oneOf")
 }
 
 /// Replaces `{anyOf | oneOf: [T, {type: null}]}` with `T`, as long as the keys
@@ -84,7 +113,8 @@ pub(super) fn normalize_nullable_unions(value: &mut Value) {
 /// Keeping the variant's `$ref` intact is most of the value. `import_schema`
 /// names a type after the ref it came through, so unwrapping recovers hundreds
 /// of named types per document that would otherwise import as anonymous JSON.
-fn unwrap_nullable_union(object: &mut Map<String, Value>) {
+fn unwrap_nullable_union(object: &mut Map<String, Value>) -> bool {
+    let mut unwrapped = false;
     for keyword in ["anyOf", "oneOf"] {
         let Some(variant) = sole_declared_variant(object.get(keyword)).cloned() else {
             continue;
@@ -96,7 +126,9 @@ fn unwrap_nullable_union(object: &mut Map<String, Value>) {
         for (key, value) in variant {
             object.entry(key).or_insert(value);
         }
+        unwrapped = true;
     }
+    unwrapped
 }
 
 /// Whether `key` annotates the schema it sits in rather than constraining the
@@ -193,9 +225,9 @@ fn names_null_type(value: &Value) -> bool {
 /// 3.0 forbids `type` arrays outright — so unlike the `anyOf: [{$ref: T}]`
 /// spelling that GitHub's 3.0 document relies on, collapsing it cannot reach a
 /// document that imports correctly today.
-fn drop_null_from_type_array(object: &mut Map<String, Value>) {
+fn drop_null_from_type_array(object: &mut Map<String, Value>) -> bool {
     let Some(declared) = object.get("type").and_then(Value::as_array) else {
-        return;
+        return false;
     };
     // A `type` array holds type names, and nothing else belongs in one — a
     // payload that happens to carry a `type` key must be left alone.
@@ -203,29 +235,31 @@ fn drop_null_from_type_array(object: &mut Map<String, Value>) {
         .iter()
         .all(|value| value.is_string() || value.is_null())
     {
-        return;
+        return false;
     }
     let mut named = declared.iter().filter(|value| !names_null_type(value));
     let Some(declared_type) = named.next() else {
-        return;
+        return false;
     };
     // More than one name is a genuine union.
     if named.next().is_some() {
-        return;
+        return false;
     }
     let declared_type = declared_type.clone();
     object.insert("type".to_string(), declared_type);
+    true
 }
 
 #[cfg(test)]
 mod tests {
     use serde_json::json;
 
-    use super::normalize_nullable_unions;
+    use super::normalized_schema;
 
-    fn normalized(mut value: serde_json::Value) -> serde_json::Value {
-        normalize_nullable_unions(&mut value);
-        value
+    /// The schema as a reader would see it. `None` means it was already
+    /// readable, so these assertions read the same either way.
+    fn normalized(value: serde_json::Value) -> serde_json::Value {
+        normalized_schema(&value).unwrap_or(value)
     }
 
     #[test]
@@ -368,29 +402,32 @@ mod tests {
     }
 
     #[test]
-    fn normalizes_every_schema_position() {
+    fn normalizes_the_schema_it_is_given_and_leaves_its_children_to_their_own_reads() {
+        // A child is a schema in its own right and is normalized when a reader
+        // resolves it, so rewriting it here would be doing it twice — and doing
+        // it to whatever else happened to be nested, which is how the
+        // document-wide pass this replaced reached `example` payloads.
         assert_eq!(
             normalized(json!({
-                "type": "object",
+                "type": ["object", "null"],
                 "properties": {"id": {"anyOf": [{"type": "string"}, {"type": "null"}]}},
-                "items": {"type": ["integer", "null"]},
-                "additionalProperties": {"anyOf": [{"type": "boolean"}, {"type": "null"}]},
-                "allOf": [{"type": ["object", "null"], "properties": {}}],
             })),
             json!({
                 "type": "object",
-                "properties": {"id": {"type": "string"}},
-                "items": {"type": "integer"},
-                "additionalProperties": {"type": "boolean"},
-                "allOf": [{"type": "object", "properties": {}}],
+                "properties": {"id": {"anyOf": [{"type": "string"}, {"type": "null"}]}},
             })
         );
-        // A union nested inside a union variant: children are normalized first,
-        // so the promoted variant is already collapsed.
+    }
+
+    #[test]
+    fn unwraps_a_union_whose_variant_is_itself_a_union() {
+        // The promoted variant carries its own union, which the document-wide
+        // pass had already collapsed on the way down. One schema at a time, the
+        // rewrites are re-applied until the schema settles.
         assert_eq!(
             normalized(json!({
                 "anyOf": [
-                    {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                    {"anyOf": [{"type": ["string", "null"]}, {"type": "null"}]},
                     {"type": "null"},
                 ],
             })),
@@ -400,47 +437,34 @@ mod tests {
 
     #[test]
     fn leaves_property_names_that_collide_with_keywords_alone() {
-        // The rewrites key off array values, and a `properties` map holds
-        // objects — so a property named `type` or `anyOf` is normalized as the
-        // schema it is, and the map itself is untouched.
+        // A `properties` map holds schemas, not keywords, and is never the
+        // schema being read — so a property named `type` or `anyOf` reaches
+        // these rewrites only as the schema it is.
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "type": {"type": ["string", "null"]},
+                "anyOf": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+            },
+        });
+        assert_eq!(normalized(schema.clone()), schema);
         assert_eq!(
-            normalized(json!({
-                "type": "object",
-                "properties": {
-                    "type": {"type": ["string", "null"]},
-                    "anyOf": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
-                    "default": {"type": "boolean"},
-                },
-            })),
-            json!({
-                "type": "object",
-                "properties": {
-                    "type": {"type": "string"},
-                    "anyOf": {"type": "integer"},
-                    "default": {"type": "boolean"},
-                },
-            })
+            normalized(json!({"type": ["string", "null"]})),
+            json!({"type": "string"})
         );
     }
 
     #[test]
-    fn leaves_example_payloads_recognisable() {
-        // Example and default payloads are never read into the IR, so a
-        // rewrite inside one is inert — but a payload that merely looks like a
-        // schema should still come through intact.
-        assert_eq!(
-            normalized(json!({
-                "type": "object",
-                "properties": {"kind": {"type": "string"}},
-                "example": {"kind": "text"},
-                "default": {"type": ["a", "b"]},
-            })),
-            json!({
-                "type": "object",
-                "properties": {"kind": {"type": "string"}},
-                "example": {"kind": "text"},
-                "default": {"type": ["a", "b"]},
-            })
-        );
+    fn leaves_payloads_that_are_not_schemas_alone() {
+        // Reading one schema at a time is what keeps these safe: an `example`
+        // or `default` payload is never resolved as a schema, so nothing here
+        // is ever applied to it — not even when it looks exactly like one.
+        let schema = json!({
+            "type": "object",
+            "properties": {"kind": {"type": "string"}},
+            "example": {"type": ["admin", null]},
+            "default": {"type": ["a"]},
+        });
+        assert_eq!(normalized(schema.clone()), schema);
     }
 }

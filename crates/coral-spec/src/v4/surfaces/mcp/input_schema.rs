@@ -5,8 +5,8 @@ use serde_json::Value;
 use crate::v4::diagnostics::Diagnostic;
 use crate::v4::ir::{IrInputLocation, IrOperationInput, IrScalarType};
 use crate::v4::surfaces::json_schema::{
-    JsonObjectShape, JsonSchemaComparisonError, JsonSchemaWalkError, direct_json_object_shape,
-    json_schema_default_to_string, json_schema_scalar_type,
+    JsonObjectShape, JsonSchemaComparisonError, JsonSchemaWalkError, SchemaRoot,
+    direct_json_object_shape, json_schema_default_to_string, json_schema_scalar_type,
     merge_json_object_shape_annotation_insensitive, resolve_json_schema_ref_with_siblings,
     with_resolved_json_schema,
 };
@@ -31,8 +31,11 @@ impl McpImporter<'_> {
                 diagnostics,
                 schema_complete: &mut schema_complete,
             };
+            // Read exactly as published: the 3.1 nullability rewrites belong
+            // to the OpenAPI surface, and nothing here has been measured
+            // against an MCP descriptor.
             let Some(shape) = input_object_shape(
-                &tool.input_schema,
+                SchemaRoot::new(&tool.input_schema),
                 &tool.input_schema,
                 &mut resolving_refs,
                 &mut context,
@@ -81,7 +84,7 @@ pub(super) struct ImportedInputs {
 }
 
 fn input_object_shape(
-    root: &Value,
+    root: SchemaRoot<'_>,
     schema: &Value,
     resolving_refs: &mut BTreeSet<String>,
     context: &mut InputSchemaContext<'_, '_>,
@@ -141,7 +144,7 @@ fn input_object_shape(
 }
 
 fn resolve_input_property_schemas(
-    root: &Value,
+    root: SchemaRoot<'_>,
     shape: &mut JsonObjectShape,
     resolving_refs: &mut BTreeSet<String>,
     context: &mut InputSchemaContext<'_, '_>,
@@ -220,7 +223,7 @@ impl InputSchemaContext<'_, '_> {
         );
     }
 
-    fn push_schema_walk_diagnostic(&mut self, error: JsonSchemaWalkError<'_>) {
+    fn push_schema_walk_diagnostic(&mut self, error: JsonSchemaWalkError) {
         let message = match error {
             JsonSchemaWalkError::ExternalRef(reference) => {
                 format!("MCP input schema external reference '{reference}' is unsupported")

@@ -57,7 +57,11 @@ impl OpenApiImporter<'_> {
         operation_id: &str,
         diagnostics: &mut Vec<Diagnostic>,
     ) -> Option<String> {
-        let resolved = self.resolve_ref(schema, operation_id, diagnostics)?;
+        // The type is named after the ref it arrived through, and a nullable
+        // `$ref` union only carries one once it is unwrapped — so the referring
+        // schema is read the same way the referent is.
+        let schema = self.read_schema(schema);
+        let resolved = self.resolve_ref(&schema, operation_id, diagnostics)?;
         let type_id = schema.get("$ref").and_then(Value::as_str).map_or_else(
             || normalize_identifier(suggested_id, "type"),
             type_id_from_ref,
@@ -271,7 +275,7 @@ impl OpenApiImporter<'_> {
         diagnostics: &mut Vec<Diagnostic>,
     ) -> Result<(), AllOfMergeError> {
         let walked = with_resolved_json_schema(
-            self.document,
+            self.schema_root(),
             schema,
             resolving_refs,
             depth,
@@ -294,7 +298,7 @@ impl OpenApiImporter<'_> {
             Ok(merge_result) => merge_result,
             // Converted rather than propagated: the walk error borrows from the
             // schema it walked, and the top-level caller passes a local.
-            Err(error) => Err(Self::all_of_walk_error(error, operation_id, diagnostics)),
+            Err(error) => Err(Self::all_of_walk_error(&error, operation_id, diagnostics)),
         }
     }
 
@@ -334,18 +338,18 @@ impl OpenApiImporter<'_> {
         Ok(())
     }
 
-    /// Records the diagnostic a failed branch walk deserves and reduces it to a
-    /// lifetime-free error.
+    /// Records the diagnostic a failed branch walk deserves and reduces it to
+    /// the merge's own error.
     fn all_of_walk_error(
-        error: JsonSchemaWalkError<'_>,
+        error: &JsonSchemaWalkError,
         operation_id: &str,
         diagnostics: &mut Vec<Diagnostic>,
     ) -> AllOfMergeError {
         let ref_error = match error {
-            JsonSchemaWalkError::ExternalRef(reference) => RefError::External(reference),
-            JsonSchemaWalkError::RefNotFound(reference) => RefError::NotFound(reference),
+            JsonSchemaWalkError::ExternalRef(reference) => RefError::External(reference.as_str()),
+            JsonSchemaWalkError::RefNotFound(reference) => RefError::NotFound(reference.as_str()),
             JsonSchemaWalkError::RefCycle(reference) => {
-                return AllOfMergeError::RefCycle(reference.to_string());
+                return AllOfMergeError::RefCycle(reference.clone());
             }
             JsonSchemaWalkError::DepthExceeded => return AllOfMergeError::CompositionTooDeep,
         };
@@ -366,9 +370,10 @@ impl OpenApiImporter<'_> {
     ) -> Vec<IrField> {
         properties
             .map(|(name, schema)| {
+                let schema = self.read_schema(schema);
                 let type_ref = self
                     .import_schema(
-                        schema,
+                        &schema,
                         &format!("{parent_id}_{name}"),
                         operation_id,
                         diagnostics,
@@ -379,7 +384,7 @@ impl OpenApiImporter<'_> {
                     type_ref,
                     required: required.contains(name),
                     nullable: true,
-                    description: self.field_description(schema),
+                    description: self.field_description(&schema),
                 }
             })
             .collect()
