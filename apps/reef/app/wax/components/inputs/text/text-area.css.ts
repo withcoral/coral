@@ -24,11 +24,14 @@ export const textAreaContainer = style({
       borderColor: theme.input.stroke.disabled,
       cursor: 'not-allowed',
     },
-    '&:focus-within': {
+    '&:focus-within:not(:has(textarea[data-invalid]))': {
       borderColor: theme.input.stroke.focus,
     },
-    '&:hover:not(:focus-within):not(:has(textarea:disabled))': {
+    '&:hover:not(:focus-within):not(:has(textarea:disabled)):not(:has(textarea[data-invalid]))': {
       borderColor: theme.input.stroke.hover,
+    },
+    '&:has(textarea[data-invalid]):not(:has(textarea:disabled))': {
+      borderColor: theme.input.stroke.error,
     },
   },
 })

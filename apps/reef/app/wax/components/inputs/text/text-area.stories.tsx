@@ -45,6 +45,19 @@ export const Disabled: Story = {
   },
 }
 
+export const Invalid: Story = {
+  args: {
+    invalid: true,
+    value: 'Too short.',
+  },
+  play: async ({ canvas }) => {
+    const textArea = canvas.getByRole('textbox')
+
+    await expect(textArea).toHaveAttribute('aria-invalid', 'true')
+    await expect(textArea).toHaveAttribute('data-invalid')
+  },
+}
+
 export const Controlled: Story = {
   render: () => {
     const [value, setValue] = useState('A longer description that can span multiple lines.')

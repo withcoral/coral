@@ -1,7 +1,7 @@
 //! Heuristic scanner for truncated column/table/source descriptions.
 //!
 //! A manifest's descriptions feed documentation, MCP surfaces, and the
-//! `coral.columns` catalog. When an upstream generation step (e.g. `OpenAPI`
+//! `coral.columns` catalog. When an upstream generation step (e.g. OpenAPI
 //! → YAML) applies a character cap, sentences get cut mid-phrase. This module
 //! walks each `sources/**/manifest.y{a,}ml` and flags descriptions that exhibit
 //! deterministic truncation signals.

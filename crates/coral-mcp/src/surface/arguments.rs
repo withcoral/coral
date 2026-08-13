@@ -1,6 +1,25 @@
 use rmcp::ErrorData;
 use serde_json::{Map, Value};
 
+pub(crate) fn reject_unknown_arguments(
+    arguments: Option<&Map<String, Value>>,
+    allowed: &[&str],
+) -> Result<(), ErrorData> {
+    let Some(arguments) = arguments else {
+        return Ok(());
+    };
+    if let Some(key) = arguments
+        .keys()
+        .find(|key| !allowed.contains(&key.as_str()))
+    {
+        return Err(ErrorData::invalid_params(
+            format!("unknown argument '{key}'"),
+            None,
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn required_string_argument(
     arguments: Option<&Map<String, Value>>,
     key: &str,
