@@ -7,6 +7,7 @@ use std::time::Duration;
 use axum::body::{Body, to_bytes};
 use axum::http::{HeaderValue, Method, Request, StatusCode, header};
 use axum::{Router, response::Response};
+use coral_api::v1::CreateWorkspaceRequest;
 use coral_client::{AppClient, local::ServerBuilder};
 use futures::poll;
 use rmcp::ServiceExt as _;
@@ -399,6 +400,13 @@ async fn readyz_classifies_auth_transport_and_timeout_results() {
 #[tokio::test]
 async fn streamable_http_executes_tools_and_shutdown_is_bounded() {
     let (_temp, app_server, app) = local_app().await;
+    let workspace = coral_client::workspace("http");
+    app.workspace_client()
+        .create_workspace(CreateWorkspaceRequest {
+            workspace: Some(workspace.clone()),
+        })
+        .await
+        .expect("create HTTP workspace");
     let config =
         McpHttpConfig::new(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).expect("loopback config");
     let server = start_auth_disabled(
@@ -406,6 +414,7 @@ async fn streamable_http_executes_tools_and_shutdown_is_bounded() {
         app,
         McpOptions {
             feedback_enabled: true,
+            workspace: Some(workspace),
             ..McpOptions::default()
         },
     )
