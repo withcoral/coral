@@ -194,12 +194,16 @@ export async function run(owner: string): Promise<string> {
         };
         assert!(implementation.source.contains("export async function run"));
         let signature = function.declared_signature().expect("declared signature");
-        assert_eq!(signature.arguments.len(), 1);
-        assert_eq!(signature.arguments[0].name, "owner");
-        assert_eq!(signature.arguments[0].data_type, ManifestDataType::Utf8);
-        assert_eq!(signature.result_columns.len(), 1);
-        assert_eq!(signature.result_columns[0].name, "title");
-        assert!(signature.result_columns[0].nullable);
+        let [argument] = signature.arguments.as_slice() else {
+            panic!("expected one declared argument");
+        };
+        assert_eq!(argument.name, "owner");
+        assert_eq!(argument.data_type, ManifestDataType::Utf8);
+        let [result_column] = signature.result_columns.as_slice() else {
+            panic!("expected one declared result column");
+        };
+        assert_eq!(result_column.name, "title");
+        assert!(result_column.nullable);
     }
 
     #[test]

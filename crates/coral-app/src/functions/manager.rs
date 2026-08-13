@@ -4,7 +4,9 @@ use std::collections::BTreeSet;
 use std::future::Future;
 use std::sync::Arc;
 
-use coral_engine::{PreparedQueryRuntime, QueryRuntimeConfig, QuerySource, UdfRuntimeDefinition};
+use coral_engine::{
+    CoralSqlFunctionDefinition, PreparedQueryRuntime, QueryRuntimeConfig, QuerySource,
+};
 use coral_spec::{FunctionSpec, parse_function_artifact as parse_authored_function_artifact};
 
 use crate::bootstrap::AppError;
@@ -50,7 +52,7 @@ pub(crate) struct FunctionListing {
 }
 
 pub(crate) enum FunctionRuntimeStatus {
-    Ready(Box<UdfRuntimeDefinition>),
+    Ready(Box<CoralSqlFunctionDefinition>),
     Invalid(String),
 }
 
@@ -70,7 +72,7 @@ enum FunctionCandidate {
     Pending {
         name: FunctionName,
         write_surface: FunctionWriteSurface,
-        definition: Box<UdfRuntimeDefinition>,
+        definition: Box<CoralSqlFunctionDefinition>,
     },
 }
 
@@ -97,7 +99,7 @@ impl FunctionManager {
         &self,
         workspace_name: &WorkspaceName,
         artifact: &str,
-        runtime_function: &UdfRuntimeDefinition,
+        runtime_function: &CoralSqlFunctionDefinition,
     ) -> Result<InstalledFunction, AppError> {
         let function_name = validated_function_name(artifact, runtime_function)?;
         self.install_user_function_artifact(
@@ -117,7 +119,7 @@ impl FunctionManager {
         &self,
         workspace_name: &WorkspaceName,
         artifact: &str,
-        runtime_function: &UdfRuntimeDefinition,
+        runtime_function: &CoralSqlFunctionDefinition,
         revision: WorkspaceLifecycleRevision,
         mode: FunctionInstallMode,
         write_surface: FunctionWriteSurface,
@@ -220,7 +222,7 @@ impl FunctionManager {
         selected_sources: &[QuerySource],
         mut runtime_config: impl FnMut() -> Result<QueryRuntimeConfig, AppError>,
         artifact: &str,
-    ) -> Result<UdfRuntimeDefinition, AppError> {
+    ) -> Result<CoralSqlFunctionDefinition, AppError> {
         let function = parse_authored_function_artifact(artifact).map_err(|error| {
             AppError::InvalidInput(format!("function validation failed: {error}"))
         })?;
@@ -254,7 +256,7 @@ impl FunctionManager {
         workspace_name: &WorkspaceName,
         selected_sources: &[QuerySource],
         runtime: &PreparedQueryRuntime,
-    ) -> Result<Vec<UdfRuntimeDefinition>, AppError> {
+    ) -> Result<Vec<CoralSqlFunctionDefinition>, AppError> {
         let listings = self
             .evaluate_function_listings(workspace_name, selected_sources, |pending| {
                 infer_runtime_functions_in_prepared_runtime(runtime, pending)
@@ -281,8 +283,9 @@ impl FunctionManager {
         infer: Infer,
     ) -> Result<Vec<FunctionListing>, AppError>
     where
-        Infer: FnOnce(Vec<UdfRuntimeDefinition>) -> InferFuture,
-        InferFuture: Future<Output = Result<Vec<Result<UdfRuntimeDefinition, AppError>>, AppError>>,
+        Infer: FnOnce(Vec<CoralSqlFunctionDefinition>) -> InferFuture,
+        InferFuture:
+            Future<Output = Result<Vec<Result<CoralSqlFunctionDefinition, AppError>>, AppError>>,
     {
         let artifacts = self.load_function_artifacts(workspace_name)?;
         if artifacts.is_empty() {
@@ -489,7 +492,7 @@ impl FunctionManager {
 
 fn validated_function_name(
     artifact: &str,
-    runtime_function: &UdfRuntimeDefinition,
+    runtime_function: &CoralSqlFunctionDefinition,
 ) -> Result<FunctionName, AppError> {
     let function = parse_authored_function_artifact(artifact)
         .map_err(|error| AppError::InvalidInput(format!("function validation failed: {error}")))?;
@@ -523,7 +526,7 @@ fn parse_function_artifact(artifact: &FunctionArtifact) -> Result<FunctionSpec, 
 fn ready_listing(
     name: FunctionName,
     write_surface: FunctionWriteSurface,
-    definition: UdfRuntimeDefinition,
+    definition: CoralSqlFunctionDefinition,
 ) -> FunctionListing {
     FunctionListing {
         name,
@@ -623,7 +626,7 @@ export async function run(owner: string): Promise<string> {{
         )
     }
 
-    fn validated_function(artifact: &str) -> UdfRuntimeDefinition {
+    fn validated_function(artifact: &str) -> CoralSqlFunctionDefinition {
         let spec = parse_authored_function_artifact(artifact).expect("function spec");
         lower_runtime_function_without_signature(&spec).expect("supported function")
     }
@@ -750,8 +753,8 @@ export async function run(owner: string): Promise<string> {{
             lower_runtime_function_without_signature(&spec).expect("SQL lowering should succeed");
 
         assert_eq!(spec.group(), "github");
-        assert_eq!(definition.publish.table_function.schema, "github");
-        assert_eq!(definition.publish.table_function.name, "review_queue");
+        assert_eq!(definition.publish.schema, "github");
+        assert_eq!(definition.publish.name, "review_queue");
     }
 
     #[tokio::test]

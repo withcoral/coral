@@ -664,8 +664,8 @@ pub struct QueryRuntimeConfig {
         Option<RequestIdentityHttpAuthenticatorFactory>,
     /// Runtime policy for dependent predicate pushdown.
     pub dependent_join: DependentJoinConfig,
-    /// Validated UDFs available in this runtime build.
-    pub udfs: Vec<super::UdfRuntimeDefinition>,
+    /// Executable Coral SQL functions available in this runtime build.
+    pub udfs: Vec<super::CoralSqlFunctionDefinition>,
 }
 
 impl QueryRuntimeConfig {
@@ -684,9 +684,9 @@ impl QueryRuntimeConfig {
         }
     }
 
-    /// Attaches validated UDFs to this runtime config.
+    /// Attaches executable Coral SQL functions to this runtime config.
     #[must_use]
-    pub fn with_udfs(mut self, udfs: Vec<super::UdfRuntimeDefinition>) -> Self {
+    pub fn with_udfs(mut self, udfs: Vec<super::CoralSqlFunctionDefinition>) -> Self {
         self.udfs = udfs;
         self
     }

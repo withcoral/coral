@@ -20,9 +20,8 @@ pub use query::{
 };
 pub(crate) use query_error::{ColumnParts, TableRefParts};
 pub use udfs::{
-    UdfRuntimeArgument, UdfRuntimeDefinition, UdfRuntimeImplementation, UdfRuntimePublish,
-    UdfRuntimeResultColumn, UdfRuntimeSignature, UdfRuntimeSqlDefinition,
-    UdfRuntimeTableFunctionPublish,
+    CoralSqlFunctionArgument, CoralSqlFunctionDefinition, CoralSqlFunctionInferenceDefinition,
+    CoralSqlFunctionSignature, CoralSqlResultColumn, CoralSqlTableFunctionPublish,
 };
 
 #[cfg(test)]

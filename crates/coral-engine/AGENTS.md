@@ -33,6 +33,8 @@ registration, and query execution.
 - Runtime components are the app-to-engine package boundary. Do not add a
   backend that reaches back into DSL v4 materialization or authored-manifest
   types when `coral-app` can assemble existing backend-ready component specs.
+- Installed-function inputs are executable Coral SQL definitions. Do not add
+  placeholder variants for languages that `DataFusion` cannot execute.
 - Reuse database connection pools only through an explicit
   `DatabasePoolRegistry` supplied by the caller and key its pool map directly
   by the workspace-local, unique SQL catalog name. Keep pool implementation in

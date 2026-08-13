@@ -6,11 +6,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use coral_engine::{
-    CatalogInfo, CoralQuery, CoreError, DescribeCatalogSurfaceInfo, PreparedQueryRuntime,
-    QueryExecution, QueryExecutionProvenance, QueryPlan, QueryRuntimeConfig, QueryRuntimeContext,
-    QuerySource, ResolvedQueryResources, SourceDecorator, SourceDecoratorError,
-    SourceFailurePolicy, SourceInputResolver, SourceTables, SourceValidationReport, StatusCode,
-    TableInfo, UdfRuntimeDefinition,
+    CatalogInfo, CoralQuery, CoralSqlFunctionDefinition, CoreError, DescribeCatalogSurfaceInfo,
+    PreparedQueryRuntime, QueryExecution, QueryExecutionProvenance, QueryPlan, QueryRuntimeConfig,
+    QueryRuntimeContext, QuerySource, ResolvedQueryResources, SourceDecorator,
+    SourceDecoratorError, SourceFailurePolicy, SourceInputResolver, SourceTables,
+    SourceValidationReport, StatusCode, TableInfo,
 };
 use coral_spec::{ManifestInputKind, ManifestInputSpec};
 use opentelemetry::trace::Status as OtelStatus;
@@ -76,7 +76,7 @@ pub(crate) struct ValidatedSource {
 
 #[derive(Debug)]
 pub(crate) struct AddedUserFunction {
-    pub(crate) definition: UdfRuntimeDefinition,
+    pub(crate) definition: CoralSqlFunctionDefinition,
     pub(crate) replaced: bool,
     pub(crate) write_surface: FunctionWriteSurface,
 }
@@ -891,7 +891,7 @@ impl QueryManager {
         &self,
         workspace_name: &WorkspaceName,
         artifact: &str,
-    ) -> Result<UdfRuntimeDefinition, QueryManagerError> {
+    ) -> Result<CoralSqlFunctionDefinition, QueryManagerError> {
         self.require_workspace(workspace_name)
             .await
             .map_err(QueryManagerError::App)?;
@@ -994,7 +994,7 @@ impl QueryManager {
         artifact: &str,
         loaded_sources: &[LoadedQuerySource],
         config: &AppConfig,
-    ) -> Result<UdfRuntimeDefinition, QueryManagerError> {
+    ) -> Result<CoralSqlFunctionDefinition, QueryManagerError> {
         let sources = query_sources_from_loaded(loaded_sources);
         self.function_manager
             .validate_user_function_artifact(
@@ -3158,7 +3158,7 @@ where type = $kind
         else {
             panic!("function should be runtime-ready");
         };
-        assert_eq!(definition.publish.table_function.guide, expected_guide);
+        assert_eq!(definition.publish.guide, expected_guide);
         let column = definition
             .result_columns
             .first()

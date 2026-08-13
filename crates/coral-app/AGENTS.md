@@ -17,6 +17,8 @@ root.
   `coral-spec`
 - assembly of query-engine runtime packages from app-owned installed state,
   including DSL v4 materialized artifacts and generated runtime components
+- selection of authored function implementations and assembly of backend-ready
+  Coral SQL function definitions before calling `coral-engine`
 - query-time selection of installed sources before calling `coral-engine`
 - workspace-scoped catalog discovery behavior over query-visible tables:
   matching, pagination, exact lookup, column filtering, and missing-table

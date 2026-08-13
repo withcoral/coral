@@ -25,6 +25,8 @@ discovery, and normalized source-definition models.
   types.
 - Keep runtime execution concerns out of this crate. Engine behavior belongs in
   `coral-engine`.
+- Keep authored function language, generic identity, and declared signatures
+  transport-neutral and execution-neutral.
 - Backends that declare SQL relations, including tables and source-scoped table
   functions, must project those names into the shared declared-relation
   namespace validator in `src/validate.rs`; do not hand-roll backend-local

@@ -80,16 +80,16 @@ pub use composition::{
     SourceObservationPublisher, SourceObservationSurfaceKind, SourceScanObservation, SourceTables,
 };
 pub use contracts::{
-    CatalogInfo, ColumnInfo, CoreError, DependentJoinConfig, DependentJoinSourceConfig,
+    CatalogInfo, ColumnInfo, CoralSqlFunctionArgument, CoralSqlFunctionDefinition,
+    CoralSqlFunctionInferenceDefinition, CoralSqlFunctionSignature, CoralSqlResultColumn,
+    CoralSqlTableFunctionPublish, CoreError, DependentJoinConfig, DependentJoinSourceConfig,
     DescribeCatalogSurfaceInfo, EffectiveDependentJoinConfig, MemorySize, QueryExecution,
     QueryExecutionProvenance, QueryMemoryConfig, QueryParameterValue, QueryParameters, QueryPlan,
     QueryRuntimeConfig, QueryRuntimeContext, QuerySource, QueryTableFunctionUsage, QueryTableUsage,
     QueryTestFailure, QueryTestResult, QueryTestSuccess, ResolvedQueryResources,
     RuntimeSourceComponent, RuntimeSourcePackage, SourceValidationReport, StatusCode,
     StructuredQueryError, TableFunctionArgumentInfo, TableFunctionInfo,
-    TableFunctionResultColumnInfo, TableInfo, UdfRuntimeArgument, UdfRuntimeDefinition,
-    UdfRuntimeImplementation, UdfRuntimePublish, UdfRuntimeResultColumn, UdfRuntimeSignature,
-    UdfRuntimeSqlDefinition, UdfRuntimeTableFunctionPublish,
+    TableFunctionResultColumnInfo, TableInfo,
 };
 pub use runtime::normalize_catalog_name;
 
@@ -190,11 +190,11 @@ impl PreparedQueryRuntime {
     /// source runtime.
     pub async fn infer_udf_signatures(
         &self,
-        udfs: Vec<UdfRuntimeSqlDefinition>,
-    ) -> Result<Vec<Result<UdfRuntimeSignature, CoreError>>, CoreError> {
+        udfs: Vec<CoralSqlFunctionInferenceDefinition>,
+    ) -> Result<Vec<Result<CoralSqlFunctionSignature, CoreError>>, CoreError> {
         let mut results = Vec::with_capacity(udfs.len());
         for udf in udfs {
-            if udf.sql().trim().is_empty() {
+            if udf.query.trim().is_empty() {
                 results.push(Err(CoreError::InvalidInput(format!(
                     "udf '{}' SQL body cannot be empty",
                     udf.name
@@ -212,7 +212,10 @@ impl PreparedQueryRuntime {
     ///
     /// Returns [`CoreError`] if UDF publication conflicts with the prepared
     /// catalog or a UDF body cannot be planned.
-    pub async fn with_udfs(mut self, udfs: Vec<UdfRuntimeDefinition>) -> Result<Self, CoreError> {
+    pub async fn with_udfs(
+        mut self,
+        udfs: Vec<CoralSqlFunctionDefinition>,
+    ) -> Result<Self, CoreError> {
         self.inner.install_udfs(udfs).await?;
         Ok(self)
     }
@@ -429,8 +432,8 @@ impl CoralQuery {
     pub async fn infer_udf_signature(
         sources: &[QuerySource],
         runtime: QueryRuntimeConfig,
-        udf: UdfRuntimeSqlDefinition,
-    ) -> Result<UdfRuntimeSignature, CoreError> {
+        udf: CoralSqlFunctionInferenceDefinition,
+    ) -> Result<CoralSqlFunctionSignature, CoreError> {
         let mut results = Self::infer_udf_signatures(sources, runtime, vec![udf]).await?;
         results.pop().ok_or_else(|| {
             CoreError::InvalidInput("UDF signature inference returned no result".to_string())
@@ -448,8 +451,8 @@ impl CoralQuery {
     pub async fn infer_udf_signatures(
         sources: &[QuerySource],
         runtime: QueryRuntimeConfig,
-        udfs: Vec<UdfRuntimeSqlDefinition>,
-    ) -> Result<Vec<Result<UdfRuntimeSignature, CoreError>>, CoreError> {
+        udfs: Vec<CoralSqlFunctionInferenceDefinition>,
+    ) -> Result<Vec<Result<CoralSqlFunctionSignature, CoreError>>, CoreError> {
         if udfs.is_empty() {
             return Ok(Vec::new());
         }

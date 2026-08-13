@@ -1,7 +1,7 @@
 use coral_engine::{
-    CoralQuery, PreparedQueryRuntime, QueryRuntimeConfig, QuerySource, UdfRuntimeDefinition,
-    UdfRuntimeImplementation, UdfRuntimePublish, UdfRuntimeSignature, UdfRuntimeSqlDefinition,
-    UdfRuntimeTableFunctionPublish,
+    CoralQuery, CoralSqlFunctionDefinition, CoralSqlFunctionInferenceDefinition,
+    CoralSqlFunctionSignature, CoralSqlTableFunctionPublish, PreparedQueryRuntime,
+    QueryRuntimeConfig, QuerySource,
 };
 use coral_spec::{FunctionImplementationSpec, FunctionSpec};
 
@@ -11,7 +11,7 @@ pub(crate) async fn infer_runtime_function(
     selected_sources: &[QuerySource],
     mut runtime_config: impl FnMut() -> Result<QueryRuntimeConfig, AppError>,
     spec: &FunctionSpec,
-) -> Result<UdfRuntimeDefinition, AppError> {
+) -> Result<CoralSqlFunctionDefinition, AppError> {
     let runtime_function = lower_runtime_function_without_signature(spec)?;
     let mut results =
         infer_runtime_functions(selected_sources, runtime_config()?, vec![runtime_function])
@@ -24,8 +24,8 @@ pub(crate) async fn infer_runtime_function(
 pub(crate) async fn infer_runtime_functions(
     selected_sources: &[QuerySource],
     runtime_config: QueryRuntimeConfig,
-    runtime_functions: Vec<UdfRuntimeDefinition>,
-) -> Result<Vec<Result<UdfRuntimeDefinition, AppError>>, AppError> {
+    runtime_functions: Vec<CoralSqlFunctionDefinition>,
+) -> Result<Vec<Result<CoralSqlFunctionDefinition, AppError>>, AppError> {
     let sql_definitions = runtime_functions
         .iter()
         .map(runtime_sql_definition)
@@ -45,8 +45,8 @@ pub(crate) async fn infer_runtime_functions(
 
 pub(crate) async fn infer_runtime_functions_in_prepared_runtime(
     runtime: &PreparedQueryRuntime,
-    runtime_functions: Vec<UdfRuntimeDefinition>,
-) -> Result<Vec<Result<UdfRuntimeDefinition, AppError>>, AppError> {
+    runtime_functions: Vec<CoralSqlFunctionDefinition>,
+) -> Result<Vec<Result<CoralSqlFunctionDefinition, AppError>>, AppError> {
     let sql_definitions = runtime_functions
         .iter()
         .map(runtime_sql_definition)
@@ -60,9 +60,9 @@ pub(crate) async fn infer_runtime_functions_in_prepared_runtime(
 }
 
 fn apply_signatures(
-    runtime_functions: Vec<UdfRuntimeDefinition>,
-    signatures: Vec<Result<UdfRuntimeSignature, coral_engine::CoreError>>,
-) -> Vec<Result<UdfRuntimeDefinition, AppError>> {
+    runtime_functions: Vec<CoralSqlFunctionDefinition>,
+    signatures: Vec<Result<CoralSqlFunctionSignature, coral_engine::CoreError>>,
+) -> Vec<Result<CoralSqlFunctionDefinition, AppError>> {
     runtime_functions
         .into_iter()
         .zip(signatures)
@@ -82,15 +82,13 @@ fn runtime_validation_error(error: &coral_engine::CoreError) -> AppError {
 
 pub(crate) fn lower_runtime_function_without_signature(
     spec: &FunctionSpec,
-) -> Result<UdfRuntimeDefinition, AppError> {
+) -> Result<CoralSqlFunctionDefinition, AppError> {
     match spec.implementation() {
-        FunctionImplementationSpec::CoralSql(implementation) => Ok(UdfRuntimeDefinition {
+        FunctionImplementationSpec::CoralSql(implementation) => Ok(CoralSqlFunctionDefinition {
             name: spec.name().to_string(),
             description: spec.description().to_string(),
             arguments: Vec::new(),
-            implementation: UdfRuntimeImplementation::CoralSql {
-                query: implementation.query.clone(),
-            },
+            query: implementation.query.clone(),
             publish: runtime_publish(spec),
             result_columns: Vec::new(),
             source_names: Vec::new(),
@@ -99,21 +97,21 @@ pub(crate) fn lower_runtime_function_without_signature(
     }
 }
 
-fn runtime_sql_definition(function: &UdfRuntimeDefinition) -> UdfRuntimeSqlDefinition {
-    UdfRuntimeSqlDefinition {
+fn runtime_sql_definition(
+    function: &CoralSqlFunctionDefinition,
+) -> CoralSqlFunctionInferenceDefinition {
+    CoralSqlFunctionInferenceDefinition {
         name: function.name.clone(),
-        implementation: function.implementation.clone(),
+        query: function.query.clone(),
     }
 }
 
-fn runtime_publish(spec: &FunctionSpec) -> UdfRuntimePublish {
-    UdfRuntimePublish {
-        table_function: UdfRuntimeTableFunctionPublish {
-            schema: spec.group().to_string(),
-            name: spec.name().to_string(),
-            description: String::new(),
-            guide: spec.guide().to_string(),
-        },
+fn runtime_publish(spec: &FunctionSpec) -> CoralSqlTableFunctionPublish {
+    CoralSqlTableFunctionPublish {
+        schema: spec.group().to_string(),
+        name: spec.name().to_string(),
+        description: String::new(),
+        guide: spec.guide().to_string(),
     }
 }
 

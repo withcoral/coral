@@ -17,20 +17,16 @@ use crate::runtime::query::{QueryRuntimeAdapter, query_parameter_scalar_value};
 use crate::runtime::scoped_table_functions::{ScopedTableFunctionName, qualified_name};
 use crate::types::parameter_binding_is_string_shaped;
 use crate::{
-    CoreError, QueryParameterValue, QueryParameters, UdfRuntimeArgument, UdfRuntimeDefinition,
-    UdfRuntimeImplementation, UdfRuntimeResultColumn, UdfRuntimeSignature, UdfRuntimeSqlDefinition,
+    CoralSqlFunctionArgument, CoralSqlFunctionDefinition, CoralSqlFunctionInferenceDefinition,
+    CoralSqlFunctionSignature, CoralSqlResultColumn, CoreError, QueryParameterValue,
+    QueryParameters,
 };
-
-pub(crate) fn udf_sql(udf: &UdfRuntimeDefinition) -> &str {
-    let UdfRuntimeImplementation::CoralSql { query } = &udf.implementation;
-    query
-}
 
 pub(crate) async fn infer_udf_signature(
     query_runtime: &QueryRuntimeAdapter,
-    udf: &UdfRuntimeSqlDefinition,
-) -> Result<UdfRuntimeSignature, CoreError> {
-    let signature = query_runtime.infer_sql_signature(udf.sql()).await?;
+    udf: &CoralSqlFunctionInferenceDefinition,
+) -> Result<CoralSqlFunctionSignature, CoreError> {
+    let signature = query_runtime.infer_sql_signature(&udf.query).await?;
     let mut arguments = Vec::new();
     for (placeholder, field) in signature.parameter_fields {
         let name = placeholder
@@ -56,22 +52,22 @@ pub(crate) async fn infer_udf_signature(
                 })?
             }
         };
-        arguments.push(UdfRuntimeArgument { name, data_type });
+        arguments.push(CoralSqlFunctionArgument { name, data_type });
     }
     arguments.sort_by(|left, right| left.name.cmp(&right.name));
 
-    Ok(UdfRuntimeSignature {
+    Ok(CoralSqlFunctionSignature {
         arguments,
         result_columns: result_columns(signature.planned_schema.as_ref()),
         source_names: signature.source_names,
     })
 }
 
-fn result_columns(schema: &Schema) -> Vec<UdfRuntimeResultColumn> {
+fn result_columns(schema: &Schema) -> Vec<CoralSqlResultColumn> {
     schema
         .fields()
         .iter()
-        .map(|field| UdfRuntimeResultColumn {
+        .map(|field| CoralSqlResultColumn {
             name: field.name().clone(),
             data_type: field.data_type().clone(),
             nullable: field.is_nullable(),
@@ -80,14 +76,14 @@ fn result_columns(schema: &Schema) -> Vec<UdfRuntimeResultColumn> {
 }
 
 pub(crate) fn udf_query_parameters(
-    udf: &UdfRuntimeDefinition,
+    udf: &CoralSqlFunctionDefinition,
     arguments: &QueryParameters,
 ) -> DataFusionResult<QueryParameters> {
     UdfArgumentBinding::new(udf, arguments).into_query_params()
 }
 
 pub(crate) fn published_table_functions(
-    udfs: &[UdfRuntimeDefinition],
+    udfs: &[CoralSqlFunctionDefinition],
     source_function_names: &HashSet<ScopedTableFunctionName>,
 ) -> DataFusionResult<Vec<CatalogTableFunction>> {
     PublishedTableFunctions::new(source_function_names).build(udfs)
@@ -110,7 +106,7 @@ impl<'a> PublishedTableFunctions<'a> {
 
     fn build(
         mut self,
-        udfs: &[UdfRuntimeDefinition],
+        udfs: &[CoralSqlFunctionDefinition],
     ) -> DataFusionResult<Vec<CatalogTableFunction>> {
         for udf in udfs {
             self.push_udf(udf)?;
@@ -122,8 +118,8 @@ impl<'a> PublishedTableFunctions<'a> {
         Ok(self.rows)
     }
 
-    fn push_udf(&mut self, udf: &UdfRuntimeDefinition) -> DataFusionResult<()> {
-        let publish = &udf.publish.table_function;
+    fn push_udf(&mut self, udf: &CoralSqlFunctionDefinition) -> DataFusionResult<()> {
+        let publish = &udf.publish;
         let key = ScopedTableFunctionName::from_parts(&publish.schema, &publish.name);
         self.reject_duplicate_udf(&key)?;
         self.reject_source_collision(&key)?;
@@ -154,10 +150,10 @@ impl<'a> PublishedTableFunctions<'a> {
 }
 
 fn catalog_table_function(
-    udf: &UdfRuntimeDefinition,
+    udf: &CoralSqlFunctionDefinition,
     key: &ScopedTableFunctionName,
 ) -> CatalogTableFunction {
-    let publish = &udf.publish.table_function;
+    let publish = &udf.publish;
     CatalogTableFunction {
         schema_name: key.schema.clone(),
         function_name: key.function.clone(),
@@ -190,7 +186,7 @@ fn catalog_table_function(
 }
 
 pub(crate) fn udf_argument_values(
-    udf: &UdfRuntimeDefinition,
+    udf: &CoralSqlFunctionDefinition,
     args: &[Expr],
 ) -> DataFusionResult<QueryParameters> {
     if args.len() > udf.arguments.len() {
@@ -215,8 +211,8 @@ pub(crate) fn udf_argument_values(
 }
 
 fn udf_argument_value(
-    udf: &UdfRuntimeDefinition,
-    argument: &UdfRuntimeArgument,
+    udf: &CoralSqlFunctionDefinition,
+    argument: &CoralSqlFunctionArgument,
     expr: &Expr,
 ) -> DataFusionResult<QueryParameterValue> {
     let Some(value) = literal_scalar_value(expr)? else {
@@ -245,7 +241,7 @@ pub(crate) fn udf_param_values(params: &QueryParameters) -> Vec<(String, ScalarV
         .collect()
 }
 
-pub(crate) fn udf_arrow_schema(udf: &UdfRuntimeDefinition) -> DataFusionResult<Arc<Schema>> {
+pub(crate) fn udf_arrow_schema(udf: &CoralSqlFunctionDefinition) -> DataFusionResult<Arc<Schema>> {
     if udf.result_columns.is_empty() {
         return Err(DataFusionError::Plan(format!(
             "published udf '{}' requires declared result columns",
@@ -261,17 +257,17 @@ pub(crate) fn udf_arrow_schema(udf: &UdfRuntimeDefinition) -> DataFusionResult<A
     Ok(Arc::new(Schema::new(fields)))
 }
 
-fn udf_result_field(column: &UdfRuntimeResultColumn) -> Field {
+fn udf_result_field(column: &CoralSqlResultColumn) -> Field {
     Field::new(&column.name, column.data_type.clone(), column.nullable)
 }
 
 struct UdfArgumentBinding<'a> {
-    udf: &'a UdfRuntimeDefinition,
+    udf: &'a CoralSqlFunctionDefinition,
     arguments: &'a QueryParameters,
 }
 
 impl<'a> UdfArgumentBinding<'a> {
-    fn new(udf: &'a UdfRuntimeDefinition, arguments: &'a QueryParameters) -> Self {
+    fn new(udf: &'a CoralSqlFunctionDefinition, arguments: &'a QueryParameters) -> Self {
         Self { udf, arguments }
     }
 
@@ -302,7 +298,7 @@ impl<'a> UdfArgumentBinding<'a> {
 
     fn bind_argument(
         &self,
-        argument: &UdfRuntimeArgument,
+        argument: &CoralSqlFunctionArgument,
         params: &mut QueryParameters,
     ) -> DataFusionResult<()> {
         let binding = UdfParameterTypeBinding::new(argument.data_type);
@@ -482,28 +478,24 @@ mod tests {
     use arrow::datatypes::TimeUnit;
     use datafusion::logical_expr::expr::{Cast, TryCast};
 
-    fn argument(name: &str, data_type: ManifestDataType) -> UdfRuntimeArgument {
-        UdfRuntimeArgument {
+    fn argument(name: &str, data_type: ManifestDataType) -> CoralSqlFunctionArgument {
+        CoralSqlFunctionArgument {
             name: name.to_string(),
             data_type,
         }
     }
 
-    fn udf() -> UdfRuntimeDefinition {
-        UdfRuntimeDefinition {
+    fn udf() -> CoralSqlFunctionDefinition {
+        CoralSqlFunctionDefinition {
             name: "open_pull_requests".to_string(),
             description: String::new(),
             arguments: vec![argument("author", ManifestDataType::Utf8)],
-            implementation: UdfRuntimeImplementation::CoralSql {
-                query: "select * from github.pull_requests where author = $author".to_string(),
-            },
-            publish: crate::UdfRuntimePublish {
-                table_function: crate::UdfRuntimeTableFunctionPublish {
-                    schema: "udfs".to_string(),
-                    name: "open_pull_requests".to_string(),
-                    description: String::new(),
-                    guide: String::new(),
-                },
+            query: "select * from github.pull_requests where author = $author".to_string(),
+            publish: crate::CoralSqlTableFunctionPublish {
+                schema: "udfs".to_string(),
+                name: "open_pull_requests".to_string(),
+                description: String::new(),
+                guide: String::new(),
             },
             result_columns: Vec::new(),
             source_names: vec!["github".to_string()],

@@ -44,15 +44,16 @@ use crate::runtime::udf_calls::{
 };
 use crate::runtime::udfs::published_table_functions;
 use crate::{
-    BoundRequestIdentityHttpAuthenticator, CatalogInfo, CoreError, DependentJoinConfig,
-    DescribeCatalogSurfaceInfo, MemorySize, QueryExecution, QueryExecutionProvenance,
+    BoundRequestIdentityHttpAuthenticator, CatalogInfo, CoralSqlFunctionDefinition, CoreError,
+    DependentJoinConfig, DescribeCatalogSurfaceInfo, MemorySize, QueryExecution,
+    QueryExecutionProvenance,
     QueryMemoryConfig, QueryParameterValue, QueryParameters, QueryPlan, QueryResultObserver,
     QueryResultObserverError, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,
     QueryTableFunctionUsage, QueryTableUsage, RequestAuthenticator,
     RequestIdentityHttpAuthenticatorError, RequestIdentityHttpAuthenticatorFactory,
     RequestIdentitySelectionContext, RequestIdentitySelectionError, RequestIdentitySelector,
     ResolvedQueryResources, SelectedRequestIdentity, SourceDecorator, SourceInputResolver,
-    SourceObservationPublisher, TableFunctionInfo, TableInfo, UdfRuntimeDefinition,
+    SourceObservationPublisher, TableFunctionInfo, TableInfo,
     normalize_catalog_name,
 };
 
@@ -116,7 +117,7 @@ struct FallbackRuntimeConfig {
     database_pool_registry: Arc<crate::DatabasePoolRegistry>,
     dependent_join: DependentJoinConfig,
     memory: QueryMemoryConfig,
-    udfs: Vec<UdfRuntimeDefinition>,
+    udfs: Vec<CoralSqlFunctionDefinition>,
     extension_hooks: RuntimeExtensionHooks,
     request_identity_http_authenticators: BoundRequestIdentityHttpAuthenticators,
 }
@@ -141,7 +142,7 @@ struct RuntimeBuildInputs<'a> {
     source_decorators: &'a mut [Box<dyn SourceDecorator>],
     dependent_join: &'a DependentJoinConfig,
     memory: &'a QueryMemoryConfig,
-    udfs: &'a [UdfRuntimeDefinition],
+    udfs: &'a [CoralSqlFunctionDefinition],
 }
 
 enum SqlExecutionFailure {
@@ -400,7 +401,7 @@ async fn install_table_function_call_planners(
     ctx: &SessionContext,
     source_functions: SourceFunctionRegistry,
     source_table_function_names: HashSet<ScopedTableFunctionName>,
-    udfs: &[UdfRuntimeDefinition],
+    udfs: &[CoralSqlFunctionDefinition],
     tables: &[TableInfo],
 ) -> Result<(), CoreError> {
     match (!source_functions.is_empty(), !udfs.is_empty()) {
@@ -449,7 +450,7 @@ fn validate_catalog_surface_namespace(
 
 async fn install_udf_call_planner(
     ctx: &SessionContext,
-    udfs: &[UdfRuntimeDefinition],
+    udfs: &[CoralSqlFunctionDefinition],
     source_table_function_names: HashSet<ScopedTableFunctionName>,
     tables: &[TableInfo],
 ) -> Result<(), CoreError> {
@@ -552,7 +553,7 @@ async fn register_runtime_sources(
 impl QueryRuntimeAdapter {
     pub(crate) async fn install_udfs(
         &mut self,
-        udfs: Vec<UdfRuntimeDefinition>,
+        udfs: Vec<CoralSqlFunctionDefinition>,
     ) -> Result<(), CoreError> {
         if udfs.is_empty() {
             return Ok(());
@@ -1581,9 +1582,8 @@ mod tests {
     use crate::backends::common::RegisteredColumn;
     use crate::backends::{RegisteredTable, SourceQualifiedName};
     use crate::{
-        DependentJoinConfig, MemorySize, QueryMemoryConfig, QueryRuntimeContext,
-        UdfRuntimeImplementation, UdfRuntimePublish, UdfRuntimeResultColumn,
-        UdfRuntimeTableFunctionPublish,
+        CoralSqlResultColumn, CoralSqlTableFunctionPublish, DependentJoinConfig, MemorySize,
+        QueryMemoryConfig, QueryRuntimeContext,
     };
 
     fn adapter_with_sources(active_sources: Vec<RegisteredSource>) -> QueryRuntimeAdapter {
@@ -2007,22 +2007,18 @@ mod tests {
             .await
             .expect("primary runtime");
         runtime
-            .install_udfs(vec![UdfRuntimeDefinition {
+            .install_udfs(vec![CoralSqlFunctionDefinition {
                 name: "constant_value".to_string(),
                 description: "Returns one value".to_string(),
                 arguments: Vec::new(),
-                implementation: UdfRuntimeImplementation::CoralSql {
-                    query: "select 1 as value".to_string(),
+                query: "select 1 as value".to_string(),
+                publish: CoralSqlTableFunctionPublish {
+                    schema: "functions".to_string(),
+                    name: "constant_value".to_string(),
+                    description: "Returns one value".to_string(),
+                    guide: String::new(),
                 },
-                publish: UdfRuntimePublish {
-                    table_function: UdfRuntimeTableFunctionPublish {
-                        schema: "functions".to_string(),
-                        name: "constant_value".to_string(),
-                        description: "Returns one value".to_string(),
-                        guide: String::new(),
-                    },
-                },
-                result_columns: vec![UdfRuntimeResultColumn {
+                result_columns: vec![CoralSqlResultColumn {
                     name: "value".to_string(),
                     data_type: DataType::Int64,
                     nullable: false,

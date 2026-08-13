@@ -34,8 +34,8 @@ use crate::runtime::scoped_table_functions::{
     reject_settings, reject_unbound_parameters as reject_unbound_table_function_parameters,
     reject_unsupported_modifiers,
 };
-use crate::runtime::udfs::{udf_argument_values, udf_arrow_schema, udf_param_values, udf_sql};
-use crate::{QueryParameters, UdfRuntimeDefinition};
+use crate::runtime::udfs::{udf_argument_values, udf_arrow_schema, udf_param_values};
+use crate::{CoralSqlFunctionDefinition, QueryParameters};
 
 pub(crate) const UDF_CALL_NODE_NAME: &str = "CoralUdfCall";
 
@@ -49,7 +49,7 @@ pub(crate) struct UdfCallRegistry {
 impl UdfCallRegistry {
     pub(crate) async fn new(
         ctx: &SessionContext,
-        udfs: &[UdfRuntimeDefinition],
+        udfs: &[CoralSqlFunctionDefinition],
         source_functions: HashSet<ScopedTableFunctionName>,
     ) -> Result<Self> {
         let source_function_schemas = source_functions
@@ -63,7 +63,7 @@ impl UdfCallRegistry {
         };
 
         for udf in udfs {
-            let body_plan = ctx.state().create_logical_plan(udf_sql(udf)).await?;
+            let body_plan = ctx.state().create_logical_plan(&udf.query).await?;
             read_only_sql_options().verify_plan(&body_plan)?;
             registry.insert_function(udf, &body_plan)?;
         }
@@ -80,10 +80,10 @@ impl UdfCallRegistry {
 
     fn insert_function(
         &mut self,
-        udf: &UdfRuntimeDefinition,
+        udf: &CoralSqlFunctionDefinition,
         body_plan: &LogicalPlan,
     ) -> Result<()> {
-        let publish = &udf.publish.table_function;
+        let publish = &udf.publish;
         let key = ScopedTableFunctionName::from_parts(&publish.schema, &publish.name);
         if self
             .functions
@@ -166,7 +166,7 @@ struct UdfCallTarget {
     display_name: String,
     table_reference: TableReference,
     arg_names: Vec<String>,
-    udf: UdfRuntimeDefinition,
+    udf: CoralSqlFunctionDefinition,
     body_plan: LogicalPlan,
     schema: DFSchemaRef,
 }
@@ -175,7 +175,7 @@ impl UdfCallTarget {
     fn new(
         schema: &str,
         name: &str,
-        udf: &UdfRuntimeDefinition,
+        udf: &CoralSqlFunctionDefinition,
         body_plan: &LogicalPlan,
     ) -> Result<Self> {
         validate_argument_definitions(udf)?;
@@ -231,7 +231,7 @@ pub(crate) struct UdfCallNode {
     arg_names: Vec<String>,
     args: Vec<Expr>,
     schema: DFSchemaRef,
-    udf: UdfRuntimeDefinition,
+    udf: CoralSqlFunctionDefinition,
     body_plan: LogicalPlan,
 }
 
@@ -310,7 +310,7 @@ impl UdfCallNode {
     }
 }
 
-fn validate_argument_definitions(udf: &UdfRuntimeDefinition) -> Result<()> {
+fn validate_argument_definitions(udf: &CoralSqlFunctionDefinition) -> Result<()> {
     let mut seen = BTreeSet::new();
     for argument in &udf.arguments {
         if !seen.insert(argument.name.to_ascii_lowercase()) {
@@ -324,7 +324,7 @@ fn validate_argument_definitions(udf: &UdfRuntimeDefinition) -> Result<()> {
 }
 
 fn validate_declared_result_schema(
-    udf: &UdfRuntimeDefinition,
+    udf: &CoralSqlFunctionDefinition,
     body_plan: &LogicalPlan,
     declared_schema: &Schema,
 ) -> Result<()> {
