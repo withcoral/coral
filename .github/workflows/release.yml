@@ -545,6 +545,7 @@ jobs:
     uses: ./.github/workflows/docker-publish.yml
     with:
       tag: ${{ needs.validate-release-ref.outputs.tag-name }}
+      defer-aliases: true
 
   publish-reef-docker:
     needs:

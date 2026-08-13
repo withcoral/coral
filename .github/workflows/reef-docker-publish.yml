@@ -86,7 +86,45 @@ jobs:
         with:
           cache-binary: false
 
+      - name: Resolve existing immutable version
+        id: existing
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          set -euo pipefail
+          version_ref="${IMAGE}:${VERSION}"
+          digest=""
+          error_file="$RUNNER_TEMP/reef-package-versions-error.txt"
+          if matches="$(gh api --paginate \
+            "/orgs/withcoral/packages/container/reef/versions?per_page=100" \
+            --jq ".[] | select(any(.metadata.container.tags[]; . == \"${VERSION}\")) | .name" \
+            2>"$error_file")"; then
+            if [ -n "$matches" ]; then
+              test "$(printf '%s\n' "$matches" | wc -l)" -eq 1
+              digest="$matches"
+              resolved="$(docker buildx imagetools inspect "$version_ref" --format '{{.Manifest.Digest}}')"
+              if [ "$resolved" != "$digest" ]; then
+                echo "${version_ref} resolved to ${resolved}, but the package API reported ${digest}." >&2
+                exit 1
+              fi
+              echo "Reusing existing immutable ${version_ref} at ${digest}."
+            fi
+          elif grep -Fq '(HTTP 404)' "$error_file"; then
+            echo "Reef package lookup returned HTTP 404; treating ${version_ref} as unpublished."
+          else
+            cat "$error_file" >&2
+            exit 1
+          fi
+          if [ -n "$digest" ] && [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "${version_ref} resolved to invalid digest '${digest}'." >&2
+            exit 1
+          fi
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+
       - name: Build and push image by digest
+        if: steps.existing.outputs.digest == ''
         id: build
         shell: bash
         env:
@@ -106,10 +144,41 @@ jobs:
           test -n "$digest"
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
 
+      - name: Resolve candidate digest
+        id: candidate
+        shell: bash
+        env:
+          BUILD_DIGEST: ${{ steps.build.outputs.digest }}
+          EXISTING_DIGEST: ${{ steps.existing.outputs.digest }}
+        run: |
+          set -euo pipefail
+          digest="${EXISTING_DIGEST:-$BUILD_DIGEST}"
+          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "Reef candidate digest is missing or invalid: '${digest}'." >&2
+            exit 1
+          fi
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Verify existing manifest signature
+        if: steps.existing.outputs.digest != ''
+        shell: bash
+        env:
+          DIGEST: ${{ steps.candidate.outputs.digest }}
+          EXPECTED_IDENTITY: ${{ github.server_url }}/${{ github.workflow_ref }}
+        run: |
+          set -euo pipefail
+          cosign verify \
+            --certificate-identity "$EXPECTED_IDENTITY" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "${IMAGE}@${DIGEST}" >/dev/null
+
       - name: Verify staged image metadata
         shell: bash
         env:
-          DIGEST: ${{ steps.build.outputs.digest }}
+          DIGEST: ${{ steps.candidate.outputs.digest }}
           VERSION: ${{ steps.tag.outputs.version }}
         run: |
           set -euo pipefail
@@ -117,41 +186,56 @@ jobs:
           test "$(docker image inspect "${IMAGE}@${DIGEST}" --format '{{index .Config.Labels "org.opencontainers.image.version"}}')" = "$VERSION"
           test "$(docker image inspect "${IMAGE}@${DIGEST}" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" = "$RELEASE_COMMIT_SHA"
 
-      - name: Install cosign
-        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
-
-      - name: Sign the staged manifest
+      - name: Smoke staged Reef image
         shell: bash
         env:
-          DIGEST: ${{ steps.build.outputs.digest }}
+          DIGEST: ${{ steps.candidate.outputs.digest }}
+        run: |
+          set -euo pipefail
+          container=reef-release-smoke
+          cleanup() {
+            docker rm -f "$container" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT HUP INT TERM
+          docker run -d --platform linux/amd64 --read-only --name "$container" \
+            -e CORAL_ENDPOINT=http://127.0.0.1:14555 \
+            -e REEF_AUTH_MODE=disabled \
+            "${IMAGE}@${DIGEST}" >/dev/null
+          for _ in $(seq 1 30); do
+            status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$container")"
+            if [ "$status" = healthy ]; then
+              test "$(docker exec "$container" node -e 'process.stdout.write(`${process.getuid()}:${process.getgid()}`)')" = 1000:1000
+              exit 0
+            fi
+            [ "$status" != exited ] || break
+            sleep 1
+          done
+          docker logs "$container" >&2 || true
+          exit 1
+
+      - name: Sign the staged manifest
+        if: steps.existing.outputs.digest == ''
+        shell: bash
+        env:
+          DIGEST: ${{ steps.candidate.outputs.digest }}
         run: cosign sign --yes "${IMAGE}@${DIGEST}"
 
       - name: Publish immutable version tag
         id: publish
         shell: bash
         env:
-          BUILD_DIGEST: ${{ steps.build.outputs.digest }}
-          GH_TOKEN: ${{ github.token }}
+          DIGEST: ${{ steps.candidate.outputs.digest }}
+          EXISTING_DIGEST: ${{ steps.existing.outputs.digest }}
           VERSION: ${{ steps.tag.outputs.version }}
         run: |
           set -euo pipefail
           version_ref="${IMAGE}:${VERSION}"
-          existing_digest="$(gh api --paginate \
-            "/orgs/withcoral/packages/container/reef/versions?per_page=100" \
-            --jq ".[] | select(any(.metadata.container.tags[]; . == \"${VERSION}\")) | .name")"
-          if [ -n "$existing_digest" ]; then
-            test "$(printf '%s\n' "$existing_digest" | wc -l)" -eq 1
-            if [ "$existing_digest" != "$BUILD_DIGEST" ]; then
-              echo "${version_ref} already points to ${existing_digest}; refusing to replace it with ${BUILD_DIGEST}." >&2
-              exit 1
-            fi
-            echo "${version_ref} already points to the verified digest."
-          else
-            docker buildx imagetools create --tag "$version_ref" "${IMAGE}@${BUILD_DIGEST}"
+          if [ -z "$EXISTING_DIGEST" ]; then
+            docker buildx imagetools create --tag "$version_ref" "${IMAGE}@${DIGEST}"
           fi
           published_digest="$(docker buildx imagetools inspect "$version_ref" --format '{{.Manifest.Digest}}')"
-          if [ "$published_digest" != "$BUILD_DIGEST" ]; then
-            echo "${version_ref} resolved to ${published_digest}, expected ${BUILD_DIGEST}." >&2
+          if [ "$published_digest" != "$DIGEST" ]; then
+            echo "${version_ref} resolved to ${published_digest}, expected ${DIGEST}." >&2
             exit 1
           fi
           echo "digest=${published_digest}" >> "$GITHUB_OUTPUT"

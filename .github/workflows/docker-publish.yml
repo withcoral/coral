@@ -6,9 +6,14 @@ on:
         description: Published release tag to package, e.g. v1.2.3.
         required: true
         type: string
+      defer-aliases:
+        description: Defer moving aliases to the paired release coordinator.
+        required: false
+        type: boolean
+        default: false
     outputs:
       digest:
-        description: Published Coral version digest.
+        description: Digest the published Coral version tag resolves to.
         value: ${{ jobs.publish-image.outputs.digest }}
   workflow_dispatch:
     inputs:
@@ -21,9 +26,8 @@ on:
 permissions:
   contents: read
 concurrency:
-  # Serialize rebuilds of the same mutable version tag. Moving aliases are
-  # coordinated across Coral and Reef by docker-aliases.yml.
-  group: docker-publish-${{ inputs.tag }}
+  # Direct CVE rebuilds and the paired release's alias coordination mutate the same tags.
+  group: coordinated-docker-aliases
   queue: max
 
 env:
@@ -57,7 +61,11 @@ jobs:
             exit 1
           fi
 
-          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          version="${TAG#v}"
+          {
+            echo "version=${version}"
+            echo "major-minor=${version%.*}"
+          } >> "$GITHUB_OUTPUT"
 
       # The Dockerfile and entrypoint come from the ref this workflow runs on:
       # the release tag under workflow_call, and whatever ref the CVE rebuild
@@ -141,6 +149,43 @@ jobs:
           test -n "$digest"
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
 
+      - name: Read release prerelease flag
+        if: ${{ inputs.defer-aliases != true }}
+        id: release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          prerelease="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isPrerelease --jq .isPrerelease)"
+          echo "prerelease=${prerelease}" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve the newest stable tags
+        if: ${{ inputs.defer-aliases != true }}
+        id: newest
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MAJOR_MINOR: ${{ steps.tag.outputs.major-minor }}
+        run: |
+          set -euo pipefail
+          # One listing, ranked by version rather than by GitHub's own ordering
+          # (which is by commit date, not by semver). "$TAG" joins the candidate
+          # set either way: the release path may not list it yet, and the CVE
+          # rebuild path already does, so both compare against the same set.
+          stable="$(gh release list --repo "$GITHUB_REPOSITORY" \
+            --exclude-pre-releases --exclude-drafts --limit 1000 \
+            --json tagName --jq '.[].tagName')"
+          candidates="$(printf '%s\n%s\n' "$stable" "$TAG" | grep -v '^$' | sort -u)"
+          newest="$(printf '%s\n' "$candidates" | sort -V | tail -1)"
+          # Dots are literal so the 1.2 line never absorbs 1.20.x.
+          line="$(printf '%s\n' "$candidates" | grep -E "^v${MAJOR_MINOR//./\\.}\." | sort -V | tail -1)"
+          echo "newest candidate is '${newest}'; newest in the ${MAJOR_MINOR} line is '${line}'; this run packages '${TAG}'"
+          {
+            echo "tag=${newest}"
+            echo "line-tag=${line}"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Prepare smoke helper
         shell: bash
         run: |
@@ -219,16 +264,33 @@ jobs:
           docker logs coral-smoke-seed 2>&1 | grep -F 'CORAL_SEED_CONFIG ignored'
 
       # Moving aliases are applied to Coral and Reef together by the release
-      # coordinator after both immutable images have passed their own gates.
+      # coordinator. A direct CVE rebuild updates Coral's eligible aliases here.
       - name: Tag the validated manifest
         id: manifest
         shell: bash
         env:
           BUILD_DIGEST: ${{ steps.build.outputs.digest }}
+          DEFER_ALIASES: ${{ inputs.defer-aliases }}
+          MAJOR_MINOR: ${{ steps.tag.outputs.major-minor }}
+          NEWEST_LINE_TAG: ${{ steps.newest.outputs.line-tag }}
+          NEWEST_TAG: ${{ steps.newest.outputs.tag }}
+          PRERELEASE: ${{ steps.release.outputs.prerelease }}
           VERSION: ${{ steps.tag.outputs.version }}
         run: |
           set -euo pipefail
-          docker buildx imagetools create --tag "${IMAGE}:${VERSION}" "${IMAGE}@${BUILD_DIGEST}"
+          # The exact version tag always publishes. During a direct CVE rebuild,
+          # moving tags never move backwards or point at a prerelease: rebuilding
+          # a superseded release republishes only its own exact version tag.
+          tags=(--tag "${IMAGE}:${VERSION}")
+          if [ "$DEFER_ALIASES" != true ]; then
+            if [ "$PRERELEASE" = false ] && [ "$NEWEST_LINE_TAG" = "$TAG" ]; then
+              tags+=(--tag "${IMAGE}:${MAJOR_MINOR}")
+            fi
+            if [ "$PRERELEASE" = false ] && [ "$NEWEST_TAG" = "$TAG" ]; then
+              tags+=(--tag "${IMAGE}:latest")
+            fi
+          fi
+          docker buildx imagetools create "${tags[@]}" "${IMAGE}@${BUILD_DIGEST}"
           # Tagging republishes the index, so re-read the digest the tags resolve to.
           digest="$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" --format '{{.Manifest.Digest}}')"
           test -n "$digest"

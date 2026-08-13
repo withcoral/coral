@@ -30,24 +30,38 @@ test('publication verifies and signs the digest before exposing its version tag'
   assert.match(dockerfile, /org\.opencontainers\.image\.revision="\$REEF_REVISION"/)
 
   const verify = workflow.indexOf('- name: Verify staged image metadata')
+  const smoke = workflow.indexOf('- name: Smoke staged Reef image')
   const sign = workflow.indexOf('- name: Sign the staged manifest')
   const publish = workflow.indexOf('- name: Publish immutable version tag')
-  assert.ok(verify < sign && sign < publish)
+  assert.ok(verify < smoke && smoke < sign && sign < publish)
+  assert.match(workflow.slice(smoke, sign), /"\$\{IMAGE\}@\$\{DIGEST\}"/)
+  assert.match(workflow.slice(smoke, sign), /State\.Health\.Status/)
+  assert.match(workflow.slice(smoke, sign), /process\.getuid\(\).*process\.getgid\(\)/)
+  assert.match(workflow.slice(smoke, sign), /= 1000:1000/)
   assert.doesNotMatch(workflow.slice(0, publish), /--tag "?\$\{IMAGE\}:\$\{VERSION\}/)
 })
 
-test('immutable version publication handles absent, same, and different digests', async () => {
+test('Reef reruns reuse the signed immutable version digest without rebuilding it', async () => {
   const workflow = await read('../.github/workflows/reef-docker-publish.yml')
+  const resolve = workflow.slice(
+    workflow.indexOf('- name: Resolve existing immutable version'),
+    workflow.indexOf('- name: Build and push image by digest'),
+  )
   const publish = workflow.slice(workflow.indexOf('- name: Publish immutable version tag'))
 
   assert.match(workflow, /group: reef-docker-publish-\$\{\{ inputs\.tag \}\}/)
-  assert.match(publish, /existing_digest="\$\(gh api --paginate/)
-  assert.match(publish, /if \[ -n "\$existing_digest" \]/)
-  assert.match(publish, /existing_digest" != "\$BUILD_DIGEST"/)
-  assert.match(publish, /refusing to replace it/)
-  assert.match(publish, /already points to the verified digest/)
+  assert.match(resolve, /matches="\$\(gh api --paginate/)
+  assert.match(resolve, /test "\$\(printf '%s\\n' "\$matches" \| wc -l\)" -eq 1/)
+  assert.match(resolve, /resolved" != "\$digest"/)
+  assert.match(resolve, /elif grep -Fq '\(HTTP 404\)'/)
+  assert.match(resolve, /cat "\$error_file" >&2\n\s+exit 1/)
+  assert.match(workflow, /if: steps\.existing\.outputs\.digest == ''\n\s+id: build/)
+  assert.match(workflow, /if: steps\.existing\.outputs\.digest != ''[\s\S]*cosign verify/)
+  assert.match(workflow, /EXPECTED_IDENTITY: \$\{\{ github\.server_url \}\}\/\$\{\{ github\.workflow_ref \}\}/)
+  assert.match(workflow, /digest="\$\{EXISTING_DIGEST:-\$BUILD_DIGEST\}"/)
+  assert.match(publish, /if \[ -z "\$EXISTING_DIGEST" \]/)
   assert.match(publish, /imagetools create --tag "\$version_ref"/)
-  assert.match(publish, /published_digest" != "\$BUILD_DIGEST"/)
+  assert.match(publish, /published_digest" != "\$DIGEST"/)
 })
 
 test('release waits for completed artifacts before publishing Reef', async () => {
@@ -58,16 +72,23 @@ test('release waits for completed artifacts before publishing Reef', async () =>
   assert.match(workflow, /commit-sha: \$\{\{ needs\.validate-release-ref\.outputs\.commit-sha \}\}/)
 })
 
-test('moving aliases have one coordinator after both immutable publishers', async () => {
+test('release aliases stay paired while direct Coral CVE rebuilds advance eligible aliases', async () => {
   const [release, coral, aliases] = await Promise.all([
     read('../.github/workflows/release.yml'),
     read('../.github/workflows/docker-publish.yml'),
     read('../.github/workflows/docker-aliases.yml'),
   ])
 
-  assert.doesNotMatch(coral, /\$\{IMAGE\}:(?:latest|\$\{MAJOR_MINOR\})/)
-  assert.doesNotMatch(coral, /major-minor=/)
-  assert.match(coral, /group: docker-publish-\$\{\{ inputs\.tag \}\}/)
+  assert.match(coral, /defer-aliases:/)
+  assert.match(coral, /group: coordinated-docker-aliases/)
+  assert.match(coral, /major-minor=\$\{version%\.\*\}/)
+  assert.match(coral, /if: \$\{\{ inputs\.defer-aliases != true \}\}/)
+  assert.match(coral, /if \[ "\$DEFER_ALIASES" != true \]; then/)
+  assert.match(coral, /\[ "\$PRERELEASE" = false \] && \[ "\$NEWEST_LINE_TAG" = "\$TAG" \]/)
+  assert.match(coral, /\[ "\$PRERELEASE" = false \] && \[ "\$NEWEST_TAG" = "\$TAG" \]/)
+  assert.match(coral, /tags\+=\(--tag "\$\{IMAGE\}:\$\{MAJOR_MINOR\}"\)/)
+  assert.match(coral, /tags\+=\(--tag "\$\{IMAGE\}:latest"\)/)
+  assert.match(release, /publish-docker:[\s\S]*defer-aliases: true/)
   assert.match(
     release,
     /coordinate-docker-aliases:\n(?:.|\n)*- publish-docker\n(?:.|\n)*- publish-reef-docker/,
