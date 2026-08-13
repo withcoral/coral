@@ -1,0 +1,6 @@
+name: integrations_sh
+dsl_version: 4
+surface:
+  type: openapi
+  url: https://integrations.sh/openapi.json
+  base_url: https://integrations.sh
