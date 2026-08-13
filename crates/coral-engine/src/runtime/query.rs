@@ -46,15 +46,13 @@ use crate::runtime::udfs::published_table_functions;
 use crate::{
     BoundRequestIdentityHttpAuthenticator, CatalogInfo, CoralSqlFunctionDefinition, CoreError,
     DependentJoinConfig, DescribeCatalogSurfaceInfo, MemorySize, QueryExecution,
-    QueryExecutionProvenance,
-    QueryMemoryConfig, QueryParameterValue, QueryParameters, QueryPlan, QueryResultObserver,
-    QueryResultObserverError, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,
-    QueryTableFunctionUsage, QueryTableUsage, RequestAuthenticator,
+    QueryExecutionProvenance, QueryMemoryConfig, QueryParameterValue, QueryParameters, QueryPlan,
+    QueryResultObserver, QueryResultObserverError, QueryRuntimeConfig, QueryRuntimeContext,
+    QuerySource, QueryTableFunctionUsage, QueryTableUsage, RequestAuthenticator,
     RequestIdentityHttpAuthenticatorError, RequestIdentityHttpAuthenticatorFactory,
     RequestIdentitySelectionContext, RequestIdentitySelectionError, RequestIdentitySelector,
     ResolvedQueryResources, SelectedRequestIdentity, SourceDecorator, SourceInputResolver,
-    SourceObservationPublisher, TableFunctionInfo, TableInfo,
-    normalize_catalog_name,
+    SourceObservationPublisher, TableFunctionInfo, TableInfo, normalize_catalog_name,
 };
 
 pub(crate) struct QueryRuntimeAdapter {

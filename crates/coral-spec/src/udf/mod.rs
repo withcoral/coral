@@ -14,4 +14,4 @@ pub use model::{
     FunctionDeclaredSignature, FunctionImplementationSpec, FunctionLanguage, FunctionSpec,
     FunctionTypeScriptImplementationSpec,
 };
-pub use parser::{parse_function_artifact, parse_function_sql};
+pub use parser::parse_function_artifact;

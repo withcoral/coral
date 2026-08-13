@@ -70,11 +70,6 @@ pub fn parse_function_artifact(raw: &str) -> Result<FunctionSpec> {
     })
 }
 
-/// Compatibility wrapper for callers that still use the SQL-specific name.
-pub fn parse_function_sql(raw: &str) -> Result<FunctionSpec> {
-    parse_function_artifact(raw)
-}
-
 fn split_frontmatter(raw: &str) -> Result<(&str, &str)> {
     let Some(after_open) = raw.strip_prefix("/*") else {
         return Err(ManifestError::validation(
@@ -98,7 +93,7 @@ fn split_frontmatter(raw: &str) -> Result<(&str, &str)> {
 mod tests {
     use crate::{FunctionImplementationSpec, ManifestDataType};
 
-    use super::{parse_function_artifact, parse_function_sql};
+    use super::parse_function_artifact;
 
     #[derive(Clone, Copy)]
     enum ExpectedError {
@@ -167,8 +162,8 @@ export async function run(owner: string): Promise<string> {
     }
 
     #[test]
-    fn parse_function_sql_accepts_valid_function() {
-        let function = parse_function_sql(valid_function()).expect("function should parse");
+    fn parse_function_artifact_accepts_valid_sql_function() {
+        let function = parse_function_artifact(valid_function()).expect("function should parse");
 
         assert_eq!(function.name(), "github_review_queue");
         assert_eq!(function.group(), "functions");
@@ -207,17 +202,17 @@ export async function run(owner: string): Promise<string> {
     }
 
     #[test]
-    fn parse_function_sql_defaults_omitted_guide() {
+    fn parse_function_artifact_defaults_omitted_guide() {
         let artifact =
             function_with(&[("guide: Use this function for review queue lookups.\n", "")]);
 
-        let function = parse_function_sql(&artifact).expect("function should parse");
+        let function = parse_function_artifact(&artifact).expect("function should parse");
 
         assert!(function.guide().is_empty());
     }
 
     #[test]
-    fn parse_function_sql_rejects_invalid_frontmatter() {
+    fn parse_function_artifact_rejects_invalid_frontmatter() {
         let cases = [
             (
                 "missing frontmatter",
@@ -267,8 +262,8 @@ export async function run(owner: string): Promise<string> {
     }
 
     #[test]
-    fn parse_function_sql_preserves_body_after_frontmatter_comment() {
-        let function = parse_function_sql(valid_function()).expect("function should parse");
+    fn parse_function_artifact_preserves_body_after_frontmatter_comment() {
+        let function = parse_function_artifact(valid_function()).expect("function should parse");
         let FunctionImplementationSpec::CoralSql(implementation) = function.implementation() else {
             panic!("SQL artifact should produce a Coral SQL implementation");
         };
@@ -299,14 +294,30 @@ export async function run(owner: string): Promise<string> {
     }
 
     #[test]
+    fn parse_function_artifact_rejects_declared_signature_for_sql() {
+        let artifact = function_with(&[(
+            "description: GitHub PR review queue",
+            "description: GitHub PR review queue\nsignature:\n  result_columns:\n    - name: title\n      data_type: Utf8",
+        )]);
+
+        assert_function_error(
+            "declared SQL signature",
+            &artifact,
+            ExpectedError::Exact(
+                "function 'github_review_queue' SQL implementation must not declare a signature because Coral infers it from SQL",
+            ),
+        );
+    }
+
+    #[test]
     fn parse_function_artifact_rejects_duplicate_declared_names() {
         let duplicate_arguments = function_with(&[(
             "description: GitHub PR review queue",
-            "signature:\n  arguments:\n    - name: owner\n      data_type: Utf8\n    - name: owner\n      data_type: Int64\n  result_columns:\n    - name: title\n      data_type: Utf8",
+            "language: typescript\nsignature:\n  arguments:\n    - name: owner\n      data_type: Utf8\n    - name: owner\n      data_type: Int64\n  result_columns:\n    - name: title\n      data_type: Utf8",
         )]);
         let duplicate_columns = function_with(&[(
             "description: GitHub PR review queue",
-            "signature:\n  result_columns:\n    - name: title\n      data_type: Utf8\n    - name: title\n      data_type: Int64",
+            "language: typescript\nsignature:\n  result_columns:\n    - name: title\n      data_type: Utf8\n    - name: title\n      data_type: Int64",
         )]);
 
         assert_function_error(
@@ -347,7 +358,7 @@ export async function run(owner: string): Promise<string> {
     }
 
     #[test]
-    fn parse_function_sql_rejects_invalid_schema() {
+    fn parse_function_artifact_rejects_invalid_schema() {
         let cases = [
             (
                 "mixed-case table-function schema",

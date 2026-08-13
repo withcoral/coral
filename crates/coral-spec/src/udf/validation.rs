@@ -54,6 +54,12 @@ impl FunctionValidator {
                         self.raw.frontmatter.name
                     )));
                 }
+                if self.raw.frontmatter.signature.is_some() {
+                    return Err(ManifestError::validation(format!(
+                        "function '{}' SQL implementation must not declare a signature because Coral infers it from SQL",
+                        self.raw.frontmatter.name
+                    )));
+                }
             }
             FunctionImplementationSpec::TypeScript(implementation) => {
                 if implementation.source.trim().is_empty() {

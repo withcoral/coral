@@ -138,7 +138,7 @@ pub use template::{ParsedTemplate, TemplateNamespace, TemplatePart, TemplateToke
 pub use udf::{
     FunctionCoralSqlImplementationSpec, FunctionDeclaredArgument, FunctionDeclaredResultColumn,
     FunctionDeclaredSignature, FunctionImplementationSpec, FunctionLanguage, FunctionSpec,
-    FunctionTypeScriptImplementationSpec, parse_function_artifact, parse_function_sql,
+    FunctionTypeScriptImplementationSpec, parse_function_artifact,
 };
 pub(crate) use validate::{
     DeclaredRelation, DetailHintDeclaringSurface, DetailHintTargetTable, HttpTableValidation,
