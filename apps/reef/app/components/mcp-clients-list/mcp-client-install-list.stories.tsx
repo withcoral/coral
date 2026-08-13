@@ -12,8 +12,15 @@ const meta = {
       },
       {
         id: 'codex',
-        installCommand: 'curl -fsSL https://reef.example/mcp/install/codex | sh',
+        installCommand:
+          'npx -y add-mcp@1.11.0 https://coral.example/mcp --global --agent codex --name coral --transport http --yes',
         name: 'Codex',
+      },
+      {
+        id: 'claude-desktop',
+        name: 'Claude Desktop',
+        setupInstructions:
+          'Claude Desktop supports remote MCP servers through Settings → Connectors. Add the Coral endpoint there.',
       },
     ],
   },

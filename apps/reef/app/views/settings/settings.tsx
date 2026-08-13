@@ -34,10 +34,16 @@ export function Settings({
         </Typography.Body>
       </header>
 
+      {loaderData.runtime === 'web' && loaderData.usesRemoteMcp ? (
+        <Banner>
+          Remote MCP connections use the default workspace configured by the Coral endpoint.
+        </Banner>
+      ) : null}
+
       <Banner>
         {desktop
           ? 'This page shows only global MCP configurations. Project-specific and other connections will not appear here.'
-          : 'Each command updates one user-global MCP client configuration. It will not replace an existing Coral entry, and project configuration may override it.'}
+          : 'These settings affect only global MCP configurations. Project-specific and other connections will not be replaced.'}
       </Banner>
 
       {desktop ? (
@@ -49,7 +55,7 @@ export function Settings({
           workspaces={workspaces}
         />
       ) : (
-        <McpClientInstallList clients={loaderData.mcpClients} />
+        <McpClientInstallList clients={loaderData.mcpClients} workspaces={workspaces} />
       )}
     </section>
   )

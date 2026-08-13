@@ -6,16 +6,15 @@ import {
   isCoralDesktopBuild,
   type McpClientDescriptor,
 } from '@/lib/coral-desktop'
-import { mcpClientInstallPath, webMcpClients } from '@/lib/mcp-clients'
+import { remoteMcpClientInstructions, webMcpClients } from '@/lib/mcp-clients'
+import { mcpConnectionFromEnv } from '@/lib/mcp-connection'
+import type { McpClientInstallListItem } from '@/components/mcp-clients-list'
 import { addToast } from '@/wax/components/toast'
 
 interface WebSettingsLoaderData {
   readonly runtime: 'web'
-  readonly mcpClients: ReadonlyArray<{
-    readonly id: string
-    readonly installCommand: string
-    readonly name: string
-  }>
+  readonly mcpClients: readonly McpClientInstallListItem[]
+  readonly usesRemoteMcp: boolean
 }
 
 export interface DesktopSettingsLoaderData {
@@ -30,14 +29,31 @@ export interface DesktopMcpClientData {
   readonly error?: string
 }
 
-export function loader({ request }: Route.LoaderArgs): WebSettingsLoaderData {
-  const origin = new URL(request.url).origin
+export function loader(): WebSettingsLoaderData {
+  const connection = mcpConnectionFromEnv()
   return {
     runtime: 'web',
-    mcpClients: webMcpClients.map((client) => ({
-      ...client,
-      installCommand: `curl -fsSL ${origin}${mcpClientInstallPath(client.id)} | sh`,
-    })),
+    usesRemoteMcp: connection.mode === 'remote',
+    mcpClients: webMcpClients.map((client) => {
+      const setupInstructions =
+        connection.mode === 'remote' && remoteMcpClientInstructions[client.id]
+          ? `${remoteMcpClientInstructions[client.id]} ${connection.url}`
+          : undefined
+      return setupInstructions
+        ? { ...client, setupInstructions }
+        : {
+            ...client,
+            installCommand:
+              connection.mode === 'remote'
+                ? `npx -y add-mcp@1.11.0 ${connection.url} --global --agent ${client.id} --name coral --transport http --yes`
+                : `npx --yes add-mcp@1.11.0 "$(command -v coral)" --global --agent ${client.id} --name coral --args mcp-stdio --yes`,
+            ...(connection.mode === 'local'
+              ? {
+                  workspaceInstallCommand: `npx --yes add-mcp@1.11.0 "$(command -v coral)" --global --agent ${client.id} --name coral --args mcp-stdio --yes`,
+                }
+              : {}),
+          }
+    }),
   }
 }
 

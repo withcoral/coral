@@ -31,6 +31,15 @@ export const workspaceColumn = style({
   },
 })
 
+export const clientColumn = style({
+  width: '180px',
+  '@media': {
+    [MOBILE_QUERY]: {
+      width: '140px',
+    },
+  },
+})
+
 export const workspaceTrigger = style({
   justifyContent: 'space-between',
 })
@@ -41,7 +50,7 @@ export const workspaceMenu = style({
 })
 
 export const installColumn = style({
-  width: '70%',
+  width: 'auto',
 })
 
 export const installCommand = style({
@@ -50,6 +59,25 @@ export const installCommand = style({
   gap: '12px',
   justifyContent: 'space-between',
   minWidth: 0,
+})
+
+export const copyButton = style({
+  opacity: 0,
+  transition: 'opacity 120ms ease',
+  selectors: {
+    [`${installCommand}:focus-within &`]: { opacity: 1 },
+    [`${installCommand}:hover &`]: { opacity: 1 },
+  },
+})
+
+// Table cells normally truncate to preserve dense configuration rows. Manual
+// remote-client setup needs the endpoint and every step to remain readable.
+export const setupCell = style({
+  maxWidth: 'none',
+  overflow: 'visible',
+  overflowWrap: 'anywhere',
+  textOverflow: 'clip',
+  whiteSpace: 'normal',
 })
 
 globalStyle(`${installCommand} code`, {

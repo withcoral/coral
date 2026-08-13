@@ -77,16 +77,16 @@ export function Sidebar({
   const mcpClientsPath = routePath('settingsMcpClients')
   const runtimeFeaturesPath = routePath('settingsRuntimeFeatures')
   const isSettingsRoute = Boolean(useMatch({ end: false, path: settingsPath }))
-  // MCP client configuration exists only in the Desktop shell. Runtime features
-  // are Coral config, so they are reachable from every build.
+  // Both builds can configure MCP clients: Desktop writes client configuration,
+  // while web offers bounded install commands. Runtime features are Coral config.
   //
   // Both address their own page. The section root belongs to the cog in the
   // workspace menu, whose redirect picks a landing page per build; a link that
   // names one page cannot borrow it, and `/settings` in `paths` would light both
   // rows at once.
-  const mcpClientsNavItems: NavItem[] = desktop
-    ? [{ icon: 'Settings', label: 'MCP Clients', paths: [mcpClientsPath], to: mcpClientsPath }]
-    : []
+  const mcpClientsNavItems: NavItem[] = [
+    { icon: 'Settings', label: 'MCP Clients', paths: [mcpClientsPath], to: mcpClientsPath },
+  ]
   const settingsNavItems: NavItem[] = [
     ...mcpClientsNavItems,
     {

@@ -23,10 +23,9 @@ export const webMcpClients: readonly WebMcpClient[] = [
   { id: 'zed', name: 'Zed' },
 ]
 
-export function mcpClientById(clientId: string | undefined): WebMcpClient | undefined {
-  return webMcpClients.find((client) => client.id === clientId)
-}
-
-export function mcpClientInstallPath(clientId: string): string {
-  return `/mcp/install/${encodeURIComponent(clientId)}`
+// Kept in sync with add-mcp@1.11.0, which cannot write a remote HTTP server
+// into Claude Desktop's stdio-only file configuration.
+export const remoteMcpClientInstructions: Readonly<Record<string, string>> = {
+  'claude-desktop':
+    'Claude Desktop supports remote MCP servers through Settings → Connectors. Add the Coral endpoint there.',
 }
