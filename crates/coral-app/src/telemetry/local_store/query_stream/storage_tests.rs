@@ -5,8 +5,8 @@ use std::time::{Duration, SystemTime};
 use serde_json::json;
 
 use super::super::{
-    FederatedTraceScope, OwnedWorkspaceScope, StoredTraceInvocationKind, StoredTraceOperationKind,
-    StoredTraceStatus, TraceListSpanRecord, unix_nanos,
+    OwnedWorkspaceScope, StoredTraceInvocationKind, StoredTraceOperationKind, StoredTraceStatus,
+    TraceListSpanRecord, TraceReadScope, TraceWorkspaceScope, unix_nanos,
 };
 use super::QueryStreamProjector;
 use super::test_support::{TraceFiles, span};
@@ -102,47 +102,79 @@ fn query_stream_filters_workspace_before_pagination() {
 #[test]
 fn query_stream_owned_scope_pages_across_owned_workspaces_only() {
     let files = TraceFiles::new();
-    let mut records = vec![
-        span("host-trace", "host-entry")
-            .attrs(json!({"sql": "SELECT 'host'"}))
-            .times(5, 35)
-            .build(),
-    ];
-    for (trace_id, span_id, workspace, end_time) in [
+    files.write(
+        "spans-newer-concealed.jsonl",
+        &[
+            span("host-trace", "host-entry")
+                .remote_root()
+                .entry("query", "sql", "  ")
+                .attrs(json!({"sql": "SELECT 'host'"}))
+                .times(50, 60)
+                .build(),
+            span("mixed-unowned", "mixed-alpha")
+                .remote_root()
+                .entry("query", "sql", "alpha")
+                .times(45, 55)
+                .build(),
+            span("mixed-unowned", "mixed-gamma")
+                .remote_root()
+                .entry("query", "sql", "gamma")
+                .times(44, 54)
+                .build(),
+        ],
+    );
+    let records = [
         ("alpha-trace", "alpha-entry", "alpha", 40),
         ("beta-trace", "beta-entry", "beta", 30),
         ("gamma-trace", "gamma-entry", "gamma", 20),
-    ] {
-        records.push(
-            span(trace_id, span_id)
-                .entry("query", "sql", workspace)
-                .attrs(json!({"sql": format!("SELECT '{workspace}'")}))
-                .times(end_time - 1, end_time)
-                .build(),
-        );
-    }
+        ("mixed-owned", "mixed-owned-alpha", "alpha", 15),
+        ("mixed-owned", "mixed-owned-beta", "beta", 14),
+    ]
+    .map(|(trace_id, span_id, workspace, end_time)| {
+        span(trace_id, span_id)
+            .remote_root()
+            .entry("query", "sql", workspace)
+            .attrs(json!({"sql": format!("SELECT '{workspace}'")}))
+            .times(end_time - 1, end_time)
+            .build()
+    });
     files.write("spans-owned-scope.jsonl", &records);
 
-    let owned = OwnedWorkspaceScope::new(["alpha".to_string(), "beta".to_string()]);
-    let scope = Some(FederatedTraceScope::Owned(&owned));
-    let first = files.list_scoped(1, 0, scope);
-    let second = files.list_scoped(1, 1, scope);
+    let owned = OwnedWorkspaceScope::new(["alpha".into(), "beta".into()]);
+    let scope = TraceWorkspaceScope::Owned(&owned);
+    let page_trace_ids = (0..3)
+        .filter_map(|offset| files.list_scoped(1, offset, scope).pop())
+        .map(|summary| summary.trace_id)
+        .collect::<Vec<_>>();
+    assert_eq!(page_trace_ids, ["alpha-trace", "beta-trace", "mixed-owned"]);
+    let detail = files
+        .get("mixed-owned", &TraceReadScope::Owned(owned.clone()))
+        .expect("get trace spanning owned workspaces");
+    assert_eq!(detail.spans.len(), 2);
+
+    let alpha_only = OwnedWorkspaceScope::new(["alpha".into()]);
+    let listed = files.list_scoped(10, 0, TraceWorkspaceScope::Owned(&alpha_only));
+    assert!(listed.iter().all(|s| s.trace_id != "mixed-owned"));
+    files
+        .get("mixed-owned", &TraceReadScope::Owned(alpha_only))
+        .unwrap_err();
+    for trace_id in ["mixed-unowned", "host-trace", "gamma-trace"] {
+        files
+            .get(trace_id, &TraceReadScope::Owned(owned.clone()))
+            .unwrap_err();
+    }
+    let unrestricted = files.list_scoped(10, 0, TraceWorkspaceScope::Unrestricted);
     assert_eq!(
-        first.first().expect("first owned entry").root_span_id,
-        "alpha-entry"
+        unrestricted.first().expect("unrestricted trace").trace_id,
+        "host-trace"
     );
-    assert_eq!(
-        second.first().expect("second owned entry").root_span_id,
-        "beta-entry"
-    );
-    assert!(files.list_scoped(10, 2, scope).is_empty());
+    files
+        .get("host-trace", &TraceReadScope::Unrestricted)
+        .expect("unrestricted host trace");
 
     let unowned = OwnedWorkspaceScope::default();
-    assert!(
-        files
-            .list_scoped(10, 0, Some(FederatedTraceScope::Owned(&unowned)))
-            .is_empty()
-    );
+    let unowned_scope = TraceWorkspaceScope::Owned(&unowned);
+    assert!(files.list_scoped(10, 0, unowned_scope).is_empty());
 }
 
 #[test]
@@ -332,7 +364,7 @@ fn query_stream_completes_returned_operations_from_older_files() {
 
 #[test]
 fn query_stream_projector_releases_completed_discovery_trees() {
-    let mut projector = QueryStreamProjector::new(1, Some(FederatedTraceScope::Named("alpha")));
+    let mut projector = QueryStreamProjector::new(1, TraceWorkspaceScope::Named("alpha"));
 
     for index in (0..128_i64).rev() {
         let base = index * 10;
@@ -392,7 +424,7 @@ fn query_stream_keeps_newer_duplicate_span_across_files() {
 
     let newer_modified = base_time + Duration::from_millis(10);
     let newer = span("duplicate-query-stream", "duplicate-entry")
-        .entry("query", "sql", "alpha")
+        .entry("query", "sql", "beta")
         .attrs(json!({"sql": "SELECT 'new'"}))
         .times(
             unix_nanos(base_time + Duration::from_millis(500)),
@@ -401,12 +433,29 @@ fn query_stream_keeps_newer_duplicate_span_across_files() {
         .build();
     files.write_at(&newer, newer_modified);
 
-    let summaries = files.list(1, 0, Some("alpha"));
-    assert_eq!(summaries.len(), 1);
-    assert_eq!(
-        summaries.first().expect("newer duplicate summary").query,
-        "SELECT 'new'"
-    );
+    let summary = files
+        .list(1, 0, Some("beta"))
+        .pop()
+        .expect("newer duplicate");
+    assert_eq!(summary.query, "SELECT 'new'");
+    assert!(files.list(1, 1, Some("beta")).is_empty());
+    for (workspace, visible) in [("alpha", false), ("beta", true)] {
+        assert_eq!(
+            files.list(1, 0, Some(workspace)).len(),
+            usize::from(visible)
+        );
+        let named = TraceReadScope::Named(workspace.to_string());
+        assert_eq!(files.get("duplicate-query-stream", &named).is_ok(), visible);
+        let owned = OwnedWorkspaceScope::new([workspace.to_string()]);
+        let listed = files.list_scoped(1, 0, TraceWorkspaceScope::Owned(&owned));
+        assert_eq!(listed.len(), usize::from(visible));
+        assert_eq!(
+            files
+                .get("duplicate-query-stream", &TraceReadScope::Owned(owned))
+                .is_ok(),
+            visible
+        );
+    }
 }
 
 #[test]

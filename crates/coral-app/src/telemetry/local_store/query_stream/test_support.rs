@@ -9,7 +9,8 @@ use super::super::tests::{
     write_record_file_lines,
 };
 use super::super::{
-    FederatedTraceScope, StoredTraceStatus, TraceSpanRecord, TraceStore, TraceSummaryRecord,
+    StoredTraceStatus, TraceDetailRecord, TraceReadScope, TraceSpanRecord, TraceStore,
+    TraceSummaryRecord, TraceWorkspaceScope,
 };
 
 pub(super) fn span(trace_id: &str, span_id: &str) -> TestSpan {
@@ -85,7 +86,13 @@ pub(super) fn project(
     records: &[TraceSpanRecord],
     workspace_name: Option<&str>,
 ) -> Vec<TraceSummaryRecord> {
-    super::summaries(records, workspace_name.map(FederatedTraceScope::Named))
+    super::summaries(
+        records,
+        workspace_name.map_or(
+            TraceWorkspaceScope::Unrestricted,
+            TraceWorkspaceScope::Named,
+        ),
+    )
 }
 
 pub(super) struct TraceFiles {
@@ -133,7 +140,10 @@ impl TraceFiles {
         self.list_scoped(
             limit,
             offset,
-            workspace_name.map(FederatedTraceScope::Named),
+            workspace_name.map_or(
+                TraceWorkspaceScope::Unrestricted,
+                TraceWorkspaceScope::Named,
+            ),
         )
     }
 
@@ -141,10 +151,22 @@ impl TraceFiles {
         &self,
         limit: usize,
         offset: usize,
-        scope: Option<FederatedTraceScope<'_>>,
+        scope: TraceWorkspaceScope<'_>,
     ) -> Vec<TraceSummaryRecord> {
-        TraceStore::new(self.temp.path().to_path_buf())
-            .list_query_stream_sync(limit, offset, scope)
-            .expect("list query stream")
+        super::list(
+            &TraceStore::new(self.temp.path().to_path_buf()),
+            limit,
+            offset,
+            scope,
+        )
+        .expect("list query stream")
+    }
+
+    pub(super) fn get(
+        &self,
+        trace_id: &str,
+        scope: &TraceReadScope,
+    ) -> Result<TraceDetailRecord, super::super::TraceStoreError> {
+        TraceStore::new(self.temp.path().to_path_buf()).get_query_stream_trace_sync(trace_id, scope)
     }
 }

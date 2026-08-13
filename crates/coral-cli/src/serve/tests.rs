@@ -2,7 +2,9 @@ use std::net::TcpListener;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use coral_api::v1::{
-    CatalogItemKind, ListCatalogRequest, ListWorkspacesRequest, PaginationRequest,
+    AddWorkspaceMemberRequest, CatalogItemKind, CreateWorkspaceRequest, ListCatalogRequest,
+    ListWorkspacesRequest, PaginationRequest, RemoveWorkspaceMemberRequest, Workspace,
+    WorkspaceMember, WorkspaceRole,
 };
 use coral_client::default_workspace;
 use jsonwebtoken::jwk::{Jwk, ThumbprintHash};
@@ -10,10 +12,11 @@ use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use reqwest::header::WWW_AUTHENTICATE;
 use ring::rand::SystemRandom;
 use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair};
-use rmcp::ServiceExt as _;
 use rmcp::model::CallToolRequestParams;
+use rmcp::service::RunningService;
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
+use rmcp::{RoleClient, ServiceExt as _};
 use tempfile::TempDir;
 use tonic::Request;
 
@@ -25,6 +28,20 @@ const OAUTH_RESOURCE: &str = "http://localhost:1457";
 const SESSION_ISSUER: &str = "https://auth.example";
 const SESSION_RESOURCE: &str = "https://coral.example/mcp";
 const REEF_RESOURCE: &str = "https://reef.example";
+const SHARED_WORKSPACE: &str = "shared";
+
+fn shared_workspace() -> Workspace {
+    Workspace {
+        name: SHARED_WORKSPACE.to_string(),
+    }
+}
+
+fn shared_mcp_options() -> McpOptions {
+    McpOptions {
+        workspace: Some(shared_workspace()),
+        ..McpOptions::default()
+    }
+}
 
 fn write_config(temp: &TempDir, config: &str) {
     std::fs::write(temp.path().join("config.toml"), config).expect("write config");
@@ -163,11 +180,15 @@ fn catalog_request() -> ListCatalogRequest {
 /// token, or one whose `kid` disclaims the key that signed it — still have to be
 /// assembled by hand wherever they are needed.
 fn session_token(signing_key: &[u8], audience: &str) -> String {
+    session_token_for_subject(signing_key, audience, "alice")
+}
+
+fn session_token_for_subject(signing_key: &[u8], audience: &str, subject: &str) -> String {
     coral_app::test_session_tokens::issue_access_token(
         SESSION_ISSUER,
         signing_key,
         Duration::from_mins(5),
-        "alice",
+        subject,
         "https://client.example/client.json",
         audience,
     )
@@ -266,23 +287,53 @@ async fn assert_grpc_authenticated(server: &RunningServer, token: &str) {
     )
     .await
     .expect("authenticated gRPC client");
-    let response = authenticated
+    let _response = authenticated
         .workspace_client()
         .list_workspaces(Request::new(ListWorkspacesRequest {}))
         .await
-        .expect("authenticated workspace listing")
-        .into_inner();
-    assert!(response.memberships.is_empty());
+        .expect("authenticated workspace listing");
+}
+
+async fn prepare_authenticated_workspace(
+    temp: &TempDir,
+    server: &RunningServer,
+    signing_key: &[u8],
+    workspace: &str,
+) -> (String, String) {
+    let identity =
+        coral_app::test_session_tokens::persist_test_login_identity(temp.path(), "alice")
+            .await
+            .expect("persist test login identity");
+    let token = session_token_for_subject(signing_key, SESSION_RESOURCE, &identity);
+    let client = connect_with_loopback_bearer(
+        server.endpoint_uri(),
+        BearerToken::new(&token).expect("bearer token"),
+    )
+    .await
+    .expect("authenticated gRPC client");
+    client
+        .workspace_client()
+        .create_workspace(Request::new(CreateWorkspaceRequest {
+            workspace: Some(Workspace {
+                name: workspace.to_string(),
+            }),
+        }))
+        .await
+        .expect("create authenticated workspace");
+    (token, identity)
+}
+
+async fn authenticated_mcp_client(endpoint: &str, token: &str) -> RunningService<RoleClient, ()> {
+    let config =
+        StreamableHttpClientTransportConfig::with_uri(endpoint.to_string()).auth_header(token);
+    ().serve(StreamableHttpClientTransport::from_config(config))
+        .await
+        .expect("initialize authenticated MCP client")
 }
 
 async fn assert_authenticated_surfaces(server: &RunningServer, mcp_endpoint: &str, token: &str) {
     assert_grpc_authenticated(server, token).await;
-    let config =
-        StreamableHttpClientTransportConfig::with_uri(mcp_endpoint.to_string()).auth_header(token);
-    let client =
-        ().serve(StreamableHttpClientTransport::from_config(config))
-            .await
-            .expect("initialize authenticated MCP client");
+    let client = authenticated_mcp_client(mcp_endpoint, token).await;
     client
         .cancel()
         .await
@@ -578,7 +629,7 @@ async fn session_authenticated_companion_gates_grpc_and_mcp() {
         ServerBuilder::configured_standalone_grpc()
             .with_config_dir(temp.path())
             .with_noop_feedback_uploads(),
-        McpOptions::default(),
+        shared_mcp_options(),
     )
     .await
     .expect("start authenticated composite server");
@@ -610,7 +661,9 @@ async fn session_authenticated_companion_gates_grpc_and_mcp() {
 
     assert_grpc_rejects_unauthenticated(server.endpoint_uri()).await;
 
-    let token = session_token(signing_key.as_ref(), &resource);
+    let (token, _) =
+        prepare_authenticated_workspace(&temp, &server, signing_key.as_ref(), SHARED_WORKSPACE)
+            .await;
     assert_authenticated_surfaces(&server, &format!("{base}/mcp"), &token).await;
 
     let reef_token = session_token(signing_key.as_ref(), REEF_RESOURCE);
@@ -644,6 +697,88 @@ async fn session_authenticated_companion_gates_grpc_and_mcp() {
         .shutdown()
         .await
         .expect("shutdown OAuth server");
+}
+
+#[tokio::test]
+async fn established_authenticated_mcp_session_observes_membership_revocation() {
+    let temp = TempDir::new().expect("temp dir");
+    let signing_key =
+        EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
+            .expect("P-256 signing key");
+    write_session_config(&temp, signing_key.as_ref());
+    let server = start(
+        ServerBuilder::configured_standalone_grpc()
+            .with_config_dir(temp.path())
+            .with_noop_feedback_uploads(),
+        shared_mcp_options(),
+    )
+    .await
+    .expect("start authenticated composite server");
+    let (token, user_id) =
+        prepare_authenticated_workspace(&temp, &server, signing_key.as_ref(), SHARED_WORKSPACE)
+            .await;
+    let successor =
+        coral_app::test_session_tokens::persist_test_login_identity(temp.path(), "successor")
+            .await
+            .expect("persist successor identity");
+    let app = connect_with_loopback_bearer(
+        server.endpoint_uri(),
+        BearerToken::new(&token).expect("bearer token"),
+    )
+    .await
+    .expect("authenticated gRPC client");
+    app.workspace_client()
+        .add_workspace_member(Request::new(AddWorkspaceMemberRequest {
+            workspace: Some(shared_workspace()),
+            member: Some(WorkspaceMember {
+                user_id: successor,
+                role: WorkspaceRole::Owner as i32,
+                display_name: String::new(),
+            }),
+        }))
+        .await
+        .expect("add successor owner");
+
+    let endpoint = format!(
+        "http://{}/mcp",
+        server.mcp_http_addr().expect("MCP HTTP endpoint")
+    );
+    let client = authenticated_mcp_client(&endpoint, &token).await;
+    let arguments = serde_json::Map::from_iter([(
+        "intent".to_string(),
+        serde_json::json!("verify membership revocation"),
+    )]);
+    let before = client
+        .call_tool(CallToolRequestParams::new("start_task").with_arguments(arguments.clone()))
+        .await
+        .expect("call tool before revocation");
+    assert_eq!(before.is_error, Some(false));
+
+    app.workspace_client()
+        .remove_workspace_member(Request::new(RemoveWorkspaceMemberRequest {
+            workspace: Some(shared_workspace()),
+            user_id,
+        }))
+        .await
+        .expect("remove original owner");
+    let after = client
+        .call_tool(CallToolRequestParams::new("start_task").with_arguments(arguments))
+        .await
+        .expect("call tool after revocation");
+    assert_eq!(after.is_error, Some(true));
+    let after = after.structured_content.expect("structured tool error");
+    let error = after.get("error").expect("structured error details");
+    assert_eq!(
+        error.get("reason").and_then(serde_json::Value::as_str),
+        Some("WORKSPACE_NOT_FOUND")
+    );
+    assert_eq!(
+        error.get("retryable").and_then(serde_json::Value::as_bool),
+        Some(false)
+    );
+
+    client.cancel().await.expect("stop MCP client");
+    server.shutdown().await.expect("shutdown composite server");
 }
 
 #[tokio::test]
@@ -690,7 +825,6 @@ async fn session_failures_and_restart_are_fail_closed() {
         .duration_since(UNIX_EPOCH)
         .expect("current time")
         .as_secs();
-    let valid = session_token(signing_key.as_ref(), SESSION_RESOURCE);
     let expired = signed_session_token(
         &encoding_key,
         &key_id,
@@ -716,7 +850,7 @@ async fn session_failures_and_restart_are_fail_closed() {
         ServerBuilder::configured_standalone_grpc()
             .with_config_dir(temp.path())
             .with_noop_feedback_uploads(),
-        McpOptions::default(),
+        shared_mcp_options(),
     )
     .await
     .expect("start authenticated composite server");
@@ -724,6 +858,9 @@ async fn session_failures_and_restart_are_fail_closed() {
         "http://{}/mcp",
         server.mcp_http_addr().expect("MCP HTTP endpoint")
     );
+    let (valid, _) =
+        prepare_authenticated_workspace(&temp, &server, signing_key.as_ref(), SHARED_WORKSPACE)
+            .await;
 
     let expired_rejection = assert_bearer_rejected(&server, &mcp_endpoint, &expired).await;
     let wrong_audience_rejection =
@@ -741,7 +878,7 @@ async fn session_failures_and_restart_are_fail_closed() {
         ServerBuilder::configured_standalone_grpc()
             .with_config_dir(temp.path())
             .with_noop_feedback_uploads(),
-        McpOptions::default(),
+        shared_mcp_options(),
     )
     .await
     .expect("restart authenticated composite server");

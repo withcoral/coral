@@ -218,10 +218,6 @@ fn trace_manager_status(error: TraceManagerError) -> Status {
         TraceManagerError::NotFound { trace_id } => {
             Status::new(Code::NotFound, format!("trace '{trace_id}' not found"))
         }
-        TraceManagerError::OwnedScopeUnsupported => Status::new(
-            Code::PermissionDenied,
-            "query-stream traces require an explicit workspace",
-        ),
         TraceManagerError::Store(error) => Status::new(Code::Internal, error.to_string()),
     }
 }
@@ -538,13 +534,49 @@ mod tests {
         .await
         .expect_err("unknown view is rejected");
         assert_eq!(unknown_view.code(), Code::InvalidArgument);
-        let status = TraceServiceApi::list_traces(
+        let mut global_request = view_list_request(&fixture.owner, None, TraceView::QueryStream);
+        global_request.get_mut().page_size = 10;
+        let global = TraceServiceApi::list_traces(&fixture.service, global_request)
+            .await
+            .expect("owner-scoped query stream")
+            .into_inner();
+        assert_eq!(trace_ids(&global), vec!["mixed-trace", "shared-trace"]);
+
+        let mixed = TraceServiceApi::get_trace(
             &fixture.service,
-            view_list_request(&fixture.owner, None, TraceView::QueryStream),
+            view_get_request(&fixture.owner, "mixed-trace", None, TraceView::QueryStream),
         )
         .await
-        .expect_err("query-stream view has no owner-scoped read yet");
-        assert_eq!(status.code(), Code::PermissionDenied);
+        .expect("owner reads a trace attributed only to owned workspaces")
+        .into_inner();
+        assert_eq!(mixed.spans.len(), 2);
+
+        for principal in [&fixture.member, &fixture.nonmember] {
+            let response = TraceServiceApi::list_traces(
+                &fixture.service,
+                view_list_request(principal, None, TraceView::QueryStream),
+            )
+            .await
+            .expect("a caller without owned workspaces gets an empty page")
+            .into_inner();
+            assert!(response.traces.is_empty());
+            let concealed = TraceServiceApi::get_trace(
+                &fixture.service,
+                view_get_request(principal, "shared-trace", None, TraceView::QueryStream),
+            )
+            .await
+            .expect_err("a caller without owned workspaces cannot read a trace");
+            assert_eq!(concealed.code(), Code::NotFound);
+        }
+
+        let mut local_request =
+            view_list_request(&Principal::local(), None, TraceView::QueryStream);
+        local_request.get_mut().page_size = 10;
+        let local = TraceServiceApi::list_traces(&fixture.local_service, local_request)
+            .await
+            .expect("local principal reads the unrestricted query stream")
+            .into_inner();
+        assert_eq!(trace_ids(&local), vec!["mixed-trace", "shared-trace"]);
     }
 
     struct ServiceFixture {

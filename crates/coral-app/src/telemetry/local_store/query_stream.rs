@@ -5,15 +5,14 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 mod classification;
 
 use classification::{
-    QueryStreamMetadata, QueryStreamPrimaryOperation, QueryStreamWorkspaceEvidence,
-    is_unmarked_mcp_protocol_attributes, operation_text_from_attributes,
-    operation_text_is_semantic, query_stream_metadata,
+    QueryStreamMetadata, QueryStreamPrimaryOperation, is_unmarked_mcp_protocol_attributes,
+    operation_text_from_attributes, operation_text_is_semantic, query_stream_metadata,
 };
 
 use super::{
     StoredTraceOperationKind, StoredTraceStatus, TraceListSpanRecord, TraceSpanRecord, TraceStore,
-    TraceStoreError, TraceSummaryRecord, attr_string, attr_u64, parse_attributes,
-    read_list_spans_file, status_from_attributes, usize_to_u32,
+    TraceStoreError, TraceSummaryRecord, TraceWorkspaceScope, attr_string, attr_u64,
+    parse_attributes, read_list_spans_file, status_from_attributes, usize_to_u32,
 };
 use coral_telemetry::WORKSPACE_SPAN_ATTRIBUTE;
 
@@ -23,7 +22,7 @@ pub(super) fn list(
     store: &TraceStore,
     limit: usize,
     offset: usize,
-    workspace_name: Option<&str>,
+    scope: TraceWorkspaceScope<'_>,
 ) -> Result<Vec<TraceSummaryRecord>, TraceStoreError> {
     if limit == 0 {
         return Ok(Vec::new());
@@ -32,7 +31,7 @@ pub(super) fn list(
     store.prune_expired()?;
     let files = store.jsonl_files_by_modified()?;
     let required_entry_count = offset.saturating_add(limit);
-    let mut projector = QueryStreamProjector::new(required_entry_count, workspace_name);
+    let mut projector = QueryStreamProjector::new(required_entry_count, scope);
     let mut scanned_all_files = true;
     let mut remaining_files = files.as_slice();
     while let Some(newest_bucket_file) = remaining_files.last() {
@@ -57,7 +56,9 @@ pub(super) fn list(
         };
         let watermark = newest_unscanned_file.span_end_upper_bound_unix_nanos;
         projector.advance_watermark(watermark);
-        if workspace_name.is_none() && projector.page_is_newer_than(watermark) {
+        if matches!(scope, TraceWorkspaceScope::Unrestricted)
+            && projector.page_is_newer_than(watermark)
+        {
             scanned_all_files = false;
             break;
         }
@@ -86,12 +87,12 @@ fn sort_and_deduplicate_query_stream_summaries(summaries: &mut Vec<TraceSummaryR
 
 pub(super) fn summary(
     spans: &[TraceSpanRecord],
-    workspace_name: Option<&str>,
+    scope: TraceWorkspaceScope<'_>,
 ) -> Option<TraceSummaryRecord> {
-    summaries(spans, workspace_name).into_iter().next()
+    summaries(spans, scope).into_iter().next()
 }
 
-fn summaries(spans: &[TraceSpanRecord], workspace_name: Option<&str>) -> Vec<TraceSummaryRecord> {
+fn summaries(spans: &[TraceSpanRecord], scope: TraceWorkspaceScope<'_>) -> Vec<TraceSummaryRecord> {
     let records = spans
         .iter()
         .map(|span| TraceListSpanRecord {
@@ -107,7 +108,7 @@ fn summaries(spans: &[TraceSpanRecord], workspace_name: Option<&str>) -> Vec<Tra
         })
         .collect::<Vec<_>>();
     let required_entry_count = records.len();
-    let mut projector = QueryStreamProjector::new(required_entry_count, workspace_name);
+    let mut projector = QueryStreamProjector::new(required_entry_count, scope);
     projector.record_file(records);
     projector.finish();
     projector.into_page(0, required_entry_count)
@@ -196,7 +197,6 @@ struct QueryStreamEntrySnapshot {
     start_time_unix_nanos: i64,
     end_time_unix_nanos: i64,
     metadata: QueryStreamMetadata,
-    workspace: Option<String>,
     operation_text: Option<String>,
     row_count: Option<u64>,
 }
@@ -211,7 +211,6 @@ impl QueryStreamEntrySnapshot {
             start_time_unix_nanos: span.start_time_unix_nanos,
             end_time_unix_nanos: span.end_time_unix_nanos,
             metadata,
-            workspace: span.workspace.clone(),
             operation_text: span.operation_text.clone(),
             row_count: span.row_count,
         }
@@ -240,7 +239,6 @@ struct StreamingQueryStreamAggregate {
     span_count: usize,
     primary_descendant_operation: Option<QueryStreamPrimaryOperation>,
     text_enrichment: Option<QueryStreamTextEnrichment>,
-    workspace_evidence: QueryStreamWorkspaceEvidence,
 }
 
 impl StreamingQueryStreamAggregate {
@@ -250,13 +248,11 @@ impl StreamingQueryStreamAggregate {
             span_count: 0,
             primary_descendant_operation: None,
             text_enrichment: None,
-            workspace_evidence: QueryStreamWorkspaceEvidence::default(),
         }
     }
 
     fn record_span(&mut self, span: &ProjectedQueryStreamSpan, depth: usize) {
         self.span_count = self.span_count.saturating_add(1);
-        self.workspace_evidence.record(span.workspace.as_deref());
         let Some(metadata) = span.metadata.as_ref() else {
             return;
         };
@@ -295,20 +291,6 @@ impl StreamingQueryStreamAggregate {
         {
             self.text_enrichment = Some(enrichment);
         }
-    }
-
-    fn workspace(&self) -> Option<&str> {
-        self.entry
-            .workspace
-            .as_deref()
-            .or_else(|| self.workspace_evidence.unique())
-    }
-
-    fn may_match_workspace(&self, workspace_name: Option<&str>) -> bool {
-        workspace_name.is_none_or(|workspace_name| {
-            self.workspace()
-                .is_none_or(|operation_workspace| operation_workspace == workspace_name)
-        })
     }
 
     fn into_summary(self) -> TraceSummaryRecord {
@@ -359,23 +341,23 @@ impl StreamingQueryStreamAggregate {
 /// be discarded. A completed child with an unresolved local parent remains
 /// hidden until that owning ancestry is exported, avoiding an incomplete row
 /// that would later need to be replaced by its outer operation.
-struct QueryStreamProjector {
+struct QueryStreamProjector<'a> {
     required_entry_count: usize,
-    workspace_name: Option<String>,
+    scope: TraceWorkspaceScope<'a>,
     nodes: HashMap<QueryStreamSpanKey, QueryStreamNodeState>,
     node_starts: BTreeMap<i64, Vec<QueryStreamSpanKey>>,
     aggregates: HashMap<u64, StreamingQueryStreamAggregate>,
     aggregate_starts: BTreeMap<i64, Vec<u64>>,
     finalized: Vec<TraceSummaryRecord>,
-    trace_workspace_evidence: HashMap<String, QueryStreamWorkspaceEvidence>,
+    trace_workspace_evidence: HashMap<String, HashSet<String>>,
     next_operation_id: u64,
 }
 
-impl QueryStreamProjector {
-    fn new(required_entry_count: usize, workspace_name: Option<&str>) -> Self {
+impl<'a> QueryStreamProjector<'a> {
+    fn new(required_entry_count: usize, scope: TraceWorkspaceScope<'a>) -> Self {
         Self {
             required_entry_count,
-            workspace_name: workspace_name.map(str::to_string),
+            scope,
             nodes: HashMap::new(),
             node_starts: BTreeMap::new(),
             aggregates: HashMap::new(),
@@ -430,10 +412,16 @@ impl QueryStreamProjector {
         if self.nodes.contains_key(&key) {
             return;
         }
-        self.trace_workspace_evidence
-            .entry(span.trace_id.clone())
-            .or_default()
-            .record(span.workspace.as_deref());
+        if let Some(workspace) = span
+            .workspace
+            .as_deref()
+            .filter(|workspace| !workspace.trim().is_empty())
+        {
+            self.trace_workspace_evidence
+                .entry(span.trace_id.clone())
+                .or_default()
+                .insert(workspace.to_string());
+        }
         let parent = span
             .parent_key()
             .as_ref()
@@ -522,7 +510,7 @@ impl QueryStreamProjector {
 
     fn trim_finalized(&mut self) {
         sort_and_deduplicate_query_stream_summaries(&mut self.finalized);
-        if self.workspace_name.is_none() {
+        if matches!(self.scope, TraceWorkspaceScope::Unrestricted) {
             self.finalized.truncate(self.required_entry_count);
         }
     }
@@ -538,16 +526,15 @@ impl QueryStreamProjector {
             && self
                 .aggregates
                 .values()
-                .filter(|aggregate| aggregate.may_match_workspace(self.workspace_name.as_deref()))
                 .all(|aggregate| aggregate.entry.end_time_unix_nanos < boundary.end_time_unix_nanos)
     }
 
     fn into_page(mut self, offset: usize, limit: usize) -> Vec<TraceSummaryRecord> {
-        if let Some(workspace_name) = self.workspace_name.as_deref() {
+        if !matches!(self.scope, TraceWorkspaceScope::Unrestricted) {
             self.finalized.retain(|summary| {
                 self.trace_workspace_evidence
                     .get(&summary.trace_id)
-                    .is_some_and(|evidence| evidence.matches(workspace_name))
+                    .is_some_and(|evidence| self.scope.permits(evidence))
             });
         }
         sort_and_deduplicate_query_stream_summaries(&mut self.finalized);

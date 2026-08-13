@@ -49,38 +49,6 @@ fn query_stream_projects_outer_operations() {
 }
 
 #[test]
-fn query_stream_conceals_cross_workspace_descendant_enrichment() {
-    let tool = span("cross-workspace-trace", "tool")
-        .named("coral.mcp.call_tool")
-        .remote_root()
-        .entry("tool", "sql", "alpha")
-        .attrs(json!({
-            "mcp.method": "tools/call",
-            "mcp.tool.name": "sql",
-        }))
-        .times(10, 40)
-        .build();
-    let foreign_query = span("cross-workspace-trace", "foreign-query")
-        .child_of(&tool)
-        .entry("query", "sql", "gamma")
-        .attrs(json!({
-            "sql": "SELECT 'gamma secret'",
-            "row_count": 41,
-        }))
-        .times(20, 30)
-        .build();
-
-    assert!(
-        project(&[tool.clone(), foreign_query.clone()], Some("alpha")).is_empty(),
-        "a foreign descendant must conceal the complete projected operation"
-    );
-    let local = project(&[tool, foreign_query], None);
-    let summary = local.first().expect("local projected operation");
-    assert_eq!(summary.query, "SELECT 'gamma secret'");
-    assert_eq!(summary.row_count, 41);
-}
-
-#[test]
 fn query_stream_projects_search_text_for_mcp_operation() {
     let tool = span("search-trace", "search-tool")
         .named("coral.mcp.call_tool")

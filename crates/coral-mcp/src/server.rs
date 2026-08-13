@@ -6,21 +6,22 @@ use coral_api::v1::{
     AddFunctionRequest, CatalogItemKind as ProtoCatalogItemKind, DescribeTableRequest,
     DescribeTableResponse, EndTaskRequest, ExecuteSqlRequest, FunctionWriteSurface,
     ListCatalogRequest, ListCatalogResponse, ListColumnsRequest, ListSourcesRequest,
-    PaginationRequest, QueryGuideReadContext, SearchRequest, Source, StartTaskRequest,
-    SubmitFeedbackRequest, TableSummary as ProtoTableSummary, TaskStatus as ProtoTaskStatus,
-    catalog_item,
+    ListWorkspacesRequest, PaginationRequest, QueryGuideReadContext, SearchRequest, Source,
+    StartTaskRequest, SubmitFeedbackRequest, TableSummary as ProtoTableSummary,
+    TaskStatus as ProtoTaskStatus, catalog_item,
 };
 use coral_client::{
     AppClient, CatalogClient, FeedbackClient, FunctionClient, QueryClient, SearchClient,
-    SourceClient, TaskClient, batches_to_json_rows_json_safe_numbers, decode_execute_sql_response,
-    default_workspace, search_response_json_value, with_task_metadata,
+    SourceClient, TaskClient, WorkspaceClient, batches_to_json_rows_json_safe_numbers,
+    decode_execute_sql_response, search_response_json_value, with_task_metadata,
 };
 use rmcp::{
     ErrorData, ServerHandler,
     model::{
-        CallToolRequestParams, CallToolResult, Implementation, ListResourcesResult,
-        ListToolsResult, PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResult,
-        ResourceContents, ServerCapabilities, ServerInfo,
+        CallToolRequestParams, CallToolResult, Implementation, InitializeRequestParams,
+        InitializeResult, ListResourcesResult, ListToolsResult, PaginatedRequestParams,
+        ReadResourceRequestParams, ReadResourceResult, ResourceContents, ServerCapabilities,
+        ServerInfo,
     },
     service::{RequestContext, RoleServer},
 };
@@ -236,6 +237,7 @@ pub(crate) struct CoralMcpServerFactory {
     app: AppClient,
     options: McpOptions,
     guide_block: Arc<GuideBlockState>,
+    require_workspace_membership: bool,
 }
 
 impl CoralMcpServerFactory {
@@ -252,6 +254,19 @@ impl CoralMcpServerFactory {
             app,
             options,
             guide_block: Arc::new(GuideBlockState::default()),
+            require_workspace_membership: false,
+        }
+    }
+
+    /// Creates a factory that binds each authenticated session only to its
+    /// configured workspace membership.
+    #[must_use]
+    pub(crate) fn authenticated(app: AppClient, options: McpOptions) -> Self {
+        Self {
+            app,
+            options,
+            guide_block: Arc::new(GuideBlockState::default()),
+            require_workspace_membership: true,
         }
     }
 
@@ -264,12 +279,14 @@ impl CoralMcpServerFactory {
             &self.app,
             self.options.clone(),
             Arc::clone(&self.guide_block),
+            self.require_workspace_membership,
         )
     }
 }
 
 #[derive(Clone)]
 pub(crate) struct CoralMcpServer {
+    workspace_client: WorkspaceClient,
     source: SourceClient,
     catalog: CatalogClient,
     query: QueryClient,
@@ -280,6 +297,7 @@ pub(crate) struct CoralMcpServer {
     guide_block: Arc<GuideBlockState>,
     startup_context: McpStartupContext,
     options: McpOptions,
+    require_workspace_membership: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -321,9 +339,20 @@ impl McpStartupContext {
 }
 
 impl CoralMcpServer {
-    fn new(app: &AppClient, options: McpOptions, guide_block: Arc<GuideBlockState>) -> Self {
+    fn new(
+        app: &AppClient,
+        options: McpOptions,
+        guide_block: Arc<GuideBlockState>,
+        require_workspace_membership: bool,
+    ) -> Self {
         let startup_context = McpStartupContext::from_options(&options);
-        Self::new_with_startup_context(app, options, startup_context, guide_block)
+        Self::new_with_startup_context(
+            app,
+            options,
+            startup_context,
+            guide_block,
+            require_workspace_membership,
+        )
     }
 
     fn new_with_startup_context(
@@ -331,8 +360,10 @@ impl CoralMcpServer {
         options: McpOptions,
         startup_context: McpStartupContext,
         guide_block: Arc<GuideBlockState>,
+        require_workspace_membership: bool,
     ) -> Self {
         Self {
+            workspace_client: app.workspace_client(),
             source: app.source_client(),
             catalog: app.catalog_client(),
             query: app.query_client(),
@@ -343,6 +374,7 @@ impl CoralMcpServer {
             guide_block,
             startup_context,
             options,
+            require_workspace_membership,
         }
     }
 
@@ -357,7 +389,7 @@ impl CoralMcpServer {
         self.options
             .workspace
             .clone()
-            .unwrap_or_else(default_workspace)
+            .expect("MCP composition must resolve a workspace before serving")
     }
 
     async fn load_sources(&self) -> Result<Vec<Source>, tonic::Status> {
@@ -911,6 +943,54 @@ impl CoralMcpServer {
 }
 
 impl ServerHandler for CoralMcpServer {
+    async fn initialize(
+        &self,
+        request: InitializeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<InitializeResult, ErrorData> {
+        let Some(configured) = self.options.workspace.as_ref() else {
+            return Err(ErrorData::invalid_request(
+                "configure a workspace you can access before starting shared MCP; if none exists, create one first",
+                None,
+            ));
+        };
+        if !self.require_workspace_membership {
+            context.peer.set_peer_info(request);
+            return Ok(self.get_info());
+        }
+        let memberships = self
+            .workspace_client
+            .clone()
+            .list_workspaces(Request::new(ListWorkspacesRequest {}))
+            .await
+            .map_err(|status| match status.code() {
+                tonic::Code::Unauthenticated => ErrorData::invalid_request(
+                    "authentication is required to start a shared MCP session",
+                    None,
+                ),
+                _ => ErrorData::internal_error("failed to list workspace memberships", None),
+            })?
+            .into_inner()
+            .memberships;
+        let mut configured_visible = false;
+        for membership in memberships {
+            let valid_role = coral_api::v1::WorkspaceRole::try_from(membership.role)
+                .is_ok_and(|role| role != coral_api::v1::WorkspaceRole::Unspecified);
+            let Some(workspace) = membership.workspace.filter(|_| valid_role) else {
+                return Err(ErrorData::internal_error(
+                    "workspace membership response was malformed",
+                    None,
+                ));
+            };
+            configured_visible |= workspace.name == configured.name;
+        }
+        if !configured_visible {
+            return Err(ErrorData::resource_not_found("workspace not found", None));
+        }
+        context.peer.set_peer_info(request);
+        Ok(self.get_info())
+    }
+
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(
             ServerCapabilities::builder()

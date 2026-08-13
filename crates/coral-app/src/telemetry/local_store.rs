@@ -371,15 +371,32 @@ impl OwnedWorkspaceScope {
     }
 }
 
+#[derive(Debug, Clone)]
+pub(crate) enum TraceReadScope {
+    Unrestricted,
+    Named(String),
+    Owned(OwnedWorkspaceScope),
+}
+
+impl TraceReadScope {
+    fn as_workspace_scope(&self) -> TraceWorkspaceScope<'_> {
+        match self {
+            Self::Unrestricted => TraceWorkspaceScope::Unrestricted,
+            Self::Named(name) => TraceWorkspaceScope::Named(name),
+            Self::Owned(scope) => TraceWorkspaceScope::Owned(scope),
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
-enum TraceWorkspaceScope<'a> {
+pub(super) enum TraceWorkspaceScope<'a> {
     Unrestricted,
     Named(&'a str),
     Owned(&'a OwnedWorkspaceScope),
 }
 
 impl TraceWorkspaceScope<'_> {
-    fn permits(self, workspace_names: &HashSet<String>) -> bool {
+    pub(super) fn permits(self, workspace_names: &HashSet<String>) -> bool {
         match self {
             Self::Unrestricted => true,
             Self::Named(name) => {
@@ -700,14 +717,15 @@ impl TraceStore {
         &self,
         limit: usize,
         offset: usize,
-        workspace_name: Option<String>,
+        scope: TraceReadScope,
     ) -> Result<Vec<TraceSummaryRecord>, TraceStoreError> {
+        if matches!(&scope, TraceReadScope::Owned(owned) if owned.0.is_empty()) {
+            return Ok(Vec::new());
+        }
         let traces = self.clone();
-        task::spawn_blocking(move || {
-            traces.list_query_stream_sync(limit, offset, workspace_name.as_deref())
-        })
-        .await
-        .map_err(|source| TraceStoreError::Worker { source })?
+        task::spawn_blocking(move || traces.list_query_stream_sync(limit, offset, &scope))
+            .await
+            .map_err(|source| TraceStoreError::Worker { source })?
     }
 
     pub(crate) async fn get_trace_unrestricted(
@@ -747,14 +765,15 @@ impl TraceStore {
     pub(crate) async fn get_query_stream_trace(
         &self,
         trace_id: String,
-        workspace_name: Option<String>,
+        scope: TraceReadScope,
     ) -> Result<TraceDetailRecord, TraceStoreError> {
+        if matches!(&scope, TraceReadScope::Owned(owned) if owned.0.is_empty()) {
+            return Err(TraceStoreError::NotFound(trace_id));
+        }
         let traces = self.clone();
-        task::spawn_blocking(move || {
-            traces.get_query_stream_trace_sync(&trace_id, workspace_name.as_deref())
-        })
-        .await
-        .map_err(|source| TraceStoreError::Worker { source })?
+        task::spawn_blocking(move || traces.get_query_stream_trace_sync(&trace_id, &scope))
+            .await
+            .map_err(|source| TraceStoreError::Worker { source })?
     }
 
     pub(crate) async fn delete_traces_for_workspace(
@@ -860,9 +879,9 @@ impl TraceStore {
         &self,
         limit: usize,
         offset: usize,
-        workspace_name: Option<&str>,
+        scope: &TraceReadScope,
     ) -> Result<Vec<TraceSummaryRecord>, TraceStoreError> {
-        query_stream::list(self, limit, offset, workspace_name)
+        query_stream::list(self, limit, offset, scope.as_workspace_scope())
     }
 
     fn get_trace_sync(&self, trace_id: &str) -> Result<TraceDetailRecord, TraceStoreError> {
@@ -921,10 +940,10 @@ impl TraceStore {
     fn get_query_stream_trace_sync(
         &self,
         trace_id: &str,
-        workspace_name: Option<&str>,
+        scope: &TraceReadScope,
     ) -> Result<TraceDetailRecord, TraceStoreError> {
         let mut detail = self.get_trace_sync(trace_id)?;
-        let Some(summary) = query_stream::summary(&detail.spans, workspace_name) else {
+        let Some(summary) = query_stream::summary(&detail.spans, scope.as_workspace_scope()) else {
             return Err(TraceStoreError::NotFound(trace_id.to_string()));
         };
         detail.summary = summary;

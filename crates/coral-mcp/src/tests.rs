@@ -7,7 +7,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use coral_api::v1::{ImportSourceRequest, Workspace, import_source_response};
+use coral_api::v1::{
+    CreateWorkspaceRequest, ImportSourceRequest, Workspace, import_source_response,
+};
 use coral_client::{
     AppClient, SourceClient, default_workspace,
     local::{RunningServer, ServerBuilder},
@@ -295,7 +297,18 @@ async fn start_session(temp: &TempDir) -> TestSession {
     start_session_with_options(temp, McpOptions::default()).await
 }
 
-async fn start_session_with_options(temp: &TempDir, options: McpOptions) -> TestSession {
+async fn create_test_workspace(app: &AppClient) -> Workspace {
+    let workspace = default_workspace();
+    app.workspace_client()
+        .create_workspace(Request::new(CreateWorkspaceRequest {
+            workspace: Some(workspace.clone()),
+        }))
+        .await
+        .expect("create explicit test workspace");
+    workspace
+}
+
+async fn start_session_with_options(temp: &TempDir, mut options: McpOptions) -> TestSession {
     let server = ServerBuilder::new()
         .with_config_dir(temp.path().join("coral-config"))
         .with_noop_feedback_uploads()
@@ -305,6 +318,9 @@ async fn start_session_with_options(temp: &TempDir, options: McpOptions) -> Test
     let app = AppClient::connect(server.endpoint_uri())
         .await
         .expect("connect client");
+    if options.workspace.is_none() {
+        options.workspace = Some(create_test_workspace(&app).await);
+    }
     let source_client = app.source_client();
     let factory = CoralMcpServerFactory::new(app, options);
     let (client, mcp_server_task) = start_mcp_session(factory.create()).await;
@@ -2073,12 +2089,14 @@ async fn factory_shares_configuration_and_task_guide_state_across_sessions() {
     let app = AppClient::connect(app_server.endpoint_uri())
         .await
         .expect("connect client");
+    let workspace = create_test_workspace(&app).await;
     let mut source_client = app.source_client();
     add_demo_source(&mut source_client, manifest_yaml).await;
     let factory = CoralMcpServerFactory::new(
         app,
         McpOptions {
             feedback_enabled: true,
+            workspace: Some(workspace),
             ..McpOptions::default()
         },
     );

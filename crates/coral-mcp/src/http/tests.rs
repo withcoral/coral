@@ -8,7 +8,7 @@ use axum::body::{Body, to_bytes};
 use axum::http::{HeaderValue, Method, Request, StatusCode, header};
 use axum::{Router, response::Response};
 use coral_api::v1::{AddFunctionRequest, CreateWorkspaceRequest, FunctionWriteSurface, Workspace};
-use coral_client::{AppClient, local::ServerBuilder};
+use coral_client::{AppClient, default_workspace, local::ServerBuilder};
 use futures::poll;
 use rmcp::model::{CallToolRequestParams, ClientJsonRpcMessage};
 use rmcp::service::RunningService;
@@ -41,9 +41,13 @@ const INITIALIZE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","param
 const PING: &str = r#"{"jsonrpc":"2.0","id":2,"method":"ping"}"#;
 /// Configured MCP workspace for the per-session resolution test.
 const PINNED_WORKSPACE: &str = "pinned";
-/// Existing default workspace visible to a local app client.
-const LOCAL_DEFAULT_WORKSPACE: &str = "default";
-const LOCAL_DEFAULT_WORKSPACE_PROBE: &str = "default_workspace_probe";
+
+fn test_mcp_options() -> McpOptions {
+    McpOptions {
+        workspace: Some(default_workspace()),
+        ..McpOptions::default()
+    }
+}
 
 fn raw_mcp_request(body: impl Into<Body>) -> Request<Body> {
     Request::builder()
@@ -148,10 +152,16 @@ async fn local_app() -> (TempDir, coral_client::local::RunningServer, AppClient)
     let app = AppClient::connect(server.endpoint_uri())
         .await
         .expect("connect app client");
+    app.workspace_client()
+        .create_workspace(tonic::Request::new(CreateWorkspaceRequest {
+            workspace: test_mcp_options().workspace,
+        }))
+        .await
+        .expect("create test workspace");
     (temp, server, app)
 }
 
-/// Creates `workspace` on one app server and installs a table function whose
+/// Creates a workspace on one app server and installs a table function whose
 /// name identifies that workspace in any catalog listing.
 async fn install_workspace_probe(app: &AppClient, workspace: &str, function: &str) {
     let workspace = Workspace {
@@ -182,12 +192,43 @@ async fn install_probe_function(app: &AppClient, workspace: Workspace, function:
         .expect("install probe function");
 }
 
-async fn authenticated_session(endpoint: &str, token: &str) -> RunningService<RoleClient, ()> {
+async fn authenticated_session(
+    endpoint: &str,
+    token: &str,
+) -> Result<RunningService<RoleClient, ()>, String> {
     ().serve(StreamableHttpClientTransport::from_config(
         StreamableHttpClientTransportConfig::with_uri(endpoint.to_string()).auth_header(token),
     ))
     .await
-    .expect("initialize authenticated MCP session")
+    .map_err(|error| error.to_string())
+}
+
+async fn initialize_error(endpoint: &str, token: &str) -> String {
+    let address = endpoint
+        .strip_prefix("http://")
+        .and_then(|endpoint| endpoint.strip_suffix("/mcp"))
+        .expect("loopback MCP endpoint")
+        .parse::<SocketAddr>()
+        .expect("loopback MCP address");
+    let mut stream = TcpStream::connect(address)
+        .await
+        .expect("connect MCP server");
+    stream
+        .write_all(
+            format!(
+                "POST /mcp HTTP/1.1\r\nHost: {address}\r\nAccept: application/json, text/event-stream\r\nContent-Type: application/json\r\nAuthorization: Bearer {token}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{INITIALIZE}",
+                INITIALIZE.len()
+            )
+            .as_bytes(),
+        )
+        .await
+        .expect("write initialize request");
+    let mut response = Vec::new();
+    stream
+        .read_to_end(&mut response)
+        .await
+        .expect("read initialize response");
+    String::from_utf8_lossy(&response).into_owned()
 }
 
 /// Reports which workspace one established session is talking to.
@@ -288,7 +329,7 @@ async fn raw_routes_enforce_health_and_host_contracts() {
     let advertised_ip = IpAddr::V4(Ipv4Addr::new(127, 42, 3, 9));
     let (router, state) = auth_disabled_router(
         app.clone(),
-        McpOptions::default(),
+        test_mcp_options(),
         ReadinessProbe::from_app(app),
         advertised_ip,
     );
@@ -366,7 +407,7 @@ async fn mcp_rejects_uninitialized_and_oversized_requests_without_leaking_sessio
     let (_temp, app_server, app) = local_app().await;
     let (router, state) = auth_disabled_router(
         app.clone(),
-        McpOptions::default(),
+        test_mcp_options(),
         ReadinessProbe::from_app(app),
         IpAddr::V4(Ipv4Addr::LOCALHOST),
     );
@@ -486,7 +527,7 @@ async fn streamable_http_executes_tools_and_shutdown_is_bounded() {
         app,
         McpOptions {
             feedback_enabled: true,
-            ..McpOptions::default()
+            ..test_mcp_options()
         },
     )
     .await
@@ -582,7 +623,7 @@ async fn shutdown_timeout_matches_one_second_contract() {
     let (_temp, app_server, app) = local_app().await;
     let config =
         McpHttpConfig::new(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).expect("loopback config");
-    let server = start_auth_disabled(config, app, McpOptions::default())
+    let server = start_auth_disabled(config, app, test_mcp_options())
         .await
         .expect("start MCP HTTP server");
     let state = server.state.clone();
@@ -606,7 +647,7 @@ async fn dropping_server_cancels_requests_and_releases_state() {
     let (_temp, app_server, app) = local_app().await;
     let config =
         McpHttpConfig::new(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).expect("loopback config");
-    let server = start_auth_disabled(config, app, McpOptions::default())
+    let server = start_auth_disabled(config, app, test_mcp_options())
         .await
         .expect("start MCP HTTP server");
     let transport =
@@ -661,7 +702,7 @@ async fn authenticated_session_lifecycle_is_coherent() {
             counted_factory_calls.fetch_add(1, Ordering::Relaxed);
             std::future::ready(Ok::<_, ()>(app.clone()))
         },
-        McpOptions::default(),
+        test_mcp_options(),
         || async { Ok::<_, tonic::Code>(()) },
     );
     let (router, state) = authenticated_router(config, runtime);
@@ -747,7 +788,7 @@ async fn authenticated_requests_are_bounded_before_and_after_initialization() {
             counted_factory_calls.fetch_add(1, Ordering::Relaxed);
             std::future::ready(Ok::<_, ()>(app.clone()))
         },
-        McpOptions::default(),
+        test_mcp_options(),
         || async { Ok::<_, tonic::Code>(()) },
     );
     let (router, state) = authenticated_router(authenticated_config(), runtime);
@@ -802,7 +843,7 @@ async fn authenticated_sessions_remain_isolated() {
     let runtime = AuthenticatedMcpHttpRuntime::new(
         |_| async { Ok::<_, ()>(()) },
         move |_| std::future::ready(Ok::<_, ()>(app.clone())),
-        McpOptions::default(),
+        test_mcp_options(),
         || async { Ok::<_, tonic::Code>(()) },
     );
     let (router, state) = authenticated_router(authenticated_config(), runtime);
@@ -854,7 +895,7 @@ async fn authenticated_session_admission_rejects_before_client_creation() {
             counted_factory_calls.fetch_add(1, Ordering::Relaxed);
             std::future::ready(Ok::<_, ()>(app.clone()))
         },
-        McpOptions::default(),
+        test_mcp_options(),
         || async { Ok::<_, tonic::Code>(()) },
     );
     let sessions = Arc::new(AuthenticatedSessions::new(1));
@@ -893,7 +934,7 @@ async fn authenticated_session_honors_the_declared_idle_timeout() {
     let runtime = AuthenticatedMcpHttpRuntime::new(
         |_| async { Ok::<_, ()>(()) },
         move |_| std::future::ready(Ok::<_, ()>(app.clone())),
-        McpOptions::default(),
+        test_mcp_options(),
         || async { Ok::<_, tonic::Code>(()) },
     );
     let sessions = Arc::new(AuthenticatedSessions::new(1));
@@ -1045,7 +1086,7 @@ async fn authenticated_discovery_and_challenge_do_not_advertise_scopes() {
     let runtime = AuthenticatedMcpHttpRuntime::new(
         |_| async { Ok::<_, ()>(()) },
         |_| std::future::ready(Err::<AppClient, ()>(())),
-        McpOptions::default(),
+        test_mcp_options(),
         || async { Ok::<_, tonic::Code>(()) },
     );
     let (router, _state) = authenticated_router(config, runtime);
@@ -1089,27 +1130,12 @@ async fn authenticated_discovery_and_challenge_do_not_advertise_scopes() {
     assert!(document.get("scopes_supported").is_none());
 }
 
-/// Two bearer tokens resolve two different app clients, so one configured pin
-/// may only survive in the session whose client holds the pinned workspace.
-///
-/// The two clients address separate app servers, which is what makes the
-/// property observable: a pin that leaked into the second session would be
-/// resolved against a server that has no such workspace, and a workspace
-/// resolved once per session cannot move when the second client is granted the
-/// pinned workspace afterward.
 #[tokio::test]
-async fn authenticated_workspace_isolation_resolves_one_workspace_per_session() {
+async fn authenticated_sessions_require_exact_configured_workspace_membership() {
     let (_member_temp, member_server, member_app) = local_app().await;
     let (_outsider_temp, outsider_server, outsider_app) = local_app().await;
     install_workspace_probe(&member_app, PINNED_WORKSPACE, "pinned_workspace_probe").await;
-    install_probe_function(
-        &outsider_app,
-        Workspace {
-            name: LOCAL_DEFAULT_WORKSPACE.to_string(),
-        },
-        LOCAL_DEFAULT_WORKSPACE_PROBE,
-    )
-    .await;
+    install_workspace_probe(&outsider_app, "alternate", "alternate_workspace_probe").await;
     let session_outsider_app = outsider_app.clone();
 
     let runtime = AuthenticatedMcpHttpRuntime::new(
@@ -1138,8 +1164,13 @@ async fn authenticated_workspace_isolation_resolves_one_workspace_per_session() 
     .expect("start authenticated MCP HTTP server");
     let endpoint = format!("http://{}/mcp", server.local_addr());
 
-    let member = authenticated_session(&endpoint, "member-token").await;
-    let outsider = authenticated_session(&endpoint, "outsider-token").await;
+    let member = authenticated_session(&endpoint, "member-token")
+        .await
+        .expect("configured workspace member starts a session");
+    let outsider = initialize_error(&endpoint, "outsider-token").await;
+    assert!(outsider.contains(r#""code":-32002"#), "{outsider}");
+    assert!(outsider.contains(r#""message":"workspace not found""#));
+    assert!(!outsider.contains(PINNED_WORKSPACE));
 
     let member_evidence = session_workspace_evidence(&member).await;
     assert!(
@@ -1147,32 +1178,36 @@ async fn authenticated_workspace_isolation_resolves_one_workspace_per_session() 
         "the configured pin must be retained for the session whose client holds it: {member_evidence}"
     );
 
-    let outsider_evidence = session_workspace_evidence(&outsider).await;
-    assert!(
-        outsider_evidence.contains(LOCAL_DEFAULT_WORKSPACE_PROBE),
-        "a session whose client lacks the pin must resolve that client's own default workspace: {outsider_evidence}"
-    );
-    assert!(
-        !outsider_evidence.contains(PINNED_WORKSPACE),
-        "the configured pin must not reach a session whose client does not hold it: {outsider_evidence}"
-    );
-
-    // The workspace is resolved once per session: granting the pinned workspace
-    // to the outsider's client after its session exists must not move it.
-    install_workspace_probe(&outsider_app, PINNED_WORKSPACE, "late_membership_probe").await;
-    let after_grant = session_workspace_evidence(&outsider).await;
-    assert!(
-        !after_grant.contains("late_membership_probe"),
-        "an established session must not re-resolve its workspace per tool call: {after_grant}"
-    );
-    assert!(
-        after_grant.contains(LOCAL_DEFAULT_WORKSPACE_PROBE),
-        "an established session must keep the workspace it resolved: {after_grant}"
+    assert_eq!(
+        authenticated_sessions(&server)
+            .upgrade()
+            .expect("authenticated sessions")
+            .len()
+            .await,
+        1,
+        "a rejected initialization must not leave a bound session"
     );
 
-    let _member_cancel = member.cancel().await;
-    let _outsider_cancel = outsider.cancel().await;
+    member.cancel().await.expect("stop member session");
     server.shutdown().await.expect("shutdown MCP HTTP server");
+
+    let missing_runtime = AuthenticatedMcpHttpRuntime::new(
+        |_| async { Ok::<_, ()>(()) },
+        move |_| std::future::ready(Ok::<_, ()>(outsider_app.clone())),
+        McpOptions::default(),
+        || async { Ok::<_, tonic::Code>(()) },
+    );
+    let missing = start_authenticated(
+        authenticated_config_at("127.0.0.1:0".parse().unwrap()),
+        missing_runtime,
+    )
+    .await
+    .expect("start MCP server without a configured workspace");
+    let missing_endpoint = format!("http://{}/mcp", missing.local_addr());
+    let missing_error = initialize_error(&missing_endpoint, "member-token").await;
+    assert!(missing_error.contains(r#""code":-32600"#));
+    assert!(missing_error.contains("configure a workspace you can access"));
+    missing.shutdown().await.expect("shutdown MCP HTTP server");
     member_server.shutdown().await.unwrap();
     outsider_server.shutdown().await.unwrap();
 }
@@ -1183,7 +1218,7 @@ async fn dropping_authenticated_server_closes_sessions_and_releases_state() {
     let runtime = AuthenticatedMcpHttpRuntime::new(
         |_| async { Ok::<_, ()>(()) },
         move |_| std::future::ready(Ok::<_, ()>(app.clone())),
-        McpOptions::default(),
+        test_mcp_options(),
         || async { Ok::<_, tonic::Code>(()) },
     );
     let server = start_authenticated(

@@ -911,7 +911,7 @@ async fn create_session_factory(
         () = state.server.config.cancellation_token.cancelled() => Err(StatusCode::SERVICE_UNAVAILABLE),
         client = (state.runtime.session_client_factory)(token) => client.map_err(|()| StatusCode::SERVICE_UNAVAILABLE),
     }?;
-    Ok(CoralMcpServerFactory::new(
+    Ok(CoralMcpServerFactory::authenticated(
         client,
         state.runtime.options.clone(),
     ))
