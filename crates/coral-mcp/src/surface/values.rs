@@ -2,7 +2,6 @@ use coral_api::v1::TableSummary;
 pub(crate) use coral_client::{
     format_schema_table_equivalent, format_table_name, optional_catalog_name,
 };
-use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -54,34 +53,6 @@ impl<'a> From<&'a TableSummary> for QueryableTableSummaryValue<'a> {
             ),
             description: &table.description,
             guide: &table.guide,
-            required_filters: &table.required_filters,
-        }
-    }
-}
-
-#[derive(Serialize, JsonSchema)]
-#[schemars(deny_unknown_fields)]
-pub(crate) struct MissingTableSummaryValue<'a> {
-    pub(crate) catalog_name: &'a str,
-    pub(crate) schema_name: &'a str,
-    pub(crate) table_name: &'a str,
-    pub(crate) name: String,
-    pub(crate) description: &'a str,
-    pub(crate) required_filters: &'a [String],
-}
-
-impl<'a> From<&'a TableSummary> for MissingTableSummaryValue<'a> {
-    fn from(table: &'a TableSummary) -> Self {
-        Self {
-            catalog_name: &table.catalog_name,
-            schema_name: &table.schema_name,
-            table_name: &table.name,
-            name: format_table_name(
-                optional_catalog_name(&table.catalog_name),
-                &table.schema_name,
-                &table.name,
-            ),
-            description: &table.description,
             required_filters: &table.required_filters,
         }
     }

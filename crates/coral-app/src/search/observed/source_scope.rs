@@ -19,6 +19,23 @@ pub(super) struct SurfaceKey {
     pub(super) surface_name: String,
 }
 
+/// A runtime component whose name diverges from its package's source name.
+///
+/// Since #1791 one source publishes exactly one surface and one SQL namespace,
+/// and the sources domain copies both names from the same `manifest.common.name`
+/// field, so this is unreachable on every production path. Search still refuses
+/// the source here rather than writing rows under an identity that would select
+/// nothing back — a tripwire at the single seam that derives identity from a
+/// runtime package, not an enforcement boundary.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "source '{source_name}' exposes runtime component '{component_source_name}'; one installed source must publish exactly one runtime schema"
+)]
+pub(crate) struct ObservedSourceIdentityMismatch {
+    source_name: String,
+    component_source_name: String,
+}
+
 /// Opaque identity supplied by the app-owned runtime-package boundary.
 ///
 /// The queue substrate does not interpret either value. The app-wiring PR
@@ -48,28 +65,10 @@ impl<'a> SourceScopeSeed<'a> {
     }
 }
 
-/// A runtime component whose name diverges from its package's source name.
-///
-/// Since #1791 one source publishes exactly one surface and one SQL namespace,
-/// and the sources domain copies both names from the same `manifest.common.name`
-/// field, so this is unreachable on every production path. Search still refuses
-/// the source rather than writing rows under an identity that would select
-/// nothing back -- a tripwire at the single seam that derives identity from a
-/// runtime package, not an enforcement boundary.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error(
-    "source '{source_name}' exposes runtime component '{component_source_name}'; one installed source must publish exactly one runtime schema"
-)]
-pub(crate) struct ObservedSourceIdentityMismatch {
-    source_name: String,
-    component_source_name: String,
-}
-
 #[derive(Debug, Clone)]
 pub(super) struct ObservedSourceSurfaceScope {
-    /// Canonical installed source that owns lifecycle clears and invalidation epochs.
-    pub(super) owner_source_name: String,
-    /// Runtime component schema used in SQL and search results.
+    /// Installed source: lifecycle clears, invalidation epochs, and the SQL
+    /// namespace used in search results — one name, because they are one thing.
     pub(super) source_name: String,
     surface_key: SurfaceKey,
     pub(super) source_scope_id: String,
@@ -82,7 +81,6 @@ impl ObservedSourceSurfaceScope {
 
     pub(super) fn live_scope(&self) -> ObservedValuesLiveScope {
         ObservedValuesLiveScope {
-            owner_source_name: self.owner_source_name.clone(),
             source_name: self.source_name.clone(),
             source_scope_id: self.source_scope_id.clone(),
             surface_kind: self.surface_key.surface_kind,
@@ -121,8 +119,7 @@ pub(super) fn source_surface_scopes(
             RuntimeSourceComponent::Http(manifest) => {
                 scopes.extend(manifest.tables.iter().map(|table| {
                     surface_scope(
-                        source,
-                        manifest.common.name.as_str(),
+                        source_name,
                         ObservedValuesSurfaceKind::Table,
                         table.name(),
                         seed,
@@ -130,8 +127,7 @@ pub(super) fn source_surface_scopes(
                 }));
                 scopes.extend(manifest.functions.iter().map(|function| {
                     surface_scope(
-                        source,
-                        manifest.common.name.as_str(),
+                        source_name,
                         ObservedValuesSurfaceKind::Function,
                         function.name.as_str(),
                         seed,
@@ -141,8 +137,7 @@ pub(super) fn source_surface_scopes(
             RuntimeSourceComponent::File(manifest) => {
                 scopes.extend(manifest.tables.iter().map(|table| {
                     surface_scope(
-                        source,
-                        manifest.common.name.as_str(),
+                        source_name,
                         ObservedValuesSurfaceKind::Table,
                         table.name(),
                         seed,
@@ -152,8 +147,7 @@ pub(super) fn source_surface_scopes(
             RuntimeSourceComponent::Mcp(manifest) => {
                 scopes.extend(manifest.tables.iter().map(|table| {
                     surface_scope(
-                        source,
-                        manifest.common.name.as_str(),
+                        source_name,
                         ObservedValuesSurfaceKind::Table,
                         table.name(),
                         seed,
@@ -161,8 +155,7 @@ pub(super) fn source_surface_scopes(
                 }));
                 scopes.extend(manifest.functions.iter().map(|function| {
                     surface_scope(
-                        source,
-                        manifest.common.name.as_str(),
+                        source_name,
                         ObservedValuesSurfaceKind::Function,
                         function.name(),
                         seed,
@@ -175,8 +168,7 @@ pub(super) fn source_surface_scopes(
 }
 
 fn surface_scope(
-    source: &QuerySource,
-    component_source_name: &str,
+    source_name: &str,
     surface_kind: ObservedValuesSurfaceKind,
     surface_name: &str,
     seed: SourceScopeSeed<'_>,
@@ -185,16 +177,15 @@ fn surface_scope(
         format_version: SOURCE_SCOPE_FORMAT_VERSION,
         runtime_contract_fingerprint: seed.runtime_contract_fingerprint,
         credential_revision: seed.credential_revision,
-        component_source_name,
+        source_name,
         surface_kind: surface_kind.as_str(),
         surface_name,
     })
     .expect("observed-values source scope must serialize");
     ObservedSourceSurfaceScope {
-        owner_source_name: source.source_name().to_string(),
-        source_name: component_source_name.to_string(),
+        source_name: source_name.to_string(),
         surface_key: SurfaceKey {
-            source_name: component_source_name.to_string(),
+            source_name: source_name.to_string(),
             surface_kind,
             surface_name: surface_name.to_string(),
         },
@@ -207,33 +198,31 @@ struct ScopeFingerprint<'a> {
     format_version: u8,
     runtime_contract_fingerprint: &'a str,
     credential_revision: Uuid,
-    component_source_name: &'a str,
+    // The serialized key is a stable on-disk format: these bytes are hashed
+    // into `source_scope_id`, which every stored observed row is keyed by.
+    // Renaming the Rust field to match the singular identity model must not
+    // rotate scope ids, or migrated rows would be fail-closed invisible.
+    #[serde(rename = "component_source_name")]
+    source_name: &'a str,
     surface_kind: &'static str,
     surface_name: &'a str,
 }
 
 #[cfg(test)]
 mod tests {
-    use uuid::Uuid;
-
     use super::{SOURCE_SCOPE_FORMAT_VERSION, ScopeFingerprint};
     use crate::hash::sha256_hex;
+    use uuid::Uuid;
 
-    /// Pins the exact bytes hashed into `source_scope_id`.
-    ///
-    /// Every stored observed row is keyed by that id and retrieval is
-    /// fail-closed, so a change to this serialization silently hides the entire
-    /// observed corpus rather than failing anything. The struct is private and
-    /// its field names are part of the on-disk format, not an implementation
-    /// detail -- if a refactor needs to rename one, it owes a `#[serde(rename)]`
-    /// and this test must keep passing untouched.
+    /// Pins the hashed bytes across the `component_source_name` -> `source_name`
+    /// Rust rename. A change here invalidates every stored observed row.
     #[test]
-    fn scope_fingerprint_hash_is_stable() {
+    fn scope_fingerprint_hash_is_stable_across_the_field_rename() {
         let scope_bytes = serde_json::to_vec(&ScopeFingerprint {
             format_version: SOURCE_SCOPE_FORMAT_VERSION,
             runtime_contract_fingerprint: "v1:test-runtime-contract",
             credential_revision: Uuid::nil(),
-            component_source_name: "github_v4",
+            source_name: "github_v4",
             surface_kind: "table",
             surface_name: "issues",
         })

@@ -11,6 +11,7 @@ export interface TextAreaProps {
   className?: string
   disabled?: boolean
   id?: string
+  invalid?: boolean
   name?: string
   onBlur?: () => void
   onChange?: (value: string) => void
@@ -28,6 +29,7 @@ export function TextArea({
   className,
   disabled,
   id,
+  invalid,
   name,
   onBlur,
   onChange,
@@ -39,7 +41,7 @@ export function TextArea({
   value,
 }: TextAreaProps) {
   return (
-    <Field.Root disabled={disabled}>
+    <Field.Root disabled={disabled} invalid={invalid}>
       <ScrollArea
         className={styles.textAreaContainer}
         height="auto"

@@ -1,7 +1,7 @@
 use rmcp::model::{CallToolResult, Tool};
 use serde_json::Value;
 
-use super::catalog::{describe_table_tool, list_catalog_tool, list_columns_tool};
+use super::catalog::{describe_tool, list_catalog_tool, list_columns_tool};
 use super::context::ToolDescriptionContext;
 use super::feedback::feedback_tool;
 use super::function::add_function_tool;
@@ -26,7 +26,7 @@ pub(crate) fn available_tools(
             add_function_tool(),
             search_tool(context, availability.observed_values_search_enabled),
             list_catalog_tool(context),
-            describe_table_tool(),
+            describe_tool(),
             list_columns_tool(),
         ]
         .into_iter()
@@ -260,7 +260,7 @@ mod tests {
                 "add_function",
                 "search",
                 "list_catalog",
-                "describe_table",
+                "describe",
                 "list_columns",
                 "end_task"
             ]

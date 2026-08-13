@@ -1,6 +1,6 @@
 //! Heuristic inference of lookup key joinability for REST surfaces.
 //!
-//! During `OpenAPI` import Coral guesses which REST query parameters are
+//! During OpenAPI import Coral guesses which REST query parameters are
 //! complete exact lookups and records the positive allowlist in operation
 //! metadata. Other parameters stay pushdown filters; they just cannot anchor dependent joins
 //! (`FilterSpec.lookup_key` stays false). MCP pagination is handled separately
