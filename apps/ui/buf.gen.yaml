@@ -12,4 +12,5 @@ inputs:
       - ../../crates/coral-api/proto/coral/v1/catalog.proto
       - ../../crates/coral-api/proto/coral/v1/query.proto
       - ../../crates/coral-api/proto/coral/v1/sources.proto
+      - ../../crates/coral-api/proto/coral/v1/task.proto
       - ../../crates/coral-api/proto/coral/v1/traces.proto

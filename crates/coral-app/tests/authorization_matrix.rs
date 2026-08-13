@@ -21,7 +21,10 @@ enum Access {
 const AUTHORIZATION_MATRIX: &[(&str, Access)] = &[
     ("coral.v1.CatalogService/ListCatalog", Access::Read),
     ("coral.v1.CatalogService/SearchCatalog", Access::Read),
-    ("coral.v1.CatalogService/DescribeTable", Access::Read),
+    (
+        "coral.v1.CatalogService/DescribeCatalogSurface",
+        Access::Read,
+    ),
     ("coral.v1.CatalogService/ListColumns", Access::Read),
     ("coral.v1.FeedbackService/SubmitFeedback", Access::Read),
     ("coral.v1.FunctionService/AddFunction", Access::Manage),
