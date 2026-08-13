@@ -7,9 +7,11 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use coral_api::v1::{ImportSourceRequest, Workspace, import_source_response};
+use coral_api::v1::{
+    CreateWorkspaceRequest, ImportSourceRequest, Workspace, import_source_response,
+};
 use coral_client::{
-    AppClient, SourceClient, default_workspace,
+    AppClient, SourceClient,
     local::{RunningServer, ServerBuilder},
 };
 use jsonschema::Validator;
@@ -33,6 +35,7 @@ use crate::{
 };
 
 type McpServerTask = tokio::task::JoinHandle<Result<(), Box<dyn std::error::Error + Send + Sync>>>;
+const MCP_TEST_WORKSPACE: &str = "mcp-test";
 
 fn span_string_attribute(span: &SpanData, name: &str) -> Option<String> {
     span.attributes
@@ -270,7 +273,7 @@ async fn start_test_task(client: &RunningService<RoleClient, ()>) -> String {
 async fn add_demo_source(source_client: &mut SourceClient, manifest_yaml: String) {
     let mut stream = source_client
         .import_source(Request::new(ImportSourceRequest {
-            workspace: Some(default_workspace()),
+            workspace: Some(coral_client::workspace(MCP_TEST_WORKSPACE)),
             manifest_yaml,
             variables: Vec::new(),
             secrets: Vec::new(),
@@ -314,7 +317,18 @@ async fn start_session(temp: &TempDir) -> TestSession {
     start_session_with_options(temp, McpOptions::default()).await
 }
 
-async fn start_session_with_options(temp: &TempDir, options: McpOptions) -> TestSession {
+async fn create_test_workspace(app: &AppClient) -> Workspace {
+    let workspace = coral_client::workspace(MCP_TEST_WORKSPACE);
+    app.workspace_client()
+        .create_workspace(Request::new(CreateWorkspaceRequest {
+            workspace: Some(workspace.clone()),
+        }))
+        .await
+        .expect("create MCP test workspace");
+    workspace
+}
+
+async fn start_session_with_options(temp: &TempDir, mut options: McpOptions) -> TestSession {
     let server = ServerBuilder::new()
         .with_config_dir(temp.path().join("coral-config"))
         .with_noop_feedback_uploads()
@@ -324,6 +338,9 @@ async fn start_session_with_options(temp: &TempDir, options: McpOptions) -> Test
     let app = AppClient::connect(server.endpoint_uri())
         .await
         .expect("connect client");
+    if options.workspace.is_none() {
+        options.workspace = Some(create_test_workspace(&app).await);
+    }
     let source_client = app.source_client();
     let factory = CoralMcpServerFactory::new(app, options);
     let (client, mcp_server_task) = start_mcp_session(factory.create()).await;
@@ -2020,12 +2037,14 @@ async fn factory_shares_configuration_and_task_guide_state_across_sessions() {
     let app = AppClient::connect(app_server.endpoint_uri())
         .await
         .expect("connect client");
+    let workspace = create_test_workspace(&app).await;
     let mut source_client = app.source_client();
     add_demo_source(&mut source_client, manifest_yaml).await;
     let factory = CoralMcpServerFactory::new(
         app,
         McpOptions {
             feedback_enabled: true,
+            workspace: Some(workspace),
             ..McpOptions::default()
         },
     );
@@ -2305,14 +2324,14 @@ async fn mcp_feedback_tool_persists_blocked_agent_report() {
 
     let raw = fs::read_to_string(
         temp.path()
-            .join("coral-config/workspaces/default/feedback/reports.jsonl"),
+            .join("coral-config/workspaces/mcp-test/feedback/reports.jsonl"),
     )
     .expect("feedback file should exist");
     let records = raw.lines().collect::<Vec<_>>();
     assert_eq!(records.len(), 1);
     let record: Value = serde_json::from_str(records[0]).expect("feedback JSONL should parse");
     assert_eq!(record["id"], structured["feedback_id"]);
-    assert_eq!(record["workspace"], "default");
+    assert_eq!(record["workspace"], MCP_TEST_WORKSPACE);
     assert_eq!(record["trying_to_do"], "Fix failing tests");
     assert_eq!(
         record["tried"],
@@ -2344,7 +2363,7 @@ async fn mcp_feedback_tool_persists_blocked_agent_report() {
 
     let raw_after_error = fs::read_to_string(
         temp.path()
-            .join("coral-config/workspaces/default/feedback/reports.jsonl"),
+            .join("coral-config/workspaces/mcp-test/feedback/reports.jsonl"),
     )
     .expect("feedback file should still exist");
     assert_eq!(raw_after_error.lines().count(), 1);
@@ -2391,7 +2410,7 @@ async fn mcp_feedback_tool_always_accepts_task_context() {
 
     let raw = fs::read_to_string(
         temp.path()
-            .join("coral-config/workspaces/default/feedback/reports.jsonl"),
+            .join("coral-config/workspaces/mcp-test/feedback/reports.jsonl"),
     )
     .expect("feedback file should exist");
     let records = raw.lines().collect::<Vec<_>>();
@@ -2440,7 +2459,7 @@ async fn mcp_feedback_tool_is_disabled_by_default() {
     assert!(
         !temp
             .path()
-            .join("coral-config/workspaces/default/feedback/reports.jsonl")
+            .join("coral-config/workspaces/mcp-test/feedback/reports.jsonl")
             .exists()
     );
 
