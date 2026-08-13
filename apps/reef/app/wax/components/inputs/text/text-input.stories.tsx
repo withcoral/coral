@@ -2,6 +2,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 
 import { useState } from 'react'
 import { Controller, useForm } from 'react-hook-form'
+import { expect } from 'storybook/test'
 
 import { Button } from '@/wax/components'
 
@@ -33,6 +34,20 @@ export const Disabled: Story = {
   args: {
     disabled: true,
     placeholder: 'Search...',
+  },
+}
+
+export const Invalid: Story = {
+  args: {
+    invalid: true,
+    placeholder: 'Type something...',
+    value: 'not-an-email',
+  },
+  play: async ({ canvas }) => {
+    const input = canvas.getByRole('textbox')
+
+    await expect(input).toHaveAttribute('aria-invalid', 'true')
+    await expect(input).toHaveAttribute('data-invalid')
   },
 }
 

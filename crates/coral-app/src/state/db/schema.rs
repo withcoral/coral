@@ -27,6 +27,27 @@ pub(in crate::state::db) enum Tasks {
 }
 
 #[derive(Iden)]
+pub(in crate::state::db) enum TaskQueries {
+    Table,
+    Id,
+    TaskId,
+    Intent,
+    Sql,
+    Status,
+    StartedAtUnixNanos,
+}
+
+#[derive(Iden)]
+pub(in crate::state::db) enum TaskQueryRelations {
+    Table,
+    QueryId,
+    RelationKind,
+    CatalogName,
+    SchemaName,
+    RelationName,
+}
+
+#[derive(Iden)]
 pub(in crate::state::db) enum IdentitySpecs {
     Table,
     Id,
