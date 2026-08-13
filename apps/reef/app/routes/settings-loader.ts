@@ -1,4 +1,4 @@
-import type { Route } from './+types/settings'
+import type { Route } from './settings/+types/mcp-clients'
 
 import {
   coralDesktopApi,

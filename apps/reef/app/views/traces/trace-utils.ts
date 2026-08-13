@@ -4,6 +4,7 @@ import {
   type TraceSpan,
   type TraceSummary,
 } from '@/generated/coral/v1/traces_pb'
+import { nanosToMs } from '@/utils/format-time'
 
 export type JsonObject = Record<string, unknown>
 export type TraceSpanData = Omit<TraceSpan, '$typeName' | '$unknown'>
@@ -13,39 +14,8 @@ export interface TraceDetailData {
   summary?: TraceSummaryData
 }
 
-export function nanosToMs(nanos: string | bigint | number): number {
-  const value = typeof nanos === 'bigint' ? nanos : BigInt(nanos || 0)
-  return Number(value / 1_000_000n)
-}
-
 export function startMs(trace: TraceSummaryData): number {
   return nanosToMs(trace.startTimeUnixNanos)
-}
-
-export function formatDuration(ms: number): string {
-  if (!Number.isFinite(ms) || ms < 0) return '—'
-  if (ms < 1000) return `${Math.max(1, Math.round(ms))}ms`
-  return `${(ms / 1000).toFixed(2)}s`
-}
-
-export function formatDurationFromNanos(nanos: string): string {
-  return formatDuration(nanosToMs(nanos))
-}
-
-export function formatTimestamp(timestamp: number): string {
-  if (!Number.isFinite(timestamp) || timestamp <= 0) return 'Unknown time'
-  return new Date(timestamp).toLocaleString(undefined, {
-    dateStyle: 'medium',
-    timeStyle: 'medium',
-  })
-}
-
-export function timeAgo(timestamp: number, referenceTimeMs: number): string {
-  const diff = Math.floor((referenceTimeMs - timestamp) / 1000)
-  if (diff < 5) return 'Just now'
-  if (diff < 60) return `${diff}s ago`
-  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
-  return `${Math.floor(diff / 3600)}h ago`
 }
 
 export function formatRows(trace: TraceSummaryData): string {
@@ -71,7 +41,7 @@ export function durationClass(nanos: string, warningClass: string, defaultClass:
 export function formatTraceError(message: string): string {
   const normalized = message.toLowerCase()
   if (normalized.includes('unimplemented') || normalized.includes('http 404')) {
-    return 'Trace storage is not enabled for this Coral server. Enable [local_traces].enabled = true, restart the Coral server, then run an operation.'
+    return 'This Coral server does not serve trace history. Trace history is on by default, so check that config.toml does not set [trace_history].enabled = false, then restart the Coral server.'
   }
   return message
 }
