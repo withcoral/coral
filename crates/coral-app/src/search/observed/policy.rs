@@ -4,7 +4,6 @@ use crate::search::observed::sqlite_queue::ObservedValuesSurfaceKind;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ObservedValuesLiveScope {
-    pub(crate) owner_source_name: String,
     pub(crate) source_name: String,
     pub(crate) source_scope_id: String,
     pub(crate) surface_kind: ObservedValuesSurfaceKind,
@@ -13,7 +12,7 @@ pub(crate) struct ObservedValuesLiveScope {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ObservedValuesLiveScopeLoadFailure {
-    pub(crate) owner_source_name: String,
+    pub(crate) source_name: String,
     pub(crate) message: String,
 }
 
@@ -53,10 +52,10 @@ impl ObservedValuesRetrievalPolicy {
         !self.failed_sources.is_empty()
     }
 
-    pub(crate) fn failed_owner_source_names(&self) -> Vec<&str> {
+    pub(crate) fn failed_source_names(&self) -> Vec<&str> {
         self.failed_sources
             .iter()
-            .map(|failure| failure.owner_source_name.as_str())
+            .map(|failure| failure.source_name.as_str())
             .collect()
     }
 
@@ -93,7 +92,7 @@ mod tests {
 
         assert!(policy.has_load_failures());
         assert_eq!(policy.failed_source_count(), 2);
-        assert_eq!(policy.failed_owner_source_names(), vec!["jira", "slack"]);
+        assert_eq!(policy.failed_source_names(), vec!["jira", "slack"]);
         assert_eq!(policy.failed_sources().len(), 2);
     }
 
@@ -116,7 +115,6 @@ mod tests {
 
     fn live_scope(source_name: &str, source_scope_id: &str) -> ObservedValuesLiveScope {
         ObservedValuesLiveScope {
-            owner_source_name: source_name.to_string(),
             source_name: source_name.to_string(),
             source_scope_id: source_scope_id.to_string(),
             surface_kind: ObservedValuesSurfaceKind::Table,
@@ -126,7 +124,7 @@ mod tests {
 
     fn load_failure(source_name: &str, message: &str) -> ObservedValuesLiveScopeLoadFailure {
         ObservedValuesLiveScopeLoadFailure {
-            owner_source_name: source_name.to_string(),
+            source_name: source_name.to_string(),
             message: message.to_string(),
         }
     }

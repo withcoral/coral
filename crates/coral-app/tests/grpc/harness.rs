@@ -246,6 +246,7 @@ impl GrpcHarness {
                 workspace: Some(default_workspace()),
                 sql: sql.to_string(),
                 guide_read_context: None,
+                task_attribution: None,
             }))
             .await
             .expect("execute sql")

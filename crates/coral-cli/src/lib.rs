@@ -974,6 +974,7 @@ async fn run_app_command(
                     workspace: Some(workspace.clone()),
                     sql: args.sql,
                     guide_read_context: None,
+                    task_attribution: None,
                 }))
                 .await
             {

@@ -18,9 +18,8 @@ mod tools;
 mod values;
 
 pub(crate) use catalog::{
-    CatalogToolKind, describe_table_arguments, describe_table_value, list_catalog_arguments,
-    list_catalog_value, list_columns_arguments, list_columns_table_fallback_value,
-    list_columns_value,
+    CatalogToolKind, describe_arguments, describe_value, list_catalog_arguments,
+    list_catalog_value, list_columns_arguments, list_columns_value,
 };
 pub(crate) use context::ToolDescriptionContext;
 pub(crate) use errors::{status_to_error_data, tool_error_from_status, tool_error_result};

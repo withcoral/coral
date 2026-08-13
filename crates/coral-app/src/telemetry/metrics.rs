@@ -11,6 +11,7 @@ pub(crate) struct Metrics {
     count: Counter<u64>,
     duration: Histogram<f64>,
     rows: Histogram<u64>,
+    task_query_recording_count: Counter<u64>,
 }
 
 impl Metrics {
@@ -28,6 +29,15 @@ impl Metrics {
 
         if let Some(row_count) = row_count {
             self.rows.record(row_count, &attributes);
+        }
+    }
+
+    pub(crate) fn record_task_query_recording(&self, error_type: Option<&'static str>) {
+        match error_type {
+            Some(error_type) => self
+                .task_query_recording_count
+                .add(1, &[KeyValue::new("error.type", error_type)]),
+            None => self.task_query_recording_count.add(1, &[]),
         }
     }
 }
@@ -54,6 +64,11 @@ fn build_metrics(meter: &Meter) -> Metrics {
             .u64_histogram("coral.query.rows")
             .with_unit("{rows}")
             .with_description("Rows returned per query")
+            .build(),
+        task_query_recording_count: meter
+            .u64_counter("coral.task_query.recording.count")
+            .with_unit("{recordings}")
+            .with_description("Task query recording attempts")
             .build(),
     }
 }
@@ -258,6 +273,38 @@ mod tests {
                 attributes: &[("operation", "execute_sql"), ("status", "ok")],
                 value: 7,
             }],
+        );
+    }
+
+    #[test]
+    fn task_query_recording_metric_uses_bounded_failure_types() {
+        super::test_support::reset_metrics();
+        let exporter = super::test_support::install_metrics_exporter();
+        let metrics = metrics();
+
+        metrics.record_task_query_recording(None);
+        metrics.record_task_query_recording(Some("database"));
+        metrics.record_task_query_recording(Some("task_not_found"));
+
+        super::test_support::flush_metrics();
+        let finished = exporter.get_finished_metrics().expect("finished metrics");
+        assert_counter_points(
+            &finished,
+            "coral.task_query.recording.count",
+            &[
+                ExpectedMetricPoint {
+                    attributes: &[],
+                    value: 1,
+                },
+                ExpectedMetricPoint {
+                    attributes: &[("error.type", "database")],
+                    value: 1,
+                },
+                ExpectedMetricPoint {
+                    attributes: &[("error.type", "task_not_found")],
+                    value: 1,
+                },
+            ],
         );
     }
 

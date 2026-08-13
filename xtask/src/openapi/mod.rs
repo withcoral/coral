@@ -11,7 +11,7 @@ use lib::hydrate_openapi_from_location;
 /// Arguments for the `openapi-hydrate` subcommand.
 #[derive(Debug, clap::Args)]
 pub(crate) struct HydrateArgs {
-    /// HTTPS URL or local file path to the `OpenAPI` descriptor.
+    /// HTTPS URL or local file path to the OpenAPI descriptor.
     location: String,
 }
 

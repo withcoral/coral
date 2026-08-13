@@ -27,7 +27,10 @@ pub struct IrOperation {
     pub naming: Option<IrOperationNaming>,
     pub inputs: Vec<IrOperationInput>,
     pub output: IrOperationOutput,
-    pub entity: Option<IrEntityCandidate>,
+    /// Name of the rows this operation yields. Seeds the projection
+    /// name; when unset the namer falls back to the operation id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entity_name: Option<String>,
     pub execution: IrExecutionAttachment,
     pub diagnostics: Vec<Diagnostic>,
 }
@@ -54,13 +57,6 @@ pub struct IrOperationInput {
 pub struct IrOperationOutput {
     pub cardinality: OutputCardinality,
     pub type_ref: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IrEntityCandidate {
-    pub name: String,
-    pub type_ref: String,
-    pub identity_fields: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -197,7 +193,7 @@ mod tests {
                     cardinality: OutputCardinality::List,
                     type_ref: "issue".to_string(),
                 },
-                entity: None,
+                entity_name: None,
                 execution: IrExecutionAttachment::Rest(Box::new(RestExecutionAttachment {
                     method: HttpMethod::Get,
                     path_template: "/issues".to_string(),
@@ -266,7 +262,7 @@ mod tests {
                     cardinality: OutputCardinality::List,
                     type_ref: "item".to_string(),
                 },
-                entity: None,
+                entity_name: None,
                 execution: IrExecutionAttachment::Mcp(McpExecutionAttachment {
                     tool_name: "list_items".to_string(),
                 }),
