@@ -1,4 +1,4 @@
-import { McpClientsList, type DesktopMcpClientsState } from '@/components/mcp-clients-list'
+import { McpClientsList, type McpClientsConnectionState } from '@/components/mcp-clients-list'
 import { Inputs, ScrollArea, Tabs, Typography } from '@/wax/components'
 import { CopyButton } from '@/wax/components/button'
 
@@ -53,7 +53,7 @@ export function coralAgentSetupPrompt(runtime: 'desktop' | 'web'): string {
 }
 
 interface ConnectClientsProps {
-  mcpClients: DesktopMcpClientsState
+  mcpClients: McpClientsConnectionState
   workspaces: ReadonlyArray<{ name: string }>
 }
 

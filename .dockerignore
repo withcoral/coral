@@ -12,4 +12,8 @@ target
 **/node_modules
 **/.env
 **/.env.*
+apps/reef/build
+apps/reef/.react-router
+apps/reef/app/generated
+apps/reef/storybook-static
 benchmarks/universal-search/runs

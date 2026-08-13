@@ -1,5 +1,7 @@
 //! Runtime feature registry and effective feature resolution.
 
+pub(crate) mod service;
+
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -249,6 +251,19 @@ impl FeatureStore {
         let mut features = Features::from_raw_overrides(&raw);
         features.apply_overrides(overrides);
         Ok(features)
+    }
+
+    /// Lists every known feature as local config alone resolves it.
+    ///
+    /// Process-local overrides are deliberately not applied. A launch flag
+    /// belongs to one process, so it describes what a server is running rather
+    /// than what its config says, and callers that write config read this back.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError`] if `config.toml` exists but cannot be read or parsed.
+    pub fn statuses(&self) -> Result<Vec<FeatureStatus>, AppError> {
+        self.statuses_with_overrides(&FeatureOverrides::default())
     }
 
     /// Lists every known feature, applying process-local overrides to effective state.

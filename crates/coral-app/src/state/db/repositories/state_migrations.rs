@@ -93,7 +93,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "set CORAL_TEST_POSTGRES_URL to run the repository contract against Postgres"]
-    async fn state_migration_repository_round_trips_against_postgres() {
+    async fn state_migration_repository_contract_on_postgres() {
         let Some(url) = postgres_test_url() else {
             return;
         };
@@ -157,7 +157,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "set CORAL_TEST_POSTGRES_URL to run concurrent claims against Postgres"]
-    async fn state_migration_repository_round_trips_against_postgres_with_one_concurrent_winner() {
+    async fn state_migration_repository_concurrency_contract_on_postgres() {
         let Some(url) = postgres_test_url() else {
             return;
         };
