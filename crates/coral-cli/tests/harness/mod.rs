@@ -28,22 +28,23 @@ use coral_api::v1::{
     CreateBundledSourceWithOAuthRequest, CreateBundledSourceWithOAuthResponse,
     CreateWorkspaceRequest, CreateWorkspaceResponse, DeleteFunctionRequest, DeleteFunctionResponse,
     DeleteSourceRequest, DeleteSourceResponse, DeleteWorkspaceRequest, DeleteWorkspaceResponse,
-    DescribeTableRequest, DescribeTableResponse, DiscoverSourcesRequest, DiscoverSourcesResponse,
-    DrainSearchQueueRequest, DrainSearchQueueResponse, EndTaskRequest, EndTaskResponse,
-    ExecuteSqlRequest, ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse,
+    DescribeCatalogSurfaceRequest, DescribeCatalogSurfaceResponse, DiscoverSourcesRequest,
+    DiscoverSourcesResponse, DrainSearchQueueRequest, DrainSearchQueueResponse, EndTaskRequest,
+    EndTaskResponse, ExecuteSqlRequest, ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse,
     GetSourceInfoRequest, GetSourceInfoResponse, GetSourceRequest, GetSourceResponse,
     ImportSourceRequest, ImportSourceResponse, ListCatalogRequest, ListCatalogResponse,
     ListColumnsRequest, ListColumnsResponse, ListFunctionsRequest, ListFunctionsResponse,
     ListSourcesRequest, ListSourcesResponse, ListWorkspacesRequest, ListWorkspacesResponse,
-    ObservedDrainResult, ObservedRebuildResult, PaginationRequest, PaginationResponse, QueryPlan,
-    RebuildSearchIndexRequest, RebuildSearchIndexResponse, SearchCatalogRequest,
-    SearchCatalogResponse, SearchField, SearchMaintenanceResult, SearchMaintenanceState,
-    SearchProvider, SearchProviderCoverage, SearchProviderState, SearchRequest, SearchResponse,
-    SearchResult, SearchResultTruncation, SearchStorageCleanupResult, SearchSurfaceRef,
-    SearchTableShape, Source, SourceCredentialStorage, SourceInfo, SourceInputSpec, SourceOrigin,
-    SourceSecretInput, StartTaskRequest, StartTaskResponse, Table, TableFunction, TableSummary,
-    Task as ProtoTask, TaskEnd as ProtoTaskEnd, TaskStatus, ValidateSourceRequest,
-    ValidateSourceResponse, Workspace, catalog_item, create_bundled_source_with_o_auth_response,
+    MissingCatalogSurface, ObservedDrainResult, ObservedRebuildResult, PaginationRequest,
+    PaginationResponse, QueryPlan, RebuildSearchIndexRequest, RebuildSearchIndexResponse,
+    SearchCatalogRequest, SearchCatalogResponse, SearchField, SearchMaintenanceResult,
+    SearchMaintenanceState, SearchProvider, SearchProviderCoverage, SearchProviderState,
+    SearchRequest, SearchResponse, SearchResult, SearchResultTruncation,
+    SearchStorageCleanupResult, SearchSurfaceRef, SearchTableShape, Source,
+    SourceCredentialStorage, SourceInfo, SourceInputSpec, SourceOrigin, SourceSecretInput,
+    StartTaskRequest, StartTaskResponse, Table, TableFunction, TableSummary, Task as ProtoTask,
+    TaskEnd as ProtoTaskEnd, TaskStatus, ValidateSourceRequest, ValidateSourceResponse, Workspace,
+    catalog_item, create_bundled_source_with_o_auth_response, describe_catalog_surface_response,
     import_source_response, search_maintenance_result, search_result,
     source_input_spec::Input as ProtoSourceInput,
 };
@@ -854,14 +855,14 @@ fn list_catalog_response(request: &ListCatalogRequest) -> ListCatalogResponse {
 #[derive(Default)]
 struct Captured {
     execute_sql: Mutex<Vec<ExecuteSqlRequest>>,
-    search: Mutex<Vec<SearchRequest>>,
     execute_sql_task_ids: Mutex<Vec<Option<String>>>,
+    search: Mutex<Vec<SearchRequest>>,
     rebuild_search_index: Mutex<Vec<RebuildSearchIndexRequest>>,
     drain_search_queue: Mutex<Vec<DrainSearchQueueRequest>>,
     clear_search_data: Mutex<Vec<ClearSearchDataRequest>>,
     list_catalog: Mutex<Vec<ListCatalogRequest>>,
     search_catalog: Mutex<Vec<SearchCatalogRequest>>,
-    describe_table: Mutex<Vec<DescribeTableRequest>>,
+    describe_catalog_surface: Mutex<Vec<DescribeCatalogSurfaceRequest>>,
     list_columns: Mutex<Vec<ListColumnsRequest>>,
     discover_sources: Mutex<Vec<DiscoverSourcesRequest>>,
     list_sources: Mutex<Vec<ListSourcesRequest>>,
@@ -982,17 +983,17 @@ impl QueryService for MockQueryService {
             .get(CORAL_TASK_ID_METADATA_KEY)
             .and_then(|value| value.to_str().ok())
             .map(str::to_string);
+        self.captured
+            .execute_sql_task_ids
+            .lock()
+            .expect("execute_sql task ID capture")
+            .push(task_id);
         let request = request.into_inner();
         self.captured
             .execute_sql
             .lock()
             .expect("execute_sql capture")
             .push(request.clone());
-        self.captured
-            .execute_sql_task_ids
-            .lock()
-            .expect("execute_sql task id capture")
-            .push(task_id);
         let sql = request.sql;
         if sql
             .trim_start()
@@ -1087,38 +1088,28 @@ impl CatalogService for MockCatalogService {
         }))
     }
 
-    async fn describe_table(
+    async fn describe_catalog_surface(
         &self,
-        request: Request<DescribeTableRequest>,
-    ) -> Result<Response<DescribeTableResponse>, Status> {
+        request: Request<DescribeCatalogSurfaceRequest>,
+    ) -> Result<Response<DescribeCatalogSurfaceResponse>, Status> {
         let request = request.into_inner();
         self.captured
-            .describe_table
+            .describe_catalog_surface
             .lock()
-            .expect("describe_table capture")
+            .expect("describe_catalog_surface capture")
             .push(request.clone());
         let table = mock_visible_tables().into_iter().find(|table| {
-            table.schema_name == request.schema_name && table.name == request.table_name
+            table.schema_name == request.schema_name && table.name == request.surface_name
         });
         if let Some(table) = table {
-            return Ok(Response::new(DescribeTableResponse {
-                table: Some(table),
-                suggestions: Vec::new(),
-                available_schemas: Vec::new(),
-                same_schema_tables: Vec::new(),
+            return Ok(Response::new(DescribeCatalogSurfaceResponse {
+                result: Some(describe_catalog_surface_response::Result::Table(table)),
             }));
         }
-        let same_schema_tables = mock_visible_tables()
-            .into_iter()
-            .filter(|table| table.schema_name == request.schema_name)
-            .take(10)
-            .map(|table| table_summary(&table))
-            .collect();
-        Ok(Response::new(DescribeTableResponse {
-            table: None,
-            suggestions: Vec::new(),
-            available_schemas: vec!["local_messages".to_string()],
-            same_schema_tables,
+        Ok(Response::new(DescribeCatalogSurfaceResponse {
+            result: Some(describe_catalog_surface_response::Result::Missing(
+                MissingCatalogSurface {},
+            )),
         }))
     }
 
@@ -1637,16 +1628,16 @@ impl MockServer {
             .clone()
     }
 
-    pub(crate) fn search_requests(&self) -> Vec<SearchRequest> {
-        self.captured.search.lock().expect("search capture").clone()
-    }
-
     pub(crate) fn execute_sql_task_ids(&self) -> Vec<Option<String>> {
         self.captured
             .execute_sql_task_ids
             .lock()
-            .expect("execute_sql task id capture")
+            .expect("execute_sql task ID capture")
             .clone()
+    }
+
+    pub(crate) fn search_requests(&self) -> Vec<SearchRequest> {
+        self.captured.search.lock().expect("search capture").clone()
     }
 
     pub(crate) fn rebuild_search_index_requests(&self) -> Vec<RebuildSearchIndexRequest> {
@@ -1705,11 +1696,11 @@ impl MockServer {
             .clone()
     }
 
-    pub(crate) fn describe_table_requests(&self) -> Vec<DescribeTableRequest> {
+    pub(crate) fn describe_catalog_surface_requests(&self) -> Vec<DescribeCatalogSurfaceRequest> {
         self.captured
-            .describe_table
+            .describe_catalog_surface
             .lock()
-            .expect("describe_table capture")
+            .expect("describe_catalog_surface capture")
             .clone()
     }
 

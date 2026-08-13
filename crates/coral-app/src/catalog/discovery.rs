@@ -1,8 +1,9 @@
 //! Workspace-scoped catalog discovery operations.
 
-use std::collections::BTreeSet;
-
-use coral_engine::{CatalogInfo, ColumnInfo, TableFunctionInfo, TableInfo, normalize_catalog_name};
+use coral_engine::{
+    CatalogInfo, ColumnInfo, DescribeCatalogSurfaceInfo, TableFunctionInfo, TableInfo,
+    normalize_catalog_name,
+};
 use regex::{Regex, RegexBuilder};
 
 use crate::bootstrap::AppError;
@@ -17,7 +18,6 @@ const DEFAULT_COLUMN_LIMIT: u32 = 50;
 const MAX_COLUMN_LIMIT: u32 = 200;
 const MAX_METADATA_PATTERN_BYTES: usize = 256;
 const REGEX_SIZE_LIMIT_BYTES: usize = 1 << 20;
-const MISSING_TABLE_SUGGESTION_LIMIT: usize = 10;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct Pagination {
@@ -101,16 +101,31 @@ impl CatalogMetadataField {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) enum DescribeTableResult {
-    Found(TableInfo),
-    Missing(MissingTableContext),
+pub(crate) enum DescribeCatalogSurfaceResult {
+    Table(TableInfo),
+    TableFunction(TableFunctionInfo),
+    Missing,
 }
 
-#[derive(Clone, Debug)]
-pub(crate) struct MissingTableContext {
-    pub(crate) suggestions: Vec<TableInfo>,
-    pub(crate) available_schemas: Vec<String>,
-    pub(crate) same_schema_tables: Vec<TableInfo>,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CatalogSurfaceRef<'a> {
+    pub(crate) catalog: Option<&'a str>,
+    pub(crate) schema: &'a str,
+    pub(crate) surface: &'a str,
+}
+
+impl<'a> CatalogSurfaceRef<'a> {
+    pub(crate) fn new(
+        catalog_name: Option<&'a str>,
+        schema_name: &'a str,
+        surface_name: &'a str,
+    ) -> Self {
+        Self {
+            catalog: catalog_name,
+            schema: schema_name,
+            surface: surface_name,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -242,7 +257,7 @@ impl CatalogDiscovery {
         // Pass the filter through untouched. `None` here means "every catalog",
         // so normalizing `datafusion` to `None` would widen an exact-match
         // request into a wildcard, contradicting both the proto contract and
-        // `describe_table`, which resolves the same value to two-part tables.
+        // `describe_catalog_surface`, which resolves the same value to two-part tables.
         // The engine normalizes the sentinel on the value side instead.
         self.queries
             .list_catalog(workspace_name, catalog_name, schema_name, attribution)
@@ -259,35 +274,31 @@ impl CatalogDiscovery {
             .await
     }
 
-    pub(crate) async fn describe_table(
+    pub(crate) async fn describe_catalog_surface(
         &self,
         workspace_name: &WorkspaceName,
-        table_ref: CatalogTableRef<'_>,
+        surface_ref: CatalogSurfaceRef<'_>,
         attribution: &QueryAttribution,
-    ) -> Result<DescribeTableResult, QueryManagerError> {
-        let table_lookup = self
+    ) -> Result<DescribeCatalogSurfaceResult, QueryManagerError> {
+        let result = self
             .queries
-            .describe_table(
+            .describe_catalog_surface(
                 workspace_name,
-                table_ref.catalog_name,
-                table_ref.schema_name,
-                table_ref.table_name,
+                surface_ref.catalog,
+                surface_ref.schema,
+                surface_ref.surface,
                 attribution,
             )
             .await?;
-        if let Some(table) = table_lookup.table {
-            return Ok(DescribeTableResult::Found(table));
+        match result {
+            DescribeCatalogSurfaceInfo::Table(table) => {
+                Ok(DescribeCatalogSurfaceResult::Table(table))
+            }
+            DescribeCatalogSurfaceInfo::TableFunction(table_function) => {
+                Ok(DescribeCatalogSurfaceResult::TableFunction(table_function))
+            }
+            DescribeCatalogSurfaceInfo::Missing => Ok(DescribeCatalogSurfaceResult::Missing),
         }
-
-        let tables = table_lookup.missing_context_tables;
-        let available_schemas = available_table_schemas(&tables);
-        let same_schema_tables = same_schema_tables(&tables, table_ref);
-        let suggestions = missing_table_suggestions(&tables, table_ref, &same_schema_tables);
-        Ok(DescribeTableResult::Missing(MissingTableContext {
-            suggestions,
-            available_schemas,
-            same_schema_tables,
-        }))
     }
 }
 
@@ -585,69 +596,6 @@ fn column_matched_fields(column: &ColumnInfo, regex: &Regex) -> Vec<ColumnMetada
         .collect()
 }
 
-fn available_table_schemas(tables: &[TableInfo]) -> Vec<String> {
-    tables
-        .iter()
-        .map(|table| table.schema_name.clone())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect()
-}
-
-fn same_schema_tables(tables: &[TableInfo], table_ref: CatalogTableRef<'_>) -> Vec<TableInfo> {
-    tables
-        .iter()
-        .filter(|table| schema_qualifier_matches(table, table_ref))
-        .take(MISSING_TABLE_SUGGESTION_LIMIT)
-        .cloned()
-        .collect()
-}
-
-fn missing_table_suggestions(
-    all_tables: &[TableInfo],
-    table_ref: CatalogTableRef<'_>,
-    same_schema_tables: &[TableInfo],
-) -> Vec<TableInfo> {
-    let mut suggestions = all_tables
-        .iter()
-        .filter(|table| same_schema_tables.is_empty() || schema_qualifier_matches(table, table_ref))
-        .filter(|table| table_metadata_contains_literal(table, table_ref.table_name))
-        .take(MISSING_TABLE_SUGGESTION_LIMIT)
-        .cloned()
-        .collect::<Vec<_>>();
-    if suggestions.is_empty() {
-        suggestions.extend_from_slice(same_schema_tables);
-    }
-    suggestions
-}
-
-fn table_metadata_contains_literal(table: &TableInfo, literal: &str) -> bool {
-    let literal = literal.trim();
-    if literal.is_empty() {
-        return false;
-    }
-    let literal = literal.to_lowercase();
-    let schema_name = table_addressable_schema_name(table);
-    let name = table_addressable_name(table);
-    table
-        .catalog_name
-        .as_deref()
-        .into_iter()
-        .chain([
-            table.schema_name.as_str(),
-            schema_name.as_str(),
-            table.table_name.as_str(),
-            name.as_str(),
-            table.description.as_str(),
-            table.guide.as_str(),
-        ])
-        .any(|value| value.to_lowercase().contains(&literal))
-        || table
-            .required_filters
-            .iter()
-            .any(|filter| filter.to_lowercase().contains(&literal))
-}
-
 fn table_addressable_schema_name(table: &TableInfo) -> String {
     match table.catalog_name.as_deref() {
         Some(catalog_name) => format!("{catalog_name}.{}", table.schema_name),
@@ -682,17 +630,6 @@ fn table_qualifier_matches(table: &TableInfo, table_ref: CatalogTableRef<'_>) ->
     }
 }
 
-/// Matches recovery hints rather than lookups: an absent catalog matches every
-/// catalog, so a two-part miss still surfaces its three-part neighbors. Lookups
-/// keep using [`table_qualifier_matches`], which stays an exact match so a bare
-/// reference never resolves into a catalog-backed table.
-fn schema_qualifier_matches(table: &TableInfo, table_ref: CatalogTableRef<'_>) -> bool {
-    table_ref
-        .catalog_name
-        .is_none_or(|catalog| table.catalog_name.as_deref() == Some(catalog))
-        && table.schema_name == table_ref.schema_name
-}
-
 pub(crate) fn page_items<T>(items: Vec<T>, pagination: Pagination) -> Page<T> {
     let total = u32::try_from(items.len()).unwrap_or(u32::MAX);
     let offset = usize::try_from(pagination.offset).unwrap_or(usize::MAX);
@@ -722,9 +659,8 @@ pub(crate) fn page_items<T>(items: Vec<T>, pagination: Pagination) -> Page<T> {
 #[cfg(test)]
 mod tests {
     use super::{
-        CatalogMetadataField, CatalogTableRef, available_table_schemas, compile_metadata_regex,
-        missing_table_suggestions, same_schema_tables, table_matched_fields, table_matches_ref,
-        table_metadata_contains_literal,
+        CatalogMetadataField, CatalogSurfaceRef, CatalogTableRef, compile_metadata_regex,
+        table_matched_fields, table_matches_ref,
     };
     use coral_engine::TableInfo;
 
@@ -771,7 +707,7 @@ mod tests {
     fn database_catalog_and_schema_match_catalog_discovery_metadata() {
         let main = database_table("main", "users");
         let analytics = database_table("analytics", "events");
-        let tables = vec![main, analytics];
+        let tables = [main, analytics];
         let main_table = tables.first().expect("main table");
 
         assert!(table_matches_ref(
@@ -834,30 +770,7 @@ mod tests {
             vec![CatalogMetadataField::CatalogName]
         );
 
-        assert_eq!(available_table_schemas(&tables), vec!["analytics", "main"]);
-        let same_schema = same_schema_tables(
-            &tables,
-            CatalogTableRef::new(Some("coral_db"), "main", "missing"),
-        );
-        assert_eq!(same_schema.len(), 1);
-        let same_schema_table = same_schema.first().expect("same schema table");
-        assert_eq!(same_schema_table.catalog_name.as_deref(), Some("coral_db"));
-        assert_eq!(same_schema_table.schema_name, "main");
-        assert_eq!(same_schema_table.table_name, "users");
-
-        let suggestions = missing_table_suggestions(
-            &tables,
-            CatalogTableRef::new(Some("coral_db"), "main", "user"),
-            &same_schema,
-        );
-        assert_eq!(suggestions.len(), 1);
-        let suggestion = suggestions.first().expect("suggestion");
-        assert_eq!(suggestion.catalog_name.as_deref(), Some("coral_db"));
-        assert_eq!(suggestion.schema_name, "main");
-        assert_eq!(suggestion.table_name, "users");
-        assert!(table_metadata_contains_literal(
-            same_schema_table,
-            "coral_db.main.users"
-        ));
+        let surface_ref = CatalogSurfaceRef::new(Some(" coral_db "), "main", "users");
+        assert_eq!(surface_ref.catalog, Some(" coral_db "));
     }
 }

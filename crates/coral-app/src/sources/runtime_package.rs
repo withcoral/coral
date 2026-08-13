@@ -650,7 +650,7 @@ mod tests {
                     cardinality: coral_spec::v4::OutputCardinality::List,
                     type_ref: "item".to_string(),
                 },
-                entity: None,
+                entity_name: None,
                 execution: IrExecutionAttachment::Rest(Box::new(RestExecutionAttachment {
                     method: HttpMethod::Get,
                     path_template: "/items".to_string(),
@@ -723,7 +723,7 @@ mod tests {
                     cardinality: coral_spec::v4::OutputCardinality::List,
                     type_ref: "item".to_string(),
                 },
-                entity: None,
+                entity_name: None,
                 execution: IrExecutionAttachment::Rest(Box::new(RestExecutionAttachment {
                     method: HttpMethod::Get,
                     path_template: "/items".to_string(),
@@ -865,7 +865,7 @@ mod tests {
                     cardinality: coral_spec::v4::OutputCardinality::List,
                     type_ref: "tool_result".to_string(),
                 },
-                entity: None,
+                entity_name: None,
                 execution: IrExecutionAttachment::Mcp(McpExecutionAttachment {
                     tool_name: operation_id.to_string(),
                 }),
@@ -917,7 +917,7 @@ mod tests {
                     cardinality: coral_spec::v4::OutputCardinality::Singleton,
                     type_ref: "envelope".to_string(),
                 },
-                entity: None,
+                entity_name: None,
                 execution: IrExecutionAttachment::Rest(Box::new(RestExecutionAttachment {
                     method: HttpMethod::Get,
                     path_template: "/items".to_string(),
