@@ -7,6 +7,7 @@ use std::time::Duration;
 use axum::body::{Body, to_bytes};
 use axum::http::{HeaderValue, Method, Request, StatusCode, header};
 use axum::{Router, response::Response};
+use coral_api::v1::CreateWorkspaceRequest;
 use coral_client::{AppClient, local::ServerBuilder};
 use futures::poll;
 use rmcp::ServiceExt as _;
@@ -205,6 +206,12 @@ fn auth_disabled_config_accepts_only_real_loopback_binds() {
 #[tokio::test]
 async fn raw_routes_enforce_health_and_host_contracts() {
     let (_temp, app_server, app) = local_app().await;
+    app.workspace_client()
+        .create_workspace(CreateWorkspaceRequest {
+            workspace: Some(coral_client::workspace("only")),
+        })
+        .await
+        .expect("create only workspace");
     let advertised_ip = IpAddr::V4(Ipv4Addr::new(127, 42, 3, 9));
     let (router, state) = auth_disabled_router(
         app.clone(),
@@ -374,16 +381,16 @@ async fn mcp_rejects_uninitialized_and_oversized_requests_without_leaking_sessio
 }
 
 #[tokio::test]
-async fn readyz_classifies_auth_transport_and_timeout_results() {
-    for (code, expected) in [
-        (tonic::Code::Unauthenticated, StatusCode::NO_CONTENT),
-        (tonic::Code::PermissionDenied, StatusCode::NO_CONTENT),
-        (tonic::Code::Unavailable, StatusCode::SERVICE_UNAVAILABLE),
+async fn readyz_classifies_health_and_timeout_results() {
+    for code in [
+        tonic::Code::Unauthenticated,
+        tonic::Code::PermissionDenied,
+        tonic::Code::Unavailable,
     ] {
         let probe = ReadinessProbe(Arc::new(move || Box::pin(async move { Err(code) })));
         assert_eq!(
             readiness_status(&probe, Duration::from_millis(10)).await,
-            expected
+            StatusCode::SERVICE_UNAVAILABLE
         );
     }
 
@@ -399,6 +406,13 @@ async fn readyz_classifies_auth_transport_and_timeout_results() {
 #[tokio::test]
 async fn streamable_http_executes_tools_and_shutdown_is_bounded() {
     let (_temp, app_server, app) = local_app().await;
+    let workspace = coral_client::workspace("http");
+    app.workspace_client()
+        .create_workspace(CreateWorkspaceRequest {
+            workspace: Some(workspace.clone()),
+        })
+        .await
+        .expect("create HTTP workspace");
     let config =
         McpHttpConfig::new(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).expect("loopback config");
     let server = start_auth_disabled(
@@ -406,6 +420,7 @@ async fn streamable_http_executes_tools_and_shutdown_is_bounded() {
         app,
         McpOptions {
             feedback_enabled: true,
+            workspace: Some(workspace),
             ..McpOptions::default()
         },
     )
