@@ -18,9 +18,8 @@ use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, Method, Request, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get};
-use coral_api::v1::{CatalogItemKind, ListCatalogRequest, PaginationRequest};
 use coral_app::{CanonicalOauthUrl, OauthUrlError};
-use coral_client::{AppClient, default_workspace};
+use coral_client::AppClient;
 use futures::{Stream, StreamExt as _};
 use rmcp::model::{ClientJsonRpcMessage, ClientRequest, ServerJsonRpcMessage};
 use rmcp::transport::{
@@ -46,7 +45,6 @@ use tokio::net::TcpListener;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore, oneshot};
 use tokio::task::JoinHandle;
 use tokio_stream::wrappers::ReceiverStream;
-use tonic::Request as GrpcRequest;
 use tower::ServiceExt;
 use url::{Position, Url};
 
@@ -651,22 +649,13 @@ struct ReadinessProbe(Arc<dyn Fn() -> ProbeFuture + Send + Sync>);
 impl ReadinessProbe {
     fn from_app(app: AppClient) -> Self {
         Self(Arc::new(move || {
-            let mut catalog = app.catalog_client();
+            let app = app.clone();
             Box::pin(async move {
-                catalog
-                    .list_catalog(GrpcRequest::new(ListCatalogRequest {
-                        workspace: Some(default_workspace()),
-                        catalog_name: String::new(),
-                        schema_name: String::new(),
-                        kind: CatalogItemKind::Unspecified as i32,
-                        pagination: Some(PaginationRequest {
-                            limit: 1,
-                            offset: 0,
-                        }),
-                    }))
-                    .await
-                    .map(|_response| ())
-                    .map_err(|status| status.code())
+                match app.check_engine_ready().await {
+                    Ok(true) => Ok(()),
+                    Ok(false) => Err(tonic::Code::Unavailable),
+                    Err(status) => Err(status.code()),
+                }
             })
         }))
     }
@@ -1044,22 +1033,8 @@ async fn readyz(State(state): State<Arc<HttpState>>) -> StatusCode {
 async fn readiness_status(probe: &ReadinessProbe, timeout: Duration) -> StatusCode {
     match tokio::time::timeout(timeout, (probe.0)()).await {
         Ok(Ok(())) => StatusCode::NO_CONTENT,
-        Ok(Err(code)) if catalog_rejection_is_reachable(code) => StatusCode::NO_CONTENT,
         Ok(Err(_)) | Err(_) => StatusCode::SERVICE_UNAVAILABLE,
     }
-}
-
-fn catalog_rejection_is_reachable(code: tonic::Code) -> bool {
-    !matches!(
-        code,
-        tonic::Code::Cancelled
-            | tonic::Code::Unknown
-            | tonic::Code::DeadlineExceeded
-            | tonic::Code::Unimplemented
-            | tonic::Code::Internal
-            | tonic::Code::Unavailable
-            | tonic::Code::DataLoss
-    )
 }
 
 #[cfg(test)]

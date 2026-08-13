@@ -66,7 +66,15 @@ fn nonempty_lines(output: &str) -> Vec<&str> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn sql_command_renders_table_output() {
-    let server = MockServer::start().await;
+    let server = MockServer::start_with_config(MockServerConfig::default().with_list_workspaces(
+        ListWorkspacesResponse {
+            memberships: vec![WorkspaceMembership {
+                workspace: Some(coral_client::workspace("only-workspace")),
+                role: WorkspaceRole::Owner as i32,
+            }],
+        },
+    ))
+    .await;
 
     let assert = server
         .cmd()
@@ -81,7 +89,7 @@ async fn sql_command_renders_table_output() {
     let requests = server.execute_sql_requests();
     assert_eq!(requests.len(), 1, "expected one execute_sql call");
     assert_eq!(requests[0].sql, "select 1 as value");
-    assert_default_workspace(requests[0].workspace.as_ref());
+    assert_workspace_name(requests[0].workspace.as_ref(), "only-workspace");
     assert_eq!(server.list_workspaces_requests().len(), 1);
 
     server.shutdown().await;
@@ -106,117 +114,35 @@ async fn sql_command_uses_workspace_flag() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn sql_command_uses_the_only_local_workspace() {
-    let server = MockServer::start_with_config(MockServerConfig::default().with_list_workspaces(
-        ListWorkspacesResponse {
-            memberships: vec![WorkspaceMembership {
-                workspace: Some(Workspace {
-                    name: "only-workspace".to_string(),
-                }),
+async fn commands_guide_when_workspace_resolution_fails() {
+    const NONE: &str = "no workspace is available; create one with `coral workspace create <name>`";
+    const AMBIGUOUS: &str =
+        "multiple workspaces are available; specify one with `--workspace <name>`";
+    let (sql, mcp) = (&["sql", "select 1 as value"][..], &["mcp-stdio"][..]);
+    for (args, names, guidance) in [
+        (sql, Vec::new(), NONE),
+        (sql, vec!["alpha", "beta"], AMBIGUOUS),
+        (mcp, Vec::new(), NONE),
+        (mcp, vec!["alpha", "beta"], AMBIGUOUS),
+    ] {
+        let memberships = names
+            .into_iter()
+            .map(|name| WorkspaceMembership {
+                workspace: Some(coral_client::workspace(name)),
                 role: WorkspaceRole::Owner as i32,
-            }],
-        },
-    ))
-    .await;
-
-    server
-        .cmd()
-        .args(["sql", "select 1 as value"])
-        .assert()
-        .success();
-    let requests = server.execute_sql_requests();
-    assert_workspace_name(requests[0].workspace.as_ref(), "only-workspace");
-    server.shutdown().await;
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn sql_command_guides_when_no_local_workspace_exists() {
-    let server = MockServer::start_with_config(
-        MockServerConfig::default().with_list_workspaces(ListWorkspacesResponse::default()),
-    )
-    .await;
-
-    let assert = server
-        .cmd()
-        .args(["sql", "select 1 as value"])
-        .assert()
-        .failure();
-    assert!(
-        String::from_utf8_lossy(&assert.get_output().stderr)
-            .contains("no workspace is available; create one with `coral workspace create <name>`")
-    );
-    assert!(server.execute_sql_requests().is_empty());
-    server.shutdown().await;
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn sql_command_guides_when_local_workspace_is_ambiguous() {
-    let server = MockServer::start_with_config(
-        MockServerConfig::default().with_list_workspaces(ListWorkspacesResponse {
-            memberships: ["alpha", "beta"]
-                .into_iter()
-                .map(|name| WorkspaceMembership {
-                    workspace: Some(Workspace {
-                        name: name.to_string(),
-                    }),
-                    role: WorkspaceRole::Owner as i32,
-                })
-                .collect(),
-        }),
-    )
-    .await;
-
-    let assert = server
-        .cmd()
-        .args(["sql", "select 1 as value"])
-        .assert()
-        .failure();
-    assert!(
-        String::from_utf8_lossy(&assert.get_output().stderr)
-            .contains("multiple workspaces are available; specify one with `--workspace <name>`")
-    );
-    assert!(server.execute_sql_requests().is_empty());
-    server.shutdown().await;
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn mcp_stdio_guides_when_no_local_workspace_exists() {
-    let server = MockServer::start_with_config(
-        MockServerConfig::default().with_list_workspaces(ListWorkspacesResponse::default()),
-    )
-    .await;
-
-    let assert = server.cmd().arg("mcp-stdio").assert().failure();
-    assert!(
-        String::from_utf8_lossy(&assert.get_output().stderr)
-            .contains("no workspace is available; create one with `coral workspace create <name>`")
-    );
-    server.shutdown().await;
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn mcp_stdio_guides_when_local_workspace_is_ambiguous() {
-    let server = MockServer::start_with_config(
-        MockServerConfig::default().with_list_workspaces(ListWorkspacesResponse {
-            memberships: ["alpha", "beta"]
-                .into_iter()
-                .map(|name| WorkspaceMembership {
-                    workspace: Some(Workspace {
-                        name: name.to_string(),
-                    }),
-                    role: WorkspaceRole::Owner as i32,
-                })
-                .collect(),
-        }),
-    )
-    .await;
-
-    let assert = server.cmd().arg("mcp-stdio").assert().failure();
-    assert!(
-        String::from_utf8_lossy(&assert.get_output().stderr)
-            .contains("multiple workspaces are available; specify one with `--workspace <name>`")
-    );
-    server.shutdown().await;
+            })
+            .collect();
+        let server = MockServer::start_with_config(
+            MockServerConfig::default()
+                .with_list_workspaces(ListWorkspacesResponse { memberships }),
+        )
+        .await;
+        let assert = server.cmd().args(args).assert().failure();
+        let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+        assert!(stderr.contains(guidance), "{args:?}: {stderr}");
+        assert!(server.execute_sql_requests().is_empty());
+        server.shutdown().await;
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

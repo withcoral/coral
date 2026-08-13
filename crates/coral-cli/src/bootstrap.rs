@@ -132,7 +132,7 @@ mod tests {
     use coral_client::AppClient;
 
     #[tokio::test]
-    async fn configured_auth_denies_local_principal_to_ordinary_cli_client() {
+    async fn configured_auth_uses_no_local_principal_policy_for_cli_client() {
         let config_dir = TempDir::new().expect("config dir");
         let signing_key =
             EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
@@ -158,7 +158,7 @@ mod tests {
             .workspace_client()
             .list_workspaces(Request::new(ListWorkspacesRequest {}))
             .await
-            .expect_err("ordinary CLI client must not become the local principal");
+            .expect_err("NoLocalPrincipal CLI client must not become the local principal");
         assert_eq!(denied.code(), Code::Unauthenticated);
         server.shutdown().await.expect("shut down CLI app server");
     }
