@@ -121,6 +121,15 @@ async function authorizationServerMetadata(
   }
 
   const metadata = (await response.json()) as AuthorizationServerMetadata
+  validateAuthorizationServerMetadata(metadata, config.issuer)
+
+  return metadata
+}
+
+function validateAuthorizationServerMetadata(
+  metadata: AuthorizationServerMetadata,
+  issuer: string,
+): void {
   if (
     typeof metadata.authorization_endpoint !== 'string' ||
     typeof metadata.issuer !== 'string' ||
@@ -128,11 +137,36 @@ async function authorizationServerMetadata(
   ) {
     throw new Error('Coral auth metadata is missing required OAuth endpoints')
   }
-  if (metadata.issuer !== config.issuer) {
+  if (metadata.issuer !== issuer) {
     throw new Error('Coral auth metadata issuer does not match REEF_AUTH_ISSUER')
   }
 
-  return metadata
+  const issuerOrigin = new URL(issuer).origin
+  validateMetadataEndpoint(metadata.authorization_endpoint, 'authorization_endpoint', issuerOrigin)
+  validateMetadataEndpoint(metadata.token_endpoint, 'token_endpoint', issuerOrigin)
+}
+
+function validateMetadataEndpoint(endpoint: string, name: string, issuerOrigin: string): void {
+  let url: URL
+  try {
+    url = new URL(endpoint)
+  } catch {
+    throw invalidMetadataEndpoint(name)
+  }
+  if (
+    (url.protocol !== 'http:' && url.protocol !== 'https:') ||
+    url.origin !== issuerOrigin ||
+    url.username ||
+    url.password
+  ) {
+    throw invalidMetadataEndpoint(name)
+  }
+}
+
+function invalidMetadataEndpoint(name: string): Error {
+  return new Error(
+    `Coral auth metadata ${name} must be an absolute same-origin HTTP(S) URL without credentials`,
+  )
 }
 
 async function exchangeAuthorizationCode(
@@ -157,6 +191,7 @@ async function exchangeAuthorizationCode(
     body,
     headers: { accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded' },
     method: 'POST',
+    redirect: 'manual',
   })
   if (!response.ok) {
     throw await tokenExchangeError(response)
