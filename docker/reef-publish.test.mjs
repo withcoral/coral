@@ -129,20 +129,36 @@ test('alias publication converges absent, same, mismatch, and partial-failure st
   }
 })
 
-test('GitHub release promotion is the final coordinated commit point', async () => {
+test('release promotion is coordinated and notification is independently retryable', async () => {
   const release = await read('../.github/workflows/release.yml')
   const coordinate = release.indexOf('coordinate-docker-aliases:')
   const promote = release.indexOf('promote-release:', coordinate)
+  const notify = release.indexOf('notify-release:', promote)
 
-  assert.ok(coordinate >= 0 && coordinate < promote)
-  assert.match(release.slice(promote), /- coordinate-docker-aliases/)
+  assert.ok(coordinate >= 0 && coordinate < promote && promote < notify)
+  assert.match(release.slice(promote, notify), /- coordinate-docker-aliases/)
+  assert.match(release.slice(promote, notify), /environment: release/)
   assert.match(
-    release.slice(promote),
+    release.slice(promote, notify),
+    /outputs:\n\s+promoted: \$\{\{ steps\.promote\.outputs\.promoted \}\}/,
+  )
+  assert.match(
+    release.slice(promote, notify),
     /MAKE_LATEST: \$\{\{ needs\.coordinate-docker-aliases\.outputs\.make-latest \}\}/,
   )
-  assert.match(release.slice(promote), /if \[ "\$was_prerelease" = true \]/)
-  assert.match(release.slice(promote), /-F prerelease=false -f "make_latest=\$\{MAKE_LATEST\}"/)
-  assert.match(release.slice(promote), /if: steps\.promote\.outputs\.promoted == 'true'/)
+  assert.match(release.slice(promote, notify), /if \[ "\$was_prerelease" = true \]/)
+  assert.match(
+    release.slice(promote, notify),
+    /-F prerelease=false -f "make_latest=\$\{MAKE_LATEST\}"/,
+  )
+  assert.doesNotMatch(release.slice(promote, notify), /DISCORD_WEBHOOK/)
+  assert.match(release.slice(notify), /- promote-release/)
+  assert.match(release.slice(notify), /environment: release/)
+  assert.match(
+    release.slice(notify),
+    /if: needs\.promote-release\.outputs\.promoted == 'true'/,
+  )
+  assert.match(release.slice(notify), /DISCORD_WEBHOOK/)
   assert.doesNotMatch(release.slice(0, coordinate), /releases\/tags\/\$\{TAG_NAME\}/)
   assert.doesNotMatch(release.slice(0, coordinate), /-F prerelease=false/)
 })

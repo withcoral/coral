@@ -577,9 +577,12 @@ jobs:
     needs:
       - validate-release-ref
       - coordinate-docker-aliases
+    environment: release
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      promoted: ${{ steps.promote.outputs.promoted }}
     steps:
       - name: Create GitHub App token
         uses: actions/create-github-app-token@f8d387b68d61c58ab83c6c016672934102569859 # v3.0.0
@@ -603,30 +606,36 @@ jobs:
           promoted=false
           if [ "$was_prerelease" = true ]; then
             release_id="$(printf '%s' "$release" | jq -r .id)"
-            release="$(gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
-              -F prerelease=false -f "make_latest=${MAKE_LATEST}")"
+            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
+              -F prerelease=false -f "make_latest=${MAKE_LATEST}" >/dev/null
             promoted=true
           fi
-          {
-            echo "promoted=${promoted}"
-            echo "name=$(printf '%s' "$release" | jq -r '.name // ""')"
-            echo "url=$(printf '%s' "$release" | jq -r .html_url)"
-            echo "body<<__BODY__"
-            printf '%s' "$release" | jq -r '.body // ""'
-            echo "__BODY__"
-          } >> "$GITHUB_OUTPUT"
+          echo "promoted=${promoted}" >> "$GITHUB_OUTPUT"
 
+  # Keep delivery separate so a failed webhook can be retried without
+  # re-running the already-completed promotion job.
+  notify-release:
+    needs:
+      - validate-release-ref
+      - promote-release
+    if: needs.promote-release.outputs.promoted == 'true'
+    environment: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
       - name: Post promoted release to Discord
-        if: steps.promote.outputs.promoted == 'true'
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_CHANGELOG_WEBHOOK }}
+          GH_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ needs.validate-release-ref.outputs.tag-name }}
-          RELEASE_NAME: ${{ steps.promote.outputs.name }}
-          RELEASE_BODY: ${{ steps.promote.outputs.body }}
-          RELEASE_URL: ${{ steps.promote.outputs.url }}
         run: |
-          body="${RELEASE_BODY:0:3500}"
-          title="🪸 ${RELEASE_NAME:-$TAG_NAME}"
-          jq -n --arg title "${title:0:253}" --arg desc "$body" --arg url "$RELEASE_URL" \
+          set -euo pipefail
+          release="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG_NAME}")"
+          name="$(printf '%s' "$release" | jq -r '.name // ""')"
+          url="$(printf '%s' "$release" | jq -r .html_url)"
+          body="$(printf '%s' "$release" | jq -r '.body // ""')"
+          title="🪸 ${name:-$TAG_NAME}"
+          jq -n --arg title "${title:0:253}" --arg desc "${body:0:3500}" --arg url "$url" \
             '{embeds:[{title:$title,description:$desc,url:$url,color:16744272,footer:{text:"Fresh from the reef"}}]}' |
             curl -sf -H "Content-Type: application/json" -d @- "$DISCORD_WEBHOOK"
