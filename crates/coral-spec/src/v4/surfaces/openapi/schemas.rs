@@ -315,7 +315,7 @@ impl OpenApiImporter<'_> {
     ) -> Result<(), AllOfMergeError> {
         merge_json_object_shape_annotation_insensitive(
             merged,
-            direct_json_object_shape(resolved),
+            direct_json_object_shape(self.schema_root(), resolved),
             0,
             MAX_PROPERTY_COMPARISON_DEPTH,
         )

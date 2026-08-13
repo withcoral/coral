@@ -306,7 +306,16 @@ fn json_schema_walk_error_from_ref(error: RefError<'_>) -> JsonSchemaWalkError {
     }
 }
 
-pub(crate) fn direct_json_object_shape(schema: &Value) -> JsonObjectShape {
+/// The properties and required set a schema declares in its own right.
+///
+/// Takes the [`SchemaRoot`] because the properties it hands back are schemas,
+/// and a caller that compares two of them is comparing what the provider wrote.
+/// Two `allOf` branches may declare one property in different spellings of the
+/// same thing — `{type: [string, "null"]}` against
+/// `{anyOf: [{type: string}, {type: "null"}]}` — and
+/// `json_schema_property_schemas_conflict` would read that as a genuine
+/// disagreement and discard the whole composed type.
+pub(crate) fn direct_json_object_shape(root: SchemaRoot<'_>, schema: &Value) -> JsonObjectShape {
     let Some(schema) = schema.as_object() else {
         return JsonObjectShape::default();
     };
@@ -316,7 +325,7 @@ pub(crate) fn direct_json_object_shape(schema: &Value) -> JsonObjectShape {
         .map(|properties| {
             properties
                 .iter()
-                .map(|(name, property)| (name.clone(), property.clone()))
+                .map(|(name, property)| (name.clone(), root.read(property).into_owned()))
                 .collect()
         })
         .unwrap_or_default();
@@ -493,9 +502,12 @@ fn collect_all_of_branches(
             }
             if let Some(properties) = resolved.get("properties").and_then(Value::as_object) {
                 for (name, property) in properties {
+                    // Normalized on the way into the view for the same reason
+                    // as in `direct_json_object_shape`: these are schemas, and
+                    // every caller reads them as such.
                     view.properties
                         .entry(name.clone())
-                        .or_insert_with(|| property.clone());
+                        .or_insert_with(|| root.read(property).into_owned());
                 }
             }
             for branch in resolved
@@ -943,7 +955,7 @@ mod tests {
 
     #[test]
     fn annotation_insensitive_object_shape_merge_keeps_metadata() {
-        let mut target = direct_json_object_shape(&json!({
+        let mut target = direct_json_object_shape(SchemaRoot::new(&Value::Null), &json!({
             "type": "object",
             "properties": {
                 "query": {
@@ -952,7 +964,7 @@ mod tests {
                 }
             }
         }));
-        let source = direct_json_object_shape(&json!({
+        let source = direct_json_object_shape(SchemaRoot::new(&Value::Null), &json!({
             "type": "object",
             "required": ["query"],
             "properties": {
@@ -976,7 +988,7 @@ mod tests {
 
     #[test]
     fn annotation_insensitive_object_shape_merge_ignores_nested_schema_annotations() {
-        let mut target = direct_json_object_shape(&json!({
+        let mut target = direct_json_object_shape(SchemaRoot::new(&Value::Null), &json!({
             "type": "object",
             "properties": {
                 "filter": {
@@ -990,7 +1002,7 @@ mod tests {
                 }
             }
         }));
-        let source = direct_json_object_shape(&json!({
+        let source = direct_json_object_shape(SchemaRoot::new(&Value::Null), &json!({
             "type": "object",
             "properties": {
                 "filter": {
@@ -1010,7 +1022,7 @@ mod tests {
 
     #[test]
     fn annotation_insensitive_object_shape_merge_keeps_const_values_opaque() {
-        let mut target = direct_json_object_shape(&json!({
+        let mut target = direct_json_object_shape(SchemaRoot::new(&Value::Null), &json!({
             "type": "object",
             "properties": {
                 "filter": {
@@ -1025,7 +1037,7 @@ mod tests {
                 }
             }
         }));
-        let source = direct_json_object_shape(&json!({
+        let source = direct_json_object_shape(SchemaRoot::new(&Value::Null), &json!({
             "type": "object",
             "properties": {
                 "filter": {
@@ -1049,7 +1061,7 @@ mod tests {
 
     #[test]
     fn annotation_insensitive_object_shape_merge_keeps_enum_values_opaque() {
-        let mut target = direct_json_object_shape(&json!({
+        let mut target = direct_json_object_shape(SchemaRoot::new(&Value::Null), &json!({
             "type": "object",
             "properties": {
                 "filter": {
@@ -1064,7 +1076,7 @@ mod tests {
                 }
             }
         }));
-        let source = direct_json_object_shape(&json!({
+        let source = direct_json_object_shape(SchemaRoot::new(&Value::Null), &json!({
             "type": "object",
             "properties": {
                 "filter": {
@@ -1090,7 +1102,7 @@ mod tests {
 
     #[test]
     fn annotation_insensitive_object_shape_merge_keeps_unknown_keyword_values_opaque() {
-        let mut target = direct_json_object_shape(&json!({
+        let mut target = direct_json_object_shape(SchemaRoot::new(&Value::Null), &json!({
             "type": "object",
             "properties": {
                 "filter": {
@@ -1101,7 +1113,7 @@ mod tests {
                 }
             }
         }));
-        let source = direct_json_object_shape(&json!({
+        let source = direct_json_object_shape(SchemaRoot::new(&Value::Null), &json!({
             "type": "object",
             "properties": {
                 "filter": {
@@ -1121,7 +1133,7 @@ mod tests {
 
     #[test]
     fn annotation_insensitive_object_shape_merge_recurses_into_schema_dependencies() {
-        let mut target = direct_json_object_shape(&json!({
+        let mut target = direct_json_object_shape(SchemaRoot::new(&Value::Null), &json!({
             "type": "object",
             "properties": {
                 "filter": {
@@ -1141,7 +1153,7 @@ mod tests {
                 }
             }
         }));
-        let source = direct_json_object_shape(&json!({
+        let source = direct_json_object_shape(SchemaRoot::new(&Value::Null), &json!({
             "type": "object",
             "properties": {
                 "filter": {
@@ -1167,7 +1179,7 @@ mod tests {
 
     #[test]
     fn annotation_insensitive_object_shape_merge_reports_depth_exceeded() {
-        let mut target = direct_json_object_shape(&json!({
+        let mut target = direct_json_object_shape(SchemaRoot::new(&Value::Null), &json!({
             "type": "object",
             "properties": {
                 "filter": {
@@ -1178,7 +1190,7 @@ mod tests {
                 }
             }
         }));
-        let source = direct_json_object_shape(&json!({
+        let source = direct_json_object_shape(SchemaRoot::new(&Value::Null), &json!({
             "type": "object",
             "properties": {
                 "filter": {

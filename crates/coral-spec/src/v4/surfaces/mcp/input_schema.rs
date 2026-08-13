@@ -102,7 +102,7 @@ fn input_object_shape(
                 return Ok(None);
             }
 
-            let mut shape = direct_json_object_shape(schema);
+            let mut shape = direct_json_object_shape(root, schema);
             if !resolve_input_property_schemas(
                 root,
                 &mut shape,

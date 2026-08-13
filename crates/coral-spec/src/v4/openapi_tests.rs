@@ -3818,3 +3818,84 @@ paths:
         operation.diagnostics
     );
 }
+
+/// Two `allOf` branches may spell one property's nullability differently — a
+/// `type` array in the base, a union in the subtype — and the fold compares
+/// property schemas on validation semantics to decide whether the branches
+/// disagree. Comparing what the provider wrote rather than what the importer
+/// reads makes those two spellings look like a genuine conflict, which
+/// discards every field of the composed type, not just the one in dispute.
+#[test]
+fn importer_folds_all_of_branches_that_spell_nullability_differently() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: mixed_spellings
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.1.0
+components:
+  schemas:
+    Base:
+      type: object
+      properties:
+        id: {type: [string, 'null']}
+    Extra:
+      type: object
+      properties:
+        id:
+          anyOf:
+            - {type: string}
+            - {type: 'null'}
+        name: {type: string}
+    Composed:
+      allOf:
+        - $ref: '#/components/schemas/Base'
+        - $ref: '#/components/schemas/Extra'
+paths:
+  /things:
+    get:
+      operationId: things/get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Composed'
+"
+        .as_bytes(),
+    )
+    .expect("import");
+
+    let operation = ir.operations.first().expect("operation");
+    assert!(
+        operation.diagnostics.is_empty(),
+        "{:?}",
+        operation.diagnostics
+    );
+    let row_type = ir
+        .types
+        .iter()
+        .find(|ty| ty.id == operation.output.type_ref)
+        .expect("row type");
+    let IrTypeShape::Object { fields } = &row_type.shape else {
+        panic!("the composed type should import as an object: {row_type:?}");
+    };
+    assert_eq!(
+        fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        ["id", "name"]
+    );
+}
