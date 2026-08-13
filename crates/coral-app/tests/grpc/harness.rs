@@ -26,6 +26,8 @@ pub(crate) struct GrpcHarness {
     local_trace_store_dir: Option<PathBuf>,
     app: AppClient,
     _server: RunningServer,
+    server_builder: ServerBuilder,
+    feature_overrides: FeatureOverrides,
 }
 
 pub(crate) struct FailingHttpFixture {
@@ -59,11 +61,13 @@ impl GrpcHarness {
             config_dir,
             app,
             _server: server,
+            server_builder,
+            feature_overrides,
             ..
         } = self;
         drop(app);
         drop(server);
-        Self::start_with_parts(temp_dir, config_dir, FeatureOverrides::default()).await
+        Self::start_with_builder(temp_dir, config_dir, feature_overrides, server_builder).await
     }
 
     pub(crate) async fn new_with_engine_extensions_provider(
@@ -102,8 +106,9 @@ impl GrpcHarness {
     ) -> Self {
         ensure_file_credentials_config(&config_dir);
         let server = server_builder
+            .clone()
             .with_config_dir(&config_dir)
-            .with_feature_overrides(feature_overrides)
+            .with_feature_overrides(feature_overrides.clone())
             .start()
             .await
             .expect("start server");
@@ -117,6 +122,8 @@ impl GrpcHarness {
             local_trace_store_dir,
             app,
             _server: server,
+            server_builder,
+            feature_overrides,
         }
     }
 

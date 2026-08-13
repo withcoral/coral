@@ -543,7 +543,7 @@ fn catalog_fingerprint(
                 FROM catalog_documents AS documents
                 LEFT JOIN catalog_source_owners AS owners
                     ON owners.workspace = documents.workspace
-                   AND owners.source_name = documents.source_name
+                   AND owners.source_name = COALESCE(documents.catalog_name, documents.source_name)
                 WHERE documents.workspace = ?1
                   AND (
                       owners.source_name IS NULL

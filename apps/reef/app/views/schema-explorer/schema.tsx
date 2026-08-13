@@ -159,6 +159,13 @@ function expansionKey(catalogName: string, schemaName: string) {
   return `${catalogName}\0${schemaName}`
 }
 
+export function schemaTreeChildrenId(
+  kind: 'catalog' | 'catalogSchema' | 'schema',
+  ...names: string[]
+) {
+  return `schema-tree-${kind}-${encodeURIComponent(JSON.stringify(names))}`
+}
+
 function toggleExpanded(
   setExpanded: React.Dispatch<React.SetStateAction<Set<string>>>,
   key: string,
@@ -258,7 +265,7 @@ function CatalogTreeGroup({
   const descendantSearch = catalogMatches ? '' : normalizedSearch
   const visibleSchemas = visibleSchemasForCatalog(catalog, normalizedSearch)
   const expanded = normalizedSearch !== '' || expandedCatalogs.has(catalog.name)
-  const catalogChildrenId = `catalog-${catalog.name}-schemas`
+  const catalogChildrenId = schemaTreeChildrenId('catalog', catalog.name)
   return (
     <div>
       <ButtonContainer
@@ -284,7 +291,11 @@ function CatalogTreeGroup({
           {visibleSchemas.map((providerSchema) => {
             const schemaKey = expansionKey(catalog.name, providerSchema.name)
             const schemaExpanded = normalizedSearch !== '' || expandedSchemas.has(schemaKey)
-            const schemaChildrenId = `catalog-${catalog.name}-schema-${providerSchema.name}-items`
+            const schemaChildrenId = schemaTreeChildrenId(
+              'catalogSchema',
+              catalog.name,
+              providerSchema.name,
+            )
             const visibleItems = visibleItemsForSchema(providerSchema, descendantSearch)
             return (
               <div key={schemaKey}>
@@ -345,7 +356,7 @@ function SchemaTreeGroup({
   workspaceId: string
 }) {
   const expanded = normalizedSearch !== '' || expandedSchemas.has(schema.name)
-  const schemaChildrenId = `schema-${schema.name}-items`
+  const schemaChildrenId = schemaTreeChildrenId('schema', schema.name)
   const visibleItems = visibleItemsForSchema(schema, normalizedSearch)
   return (
     <div>

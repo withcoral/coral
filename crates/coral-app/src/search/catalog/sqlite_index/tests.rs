@@ -113,6 +113,48 @@ fn search_hit_preserves_catalog_identity_from_the_projection() {
 }
 
 #[test]
+fn catalog_qualified_projection_remains_current_after_refresh() {
+    let temp = tempdir().expect("tempdir");
+    let store = catalog_store(&temp);
+    let mut document = owned_document(
+        "github_v4",
+        DocumentInput {
+            doc_id: "catalog:table:github_v4.issues.list_for_repo",
+            doc_kind: CatalogIndexDocumentKind::CatalogTable,
+            source_name: "issues",
+            surface_kind: "table",
+            surface_name: "list_for_repo",
+            field_name: "",
+            field_role: "",
+            qualified_name: "github_v4.issues.list_for_repo",
+            title: "list_for_repo",
+            description: "GitHub repository issues",
+            searchable_text: "github repository issues",
+        },
+    );
+    document.catalog_name = Some("github_v4".to_string());
+    let snapshot = CatalogIndexSnapshot {
+        documents: vec![document],
+        fingerprint: "catalog-qualified-fixture-v1".to_string(),
+    };
+
+    let refresh = store
+        .refresh_catalog_projection(&snapshot)
+        .expect("refresh catalog-qualified projection");
+
+    assert!(refresh.refreshed);
+    assert!(
+        store
+            .catalog_projection_is_current(&snapshot.fingerprint)
+            .expect("catalog-qualified projection current")
+    );
+    let second_refresh = store
+        .refresh_catalog_projection(&snapshot)
+        .expect("second refresh");
+    assert!(!second_refresh.refreshed);
+}
+
+#[test]
 fn refresh_to_empty_snapshot_clears_projection_and_persists_fingerprint() {
     let temp = tempdir().expect("tempdir");
     let store = catalog_store(&temp);

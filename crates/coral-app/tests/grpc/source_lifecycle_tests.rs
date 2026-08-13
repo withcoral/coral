@@ -169,13 +169,30 @@ async fn installed_v4_mcp_uses_public_catalog_identities() {
         .expect("list v4 MCP catalog")
         .into_inner();
     assert_eq!(catalog.items.len(), 2);
-    assert!(catalog.items.iter().all(|item| match item.item.as_ref() {
-        Some(catalog_item::Item::Table(table)) =>
-            table.catalog_name == "mcp_v4" && table.schema_name == "public",
-        Some(catalog_item::Item::TableFunction(function)) =>
-            function.catalog_name == "mcp_v4" && function.schema_name == "public",
-        None => false,
-    }));
+    let tables = catalog
+        .items
+        .iter()
+        .filter_map(|item| match item.item.as_ref() {
+            Some(catalog_item::Item::Table(table)) => Some(table),
+            Some(catalog_item::Item::TableFunction(_)) | None => None,
+        })
+        .collect::<Vec<_>>();
+    let functions = catalog
+        .items
+        .iter()
+        .filter_map(|item| match item.item.as_ref() {
+            Some(catalog_item::Item::TableFunction(function)) => Some(function),
+            Some(catalog_item::Item::Table(_)) | None => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(tables.len(), 1);
+    assert_eq!(tables[0].catalog_name, "mcp_v4");
+    assert_eq!(tables[0].schema_name, "public");
+    assert_eq!(tables[0].name, "list_items");
+    assert_eq!(functions.len(), 1);
+    assert_eq!(functions[0].catalog_name, "mcp_v4");
+    assert_eq!(functions[0].schema_name, "public");
+    assert_eq!(functions[0].name, "get_item");
 
     for sql in [
         "SELECT id FROM mcp_v4.list_items",

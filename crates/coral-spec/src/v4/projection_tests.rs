@@ -34,15 +34,22 @@ surface:
         .projections
         .iter()
         .filter(|projection| projection.visibility == ProjectionVisibility::Published)
-        .map(|projection| projection.name.as_str())
-        .collect::<Vec<_>>();
-    assert!(published.len() >= 3, "{published:?}");
-    assert!(
-        catalog
-            .projections
-            .iter()
-            .all(|projection| !projection.name.is_empty())
-    );
+        .map(|projection| (projection.operation_id.as_str(), projection.name.as_str()))
+        .collect::<HashMap<_, _>>();
+    for (operation_id, expected_name) in [
+        ("issues_list_for_repo", "list_for_repo"),
+        (
+            "search_issues_and_pull_requests",
+            "issues_and_pull_requests",
+        ),
+        ("issues_get", "get"),
+    ] {
+        assert_eq!(
+            published.get(operation_id),
+            Some(&expected_name),
+            "published GitHub issue projections: {published:?}"
+        );
+    }
 }
 
 #[test]
