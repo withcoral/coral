@@ -3,31 +3,33 @@ import { NavLink, useLocation } from 'react-router'
 
 import { HighlightedCode } from '@/components/code-block'
 import { routePath } from '@/routing/routemap'
+import { formatDurationFromNanos, formatTimestamp, timeAgo } from '@/utils/format-time'
+import { useNow } from '@/utils/use-now'
 import { Tooltip } from '@/wax/components/tooltip'
 import { Typography } from '@/wax/components/typography'
 
 import * as s from './traces.css'
 import {
   durationClass,
-  formatDurationFromNanos,
-  formatTimestamp,
   operationCodeLanguage,
   operationPreview,
   startMs,
   statusTone,
-  timeAgo,
   type TraceSummaryData,
 } from './trace-utils'
 
+/** How recent the newest trace must be for a label to count seconds. */
+const SECONDS_LABEL_WINDOW_MS = 60_000
+
 function TraceRow({
   active,
-  referenceTimeMs,
+  nowMs,
   search,
   trace,
   workspaceId,
 }: {
   active: boolean
-  referenceTimeMs: number
+  nowMs: number
   search: string
   trace: TraceSummaryData
   workspaceId: string
@@ -46,7 +48,7 @@ function TraceRow({
       <div className={classNames(s.cell, s.cellTimestamp)}>
         <Tooltip content={formatTimestamp(startMs(trace))} side="right">
           <Typography.Body as="span" variant="tertiary">
-            {timeAgo(startMs(trace), referenceTimeMs)}
+            {timeAgo(startMs(trace), nowMs)}
           </Typography.Body>
         </Tooltip>
       </div>
@@ -82,13 +84,22 @@ export function TraceList({
   workspaceId: string
 }) {
   const location = useLocation()
+  // The list revalidates every 30s, which refreshes referenceTimeMs and so keeps
+  // minute-scale labels current on its own. Tick only for second-scale labels.
+  const newestStartMs = Math.max(0, ...traces.map(startMs))
+  const shouldCountSeconds = referenceTimeMs - newestStartMs < SECONDS_LABEL_WINDOW_MS
+  const { now } = useNow({
+    refreshAfterMs: shouldCountSeconds ? 1_000 : undefined,
+    seedMs: referenceTimeMs,
+  })
+
   return (
     <div className={s.traceList}>
       {traces.map((trace) => (
         <TraceRow
           active={trace.traceId === activeTraceId}
           key={trace.traceId}
-          referenceTimeMs={referenceTimeMs}
+          nowMs={now.getTime()}
           search={location.search}
           trace={trace}
           workspaceId={workspaceId}

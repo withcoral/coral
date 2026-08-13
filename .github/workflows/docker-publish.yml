@@ -6,6 +6,15 @@ on:
         description: Published release tag to package, e.g. v1.2.3.
         required: true
         type: string
+      defer-aliases:
+        description: Defer moving aliases to the paired release coordinator.
+        required: false
+        type: boolean
+        default: false
+    outputs:
+      digest:
+        description: Digest the published Coral version tag resolves to.
+        value: ${{ jobs.publish-image.outputs.digest }}
   workflow_dispatch:
     inputs:
       tag:
@@ -17,9 +26,9 @@ on:
 permissions:
   contents: read
 concurrency:
-  # Moving tags (latest and X.Y) are shared mutable state across releases, so
-  # every publish must finish before the next one evaluates and applies them.
-  group: docker-publish
+  # Direct CVE rebuilds share the coordinator lock because they may move X.Y
+  # and latest. Deferred release builds get a run-local group instead.
+  group: ${{ inputs.defer-aliases == true && format('docker-publish-deferred-{0}', github.run_id) || 'coordinated-docker-aliases' }}
   queue: max
 
 env:
@@ -32,6 +41,11 @@ env:
 jobs:
   publish-image:
     name: Build, publish, and smoke the linux/amd64 image
+    # Serialize exact-version writes even when a direct rebuild overlaps a
+    # deferred release build for the same tag.
+    concurrency:
+      group: docker-publish-${{ inputs.tag }}
+      queue: max
     # GitHub-hosted, like release.yml's Linux build matrix: the smoke battery
     # runs real containers against the pushed digest on a stock Docker daemon.
     runs-on: ubuntu-latest
@@ -39,6 +53,8 @@ jobs:
       contents: read
       packages: write
       id-token: write
+    outputs:
+      digest: ${{ steps.manifest.outputs.digest }}
     steps:
       - name: Validate tag
         id: tag
@@ -140,16 +156,18 @@ jobs:
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
 
       - name: Read release prerelease flag
+        if: ${{ inputs.defer-aliases != true }}
         id: release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          prerelease="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isPrerelease --jq '.isPrerelease')"
+          prerelease="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isPrerelease --jq .isPrerelease)"
           echo "prerelease=${prerelease}" >> "$GITHUB_OUTPUT"
 
       - name: Resolve the newest stable tags
+        if: ${{ inputs.defer-aliases != true }}
         id: newest
         shell: bash
         env:
@@ -168,10 +186,91 @@ jobs:
           newest="$(printf '%s\n' "$candidates" | sort -V | tail -1)"
           # Dots are literal so the 1.2 line never absorbs 1.20.x.
           line="$(printf '%s\n' "$candidates" | grep -E "^v${MAJOR_MINOR//./\\.}\." | sort -V | tail -1)"
-          echo "newest stable release is '${newest}'; newest in the ${MAJOR_MINOR} line is '${line}'; this run packages '${TAG}'"
+          echo "newest candidate is '${newest}'; newest in the ${MAJOR_MINOR} line is '${line}'; this run packages '${TAG}'"
           {
             echo "tag=${newest}"
             echo "line-tag=${line}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Snapshot direct rebuild alias ownership
+        if: ${{ inputs.defer-aliases != true }}
+        id: aliases
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MAJOR_MINOR: ${{ steps.tag.outputs.major-minor }}
+          NEWEST_LINE_TAG: ${{ steps.newest.outputs.line-tag }}
+          NEWEST_TAG: ${{ steps.newest.outputs.tag }}
+          PRERELEASE: ${{ steps.release.outputs.prerelease }}
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          set -euo pipefail
+          tag_digest() {
+            local tag="$1"
+            local matches
+            if ! matches="$(gh api --paginate \
+              "/orgs/withcoral/packages/container/coral/versions?per_page=100" \
+              --jq ".[] | select(any(.metadata.container.tags[]; . == \"${tag}\")) | .name")"; then
+              echo "Failed to resolve ${IMAGE}:${tag} through the package API." >&2
+              return 2
+            fi
+            if [ -n "$matches" ]; then
+              if [ "$(printf '%s\n' "$matches" | wc -l)" -ne 1 ]; then
+                echo "${IMAGE}:${tag} resolved to multiple package digests." >&2
+                return 2
+              fi
+              if [[ ! "$matches" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+                echo "${IMAGE}:${tag} resolved to invalid digest '${matches}'." >&2
+                return 2
+              fi
+            fi
+            printf '%s' "$matches"
+          }
+
+          if ! version_digest="$(tag_digest "$VERSION")"; then
+            exit 1
+          fi
+          can_move_alias() {
+            local alias="$1"
+            local eligible="$2"
+            local alias_digest
+            [ "$eligible" = true ] || return 1
+            if ! alias_digest="$(tag_digest "$alias")"; then
+              return 2
+            fi
+            if [ -z "$alias_digest" ] || { [ -n "$version_digest" ] && [ "$alias_digest" = "$version_digest" ]; }; then
+              return 0
+            fi
+            echo "Leaving ${IMAGE}:${alias} at ${alias_digest}; it does not belong to ${IMAGE}:${VERSION}${version_digest:+ at ${version_digest}}." >&2
+            return 1
+          }
+
+          line_eligible=false
+          latest_eligible=false
+          if [ "$PRERELEASE" = false ] && [ "$NEWEST_LINE_TAG" = "$TAG" ]; then
+            line_eligible=true
+          fi
+          if [ "$PRERELEASE" = false ] && [ "$NEWEST_TAG" = "$TAG" ]; then
+            latest_eligible=true
+          fi
+
+          move_line=false
+          move_latest=false
+          if can_move_alias "$MAJOR_MINOR" "$line_eligible"; then
+            move_line=true
+          else
+            status=$?
+            [ "$status" -eq 1 ] || exit "$status"
+          fi
+          if can_move_alias latest "$latest_eligible"; then
+            move_latest=true
+          else
+            status=$?
+            [ "$status" -eq 1 ] || exit "$status"
+          fi
+          {
+            echo "move-line=${move_line}"
+            echo "move-latest=${move_latest}"
           } >> "$GITHUB_OUTPUT"
 
       - name: Prepare smoke helper
@@ -251,44 +350,48 @@ jobs:
           "$RUNNER_TEMP/wait-healthy.sh" coral-smoke-seed
           docker logs coral-smoke-seed 2>&1 | grep -F 'CORAL_SEED_CONFIG ignored'
 
-      # The digest is deliberately untagged until every smoke check passes, so
-      # a broken rebuild cannot move an existing release, line, or latest tag.
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Sign the staged manifest
+        shell: bash
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          cosign sign --yes "${IMAGE}@${DIGEST}"
+
+      # Moving aliases are applied to Coral and Reef together by the release
+      # coordinator. A direct CVE rebuild moves an alias only when it is absent
+      # or still resolves to the rebuilt exact version, so it cannot roll back
+      # a coordinated pair.
       - name: Tag the validated manifest
         id: manifest
         shell: bash
         env:
           BUILD_DIGEST: ${{ steps.build.outputs.digest }}
-          VERSION: ${{ steps.tag.outputs.version }}
+          DEFER_ALIASES: ${{ inputs.defer-aliases }}
           MAJOR_MINOR: ${{ steps.tag.outputs.major-minor }}
-          PRERELEASE: ${{ steps.release.outputs.prerelease }}
-          NEWEST_TAG: ${{ steps.newest.outputs.tag }}
-          NEWEST_LINE_TAG: ${{ steps.newest.outputs.line-tag }}
+          MOVE_LATEST: ${{ steps.aliases.outputs.move-latest }}
+          MOVE_LINE: ${{ steps.aliases.outputs.move-line }}
+          VERSION: ${{ steps.tag.outputs.version }}
         run: |
           set -euo pipefail
-          # The exact version tag always publishes. The moving tags never move
-          # backwards and never point at a prerelease: a CVE rebuild of a
-          # superseded release re-publishes its own version tag, but leaves
-          # `X.Y` and `latest` on whichever release is newest by semver.
+          # The exact version tag always publishes. During a direct CVE rebuild,
+          # moving tags never move backwards or point at a prerelease: a release
+          # superseded in its own X.Y line republishes only its exact version tag.
           tags=(--tag "${IMAGE}:${VERSION}")
-          if [ "$PRERELEASE" = "false" ] && [ "$NEWEST_LINE_TAG" = "$TAG" ]; then
-            tags+=(--tag "${IMAGE}:${MAJOR_MINOR}")
-          fi
-          if [ "$PRERELEASE" = "false" ] && [ "$NEWEST_TAG" = "$TAG" ]; then
-            tags+=(--tag "${IMAGE}:latest")
+          if [ "$DEFER_ALIASES" != true ]; then
+            if [ "$MOVE_LINE" = true ]; then
+              tags+=(--tag "${IMAGE}:${MAJOR_MINOR}")
+            fi
+            if [ "$MOVE_LATEST" = true ]; then
+              tags+=(--tag "${IMAGE}:latest")
+            fi
           fi
           docker buildx imagetools create "${tags[@]}" "${IMAGE}@${BUILD_DIGEST}"
-          # Tagging republishes the index, so re-read the digest the tags resolve to.
+          # A one-source create preserves the signed index; verify the exact tag
+          # still resolves to that digest after publishing all selected tags.
           digest="$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" --format '{{.Manifest.Digest}}')"
-          test -n "$digest"
+          test "$digest" = "$BUILD_DIGEST"
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
-
-      - name: Install cosign
-        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
-
-      - name: Sign the published manifest
-        shell: bash
-        env:
-          DIGEST: ${{ steps.manifest.outputs.digest }}
-        run: |
-          set -euo pipefail
-          cosign sign --yes "${IMAGE}@${DIGEST}"
