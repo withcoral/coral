@@ -2,7 +2,7 @@
 //! either a continuation token or a whole next-page URL.
 //!
 //! Three callers ask the same question of a response schema: which property
-//! carries the next page? They ask it of different vocabularies — `OpenAPI`
+//! carries the next page? They ask it of different vocabularies — OpenAPI
 //! accepts a wider set of cursor names than MCP, and body next-URL detection
 //! has its own narrower lexicon — so the lexicon is a parameter, but the walk
 //! itself is shared.

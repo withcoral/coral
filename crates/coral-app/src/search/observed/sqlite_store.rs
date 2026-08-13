@@ -60,10 +60,10 @@ impl SqliteObservedValuesStore {
     pub(crate) fn capture_epoch(
         &self,
         workspace_name: &WorkspaceName,
-        owner_source_name: &str,
+        source_name: &str,
     ) -> Result<ObservedValuesEpoch, SqliteSearchError> {
-        let mut epochs = self.capture_epochs_for_sources(workspace_name, [owner_source_name])?;
-        let Some(epoch) = epochs.remove(owner_source_name) else {
+        let mut epochs = self.capture_epochs_for_sources(workspace_name, [source_name])?;
+        let Some(epoch) = epochs.remove(source_name) else {
             return Ok(ObservedValuesEpoch::ZERO);
         };
         Ok(epoch)
@@ -72,15 +72,15 @@ impl SqliteObservedValuesStore {
     pub(crate) fn capture_epochs_for_sources<'a>(
         &self,
         workspace_name: &WorkspaceName,
-        owner_source_names: impl IntoIterator<Item = &'a str>,
+        source_names: impl IntoIterator<Item = &'a str>,
     ) -> Result<BTreeMap<String, ObservedValuesEpoch>, SqliteSearchError> {
         let store = SqliteSearchStore::open_workspace(&self.layout, workspace_name)?;
         let connection = store.connect()?;
         let mut epochs = BTreeMap::new();
-        for owner_source_name in owner_source_names {
+        for source_name in source_names {
             epochs.insert(
-                owner_source_name.to_string(),
-                read_epoch(&connection, workspace_name, owner_source_name)?,
+                source_name.to_string(),
+                read_epoch(&connection, workspace_name, source_name)?,
             );
         }
         Ok(epochs)
@@ -121,13 +121,13 @@ impl SqliteObservedValuesStore {
     pub(crate) fn clear_source_and_advance_epoch(
         &self,
         workspace_name: &WorkspaceName,
-        owner_source_name: &str,
+        source_name: &str,
     ) -> Result<ObservedValuesClearResult, SqliteSearchError> {
         let store = SqliteSearchStore::open_workspace(&self.layout, workspace_name)?;
         let mut connection = store.connect()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let result =
-            clear_observed_source_in_transaction(&transaction, workspace_name, owner_source_name)?;
+            clear_observed_source_in_transaction(&transaction, workspace_name, source_name)?;
         transaction.commit()?;
         Ok(result)
     }
@@ -336,19 +336,19 @@ impl SqliteObservedValuesStore {
     pub(crate) fn queue_source_identities(
         &self,
         workspace_name: &WorkspaceName,
-    ) -> Result<Vec<(String, String, String)>, SqliteSearchError> {
+    ) -> Result<Vec<(String, String)>, SqliteSearchError> {
         let store = SqliteSearchStore::open_workspace(&self.layout, workspace_name)?;
         let connection = store.connect()?;
         let mut statement = connection.prepare(
             "
-            SELECT owner_source_name, source_name, surface_name
+            SELECT source_name, surface_name
             FROM observed_queue_jobs
             WHERE workspace = ?1
             ORDER BY id
             ",
         )?;
         let rows = statement.query_map(params![workspace_name.as_str()], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            Ok((row.get(0)?, row.get(1)?))
         })?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(SqliteSearchError::from)
@@ -384,7 +384,7 @@ fn enqueue_if_current_in_transaction(
     captured_epoch: ObservedValuesEpoch,
     policy: ObservedValuesStoragePolicy,
 ) -> Result<ObservedValuesEnqueueResult, SqliteSearchError> {
-    let current_epoch = read_epoch(transaction, workspace_name, &job.owner_source_name)?;
+    let current_epoch = read_epoch(transaction, workspace_name, &job.source_name)?;
     if current_epoch != captured_epoch {
         return Ok(ObservedValuesEnqueueResult::StaleEpoch);
     }
@@ -405,7 +405,6 @@ fn enqueue_if_current_in_transaction(
         "
             INSERT INTO observed_queue_jobs (
                 workspace,
-                owner_source_name,
                 source_name,
                 source_scope_id,
                 surface_kind,
@@ -425,13 +424,11 @@ fn enqueue_if_current_in_transaction(
                 ?6,
                 ?7,
                 ?8,
-                ?9,
                 strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
                 strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
             )
             ON CONFLICT(
                 workspace,
-                owner_source_name,
                 source_name,
                 source_scope_id,
                 surface_kind,
@@ -446,7 +443,6 @@ fn enqueue_if_current_in_transaction(
             ",
         params![
             workspace_name.as_str(),
-            &job.owner_source_name,
             &job.source_name,
             &job.source_scope_id,
             job.surface_kind.as_str(),
@@ -488,21 +484,21 @@ pub(crate) fn clear_observed_workspace_in_transaction(
 pub(crate) fn clear_observed_source_in_transaction(
     transaction: &Transaction<'_>,
     workspace_name: &WorkspaceName,
-    owner_source_name: &str,
+    source_name: &str,
 ) -> Result<ObservedValuesClearResult, SqliteSearchError> {
     let deleted_fts_count = transaction.execute(
-        "DELETE FROM observed_values_fts WHERE workspace = ?1 AND owner_source_name = ?2",
-        params![workspace_name.as_str(), owner_source_name],
+        "DELETE FROM observed_values_fts WHERE workspace = ?1 AND source_name = ?2",
+        params![workspace_name.as_str(), source_name],
     )?;
     let deleted_value_count = transaction.execute(
-        "DELETE FROM observed_values WHERE workspace = ?1 AND owner_source_name = ?2",
-        params![workspace_name.as_str(), owner_source_name],
+        "DELETE FROM observed_values WHERE workspace = ?1 AND source_name = ?2",
+        params![workspace_name.as_str(), source_name],
     )?;
     let deleted_queue_job_count = transaction.execute(
-        "DELETE FROM observed_queue_jobs WHERE workspace = ?1 AND owner_source_name = ?2",
-        params![workspace_name.as_str(), owner_source_name],
+        "DELETE FROM observed_queue_jobs WHERE workspace = ?1 AND source_name = ?2",
+        params![workspace_name.as_str(), source_name],
     )?;
-    advance_source_epoch(transaction, workspace_name, owner_source_name)?;
+    advance_source_epoch(transaction, workspace_name, source_name)?;
     Ok(ObservedValuesClearResult {
         values: u32::try_from(deleted_value_count).unwrap_or(u32::MAX),
         fts_rows: u32::try_from(deleted_fts_count).unwrap_or(u32::MAX),
@@ -546,18 +542,16 @@ fn pending_queue_job_id(
             SELECT id
             FROM observed_queue_jobs
             WHERE workspace = ?1
-              AND owner_source_name = ?2
-              AND source_name = ?3
-              AND source_scope_id = ?4
-              AND surface_kind = ?5
-              AND surface_name = ?6
-              AND workspace_generation = ?7
-              AND source_generation = ?8
-              AND attempts < ?9
+              AND source_name = ?2
+              AND source_scope_id = ?3
+              AND surface_kind = ?4
+              AND surface_name = ?5
+              AND workspace_generation = ?6
+              AND source_generation = ?7
+              AND attempts < ?8
             ",
             params![
                 workspace_name.as_str(),
-                &job.owner_source_name,
                 &job.source_name,
                 &job.source_scope_id,
                 job.surface_kind.as_str(),
@@ -575,7 +569,7 @@ fn pending_queue_job_id(
 fn read_epoch(
     connection: &Connection,
     workspace_name: &WorkspaceName,
-    owner_source_name: &str,
+    source_name: &str,
 ) -> Result<ObservedValuesEpoch, SqliteSearchError> {
     let workspace_generation = connection
         .query_row(
@@ -596,7 +590,7 @@ fn read_epoch(
             FROM observed_source_generations
             WHERE workspace = ?1 AND source_name = ?2
             ",
-            params![workspace_name.as_str(), owner_source_name],
+            params![workspace_name.as_str(), source_name],
             |row| row.get(0),
         )
         .optional()?
@@ -627,7 +621,7 @@ fn advance_workspace_epoch(
 fn advance_source_epoch(
     connection: &Connection,
     workspace_name: &WorkspaceName,
-    owner_source_name: &str,
+    source_name: &str,
 ) -> Result<(), SqliteSearchError> {
     connection.execute(
         "
@@ -642,7 +636,7 @@ fn advance_source_epoch(
             generation = generation + 1,
             updated_at = excluded.updated_at
         ",
-        params![workspace_name.as_str(), owner_source_name],
+        params![workspace_name.as_str(), source_name],
     )?;
     Ok(())
 }

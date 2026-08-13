@@ -1,5 +1,4 @@
 use std::cell::Cell;
-use std::fs;
 use std::path::Path;
 use std::sync::mpsc::sync_channel;
 use std::thread;
@@ -253,53 +252,51 @@ fn immediate_transaction_is_locked(connection: &mut rusqlite::Connection) -> boo
 }
 
 #[test]
-fn clear_source_removes_every_component_schema_owned_by_that_source() {
+fn clear_source_removes_only_that_installed_source() {
     let temp = tempdir().expect("tempdir");
     let layout = AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
     let workspace = WorkspaceName::default();
     let store = SqliteObservedValuesStore::new(layout.clone());
-    let jobs = multi_schema_clear_jobs();
+    let jobs = independent_source_clear_jobs();
     seed_projected_and_pending_jobs(&layout, &workspace, &store, &jobs);
 
     let backing = SqliteSearchStore::open_workspace(&layout, &workspace).expect("store");
     let connection = backing.connect_for_test().expect("connection");
-    for table_name in [
-        "observed_values",
-        "observed_values_fts",
-        "observed_queue_jobs",
-    ] {
-        assert_owner_component_schema_count(&connection, table_name, &workspace, "github_v4", 2);
-    }
-    assert_projected_owner_names(
+    assert_projected_source_names(
         &connection,
         &workspace,
-        &["github_v4", "github_v4", "jira_v4"],
+        &["github_mcp_v4", "github_v4", "jira_v4"],
     );
     drop(connection);
 
     let result = store
         .clear_source_and_advance_epoch(&workspace, "github_v4")
-        .expect("clear github owner");
+        .expect("clear github_v4");
 
-    assert_eq!(result.values, 2);
-    assert_eq!(result.fts_rows, 2);
-    assert_eq!(result.queue_jobs, 2);
+    // `github_v4` and `github_mcp_v4` are two independent sources, not two
+    // components of one: clearing the REST source must not touch the MCP one.
+    assert_eq!(result.values, 1);
+    assert_eq!(result.fts_rows, 1);
+    assert_eq!(result.queue_jobs, 1);
     let connection = backing.connect_for_test().expect("reconnect");
-    assert_projected_owner_names(&connection, &workspace, &["jira_v4"]);
+    assert_projected_source_names(&connection, &workspace, &["github_mcp_v4", "jira_v4"]);
     assert_eq!(
         store
             .capture_epoch(&workspace, "github_v4")
-            .expect("github epoch after clear")
+            .expect("github_v4 epoch after clear")
             .source_generation,
         1
     );
-    assert_eq!(
-        store
-            .capture_epoch(&workspace, "jira_v4")
-            .expect("jira epoch after clear")
-            .source_generation,
-        0
-    );
+    for untouched in ["github_mcp_v4", "jira_v4"] {
+        assert_eq!(
+            store
+                .capture_epoch(&workspace, untouched)
+                .expect("untouched epoch after clear")
+                .source_generation,
+            0,
+            "clearing github_v4 must not advance the {untouched} epoch"
+        );
+    }
 }
 
 #[test]
@@ -724,17 +721,17 @@ fn boundary_crossing_projection_respects_eviction_cap_and_keeps_job_queued() {
 }
 
 #[test]
-fn upgraded_v2_fts_tombstones_are_compacted_without_a_queued_job() {
+fn fts_tombstones_are_compacted_without_a_queued_job() {
     let temp = tempdir().expect("tempdir");
     let layout = AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
     let workspace = WorkspaceName::default();
     let database_path = layout.search_sqlite_file(&workspace);
-    seed_v2_fts_tombstones(&database_path);
+    seed_fts_tombstones(&database_path);
 
     let ordinary_store = SqliteObservedValuesStore::new(layout.clone());
     let generation = ordinary_store
         .capture_epoch(&workspace, "github")
-        .expect("upgrade v2 database and capture generation");
+        .expect("capture generation");
     let backing = SqliteSearchStore::open_workspace(&layout, &workspace).expect("store");
     let connection = backing.connect_for_test().expect("connection");
     let secure_delete: i64 = connection
@@ -745,9 +742,7 @@ fn upgraded_v2_fts_tombstones_are_compacted_without_a_queued_job() {
         )
         .expect("secure-delete setting");
     assert_eq!(secure_delete, 1);
-    assert!(
-        observed_fts_mergeable_segments_exist(&connection).expect("mergeable legacy FTS segments")
-    );
+    assert!(observed_fts_mergeable_segments_exist(&connection).expect("mergeable FTS segments"));
     let live_bytes_before = live_database_bytes_for_test(&connection);
     let page_size: i64 = connection
         .query_row("PRAGMA page_size", [], |row| row.get(0))
@@ -816,15 +811,15 @@ fn upgraded_v2_fts_tombstones_are_compacted_without_a_queued_job() {
 }
 
 #[test]
-fn upgraded_v2_fts_tombstones_are_compacted_during_enqueue() {
+fn fts_tombstones_are_compacted_during_enqueue() {
     let temp = tempdir().expect("tempdir");
     let layout = AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
     let workspace = WorkspaceName::default();
-    seed_v2_fts_tombstones(&layout.search_sqlite_file(&workspace));
+    seed_fts_tombstones(&layout.search_sqlite_file(&workspace));
     let ordinary_store = SqliteObservedValuesStore::new(layout.clone());
     let generation = ordinary_store
         .capture_epoch(&workspace, "github")
-        .expect("upgrade v2 database and capture generation");
+        .expect("capture generation");
     let backing = SqliteSearchStore::open_workspace(&layout, &workspace).expect("store");
     let connection = backing.connect_for_test().expect("connection");
     let live_bytes = live_database_bytes_for_test(&connection);
@@ -1096,17 +1091,17 @@ fn eviction_preserves_same_value_key_owned_by_another_source() {
     let layout = AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
     let workspace = WorkspaceName::default();
     let initial_store = SqliteObservedValuesStore::new(layout.clone());
-    for owner_source_name in ["owner-a", "owner-b"] {
+    for source_name in ["source-a", "source-b"] {
         let generation = initial_store
-            .capture_epoch(&workspace, owner_source_name)
+            .capture_epoch(&workspace, source_name)
             .expect("generation");
         initial_store
             .enqueue_if_current(
                 &workspace,
-                &test_job_with_owner(owner_source_name),
+                &test_job_for_shared_value(source_name),
                 generation,
             )
-            .expect("enqueue owner observation");
+            .expect("enqueue source observation");
     }
     initial_store
         .drain_queue(&workspace, drain_budget())
@@ -1117,8 +1112,8 @@ fn eviction_preserves_same_value_key_owned_by_another_source() {
         .execute(
             "
             UPDATE observed_values
-            SET last_observed_at = CASE owner_source_name
-                WHEN 'owner-a' THEN '2020-01-01T00:00:00.000Z'
+            SET last_observed_at = CASE source_name
+                WHEN 'source-a' THEN '2020-01-01T00:00:00.000Z'
                 ELSE '2021-01-01T00:00:00.000Z'
             END
             WHERE workspace = ?1
@@ -1147,8 +1142,8 @@ fn eviction_preserves_same_value_key_owned_by_another_source() {
     let connection = backing.connect_for_test().expect("connection");
     for table_name in ["observed_values", "observed_values_fts"] {
         assert_eq!(
-            projected_owner_names(&connection, table_name, &workspace),
-            ["owner-b"],
+            projected_source_names(&connection, table_name, &workspace),
+            ["source-b"],
             "eviction should remove one exact {table_name} identity"
         );
     }
@@ -1454,10 +1449,10 @@ fn projection_realigns_a_legacy_same_key_fts_row_without_leaving_a_duplicate() {
         .execute(
             "
             INSERT INTO observed_values_fts (
-                rowid, workspace, owner_source_name, source_name, source_scope_id,
+                rowid, workspace, source_name, source_scope_id,
                 surface_kind, surface_name, column_name, value_key, display_value, search_text
             )
-            SELECT ?2, workspace, owner_source_name, source_name, source_scope_id,
+            SELECT ?2, workspace, source_name, source_scope_id,
                    surface_kind, surface_name, column_name, value_key, display_value, search_text
             FROM observed_values
             WHERE rowid = ?1
@@ -1497,9 +1492,9 @@ fn projection_realigns_a_legacy_same_key_fts_row_without_leaving_a_duplicate() {
 #[test]
 #[expect(
     clippy::too_many_lines,
-    reason = "the collision test verifies projection rollback, failed-owner preservation, recovery, and retry as one state transition"
+    reason = "the collision test verifies projection rollback, failed-source preservation, recovery, and retry as one state transition"
 )]
-fn projection_and_rebuild_preserve_an_unrelated_failed_owner_rowid_collision() {
+fn projection_and_rebuild_preserve_an_unrelated_failed_source_rowid_collision() {
     let temp = tempdir().expect("tempdir");
     let layout = AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
     let workspace = WorkspaceName::default();
@@ -1537,16 +1532,16 @@ fn projection_and_rebuild_preserve_an_unrelated_failed_owner_rowid_collision() {
         .execute(
             "
             INSERT INTO observed_values_fts (
-                rowid, workspace, owner_source_name, source_name, source_scope_id,
+                rowid, workspace, source_name, source_scope_id,
                 surface_kind, surface_name, column_name, value_key, display_value, search_text
             ) VALUES (
-                ?1, ?2, 'jira', 'jira', 'failed-scope', 'table', 'issues', 'title',
-                'failed-key', 'Failed owner value', 'failed owner value'
+                ?1, ?2, 'jira', 'failed-scope', 'table', 'issues', 'title',
+                'failed-key', 'Failed source value', 'failed source value'
             )
             ",
             params![canonical_rowid, workspace.as_str()],
         )
-        .expect("occupy the canonical rowid with a failed-owner row");
+        .expect("occupy the canonical rowid with a failed-source row");
     drop(connection);
 
     store
@@ -1565,7 +1560,7 @@ fn projection_and_rebuild_preserve_an_unrelated_failed_owner_rowid_collision() {
     let state: (String, String, String) = connection
         .query_row(
             "
-            SELECT v.display_value, f.owner_source_name, f.display_value
+            SELECT v.display_value, f.source_name, f.display_value
             FROM observed_values v
             JOIN observed_values_fts f ON f.rowid = v.rowid
             WHERE v.rowid = ?1
@@ -1579,7 +1574,7 @@ fn projection_and_rebuild_preserve_an_unrelated_failed_owner_rowid_collision() {
         (
             "Original value".to_string(),
             "jira".to_string(),
-            "Failed owner value".to_string(),
+            "Failed source value".to_string(),
         ),
         "the failed projection transaction must preserve both canonical and unrelated FTS content"
     );
@@ -1591,14 +1586,14 @@ fn projection_and_rebuild_preserve_an_unrelated_failed_owner_rowid_collision() {
         .expect("rebuild while Jira is failed");
     assert_eq!(blocked.fts_rows_rebuilt, 0);
     let connection = backing.connect_for_test().expect("connection");
-    let owner_while_failed: String = connection
+    let source_while_failed: String = connection
         .query_row(
-            "SELECT owner_source_name FROM observed_values_fts WHERE rowid = ?1",
+            "SELECT source_name FROM observed_values_fts WHERE rowid = ?1",
             params![canonical_rowid],
             |row| row.get(0),
         )
-        .expect("failed-owner occupant");
-    assert_eq!(owner_while_failed, "jira");
+        .expect("failed-source occupant");
+    assert_eq!(source_while_failed, "jira");
     drop(connection);
 
     let recovered = store
@@ -1615,7 +1610,7 @@ fn projection_and_rebuild_preserve_an_unrelated_failed_owner_rowid_collision() {
     let recovered_state: (i64, String, String) = connection
         .query_row(
             "
-            SELECT COUNT(*), MIN(owner_source_name), MIN(display_value)
+            SELECT COUNT(*), MIN(source_name), MIN(display_value)
             FROM observed_values_fts
             WHERE rowid = ?1
             ",
@@ -1812,10 +1807,10 @@ fn rebuild_converges_a_healthy_legacy_rowid_collision_without_duplicates_or_loss
         .execute(
             "
             INSERT INTO observed_values_fts (
-                rowid, workspace, owner_source_name, source_name, source_scope_id,
+                rowid, workspace, source_name, source_scope_id,
                 surface_kind, surface_name, column_name, value_key, display_value, search_text
             )
-            SELECT ?2, workspace, owner_source_name, source_name, source_scope_id,
+            SELECT ?2, workspace, source_name, source_scope_id,
                    surface_kind, surface_name, column_name, value_key, display_value, search_text
             FROM observed_values
             WHERE rowid = ?1
@@ -1914,12 +1909,12 @@ fn rebuild_breaks_a_healthy_two_row_legacy_collision_cycle() {
         .execute(
             "
             INSERT INTO observed_values_fts (
-                rowid, workspace, owner_source_name, source_name, source_scope_id,
+                rowid, workspace, source_name, source_scope_id,
                 surface_kind, surface_name, column_name, value_key, display_value, search_text
             )
             SELECT
                 CASE value_key WHEN 'key-a' THEN ?2 ELSE ?1 END,
-                workspace, owner_source_name, source_name, source_scope_id,
+                workspace, source_name, source_scope_id,
                 surface_kind, surface_name, column_name, value_key, display_value, search_text
             FROM observed_values
             WHERE rowid IN (?1, ?2)
@@ -1932,10 +1927,10 @@ fn rebuild_breaks_a_healthy_two_row_legacy_collision_cycle() {
         .execute(
             "
             INSERT INTO observed_values_fts (
-                rowid, workspace, owner_source_name, source_name, source_scope_id,
+                rowid, workspace, source_name, source_scope_id,
                 surface_kind, surface_name, column_name, value_key, display_value, search_text
             )
-            SELECT ?2, workspace, owner_source_name, source_name, source_scope_id,
+            SELECT ?2, workspace, source_name, source_scope_id,
                    surface_kind, surface_name, column_name, value_key, display_value, search_text
             FROM observed_values
             WHERE rowid = ?1
@@ -2067,7 +2062,6 @@ fn rebuild_fts_reconciles_corrupt_rows_in_bounded_commits() {
             "
             INSERT INTO observed_values_fts (
                 workspace,
-                owner_source_name,
                 source_name,
                 source_scope_id,
                 surface_kind,
@@ -2079,7 +2073,6 @@ fn rebuild_fts_reconciles_corrupt_rows_in_bounded_commits() {
             )
             SELECT
                 workspace,
-                owner_source_name,
                 source_name,
                 source_scope_id,
                 surface_kind,
@@ -2110,7 +2103,6 @@ fn rebuild_fts_reconciles_corrupt_rows_in_bounded_commits() {
             "
             INSERT INTO observed_values_fts (
                 workspace,
-                owner_source_name,
                 source_name,
                 source_scope_id,
                 surface_kind,
@@ -2119,7 +2111,7 @@ fn rebuild_fts_reconciles_corrupt_rows_in_bounded_commits() {
                 value_key,
                 display_value,
                 search_text
-            ) VALUES (?1, 'github', 'github', 'scope-orphan', 'table', 'issues', 'title',
+            ) VALUES (?1, 'github', 'scope-orphan', 'table', 'issues', 'title',
                 'invoice-orphan', 'Invoice orphan', 'invoice orphan')
             ",
             params![workspace.as_str()],
@@ -2391,15 +2383,15 @@ fn rebuild_fts_repairs_non_text_derived_keys_by_rowid() {
         .execute_batch(&format!(
             "
             INSERT INTO observed_values_fts VALUES (
-                '{}', 'github', NULL, 'scope-null', 'table', 'issues', 'title',
+                '{}', NULL, 'scope-null', 'table', 'issues', 'title',
                 'null-key', 'Null key', 'null key'
             );
             INSERT INTO observed_values_fts VALUES (
-                '{}', 'github', X'676974687562', 'scope-blob', 'table', 'issues', 'title',
+                '{}', X'676974687562', 'scope-blob', 'table', 'issues', 'title',
                 'blob-key', 'Blob key', 'blob key'
             );
             INSERT INTO observed_values_fts VALUES (
-                '{}', 'github', 7, 'scope-integer', 'table', 'issues', 'title',
+                '{}', 7, 'scope-integer', 'table', 'issues', 'title',
                 'integer-key', 'Integer key', 'integer key'
             );
             ",
@@ -2454,12 +2446,12 @@ fn rebuild_fts_keyset_covers_the_entire_sqlite_rowid_domain() {
             .execute(
                 "
                 INSERT INTO observed_values (
-                    rowid, workspace, owner_source_name, source_name, source_scope_id,
+                    rowid, workspace, source_name, source_scope_id,
                     surface_kind, surface_name, column_name, value_key, display_value,
                     search_text, first_observed_at, last_observed_at, observation_count,
                     source_generation, workspace_generation
                 ) VALUES (
-                    ?1, ?2, 'github', 'github', ?3, 'table', 'issues', 'title', ?4, ?5,
+                    ?1, ?2, 'github', ?3, 'table', 'issues', 'title', ?4, ?5,
                     ?6, '2020-01-01T00:00:00.000Z', '9999-01-01T00:00:00.000Z', 1, 0, 0
                 )
                 ",
@@ -2477,10 +2469,10 @@ fn rebuild_fts_keyset_covers_the_entire_sqlite_rowid_domain() {
             .execute(
                 "
                 INSERT INTO observed_values_fts (
-                    rowid, workspace, owner_source_name, source_name, source_scope_id,
+                    rowid, workspace, source_name, source_scope_id,
                     surface_kind, surface_name, column_name, value_key, display_value, search_text
                 ) VALUES (
-                    ?1, ?2, 'github', ?3, ?4, 'table', 'issues', 'title', ?5, ?6, ?7
+                    ?1, ?2, ?3, ?4, 'table', 'issues', 'title', ?5, ?6, ?7
                 )
                 ",
                 params![
@@ -2499,7 +2491,7 @@ fn rebuild_fts_keyset_covers_the_entire_sqlite_rowid_domain() {
 
     let policy = ObservedValuesRetrievalPolicy::new(
         rows.iter()
-            .map(|(_, scope, _, _)| test_live_scope_for_owner("github", scope, "issues"))
+            .map(|(_, scope, _, _)| test_live_scope_for_source("github", scope, "issues"))
             .collect(),
         365,
     );
@@ -2605,7 +2597,7 @@ fn rebuild_fts_reuses_one_retention_cutoff_across_batches() {
     let policy = ObservedValuesRetrievalPolicy::new(
         scopes
             .iter()
-            .map(|scope| test_live_scope_for_owner("github", scope, "issues"))
+            .map(|scope| test_live_scope_for_source("github", scope, "issues"))
             .collect(),
         1,
     );
@@ -2684,7 +2676,7 @@ fn rebuild_fts_preserves_rows_for_sources_with_live_scope_load_failures() {
     store
         .enqueue_if_current(
             &workspace,
-            &test_job_for_owner("github", "live-scope", "issues", "Payment current"),
+            &test_job_for_source("github", "live-scope", "issues", "Payment current"),
             github_generation,
         )
         .expect("enqueue github");
@@ -2694,7 +2686,7 @@ fn rebuild_fts_preserves_rows_for_sources_with_live_scope_load_failures() {
     store
         .enqueue_if_current(
             &workspace,
-            &test_job_for_owner("github", "removed-scope", "issues", "Payment removed"),
+            &test_job_for_source("github", "removed-scope", "issues", "Payment removed"),
             github_generation,
         )
         .expect("enqueue removed github scope");
@@ -2704,7 +2696,7 @@ fn rebuild_fts_preserves_rows_for_sources_with_live_scope_load_failures() {
     store
         .enqueue_if_current(
             &workspace,
-            &test_job_for_owner("jira", "unknown-scope", "issues", "Payment blocked"),
+            &test_job_for_source("jira", "unknown-scope", "issues", "Payment blocked"),
             jira_generation,
         )
         .expect("enqueue jira");
@@ -2732,8 +2724,8 @@ fn rebuild_fts_preserves_rows_for_sources_with_live_scope_load_failures() {
 
     let recovered_policy = ObservedValuesRetrievalPolicy::new(
         vec![
-            test_live_scope_for_owner("github", "live-scope", "issues"),
-            test_live_scope_for_owner("jira", "unknown-scope", "issues"),
+            test_live_scope_for_source("github", "live-scope", "issues"),
+            test_live_scope_for_source("jira", "unknown-scope", "issues"),
         ],
         365,
     );
@@ -2847,7 +2839,7 @@ fn test_job_with(
     surface_name: &str,
     display_value: &str,
 ) -> ObservedValuesQueueJob {
-    test_job_for_owner("github", source_scope_id, surface_name, display_value)
+    test_job_for_source("github", source_scope_id, surface_name, display_value)
 }
 
 fn test_job_with_stable_key(
@@ -2864,30 +2856,13 @@ fn test_job_with_stable_key(
     job
 }
 
-fn test_job_for_owner(
-    owner_source_name: &str,
-    source_scope_id: &str,
-    surface_name: &str,
-    display_value: &str,
-) -> ObservedValuesQueueJob {
-    test_job_with_identity(
-        owner_source_name,
-        owner_source_name,
-        source_scope_id,
-        surface_name,
-        display_value,
-    )
-}
-
-fn test_job_with_identity(
-    owner_source_name: &str,
+fn test_job_for_source(
     source_name: &str,
     source_scope_id: &str,
     surface_name: &str,
     display_value: &str,
 ) -> ObservedValuesQueueJob {
     ObservedValuesQueueJob {
-        owner_source_name: owner_source_name.to_string(),
         source_name: source_name.to_string(),
         source_scope_id: source_scope_id.to_string(),
         surface_kind: ObservedValuesSurfaceKind::Table,
@@ -2896,10 +2871,10 @@ fn test_job_with_identity(
     }
 }
 
-fn test_job_with_owner(owner_source_name: &str) -> ObservedValuesQueueJob {
+/// Two independent sources observing the same value on the same surface name.
+fn test_job_for_shared_value(source_name: &str) -> ObservedValuesQueueJob {
     ObservedValuesQueueJob {
-        owner_source_name: owner_source_name.to_string(),
-        source_name: "shared_query_schema".to_string(),
+        source_name: source_name.to_string(),
         source_scope_id: "shared-scope".to_string(),
         surface_kind: ObservedValuesSurfaceKind::Table,
         surface_name: "issues".to_string(),
@@ -2914,7 +2889,7 @@ fn enqueue_test_jobs(
 ) {
     for job in jobs {
         let generation = store
-            .capture_epoch(workspace, &job.owner_source_name)
+            .capture_epoch(workspace, &job.source_name)
             .expect("generation");
         assert!(matches!(
             store
@@ -2925,29 +2900,11 @@ fn enqueue_test_jobs(
     }
 }
 
-fn multi_schema_clear_jobs() -> [ObservedValuesQueueJob; 3] {
+fn independent_source_clear_jobs() -> [ObservedValuesQueueJob; 3] {
     [
-        test_job_with_identity(
-            "github_v4",
-            "github_v4_rest",
-            "rest-scope",
-            "issues",
-            "REST payment issue",
-        ),
-        test_job_with_identity(
-            "github_v4",
-            "github_v4_mcp",
-            "mcp-scope",
-            "pulls",
-            "MCP payment issue",
-        ),
-        test_job_with_identity(
-            "jira_v4",
-            "jira_v4_mcp",
-            "jira-scope",
-            "issues",
-            "Jira payment issue",
-        ),
+        test_job_for_source("github_v4", "rest-scope", "issues", "REST payment issue"),
+        test_job_for_source("github_mcp_v4", "mcp-scope", "pulls", "MCP payment issue"),
+        test_job_for_source("jira_v4", "jira-scope", "issues", "Jira payment issue"),
     ]
 }
 
@@ -2978,7 +2935,7 @@ fn insert_queue_job_for_test(
     job: &ObservedValuesQueueJob,
 ) {
     let generation = store
-        .capture_epoch(workspace, &job.owner_source_name)
+        .capture_epoch(workspace, &job.source_name)
         .expect("generation");
     let backing = SqliteSearchStore::open_workspace(layout, workspace).expect("store");
     let connection = backing.connect_for_test().expect("connection");
@@ -2987,7 +2944,6 @@ fn insert_queue_job_for_test(
             "
             INSERT INTO observed_queue_jobs (
                 workspace,
-                owner_source_name,
                 source_name,
                 source_scope_id,
                 surface_kind,
@@ -2995,11 +2951,10 @@ fn insert_queue_job_for_test(
                 workspace_generation,
                 source_generation,
                 payload_json
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
             ",
             params![
                 workspace.as_str(),
-                &job.owner_source_name,
                 &job.source_name,
                 &job.source_scope_id,
                 job.surface_kind.as_str(),
@@ -3031,29 +2986,14 @@ fn bulk_test_job(
     job
 }
 
-fn seed_v2_fts_tombstones(database_path: &Path) {
-    fs::create_dir_all(database_path.parent().expect("search database parent"))
-        .expect("create search database parent");
-    let connection = Connection::open(database_path).expect("raw v2 connection");
-    connection
-        .execute_batch(include_str!("../../migrations/0001_catalog_search.sql"))
-        .expect("v1 search schema");
-    connection
-        .execute_batch(include_str!("../../migrations/0002_observed_values.sql"))
-        .expect("v2 observed-values schema");
-    connection
-        .execute(
-            "
-            INSERT INTO search_meta (key, value)
-            VALUES ('schema_version', '2')
-            ON CONFLICT(key) DO UPDATE SET value = excluded.value
-            ",
-            [],
-        )
-        .expect("record v2 schema version");
-    connection
-        .pragma_update(None, "user_version", 2)
-        .expect("record v2 user version");
+/// Leaves the FTS index full of deleted-but-unmerged rows on the current
+/// schema. The version-5 migration rebuilds FTS from the canonical table, so
+/// tombstones that matter now are the ones ordinary deletes and evictions
+/// produce after the upgrade -- which is what these tests exercise.
+fn seed_fts_tombstones(database_path: &Path) {
+    SqliteSearchStore::open(database_path, WorkspaceName::default())
+        .expect("create current-schema database");
+    let connection = Connection::open(database_path).expect("raw connection");
     connection
         .execute_batch(
             "
@@ -3064,7 +3004,6 @@ fn seed_v2_fts_tombstones(database_path: &Path) {
             )
             INSERT INTO observed_values (
                 workspace,
-                owner_source_name,
                 source_name,
                 source_scope_id,
                 surface_kind,
@@ -3080,14 +3019,13 @@ fn seed_v2_fts_tombstones(database_path: &Path) {
                 workspace_generation
             )
             SELECT
-                'default', 'github', 'github', 'legacy', 'table', 'issues', 'title',
+                'default', 'github', 'legacy', 'table', 'issues', 'title',
                 printf('legacy-%d', id), hex(randomblob(256)), hex(randomblob(256)),
                 '2020-01-01T00:00:00.000Z', '2020-01-01T00:00:00.000Z', 1, 0, 0
             FROM rows;
 
             INSERT INTO observed_values_fts (
                 workspace,
-                owner_source_name,
                 source_name,
                 source_scope_id,
                 surface_kind,
@@ -3099,7 +3037,6 @@ fn seed_v2_fts_tombstones(database_path: &Path) {
             )
             SELECT
                 workspace,
-                owner_source_name,
                 source_name,
                 source_scope_id,
                 surface_kind,
@@ -3114,8 +3051,7 @@ fn seed_v2_fts_tombstones(database_path: &Path) {
             DELETE FROM observed_values_fts;
             ",
         )
-        .expect("create v2 FTS tombstones");
-    assert!(observed_fts_mergeable_segments_exist(&connection).expect("mergeable v2 FTS segments"));
+        .expect("create FTS tombstones");
 }
 
 fn live_database_bytes_for_test(connection: &rusqlite::Connection) -> u64 {
@@ -3153,8 +3089,8 @@ fn test_policy_with_failed_sources(
         test_live_scopes(scopes),
         failed_sources
             .iter()
-            .map(|owner_source_name| ObservedValuesLiveScopeLoadFailure {
-                owner_source_name: (*owner_source_name).to_string(),
+            .map(|source_name| ObservedValuesLiveScopeLoadFailure {
+                source_name: (*source_name).to_string(),
                 message: "failed to load".to_string(),
             })
             .collect(),
@@ -3165,18 +3101,17 @@ fn test_policy_with_failed_sources(
 fn test_live_scopes(scopes: &[(&str, &str)]) -> Vec<ObservedValuesLiveScope> {
     scopes
         .iter()
-        .map(|(scope, surface)| test_live_scope_for_owner("github", scope, surface))
+        .map(|(scope, surface)| test_live_scope_for_source("github", scope, surface))
         .collect()
 }
 
-fn test_live_scope_for_owner(
-    owner_source_name: &str,
+fn test_live_scope_for_source(
+    source_name: &str,
     source_scope_id: &str,
     surface_name: &str,
 ) -> ObservedValuesLiveScope {
     ObservedValuesLiveScope {
-        owner_source_name: owner_source_name.to_string(),
-        source_name: owner_source_name.to_string(),
+        source_name: source_name.to_string(),
         source_scope_id: source_scope_id.to_string(),
         surface_kind: ObservedValuesSurfaceKind::Table,
         surface_name: surface_name.to_string(),
@@ -3187,23 +3122,22 @@ fn drain_budget() -> ObservedValuesDrainBudget {
     ObservedValuesDrainBudget::new(10, Duration::from_secs(1))
 }
 
-fn projected_owner_names(
+fn projected_source_names(
     connection: &rusqlite::Connection,
     table_name: &str,
     workspace: &WorkspaceName,
 ) -> Vec<String> {
-    let sql = format!(
-        "SELECT owner_source_name FROM {table_name} WHERE workspace = ?1 ORDER BY owner_source_name"
-    );
-    let mut statement = connection.prepare(&sql).expect("owner query");
+    let sql =
+        format!("SELECT source_name FROM {table_name} WHERE workspace = ?1 ORDER BY source_name");
+    let mut statement = connection.prepare(&sql).expect("source query");
     let rows = statement
         .query_map(params![workspace.as_str()], |row| row.get(0))
-        .expect("query owner rows");
+        .expect("query source rows");
     rows.collect::<Result<Vec<_>, _>>()
-        .expect("collect owner rows")
+        .expect("collect source rows")
 }
 
-fn assert_projected_owner_names(
+fn assert_projected_source_names(
     connection: &rusqlite::Connection,
     workspace: &WorkspaceName,
     expected: &[&str],
@@ -3214,34 +3148,11 @@ fn assert_projected_owner_names(
         "observed_queue_jobs",
     ] {
         assert_eq!(
-            projected_owner_names(connection, table_name, workspace),
+            projected_source_names(connection, table_name, workspace),
             expected,
-            "unexpected owners in {table_name}"
+            "unexpected sources in {table_name}"
         );
     }
-}
-
-fn assert_owner_component_schema_count(
-    connection: &rusqlite::Connection,
-    table_name: &str,
-    workspace: &WorkspaceName,
-    owner_source_name: &str,
-    expected: i64,
-) {
-    let sql = format!(
-        "SELECT COUNT(DISTINCT source_name) FROM {table_name} WHERE workspace = ?1 AND owner_source_name = ?2"
-    );
-    let component_schema_count: i64 = connection
-        .query_row(
-            &sql,
-            params![workspace.as_str(), owner_source_name],
-            |row| row.get(0),
-        )
-        .expect("component schema count");
-    assert_eq!(
-        component_schema_count, expected,
-        "unexpected component schema count in {table_name}"
-    );
 }
 
 fn advance_source_epoch_for_test(

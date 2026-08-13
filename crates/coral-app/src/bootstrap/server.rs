@@ -66,6 +66,7 @@ use crate::sources::materialization::SourceDiagnosticReporter;
 use crate::sources::service::SourceService;
 use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig, run_state_migrations};
 use crate::state::{AppStateLayout, ConfigStore};
+use crate::task::activity::TaskActivityRecorder;
 use crate::task::manager::TaskManager;
 use crate::task::service::TaskService;
 use crate::task::store::TaskStore;
@@ -475,12 +476,11 @@ async fn start_components(builder: ServerBuilder) -> Result<RunningServer, AppEr
     let feedback_manager =
         FeedbackManager::with_publisher(layout.clone(), builder.config.feedback_publisher);
     let task_manager = TaskManager::new(TaskStore::new(Arc::clone(&coral_db)));
-    let body_capture_max_bytes = telemetry_config
-        .trace_history
-        .http_body_recording_max_bytes();
-    let query_runtime_context = env
-        .query_runtime_context()
-        .with_body_capture_max_bytes(body_capture_max_bytes);
+    let query_runtime_context = env.query_runtime_context().with_body_capture_max_bytes(
+        telemetry_config
+            .trace_history
+            .http_body_recording_max_bytes(),
+    );
 
     let query_manager = QueryManager::with_diagnostic_reporter(
         config_store.clone(),
@@ -493,7 +493,8 @@ async fn start_components(builder: ServerBuilder) -> Result<RunningServer, AppEr
         diagnostic_reporter.clone(),
         workspace_pool_registry,
     )
-    .with_database_sources_enabled(database_sources_enabled);
+    .with_database_sources_enabled(database_sources_enabled)
+    .with_task_activity_recorder(TaskActivityRecorder::new(Arc::clone(&coral_db)));
     let observed_values_search_enabled = features.enabled(Feature::ObservedValuesSearch);
     let search_observations =
         observed_values_search_enabled.then(|| SearchObservationHandle::new(layout.clone()));
@@ -1253,7 +1254,6 @@ enabled = false
             .enqueue_if_current(
                 &workspace,
                 &ObservedValuesQueueJob {
-                    owner_source_name: "github".to_string(),
                     source_name: "github".to_string(),
                     source_scope_id: "scope".to_string(),
                     surface_kind: ObservedValuesSurfaceKind::Table,
@@ -1826,7 +1826,6 @@ backend = "unsupported"
             .enqueue_if_current(
                 &workspace,
                 &ObservedValuesQueueJob {
-                    owner_source_name: "github".to_string(),
                     source_name: "github".to_string(),
                     source_scope_id: "scope".to_string(),
                     surface_kind: ObservedValuesSurfaceKind::Table,
@@ -1875,7 +1874,6 @@ backend = "unsupported"
             .enqueue_if_current(
                 &workspace,
                 &ObservedValuesQueueJob {
-                    owner_source_name: "github".to_string(),
                     source_name: "github".to_string(),
                     source_scope_id: "scope".to_string(),
                     surface_kind: ObservedValuesSurfaceKind::Table,
@@ -2478,6 +2476,7 @@ tables:
                 workspace: Some(default_workspace()),
                 sql: "SELECT text FROM tilde_demo.messages ORDER BY text".to_string(),
                 guide_read_context: None,
+                task_attribution: None,
             }))
             .await
             .expect("execute sql")
@@ -2568,6 +2567,7 @@ tables:
                 workspace: Some(default_workspace()),
                 sql: sql.to_string(),
                 guide_read_context: None,
+                task_attribution: None,
             }))
             .await
             .expect("execute_sql >4MB response")
@@ -2716,6 +2716,7 @@ tables:
                 workspace: Some(default_workspace()),
                 sql: "SELECT bogus_column FROM wide_demo.wide LIMIT 0".to_string(),
                 guide_read_context: None,
+                task_attribution: None,
             }))
             .await
             .expect_err("expected gRPC Status, not a transport-level PROTOCOL_ERROR");

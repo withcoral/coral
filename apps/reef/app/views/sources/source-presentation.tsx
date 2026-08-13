@@ -16,8 +16,8 @@ import * as styles from './source-presentation.css'
 export function SourceError({ children, className }: { children: ReactNode; className?: string }) {
   return (
     <div className={classNames(styles.error, className)}>
-      <Icon color="inherit" name="CircleAlert" size="14" />
-      <Typography.BodySmall>{children}</Typography.BodySmall>
+      <Icon color="inherit" name="CircleAlert" size="18" />
+      <Typography.BodySmall className={styles.errorText}>{children}</Typography.BodySmall>
     </div>
   )
 }
