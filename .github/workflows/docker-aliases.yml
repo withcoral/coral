@@ -31,7 +31,7 @@ jobs:
       packages: write
     env:
       TAG: ${{ inputs.tag }}
-      CORAL_DIGEST: ${{ inputs.coral-digest }}
+      PUBLISHED_CORAL_DIGEST: ${{ inputs.coral-digest }}
       REEF_DIGEST: ${{ inputs.reef-digest }}
     outputs:
       make-latest: ${{ steps.advance.outputs.make-latest }}
@@ -57,6 +57,18 @@ jobs:
           set -euo pipefail
           version="${TAG#v}"
           line="${version%.*}"
+          coral_version_ref="ghcr.io/withcoral/coral:${version}"
+          if ! coral_digest="$(docker buildx imagetools inspect "$coral_version_ref" --format '{{.Manifest.Digest}}')"; then
+            echo "Failed to resolve current exact Coral image ${coral_version_ref}." >&2
+            exit 1
+          fi
+          if [[ ! "$coral_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "${coral_version_ref} resolved to invalid digest '${coral_digest}'." >&2
+            exit 1
+          fi
+          if [ "$coral_digest" != "$PUBLISHED_CORAL_DIGEST" ]; then
+            echo "Using current ${coral_version_ref} at ${coral_digest}; release publication produced ${PUBLISHED_CORAL_DIGEST}."
+          fi
           # The release remains a prerelease until both aliases verify.
           draft="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)"
           test "$draft" = false
@@ -80,11 +92,11 @@ jobs:
             # A partial failure is deliberately a failed release workflow. A
             # retry is idempotent and converges both aliases before completion.
             docker buildx imagetools create --tag "ghcr.io/withcoral/coral:${alias}" \
-              "ghcr.io/withcoral/coral@${CORAL_DIGEST}"
+              "ghcr.io/withcoral/coral@${coral_digest}"
             docker buildx imagetools create --tag "ghcr.io/withcoral/reef:${alias}" \
               "ghcr.io/withcoral/reef@${REEF_DIGEST}"
             coral_actual="$(docker buildx imagetools inspect "ghcr.io/withcoral/coral:${alias}" --format '{{.Manifest.Digest}}')"
             reef_actual="$(docker buildx imagetools inspect "ghcr.io/withcoral/reef:${alias}" --format '{{.Manifest.Digest}}')"
-            test "$coral_actual" = "$CORAL_DIGEST"
+            test "$coral_actual" = "$coral_digest"
             test "$reef_actual" = "$REEF_DIGEST"
           done

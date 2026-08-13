@@ -208,26 +208,36 @@ jobs:
           tag_digest() {
             local tag="$1"
             local matches
-            matches="$(gh api --paginate \
+            if ! matches="$(gh api --paginate \
               "/orgs/withcoral/packages/container/coral/versions?per_page=100" \
-              --jq ".[] | select(any(.metadata.container.tags[]; . == \"${tag}\")) | .name")"
+              --jq ".[] | select(any(.metadata.container.tags[]; . == \"${tag}\")) | .name")"; then
+              echo "Failed to resolve ${IMAGE}:${tag} through the package API." >&2
+              return 2
+            fi
             if [ -n "$matches" ]; then
-              test "$(printf '%s\n' "$matches" | wc -l)" -eq 1
+              if [ "$(printf '%s\n' "$matches" | wc -l)" -ne 1 ]; then
+                echo "${IMAGE}:${tag} resolved to multiple package digests." >&2
+                return 2
+              fi
               if [[ ! "$matches" =~ ^sha256:[0-9a-f]{64}$ ]]; then
                 echo "${IMAGE}:${tag} resolved to invalid digest '${matches}'." >&2
-                exit 1
+                return 2
               fi
             fi
             printf '%s' "$matches"
           }
 
-          version_digest="$(tag_digest "$VERSION")"
+          if ! version_digest="$(tag_digest "$VERSION")"; then
+            exit 1
+          fi
           can_move_alias() {
             local alias="$1"
             local eligible="$2"
             local alias_digest
             [ "$eligible" = true ] || return 1
-            alias_digest="$(tag_digest "$alias")"
+            if ! alias_digest="$(tag_digest "$alias")"; then
+              return 2
+            fi
             if [ -z "$alias_digest" ] || { [ -n "$version_digest" ] && [ "$alias_digest" = "$version_digest" ]; }; then
               return 0
             fi
@@ -248,9 +258,15 @@ jobs:
           move_latest=false
           if can_move_alias "$MAJOR_MINOR" "$line_eligible"; then
             move_line=true
+          else
+            status=$?
+            [ "$status" -eq 1 ] || exit "$status"
           fi
           if can_move_alias latest "$latest_eligible"; then
             move_latest=true
+          else
+            status=$?
+            [ "$status" -eq 1 ] || exit "$status"
           fi
           {
             echo "move-line=${move_line}"

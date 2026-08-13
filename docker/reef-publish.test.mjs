@@ -90,7 +90,13 @@ test('release aliases stay paired while direct Coral CVE rebuilds advance eligib
   assert.match(coral, /major-minor=\$\{version%\.\*\}/)
   assert.match(coral, /if: \$\{\{ inputs\.defer-aliases != true \}\}/)
   assert.match(coral, /- name: Snapshot direct rebuild alias ownership/)
-  assert.match(coral, /version_digest="\$\(tag_digest "\$VERSION"\)"/)
+  assert.match(coral, /if ! matches="\$\(gh api --paginate/)
+  assert.match(coral, /if ! version_digest="\$\(tag_digest "\$VERSION"\)"; then\n\s+exit 1/)
+  assert.match(
+    coral,
+    /if ! alias_digest="\$\(tag_digest "\$alias"\)"; then\n\s+return 2/,
+  )
+  assert.match(coral, /\[ "\$status" -eq 1 \] \|\| exit "\$status"/)
   assert.match(
     coral,
     /\[ -z "\$alias_digest" \] \|\| \{ \[ -n "\$version_digest" \] && \[ "\$alias_digest" = "\$version_digest" \]; \}/,
@@ -131,8 +137,9 @@ test('Coral signs the staged digest before exposing the exact version or moving 
   assert.match(workflow.slice(publish), /test "\$digest" = "\$BUILD_DIGEST"/)
 })
 
-test('alias publication converges absent, same, mismatch, and partial-failure states', async () => {
+test('alias publication adopts the current exact-version Coral digest and converges after partial failures', async () => {
   const workflow = await read('../.github/workflows/docker-aliases.yml')
+  const resolveCoral = workflow.indexOf('if ! coral_digest="$(docker buildx imagetools inspect')
   const operations = [
     ['write-coral', workflow.indexOf('imagetools create --tag "ghcr.io/withcoral/coral:${alias}"')],
     ['write-reef', workflow.indexOf('imagetools create --tag "ghcr.io/withcoral/reef:${alias}"')],
@@ -149,10 +156,17 @@ test('alias publication converges absent, same, mismatch, and partial-failure st
       ['read-reef', true],
     ],
   )
-  assert.match(workflow, /test "\$coral_actual" = "\$CORAL_DIGEST"/)
+  assert.ok(resolveCoral >= 0 && resolveCoral < operations[0][1])
+  assert.match(workflow, /PUBLISHED_CORAL_DIGEST: \$\{\{ inputs\.coral-digest \}\}/)
+  assert.match(workflow, /if \[ "\$coral_digest" != "\$PUBLISHED_CORAL_DIGEST" \]; then/)
+  assert.match(workflow, /"ghcr\.io\/withcoral\/coral@\$\{coral_digest\}"/)
+  assert.doesNotMatch(workflow, /"ghcr\.io\/withcoral\/coral@\$\{PUBLISHED_CORAL_DIGEST\}"/)
+  assert.match(workflow, /test "\$coral_actual" = "\$coral_digest"/)
   assert.match(workflow, /test "\$reef_actual" = "\$REEF_DIGEST"/)
 
-  const expected = { coral: 'coral-new', reef: 'reef-new' }
+  const releaseProducedCoral = 'coral-d1'
+  const expected = { coral: 'coral-d2-current-exact-tag', reef: 'reef-new' }
+  assert.notEqual(expected.coral, releaseProducedCoral)
   const run = (initial, failAfter = Number.POSITIVE_INFINITY) => {
     const state = { ...initial }
     for (const [index, [operation]] of operations.entries()) {
