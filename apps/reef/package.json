@@ -5,9 +5,11 @@
   "scripts": {
     "build": "npm run proto:gen && react-router build",
     "dev": "npm run proto:gen && react-router dev",
+    "start": "node server.js",
     "proto:gen": "buf generate --template buf.gen.yaml",
     "typecheck": "npm run proto:gen && react-router typegen && tsc",
     "test": "npm run proto:gen && vitest run",
+    "test:server": "node --test server.test.mjs",
     "lint": "oxlint",
     "lint:fix": "oxlint --fix",
     "format": "oxfmt",

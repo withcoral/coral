@@ -77,6 +77,26 @@ describe('architecture', () => {
     expect(dependencyNames.filter((name) => name.toLowerCase().includes('tailwind'))).toEqual([])
   })
 
+  it('keeps the production entry dependency-light and import-safe', () => {
+    const server = fs.readFileSync(path.join(reefRoot, 'server.js'), 'utf8')
+    const allowedImports = new Set([
+      'node:fs',
+      'node:fs/promises',
+      'node:http',
+      'node:path',
+      'node:stream',
+      'node:stream/promises',
+      'node:url',
+      'react-router',
+      './build/server/index.js',
+    ])
+
+    expect(importsFrom(server).filter((specifier) => !allowedImports.has(specifier))).toEqual([])
+    expect(server).not.toMatch(/@react-router\/dev|react-router dev|vite|express/)
+    expect(server).toContain('export async function startServer')
+    expect(server).toContain('pathToFileURL(process.argv[1]).href === import.meta.url')
+  })
+
   it('keeps a story in every visual Wax component directory', () => {
     const missingStories = fs
       .readdirSync(waxComponentsDir, { withFileTypes: true })

@@ -1,4 +1,4 @@
-.PHONY: install ui-build docker-build rust-checks perf-check
+.PHONY: install ui-build docker-build reef-docker-build reef-docker-smoke reef-docker-test rust-checks perf-check
 .PHONY: postgres-start postgres-url postgres-stop postgres-clean postgres-tests
 .PHONY: license-check lint-proto lint-sources fix-sources
 .PHONY: docs-generate docs-check schema-generate schema-check
@@ -7,7 +7,30 @@ LOCAL_POSTGRES_IMAGE ?= postgres:17
 LOCAL_POSTGRES_CONTAINER ?= coral-test-postgres
 LOCAL_POSTGRES_PORT ?=
 DOCKER_IMAGE ?= coral:local
+REEF_DOCKER_IMAGE ?= reef:local
 DOCKER_NO_CACHE ?= 0
+
+define docker_build_preflight
+if ! command -v docker >/dev/null 2>&1; then \
+  echo "docker is required to build the $(1) image" >&2; \
+  exit 1; \
+fi; \
+if ! docker buildx version >/dev/null 2>&1; then \
+  echo "docker buildx is required to build the $(1) image" >&2; \
+  exit 1; \
+fi; \
+daemon_arch=$$(docker info --format '{{.Architecture}}'); \
+case "$$daemon_arch" in \
+  amd64|x86_64) image_arch=amd64 ;; \
+  arm64|aarch64) image_arch=arm64 ;; \
+  *) echo "unsupported Docker architecture: $$daemon_arch" >&2; exit 1 ;; \
+esac; \
+case "$(DOCKER_NO_CACHE)" in \
+  0|false|'') no_cache=0 ;; \
+  1|true) no_cache=1 ;; \
+  *) echo "DOCKER_NO_CACHE must be 0, 1, false, or true" >&2; exit 1 ;; \
+esac;
+endef
 
 install: ui-build
 	cargo install --path crates/coral-cli --locked
@@ -31,25 +54,7 @@ ui-build:
 
 docker-build:
 	@set -eu; \
-	if ! command -v docker >/dev/null 2>&1; then \
-	  echo "docker is required to build the Coral image" >&2; \
-	  exit 1; \
-	fi; \
-	if ! docker buildx version >/dev/null 2>&1; then \
-	  echo "docker buildx is required to build the Coral image" >&2; \
-	  exit 1; \
-	fi; \
-	daemon_arch=$$(docker info --format '{{.Architecture}}'); \
-	case "$$daemon_arch" in \
-	  amd64|x86_64) image_arch=amd64 ;; \
-	  arm64|aarch64) image_arch=arm64 ;; \
-	  *) echo "unsupported Docker architecture: $$daemon_arch" >&2; exit 1 ;; \
-	esac; \
-	case "$(DOCKER_NO_CACHE)" in \
-	  0|false|'') no_cache=0 ;; \
-	  1|true) no_cache=1 ;; \
-	  *) echo "DOCKER_NO_CACHE must be 0, 1, false, or true" >&2; exit 1 ;; \
-	esac; \
+	$(call docker_build_preflight,Coral) \
 	git_sha=$$(git rev-parse --short HEAD); \
 	test -n "$$git_sha"; \
 	tmpdir=$$(mktemp -d); \
@@ -71,7 +76,7 @@ docker-build:
 	cp docker/Dockerfile docker/entrypoint.sh "$$context/docker/"; \
 	set -- docker buildx build \
 	  --platform "linux/$$image_arch" \
-	  --provenance=true \
+	  --provenance=false \
 	  --file "$$context/docker/Dockerfile" \
 	  --load \
 	  --tag "$(DOCKER_IMAGE)"; \
@@ -80,6 +85,21 @@ docker-build:
 	echo "Building $(DOCKER_IMAGE) from the local linux/$$image_arch binary..."; \
 	"$$@"; \
 	echo "Built $(DOCKER_IMAGE)"
+
+reef-docker-build:
+	@set -eu; \
+	$(call docker_build_preflight,Reef) \
+	set -- docker buildx build --platform "linux/$$image_arch" --provenance=false --file docker/Dockerfile.reef --load --tag "$(REEF_DOCKER_IMAGE)"; \
+	if [ "$$no_cache" -eq 1 ]; then set -- "$$@" --no-cache; fi; \
+	set -- "$$@" .; \
+	"$$@"; \
+	echo "Built $(REEF_DOCKER_IMAGE)"
+
+reef-docker-smoke:
+	CORAL_IMAGE="$(DOCKER_IMAGE)" REEF_IMAGE="$(REEF_DOCKER_IMAGE)" docker/reef-smoke.sh
+
+reef-docker-test: docker-build reef-docker-build
+	CORAL_IMAGE="$(DOCKER_IMAGE)" REEF_IMAGE="$(REEF_DOCKER_IMAGE)" docker/reef-smoke.sh
 
 rust-checks:
 	cargo fmt --all -- --check
