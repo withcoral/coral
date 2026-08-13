@@ -57,7 +57,11 @@ test('Reef reruns reuse the signed immutable version digest without rebuilding i
   assert.match(resolve, /cat "\$error_file" >&2\n\s+exit 1/)
   assert.match(workflow, /if: steps\.existing\.outputs\.digest == ''\n\s+id: build/)
   assert.match(workflow, /if: steps\.existing\.outputs\.digest != ''[\s\S]*cosign verify/)
-  assert.match(workflow, /EXPECTED_IDENTITY: \$\{\{ github\.server_url \}\}\/\$\{\{ github\.workflow_ref \}\}/)
+  assert.match(
+    workflow,
+    /EXPECTED_IDENTITY: \$\{\{ github\.server_url \}\}\/\$\{\{ github\.repository \}\}\/\.github\/workflows\/reef-docker-publish\.yml@\$\{\{ github\.ref \}\}/,
+  )
+  assert.doesNotMatch(workflow, /EXPECTED_IDENTITY: .*github\.workflow_ref/)
   assert.match(workflow, /digest="\$\{EXISTING_DIGEST:-\$BUILD_DIGEST\}"/)
   assert.match(publish, /if \[ -z "\$EXISTING_DIGEST" \]/)
   assert.match(publish, /imagetools create --tag "\$version_ref"/)
@@ -80,12 +84,24 @@ test('release aliases stay paired while direct Coral CVE rebuilds advance eligib
   ])
 
   assert.match(coral, /defer-aliases:/)
-  assert.match(coral, /group: coordinated-docker-aliases/)
+  assert.match(coral, /format\('docker-publish-deferred-\{0\}', github\.run_id\)/)
+  assert.match(coral, /\|\| 'coordinated-docker-aliases'/)
+  assert.match(coral, /group: docker-publish-\$\{\{ inputs\.tag \}\}/)
   assert.match(coral, /major-minor=\$\{version%\.\*\}/)
   assert.match(coral, /if: \$\{\{ inputs\.defer-aliases != true \}\}/)
+  assert.match(coral, /- name: Snapshot direct rebuild alias ownership/)
+  assert.match(coral, /version_digest="\$\(tag_digest "\$VERSION"\)"/)
+  assert.match(
+    coral,
+    /\[ -z "\$alias_digest" \] \|\| \{ \[ -n "\$version_digest" \] && \[ "\$alias_digest" = "\$version_digest" \]; \}/,
+  )
   assert.match(coral, /if \[ "\$DEFER_ALIASES" != true \]; then/)
   assert.match(coral, /\[ "\$PRERELEASE" = false \] && \[ "\$NEWEST_LINE_TAG" = "\$TAG" \]/)
   assert.match(coral, /\[ "\$PRERELEASE" = false \] && \[ "\$NEWEST_TAG" = "\$TAG" \]/)
+  assert.match(coral, /echo "move-line=\$\{move_line\}"/)
+  assert.match(coral, /echo "move-latest=\$\{move_latest\}"/)
+  assert.match(coral, /if \[ "\$MOVE_LINE" = true \]; then/)
+  assert.match(coral, /if \[ "\$MOVE_LATEST" = true \]; then/)
   assert.match(coral, /tags\+=\(--tag "\$\{IMAGE\}:\$\{MAJOR_MINOR\}"\)/)
   assert.match(coral, /tags\+=\(--tag "\$\{IMAGE\}:latest"\)/)
   assert.match(release, /publish-docker:[\s\S]*defer-aliases: true/)
@@ -101,6 +117,18 @@ test('release aliases stay paired while direct Coral CVE rebuilds advance eligib
   assert.match(aliases, /if \[ "\$TAG" = "\$newest" \]; then\n\s+aliases\+=\(latest\)/)
   assert.match(aliases, /make_latest=true/)
   assert.match(aliases, /echo "make-latest=\$\{make_latest\}"/)
+})
+
+test('Coral signs the staged digest before exposing the exact version or moving tags', async () => {
+  const workflow = await read('../.github/workflows/docker-publish.yml')
+  const sign = workflow.indexOf('- name: Sign the staged manifest')
+  const publish = workflow.indexOf('- name: Tag the validated manifest')
+
+  assert.ok(sign >= 0 && sign < publish)
+  assert.match(workflow.slice(sign, publish), /DIGEST: \$\{\{ steps\.build\.outputs\.digest \}\}/)
+  assert.match(workflow.slice(sign, publish), /cosign sign --yes "\$\{IMAGE\}@\$\{DIGEST\}"/)
+  assert.doesNotMatch(workflow.slice(0, sign), /imagetools create/)
+  assert.match(workflow.slice(publish), /test "\$digest" = "\$BUILD_DIGEST"/)
 })
 
 test('alias publication converges absent, same, mismatch, and partial-failure states', async () => {

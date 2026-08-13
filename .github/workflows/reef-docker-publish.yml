@@ -167,7 +167,9 @@ jobs:
         shell: bash
         env:
           DIGEST: ${{ steps.candidate.outputs.digest }}
-          EXPECTED_IDENTITY: ${{ github.server_url }}/${{ github.workflow_ref }}
+          # The certificate embeds job_workflow_ref: this workflow's own path
+          # at the run's ref. github.workflow_ref names release.yml instead.
+          EXPECTED_IDENTITY: ${{ github.server_url }}/${{ github.repository }}/.github/workflows/reef-docker-publish.yml@${{ github.ref }}
         run: |
           set -euo pipefail
           cosign verify \
