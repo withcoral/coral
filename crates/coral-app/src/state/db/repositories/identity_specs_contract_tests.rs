@@ -6,7 +6,7 @@ use tempfile::tempdir;
 use super::identity_specs::{
     IdentitySpecDocumentRecord, IdentitySpecId, IdentitySpecKey, IdentitySpecRecord,
 };
-use crate::bootstrap::AppError;
+use crate::bootstrap::{self, AppError};
 use crate::encrypted_document::EncryptedEnvelopeDocument;
 use crate::state::db::schema::IdentitySpecDocuments;
 use crate::state::db::{CoralDb, CoralTx, DbRepos, ResolvedDatabaseConfig};
@@ -22,6 +22,22 @@ async fn identity_spec_persistence_contract_holds_against_sqlite() {
     .await
     .expect("open sqlite");
     db.migrate().await.expect("migrate sqlite");
+    assert_identity_spec_persistence_contract(&db).await;
+}
+
+#[tokio::test]
+#[ignore = "set CORAL_TEST_POSTGRES_URL to run the shared contract against Postgres"]
+async fn identity_spec_persistence_contract_on_postgres() {
+    let Some(url) = bootstrap::env_var("CORAL_TEST_POSTGRES_URL")
+        .expect("read CORAL_TEST_POSTGRES_URL")
+        .filter(|value| !value.is_empty())
+    else {
+        return;
+    };
+    let db = CoralDb::open(ResolvedDatabaseConfig::Postgres { url })
+        .await
+        .expect("open postgres");
+    db.migrate().await.expect("migrate postgres");
     assert_identity_spec_persistence_contract(&db).await;
 }
 
@@ -73,10 +89,11 @@ async fn assert_identity_spec_persistence_contract(db: &CoralDb) {
     assert_pair(db, &global, "replacement", 10, 2).await;
     assert_pair(db, &workspace_shared, "workspace", 20, 1).await;
     assert_pair(db, &reserved_shared, "reserved", 40, 1).await;
-    assert_exact_scope_lists(
+    assert_fixture_scope_lists(
         db,
         &global,
         &workspace_shared,
+        &suffix,
         [&shared_name, global_zeta.name()],
         [workspace_beta.name(), &shared_name],
     )
@@ -163,10 +180,11 @@ async fn assert_identity_spec_persistence_contract(db: &CoralDb) {
     tx.commit().await.expect("commit cleanup");
 }
 
-async fn assert_exact_scope_lists(
+async fn assert_fixture_scope_lists(
     db: &CoralDb,
     global: &IdentitySpecKey,
     workspace: &IdentitySpecKey,
+    suffix: &str,
     mut expected_global: [&str; 2],
     mut expected_workspace: [&str; 2],
 ) {
@@ -183,8 +201,11 @@ async fn assert_exact_scope_lists(
         .list(workspace.scope())
         .await
         .expect("list workspace specs");
-    assert_eq!(names(&global_records), expected_global);
-    assert_eq!(names(&workspace_records), expected_workspace);
+    assert_eq!(fixture_names(&global_records, suffix), expected_global);
+    assert_eq!(
+        fixture_names(&workspace_records, suffix),
+        expected_workspace
+    );
     assert_eq!(
         session
             .identity_specs()
@@ -442,6 +463,13 @@ fn document_id_where(identity_spec_id: &IdentitySpecId) -> sea_query::SimpleExpr
 
 fn names(records: &[IdentitySpecRecord]) -> Vec<&str> {
     records.iter().map(|record| record.key.name()).collect()
+}
+
+fn fixture_names<'a>(records: &'a [IdentitySpecRecord], suffix: &str) -> Vec<&'a str> {
+    names(records)
+        .into_iter()
+        .filter(|name| name.ends_with(suffix))
+        .collect()
 }
 
 fn parsed_workspace(name: &str) -> WorkspaceName {
