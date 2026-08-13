@@ -26,6 +26,31 @@ async fn identity_spec_persistence_contract_holds_against_sqlite() {
 }
 
 #[tokio::test]
+async fn identity_spec_contract_preserves_preexisting_reserved_name_workspace() {
+    let temp = tempdir().expect("temp dir");
+    let db = CoralDb::open(ResolvedDatabaseConfig::Sqlite {
+        path: temp.path().join("coral.sqlite"),
+    })
+    .await
+    .expect("open sqlite");
+    db.migrate().await.expect("migrate sqlite");
+
+    let reserved = parsed_workspace("__global__");
+    let preexisting = scoped_key(&reserved, "preexisting");
+    let mut tx = db.begin().await.expect("begin preexisting transaction");
+    tx.workspaces()
+        .ensure(reserved.as_str(), 1)
+        .await
+        .expect("ensure preexisting workspace");
+    seed_pair(&mut tx, &preexisting, "preexisting", 2).await;
+    tx.commit().await.expect("commit preexisting fixture");
+
+    assert_identity_spec_persistence_contract(&db).await;
+
+    assert_pair(&db, &preexisting, "preexisting", 2, 1).await;
+}
+
+#[tokio::test]
 #[ignore = "set CORAL_TEST_POSTGRES_URL to run the shared contract against Postgres"]
 async fn identity_spec_persistence_contract_on_postgres() {
     let Some(url) = bootstrap::env_var("CORAL_TEST_POSTGRES_URL")
@@ -65,15 +90,10 @@ async fn assert_identity_spec_persistence_contract(db: &CoralDb) {
     for (key, label, now) in [(&global, "global", 10), (&global_zeta, "zeta", 11)] {
         seed_pair(&mut tx, key, label, now).await;
     }
-    tx.workspaces()
-        .ensure(reserved.as_str(), 1)
-        .await
-        .expect("ensure reserved-name workspace");
     for (key, label, now) in [
         (&workspace_shared, "workspace", 20),
         (&workspace_beta, "beta", 21),
         (&alternate_shared, "alternate", 30),
-        (&reserved_shared, "reserved", 40),
     ] {
         seed_pair(&mut tx, key, label, now).await;
     }
@@ -86,9 +106,9 @@ async fn assert_identity_spec_persistence_contract(db: &CoralDb) {
         .expect("replace document with stale clock");
     tx.commit().await.expect("commit seed transaction");
 
+    assert_reserved_workspace_name_is_not_global(db, &reserved, &reserved_shared).await;
     assert_pair(db, &global, "replacement", 10, 2).await;
     assert_pair(db, &workspace_shared, "workspace", 20, 1).await;
-    assert_pair(db, &reserved_shared, "reserved", 40, 1).await;
     assert_fixture_scope_lists(
         db,
         &global,
@@ -159,7 +179,6 @@ async fn assert_identity_spec_persistence_contract(db: &CoralDb) {
 
     assert_foreign_keys(db, &suffix).await;
     assert_rollback_invisibility(db, &suffix).await;
-    assert_max_version_is_nonmutating(db, &reserved_shared).await;
     assert_concurrent_document_versions(db, &global_zeta).await;
 
     let mut tx = db.begin().await.expect("begin cleanup transaction");
@@ -171,13 +190,39 @@ async fn assert_identity_spec_persistence_contract(db: &CoralDb) {
                 .expect("delete global spec")
         );
     }
-    for workspace in [&workspace, &reserved] {
-        tx.workspaces()
-            .delete(workspace.as_str())
-            .await
-            .expect("delete workspace");
-    }
+    tx.workspaces()
+        .delete(workspace.as_str())
+        .await
+        .expect("delete workspace");
     tx.commit().await.expect("commit cleanup");
+}
+
+async fn assert_reserved_workspace_name_is_not_global(
+    db: &CoralDb,
+    workspace: &WorkspaceName,
+    key: &IdentitySpecKey,
+) {
+    let mut tx = db.begin().await.expect("begin reserved-name transaction");
+    tx.workspaces()
+        .ensure(workspace.as_str(), 1)
+        .await
+        .expect("ensure reserved-name workspace");
+    let (spec, persisted_document) = seed_pair(&mut tx, key, "reserved", 40).await;
+    assert_eq!(spec, expected_spec(spec.id.clone(), key, "reserved", 40));
+    assert_eq!(
+        persisted_document,
+        IdentitySpecDocumentRecord {
+            identity_spec_id: spec.id.clone(),
+            document_version: 1,
+            envelope: document("reserved"),
+            created_at_unix_nanos: 40,
+            updated_at_unix_nanos: 40,
+        }
+    );
+    assert_max_version_is_nonmutating(&mut tx, &spec.id).await;
+    tx.rollback()
+        .await
+        .expect("roll back reserved-name fixture");
 }
 
 async fn assert_fixture_scope_lists(
@@ -259,45 +304,39 @@ async fn assert_rollback_invisibility(db: &CoralDb, suffix: &str) {
     assert_absent(db, &key).await;
 }
 
-async fn assert_max_version_is_nonmutating(db: &CoralDb, key: &IdentitySpecKey) {
-    let mut tx = db.begin().await.expect("begin max-version transaction");
-    let identity_spec_id = tx
-        .identity_specs()
-        .get(key)
-        .await
-        .expect("read max-version spec")
-        .expect("max-version spec exists")
-        .id;
+async fn assert_max_version_is_nonmutating(
+    tx: &mut CoralTx<'_>,
+    identity_spec_id: &IdentitySpecId,
+) {
     tx.execute(
         Query::update()
             .table(IdentitySpecDocuments::Table)
             .value(IdentitySpecDocuments::DocumentVersion, i64::MAX)
-            .and_where(document_id_where(&identity_spec_id))
+            .and_where(document_id_where(identity_spec_id))
             .to_owned(),
     )
     .await
     .expect("set max document version");
     let before = tx
         .identity_spec_documents()
-        .get(&identity_spec_id)
+        .get(identity_spec_id)
         .await
         .expect("read max-version document")
         .expect("document exists");
     let error = tx
         .identity_spec_documents()
-        .upsert(&identity_spec_id, &document("overflow"), 70)
+        .upsert(identity_spec_id, &document("overflow"), 70)
         .await
         .expect_err("max version must not wrap");
     assert!(matches!(error, AppError::FailedPrecondition(_)));
     assert_eq!(
         tx.identity_spec_documents()
-            .get(&identity_spec_id)
+            .get(identity_spec_id)
             .await
             .expect("reread max-version document")
             .expect("document remains"),
         before
     );
-    tx.rollback().await.expect("rollback max-version change");
 }
 
 async fn assert_concurrent_document_versions(db: &CoralDb, key: &IdentitySpecKey) {
