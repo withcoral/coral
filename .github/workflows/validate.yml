@@ -107,8 +107,10 @@ jobs:
               - 'apps/desktop/src/shared/types.ts'
             reef-image:
               - '.github/workflows/validate.yml'
-              - '.github/workflows/reef-docker-publish.yml'
               - '.github/workflows/docker-aliases.yml'
+              - '.github/workflows/docker-publish.yml'
+              - '.github/workflows/reef-docker-publish.yml'
+              - '.github/workflows/release.yml'
               - '.dockerignore'
               - 'Makefile'
               - 'Cargo.toml'

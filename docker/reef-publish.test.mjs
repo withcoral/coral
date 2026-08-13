@@ -66,11 +66,20 @@ test('moving aliases have one coordinator after both immutable publishers', asyn
   ])
 
   assert.doesNotMatch(coral, /\$\{IMAGE\}:(?:latest|\$\{MAJOR_MINOR\})/)
-  assert.match(release, /coordinate-docker-aliases:\n(?:.|\n)*- publish-docker\n(?:.|\n)*- publish-reef-docker/)
+  assert.doesNotMatch(coral, /major-minor=/)
+  assert.match(coral, /group: docker-publish-\$\{\{ inputs\.tag \}\}/)
+  assert.match(
+    release,
+    /coordinate-docker-aliases:\n(?:.|\n)*- publish-docker\n(?:.|\n)*- publish-reef-docker/,
+  )
   assert.match(aliases, /group: coordinated-docker-aliases/)
+  assert.match(aliases, /value: \$\{\{ jobs\.aliases\.outputs\.make-latest \}\}/)
+  assert.match(aliases, /make-latest: \$\{\{ steps\.advance\.outputs\.make-latest \}\}/)
   assert.match(aliases, /test "\$draft" = false/)
   assert.match(aliases, /\[ "\$TAG" != "\$newest_line" \] \|\| aliases\+=\("\$line"\)/)
-  assert.match(aliases, /\[ "\$TAG" != "\$newest" \] \|\| aliases\+=\(latest\)/)
+  assert.match(aliases, /if \[ "\$TAG" = "\$newest" \]; then\n\s+aliases\+=\(latest\)/)
+  assert.match(aliases, /make_latest=true/)
+  assert.match(aliases, /echo "make-latest=\$\{make_latest\}"/)
 })
 
 test('alias publication converges absent, same, mismatch, and partial-failure states', async () => {
@@ -112,7 +121,10 @@ test('alias publication converges absent, same, mismatch, and partial-failure st
   }
   for (let failAfter = 0; failAfter < operations.length; failAfter += 1) {
     let partial
-    assert.throws(() => run({}, failAfter), (error) => ((partial = error.state), true))
+    assert.throws(
+      () => run({}, failAfter),
+      (error) => ((partial = error.state), true),
+    )
     assert.deepEqual(run(partial), expected)
   }
 })
@@ -124,6 +136,31 @@ test('GitHub release promotion is the final coordinated commit point', async () 
 
   assert.ok(coordinate >= 0 && coordinate < promote)
   assert.match(release.slice(promote), /- coordinate-docker-aliases/)
-  assert.match(release.slice(promote), /-F prerelease=false -F make_latest=true/)
+  assert.match(
+    release.slice(promote),
+    /MAKE_LATEST: \$\{\{ needs\.coordinate-docker-aliases\.outputs\.make-latest \}\}/,
+  )
+  assert.match(release.slice(promote), /if \[ "\$was_prerelease" = true \]/)
+  assert.match(release.slice(promote), /-F prerelease=false -f "make_latest=\$\{MAKE_LATEST\}"/)
+  assert.match(release.slice(promote), /if: steps\.promote\.outputs\.promoted == 'true'/)
+  assert.doesNotMatch(release.slice(0, coordinate), /releases\/tags\/\$\{TAG_NAME\}/)
   assert.doesNotMatch(release.slice(0, coordinate), /-F prerelease=false/)
+})
+
+test('validation watches every workflow consumed by the release contract', async () => {
+  const validate = await read('../.github/workflows/validate.yml')
+  const reefImagePaths = validate.slice(
+    validate.indexOf('            reef-image:\n'),
+    validate.indexOf('            desktop-checks:\n'),
+  )
+
+  for (const workflow of [
+    'docker-aliases.yml',
+    'docker-publish.yml',
+    'reef-docker-publish.yml',
+    'release.yml',
+  ]) {
+    assert.match(reefImagePaths, new RegExp(`\\.github/workflows/${workflow.replace('.', '\\.')}`))
+  }
+  assert.match(reefImagePaths, /docker\/reef-publish\.test\.mjs/)
 })

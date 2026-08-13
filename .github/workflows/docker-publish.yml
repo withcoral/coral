@@ -21,9 +21,9 @@ on:
 permissions:
   contents: read
 concurrency:
-  # Moving tags (latest and X.Y) are shared mutable state across releases, so
-  # every publish must finish before the next one evaluates and applies them.
-  group: docker-publish
+  # Serialize rebuilds of the same mutable version tag. Moving aliases are
+  # coordinated across Coral and Reef by docker-aliases.yml.
+  group: docker-publish-${{ inputs.tag }}
   queue: max
 
 env:
@@ -57,11 +57,7 @@ jobs:
             exit 1
           fi
 
-          version="${TAG#v}"
-          {
-            echo "version=${version}"
-            echo "major-minor=${version%.*}"
-          } >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
 
       # The Dockerfile and entrypoint come from the ref this workflow runs on:
       # the release tag under workflow_call, and whatever ref the CVE rebuild

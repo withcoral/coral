@@ -495,26 +495,6 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --clobber
 
-      - name: Read GitHub release
-        id: promote-release
-        env:
-          GH_TOKEN: ${{ steps.github-app-token.outputs.token }}
-        run: |
-          set -euo pipefail
-          release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG_NAME}")"
-          release_id="$(printf '%s' "$release_json" | jq -r '.id')"
-          was_prerelease="$(printf '%s' "$release_json" | jq -r '.prerelease')"
-
-          {
-            echo "was_prerelease=${was_prerelease}"
-            echo "tag_name=$(printf '%s' "$release_json" | jq -r '.tag_name')"
-            echo "release_name=$(printf '%s' "$release_json" | jq -r '.name // ""')"
-            echo "release_url=$(printf '%s' "$release_json" | jq -r '.html_url')"
-            echo "body<<__RELEASE_BODY__"
-            printf '%s' "$release_json" | jq -r '.body // ""'
-            echo "__RELEASE_BODY__"
-          } >> "$GITHUB_OUTPUT"
-
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ needs.validate-release-ref.outputs.commit-sha }}
@@ -552,8 +532,8 @@ jobs:
               client_payload: { version },
             });
 
-  # Additive by design: a failure here leaves the image missing until a manual
-  # `docker-publish` dispatch, and never blocks or rewinds a published release.
+  # Both immutable images and their paired aliases are release gates. The
+  # GitHub release remains a prerelease until all three jobs succeed.
   publish-docker:
     needs:
       - validate-release-ref
@@ -614,13 +594,21 @@ jobs:
         id: promote
         env:
           GH_TOKEN: ${{ steps.github-app-token.outputs.token }}
+          MAKE_LATEST: ${{ needs.coordinate-docker-aliases.outputs.make-latest }}
           TAG_NAME: ${{ needs.validate-release-ref.outputs.tag-name }}
         run: |
           set -euo pipefail
-          release_id="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG_NAME}" --jq .id)"
-          release="$(gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
-            -F prerelease=false -F make_latest=true)"
+          release="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG_NAME}")"
+          was_prerelease="$(printf '%s' "$release" | jq -r .prerelease)"
+          promoted=false
+          if [ "$was_prerelease" = true ]; then
+            release_id="$(printf '%s' "$release" | jq -r .id)"
+            release="$(gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
+              -F prerelease=false -f "make_latest=${MAKE_LATEST}")"
+            promoted=true
+          fi
           {
+            echo "promoted=${promoted}"
             echo "name=$(printf '%s' "$release" | jq -r '.name // ""')"
             echo "url=$(printf '%s' "$release" | jq -r .html_url)"
             echo "body<<__BODY__"
@@ -629,6 +617,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Post promoted release to Discord
+        if: steps.promote.outputs.promoted == 'true'
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_CHANGELOG_WEBHOOK }}
           TAG_NAME: ${{ needs.validate-release-ref.outputs.tag-name }}
