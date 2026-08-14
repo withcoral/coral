@@ -678,6 +678,52 @@ async fn session_authenticated_companion_gates_grpc_and_mcp() {
         .expect("shutdown OAuth server");
 }
 
+/// MCP is the one public surface no person reaches directly, so a token minted
+/// for it authenticates an agent even though the identity inside it is that
+/// person's.
+///
+/// This asserts on the authenticator the running MCP surface is handed, composed
+/// from an on-disk config by the same function `start` calls, and starts the
+/// server that composition configured. Building an `AcceptedAudience` here
+/// instead would only restate the mechanism: the regression this guards is
+/// `coral serve` passing MCP a bare audience string, which names it human-facing.
+#[tokio::test]
+async fn session_auth_composes_an_agent_audience_for_mcp() {
+    let temp = TempDir::new().expect("temp dir");
+    let signing_key =
+        EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
+            .expect("P-256 signing key");
+    write_session_config(&temp, signing_key.as_ref());
+    let builder = ServerBuilder::configured_standalone_grpc()
+        .with_config_dir(temp.path())
+        .with_noop_feedback_uploads();
+    let mut settings = builder.serve_settings().expect("resolve serve settings");
+    let mcp_config = settings.mcp_http().cloned();
+    let (builder, mcp_authenticator) =
+        compose_session_policies(builder, settings.take_session_auth(), mcp_config.as_ref());
+    let mcp_authenticator = mcp_authenticator.expect("composed MCP authenticator");
+
+    let mut grpc = builder.start().await.expect("start composed gRPC server");
+    assert!(
+        grpc.take_authorization_server().is_some(),
+        "app startup owns the authorization server this composition runs"
+    );
+
+    let principal = mcp_authenticator
+        .principal_for_bearer(&session_token(signing_key.as_ref(), SESSION_RESOURCE))
+        .await
+        .expect("token minted for the MCP surface");
+    assert_eq!(principal.kind(), PrincipalKind::Agent);
+    mcp_authenticator
+        .principal_for_bearer(&session_token(signing_key.as_ref(), REEF_RESOURCE))
+        .await
+        .expect_err("MCP must refuse a token minted for a sibling surface");
+
+    grpc.shutdown()
+        .await
+        .expect("shutdown composed gRPC server");
+}
+
 #[tokio::test]
 async fn coral_ui_only_audience_authenticates_private_grpc_without_mcp_http() {
     let temp = TempDir::new().expect("temp dir");
