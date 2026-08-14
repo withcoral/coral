@@ -216,7 +216,17 @@ impl OpenApiImporter<'_> {
                     location,
                     required: parameter_is_required(parameter_obj, location),
                     data_type: scalar,
-                    default_value: schema.get("default").map(json_schema_default_to_string),
+                    // A null default declares that the parameter has none, so
+                    // it is dropped rather than stringified. `default: null`
+                    // beside a nullable union is what Pydantic emits for
+                    // `param: int | None = None`, and it survives the unwrap
+                    // as an annotation; stringifying it would bind the filter
+                    // to the literal `null` and send it on every unfiltered
+                    // query.
+                    default_value: schema
+                        .get("default")
+                        .filter(|default| !default.is_null())
+                        .map(json_schema_default_to_string),
                     description: parameter_obj
                         .get("description")
                         .and_then(Value::as_str)

@@ -1482,6 +1482,71 @@ paths:
 }
 
 #[test]
+fn importer_reads_a_null_parameter_default_as_no_default() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: defaults
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = &v4.surface;
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r#"
+openapi: 3.1.0
+paths:
+  /items:
+    get:
+      operationId: items/list
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            anyOf: [{type: integer}, {type: "null"}]
+            default: null
+        - name: cursor
+          in: query
+          schema: {type: string, default: null}
+        - name: per_page
+          in: query
+          schema:
+            anyOf: [{type: integer}, {type: "null"}]
+            default: 30
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: {type: string}
+"#
+        .as_bytes(),
+    )
+    .expect("defaults import");
+    let operation = ir.operations.first().expect("operation");
+    let defaults = operation
+        .inputs
+        .iter()
+        .map(|input| (input.name.as_str(), input.default_value.as_deref()))
+        .collect::<BTreeMap<_, _>>();
+    // What Pydantic emits for `param: int | None = None`. Stringifying it would
+    // send `?limit=null`, which an integer parameter rejects.
+    assert_eq!(defaults.get("limit"), Some(&None));
+    assert_eq!(defaults.get("cursor"), Some(&None));
+    assert_eq!(defaults.get("per_page"), Some(&Some("30")));
+}
+
+#[test]
 #[expect(
     clippy::too_many_lines,
     reason = "The OpenAPI fixture keeps common pagination aliases together."
