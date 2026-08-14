@@ -7,7 +7,7 @@ const meta = {
     clients: [
       {
         id: 'claude-code',
-        installCommand: 'curl -fsSL https://reef.example/mcp/install/claude-code | sh',
+        installCommand: 'curl -fsSL https://coral-ui.example/mcp/install/claude-code | sh',
         name: 'Claude Code',
       },
       {

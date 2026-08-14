@@ -6,7 +6,7 @@ const LOCAL_MODE = 'local'
 const REMOTE_MODE = 'remote'
 
 /**
- * Resolves the MCP server Reef installs into coding clients. This module is
+ * Resolves the MCP server Coral UI installs into coding clients. This module is
  * importable by route modules with client exports, but this function runs only
  * from server loaders and resource routes.
  */
