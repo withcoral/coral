@@ -104,12 +104,9 @@ pub(crate) fn compile_query_source(
     source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
     source_observation_publishers: &[Arc<dyn SourceObservationPublisher>],
     request_identity_http_authenticators: &HashMap<String, BoundRequestIdentityHttpAuthenticator>,
-) -> Result<Box<dyn CompiledBackendSource>, CoreError> {
+) -> Result<Option<Box<dyn CompiledBackendSource>>, CoreError> {
     if source.components().is_empty() {
-        return Err(CoreError::FailedPrecondition(format!(
-            "source '{}' has no runtime components",
-            source.source_name()
-        )));
+        return Ok(None);
     }
     let request = BackendCompileRequest {
         source,
@@ -127,10 +124,11 @@ pub(crate) fn compile_query_source(
         .iter()
         .map(|component| compile_component(component, &request))
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(composite::compile_source(
+    Ok(Some(composite::compile_source(
         source.source_name().to_string(),
+        source.catalog_target().clone(),
         compiled_components,
-    ))
+    )))
 }
 
 fn compile_component(

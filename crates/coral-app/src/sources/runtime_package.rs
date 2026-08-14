@@ -2,7 +2,9 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use coral_engine::{QuerySource, RuntimeSourceComponent, RuntimeSourcePackage};
+use coral_engine::{
+    QuerySource, RuntimeCatalogTarget, RuntimeSourceComponent, RuntimeSourcePackage,
+};
 use coral_spec::backends::database::DatabaseSourceManifest;
 use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
 use coral_spec::backends::mcp::{
@@ -153,6 +155,17 @@ pub(crate) fn query_source_from_installed_manifest(
             &source.variables,
             component.as_ref(),
         )?;
+        let catalog_target = if matches!(
+            component.as_ref(),
+            Some(RuntimeSourceComponent::Database(_))
+        ) {
+            RuntimeCatalogTarget::Source
+        } else {
+            // Static DSL v4 placement changes only when canonical projection
+            // schemas are materialized; until then preserve the existing
+            // default-catalog runtime contract.
+            RuntimeCatalogTarget::Default
+        };
         let query_source = QuerySource::from_runtime_components(
             RuntimeSourcePackage {
                 source_name: source_spec.schema_name().to_string(),
@@ -161,6 +174,7 @@ pub(crate) fn query_source_from_installed_manifest(
                 declared_inputs: source_spec.declared_inputs().to_vec(),
                 test_queries: source_spec.test_queries().to_vec(),
                 identity_requirements: None,
+                catalog_target,
                 components: component.into_iter().collect(),
             },
             source.variables.clone(),

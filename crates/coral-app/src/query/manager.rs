@@ -1159,7 +1159,11 @@ fn task_query_relations(provenance: &QueryExecutionProvenance) -> Vec<TaskQueryR
             )
         })
         .chain(provenance.table_functions().iter().map(|function| {
-            TaskQueryRelation::table_function(function.schema_name(), function.function_name())
+            TaskQueryRelation::table_function(
+                function.catalog_name(),
+                function.schema_name(),
+                function.function_name(),
+            )
         }))
         .collect()
 }
@@ -1193,7 +1197,8 @@ fn required_query_guides(
     }
     for usage in resources.table_functions() {
         if let Some(function) = catalog.table_functions.iter().find(|function| {
-            function.schema_name == usage.schema_name()
+            function.catalog_name.as_deref() == usage.catalog_name()
+                && function.schema_name == usage.schema_name()
                 && function.function_name == usage.function_name()
         }) && function.require_guide_read
         {
@@ -1418,6 +1423,7 @@ fn record_query_provenance(span: &tracing::Span, provenance: &QueryExecutionProv
             .map(|function| {
                 json!({
                     "source_name": function.source_name(),
+                    "catalog_name": function.catalog_name(),
                     "schema_name": function.schema_name(),
                     "function_name": function.function_name(),
                 })
@@ -1905,6 +1911,7 @@ mod tests {
             )],
             vec![QueryTableFunctionUsage::new(
                 "github",
+                Some("github"),
                 "github",
                 "search_runs",
             )],
@@ -1944,7 +1951,7 @@ mod tests {
                 crate::state::db::TaskQueryRelationRecord {
                     query_id: query.id.clone(),
                     relation_kind: "table_function".to_string(),
-                    catalog_name: None,
+                    catalog_name: Some("github".to_string()),
                     schema_name: "github".to_string(),
                     relation_name: "search_runs".to_string(),
                 },
@@ -2104,6 +2111,7 @@ mod tests {
             ],
             vec![QueryTableFunctionUsage::new(
                 "github",
+                None,
                 "github",
                 "search_issues",
             )],
@@ -2139,7 +2147,7 @@ mod tests {
                 crate::telemetry::QUERY_TRACE_TABLE_FUNCTIONS_ATTR
             ),
             Some(
-                r#"[{"source_name":"github","schema_name":"github","function_name":"search_issues"}]"#
+                r#"[{"source_name":"github","catalog_name":null,"schema_name":"github","function_name":"search_issues"}]"#
                     .to_string()
             )
         );

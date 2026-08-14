@@ -8,9 +8,10 @@ use arrow::record_batch::RecordBatch;
 use coral_engine::{
     CoralQuery, CoreError, EngineExtensions, QueryExecutionProvenance, QueryParameterValue,
     QueryParameters, QueryResultObserver, QueryResultObserverError, QueryRuntimeConfig,
-    QueryRuntimeContext, QuerySource, RuntimeSourcePackage, StatusCode, UdfRuntimeArgument,
-    UdfRuntimeDefinition, UdfRuntimeImplementation, UdfRuntimePublish, UdfRuntimeResultColumn,
-    UdfRuntimeSignature, UdfRuntimeSqlDefinition, UdfRuntimeTableFunctionPublish,
+    QueryRuntimeContext, QuerySource, RuntimeCatalogTarget, RuntimeSourcePackage, StatusCode,
+    UdfRuntimeArgument, UdfRuntimeDefinition, UdfRuntimeImplementation, UdfRuntimePublish,
+    UdfRuntimeResultColumn, UdfRuntimeSignature, UdfRuntimeSqlDefinition,
+    UdfRuntimeTableFunctionPublish,
 };
 use coral_spec::ManifestDataType;
 use serde_json::{Value, json};
@@ -543,6 +544,7 @@ async fn infer_udf_signature_maps_component_schema_to_canonical_source_name() {
             declared_inputs: Vec::new(),
             test_queries: Vec::new(),
             identity_requirements: None,
+            catalog_target: RuntimeCatalogTarget::Default,
             components: component_source.components().to_vec(),
         },
         BTreeMap::new(),

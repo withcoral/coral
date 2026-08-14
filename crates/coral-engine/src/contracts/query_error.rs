@@ -450,6 +450,25 @@ fn table_not_found_hint(
         .collect();
 
     if tables_in_schema.is_empty() {
+        // A former two-part v4 reference can name the correct inner schema and
+        // relation while omitting its source catalog. Suggest the unique
+        // canonical three-part identity instead of reporting that inner schema
+        // as globally unregistered.
+        let mut catalog_matches = known_tables.iter().filter(|info| {
+            info.catalog_name.is_some()
+                && eq_folded(schema, &[info.schema_name.as_str()])
+                && info.table_name.eq_ignore_ascii_case(table)
+        });
+        if let Some(hit) = catalog_matches.next()
+            && catalog_matches.next().is_none()
+        {
+            return Some(did_you_mean_hint(&format_schema_relation(
+                hit.catalog_name.as_deref(),
+                &hit.schema_name,
+                &hit.table_name,
+            )));
+        }
+
         // `known_tables` only contains successfully-registered sources, so an
         // empty schema here could mean either "not installed" or "configured
         // but failed to register". Keep the hint transport-neutral — point

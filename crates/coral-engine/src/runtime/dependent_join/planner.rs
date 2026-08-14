@@ -8,7 +8,9 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_planner::{ExtensionPlanner, PhysicalPlanner};
 
 use crate::backends::http::HttpSourceTableProvider;
-use crate::backends::shared::source_observation::SourceObservationPublishers;
+use crate::backends::shared::source_observation::{
+    SourceObservationIdentity, SourceObservationPublishers,
+};
 use crate::runtime::dependent_join::exec::{DependentJoinExec, DependentJoinExecConfig};
 use crate::runtime::dependent_join::logical::DependentJoinNode;
 
@@ -38,6 +40,7 @@ impl ExtensionPlanner for DependentJoinExtensionPlanner {
             resolver: Arc::clone(resolver),
             dependent: provider.client,
             dependent_source_schema: provider.source_schema,
+            source_observation_identity: provider.source_observation_identity,
             table: provider.table,
             binding_keys: Arc::from(node.binding_keys.clone()),
             literal_filters: Arc::new(node.literal_filters.clone()),
@@ -61,6 +64,7 @@ impl ExtensionPlanner for DependentJoinExtensionPlanner {
 struct ResolvedHttpDependent {
     client: crate::backends::http::HttpSourceClient,
     source_schema: String,
+    source_observation_identity: SourceObservationIdentity,
     table: Arc<coral_spec::backends::http::HttpTableSpec>,
     source_observation_publishers: SourceObservationPublishers,
 }
@@ -108,6 +112,13 @@ async fn resolve_http_provider(
     Ok(ResolvedHttpDependent {
         client: provider.client().clone(),
         source_schema: provider.source_schema().to_string(),
+        source_observation_identity: SourceObservationIdentity::new(
+            provider.source_name(),
+            crate::runtime::normalize_catalog_name(Some(&table_ref.catalog))
+                .map(ToString::to_string),
+            table_ref.schema.as_ref(),
+            table_ref.table.as_ref(),
+        ),
         table: Arc::clone(provider.table_spec()),
         source_observation_publishers: Arc::clone(provider.source_observation_publishers()),
     })

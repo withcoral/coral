@@ -8,6 +8,7 @@ use datafusion::datasource::TableProvider;
 use datafusion::error::DataFusionError;
 use datafusion::prelude::SessionContext;
 
+use crate::RuntimeCatalogTarget;
 use crate::backends::{
     BackendCatalogRegistration, BackendRegistration, BackendRegistrationContext,
     BackendSchemaRegistration, CompiledBackendSource, RegisteredInput, RegisteredSource,
@@ -16,15 +17,18 @@ use crate::backends::{
 
 struct CompositeCompiledSource {
     source_name: String,
+    catalog_target: RuntimeCatalogTarget,
     components: Vec<Box<dyn CompiledBackendSource>>,
 }
 
 pub(crate) fn compile_source(
     source_name: String,
+    catalog_target: RuntimeCatalogTarget,
     components: Vec<Box<dyn CompiledBackendSource>>,
 ) -> Box<dyn CompiledBackendSource> {
     Box::new(CompositeCompiledSource {
         source_name,
+        catalog_target,
         components,
     })
 }
@@ -32,7 +36,10 @@ pub(crate) fn compile_source(
 #[async_trait]
 impl CompiledBackendSource for CompositeCompiledSource {
     fn qualified_name(&self) -> SourceQualifiedName {
-        SourceQualifiedName::Schema(self.source_name.clone())
+        match &self.catalog_target {
+            RuntimeCatalogTarget::Default => SourceQualifiedName::Schema(self.source_name.clone()),
+            RuntimeCatalogTarget::Source => SourceQualifiedName::Catalog(self.source_name.clone()),
+        }
     }
 
     fn source_name(&self) -> &str {
@@ -60,21 +67,25 @@ impl CompiledBackendSource for CompositeCompiledSource {
             for schema in registration.schemas {
                 let schema_name = schema.source.qualified_name.name().to_string();
                 let target = schemas
-                    .entry(schema_name.clone())
+                    .entry(schema_name.to_ascii_lowercase())
                     .or_insert_with(|| CompositeSchemaRegistration::new(schema_name.clone()));
                 for (name, table) in schema.tables {
-                    if target.tables.insert(name.clone(), table).is_some() {
+                    if !target.relation_keys.insert(name.to_ascii_lowercase()) {
                         return Err(DataFusionError::Execution(format!(
-                            "source '{}' schema '{schema_name}' registered duplicate table '{name}'",
+                            "source '{}' schema '{schema_name}' registered duplicate relation '{name}'",
                             self.source_name
                         )));
                     }
+                    target.tables.insert(name, table);
                 }
                 for function in schema.source.table_functions {
                     let function_name = function.function_name.clone();
-                    if !target.function_keys.insert(function_name.clone()) {
+                    if !target
+                        .relation_keys
+                        .insert(function_name.to_ascii_lowercase())
+                    {
                         return Err(DataFusionError::Execution(format!(
-                            "source '{}' schema '{schema_name}' registered duplicate table function '{function_name}'",
+                            "source '{}' schema '{schema_name}' registered duplicate relation '{function_name}'",
                             self.source_name
                         )));
                     }
@@ -102,7 +113,7 @@ impl CompiledBackendSource for CompositeCompiledSource {
 struct CompositeSchemaRegistration {
     schema_name: String,
     tables: HashMap<String, Arc<dyn TableProvider>>,
-    function_keys: BTreeSet<String>,
+    relation_keys: BTreeSet<String>,
     registered_tables: Vec<RegisteredTable>,
     registered_functions: Vec<RegisteredTableFunction>,
     inputs: Vec<RegisteredInput>,
@@ -114,7 +125,7 @@ impl CompositeSchemaRegistration {
         Self {
             schema_name,
             tables: HashMap::new(),
-            function_keys: BTreeSet::new(),
+            relation_keys: BTreeSet::new(),
             registered_tables: Vec::new(),
             registered_functions: Vec::new(),
             inputs: Vec::new(),

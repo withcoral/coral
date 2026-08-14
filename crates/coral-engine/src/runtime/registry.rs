@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use datafusion::catalog::{CatalogProvider, MemoryCatalogProvider};
 use datafusion::error::{DataFusionError, Result as DataFusionResult};
 use datafusion::prelude::SessionContext;
 use tracing::{Instrument as _, info_span};
@@ -13,7 +14,7 @@ use crate::backends::{
 };
 use crate::runtime::error::{datafusion_to_core, source_decorator_error_to_core};
 use crate::runtime::schema_provider::StaticSchemaProvider;
-use crate::{CoreError, QuerySource, SourceDecorator, SourceFailurePolicy};
+use crate::{CoreError, QuerySource, RuntimeCatalogTarget, SourceDecorator, SourceFailurePolicy};
 
 /// Source SQL names the runtime owns. Mirrored by `RESERVED_SOURCE_SCHEMA_NAMES`
 /// in `coral-spec`, which rejects the same names during manifest validation so a
@@ -139,6 +140,7 @@ async fn register_sources_inner(
                     &registration_context,
                     &mut seen_schemas,
                     &mut seen_catalogs,
+                    query_source,
                     compiled_source.as_ref(),
                 )
                 .await
@@ -243,13 +245,25 @@ async fn register_source(
     registration_context: &BackendRegistrationContext,
     seen_schemas: &mut std::collections::HashSet<String>,
     seen_catalogs: &mut std::collections::HashSet<String>,
+    query_source: &QuerySource,
     source: &dyn CompiledBackendSource,
 ) -> DataFusionResult<BackendRegistration> {
     source.validate_runtime_capabilities()?;
 
     let registration = source.register(ctx, registration_context).await?;
-    claim_registration_schemas(&registration, seen_schemas)?;
-    claim_registration_catalogs(&registration, seen_catalogs)?;
+    match query_source.catalog_target() {
+        RuntimeCatalogTarget::Default => {
+            claim_registration_schemas(&registration, seen_schemas)?;
+            claim_registration_catalogs(&registration, seen_catalogs)?;
+        }
+        RuntimeCatalogTarget::Source => {
+            claim_named_catalog_registration(
+                &registration,
+                query_source.source_name(),
+                seen_catalogs,
+            )?;
+        }
+    }
 
     Ok(registration)
 }
@@ -272,6 +286,36 @@ fn claim_registration_schemas(
         }
     }
     seen_schemas.extend(registration_schemas);
+    Ok(())
+}
+
+fn claim_named_catalog_registration(
+    registration: &BackendRegistration,
+    catalog_name: &str,
+    seen_catalogs: &mut std::collections::HashSet<String>,
+) -> DataFusionResult<()> {
+    check_reserved_schema(catalog_name)?;
+    if seen_catalogs.contains(catalog_name) {
+        return Err(DataFusionError::Execution(format!(
+            "duplicate source catalog '{catalog_name}'"
+        )));
+    }
+    if !registration.schemas.is_empty() && !registration.catalogs.is_empty() {
+        return Err(DataFusionError::Execution(format!(
+            "source catalog '{catalog_name}' mixes static schemas with a discovered catalog"
+        )));
+    }
+    if registration.catalogs.len() > 1
+        || registration
+            .catalogs
+            .iter()
+            .any(|catalog| catalog.source.qualified_name.name() != catalog_name)
+    {
+        return Err(DataFusionError::Execution(format!(
+            "runtime package target '{catalog_name}' does not match its discovered catalog registration"
+        )));
+    }
+    seen_catalogs.insert(catalog_name.to_string());
     Ok(())
 }
 
@@ -305,6 +349,19 @@ fn register_backend_registration(
     registration: BackendRegistration,
     result: &mut SourceRegistrationResult,
 ) -> std::result::Result<(), CoreError> {
+    if matches!(query_source.catalog_target(), RuntimeCatalogTarget::Source)
+        && registration.catalogs.is_empty()
+    {
+        return register_named_static_catalog(
+            ctx,
+            source_decorators,
+            query_source,
+            query_source.source_name(),
+            registration.schemas,
+            result,
+        );
+    }
+
     // Source decorators wrap table providers at registration time, but catalog
     // registrations expose providers lazily through the catalog itself.
     // Decorators must explicitly allow that their table-decoration hook is
@@ -376,22 +433,71 @@ fn register_backend_registration(
         result.active_sources.push(registered_source);
     }
     for (catalog_name, _registered_catalog, registered_source, column_fetcher) in catalog_staged {
-        result.column_fetchers.push(CatalogColumnFetcher {
-            catalog_name,
-            relation_names: registered_source
-                .tables
-                .iter()
-                .filter_map(|table| {
-                    table
-                        .schema_name
-                        .as_ref()
-                        .map(|schema_name| (schema_name.clone(), table.table_name.clone()))
-                })
-                .collect(),
-            fetcher: column_fetcher,
-        });
+        if let Some(fetcher) = column_fetcher {
+            result.column_fetchers.push(CatalogColumnFetcher {
+                catalog_name,
+                relation_names: registered_source
+                    .tables
+                    .iter()
+                    .filter_map(|table| {
+                        table
+                            .schema_name
+                            .as_ref()
+                            .map(|schema_name| (schema_name.clone(), table.table_name.clone()))
+                    })
+                    .collect(),
+                fetcher,
+            });
+        }
         result.active_sources.push(registered_source);
     }
+    Ok(())
+}
+
+fn register_named_static_catalog(
+    ctx: &SessionContext,
+    source_decorators: &mut [Box<dyn SourceDecorator>],
+    query_source: &QuerySource,
+    catalog_name: &str,
+    schemas: Vec<BackendSchemaRegistration>,
+    result: &mut SourceRegistrationResult,
+) -> Result<(), CoreError> {
+    let provider: Arc<dyn CatalogProvider> = Arc::new(MemoryCatalogProvider::new());
+    let mut tables = Vec::new();
+    let mut table_functions = Vec::new();
+    let mut inputs = Vec::new();
+    let mut input_keys = std::collections::HashSet::new();
+
+    for schema in schemas {
+        let BackendSchemaRegistration {
+            tables: schema_tables,
+            source,
+        } = schema;
+        let schema_name = source.qualified_name.name().to_string();
+        let decorated = decorate_source_tables(source_decorators, query_source, schema_tables)?;
+        provider
+            .register_schema(&schema_name, Arc::new(StaticSchemaProvider::new(decorated)))
+            .map_err(|error| datafusion_to_core(&error, &[]))?;
+
+        tables.extend(source.tables.into_iter().map(|mut table| {
+            table.schema_name = Some(schema_name.clone());
+            table
+        }));
+        table_functions.extend(source.table_functions);
+        for input in source.inputs {
+            if input_keys.insert(input.key.clone()) {
+                inputs.push(input);
+            }
+        }
+    }
+
+    ctx.register_catalog(catalog_name, provider);
+    result.active_sources.push(RegisteredSource {
+        qualified_name: crate::backends::SourceQualifiedName::Catalog(catalog_name.to_string()),
+        tables,
+        table_functions,
+        inputs,
+    });
     Ok(())
 }
 
@@ -500,7 +606,7 @@ fn source_decorator_error(name: &str, error: &crate::SourceDecoratorError) -> Co
 mod tests {
     use std::collections::BTreeMap;
 
-    use crate::{CoreError, QuerySource, RuntimeSourcePackage};
+    use crate::{CoreError, QuerySource, RuntimeCatalogTarget, RuntimeSourcePackage};
 
     use super::{check_reserved_schema, validate_selected_source_names};
 
@@ -566,6 +672,7 @@ mod tests {
                 declared_inputs: Vec::new(),
                 test_queries: Vec::new(),
                 identity_requirements: None,
+                catalog_target: RuntimeCatalogTarget::Default,
                 components: Vec::new(),
             },
             BTreeMap::new(),
