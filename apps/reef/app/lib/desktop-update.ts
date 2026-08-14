@@ -16,23 +16,29 @@ desktopUpdateStateAtom.onMount = (set) => {
   const desktop = coralDesktopApi()
   if (!desktop) return
 
+  // The snapshot is only useful until something newer arrives: an event on this
+  // mount, or anything the next mount reads after this one ends. The store keeps
+  // its value between mounts, so a late snapshot can still overwrite it.
+  let snapshotIsCurrent = true
+
   // Subscription happens first so an update cannot slip through between the
-  // snapshot and listener setup. If an event wins that race, retain the newer
-  // event instead of replacing it with the older snapshot.
-  let receivedStateChange = false
+  // snapshot and listener setup.
   const unsubscribe = desktop.onUpdateStateChange((nextState) => {
-    receivedStateChange = true
+    snapshotIsCurrent = false
     set(nextState)
   })
 
   void desktop
     .getUpdateState()
     .then((initialState) => {
-      if (!receivedStateChange) set(initialState)
+      if (snapshotIsCurrent) set(initialState)
     })
     .catch((reason: unknown) => {
       console.error('Failed to read desktop update state:', desktopErrorMessage(reason))
     })
 
-  return unsubscribe
+  return () => {
+    snapshotIsCurrent = false
+    unsubscribe()
+  }
 }
