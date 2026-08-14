@@ -24,13 +24,16 @@ use crate::backends::shared::filter_expr::{
 };
 use crate::backends::shared::json_exec::{JsonExec, RowFetcher};
 use crate::backends::shared::mapping::{convert_items, filter_items_by_column_values};
-use crate::backends::shared::source_observation::SourceObservationPublishers;
+use crate::backends::shared::source_observation::{
+    SourceObservationIdentity, SourceObservationPublishers,
+};
 use coral_spec::backends::http::HttpTableSpec;
 
 /// Table provider that exposes one manifest-defined HTTP table to `DataFusion`.
 pub(crate) struct HttpSourceTableProvider {
     backend: HttpSourceClient,
     source_name: String,
+    catalog_name: Option<String>,
     source_schema: String,
     table: Arc<HttpTableSpec>,
     target: HttpFetchTarget,
@@ -58,6 +61,7 @@ impl HttpSourceTableProvider {
     pub(crate) fn new(
         backend: HttpSourceClient,
         source_name: String,
+        catalog_name: Option<String>,
         source_schema: String,
         table: HttpTableSpec,
         source_observation_publishers: SourceObservationPublishers,
@@ -67,6 +71,7 @@ impl HttpSourceTableProvider {
         Ok(Self {
             backend,
             source_name,
+            catalog_name,
             source_schema,
             table: Arc::new(table),
             target,
@@ -108,6 +113,8 @@ struct HttpFetchPlan {
 
 pub(crate) struct HttpJsonExecRequest<'a> {
     pub(crate) backend: HttpSourceClient,
+    pub(crate) source_name: &'a str,
+    pub(crate) catalog_name: Option<&'a str>,
     pub(crate) source_schema: &'a str,
     pub(crate) target: HttpFetchTarget,
     pub(crate) schema: SchemaRef,
@@ -161,9 +168,15 @@ fn merge_filter_values(
     values
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "HTTP execution assembly keeps filtering, conversion, and observation paths aligned."
+)]
 pub(crate) fn http_json_exec(request: HttpJsonExecRequest<'_>) -> Result<Arc<dyn ExecutionPlan>> {
     let HttpJsonExecRequest {
         backend,
+        source_name,
+        catalog_name,
         source_schema,
         target,
         schema,
@@ -254,6 +267,12 @@ pub(crate) fn http_json_exec(request: HttpJsonExecRequest<'_>) -> Result<Arc<dyn
         projection.cloned(),
     )?
     .with_source_observation_converter(
+        SourceObservationIdentity::new(
+            source_name,
+            catalog_name.map(ToString::to_string),
+            source_schema,
+            target.name(),
+        ),
         surface_kind,
         source_observation_publishers,
         observation_converter,
@@ -347,6 +366,8 @@ impl TableProvider for HttpSourceTableProvider {
 
         http_json_exec(HttpJsonExecRequest {
             backend: self.backend.clone(),
+            source_name: &self.source_name,
+            catalog_name: self.catalog_name.as_deref(),
             source_schema: &self.source_schema,
             target,
             schema: self.schema.clone(),

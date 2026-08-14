@@ -61,7 +61,7 @@ pub struct RuntimeSourcePackage {
 /// SQL catalog placement for one app-assembled runtime package.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeCatalogTarget {
-    /// Publish static component schemas into DataFusion's default catalog.
+    /// Publish static component schemas into `DataFusion`'s default catalog.
     Default,
     /// Publish static component schemas together under the installed source name.
     Source,

@@ -93,11 +93,15 @@ pub enum SourceObservationSurfaceKind {
 /// One typed source-scan batch observed during shared source execution.
 #[derive(Debug, Clone, Copy)]
 pub struct SourceScanObservation<'a> {
-    /// Source/schema name.
+    /// Installed source that owns the scanned relation.
     pub source_name: &'a str,
+    /// SQL catalog used by a three-part relation, when present.
+    pub catalog_name: Option<&'a str>,
+    /// SQL schema containing the scanned relation.
+    pub schema_name: &'a str,
     /// Kind of source surface.
     pub surface_kind: SourceObservationSurfaceKind,
-    /// Table or function name within the source.
+    /// Table or function name within the SQL schema.
     pub surface_name: &'a str,
     /// Typed, table-shaped batch. Consumers that need to retain data must clone
     /// or enqueue it themselves.
