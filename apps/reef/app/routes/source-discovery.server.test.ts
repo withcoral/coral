@@ -37,7 +37,7 @@ describe('source discovery', () => {
         }),
       ),
     ).toEqual({
-      auth: { kind: 'bearer', label: 'a bearer token' },
+      auth: { headerNames: [], kind: 'bearer', kinds: ['bearer'] },
       description: 'Weather observations and forecasts',
       format: 'openapi-json',
       probePath: '',
@@ -67,9 +67,9 @@ components:
 `),
     ).toEqual({
       auth: {
-        headerName: 'X-Api-Key',
+        headerNames: ['X-Api-Key'],
         kind: 'header',
-        label: 'an API key in the X-Api-Key header',
+        kinds: ['header'],
       },
       description: 'Weather observations and forecasts',
       format: 'openapi-yaml',
@@ -81,7 +81,7 @@ components:
 
   it('reports documents without an OpenAPI version as unknown', () => {
     expect(inspectSourceDocument('{"name":"not-openapi"}')).toEqual({
-      auth: { kind: 'unknown', label: '' },
+      auth: { kind: 'unknown' },
       description: '',
       format: 'unknown',
       probePath: '',
@@ -118,7 +118,11 @@ components:
           security: [{ oauth: [] }],
         }),
       ).auth,
-    ).toEqual({ kind: 'bearer', label: 'an OAuth 2.0 bearer token' })
+    ).toEqual({
+      headerNames: [],
+      kind: 'bearer',
+      kinds: ['bearer'],
+    })
   })
 
   it('reports unsupported authentication without selecting an incompatible credential', () => {
@@ -134,6 +138,352 @@ components:
         }),
       ).auth,
     ).toEqual({ kind: 'unsupported', label: 'a query API key' })
+  })
+
+  it('prefills names from only the chosen alternative', () => {
+    expect(
+      inspectSourceDocument(
+        JSON.stringify({
+          components: {
+            securitySchemes: {
+              bearerAuth: { scheme: 'bearer', type: 'http' },
+              apiKey: { in: 'header', name: 'X-Api-Key', type: 'apiKey' },
+            },
+          },
+          info: { title: 'Weather API' },
+          openapi: '3.1.0',
+        }),
+      ).auth,
+    ).toEqual({
+      headerNames: [],
+      kind: 'bearer',
+      kinds: ['bearer', 'header'],
+    })
+  })
+
+  it('reports every header a requirement combines', () => {
+    expect(
+      inspectSourceDocument(
+        JSON.stringify({
+          components: {
+            securitySchemes: {
+              apiKey: { in: 'header', name: 'DD-API-KEY', type: 'apiKey' },
+              appKey: { in: 'header', name: 'DD-APPLICATION-KEY', type: 'apiKey' },
+            },
+          },
+          info: { title: 'Metrics API' },
+          openapi: '3.1.0',
+          security: [{ apiKey: [], appKey: [] }],
+        }),
+      ).auth,
+    ).toEqual({
+      headerNames: ['DD-API-KEY', 'DD-APPLICATION-KEY'],
+      kind: 'header',
+      kinds: ['header'],
+    })
+  })
+
+  it('rejects a requirement that combines credential kinds the wizard cannot send together', () => {
+    expect(
+      inspectSourceDocument(
+        JSON.stringify({
+          components: {
+            securitySchemes: {
+              bearerAuth: { scheme: 'bearer', type: 'http' },
+              clientId: { in: 'header', name: 'X-Client-Id', type: 'apiKey' },
+            },
+          },
+          info: { title: 'Mixed Auth API' },
+          openapi: '3.1.0',
+          security: [{ bearerAuth: [], clientId: [] }],
+        }),
+      ).auth,
+    ).toEqual({
+      kind: 'unsupported',
+      label: 'a bearer token and an API key in the X-Client-Id header',
+    })
+  })
+
+  it('rejects a requirement that combines bearer schemes the wizard cannot send separately', () => {
+    expect(
+      inspectSourceDocument(
+        JSON.stringify({
+          components: {
+            securitySchemes: {
+              userToken: { scheme: 'bearer', type: 'http' },
+              appToken: { flows: {}, type: 'oauth2' },
+            },
+          },
+          info: { title: 'Two Token API' },
+          openapi: '3.1.0',
+          security: [{ userToken: [], appToken: [] }],
+        }),
+      ).auth,
+    ).toEqual({
+      kind: 'unsupported',
+      label: 'a bearer token and an OAuth 2.0 bearer token',
+    })
+  })
+
+  // The three schemes X's own document declares, which between them cover both
+  // reasons an alternative is left out of the label.
+  it('names a credential once, and leaves out one it cannot send', () => {
+    expect(
+      inspectSourceDocument(
+        JSON.stringify({
+          components: {
+            securitySchemes: {
+              BearerToken: { scheme: 'bearer', type: 'http' },
+              OAuth2UserToken: { flows: {}, type: 'oauth2' },
+              UserToken: { scheme: 'OAuth', type: 'http' },
+            },
+          },
+          info: { title: 'X API v2' },
+          openapi: '3.1.0',
+        }),
+      ).auth,
+    ).toEqual({ headerNames: [], kind: 'bearer', kinds: ['bearer'] })
+  })
+
+  it('reports every scheme a YAML document declares', () => {
+    expect(
+      inspectSourceDocument(`openapi: 3.1.0
+info:
+  title: Weather API
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-Api-Key
+`).auth,
+    ).toEqual({
+      headerNames: [],
+      kind: 'bearer',
+      kinds: ['bearer', 'header'],
+    })
+  })
+
+  // Datadog's document is the case that motivated reading `security` from YAML: its
+  // one requirement needs both of its API keys, which a menu of schemes cannot say.
+  it('reads a YAML requirement that combines schemes', () => {
+    expect(
+      inspectSourceDocument(`openapi: 3.0.0
+info:
+  title: Datadog API
+security:
+  - apiKeyAuth: []
+    appKeyAuth: []
+components:
+  securitySchemes:
+    apiKeyAuth:
+      type: apiKey
+      in: header
+      name: DD-API-KEY
+    appKeyAuth:
+      type: apiKey
+      in: header
+      name: DD-APPLICATION-KEY
+`).auth,
+    ).toEqual({
+      headerNames: ['DD-API-KEY', 'DD-APPLICATION-KEY'],
+      kind: 'header',
+      kinds: ['header'],
+    })
+  })
+
+  it('reads an unindented YAML security sequence', () => {
+    expect(
+      inspectSourceDocument(`openapi: 3.0.0
+info:
+  title: Datadog API
+security:
+- apiKeyAuth: []
+  appKeyAuth: []
+components:
+  securitySchemes:
+    apiKeyAuth:
+      type: apiKey
+      in: header
+      name: DD-API-KEY
+    appKeyAuth:
+      type: apiKey
+      in: header
+      name: DD-APPLICATION-KEY
+`).auth,
+    ).toEqual({
+      headerNames: ['DD-API-KEY', 'DD-APPLICATION-KEY'],
+      kind: 'header',
+      kinds: ['header'],
+    })
+  })
+
+  it('reads separate YAML requirements as alternatives, and their scopes as neither', () => {
+    expect(
+      inspectSourceDocument(`openapi: 3.0.0
+info:
+  title: Scoped API
+security:
+  - oauth:
+      - read
+      - write
+  - apiKeyAuth: []
+components:
+  securitySchemes:
+    oauth:
+      type: oauth2
+      flows: {}
+    apiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-Api-Key
+`).auth,
+    ).toEqual({
+      headerNames: [],
+      kind: 'bearer',
+      kinds: ['bearer', 'header'],
+    })
+  })
+
+  it('reads an empty YAML security block as no authentication', () => {
+    expect(
+      inspectSourceDocument(`openapi: 3.0.0
+info:
+  title: Open API
+security: []
+components:
+  securitySchemes:
+    apiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-Api-Key
+`).auth,
+    ).toEqual({ headerNames: [], kind: 'none', kinds: ['none'] })
+  })
+
+  it('does not guess when YAML security uses an unreadable flow sequence', () => {
+    expect(
+      inspectSourceDocument(`openapi: 3.0.0
+info:
+  title: Optional API
+security: [ {} ]
+components:
+  securitySchemes:
+    apiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-Api-Key
+`).auth,
+    ).toEqual({ kind: 'unknown' })
+  })
+
+  it('keeps optional authentication beside the scheme it is optional against', () => {
+    expect(
+      inspectSourceDocument(
+        JSON.stringify({
+          components: { securitySchemes: { bearerAuth: { scheme: 'bearer', type: 'http' } } },
+          info: { title: 'Optional API' },
+          openapi: '3.1.0',
+          security: [{ bearerAuth: [] }, {}],
+        }),
+      ).auth,
+    ).toEqual({
+      headerNames: [],
+      kind: 'bearer',
+      kinds: ['bearer', 'none'],
+    })
+  })
+
+  it('prefers a credential-bearing alternative over no authentication', () => {
+    expect(
+      inspectSourceDocument(
+        JSON.stringify({
+          components: {
+            securitySchemes: {
+              apiKey: { in: 'header', name: 'X-Api-Key', type: 'apiKey' },
+            },
+          },
+          info: { title: 'Optional API' },
+          openapi: '3.1.0',
+          security: [{}, { apiKey: [] }],
+        }),
+      ).auth,
+    ).toEqual({
+      headerNames: ['X-Api-Key'],
+      kind: 'header',
+      kinds: ['none', 'header'],
+    })
+  })
+
+  it('reads what a requirement names and the document declares', () => {
+    expect(
+      inspectSourceDocument(
+        JSON.stringify({
+          components: {
+            securitySchemes: { apiKey: { in: 'header', name: 'X-Api-Key', type: 'apiKey' } },
+          },
+          info: { title: 'Partial API' },
+          openapi: '3.1.0',
+          security: [{ apiKey: [], signature: [] }],
+        }),
+      ).auth,
+    ).toEqual({
+      headerNames: ['X-Api-Key'],
+      kind: 'header',
+      kinds: ['header'],
+    })
+  })
+
+  it('prefills only the chosen requirement when combined requirements are alternatives', () => {
+    expect(
+      inspectSourceDocument(
+        JSON.stringify({
+          components: {
+            securitySchemes: {
+              apiKey: { in: 'header', name: 'X-Api-Key', type: 'apiKey' },
+              appKey: { in: 'header', name: 'X-App-Key', type: 'apiKey' },
+              legacyKey: { in: 'header', name: 'X-Legacy-Key', type: 'apiKey' },
+              legacySecret: { in: 'header', name: 'X-Legacy-Secret', type: 'apiKey' },
+            },
+          },
+          info: { title: 'Metrics API' },
+          openapi: '3.1.0',
+          security: [
+            { apiKey: [], appKey: [] },
+            { legacyKey: [], legacySecret: [] },
+          ],
+        }),
+      ).auth,
+    ).toEqual({
+      headerNames: ['X-Api-Key', 'X-App-Key'],
+      kind: 'header',
+      kinds: ['header'],
+    })
+  })
+
+  it('counts the unsupported schemes a label would run too long to name', () => {
+    expect(
+      inspectSourceDocument(
+        JSON.stringify({
+          components: {
+            securitySchemes: Object.fromEntries(
+              ['a', 'b', 'c', 'd', 'e'].map((suffix) => [
+                `key${suffix}`,
+                { in: `cookie${suffix}`, name: `key_${suffix}`, type: 'apiKey' },
+              ]),
+            ),
+          },
+          info: { title: 'Crowded API' },
+          openapi: '3.1.0',
+        }),
+      ).auth,
+    ).toEqual({
+      kind: 'unsupported',
+      label: 'a cookiea API key or a cookieb API key or a cookiec API key, or 2 more',
+    })
   })
 
   it('loads the URL and returns a query-safe source name', async () => {
@@ -156,7 +506,7 @@ components:
     )
 
     await expect(loader({ request } as Parameters<typeof loader>[0])).resolves.toEqual({
-      auth: { kind: 'none', label: 'no authentication' },
+      auth: { headerNames: [], kind: 'none', kinds: ['none'] },
       description: 'Status checks',
       format: 'openapi-json',
       name: 'source_123_status_api',
@@ -446,7 +796,7 @@ components:
     )
 
     await expect(loader({ request } as Parameters<typeof loader>[0])).resolves.toEqual({
-      auth: { kind: 'unknown', label: '' },
+      auth: { kind: 'unknown' },
       description: '',
       format: 'mcp',
       inspectionError: 'The URL returned HTTP 405',
@@ -468,7 +818,7 @@ components:
     )
 
     await expect(loader({ request } as Parameters<typeof loader>[0])).resolves.toEqual({
-      auth: { kind: 'unknown', label: '' },
+      auth: { kind: 'unknown' },
       description: '',
       format: 'mcp',
       name: 'sse',

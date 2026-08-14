@@ -11,7 +11,7 @@ type SourceCreateDialogProps = ComponentProps<typeof SourceCreateDialog>
 
 const DISCOVERY_PATH = '/workspaces/default/sources/discover'
 const DISCOVERY = {
-  auth: { kind: 'bearer' as const, label: 'Bearer token' },
+  auth: { headerNames: [], kind: 'bearer' as const, kinds: ['bearer' as const] },
   description: 'Weather observations and forecasts',
   format: 'openapi-yaml' as const,
   name: 'weather_api',

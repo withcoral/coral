@@ -47,6 +47,27 @@ export const oauthDevicePanel = style([
   },
 ])
 
+export const headerRow = style({
+  alignItems: 'end',
+  display: 'grid',
+  gap: 14,
+  gridTemplateColumns: 'repeat(2, minmax(0, 1fr)) auto',
+  '@media': {
+    'screen and (max-width: 600px)': {
+      gridTemplateColumns: 'minmax(0, 1fr)',
+    },
+  },
+})
+
+export const headerRemove = style({
+  marginBlockEnd: 1,
+})
+
+export const headerActions = style({
+  display: 'flex',
+  gap: 6,
+})
+
 export const authPanelHidden = style({
   pointerEvents: 'none',
   visibility: 'hidden',

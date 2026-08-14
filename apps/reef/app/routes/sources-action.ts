@@ -127,9 +127,16 @@ export async function runSourcesAction(
       if (typeof manifestYaml !== 'string' || manifestYaml.trim().length === 0) {
         return actionError('import', name, 'Missing source manifest')
       }
-      const secretKey = formValue(formData, 'secret_key')
-      const secretValue = formValue(formData, 'secret_value')
-      const secrets = secretKey && secretValue ? [{ key: secretKey, value: secretValue }] : []
+      // One pair per credential, in field order: an API needing several headers at
+      // once sends a secret for each.
+      const secretValues = formData.getAll('secret_value')
+      const secrets = formData
+        .getAll('secret_key')
+        .map((key, index) => ({
+          key: typeof key === 'string' ? key.trim() : '',
+          value: typeof secretValues[index] === 'string' ? secretValues[index].trim() : '',
+        }))
+        .filter((secret) => secret.key && secret.value)
       await importSourceManifest(sourceClient, workspace, manifestYaml, secrets)
       return actionSuccess('import', name)
     }

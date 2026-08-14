@@ -5,11 +5,20 @@ const MAX_DESCRIPTOR_SIZE_MB = 64
 const MAX_DESCRIPTOR_BYTES = MAX_DESCRIPTOR_SIZE_MB * 1024 * 1024
 
 export type SourceDocumentFormat = 'mcp' | 'openapi-json' | 'openapi-yaml' | 'unknown'
-export type SourceDetectedAuth = {
-  headerName?: string
-  kind: 'bearer' | 'header' | 'none' | 'unknown' | 'unsupported'
-  label: string
-}
+
+/** A method the credentials step offers, so one a detected scheme can be answered with. */
+export type SourceAuthChoice = 'bearer' | 'header' | 'none'
+
+export type SourceDetectedAuth =
+  | { kind: 'unknown' }
+  | { kind: 'unsupported'; label: string }
+  | {
+      /** Header names needed together by the preselected alternative. */
+      headerNames: string[]
+      kind: SourceAuthChoice
+      /** Every usable method the document accepts, in declaration order. */
+      kinds: SourceAuthChoice[]
+    }
 
 export type SourceDiscoveryData =
   | {
@@ -167,32 +176,57 @@ function resolveServerUrl(url: string, variables: Record<string, unknown> | unde
   return resolved.includes('{') ? '' : resolved
 }
 
+/** One scheme as a document declares it. */
+type AuthScheme = {
+  headerName?: string
+  kind: SourceAuthChoice | 'unknown' | 'unsupported'
+  label: string
+}
+
+/**
+ * The ways a document says a request may be authenticated. Each entry is one
+ * requirement, and every scheme inside it is needed at once: OpenAPI reads several
+ * schemes in one requirement as AND and several requirements as OR, so
+ * "only one of the Security Requirement Objects needs to be satisfied".
+ */
+type AuthAlternative = AuthScheme[]
+
+const UNKNOWN_SCHEME: AuthScheme = { kind: 'unknown', label: '' }
+const NO_AUTH_SCHEME: AuthScheme = { kind: 'none', label: 'no authentication' }
+
 function inspectJsonAuth(document: Record<string, unknown>): SourceDetectedAuth {
-  const security = Array.isArray(document.security) ? document.security : undefined
-  if (
-    security?.length === 0 ||
-    security?.some((requirement) => objectKeys(requirement).length === 0)
-  ) {
-    return { kind: 'none', label: 'no authentication' }
-  }
+  const requirements = Array.isArray(document.security) ? document.security : undefined
+  return detectedAuth(jsonAuthAlternatives(document, requirements))
+}
+
+function jsonAuthAlternatives(
+  document: Record<string, unknown>,
+  requirements: unknown[] | undefined,
+): AuthAlternative[] {
+  if (requirements?.length === 0) return [[NO_AUTH_SCHEME]]
 
   const components = objectValue(document.components)
   const schemes =
     objectValue(components?.securitySchemes) ?? objectValue(document.securityDefinitions)
-  if (!schemes) return unknownAuth()
 
-  const requiredSchemeNames = security?.flatMap(objectKeys) ?? []
-  const candidates = requiredSchemeNames.length
-    ? requiredSchemeNames.map((name) => schemes[name])
-    : Object.values(schemes)
-  return bestDetectedAuth(candidates.map((scheme) => authFromScheme(objectValue(scheme))))
+  // Without a root `security` block the document does not say how its schemes
+  // combine, so each stands on its own.
+  if (!requirements) {
+    return Object.values(schemes ?? {}).map((scheme) => [authFromScheme(objectValue(scheme))])
+  }
+  return requirements.map((requirement) => {
+    const names = objectKeys(requirement)
+    // An empty requirement is how a document says a request may carry nothing, and
+    // it sits beside the others rather than replacing them.
+    if (names.length === 0) return [NO_AUTH_SCHEME]
+    return names.map((name) => authFromScheme(objectValue(schemes?.[name])))
+  })
 }
 
 function inspectYamlAuth(lines: string[]): SourceDetectedAuth {
-  const rootSecurity = lines.find((line) => indentation(line) === 0 && yamlKey(line) === 'security')
-  if (rootSecurity && yamlScalar(rootSecurity) === '[]') {
-    return { kind: 'none', label: 'no authentication' }
-  }
+  const requirements = yamlSecurityRequirements(lines)
+  if (requirements === null) return unknownAuth()
+  if (requirements?.length === 0) return detectedAuth([[NO_AUTH_SCHEME]])
 
   const componentsIndex = findYamlKey(lines, 'components', 0)
   let schemesIndex =
@@ -200,15 +234,66 @@ function inspectYamlAuth(lines: string[]): SourceDetectedAuth {
   if (schemesIndex < 0) schemesIndex = findYamlKey(lines, 'securitydefinitions', 0)
   if (schemesIndex < 0) return unknownAuth()
 
-  return bestDetectedAuth(
-    yamlChildIndexes(lines, schemesIndex).map((index) =>
-      authFromScheme(yamlMappingFields(lines, index)),
+  // Scheme names arrive lowercased from the scanner on both sides of this lookup.
+  const schemes = new Map(
+    yamlChildIndexes(lines, schemesIndex).map((index) => [
+      yamlKey(lines[index]) ?? '',
+      yamlMappingFields(lines, index),
+    ]),
+  )
+  if (!requirements) {
+    return detectedAuth([...schemes.values()].map((fields) => [authFromScheme(fields)]))
+  }
+  return detectedAuth(
+    requirements.map((names) =>
+      names.length === 0
+        ? [NO_AUTH_SCHEME]
+        : names.map((name) => authFromScheme(schemes.get(name))),
     ),
   )
 }
 
-function authFromScheme(scheme: Record<string, unknown> | undefined): SourceDetectedAuth {
-  if (!scheme) return unknownAuth()
+/**
+ * Scheme names under a root `security:` block, one entry per requirement. A `- name:`
+ * line opens a requirement and every key indented within it joins the same one, which
+ * is how a document spells "all of these at once" — Datadog's two API keys, for
+ * instance. Returns `undefined` when there is no such block and `null` when a present
+ * block uses syntax this line-based scanner cannot safely interpret. Sequence items
+ * may be indented beneath `security:` or start at the same indentation, as YAML
+ * permits both.
+ */
+function yamlSecurityRequirements(lines: string[]): string[][] | null | undefined {
+  const index = findYamlKey(lines, 'security', 0)
+  if (index < 0) return undefined
+  const scalar = yamlScalar(lines[index])
+  if (scalar === '[]') return []
+  if (scalar) return null
+
+  const requirements: string[][] = []
+  let itemIndent = -1
+  const keyIndent = indentation(lines[index])
+  for (let cursor = index + 1; cursor < lines.length; cursor += 1) {
+    const line = lines[cursor]
+    if (!line.trim()) continue
+    const indent = indentation(line)
+    const trimmed = line.trim()
+    if (indent <= keyIndent && !trimmed.startsWith('-')) break
+    if (trimmed.startsWith('-')) {
+      if (itemIndent < 0) itemIndent = indent
+      // A deeper `-` is a scope under a scheme name, not another requirement.
+      if (indent !== itemIndent) continue
+      const key = yamlKey(trimmed.slice(1).trim())
+      requirements.push(key ? [key] : [])
+      continue
+    }
+    const key = indent > itemIndent ? yamlKey(trimmed) : null
+    if (key) requirements[requirements.length - 1]?.push(key)
+  }
+  return requirements.length > 0 ? requirements : null
+}
+
+function authFromScheme(scheme: Record<string, unknown> | undefined): AuthScheme {
+  if (!scheme) return UNKNOWN_SCHEME
   const type = stringValue(scheme.type).toLowerCase()
   const httpScheme = stringValue(scheme.scheme).toLowerCase()
   const location = stringValue(scheme.in).toLowerCase()
@@ -238,19 +323,96 @@ function authFromScheme(scheme: Record<string, unknown> | undefined): SourceDete
   if (type === 'basic') {
     return { kind: 'unsupported', label: 'HTTP basic authentication' }
   }
-  return unknownAuth()
+  return UNKNOWN_SCHEME
 }
 
-function bestDetectedAuth(candidates: SourceDetectedAuth[]): SourceDetectedAuth {
+/** The single answer the wizard needs: what to preselect, and what the document accepts. */
+function detectedAuth(declared: AuthAlternative[]): SourceDetectedAuth {
+  // A requirement may name a scheme the document never declares. What can be read
+  // stands, and an alternative left with nothing is dropped.
+  const named = declared.map(namedSchemes).filter((schemes) => schemes.length > 0)
+  // An alternative Coral cannot send is worth naming only when it is all the
+  // document offers. Beside a usable one it is noise: X's spec, for instance,
+  // declares OAuth 1.0a signing next to a plain bearer token.
+  const usable = named.filter(isUsableAlternative)
+  const alternatives = dedupeAlternatives(usable.length > 0 ? usable : named)
+  if (alternatives.length === 0) return unknownAuth()
+
+  // Only here is the document's own phrasing worth showing: there is no method to
+  // name instead, and which scheme it is says why.
+  if (usable.length === 0) {
+    return { kind: 'unsupported', label: authLabel(alternatives) }
+  }
+  const chosen = preferredAlternative(alternatives)
+  return {
+    headerNames: headerNames(chosen),
+    kind: choiceOf(chosen),
+    // Two alternatives answered by the same method read as one: a document offering a
+    // choice of API key headers still asks the user for a custom header.
+    kinds: [...new Set(alternatives.map(choiceOf))],
+  }
+}
+
+/** The method a usable alternative is answered with, whatever it combines. */
+function choiceOf(alternative: AuthAlternative): SourceAuthChoice {
+  return alternative[0].kind as SourceAuthChoice
+}
+
+/**
+ * The alternative the credentials step preselects. A bearer one goes first: it needs
+ * a token and nothing else, where a header alternative also needs its names right.
+ */
+function preferredAlternative(alternatives: AuthAlternative[]): AuthAlternative {
   return (
-    candidates.find((auth) => auth.kind === 'bearer' || auth.kind === 'header') ??
-    candidates.find((auth) => auth.kind !== 'unknown') ??
-    unknownAuth()
+    alternatives.find((schemes) => schemes.every((scheme) => scheme.kind === 'bearer')) ??
+    alternatives.find((schemes) => choiceOf(schemes) !== 'none') ??
+    alternatives[0]
   )
 }
 
+// A document is free to declare a dozen schemes, and a sentence naming all of them
+// stops being read.
+const MAX_LABELLED_ALTERNATIVES = 3
+
+function authLabel(alternatives: AuthAlternative[]): string {
+  const listed = alternatives
+    .slice(0, MAX_LABELLED_ALTERNATIVES)
+    .map((schemes) => schemes.map((scheme) => scheme.label).join(' and '))
+    .join(' or ')
+  const rest = alternatives.length - MAX_LABELLED_ALTERNATIVES
+  return rest > 0 ? `${listed}, or ${rest} more` : listed
+}
+
+function namedSchemes(alternative: AuthAlternative): AuthScheme[] {
+  return alternative.filter((scheme) => scheme.kind !== 'unknown')
+}
+
+function isUsableAlternative(schemes: AuthAlternative): boolean {
+  const kinds = new Set(schemes.map((scheme) => scheme.kind))
+  if (kinds.size !== 1) return false
+  const kind = schemes[0].kind
+  return kind === 'header' || (schemes.length === 1 && (kind === 'bearer' || kind === 'none'))
+}
+
+function headerNames(alternative: AuthAlternative): string[] {
+  return [
+    ...new Set(alternative.flatMap((scheme) => (scheme.headerName ? [scheme.headerName] : []))),
+  ]
+}
+
+/** Two alternatives are the same one when they would read the same. */
+function dedupeAlternatives(alternatives: AuthAlternative[]): AuthAlternative[] {
+  const seen = new Set<string>()
+  return alternatives.filter((schemes) => {
+    const key = schemes.map((scheme) => scheme.label).join(' and ')
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
 function unknownAuth(): SourceDetectedAuth {
-  return { kind: 'unknown', label: '' }
+  return { kind: 'unknown' }
 }
 
 function objectKeys(value: unknown): string[] {
