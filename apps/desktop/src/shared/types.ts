@@ -22,8 +22,13 @@ export type DesktopUpdateStateListener = (state: DesktopUpdateState) => void
 
 export interface CoralDesktopApi {
   configureMcp(clientId: McpClientId, workspaceName: string): Promise<void>
+  downloadUpdate(): Promise<void>
   getMcpLaunchConfig(): Promise<McpLaunchConfig>
   getUpdateState(): Promise<DesktopUpdateState>
+  // Asks Coral to quit and install a staged update. Resolves once the request
+  // is accepted, which is before the sidecar stops and Squirrel takes over, so
+  // it never reports whether the install itself succeeded.
+  installUpdate(): Promise<void>
   listMcpClients(): Promise<McpClientDescriptor[]>
   onUpdateStateChange(listener: DesktopUpdateStateListener): () => void
   removeMcp(clientId: McpClientId): Promise<void>

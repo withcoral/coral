@@ -16,6 +16,7 @@ export default [
     // same-origin fetch. It and onboarding share the auth boundary but do not
     // render the app shell.
     route(`${routePattern('workspaceSource')}/oauth-install`, 'routes/source-oauth-install.ts'),
+    route(routePattern('desktopUpdate'), 'routes/desktop-update-action.ts'),
     route(routePattern('onboarding'), 'routes/onboarding.tsx'),
     layout('routes/app-shell.tsx', [
       index('routes/index.tsx'),

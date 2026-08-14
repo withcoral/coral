@@ -19,6 +19,7 @@ import {
   checkForDesktopUpdates,
   clearPendingDesktopUpdateIntent,
   desktopUpdatesSupported,
+  downloadDesktopUpdate,
   getDesktopUpdateState,
   installAutoUpdater,
   onDesktopUpdateStateChange,
@@ -267,7 +268,16 @@ function registerIpcHandlers() {
   ipcMain.handle('coral:remove-mcp', (_event, clientId: unknown) => removeMcpClient(clientId))
   ipcMain.handle('coral:get-mcp-launch-config', () => getMcpLaunchConfig())
   ipcMain.handle('coral:get-update-state', () => getDesktopUpdateState())
+  ipcMain.handle('coral:download-update', () => downloadDesktopUpdate())
+  ipcMain.handle('coral:install-update', () => installReadyUpdateNow())
   onDesktopUpdateStateChange(publishDesktopUpdateState)
+}
+
+// Quit rather than calling quitAndInstall() directly: the shutdown coordinator
+// stops the sidecar first and only then hands the staged update to Squirrel.
+function installReadyUpdateNow(): void {
+  if (getDesktopUpdateState().status !== 'ready') return
+  app.quit()
 }
 
 function publishDesktopUpdateState(state: DesktopUpdateState): void {

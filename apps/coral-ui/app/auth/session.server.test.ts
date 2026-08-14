@@ -337,9 +337,10 @@ function validTransaction() {
 // away by the cookie layer. The name is asked for rather than written out
 // because it moves with `CORAL_UI_PUBLIC_URL`.
 async function signedOAuthCookie(payload: unknown): Promise<string> {
-  return createCookie(oauthCookieName(config), { secrets: [config.sessionSecret] }).serialize(
-    payload,
-  )
+  return createCookie(oauthCookieName(config), {
+    secrets: [config.sessionSecret],
+    secure: true,
+  }).serialize(payload)
 }
 
 function cookieValue(setCookie: string): string {

@@ -14,6 +14,19 @@ const collapsedGeometry = {
   width: '34px',
 } as const
 
+// The pill contract carries a hover pair for every colour. Read both from the
+// same token group so a status cannot mix one colour with another's hover.
+function pillHover(pill: { backgroundHover: string; colorHover: string }) {
+  return {
+    selectors: {
+      '&:hover:not(:disabled)': {
+        background: pill.backgroundHover,
+        color: pill.colorHover,
+      },
+    },
+  }
+}
+
 export const indicator = recipe({
   base: {
     '@media': {
@@ -32,14 +45,32 @@ export const indicator = recipe({
     overflow: 'hidden',
     paddingBlock: '7px',
     paddingInline: '8px',
+    // The button variant would otherwise center its two unequal copy lines.
+    textAlign: 'start',
     transition: animation.colorTransition,
     width: '100%',
   },
   defaultVariants: {
+    isInteractive: false,
     isMinimized: false,
     status: 'available',
   },
   variants: {
+    isInteractive: {
+      false: {},
+      true: {
+        cursor: 'pointer',
+        selectors: {
+          '&:disabled': {
+            cursor: 'default',
+            opacity: 0.6,
+          },
+          '&:focus-visible': {
+            outline: `1px solid ${theme.button.primary.focus}`,
+          },
+        },
+      },
+    },
     isMinimized: {
       false: {},
       true: collapsedGeometry,
@@ -62,6 +93,16 @@ export const indicator = recipe({
       },
     },
   },
+  compoundVariants: [
+    {
+      style: pillHover(theme.pill.blue),
+      variants: { isInteractive: true, status: 'available' },
+    },
+    {
+      style: pillHover(theme.pill.green),
+      variants: { isInteractive: true, status: 'ready' },
+    },
+  ],
 })
 
 export const icon = style({

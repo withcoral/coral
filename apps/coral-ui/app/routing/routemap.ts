@@ -2,6 +2,7 @@ import { generatePath } from 'react-router'
 import type { RouteObject } from 'react-router'
 
 const HOME_PATH = '/'
+const DESKTOP_UPDATE_PATH = '/desktop/update'
 const LOGIN_PATH = '/login'
 const ONBOARDING_PATH = '/onboarding'
 const WORKSPACES_PATH = '/workspaces'
@@ -24,6 +25,12 @@ export const routeDefinitions = {
   home: {
     path: HOME_PATH,
     toPath: () => HOME_PATH,
+  },
+  // Action-only: the sidebar asks the Desktop host to download or install an
+  // update. It renders nothing, and only the Desktop build ever submits to it.
+  desktopUpdate: {
+    path: DESKTOP_UPDATE_PATH,
+    toPath: () => DESKTOP_UPDATE_PATH,
   },
   // The one public route with call sites spread across the app: the interstitial
   // form, the callback error boundary, and the redirect every expired session
