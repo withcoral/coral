@@ -38,6 +38,7 @@ jobs:
       install-script: ${{ steps.filter.outputs.install-script }}
       ui-build: ${{ steps.filter.outputs.ui-build }}
       ui-tests: ${{ steps.filter.outputs.ui-tests }}
+      coral-image: ${{ steps.filter.outputs.coral-image }}
       coral-ui-checks: ${{ steps.filter.outputs.coral-ui-checks }}
       coral-ui-image: ${{ steps.filter.outputs.coral-ui-image }}
       desktop-checks: ${{ steps.filter.outputs.desktop-checks }}
@@ -98,6 +99,14 @@ jobs:
               - '.github/workflows/validate.yml'
               - 'crates/coral-api/proto/**'
               - 'apps/ui/**'
+            # Kept out of the coral-ui-image block below: docker/coral-ui-publish.test.mjs
+            # reads that block by slicing to the next filter key.
+            coral-image:
+              - '.github/workflows/validate.yml'
+              - 'Makefile'
+              - 'docker/Dockerfile'
+              - 'docker/entrypoint.sh'
+              - 'docker/coral-smoke.sh'
             coral-ui-checks:
               - '.github/workflows/validate.yml'
               - 'crates/coral-api/proto/**'
@@ -113,15 +122,6 @@ jobs:
               - '.github/workflows/release.yml'
               - '.dockerignore'
               - 'Makefile'
-              - 'Cargo.toml'
-              - 'Cargo.lock'
-              - 'rust-toolchain.toml'
-              - 'rust-toolchain'
-              - 'crates/**'
-              - 'sources/core/**'
-              - 'docker/Dockerfile.local'
-              - 'docker/Dockerfile'
-              - 'docker/entrypoint.sh'
               - 'docker/Dockerfile.coral-ui'
               - 'docker/entrypoint-coral-ui.sh'
               - 'docker/coral-ui-smoke.sh'
@@ -506,12 +506,33 @@ jobs:
       - name: Smoke production Coral UI server
         run: npm run test:server --prefix apps/coral-ui
 
+  coral-image:
+    name: Coral image
+    # Validates docker/Dockerfile and docker/entrypoint.sh against a stub
+    # binary. The entrypoint is pure shell up to its closing exec, so every
+    # branch it takes runs without compiling coral-cli: rust-checks covers the
+    # real binary, and docker-publish.yml smokes the real image at release.
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    needs: changes
+    if: ${{ needs.changes.outputs.coral-image == 'true' }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          cache-binary: false
+
+      - name: Build and smoke the Coral image entrypoint
+        run: make coral-docker-stub-test CORAL_DOCKER_IMAGE=coral:stub
+
   coral-ui-image:
     name: Coral UI image
-    # Building the real Coral peer dominates this job. Give it a larger
-    # runner than the other jobs while Dockerfile.local's locked cache mounts
-    # retain registry, git, and target artifacts within the BuildKit builder.
-    runs-on: blacksmith-16vcpu-ubuntu-2404
+    # The smoke matrix is peer-free, so nothing here compiles Rust or pulls a
+    # Coral image; readiness against a live peer is covered by the mocked
+    # health client in apps/coral-ui/app/routes/readyz.server.test.ts.
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changes
     if: ${{ needs.changes.outputs.coral-ui-image == 'true' }}
     steps:
@@ -526,9 +547,9 @@ jobs:
       - name: Check Coral UI image contract
         run: node --test docker/coral-ui-image.test.mjs docker/coral-ui-publish.test.mjs
 
-      - name: Build and smoke linux/amd64 Coral and Coral UI images
+      - name: Build and smoke the linux/amd64 Coral UI image
         run: |
-          make coral-ui-docker-test DOCKER_IMAGE=coral:local CORAL_UI_DOCKER_IMAGE=coral-ui:local
+          make coral-ui-docker-test CORAL_UI_DOCKER_IMAGE=coral-ui:local
           test "$(docker image inspect coral-ui:local --format '{{.Os}}/{{.Architecture}}')" = linux/amd64
 
   desktop-checks:
@@ -792,6 +813,7 @@ jobs:
         ui-tests,
         coral-ui-checks,
         coral-ui-image,
+        coral-image,
         desktop-checks,
         proto-lint,
         gha-security-audit-pr,
@@ -816,6 +838,7 @@ jobs:
           UI_TESTS_RESULT: ${{ needs.ui-tests.result }}
           CORAL_UI_CHECKS_RESULT: ${{ needs.coral-ui-checks.result }}
           CORAL_UI_IMAGE_RESULT: ${{ needs.coral-ui-image.result }}
+          CORAL_IMAGE_RESULT: ${{ needs.coral-image.result }}
           DESKTOP_CHECKS_RESULT: ${{ needs.desktop-checks.result }}
           PROTO_LINT_RESULT: ${{ needs.proto-lint.result }}
           GHA_SECURITY_AUDIT_PR_RESULT: ${{ needs.gha-security-audit-pr.result }}
@@ -835,6 +858,7 @@ jobs:
             "ui-tests:$UI_TESTS_RESULT"
             "coral-ui-checks:$CORAL_UI_CHECKS_RESULT"
             "coral-ui-image:$CORAL_UI_IMAGE_RESULT"
+            "coral-image:$CORAL_IMAGE_RESULT"
             "desktop-checks:$DESKTOP_CHECKS_RESULT"
             "proto-lint:$PROTO_LINT_RESULT"
             "gha-security-audit-pr:$GHA_SECURITY_AUDIT_PR_RESULT"

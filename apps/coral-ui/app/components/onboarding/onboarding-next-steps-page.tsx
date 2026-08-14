@@ -59,6 +59,7 @@ interface ConnectClientsProps {
 
 /** Only Desktop can write a client's config, so only Desktop carries the clients. */
 export type OnboardingNextStepsPageProps = {
+  completing?: boolean
   onContinue?: () => void
   step: OnboardingStepState
 } & (
@@ -67,6 +68,7 @@ export type OnboardingNextStepsPageProps = {
 )
 
 export function OnboardingNextStepsPage({
+  completing = false,
   mcpClients,
   onContinue,
   runtime,
@@ -77,7 +79,11 @@ export function OnboardingNextStepsPage({
 
   return (
     <OnboardingPage
-      action={{ label: "Take me to Coral's dashboard", onClick: onContinue }}
+      action={{
+        disabled: completing,
+        label: completing ? 'Finishing setup…' : "Take me to Coral's dashboard",
+        onClick: onContinue,
+      }}
       ariaLabel="Set up Coral with an agent"
       step={step}
       sideContent={

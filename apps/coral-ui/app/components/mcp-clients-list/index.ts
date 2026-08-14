@@ -1,3 +1,4 @@
+export { McpClientInstallList, type McpClientInstallListItem } from './mcp-client-install-list'
 export {
   McpClientsList,
   type McpClientsConnectionState,

@@ -77,3 +77,10 @@ pub(in crate::state::db) enum IdentitySpecDocuments {
     CreatedAtUnixNanos,
     UpdatedAtUnixNanos,
 }
+
+#[derive(Iden)]
+pub(in crate::state::db) enum GuiOnboardingCompletions {
+    Table,
+    PrincipalId,
+    CompletedAtUnixNanos,
+}

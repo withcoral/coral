@@ -1,4 +1,4 @@
-.PHONY: install ui-build docker-build coral-ui-docker-build coral-ui-docker-smoke coral-ui-docker-test rust-checks perf-check
+.PHONY: install ui-build docker-build coral-ui-docker-build coral-ui-docker-smoke coral-ui-docker-test coral-docker-stub-build coral-docker-smoke coral-docker-stub-test rust-checks perf-check
 .PHONY: postgres-start postgres-url postgres-stop postgres-clean postgres-tests
 .PHONY: license-check lint-proto lint-sources fix-sources
 .PHONY: docs-generate docs-check schema-generate schema-check
@@ -8,6 +8,7 @@ LOCAL_POSTGRES_CONTAINER ?= coral-test-postgres
 LOCAL_POSTGRES_PORT ?=
 DOCKER_IMAGE ?= coral:local
 CORAL_UI_DOCKER_IMAGE ?= coral-ui:local
+CORAL_DOCKER_IMAGE ?= coral:stub
 DOCKER_NO_CACHE ?= 0
 
 define docker_build_preflight
@@ -96,10 +97,53 @@ coral-ui-docker-build:
 	echo "Built $(CORAL_UI_DOCKER_IMAGE)"
 
 coral-ui-docker-smoke:
-	CORAL_IMAGE="$(DOCKER_IMAGE)" CORAL_UI_IMAGE="$(CORAL_UI_DOCKER_IMAGE)" docker/coral-ui-smoke.sh
+	CORAL_UI_IMAGE="$(CORAL_UI_DOCKER_IMAGE)" docker/coral-ui-smoke.sh
 
-coral-ui-docker-test: docker-build coral-ui-docker-build
-	CORAL_IMAGE="$(DOCKER_IMAGE)" CORAL_UI_IMAGE="$(CORAL_UI_DOCKER_IMAGE)" docker/coral-ui-smoke.sh
+# The smoke runs from the recipe, not as a second prerequisite: `make -j` runs
+# prerequisites concurrently and would start it against a half-built image.
+coral-ui-docker-test: coral-ui-docker-build
+	CORAL_UI_IMAGE="$(CORAL_UI_DOCKER_IMAGE)" docker/coral-ui-smoke.sh
+
+# ----------------------------------------------------------------------------
+# Coral image entrypoint checks
+# ----------------------------------------------------------------------------
+# docker/entrypoint.sh is pure shell up to its closing exec, so every branch it
+# takes can be exercised against a stub binary. That keeps image validation off
+# the Rust build; the real binary is covered by rust-checks, and the real image
+# by the release smoke in .github/workflows/docker-publish.yml.
+#
+#   make coral-docker-stub-test
+#   CORAL_DOCKER_IMAGE=coral:test make coral-docker-stub-test
+
+coral-docker-stub-build:
+	@set -eu; \
+	$(call docker_build_preflight,Coral) \
+	tmpdir=$$(mktemp -d); \
+	trap 'rm -rf "$$tmpdir"' EXIT HUP INT TERM; \
+	context="$$tmpdir/context"; \
+	mkdir -p "$$context/dist/$$image_arch" "$$context/docker"; \
+	printf '%s\n' '#!/bin/sh' 'echo "coral-stub: $$*" >&2' 'exec sleep infinity' \
+	  > "$$context/dist/$$image_arch/coral"; \
+	chmod 0755 "$$context/dist/$$image_arch/coral"; \
+	cp docker/Dockerfile docker/entrypoint.sh "$$context/docker/"; \
+	set -- docker buildx build \
+	  --platform "linux/$$image_arch" \
+	  --provenance=false \
+	  --file "$$context/docker/Dockerfile" \
+	  --load \
+	  --tag "$(CORAL_DOCKER_IMAGE)"; \
+	if [ "$$no_cache" -eq 1 ]; then set -- "$$@" --no-cache; fi; \
+	set -- "$$@" "$$context"; \
+	echo "Building $(CORAL_DOCKER_IMAGE) with a stub binary..."; \
+	"$$@"; \
+	echo "Built $(CORAL_DOCKER_IMAGE)"
+
+coral-docker-smoke:
+	CORAL_IMAGE="$(CORAL_DOCKER_IMAGE)" docker/coral-smoke.sh
+
+# Smoke from the recipe, for the same `make -j` ordering reason as above.
+coral-docker-stub-test: coral-docker-stub-build
+	CORAL_IMAGE="$(CORAL_DOCKER_IMAGE)" docker/coral-smoke.sh
 
 rust-checks:
 	cargo fmt --all -- --check
