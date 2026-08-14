@@ -145,8 +145,8 @@ root.
   not reimplement table matching, column filtering, pagination, or
   missing-table context.
 - `sources/runtime_package.rs` owns app-level conversion from installed source
-  state and materialized artifacts into the generic runtime components accepted
-  by `coral-engine`.
+  state and materialized artifacts into the generic runtime components and
+  explicit SQL catalog target accepted by `coral-engine`.
 - For all service calls, keep protobuf request/response types confined to the
   service edge. Convert request data into small app-local command, query, or
   binding structs before calling managers; do not pass `coral_api::v1`

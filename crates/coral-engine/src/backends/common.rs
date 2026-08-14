@@ -178,7 +178,7 @@ pub(crate) struct BackendSchemaRegistration {
 pub(crate) struct BackendCatalogRegistration {
     pub(crate) catalog: Arc<dyn CatalogProvider>,
     pub(crate) source: RegisteredSource,
-    pub(crate) column_fetcher: Arc<dyn DatabaseColumnFetcher>,
+    pub(crate) column_fetcher: Option<Arc<dyn DatabaseColumnFetcher>>,
 }
 
 /// Row-set restriction for one lazy database column-metadata fetch.

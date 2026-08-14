@@ -1,6 +1,8 @@
 use std::collections::{BTreeSet, HashSet};
 
-use coral_engine::{CoralSqlFunctionDefinition, QuerySource, RuntimeSourceComponent};
+use coral_engine::{
+    CoralSqlFunctionDefinition, QuerySource, RuntimeCatalogTarget, RuntimeSourceComponent,
+};
 
 use crate::bootstrap::AppError;
 
@@ -30,6 +32,9 @@ pub(crate) fn source_sql_publish_targets_for_schemas(
 ) -> SqlPublishTargets {
     let mut targets = HashSet::new();
     for source in selected_sources {
+        if !matches!(source.catalog_target(), RuntimeCatalogTarget::Default) {
+            continue;
+        }
         for component in source.components() {
             if schemas.contains(component.source_name()) {
                 record_source_component_sql_targets(component, &mut targets);
@@ -54,6 +59,9 @@ pub(crate) fn unchecked_source_publish_schemas(
 fn source_sql_publish_targets(selected_sources: &[QuerySource]) -> SqlPublishTargets {
     let mut targets = HashSet::new();
     for source in selected_sources {
+        if !matches!(source.catalog_target(), RuntimeCatalogTarget::Default) {
+            continue;
+        }
         for component in source.components() {
             record_source_component_sql_targets(component, &mut targets);
         }
@@ -166,6 +174,7 @@ tables:
                 declared_inputs: Vec::new(),
                 test_queries: Vec::new(),
                 identity_requirements: None,
+                catalog_target: RuntimeCatalogTarget::Default,
                 components: primary
                     .components()
                     .iter()
@@ -177,6 +186,25 @@ tables:
             BTreeMap::new(),
         )
         .expect("multi-schema source")
+    }
+
+    fn named_catalog_source() -> QuerySource {
+        let component = http_source("issues", "review_queue");
+        QuerySource::from_runtime_components(
+            RuntimeSourcePackage {
+                source_name: "github_v4".to_string(),
+                authored_version: None,
+                description: String::new(),
+                declared_inputs: Vec::new(),
+                test_queries: Vec::new(),
+                identity_requirements: None,
+                catalog_target: RuntimeCatalogTarget::Source,
+                components: component.components().to_vec(),
+            },
+            BTreeMap::new(),
+            BTreeMap::new(),
+        )
+        .expect("named catalog source")
     }
 
     fn runtime_function() -> CoralSqlFunctionDefinition {
@@ -201,6 +229,13 @@ tables:
         let targets = initial_sql_publish_targets(&[functions_source()]);
 
         assert!(targets.contains(&SqlPublishTarget::new("functions", "review_queue")));
+    }
+
+    #[test]
+    fn named_catalog_relations_do_not_reserve_default_catalog_udf_targets() {
+        let targets = initial_sql_publish_targets(&[named_catalog_source()]);
+
+        assert!(!targets.contains(&SqlPublishTarget::new("issues", "review_queue")));
     }
 
     #[test]

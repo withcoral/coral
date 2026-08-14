@@ -561,12 +561,7 @@ async fn missing_required_function_arg_fails_planning() {
 
 fn register_test_sources(ctx: &SessionContext, sources: Vec<CompiledQuerySource>) {
     let registration = register_sources_blocking(ctx, sources).expect("mcp source should register");
-    let source_functions = SourceFunctionRegistry::new(
-        registration
-            .active_sources
-            .iter()
-            .flat_map(|source| source.table_functions.iter()),
-    );
+    let source_functions = SourceFunctionRegistry::new(&registration.active_sources);
     source_functions
         .install(ctx)
         .expect("source function planner should register");
@@ -582,12 +577,7 @@ fn register_test_sources_with_catalog(ctx: &SessionContext, sources: Vec<Compile
         catalog::CatalogColumnFetchFailures::default(),
     )
     .expect("catalog should register");
-    let source_functions = SourceFunctionRegistry::new(
-        registration
-            .active_sources
-            .iter()
-            .flat_map(|source| source.table_functions.iter()),
-    );
+    let source_functions = SourceFunctionRegistry::new(&registration.active_sources);
     source_functions
         .install(ctx)
         .expect("source function planner should register");

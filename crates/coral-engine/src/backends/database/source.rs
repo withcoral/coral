@@ -146,7 +146,7 @@ impl CompiledBackendSource for CompiledDatabaseSource {
             catalogs: vec![BackendCatalogRegistration {
                 catalog: database_catalog.provider,
                 source,
-                column_fetcher: database_catalog.column_fetcher,
+                column_fetcher: Some(database_catalog.column_fetcher),
             }],
         })
     }
@@ -448,8 +448,9 @@ mod tests {
     };
     use crate::backends::shared::template::RenderContext;
     use crate::{
-        CoralQuery, QueryRuntimeConfig, QuerySource, RuntimeSourceComponent, RuntimeSourcePackage,
-        SourceDecorator, SourceDecoratorError, SourceFailurePolicy, SourceTables,
+        CoralQuery, QueryRuntimeConfig, QuerySource, RuntimeCatalogTarget, RuntimeSourceComponent,
+        RuntimeSourcePackage, SourceDecorator, SourceDecoratorError, SourceFailurePolicy,
+        SourceTables,
     };
 
     struct AbortOnSourceFailureDecorator;
@@ -540,6 +541,7 @@ mod tests {
                 declared_inputs: Vec::new(),
                 test_queries: Vec::new(),
                 identity_requirements: None,
+                catalog_target: RuntimeCatalogTarget::Source,
                 components: vec![RuntimeSourceComponent::Database(database)],
             },
             BTreeMap::new(),

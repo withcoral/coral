@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use coral_engine::{
     CoralQuery, CoreError, DependentJoinConfig, DependentJoinSourceConfig, MemorySize,
-    QueryRuntimeConfig, QuerySource, StatusCode,
+    QueryRuntimeConfig, QuerySource, RuntimeCatalogTarget, RuntimeSourcePackage, StatusCode,
 };
 use coral_spec::{ValidatedSourceManifest, parse_source_manifest_yaml};
 use serde_json::{Value, json};
@@ -1683,6 +1683,64 @@ async fn dependent_join_source_config_disables_rewrite_for_source() {
         SELECT i.title AS issue_title, pr.state AS pr_state
         FROM issues.items AS i
         JOIN github.pull_requests AS pr
+          ON pr.owner = i.github_owner
+         AND pr.repo = i.github_repo
+         AND pr.number = i.github_pr_number
+        ORDER BY i.title
+        ",
+    )
+    .await
+    .expect("explain should succeed");
+
+    let explain = execution_text(&execution);
+    assert!(!explain.contains("DependentJoinExec"), "{explain}");
+}
+
+#[tokio::test]
+async fn dependent_join_source_config_uses_installed_owner_for_named_catalog() {
+    let temp = TempDir::new().expect("temp dir");
+    write_jsonl_file(
+        temp.path(),
+        "issues.jsonl",
+        &[issue_row("First", "withcoral", "coral", 123)],
+    );
+    let component = build_source(source_named(
+        github_broad_query_manifest("http://127.0.0.1:9"),
+        "api",
+    ));
+    let named_source = QuerySource::from_runtime_components(
+        RuntimeSourcePackage {
+            source_name: "github_v4".to_string(),
+            authored_version: None,
+            description: String::new(),
+            declared_inputs: Vec::new(),
+            test_queries: Vec::new(),
+            identity_requirements: None,
+            catalog_target: RuntimeCatalogTarget::Source,
+            components: component.components().to_vec(),
+        },
+        BTreeMap::new(),
+        BTreeMap::new(),
+    )
+    .expect("named catalog source");
+
+    let execution = CoralQuery::execute_sql(
+        &[build_source(issues_manifest(temp.path())), named_source],
+        runtime_with_dependent_join(DependentJoinConfig {
+            per_source: BTreeMap::from([(
+                "github_v4".to_string(),
+                DependentJoinSourceConfig {
+                    enabled: Some(false),
+                    ..DependentJoinSourceConfig::default()
+                },
+            )]),
+            ..DependentJoinConfig::default()
+        }),
+        "
+        EXPLAIN
+        SELECT i.title AS issue_title, pr.state AS pr_state
+        FROM issues.items AS i
+        JOIN github_v4.api.pull_requests AS pr
           ON pr.owner = i.github_owner
          AND pr.repo = i.github_repo
          AND pr.number = i.github_pr_number

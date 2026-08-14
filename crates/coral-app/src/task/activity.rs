@@ -63,10 +63,14 @@ impl<'a> TaskQueryRelation<'a> {
         }
     }
 
-    pub(crate) const fn table_function(schema_name: &'a str, relation_name: &'a str) -> Self {
+    pub(crate) const fn table_function(
+        catalog_name: Option<&'a str>,
+        schema_name: &'a str,
+        relation_name: &'a str,
+    ) -> Self {
         Self {
             kind: TaskQueryRelationKind::TableFunction,
-            catalog_name: None,
+            catalog_name,
             schema_name,
             relation_name,
         }

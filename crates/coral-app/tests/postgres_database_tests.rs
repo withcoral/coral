@@ -10,7 +10,8 @@ use std::fs;
 
 use coral_client::local::ServerBuilder;
 use coral_engine::{
-    CoralQuery, QueryRuntimeConfig, QuerySource, RuntimeSourceComponent, RuntimeSourcePackage,
+    CoralQuery, QueryRuntimeConfig, QuerySource, RuntimeCatalogTarget, RuntimeSourceComponent,
+    RuntimeSourcePackage,
 };
 use coral_spec::{
     DatabaseConnectionSpec, DatabaseSourceManifest, ParsedTemplate, PostgresConnectionSpec,
@@ -146,6 +147,7 @@ fn postgres_source(database_url: &str) -> QuerySource {
             declared_inputs: Vec::new(),
             test_queries: Vec::new(),
             identity_requirements: None,
+            catalog_target: RuntimeCatalogTarget::Source,
             components: vec![RuntimeSourceComponent::Database(manifest)],
         },
         BTreeMap::new(),
