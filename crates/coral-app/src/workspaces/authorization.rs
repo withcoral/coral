@@ -4,14 +4,6 @@
 //! this to this workspace — and it is answered here rather than at each RPC, so
 //! the concealment and owner-floor rules cannot drift apart between callers.
 
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the policy lands before the services and RPCs that enforce it"
-    )
-)]
-
 use std::sync::Arc;
 
 use crate::bootstrap::AppError;
@@ -26,6 +18,18 @@ use crate::workspaces::{MemberRole, WorkspaceName};
 /// reach it. Every RPC classifies into one of them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WorkspaceAction {
+    /// Every workspace-scoped RPC that exists today manages, so only
+    /// [`MemberRole::allows`] and its tests name this arm so far. The read
+    /// paths that classify into it arrive with the read-path authorization
+    /// work; the arm is declared here because the role table it feeds is
+    /// already complete.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the read paths that classify into it land after the manage RPCs"
+        )
+    )]
     Read,
     Manage,
 }
@@ -68,15 +72,49 @@ impl WorkspaceAuthorizer {
     }
 
     /// Builds an authorizer that rejects the local principal.
+    ///
+    /// Production resolves the policy from the deployment shape and reaches
+    /// [`Self::with_local_principal_policy`] directly, so only tests name the
+    /// shared-deployment case up front.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the deployment resolves this policy rather than naming it; tests name it directly"
+        )
+    )]
     pub(crate) const fn new(db: Arc<CoralDb>) -> Self {
         Self::with_local_principal_policy(db, LocalPrincipalPolicy::NoLocalPrincipal)
     }
 
     /// Builds an authorizer that treats the local principal as owner.
+    ///
+    /// Production resolves this policy from the deployment shape and reaches
+    /// [`Self::with_local_principal_policy`] directly, so only tests name the
+    /// implicit-owner case up front.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the deployment resolves this policy rather than naming it; tests name it directly"
+        )
+    )]
     pub(crate) const fn trusting_local_principal(db: Arc<CoralDb>) -> Self {
         Self::with_local_principal_policy(db, LocalPrincipalPolicy::ImplicitOwner)
     }
 
+    /// Reports the policy this authorizer was built under.
+    ///
+    /// Nothing in production asks: the composition root already knows what it
+    /// resolved. It exists so tests can assert which policy a built server
+    /// actually carries rather than inferring it from behaviour.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "only tests assert which policy a built authorizer carries"
+        )
+    )]
     pub(crate) const fn local_principal_policy(&self) -> LocalPrincipalPolicy {
         self.local_principal
     }
