@@ -10,6 +10,7 @@ use coral_api::v1::query_service_client::QueryServiceClient;
 use coral_api::v1::search_service_client::SearchServiceClient;
 use coral_api::v1::source_service_client::SourceServiceClient;
 use coral_api::v1::task_service_client::TaskServiceClient;
+use coral_api::v1::user_service_client::UserServiceClient;
 use coral_api::v1::workspace_service_client::WorkspaceServiceClient;
 use coral_api::{
     CATALOG_RESPONSE_MAX_MESSAGE_SIZE, HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE,
@@ -53,7 +54,12 @@ type GrpcService = InstrumentedGrpcService<RawGrpcService>;
 pub type SourceClient = SourceServiceClient<GrpcService>;
 
 /// Public workspace-management gRPC client.
+///
+/// Workspace membership RPCs live on this service.
 pub type WorkspaceClient = WorkspaceServiceClient<GrpcService>;
+
+/// Public user-directory gRPC client.
+pub type UserClient = UserServiceClient<GrpcService>;
 
 /// Public catalog-discovery gRPC client.
 pub type CatalogClient = CatalogServiceClient<GrpcService>;
@@ -83,6 +89,7 @@ pub type HealthCheckClient = HealthClient<GrpcService>;
 pub struct AppClient {
     source: SourceClient,
     workspace: WorkspaceClient,
+    user: UserClient,
     catalog: CatalogClient,
     query: QueryClient,
     search: SearchClient,
@@ -198,6 +205,11 @@ impl AppClient {
             &grpc_endpoint,
             static_metadata.clone(),
         ));
+        let user_client = UserClient::new(grpc_service(
+            channel.clone(),
+            &grpc_endpoint,
+            static_metadata.clone(),
+        ));
         let catalog_client = CatalogClient::new(grpc_service(
             channel.clone(),
             &grpc_endpoint,
@@ -237,6 +249,7 @@ impl AppClient {
         Ok(Self {
             source: source_client,
             workspace: workspace_client,
+            user: user_client,
             catalog: catalog_client,
             query: query_client,
             search: search_client,
@@ -257,6 +270,12 @@ impl AppClient {
     /// Returns a cloned workspace-management client.
     pub fn workspace_client(&self) -> WorkspaceClient {
         self.workspace.clone()
+    }
+
+    #[must_use]
+    /// Returns a cloned user-directory client.
+    pub fn user_client(&self) -> UserClient {
+        self.user.clone()
     }
 
     #[must_use]
@@ -428,7 +447,11 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use coral_api::v1::feedback_service_server::{FeedbackService, FeedbackServiceServer};
-    use coral_api::v1::{SubmitFeedbackRequest, SubmitFeedbackResponse};
+    use coral_api::v1::user_service_server::{UserService, UserServiceServer};
+    use coral_api::v1::{
+        GetCurrentUserRequest, GetCurrentUserResponse, ListUsersRequest, ListUsersResponse,
+        SubmitFeedbackRequest, SubmitFeedbackResponse,
+    };
     use opentelemetry::trace::TracerProvider as _;
     use opentelemetry_sdk::trace::SdkTracerProvider;
     use tokio::sync::oneshot;
@@ -467,6 +490,34 @@ mod tests {
             *self.capture.0.lock().expect("capture lock") = Some((route, traceparent));
 
             Ok(tonic::Response::new(SubmitFeedbackResponse::default()))
+        }
+    }
+
+    #[derive(Clone)]
+    struct CapturingUserService {
+        route: Arc<Mutex<Option<String>>>,
+    }
+
+    #[tonic::async_trait]
+    impl UserService for CapturingUserService {
+        async fn get_current_user(
+            &self,
+            request: tonic::Request<GetCurrentUserRequest>,
+        ) -> Result<tonic::Response<GetCurrentUserResponse>, tonic::Status> {
+            *self.route.lock().expect("route lock") = request
+                .metadata()
+                .get("x-coral-route")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_string);
+
+            Ok(tonic::Response::new(GetCurrentUserResponse::default()))
+        }
+
+        async fn list_users(
+            &self,
+            _request: tonic::Request<ListUsersRequest>,
+        ) -> Result<tonic::Response<ListUsersResponse>, tonic::Status> {
+            Ok(tonic::Response::new(ListUsersResponse::default()))
         }
     }
 
@@ -517,6 +568,47 @@ mod tests {
         assert_eq!(route, "primary");
         assert!(traceparent.starts_with("00-"), "{traceparent}");
         assert_eq!(traceparent.len(), 55);
+
+        shutdown_tx.send(()).expect("shutdown capture server");
+        server.await.expect("join capture server").expect("server");
+    }
+
+    /// A handle built from a bare channel instead of `grpc_service` would still
+    /// compile and still answer, so the interceptor wiring is what is asserted.
+    #[tokio::test(flavor = "current_thread")]
+    async fn user_client_carries_static_metadata() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind capture server");
+        let address = listener.local_addr().expect("capture server address");
+        let route = Arc::new(Mutex::new(None));
+        let service = CapturingUserService {
+            route: Arc::clone(&route),
+        };
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            tonic::transport::Server::builder()
+                .add_service(UserServiceServer::new(service))
+                .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                    drop(shutdown_rx.await);
+                })
+                .await
+        });
+
+        let endpoint = format!("http://{address}");
+        let client = AppClient::connect_with_metadata(&endpoint, [("x-coral-route", "primary")])
+            .await
+            .expect("connect client");
+        client
+            .user_client()
+            .get_current_user(GetCurrentUserRequest::default())
+            .await
+            .expect("current-user RPC");
+
+        assert_eq!(
+            route.lock().expect("route lock").as_deref(),
+            Some("primary")
+        );
 
         shutdown_tx.send(()).expect("shutdown capture server");
         server.await.expect("join capture server").expect("server");
