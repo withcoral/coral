@@ -160,6 +160,32 @@ impl TasksRepo<'_, CoralTx<'_>> {
         })
     }
 
+    /// Rewrites pre-v1 task attribution onto an internal user id.
+    ///
+    /// The match is on the stored attribution value alone. This is an
+    /// attribution migration, so it must never consult a user, membership,
+    /// workspace, or permission, and it deliberately spans every workspace the
+    /// pre-v1 identity wrote in.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "login provisioning is wired to the OIDC callback in a later stack PR"
+        )
+    )]
+    pub(in crate::state::db) async fn reattribute_pre_v1_creator(
+        &mut self,
+        pre_v1_principal_id: &str,
+        user_id: &str,
+    ) -> Result<(), DbError> {
+        let statement = Query::update()
+            .table(Tasks::Table)
+            .value(Tasks::CreatedByPrincipalId, user_id)
+            .and_where(Expr::col(Tasks::CreatedByPrincipalId).eq(pre_v1_principal_id))
+            .to_owned();
+        self.session.execute(statement).await
+    }
+
     pub(in crate::state::db) async fn delete(
         &mut self,
         workspace_id: &str,
