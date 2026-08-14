@@ -72,9 +72,7 @@ The desktop app bundles the `coral` binary it runs queries with, so you don't ne
     coral --help
     ```
 
-    This installs Coral's source-management, SQL, and MCP surfaces. It does
-    not include `coral ui`, which is compiled only when the `embedded-ui`
-    feature is enabled.
+    This installs Coral's source-management, SQL, and MCP surfaces.
 
   </Tab>
 
@@ -124,17 +122,7 @@ The desktop app bundles the `coral` binary it runs queries with, so you don't ne
     coral onboard
     ```
 
-    This build includes Coral's source-management, SQL, and MCP surfaces. It
-    does not include `coral ui`, which is compiled only when the `embedded-ui`
-    feature is enabled.
-
-    To include the local UI, build the UI first and enable `embedded-ui`:
-
-    ```powershell
-    npm ci --prefix apps/ui
-    npm run build --prefix apps/ui
-    cargo build --release --locked -p coral-cli --features embedded-ui
-    ```
+    This build includes Coral's source-management, SQL, and MCP surfaces.
 
   </Tab>
 </Tabs>

@@ -453,34 +453,6 @@ Persistently disables an experimental runtime feature.
 coral features disable feedback
 ```
 
-## `coral ui`
-
-Open the local Coral UI in your browser.
-
-```shellscript
-coral ui
-```
-
-### Options
-
-| Option      | Type | Default | Description                                      |
-| ----------- | ---- | ------- | ------------------------------------------------ |
-| `--port`    | port | `1457`  | Loopback port for the local browser-facing server |
-| `--no-open` | flag | `false` | Start the server without opening a browser       |
-
-The UI opens at `http://127.0.0.1:1457` by default, which only accepts connections from your machine. The command keeps running until you press `Ctrl-C`.
-
-The host is fixed to `127.0.0.1`. Use `--port` to bind a different loopback port:
-
-```shellscript
-coral ui --port 1458
-```
-
-Use `--no-open` to start the same loopback server without launching a browser:
-
-```shellscript
-coral ui --no-open
-```
 
 ## `coral server`
 

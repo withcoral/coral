@@ -91,8 +91,7 @@ pub struct StaticAsset {
 
 /// Source of static assets served alongside gRPC-Web on a single port.
 ///
-/// Coral itself is asset-agnostic: `coral-cli`'s `embedded-ui` feature
-/// supplies an implementation backed by the built UI bundle.
+/// Coral itself is asset-agnostic; callers may supply static assets alongside gRPC-Web.
 pub trait StaticAssetsProvider: Send + Sync + 'static {
     /// Returns the asset stored at `path` (relative, no leading slash), or
     /// `None` if the asset does not exist.
@@ -213,7 +212,7 @@ pub enum ServerMode {
         bind: SocketAddr,
     },
     /// Loopback gRPC-Web server that also serves embedded UI assets.
-    EmbeddedUi {
+    StaticAssets {
         /// Port to bind on `127.0.0.1`.
         port: u16,
         /// Static UI assets served on the same origin as gRPC-Web.
@@ -226,7 +225,7 @@ impl ServerMode {
         match self {
             Self::EphemeralGrpc => SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
             Self::StandaloneGrpc { bind } => *bind,
-            Self::EmbeddedUi { port, .. } => SocketAddr::from((Ipv4Addr::LOCALHOST, *port)),
+            Self::StaticAssets { port, .. } => SocketAddr::from((Ipv4Addr::LOCALHOST, *port)),
         }
     }
 }
@@ -274,8 +273,8 @@ impl ServerBuilder {
     /// gRPC-Web; every other path is dispatched to the supplied
     /// [`StaticAssetsProvider`], with SPA fallback to `index.html` for
     /// unknown paths.
-    pub fn embedded_ui_loopback(port: u16, assets: Arc<dyn StaticAssetsProvider>) -> Self {
-        Self::new().with_mode(ServerMode::EmbeddedUi { port, assets })
+    pub fn static_assets_loopback(port: u16, assets: Arc<dyn StaticAssetsProvider>) -> Self {
+        Self::new().with_mode(ServerMode::StaticAssets { port, assets })
     }
 
     #[must_use]
@@ -813,7 +812,7 @@ async fn start_server(
         ServerMode::EphemeralGrpc | ServerMode::StandaloneGrpc { .. } => {
             start_grpc_server(listener, shutdown_rx, routes, task_finished_tx)
         }
-        ServerMode::EmbeddedUi { assets, .. } => {
+        ServerMode::StaticAssets { assets, .. } => {
             start_grpc_web_server(listener, shutdown_rx, routes, assets, task_finished_tx)
         }
     };
@@ -1951,9 +1950,9 @@ backend = "unsupported"
     }
 
     #[tokio::test]
-    async fn embedded_ui_server_accepts_browser_requests_and_rejects_native_grpc() {
+    async fn static_asset_server_accepts_browser_requests_and_rejects_native_grpc() {
         let temp = TempDir::new().expect("temp dir");
-        let running = ServerBuilder::embedded_ui_loopback(0, Arc::new(StubAssets))
+        let running = ServerBuilder::static_assets_loopback(0, Arc::new(StubAssets))
             .with_config_dir(temp.path().join("coral-config"))
             .start()
             .await
@@ -1998,9 +1997,9 @@ backend = "unsupported"
     }
 
     #[tokio::test]
-    async fn embedded_ui_server_streams_import_source_over_grpc_web() {
+    async fn static_asset_server_streams_import_source_over_grpc_web() {
         let temp = TempDir::new().expect("temp dir");
-        let running = ServerBuilder::embedded_ui_loopback(0, Arc::new(StubAssets))
+        let running = ServerBuilder::static_assets_loopback(0, Arc::new(StubAssets))
             .with_config_dir(temp.path().join("coral-config"))
             .start()
             .await
@@ -2094,9 +2093,9 @@ tables:
     }
 
     #[tokio::test]
-    async fn embedded_ui_authenticates_grpc_web_without_gating_static_assets() {
+    async fn static_asset_server_authenticates_grpc_web_without_gating_static_assets() {
         let temp = TempDir::new().expect("temp dir");
-        let running = ServerBuilder::embedded_ui_loopback(0, Arc::new(StubAssets))
+        let running = ServerBuilder::static_assets_loopback(0, Arc::new(StubAssets))
             .with_config_dir(temp.path().join("coral-config"))
             .with_principal_provider(Arc::new(RejectingPrincipalProvider))
             .start()

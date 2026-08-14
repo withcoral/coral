@@ -10,8 +10,6 @@
 mod bootstrap;
 mod branding;
 mod browser;
-#[cfg(feature = "embedded-ui")]
-mod embedded_ui;
 pub mod env;
 mod onboard;
 mod query_error;
@@ -23,8 +21,6 @@ use std::fmt::Write as _;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-#[cfg(feature = "embedded-ui")]
-use std::sync::Arc;
 
 use clap::{
     Arg, ArgAction, ArgGroup, ArgMatches, Args, CommandFactory, Error as ClapError, FromArgMatches,
@@ -39,8 +35,6 @@ use coral_api::v1::{
     SearchProvider, SearchRequest, Workspace, function, search_clear_target,
     search_maintenance_result,
 };
-#[cfg(feature = "embedded-ui")]
-use coral_app::StaticAssetsProvider;
 use coral_app::bootstrap::is_loopback_ip;
 use coral_client::{
     AppClient, DEFAULT_WORKSPACE_ID, decode_execute_sql_response, format_batches_json,
@@ -53,10 +47,6 @@ use tonic::Request;
 #[cfg(test)]
 use tempfile as _;
 
-/// Default loopback port used by `coral ui` to expose a browser-facing
-/// gRPC-Web surface.
-#[cfg(feature = "embedded-ui")]
-const DEFAULT_SERVER_PORT: u16 = 1457;
 const MCP_INITIAL_QUERY_EXAMPLE_LIMIT: usize = 5;
 const DEFAULT_SEARCH_LIMIT: u32 = 10;
 const MIN_SEARCH_LIMIT: u32 = 1;
@@ -99,11 +89,11 @@ enum Command {
     McpStdio(McpStdioArgs),
     /// Start the long-running gRPC server
     Server,
+    /// Start Desktop's local gRPC-Web sidecar.
+    #[command(name = "desktop-server", hide = true)]
+    DesktopServer(DesktopServerArgs),
     /// Inspect and manage experimental runtime features
     Features(FeaturesArgs),
-    #[cfg(feature = "embedded-ui")]
-    /// Start the local gRPC-Web server with the embedded Coral UI
-    Ui(UiArgs),
     /// Generate shell completion scripts
     Completion(CompletionArgs),
 }
@@ -115,16 +105,11 @@ enum RequiredRuntime {
     None,
 }
 
-#[cfg(feature = "embedded-ui")]
 #[derive(Debug, Clone, Copy, Args)]
-/// Local browser-facing server options
-struct UiArgs {
-    /// Port to bind on 127.0.0.1 for the local gRPC-Web server
-    #[arg(long = "port", value_name = "PORT", default_value_t = DEFAULT_SERVER_PORT)]
+struct DesktopServerArgs {
+    /// Port to bind on 127.0.0.1 for Desktop's local gRPC-Web server.
+    #[arg(long = "port", value_name = "PORT")]
     port: u16,
-    /// Start the server without opening a browser
-    #[arg(long = "no-open")]
-    no_open: bool,
 }
 
 #[derive(Debug, Args)]
@@ -542,11 +527,10 @@ impl Command {
             | Command::Function(_)
             | Command::Onboard
             | Command::McpStdio(_) => RequiredRuntime::AppClient,
-            Command::Features(_) | Command::Completion(_) | Command::Server => {
-                RequiredRuntime::None
-            }
-            #[cfg(feature = "embedded-ui")]
-            Command::Ui(_) => RequiredRuntime::None,
+            Command::Features(_)
+            | Command::Completion(_)
+            | Command::Server
+            | Command::DesktopServer(_) => RequiredRuntime::None,
         }
     }
 
@@ -698,54 +682,6 @@ fn selected_workspace_name(cli_workspace: Option<String>, env_workspace: Option<
         .unwrap_or_else(|| DEFAULT_WORKSPACE_ID.to_string())
 }
 
-/// Returns the embedded Coral UI assets for the local server to serve.
-#[cfg(feature = "embedded-ui")]
-#[must_use]
-pub fn embedded_ui_assets() -> Arc<dyn StaticAssetsProvider> {
-    Arc::new(embedded_ui::EmbeddedUi)
-}
-
-/// Opens the given URL in the user's default browser.
-///
-/// # Errors
-///
-/// Returns an error if the platform browser opener fails.
-#[cfg(feature = "embedded-ui")]
-pub fn open_url(url: &str) -> Result<(), std::io::Error> {
-    browser::open_url(url)
-}
-
-#[cfg(feature = "embedded-ui")]
-async fn run_ui(
-    args: UiArgs,
-    feature_overrides: coral_app::features::FeatureOverrides,
-) -> Result<(), anyhow::Error> {
-    let server = bootstrap::start_ui_server(args.port, feature_overrides).await?;
-    let endpoint = server.endpoint_uri().to_string();
-
-    println!("Coral UI listening on {endpoint}");
-    if args.no_open {
-        println!("Open {endpoint} manually.");
-    } else {
-        match open_url(&endpoint) {
-            Ok(()) => println!("Opened {endpoint}"),
-            Err(error) => {
-                eprintln!("Could not open browser: {error}");
-                eprintln!("Open {endpoint} manually.");
-            }
-        }
-    }
-    println!("Press Ctrl-C to stop the UI.");
-
-    let wait =
-        wait_for_shutdown_signal_or_server_exit(server.wait_for_exit(), tokio::signal::ctrl_c())
-            .await;
-    let shutdown = server.shutdown().await;
-    wait?;
-    shutdown?;
-    Ok(())
-}
-
 async fn run_server(
     feature_overrides: coral_app::features::FeatureOverrides,
 ) -> Result<(), anyhow::Error> {
@@ -784,6 +720,7 @@ async fn run_server(
     shutdown?;
     Ok(())
 }
+
 
 async fn wait_for_shutdown_signal_or_server_exit(
     server_exit: impl Future<Output = ()>,
@@ -906,10 +843,11 @@ async fn run_no_runtime_command(
         Command::Server => Box::pin(run_server(feature_overrides.clone()))
             .await
             .map_err(Into::into),
-        #[cfg(feature = "embedded-ui")]
-        Command::Ui(args) => Box::pin(run_ui(args, feature_overrides.clone()))
-            .await
-            .map_err(Into::into),
+        Command::DesktopServer(args) => {
+            Box::pin(run_desktop_server(args, feature_overrides.clone()))
+                .await
+                .map_err(Into::into)
+        }
         Command::Sql(_)
         | Command::Search(_)
         | Command::SearchIndex(_)
@@ -1015,11 +953,10 @@ async fn run_app_command(
             .await
             .map_err(anyhow::Error::from)?;
         }
-        Command::Completion(_) | Command::Features(_) | Command::Server => {
-            unreachable!("no-runtime commands are routed without an app client")
-        }
-        #[cfg(feature = "embedded-ui")]
-        Command::Ui(_) => {
+        Command::Completion(_)
+        | Command::Features(_)
+        | Command::Server
+        | Command::DesktopServer(_) => {
             unreachable!("no-runtime commands are routed without an app client")
         }
     }
@@ -1880,6 +1817,18 @@ mod tests {
         let mcp = mcp_http_exposure_warning("http://0.0.0.0:14556/mcp", false);
         assert!(mcp.contains("does not authenticate clients"), "{mcp}");
         assert!(mcp.contains("127.0.0.1:PORT"), "{mcp}");
+    }
+
+    #[test]
+    fn desktop_server_uses_custom_port_without_required_runtime() {
+        let cli = Cli::try_parse_from(["coral", "desktop-server", "--port", "1459"])
+            .expect("desktop server args should parse");
+
+        assert_eq!(cli.command.required_runtime(), RequiredRuntime::None);
+        let super::Command::DesktopServer(args) = cli.command else {
+            panic!("expected desktop server command");
+        };
+        assert_eq!(args.port, 1459);
     }
 
     #[test]

@@ -91,7 +91,6 @@ regex = "1"
 ring = "0.17.14"
 rmcp = { version = "1.8.0", features = ["client", "reqwest", "transport-child-process", "transport-streamable-http-client-reqwest", "transport-streamable-http-server"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
-rust-embed = { version = "8", features = ["mime-guess"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 serde_yaml = "0.9"

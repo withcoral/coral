@@ -21,10 +21,6 @@
   scripts.
 - `apps/desktop`: Electron shell around Coral UI and the local Coral sidecar.
 - `apps/docs`: Mintlify documentation site.
-- `apps/ui`: embedded Coral app UI built into the CLI release flow, npm package
-  `coral-embedded-ui`. Distinct from `apps/coral-ui`: this one is compiled into
-  the CLI binary, that one is a standalone server. The two are easy to confuse —
-  check which surface a change belongs to before editing.
 - `plugins/coral`: Agent plugin packaging. `plugins/coral/skills` is the
   canonical in-repo home for maintained Coral agent skills.
 
@@ -47,7 +43,6 @@
   `make schema-generate` to refresh generated schema files. The Validate
   workflow enforces this through its `schema-freshness` job when schema inputs
   change.
-- UI changes must pass `npm run check --prefix apps/ui` (oxfmt + oxlint) before submitting.
 - Coral UI changes must pass `npm run check --prefix apps/coral-ui`,
   `npm run typecheck --prefix apps/coral-ui`, `npm test --prefix apps/coral-ui`, and
   `npm run build --prefix apps/coral-ui`, followed by
