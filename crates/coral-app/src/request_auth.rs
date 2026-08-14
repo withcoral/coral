@@ -37,6 +37,15 @@ impl AcceptedAudience {
 /// A bare resource identifier names a human-facing surface. An agent-only
 /// surface — MCP — has to be tagged with [`AcceptedAudience::new`], because
 /// nothing about the identifier itself says which kind reaches it.
+///
+/// Every audience a served instance passes today is still a bare `String`:
+/// `SessionAuthSettings::principal_provider` in `bootstrap::server_config`
+/// takes `IntoIterator<Item = String>`, and the CLI's `compose_session_policies`
+/// hands it the public audiences verbatim. The MCP surface therefore
+/// authenticates a [`PrincipalKind::User`] in a running instance for now —
+/// tagging it as an agent is wired by the later stack PR that owns that
+/// wiring, which is also where `AcceptedAudience` becomes reachable from
+/// outside this crate.
 impl From<String> for AcceptedAudience {
     fn from(resource: String) -> Self {
         Self::new(resource, PrincipalKind::User)
