@@ -1,12 +1,3 @@
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "login provisioning consumes the write path; the directory reads \
-                  `get_by_user_id` and `list` land before the membership RPCs that serve them"
-    )
-)]
-
 use sea_query::{Expr, ExprTrait, OnConflict, Order, Query, SelectStatement};
 use uuid::Uuid;
 
