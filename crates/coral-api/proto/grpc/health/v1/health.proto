@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Reef vendors the unary Check portion of the canonical protocol from
+// Coral UI vendors the unary Check portion of the canonical protocol from
 // https://github.com/grpc/grpc-proto/blob/master/grpc/health/v1/health.proto
 
 syntax = "proto3";

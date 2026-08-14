@@ -456,12 +456,12 @@ mod tests {
 
     #[test]
     fn registers_configured_authorization_resources() {
-        let dir = authorization_server("allowed_audiences = ['https://REEF.example.test/']\n");
+        let dir = authorization_server("allowed_audiences = ['https://CORAL-UI.example.test/']\n");
         let prepared = server(&dir);
 
         assert_eq!(
             prepared.authorization_resources,
-            ["https://reef.example.test".to_string()].into()
+            ["https://coral-ui.example.test".to_string()].into()
         );
     }
 

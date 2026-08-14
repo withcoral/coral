@@ -59,7 +59,7 @@ export async function externalCoralPath(): Promise<string> {
   throw new Error('No Coral binary is available yet. Run `npm run stage:coral --prefix apps/desktop` first.')
 }
 
-// Dev binds a known port (default 8778, overridable) because the Reef React
+// Dev binds a known port (default 8778, overridable) because the Coral UI React
 // Router server receives CORAL_ENDPOINT before the Electron sidecar exists.
 // Packaged builds keep `--port 0` (dynamic) because the app protocol resolves
 // the live endpoint before each React Router request.

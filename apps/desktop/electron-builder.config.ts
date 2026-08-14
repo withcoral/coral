@@ -79,7 +79,7 @@ export function createConfig(env: NodeJS.ProcessEnv = process.env): Configuratio
         ],
       },
       {
-        from: '../reef/build/client/',
+        from: '../coral-ui/build/client/',
         to: 'app/',
         filter: ['**/*'],
       },

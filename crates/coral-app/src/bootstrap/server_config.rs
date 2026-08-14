@@ -560,7 +560,7 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
         write_authenticated_config_with_auth(
             &layout,
             "[server.mcp_http]\nenabled = true\nbind = '127.0.0.1:0'\npublic_url = 'https://MCP.example.test/'\n",
-            "allowed_audiences = ['https://REEF.example.test/']",
+            "allowed_audiences = ['https://CORAL-UI.example.test/']",
         );
 
         let companions = LoadedServerConfig::load(&layout)
@@ -581,34 +581,37 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
         let session_auth = companions.session_auth.expect("session auth");
         assert_eq!(
             session_auth.public_audiences,
-            ["https://mcp.example.test", "https://reef.example.test"]
+            ["https://mcp.example.test", "https://coral-ui.example.test"]
         );
     }
 
     #[test]
-    fn authenticated_reef_only_config_registers_its_allowed_audience() {
+    fn authenticated_coral_ui_only_config_registers_its_allowed_audience() {
         let temp = TempDir::new().expect("temp dir");
         let layout = AppStateLayout::discover(Some(temp.path().join("config"))).expect("layout");
         write_authenticated_config_with_auth(
             &layout,
             "",
-            "allowed_audiences = ['https://REEF.example.test/']",
+            "allowed_audiences = ['https://CORAL-UI.example.test/']",
         );
 
         let companions = LoadedServerConfig::load(&layout)
             .expect("load")
             .companion_settings()
-            .expect("Reef-only companions");
+            .expect("Coral UI-only companions");
         assert!(companions.mcp_http.is_none());
         let session_auth = companions.session_auth.expect("session auth");
-        assert_eq!(session_auth.public_audiences, ["https://reef.example.test"]);
+        assert_eq!(
+            session_auth.public_audiences,
+            ["https://coral-ui.example.test"]
+        );
 
         let authorization_server = session_auth
             .into_authorization_server()
             .expect("authorization server");
         assert_eq!(
             authorization_server.authorization_resources(),
-            &["https://reef.example.test".to_string()].into()
+            &["https://coral-ui.example.test".to_string()].into()
         );
     }
 
@@ -617,7 +620,7 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
         let cases = [
             (
                 "",
-                "allowed_audiences = ['https://reef.example.test/?tenant=one']",
+                "allowed_audiences = ['https://coral-ui.example.test/?tenant=one']",
                 "auth.allowed_audiences[0] must not include a query",
             ),
             (
@@ -627,7 +630,7 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
             ),
             (
                 "",
-                "allowed_audiences = ['https://REEF.example.test/', 'https://reef.example.test']",
+                "allowed_audiences = ['https://CORAL-UI.example.test/', 'https://coral-ui.example.test']",
                 "auth.allowed_audiences[1] duplicates another configured public surface audience",
             ),
         ];

@@ -361,7 +361,7 @@ jobs:
           set -euo pipefail
           cosign sign --yes "${IMAGE}@${DIGEST}"
 
-      # Moving aliases are applied to Coral and Reef together by the release
+      # Moving aliases are applied to Coral and Coral UI together by the release
       # coordinator. A direct CVE rebuild moves an alias only when it is absent
       # or still resolves to the rebuilt exact version, so it cannot roll back
       # a coordinated pair.

@@ -439,7 +439,7 @@ mod tests {
             "http://localhost:3000".to_string(),
             "http://127.42.0.1:4000".to_string(),
             "http://localhost:5000/mcp".to_string(),
-            "https://reef.example.test".to_string(),
+            "https://coral-ui.example.test".to_string(),
         ]);
 
         assert_eq!(

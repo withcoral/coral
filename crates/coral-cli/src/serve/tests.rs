@@ -22,7 +22,7 @@ const OAUTH_ISSUER: &str = "http://localhost:9080";
 const OAUTH_RESOURCE: &str = "http://localhost:1457";
 const SESSION_ISSUER: &str = "https://auth.example";
 const SESSION_RESOURCE: &str = "https://coral.example/mcp";
-const REEF_RESOURCE: &str = "https://reef.example";
+const CORAL_UI_RESOURCE: &str = "https://coral-ui.example";
 
 fn write_config(temp: &TempDir, config: &str) {
     std::fs::write(temp.path().join("config.toml"), config).expect("write config");
@@ -221,7 +221,7 @@ public_url = 'https://CORAL.example/mcp'
     );
 }
 
-fn write_reef_only_session_config(temp: &TempDir, signing_key: &[u8]) {
+fn write_coral_ui_only_session_config(temp: &TempDir, signing_key: &[u8]) {
     write_session_config_with_mcp(temp, signing_key, "");
 }
 
@@ -239,7 +239,7 @@ enabled = false
 {mcp_http}
 
 [auth]
-allowed_audiences = ['https://REEF.example/']
+allowed_audiences = ['https://CORAL-UI.example/']
 
 [auth.session]
 signing_key_file = 'session.key'
@@ -549,9 +549,9 @@ async fn session_authenticated_companion_gates_grpc_and_mcp() {
     let token = session_token(signing_key.as_ref(), &resource);
     assert_authenticated_data(&server, &format!("{base}/mcp"), &token).await;
 
-    let reef_token = session_token(signing_key.as_ref(), REEF_RESOURCE);
-    assert_grpc_authenticated(&server, &reef_token).await;
-    assert_unauthorized(&base, &format!("Bearer {reef_token}")).await;
+    let coral_ui_token = session_token(signing_key.as_ref(), CORAL_UI_RESOURCE);
+    assert_grpc_authenticated(&server, &coral_ui_token).await;
+    assert_unauthorized(&base, &format!("Bearer {coral_ui_token}")).await;
 
     // Readiness observes the backend, not just the port: stopping gRPC while MCP
     // HTTP keeps serving must turn the authenticated probe unhealthy.
@@ -583,12 +583,12 @@ async fn session_authenticated_companion_gates_grpc_and_mcp() {
 }
 
 #[tokio::test]
-async fn reef_only_audience_authenticates_private_grpc_without_mcp_http() {
+async fn coral_ui_only_audience_authenticates_private_grpc_without_mcp_http() {
     let temp = TempDir::new().expect("temp dir");
     let signing_key =
         EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
             .expect("P-256 signing key");
-    write_reef_only_session_config(&temp, signing_key.as_ref());
+    write_coral_ui_only_session_config(&temp, signing_key.as_ref());
 
     let server = start(
         ServerBuilder::configured_standalone_grpc()
@@ -597,17 +597,20 @@ async fn reef_only_audience_authenticates_private_grpc_without_mcp_http() {
         McpOptions::default(),
     )
     .await
-    .expect("start Reef-only authenticated server");
+    .expect("start Coral UI-only authenticated server");
 
     assert!(server.grpc_authentication_enabled());
     assert!(server.mcp_http_addr().is_none());
     assert!(server.oauth_addr().is_some());
     assert_grpc_rejects_unauthenticated(server.endpoint_uri()).await;
 
-    let reef_token = session_token(signing_key.as_ref(), REEF_RESOURCE);
-    assert_grpc_authenticated(&server, &reef_token).await;
+    let coral_ui_token = session_token(signing_key.as_ref(), CORAL_UI_RESOURCE);
+    assert_grpc_authenticated(&server, &coral_ui_token).await;
 
-    server.shutdown().await.expect("shutdown Reef-only server");
+    server
+        .shutdown()
+        .await
+        .expect("shutdown Coral UI-only server");
 }
 
 #[tokio::test]

@@ -535,7 +535,7 @@ jobs:
       tag: ${{ needs.validate-release-ref.outputs.tag-name }}
       defer-aliases: true
 
-  publish-reef-docker:
+  publish-coral-ui-docker:
     needs:
       - validate-release-ref
       - publish-version
@@ -543,7 +543,7 @@ jobs:
       contents: read
       packages: write
       id-token: write
-    uses: ./.github/workflows/reef-docker-publish.yml
+    uses: ./.github/workflows/coral-ui-docker-publish.yml
     with:
       tag: ${{ needs.validate-release-ref.outputs.tag-name }}
       commit-sha: ${{ needs.validate-release-ref.outputs.commit-sha }}
@@ -552,7 +552,7 @@ jobs:
     needs:
       - validate-release-ref
       - publish-docker
-      - publish-reef-docker
+      - publish-coral-ui-docker
     permissions:
       contents: read
       packages: write
@@ -560,7 +560,7 @@ jobs:
     with:
       tag: ${{ needs.validate-release-ref.outputs.tag-name }}
       coral-digest: ${{ needs.publish-docker.outputs.digest }}
-      reef-digest: ${{ needs.publish-reef-docker.outputs.digest }}
+      coral-ui-digest: ${{ needs.publish-coral-ui-docker.outputs.digest }}
 
   promote-release:
     needs:

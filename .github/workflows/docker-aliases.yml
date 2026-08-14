@@ -8,7 +8,7 @@ on:
       coral-digest:
         required: true
         type: string
-      reef-digest:
+      coral-ui-digest:
         required: true
         type: string
     outputs:
@@ -32,7 +32,7 @@ jobs:
     env:
       TAG: ${{ inputs.tag }}
       PUBLISHED_CORAL_DIGEST: ${{ inputs.coral-digest }}
-      REEF_DIGEST: ${{ inputs.reef-digest }}
+      CORAL_UI_DIGEST: ${{ inputs.coral-ui-digest }}
     outputs:
       make-latest: ${{ steps.advance.outputs.make-latest }}
     steps:
@@ -93,10 +93,10 @@ jobs:
             # retry is idempotent and converges both aliases before completion.
             docker buildx imagetools create --tag "ghcr.io/withcoral/coral:${alias}" \
               "ghcr.io/withcoral/coral@${coral_digest}"
-            docker buildx imagetools create --tag "ghcr.io/withcoral/reef:${alias}" \
-              "ghcr.io/withcoral/reef@${REEF_DIGEST}"
+            docker buildx imagetools create --tag "ghcr.io/withcoral/coral-ui:${alias}" \
+              "ghcr.io/withcoral/coral-ui@${CORAL_UI_DIGEST}"
             coral_actual="$(docker buildx imagetools inspect "ghcr.io/withcoral/coral:${alias}" --format '{{.Manifest.Digest}}')"
-            reef_actual="$(docker buildx imagetools inspect "ghcr.io/withcoral/reef:${alias}" --format '{{.Manifest.Digest}}')"
+            coral_ui_actual="$(docker buildx imagetools inspect "ghcr.io/withcoral/coral-ui:${alias}" --format '{{.Manifest.Digest}}')"
             test "$coral_actual" = "$coral_digest"
-            test "$reef_actual" = "$REEF_DIGEST"
+            test "$coral_ui_actual" = "$CORAL_UI_DIGEST"
           done

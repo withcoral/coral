@@ -38,8 +38,8 @@ jobs:
       install-script: ${{ steps.filter.outputs.install-script }}
       ui-build: ${{ steps.filter.outputs.ui-build }}
       ui-tests: ${{ steps.filter.outputs.ui-tests }}
-      reef-checks: ${{ steps.filter.outputs.reef-checks }}
-      reef-image: ${{ steps.filter.outputs.reef-image }}
+      coral-ui-checks: ${{ steps.filter.outputs.coral-ui-checks }}
+      coral-ui-image: ${{ steps.filter.outputs.coral-ui-image }}
       desktop-checks: ${{ steps.filter.outputs.desktop-checks }}
       proto-lint: ${{ steps.filter.outputs.proto-lint }}
       source-lint: ${{ steps.filter.outputs.source-lint }}
@@ -98,18 +98,18 @@ jobs:
               - '.github/workflows/validate.yml'
               - 'crates/coral-api/proto/**'
               - 'apps/ui/**'
-            reef-checks:
+            coral-ui-checks:
               - '.github/workflows/validate.yml'
               - 'crates/coral-api/proto/**'
-              - 'apps/reef/**'
-              # Reef re-exports the desktop IPC bridge types, so a change there
-              # can break the reef type-check.
+              - 'apps/coral-ui/**'
+              # Coral UI re-exports the desktop IPC bridge types, so a change there
+              # can break the Coral UI type-check.
               - 'apps/desktop/src/shared/types.ts'
-            reef-image:
+            coral-ui-image:
               - '.github/workflows/validate.yml'
               - '.github/workflows/docker-aliases.yml'
               - '.github/workflows/docker-publish.yml'
-              - '.github/workflows/reef-docker-publish.yml'
+              - '.github/workflows/coral-ui-docker-publish.yml'
               - '.github/workflows/release.yml'
               - '.dockerignore'
               - 'Makefile'
@@ -122,12 +122,12 @@ jobs:
               - 'docker/Dockerfile.local'
               - 'docker/Dockerfile'
               - 'docker/entrypoint.sh'
-              - 'docker/Dockerfile.reef'
-              - 'docker/entrypoint-reef.sh'
-              - 'docker/reef-smoke.sh'
-              - 'docker/reef-image.test.mjs'
-              - 'docker/reef-publish.test.mjs'
-              - 'apps/reef/**'
+              - 'docker/Dockerfile.coral-ui'
+              - 'docker/entrypoint-coral-ui.sh'
+              - 'docker/coral-ui-smoke.sh'
+              - 'docker/coral-ui-image.test.mjs'
+              - 'docker/coral-ui-publish.test.mjs'
+              - 'apps/coral-ui/**'
               - 'apps/desktop/src/shared/types.ts'
               - 'crates/coral-api/proto/**'
             desktop-checks:
@@ -463,11 +463,11 @@ jobs:
             apps/ui/playwright-report/**
           if-no-files-found: ignore
 
-  reef-checks:
-    name: Reef checks
+  coral-ui-checks:
+    name: Coral UI checks
     runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changes
-    if: ${{ needs.changes.outputs.reef-checks == 'true' }}
+    if: ${{ needs.changes.outputs.coral-ui-checks == 'true' }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -477,43 +477,43 @@ jobs:
         if: ${{ github.event_name == 'pull_request' }}
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version-file: apps/reef/.node-version
+          node-version-file: apps/coral-ui/.node-version
           package-manager-cache: false
 
       - name: Set up Node with trusted npm cache
         if: ${{ github.event_name != 'pull_request' }}
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version-file: apps/reef/.node-version
+          node-version-file: apps/coral-ui/.node-version
           cache: npm
-          cache-dependency-path: apps/reef/package-lock.json
+          cache-dependency-path: apps/coral-ui/package-lock.json
 
-      - name: Install Reef dependencies
-        run: npm ci --prefix apps/reef
+      - name: Install Coral UI dependencies
+        run: npm ci --prefix apps/coral-ui
 
       - name: Lint and format check
-        run: npm run check --prefix apps/reef
+        run: npm run check --prefix apps/coral-ui
 
-      - name: Type-check Reef
-        run: npm run typecheck --prefix apps/reef
+      - name: Type-check Coral UI
+        run: npm run typecheck --prefix apps/coral-ui
 
-      - name: Test Reef
-        run: npm test --prefix apps/reef
+      - name: Test Coral UI
+        run: npm test --prefix apps/coral-ui
 
-      - name: Build Reef
-        run: npm run build --prefix apps/reef
+      - name: Build Coral UI
+        run: npm run build --prefix apps/coral-ui
 
-      - name: Smoke production Reef server
-        run: npm run test:server --prefix apps/reef
+      - name: Smoke production Coral UI server
+        run: npm run test:server --prefix apps/coral-ui
 
-  reef-image:
-    name: Reef image
+  coral-ui-image:
+    name: Coral UI image
     # Building the real Coral peer dominates this job. Give it a larger
     # runner than the other jobs while Dockerfile.local's locked cache mounts
     # retain registry, git, and target artifacts within the BuildKit builder.
     runs-on: blacksmith-16vcpu-ubuntu-2404
     needs: changes
-    if: ${{ needs.changes.outputs.reef-image == 'true' }}
+    if: ${{ needs.changes.outputs.coral-ui-image == 'true' }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -523,13 +523,13 @@ jobs:
         with:
           cache-binary: false
 
-      - name: Check Reef image contract
-        run: node --test docker/reef-image.test.mjs docker/reef-publish.test.mjs
+      - name: Check Coral UI image contract
+        run: node --test docker/coral-ui-image.test.mjs docker/coral-ui-publish.test.mjs
 
-      - name: Build and smoke linux/amd64 Coral and Reef images
+      - name: Build and smoke linux/amd64 Coral and Coral UI images
         run: |
-          make reef-docker-test DOCKER_IMAGE=coral:local REEF_DOCKER_IMAGE=reef:local
-          test "$(docker image inspect reef:local --format '{{.Os}}/{{.Architecture}}')" = linux/amd64
+          make coral-ui-docker-test DOCKER_IMAGE=coral:local CORAL_UI_DOCKER_IMAGE=coral-ui:local
+          test "$(docker image inspect coral-ui:local --format '{{.Os}}/{{.Architecture}}')" = linux/amd64
 
   desktop-checks:
     name: Desktop checks
@@ -559,7 +559,7 @@ jobs:
       - name: Install desktop dependencies
         run: npm ci --prefix apps/desktop
 
-      # The full build stages the Rust binary + Reef, which their dedicated jobs
+      # The full build stages the Rust binary + Coral UI, which their dedicated jobs
       # already cover; this runs desktop type and packaging-config checks.
       - name: Check desktop
         run: npm run check --prefix apps/desktop
@@ -790,8 +790,8 @@ jobs:
         install-script,
         ui-build,
         ui-tests,
-        reef-checks,
-        reef-image,
+        coral-ui-checks,
+        coral-ui-image,
         desktop-checks,
         proto-lint,
         gha-security-audit-pr,
@@ -814,8 +814,8 @@ jobs:
           INSTALL_SCRIPT_RESULT: ${{ needs.install-script.result }}
           UI_BUILD_RESULT: ${{ needs.ui-build.result }}
           UI_TESTS_RESULT: ${{ needs.ui-tests.result }}
-          REEF_CHECKS_RESULT: ${{ needs.reef-checks.result }}
-          REEF_IMAGE_RESULT: ${{ needs.reef-image.result }}
+          CORAL_UI_CHECKS_RESULT: ${{ needs.coral-ui-checks.result }}
+          CORAL_UI_IMAGE_RESULT: ${{ needs.coral-ui-image.result }}
           DESKTOP_CHECKS_RESULT: ${{ needs.desktop-checks.result }}
           PROTO_LINT_RESULT: ${{ needs.proto-lint.result }}
           GHA_SECURITY_AUDIT_PR_RESULT: ${{ needs.gha-security-audit-pr.result }}
@@ -833,8 +833,8 @@ jobs:
             "install-script:$INSTALL_SCRIPT_RESULT"
             "ui-build:$UI_BUILD_RESULT"
             "ui-tests:$UI_TESTS_RESULT"
-            "reef-checks:$REEF_CHECKS_RESULT"
-            "reef-image:$REEF_IMAGE_RESULT"
+            "coral-ui-checks:$CORAL_UI_CHECKS_RESULT"
+            "coral-ui-image:$CORAL_UI_IMAGE_RESULT"
             "desktop-checks:$DESKTOP_CHECKS_RESULT"
             "proto-lint:$PROTO_LINT_RESULT"
             "gha-security-audit-pr:$GHA_SECURITY_AUDIT_PR_RESULT"

@@ -38,13 +38,13 @@ export function registerAppSchemePrivileges(): void {
 }
 
 function rendererRoot(): string {
-  return app.isPackaged ? join(process.resourcesPath, 'app') : resolve(repoRoot(), 'apps', 'reef', 'build', 'client')
+  return app.isPackaged ? join(process.resourcesPath, 'app') : resolve(repoRoot(), 'apps', 'coral-ui', 'build', 'client')
 }
 
 function serverBuildEntry(): string {
   return app.isPackaged
-    ? join(app.getAppPath(), 'out', 'reef-server', 'index.js')
-    : resolve(repoRoot(), 'apps', 'reef', 'build', 'server', 'index.js')
+    ? join(app.getAppPath(), 'out', 'coral-ui-server', 'index.js')
+    : resolve(repoRoot(), 'apps', 'coral-ui', 'build', 'server', 'index.js')
 }
 
 function isInside(root: string, candidate: string): boolean {

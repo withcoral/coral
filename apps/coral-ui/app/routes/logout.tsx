@@ -1,0 +1,44 @@
+import { redirect } from 'react-router'
+
+import type { Route } from './+types/logout'
+
+import { coralUIAuthConfig } from '@/auth/config.server'
+import { clearCsrfToken, validateCsrfToken } from '@/auth/csrf.server'
+import { markAuthResponsePrivate } from '@/auth/response.server'
+import {
+  clearOAuthTransaction,
+  clearCoralUISession,
+  readCoralUISession,
+} from '@/auth/session.server'
+import { routePath } from '@/routing/routemap'
+
+export async function loader() {
+  return markAuthResponsePrivate(redirect('/'))
+}
+
+export async function action({ request }: Route.ActionArgs) {
+  if (request.method !== 'POST') {
+    throw markAuthResponsePrivate(new Response('Method Not Allowed', { status: 405 }))
+  }
+
+  const config = coralUIAuthConfig()
+  if (config.mode === 'disabled') return markAuthResponsePrivate(redirect('/'))
+  const session = await readCoralUISession(request, config)
+  if (!session || !(await validateCsrfToken(request, config, session))) {
+    throw markAuthResponsePrivate(new Response('Invalid CSRF token', { status: 403 }))
+  }
+
+  const headers = new Headers()
+  headers.append('Set-Cookie', await clearCsrfToken(config))
+  headers.append('Set-Cookie', await clearOAuthTransaction(config))
+  headers.append('Set-Cookie', await clearCoralUISession(config))
+
+  // Coral Cloud does not currently advertise a provider-neutral browser logout
+  // or revocation endpoint. Keep logout local and stop automatic SSO bounce by
+  // landing on the signed-out login screen.
+  return markAuthResponsePrivate(redirect(`${routePath('login')}?signedOut=1`, { headers }))
+}
+
+export default function Logout() {
+  return null
+}

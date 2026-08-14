@@ -16,11 +16,15 @@
   input discovery, and normalized source-definition models.
 - `crates/coral-telemetry`: cross-crate telemetry helpers that are independent
   of app bootstrap, query runtime, and adapter surfaces.
-- `apps/desktop`: Electron shell around Reef and the local Coral sidecar.
+- `apps/coral-ui`: React Router/Wax frontend shell, npm package `coral-ui`. It is
+  validated independently from `apps/ui` and is not built by Rust crate build
+  scripts.
+- `apps/desktop`: Electron shell around Coral UI and the local Coral sidecar.
 - `apps/docs`: Mintlify documentation site.
-- `apps/reef`: React Router/Wax frontend shell. It is validated independently
-  from `apps/ui` and is not built by Rust crate build scripts.
-- `apps/ui`: embedded Coral app UI built into the CLI release flow.
+- `apps/ui`: embedded Coral app UI built into the CLI release flow, npm package
+  `coral-embedded-ui`. Distinct from `apps/coral-ui`: this one is compiled into
+  the CLI binary, that one is a standalone server. The two are easy to confuse —
+  check which surface a change belongs to before editing.
 - `plugins/coral`: Agent plugin packaging. `plugins/coral/skills` is the
   canonical in-repo home for maintained Coral agent skills.
 
@@ -44,19 +48,19 @@
   workflow enforces this through its `schema-freshness` job when schema inputs
   change.
 - UI changes must pass `npm run check --prefix apps/ui` (oxfmt + oxlint) before submitting.
-- Reef changes must pass `npm run check --prefix apps/reef`,
-  `npm run typecheck --prefix apps/reef`, `npm test --prefix apps/reef`, and
-  `npm run build --prefix apps/reef`, followed by
-  `npm run test:server --prefix apps/reef`, before submitting. The production
-  server smoke test consumes the build output and runs on every Reef CI job.
+- Coral UI changes must pass `npm run check --prefix apps/coral-ui`,
+  `npm run typecheck --prefix apps/coral-ui`, `npm test --prefix apps/coral-ui`, and
+  `npm run build --prefix apps/coral-ui`, followed by
+  `npm run test:server --prefix apps/coral-ui`, before submitting. The production
+  server smoke test consumes the build output and runs on every Coral UI CI job.
 - Desktop changes must pass `npm run check --prefix apps/desktop` and
   `npm test --prefix apps/desktop` before submitting.
-- Keep Reef Vitest coverage Node-only and focused on atomic deterministic
+- Keep Coral UI Vitest coverage Node-only and focused on atomic deterministic
   functions and policies or explicit architectural invariants. Do not add broad
   browser, router, or framework-plumbing tests without a named contract or
   regression they protect.
-- Use Storybook and Chromatic for Reef component visual states.
-- Reef styling uses vanilla-extract; do not introduce Tailwind.
+- Use Storybook and Chromatic for Coral UI component visual states.
+- Coral UI styling uses vanilla-extract; do not introduce Tailwind.
 - Run `make perf-check` before submitting PRs that could affect CLI startup,
   local server bootstrap, source registration, or `coral.tables` catalog query
   latency. CI installs the bundled `github` source with fake credentials and
@@ -91,10 +95,10 @@
   platform aligned with the `docker-publish` workflow; local Docker-exporter
   loads disable provenance because that exporter cannot load attestation
   manifests. Local builds must not download a published Coral binary.
-- Use `make reef-docker-build` to build Reef from the current checkout and
-  `make reef-docker-smoke` to test already-built Coral and Reef images. Use the
-  self-contained `make reef-docker-test` to build both images and run the
-  topology/configuration matrix. Reef's runtime stage must remain COPY-only and
+- Use `make coral-ui-docker-build` to build Coral UI from the current checkout and
+  `make coral-ui-docker-smoke` to test already-built Coral and Coral UI images. Use the
+  self-contained `make coral-ui-docker-test` to build both images and run the
+  topology/configuration matrix. Coral UI's runtime stage must remain COPY-only and
   non-root; build and dependency stages run on the build platform. Local builds
   follow the Docker daemon's architecture, while CI builds and verifies
   linux/amd64 only. TLS termination belongs to the operator and is
@@ -110,17 +114,17 @@
 - Keep app-owned runtime package assembly in `coral-app`. `coral-engine`
   should compile generic runtime components, not interpret DSL v4 authored
   manifests, materialized fingerprints, semantic IR, or projection catalogs.
-- Keep Reef Coral access behind React Router server loaders, actions, or
-  resource routes using `apps/reef/app/lib/coral-request.server.ts`. Do not
+- Keep Coral UI Coral access behind React Router server loaders, actions, or
+  resource routes using `apps/coral-ui/app/lib/coral-request.server.ts`. Do not
   expose a generic renderer-to-Coral transport or Desktop sidecar proxy; add an
   explicit server route when browser-triggered Coral behavior is needed.
-- The packaged Reef server resolves its external runtime packages from the
-  Electron app. Keep every `apps/reef` production dependency represented in
+- The packaged Coral UI server resolves its external runtime packages from the
+  Electron app. Keep every `apps/coral-ui` production dependency represented in
   `apps/desktop` production dependencies; the desktop config tests enforce this
   packaging contract.
-- Use `CORAL_DESKTOP_APP=1` as Reef's single external desktop build marker.
+- Use `CORAL_DESKTOP_APP=1` as Coral UI's single external desktop build marker.
   React Router route composition may read it from `process.env`, while
-  `apps/reef/vite.config.ts` exposes only its compiled boolean value as
+  `apps/coral-ui/vite.config.ts` exposes only its compiled boolean value as
   `import.meta.env.CORAL_DESKTOP_APP`. Do not add a parallel
   `VITE_CORAL_DESKTOP_APP` marker or expose broader `CORAL_*` values to browser
   code.
