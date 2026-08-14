@@ -38,6 +38,7 @@ jobs:
       install-script: ${{ steps.filter.outputs.install-script }}
       ui-build: ${{ steps.filter.outputs.ui-build }}
       ui-tests: ${{ steps.filter.outputs.ui-tests }}
+      coral-image: ${{ steps.filter.outputs.coral-image }}
       reef-checks: ${{ steps.filter.outputs.reef-checks }}
       reef-image: ${{ steps.filter.outputs.reef-image }}
       desktop-checks: ${{ steps.filter.outputs.desktop-checks }}
@@ -98,6 +99,14 @@ jobs:
               - '.github/workflows/validate.yml'
               - 'crates/coral-api/proto/**'
               - 'apps/ui/**'
+            # Kept out of the reef-image block below: docker/reef-publish.test.mjs
+            # reads that block by slicing to the next filter key.
+            coral-image:
+              - '.github/workflows/validate.yml'
+              - 'Makefile'
+              - 'docker/Dockerfile'
+              - 'docker/entrypoint.sh'
+              - 'docker/coral-smoke.sh'
             reef-checks:
               - '.github/workflows/validate.yml'
               - 'crates/coral-api/proto/**'
@@ -113,15 +122,6 @@ jobs:
               - '.github/workflows/release.yml'
               - '.dockerignore'
               - 'Makefile'
-              - 'Cargo.toml'
-              - 'Cargo.lock'
-              - 'rust-toolchain.toml'
-              - 'rust-toolchain'
-              - 'crates/**'
-              - 'sources/core/**'
-              - 'docker/Dockerfile.local'
-              - 'docker/Dockerfile'
-              - 'docker/entrypoint.sh'
               - 'docker/Dockerfile.reef'
               - 'docker/entrypoint-reef.sh'
               - 'docker/reef-smoke.sh'
@@ -506,20 +506,35 @@ jobs:
       - name: Smoke production Reef server
         run: npm run test:server --prefix apps/reef
 
+  coral-image:
+    name: Coral image
+    # Validates docker/Dockerfile and docker/entrypoint.sh against a stub
+    # binary. The entrypoint is pure shell up to its closing exec, so every
+    # branch it takes runs without compiling coral-cli: rust-checks covers the
+    # real binary, and docker-publish.yml smokes the real image at release.
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    needs: changes
+    if: ${{ needs.changes.outputs.coral-image == 'true' }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          cache-binary: false
+
+      - name: Build and smoke the Coral image entrypoint
+        run: make coral-docker-stub-test CORAL_DOCKER_IMAGE=coral:stub
+
   reef-image:
     name: Reef image
-    # Pull requests smoke against a released Coral peer and never compile Rust,
-    # so they fit comfortably on a small runner. Pushes still build the peer
-    # from HEAD and keep the larger one for that release build.
-    runs-on: ${{ github.event_name == 'pull_request' && 'blacksmith-4vcpu-ubuntu-2404' || 'blacksmith-16vcpu-ubuntu-2404' }}
+    # The smoke matrix is peer-free, so nothing here compiles Rust or pulls a
+    # Coral image; readiness against a live peer is covered by the mocked
+    # health client in apps/reef/app/routes/readyz.server.test.ts.
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changes
     if: ${{ needs.changes.outputs.reef-image == 'true' }}
-    env:
-      # The smoke matrix only needs a peer that serves gRPC health on 14555, so
-      # it tracks the newest released Coral rather than pinning a version that
-      # would go stale. Pin this to a version or digest if a release ever breaks
-      # the matrix; pushes cover the HEAD peer either way.
-      CORAL_SMOKE_IMAGE: ghcr.io/withcoral/coral:latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -532,28 +547,10 @@ jobs:
       - name: Check Reef image contract
         run: node --test docker/reef-image.test.mjs docker/reef-publish.test.mjs
 
-      - name: Build the linux/amd64 Reef image
+      - name: Build and smoke the linux/amd64 Reef image
         run: |
-          make reef-docker-build REEF_DOCKER_IMAGE=reef:local
+          make reef-docker-test REEF_DOCKER_IMAGE=reef:local
           test "$(docker image inspect reef:local --format '{{.Os}}/{{.Architecture}}')" = linux/amd64
-
-      # docker/reef-smoke.sh only ever asks the peer to serve gRPC health on
-      # 14555 and report back through Reef's /readyz, so compiling coral-cli
-      # from HEAD -- ~85% of this job's wall time -- buys no extra signal on a
-      # pull request. Coral is published linux/amd64, matching this runner.
-      - name: Smoke Reef against the released Coral peer
-        if: ${{ github.event_name == 'pull_request' }}
-        run: |
-          docker pull --platform linux/amd64 "$CORAL_SMOKE_IMAGE"
-          make reef-docker-smoke DOCKER_IMAGE="$CORAL_SMOKE_IMAGE" REEF_DOCKER_IMAGE=reef:local
-
-      # Pushes build the peer from HEAD, so a Coral-side change to the health
-      # surface still fails here within one merge of landing.
-      - name: Smoke Reef against the Coral peer built from HEAD
-        if: ${{ github.event_name != 'pull_request' }}
-        run: |
-          make docker-build DOCKER_IMAGE=coral:local
-          make reef-docker-smoke DOCKER_IMAGE=coral:local REEF_DOCKER_IMAGE=reef:local
 
   desktop-checks:
     name: Desktop checks
@@ -816,6 +813,7 @@ jobs:
         ui-tests,
         reef-checks,
         reef-image,
+        coral-image,
         desktop-checks,
         proto-lint,
         gha-security-audit-pr,
@@ -840,6 +838,7 @@ jobs:
           UI_TESTS_RESULT: ${{ needs.ui-tests.result }}
           REEF_CHECKS_RESULT: ${{ needs.reef-checks.result }}
           REEF_IMAGE_RESULT: ${{ needs.reef-image.result }}
+          CORAL_IMAGE_RESULT: ${{ needs.coral-image.result }}
           DESKTOP_CHECKS_RESULT: ${{ needs.desktop-checks.result }}
           PROTO_LINT_RESULT: ${{ needs.proto-lint.result }}
           GHA_SECURITY_AUDIT_PR_RESULT: ${{ needs.gha-security-audit-pr.result }}
@@ -859,6 +858,7 @@ jobs:
             "ui-tests:$UI_TESTS_RESULT"
             "reef-checks:$REEF_CHECKS_RESULT"
             "reef-image:$REEF_IMAGE_RESULT"
+            "coral-image:$CORAL_IMAGE_RESULT"
             "desktop-checks:$DESKTOP_CHECKS_RESULT"
             "proto-lint:$PROTO_LINT_RESULT"
             "gha-security-audit-pr:$GHA_SECURITY_AUDIT_PR_RESULT"

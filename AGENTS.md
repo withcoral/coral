@@ -92,9 +92,17 @@
   loads disable provenance because that exporter cannot load attestation
   manifests. Local builds must not download a published Coral binary.
 - Use `make reef-docker-build` to build Reef from the current checkout and
-  `make reef-docker-smoke` to test already-built Coral and Reef images. Use the
-  self-contained `make reef-docker-test` to build both images and run the
-  topology/configuration matrix. Reef's runtime stage must remain COPY-only and
+  `make reef-docker-smoke` to run the configuration matrix against an
+  already-built Reef image. Use the self-contained `make reef-docker-test` for
+  both. That matrix is peer-free: it asserts which runtime configurations boot
+  and which fail fast, while readiness against a live Coral is covered by the
+  mocked health client in `apps/reef/app/routes/readyz.server.test.ts`.
+- Use `make coral-docker-stub-test` to build the Coral image with a stub binary
+  and exercise `docker/entrypoint.sh` (config seeding, seed-once semantics, and
+  the unwritable-volume failure). The entrypoint is pure shell up to its closing
+  exec, so this needs no Rust build; the real binary is covered by
+  `make rust-checks` and the real image by the release smoke in
+  `.github/workflows/docker-publish.yml`. Reef's runtime stage must remain COPY-only and
   non-root; build and dependency stages run on the build platform. Local builds
   follow the Docker daemon's architecture, while CI builds and verifies
   linux/amd64 only. TLS termination belongs to the operator and is
