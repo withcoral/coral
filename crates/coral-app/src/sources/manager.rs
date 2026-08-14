@@ -1769,7 +1769,6 @@ fn cleanup_empty_parent(root: &std::path::Path, path: Option<&std::path::Path>) 
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
-    use std::io::{Read as _, Write as _};
     use std::net::TcpListener as StdTcpListener;
     use std::path::Path;
     use std::sync::mpsc as std_mpsc;
@@ -1777,8 +1776,10 @@ mod tests {
     use std::time::Duration;
 
     use tempfile::TempDir;
+    use tokio::net::{TcpListener as TokioTcpListener, TcpStream as TokioTcpStream};
     use tokio::sync::mpsc;
     use tokio::task::JoinHandle;
+    use tokio::{io::AsyncReadExt as _, io::AsyncWriteExt as _};
     use url::Url;
 
     use super::{
@@ -4052,9 +4053,10 @@ surface:
                 "http://{}/token",
                 token_listener.local_addr().expect("addr")
             );
-            let token_server = tokio::task::spawn_blocking(move || {
-                let (mut stream, _) = token_listener.accept().expect("accept token request");
-                let request = read_http_request(&mut stream);
+            let token_listener = async_listener(token_listener);
+            let token_server = tokio::spawn(async move {
+                let (mut stream, _) = token_listener.accept().await.expect("accept token request");
+                let request = read_http_request(&mut stream).await;
                 let response_body = r#"{"access_token":"access-token","token_type":"Bearer"}"#;
                 let response = format!(
                     "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{response_body}",
@@ -4062,6 +4064,7 @@ surface:
                 );
                 stream
                     .write_all(response.as_bytes())
+                    .await
                     .expect("write token response");
                 request
             });
@@ -4076,11 +4079,25 @@ surface:
         form: BTreeMap<String, String>,
     }
 
-    fn read_http_request(stream: &mut std::net::TcpStream) -> CapturedTokenRequest {
+    /// Hands a bound listener to Tokio so fixture servers can await connections.
+    ///
+    /// Fixture servers must never block a thread on `accept`: a blocking accept
+    /// inside `spawn_blocking` cannot be cancelled, so a test that fails before
+    /// its request arrives leaves the blocking task parked forever. Runtime
+    /// shutdown then waits on that task and the process hangs instead of
+    /// reporting the failure — the panic never reaches the test report.
+    fn async_listener(listener: StdTcpListener) -> TokioTcpListener {
+        listener
+            .set_nonblocking(true)
+            .expect("set fixture listener non-blocking");
+        TokioTcpListener::from_std(listener).expect("adopt fixture listener")
+    }
+
+    async fn read_http_request(stream: &mut TokioTcpStream) -> CapturedTokenRequest {
         let mut buffer = Vec::new();
         let mut temp = [0_u8; 1024];
         loop {
-            let read = stream.read(&mut temp).expect("read token request");
+            let read = stream.read(&mut temp).await.expect("read token request");
             if read == 0 {
                 break;
             }
@@ -4107,7 +4124,7 @@ surface:
                     .and_then(|value| value.parse::<usize>().ok())
                     .unwrap_or(0);
                 while buffer.len() < header_end + content_length {
-                    let read = stream.read(&mut temp).expect("read token body");
+                    let read = stream.read(&mut temp).await.expect("read token body");
                     if read == 0 {
                         break;
                     }

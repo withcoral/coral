@@ -190,6 +190,11 @@ jobs:
     name: Rust checks
     runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changes
+    # Healthy runs take 5-7 minutes. This is a backstop for a job that wedges
+    # outside nextest's reach — a stuck build, cache restore, or toolchain
+    # install — so it fails on its own instead of holding a runner until
+    # someone cancels it or GitHub's 6-hour default kills it.
+    timeout-minutes: 30
     if: ${{ needs.changes.outputs.rust_checks == 'true' }}
     steps:
       - name: Free Linux runner disk space
