@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.11.0](https://github.com/withcoral/coral/compare/v0.10.0...v0.11.0) (2026-08-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* **catalog:** unify surface description ([#2074](https://github.com/withcoral/coral/issues/2074))
+
+### Features
+
+* **app:** persist task SQL activity ([#2079](https://github.com/withcoral/coral/issues/2079)) ([59170cc](https://github.com/withcoral/coral/commit/59170cc8c53db42794a7c2c7a78d03c003011665))
+* **app:** serve runtime features over gRPC ([#2142](https://github.com/withcoral/coral/issues/2142)) ([99d9d70](https://github.com/withcoral/coral/commit/99d9d70b3405bd916215fdc204c00a216702e5e8))
+* **reef:** add a runtime features list component ([#2139](https://github.com/withcoral/coral/issues/2139)) ([a159878](https://github.com/withcoral/coral/commit/a1598788a6d3f01b14910d9edf4ff95ca0a27fdd))
+* **reef:** add a runtime features settings page ([#2143](https://github.com/withcoral/coral/issues/2143)) ([220bf51](https://github.com/withcoral/coral/commit/220bf51e1c096fcb972b2971b021dfeb38a7632d))
+* **reef:** add an invalid state to TextInput and TextArea ([#2163](https://github.com/withcoral/coral/issues/2163)) ([ce1cf42](https://github.com/withcoral/coral/commit/ce1cf4265b1d8d288be96aea872d98de79965f86))
+* **reef:** allow an opt-in insecure Coral endpoint ([#2156](https://github.com/withcoral/coral/issues/2156)) ([a4bcbbf](https://github.com/withcoral/coral/commit/a4bcbbfa23ffe91bae7b9ef7f7d8dbb664610df9))
+* **reef:** enforce same-origin OAuth metadata ([#2155](https://github.com/withcoral/coral/issues/2155)) ([5fc1707](https://github.com/withcoral/coral/commit/5fc1707328a531f464f8681c149e4ff80651890d))
+* **reef:** serve Reef from a production Node entry ([#2157](https://github.com/withcoral/coral/issues/2157)) ([6b2c50d](https://github.com/withcoral/coral/commit/6b2c50d823ba7f9ea901e7e98b1992a88673d102))
+
+
+### Bug Fixes
+
+* **app:** align approval-page metadata ([#2116](https://github.com/withcoral/coral/issues/2116)) ([aaf5116](https://github.com/withcoral/coral/commit/aaf511638af9e6d128caf8677237b6bac683df43))
+* **reef:** improve relative times labels ([#2170](https://github.com/withcoral/coral/issues/2170)) ([a237683](https://github.com/withcoral/coral/commit/a237683ce239560d5bc5e8e0600ad9070d59600f))
+* **reef:** wrap long source error messages ([#2162](https://github.com/withcoral/coral/issues/2162)) ([2ccd66a](https://github.com/withcoral/coral/commit/2ccd66a063fd597bf1da6f2c9b8aa26b3fb4a0a2))
+* **search:** use singular observed source identity ([#2038](https://github.com/withcoral/coral/issues/2038)) ([fbd0621](https://github.com/withcoral/coral/commit/fbd06214e4d21dd4da05a49650b9cff97be74bdd))
+* **telemetry:** scope local-only span attributes ([#2169](https://github.com/withcoral/coral/issues/2169)) ([a52c256](https://github.com/withcoral/coral/commit/a52c2565aae361f6fdbb2f6554af9c4b1ecd500e))
+
+
+### Code Refactoring
+
+* **catalog:** unify surface description ([#2074](https://github.com/withcoral/coral/issues/2074)) ([6ddc794](https://github.com/withcoral/coral/commit/6ddc794448b17970c4ffce58e63eda34c2ed5554))
+
 ## [0.10.0](https://github.com/withcoral/coral/compare/v0.9.0...v0.10.0) (2026-08-06)
 
 
