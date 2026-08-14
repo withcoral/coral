@@ -367,13 +367,13 @@ fn parameter_is_required(parameter_obj: &Map<String, Value>, location: IrInputLo
 /// the question wrapped-list inference needs — is this operation paginated? —
 /// without the two inferences having to predict each other.
 fn detect_pagination_contract(
-    document: SchemaRoot<'_>,
+    root: SchemaRoot<'_>,
     inputs: &[IrOperationInput],
     context: &OpenApiResponsePaginationContext,
 ) -> Option<PaginationSpec> {
-    detect_link_header_pagination(document, inputs, context)
-        .or_else(|| detect_next_url_body_pagination(document, inputs, context))
-        .or_else(|| detect_cursor_query_pagination(document, inputs, context))
+    detect_link_header_pagination(root, inputs, context)
+        .or_else(|| detect_next_url_body_pagination(root, inputs, context))
+        .or_else(|| detect_cursor_query_pagination(root, inputs, context))
         .or_else(|| detect_offset_pagination(inputs))
         .or_else(|| detect_page_pagination(inputs))
 }
@@ -415,12 +415,12 @@ fn signals_page_envelope(contract: &PaginationSpec) -> bool {
 }
 
 fn detect_link_header_pagination(
-    document: SchemaRoot<'_>,
+    root: SchemaRoot<'_>,
     inputs: &[IrOperationInput],
     context: &OpenApiResponsePaginationContext,
 ) -> Option<PaginationSpec> {
     let has_link_header = response_header(context, &["link"]).is_some();
-    let next_url_header = response_next_url_header(document, context);
+    let next_url_header = response_next_url_header(root, context);
     if !has_link_header && next_url_header.is_none() {
         return None;
     }
@@ -454,7 +454,7 @@ fn detect_link_header_pagination(
 /// no diagnostic, where offset pagination would have fetched everything.
 /// Requiring the descriptor to declare `string` is the second signal.
 fn detect_next_url_body_pagination(
-    document: SchemaRoot<'_>,
+    root: SchemaRoot<'_>,
     inputs: &[IrOperationInput],
     context: &OpenApiResponsePaginationContext,
 ) -> Option<PaginationSpec> {
@@ -479,7 +479,7 @@ fn detect_next_url_body_pagination(
     ];
 
     let next_url_path = find_response_cursor_path(
-        document,
+        root,
         &context.schema,
         RESPONSE_NEXT_URL_BODY_TOKENS,
         StringTypeRequirement::Declared,
@@ -493,7 +493,7 @@ fn detect_next_url_body_pagination(
 }
 
 fn detect_cursor_query_pagination(
-    document: SchemaRoot<'_>,
+    root: SchemaRoot<'_>,
     inputs: &[IrOperationInput],
     context: &OpenApiResponsePaginationContext,
 ) -> Option<PaginationSpec> {
@@ -544,13 +544,13 @@ fn detect_cursor_query_pagination(
     // detector has already found a cursor query parameter to corroborate the
     // name, and descriptors routinely leave envelope metadata untyped.
     let response_cursor_path = find_response_cursor_path(
-        document,
+        root,
         &context.schema,
         RESPONSE_CURSOR_TOKENS,
         StringTypeRequirement::Untyped,
     )
     .unwrap_or_default();
-    let response_cursor_header = response_cursor_header(document, context);
+    let response_cursor_header = response_cursor_header(root, context);
     if response_cursor_path.is_empty() && response_cursor_header.is_none() {
         return None;
     }
