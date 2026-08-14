@@ -118,7 +118,7 @@ fn pre_v1_task_attribution_id(principal_claim: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use sea_query::{Expr, ExprTrait, Func, IntoTableRef, Query};
+    use sea_query::{Expr, ExprTrait, Func, IntoColumnRef, IntoTableRef, Query};
     use tempfile::{TempDir, tempdir};
 
     use super::{LoginIdentity, LoginProvisioning, UserRecord, pre_v1_task_attribution_id};
@@ -133,10 +133,47 @@ mod tests {
         workspace_members: i64,
     }
 
+    /// Workspace access a login must never gain, scoped to one login's own rows.
+    ///
+    /// The shared contract cannot assert this with an instance-wide `COUNT(*)`:
+    /// `make postgres-tests` runs every `contract_on_postgres` test
+    /// concurrently against **one** database, so a global count drifts under
+    /// sibling inserts that have nothing to do with this login. Scoping to the
+    /// provisioned user and the seeded workspace states the same invariant —
+    /// this login gained no workspace access — exactly and independently of
+    /// whatever else is running. The instance-wide claim, that provisioning
+    /// creates no workspace or membership *anywhere*, is asserted by the `SQLite`
+    /// test below, whose database is private to it.
+    #[derive(Debug, PartialEq, Eq)]
+    struct GrantedAccess {
+        memberships_for_user: i64,
+        members_of_seeded_workspace: i64,
+    }
+
+    impl GrantedAccess {
+        const NONE: Self = Self {
+            memberships_for_user: 0,
+            members_of_seeded_workspace: 0,
+        };
+    }
+
     #[tokio::test]
     async fn login_provisioning_contract_holds_against_sqlite() {
         let (db, _temp) = open_sqlite().await;
-        assert_login_provisioning_contract(&db).await;
+        let seeded_workspaces = assert_login_provisioning_contract(&db).await;
+
+        // Sound only here: this database is private to this test, so an
+        // instance-wide count proves the stronger claim the scoped assertions
+        // inside the contract cannot — that none of those logins created a
+        // workspace or a membership row anywhere, only the ones seeded for them.
+        assert_eq!(
+            access_counts(&db).await,
+            AccessCounts {
+                workspaces: seeded_workspaces,
+                workspace_members: 0,
+            },
+            "login provisioning must not write a workspace or a membership"
+        );
     }
 
     #[tokio::test]
@@ -188,9 +225,10 @@ mod tests {
         );
     }
 
-    async fn assert_login_provisioning_contract(db: &CoralDb) {
+    /// Returns how many workspaces the contract seeded, so a caller running on
+    /// a private database can hold provisioning to an instance-wide count.
+    async fn assert_login_provisioning_contract(db: &CoralDb) -> i64 {
         let login = seed_legacy_login(db, "contract").await;
-        let counts = access_counts(db).await;
 
         let user = expect_provisioned(
             db.user_state()
@@ -209,9 +247,9 @@ mod tests {
             "another identity's pre-v1 task must keep its attribution"
         );
         assert_eq!(
-            access_counts(db).await,
-            counts,
-            "login provisioning must not write a workspace or a membership"
+            granted_access(db, &user.user_id, &login.workspace_id).await,
+            GrantedAccess::NONE,
+            "login provisioning must not write a workspace membership"
         );
 
         let refreshed = expect_provisioned(
@@ -224,20 +262,23 @@ mod tests {
         assert_eq!(refreshed.last_login_at_unix_nanos, 200);
 
         assert_issuer_mismatch_leaves_attribution(db, &login).await;
+        // One for this contract, one for the rebound login it asserts against.
+        2
     }
 
     async fn assert_issuer_mismatch_leaves_attribution(db: &CoralDb, login: &SeededLogin) {
         let rebound = seed_legacy_login(db, &format!("{}-rebound", login.suffix)).await;
-        let counts = access_counts(db).await;
         // Mint the subject under its own issuer with a claim that matches no
         // task, so its seeded pre-v1 row is still waiting to be reattributed.
-        db.user_state()
-            .provision_login(LoginIdentity {
-                principal_claim: "unmatched claim",
-                ..rebound.identity(300)
-            })
-            .await
-            .expect("rebound first login");
+        let bound_user = expect_provisioned(
+            db.user_state()
+                .provision_login(LoginIdentity {
+                    principal_claim: "unmatched claim",
+                    ..rebound.identity(300)
+                })
+                .await
+                .expect("rebound first login"),
+        );
 
         let mismatch = db
             .user_state()
@@ -259,7 +300,11 @@ mod tests {
             pre_v1_task_attribution_id(&rebound.principal_claim),
             "a mismatched login must not reattribute anything"
         );
-        assert_eq!(access_counts(db).await, counts);
+        assert_eq!(
+            granted_access(db, &bound_user.user_id, &rebound.workspace_id).await,
+            GrantedAccess::NONE,
+            "a refused login must not grant the bound user any workspace access"
+        );
     }
 
     struct SeededLogin {
@@ -335,6 +380,38 @@ mod tests {
             workspaces: count_rows(db, Workspaces::Table).await,
             workspace_members: count_rows(db, WorkspaceMembers::Table).await,
         }
+    }
+
+    /// The workspace access one login holds: its memberships anywhere, and the
+    /// members of the workspace seeded for it.
+    async fn granted_access(db: &CoralDb, user_id: &str, workspace_id: &str) -> GrantedAccess {
+        GrantedAccess {
+            memberships_for_user: count_matching(db, WorkspaceMembers::UserId, user_id).await,
+            members_of_seeded_workspace: count_matching(
+                db,
+                WorkspaceMembers::WorkspaceId,
+                workspace_id,
+            )
+            .await,
+        }
+    }
+
+    async fn count_matching<C>(db: &CoralDb, column: C, value: &str) -> i64
+    where
+        C: IntoColumnRef,
+    {
+        let mut session = db;
+        let statement = Query::select()
+            .expr(Func::count(Expr::val(1)))
+            .from(WorkspaceMembers::Table)
+            .and_where(Expr::col(column).eq(value))
+            .to_owned();
+        let (count,): (i64,) = session
+            .fetch_optional(statement)
+            .await
+            .expect("count matching rows")
+            .unwrap_or_default();
+        count
     }
 
     async fn count_rows<T>(db: &CoralDb, table: T) -> i64
