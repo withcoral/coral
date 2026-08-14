@@ -6,7 +6,6 @@ import {
   type Transport,
 } from '@connectrpc/connect'
 import { createGrpcTransport, Http2SessionManager } from '@connectrpc/connect-node'
-import { createGrpcWebTransport } from '@connectrpc/connect-web'
 
 import { coralUIAuthConfig } from '@/auth/config.server'
 import { CatalogService } from '@/generated/coral/v1/catalog_pb'
@@ -66,9 +65,7 @@ function coralHealthTransportForRequest(request: Request) {
     request,
   })
   const { baseUrl } = endpoint
-  if (authMode === 'disabled') return createGrpcWebTransport({ baseUrl })
-
-  warnAuthenticatedCleartext(endpoint.authenticatedCleartextOrigin)
+  if (authMode !== 'disabled') warnAuthenticatedCleartext(endpoint.authenticatedCleartextOrigin)
   return createGrpcTransport({
     baseUrl,
     sessionManager: coralSessionManager(new URL(baseUrl)),
@@ -83,12 +80,6 @@ function coralTransportForRequest(request: Request, accessToken: string | null) 
   })
   const { baseUrl } = endpoint
   if (!accessToken) {
-    // The transport follows the deployment topology, not whether a token
-    // happened to be threaded here. `coral ui` — the Desktop sidecar, and the
-    // local dev default — serves gRPC-Web only and answers `application/grpc`
-    // with HTTP 415, so the unauthenticated local topology needs its own
-    // transport and this branch cannot simply go away.
-    //
     // Hosted Coral UI never reaches it: `_protected` proves a session before any
     // loader runs, so a null token in `required` mode is a caller that dropped
     // it. Falling through would send anonymous RPCs to a hosted Coral and
@@ -97,7 +88,10 @@ function coralTransportForRequest(request: Request, accessToken: string | null) 
       throw new Error('Coral authentication is required but this request carried no access token')
     }
 
-    return createGrpcWebTransport({ baseUrl })
+    return createGrpcTransport({
+      baseUrl,
+      sessionManager: coralSessionManager(new URL(baseUrl)),
+    })
   }
 
   warnAuthenticatedCleartext(endpoint.authenticatedCleartextOrigin)

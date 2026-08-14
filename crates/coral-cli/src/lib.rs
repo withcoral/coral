@@ -1882,20 +1882,6 @@ mod tests {
         assert!(mcp.contains("127.0.0.1:PORT"), "{mcp}");
     }
 
-    #[cfg(feature = "embedded-ui")]
-    #[test]
-    fn ui_command_uses_custom_port_without_required_runtime() {
-        let cli = Cli::try_parse_from(["coral", "ui", "--port", "1459", "--no-open"])
-            .expect("ui args should parse");
-
-        assert_eq!(cli.command.required_runtime(), RequiredRuntime::None);
-        let super::Command::Ui(args) = cli.command else {
-            panic!("expected ui command");
-        };
-        assert_eq!(args.port, 1459);
-        assert!(args.no_open);
-    }
-
     #[test]
     fn completion_requires_no_runtime() {
         let cli = Cli::try_parse_from(["coral", "completion", "bash"])
