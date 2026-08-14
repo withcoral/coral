@@ -51,7 +51,7 @@ export function Sidebar({
     onDownload: onUpdateDownload,
     onInstall: onUpdateInstall,
     state: updateState,
-  } = useDesktopUpdateState(desktop)
+  } = useDesktopUpdateState()
   const [createWorkspaceDialogOpen, setCreateWorkspaceDialogOpen] = useState(false)
   const createWorkspaceDialogSession = useRef(0)
   const logoutForm = useRef<HTMLFormElement>(null)
