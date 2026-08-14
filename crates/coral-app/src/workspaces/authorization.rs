@@ -55,20 +55,26 @@ pub(crate) struct WorkspaceAuthorizer {
 }
 
 impl WorkspaceAuthorizer {
-    /// Builds an authorizer that rejects the local principal.
-    pub(crate) fn new(db: Arc<CoralDb>) -> Self {
+    /// Builds an authorizer under the policy the composition root resolved for
+    /// this deployment.
+    pub(crate) const fn with_local_principal_policy(
+        db: Arc<CoralDb>,
+        local_principal: LocalPrincipalPolicy,
+    ) -> Self {
         Self {
             db,
-            local_principal: LocalPrincipalPolicy::default(),
+            local_principal,
         }
+    }
+
+    /// Builds an authorizer that rejects the local principal.
+    pub(crate) const fn new(db: Arc<CoralDb>) -> Self {
+        Self::with_local_principal_policy(db, LocalPrincipalPolicy::NoLocalPrincipal)
     }
 
     /// Builds an authorizer that treats the local principal as owner.
     pub(crate) const fn trusting_local_principal(db: Arc<CoralDb>) -> Self {
-        Self {
-            db,
-            local_principal: LocalPrincipalPolicy::ImplicitOwner,
-        }
+        Self::with_local_principal_policy(db, LocalPrincipalPolicy::ImplicitOwner)
     }
 
     pub(crate) const fn local_principal_policy(&self) -> LocalPrincipalPolicy {

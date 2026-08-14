@@ -68,7 +68,7 @@ use crate::telemetry::{TelemetryConfig, TraceManager};
 use crate::transport::GrpcRequestContextLayer;
 use crate::users::manager::UserManager;
 use crate::users::service::UserService;
-use crate::workspaces::authorization::WorkspaceAuthorizer;
+use crate::workspaces::authorization::{LocalPrincipalPolicy, WorkspaceAuthorizer};
 use crate::workspaces::{
     WorkspaceLifecycleLock, WorkspaceManager, WorkspacePoolRegistry, WorkspaceService,
 };
@@ -362,22 +362,39 @@ impl ServerBuilder {
         self
     }
 
-    /// Selects the one provider every request's principal is resolved through.
+    /// Selects the one provider every request's principal is resolved through,
+    /// together with the local-principal policy that follows from it.
     ///
     /// Session authentication and an explicit provider are two identity systems
     /// for the same requests, so asking for both is a configuration error
     /// rather than a precedence question.
-    fn resolve_principal_provider(&self) -> Result<Arc<dyn PrincipalProvider>, AppError> {
+    ///
+    /// The policy is not a separate choice: `coral:local` is precisely the
+    /// principal the default provider hands to every caller, so a deployment
+    /// admits it exactly when nothing else authenticates them. Deriving both
+    /// from the same match is what keeps a server that authenticates its
+    /// callers from also honoring the built-in principal, and keeps a
+    /// no-login install in full control of its own host.
+    fn resolve_authentication(
+        &self,
+    ) -> Result<(Arc<dyn PrincipalProvider>, LocalPrincipalPolicy), AppError> {
         match (&self.session_auth, &self.config.principal_provider) {
             (Some(_), Some(_)) => Err(AppError::FailedPrecondition(
                 "session authentication cannot be combined with an explicit principal provider"
                     .to_string(),
             )),
-            (Some(session_auth), None) => {
-                Ok(session_auth.principal_provider(session_auth.public_audiences().to_vec()))
-            }
-            (None, Some(principal_provider)) => Ok(Arc::clone(principal_provider)),
-            (None, None) => Ok(Arc::new(LocalPrincipalProvider)),
+            (Some(session_auth), None) => Ok((
+                session_auth.principal_provider(session_auth.public_audiences().to_vec()),
+                LocalPrincipalPolicy::NoLocalPrincipal,
+            )),
+            (None, Some(principal_provider)) => Ok((
+                Arc::clone(principal_provider),
+                LocalPrincipalPolicy::NoLocalPrincipal,
+            )),
+            (None, None) => Ok((
+                Arc::new(LocalPrincipalProvider),
+                LocalPrincipalPolicy::ImplicitOwner,
+            )),
         }
     }
 
@@ -396,7 +413,7 @@ impl ServerBuilder {
         reason = "the composition root constructs every app manager in one place, so it grows by one line per service the server gains"
     )]
     pub async fn start(self) -> Result<RunningServer, AppError> {
-        let principal_provider = self.resolve_principal_provider()?;
+        let (principal_provider, local_principal) = self.resolve_authentication()?;
         let session_auth = self.session_auth;
         let env = AppEnvironment::discover();
         let layout = env.app_state_layout(self.config.config_dir.clone())?;
@@ -475,7 +492,7 @@ impl ServerBuilder {
             workspace_lifecycle_lock,
         );
         let trace_components = trace_components_for_store(active_trace_store);
-        let workspace_authorizer = deployment_authorizer(&coral_db);
+        let workspace_authorizer = deployment_authorizer(&coral_db, local_principal);
         let mut server = start_server(
             ServerDependencies {
                 gui_onboarding: GuiOnboardingManager::new(Arc::clone(&coral_db)),
@@ -526,11 +543,14 @@ async fn bootstrap_database(
 /// Prepares the one access decision every workspace-scoped service shares.
 ///
 /// It is built once so the directory and the workspace control plane cannot
-/// drift onto different policies. `NoLocalPrincipal` is the safe default: until
-/// this deployment resolves its policy explicitly, an injected `coral:local`
-/// principal must reach neither.
-fn deployment_authorizer(coral_db: &Arc<CoralDb>) -> WorkspaceAuthorizer {
-    WorkspaceAuthorizer::new(Arc::clone(coral_db))
+/// drift onto different policies, and it carries the local-principal policy
+/// [`ServerBuilder::resolve_authentication`] settled for this deployment rather
+/// than re-deciding it per request.
+fn deployment_authorizer(
+    coral_db: &Arc<CoralDb>,
+    local_principal: LocalPrincipalPolicy,
+) -> WorkspaceAuthorizer {
+    WorkspaceAuthorizer::with_local_principal_policy(Arc::clone(coral_db), local_principal)
 }
 
 /// Prepares the authorization server this instance's logins are provisioned by.
@@ -989,7 +1009,7 @@ mod tests {
     use crate::telemetry::{TraceManager, service::TraceService};
     use crate::transport::workspace_to_proto;
     use crate::users::manager::UserManager;
-    use crate::workspaces::authorization::WorkspaceAuthorizer;
+    use crate::workspaces::authorization::{LocalPrincipalPolicy, WorkspaceAuthorizer};
     use crate::workspaces::{WorkspaceManager, WorkspaceName};
     use crate::{
         AwsEngineExtensionsProvider, LocalPrincipalProvider, NoopEngineExtensionsProvider,
@@ -1379,9 +1399,9 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
             )
             .expect("session token")
             .access_token;
-        let private_api = builder
+        let (private_api, _) = builder
             .with_session_auth(session_auth)
-            .resolve_principal_provider()
+            .resolve_authentication()
             .expect("private gRPC provider");
 
         let mut metadata = tonic::metadata::MetadataMap::new();
@@ -1396,6 +1416,41 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
             .expect("token minted for the MCP surface");
         assert_eq!(principal.id().as_str(), user_id);
         assert_eq!(principal.kind(), PrincipalKind::Agent);
+    }
+
+    /// The built-in `coral:local` principal is what the default provider hands
+    /// out, so admitting it must track whether anything else authenticates
+    /// callers. Getting this backwards on a no-login install locks the only
+    /// user out of their own workspaces.
+    #[test]
+    fn only_an_unauthenticated_deployment_admits_the_local_principal() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+        configure_serve_session_auth(&config_dir);
+        let (with_session_auth, session_auth) = serve_session_auth(&config_dir);
+        let policy = |builder: ServerBuilder| {
+            builder
+                .resolve_authentication()
+                .expect("resolved authentication")
+                .1
+        };
+
+        assert_eq!(
+            policy(ServerBuilder::new()),
+            LocalPrincipalPolicy::ImplicitOwner,
+            "a deployment with no login configured keeps full control of its host"
+        );
+        assert_eq!(
+            policy(with_session_auth.with_session_auth(session_auth)),
+            LocalPrincipalPolicy::NoLocalPrincipal
+        );
+        assert_eq!(
+            policy(
+                ServerBuilder::new().with_principal_provider(Arc::new(RejectingPrincipalProvider))
+            ),
+            LocalPrincipalPolicy::NoLocalPrincipal,
+            "any provider of its own is an identity system the local principal bypasses"
+        );
     }
 
     #[tokio::test]
