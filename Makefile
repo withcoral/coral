@@ -99,7 +99,10 @@ reef-docker-build:
 reef-docker-smoke:
 	REEF_IMAGE="$(REEF_DOCKER_IMAGE)" docker/reef-smoke.sh
 
-reef-docker-test: reef-docker-build reef-docker-smoke
+# The smoke runs from the recipe, not as a second prerequisite: `make -j` runs
+# prerequisites concurrently and would start it against a half-built image.
+reef-docker-test: reef-docker-build
+	REEF_IMAGE="$(REEF_DOCKER_IMAGE)" docker/reef-smoke.sh
 
 # ----------------------------------------------------------------------------
 # Coral image entrypoint checks
@@ -138,7 +141,9 @@ coral-docker-stub-build:
 coral-docker-smoke:
 	CORAL_IMAGE="$(CORAL_DOCKER_IMAGE)" docker/coral-smoke.sh
 
-coral-docker-stub-test: coral-docker-stub-build coral-docker-smoke
+# Smoke from the recipe, for the same `make -j` ordering reason as above.
+coral-docker-stub-test: coral-docker-stub-build
+	CORAL_IMAGE="$(CORAL_DOCKER_IMAGE)" docker/coral-smoke.sh
 
 rust-checks:
 	cargo fmt --all -- --check
