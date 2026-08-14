@@ -47,9 +47,12 @@ pub(in crate::state::db) enum TaskQueryRelations {
     RelationName,
 }
 
-#[expect(
-    dead_code,
-    reason = "The access-control schema lands before the user and membership repositories that query it."
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "The user directory repository is not yet wired to production consumers."
+    )
 )]
 #[derive(Iden)]
 pub(in crate::state::db) enum Users {
