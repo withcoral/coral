@@ -58,13 +58,6 @@ pub(in crate::state::db) enum Users {
     LastLoginAtUnixNanos,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the membership repository lands before the transactional state and RPCs that call it"
-    )
-)]
 #[derive(Iden)]
 pub(in crate::state::db) enum WorkspaceMembers {
     Table,

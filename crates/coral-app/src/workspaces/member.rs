@@ -5,14 +5,6 @@
 //! storage encoding lives here so persistence and authorization share one
 //! spelling of that set instead of each carrying its own string literals.
 
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the role lands with its persistence, before the RPCs that read it"
-    )
-)]
-
 use crate::workspaces::authorization::WorkspaceAction;
 
 /// One caller's role in one workspace.

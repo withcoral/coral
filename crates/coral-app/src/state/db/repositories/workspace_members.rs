@@ -1,11 +1,3 @@
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "membership persistence lands before the transactional state and RPCs that call it"
-    )
-)]
-
 use sea_query::{Expr, ExprTrait, Func, OnConflict, Order, Query, SelectStatement};
 
 use crate::state::db::DbError;

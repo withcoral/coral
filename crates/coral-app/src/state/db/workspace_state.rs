@@ -10,14 +10,6 @@
 //!
 //! [`WorkspacesRepo::hold_for_child_mutation`]: super::repositories::workspaces::WorkspacesRepo::hold_for_child_mutation
 
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the creation and membership transactions land before the manager and RPCs that call them"
-    )
-)]
-
 use super::{CoralDb, CoralTx, DbError, DbRepos};
 use crate::workspaces::MemberRole;
 

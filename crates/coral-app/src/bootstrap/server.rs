@@ -475,12 +475,14 @@ impl ServerBuilder {
             workspace_lifecycle_lock,
         );
         let trace_components = trace_components_for_store(active_trace_store);
+        let workspace_authorizer = deployment_authorizer(&coral_db);
         let mut server = start_server(
             ServerDependencies {
                 gui_onboarding: GuiOnboardingManager::new(Arc::clone(&coral_db)),
                 source: source_manager,
                 workspace: workspace_manager,
-                users: user_directory_manager(&coral_db),
+                users: UserManager::new(Arc::clone(&coral_db), workspace_authorizer.clone()),
+                workspace_authorizer,
                 query: query_manager,
                 search: search_manager,
                 search_observations,
@@ -521,16 +523,14 @@ async fn bootstrap_database(
     Ok((coral_db, authorization_server))
 }
 
-/// Prepares the directory reads this instance serves.
+/// Prepares the one access decision every workspace-scoped service shares.
 ///
-/// `NoLocalPrincipal` is the safe default: until this deployment resolves its
-/// policy explicitly, an injected `coral:local` principal must not reach the
-/// directory.
-fn user_directory_manager(coral_db: &Arc<CoralDb>) -> UserManager {
-    UserManager::new(
-        Arc::clone(coral_db),
-        WorkspaceAuthorizer::new(Arc::clone(coral_db)),
-    )
+/// It is built once so the directory and the workspace control plane cannot
+/// drift onto different policies. `NoLocalPrincipal` is the safe default: until
+/// this deployment resolves its policy explicitly, an injected `coral:local`
+/// principal must reach neither.
+fn deployment_authorizer(coral_db: &Arc<CoralDb>) -> WorkspaceAuthorizer {
+    WorkspaceAuthorizer::new(Arc::clone(coral_db))
 }
 
 /// Prepares the authorization server this instance's logins are provisioned by.
@@ -760,6 +760,7 @@ struct ServerDependencies {
     source: SourceManager,
     workspace: WorkspaceManager,
     users: UserManager,
+    workspace_authorizer: WorkspaceAuthorizer,
     query: QueryManager,
     search: SearchManager,
     search_observations: Option<SearchObservationHandle>,
@@ -782,6 +783,7 @@ fn application_routes(
         source,
         workspace,
         users,
+        workspace_authorizer,
         query,
         search,
         search_observations,
@@ -799,7 +801,7 @@ fn application_routes(
     };
     let health_queries = query.clone();
     let source_service = SourceService::new(source, query.clone(), workspace.clone());
-    let workspace_service = WorkspaceService::new(workspace);
+    let workspace_service = WorkspaceService::new(workspace, workspace_authorizer);
     let user_service = UserService::new(users);
     let catalog_service = CatalogService::new(query.clone(), task.clone());
     let function_service = FunctionService::new(query.clone());
@@ -1875,6 +1877,7 @@ backend = "unsupported"
                 source: source_manager,
                 workspace: workspace_manager,
                 users: test_user_manager(&db),
+                workspace_authorizer: WorkspaceAuthorizer::new(Arc::clone(&db)),
                 query: query_manager,
                 search: search_manager,
                 search_observations: Some(search_observations),
@@ -2024,6 +2027,7 @@ backend = "unsupported"
                 source: source_manager,
                 workspace: workspace_manager,
                 users: test_user_manager(&db),
+                workspace_authorizer: WorkspaceAuthorizer::new(Arc::clone(&db)),
                 query: query_manager,
                 search: search_manager,
                 search_observations: Some(search_observations),
@@ -2157,6 +2161,7 @@ tables:
                 source: source_manager,
                 workspace: workspace_manager,
                 users: test_user_manager(&db),
+                workspace_authorizer: WorkspaceAuthorizer::new(Arc::clone(&db)),
                 query: query_manager,
                 search: search_manager,
                 search_observations: Some(search_observations),
@@ -2290,6 +2295,7 @@ tables:
                 source: source_manager,
                 workspace: workspace_manager,
                 users: test_user_manager(&db),
+                workspace_authorizer: WorkspaceAuthorizer::new(Arc::clone(&db)),
                 query: query_manager,
                 search: search_manager,
                 search_observations: Some(search_observations),
