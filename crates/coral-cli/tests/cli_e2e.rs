@@ -334,7 +334,6 @@ async fn workspace_list_renders_configured_workspaces() {
                     role: WorkspaceRole::Member as i32,
                 },
             ],
-            ..Default::default()
         },
     ))
     .await;
@@ -358,7 +357,6 @@ async fn workspace_list_rejects_membership_without_workspace() {
                 workspace: None,
                 role: WorkspaceRole::Owner as i32,
             }],
-            ..Default::default()
         },
     ))
     .await;
