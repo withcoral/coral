@@ -18,9 +18,9 @@ pub struct OpenApiDocumentMetadata {
 /// 3.0 and 3.1 share one code path rather than one per version. The 3.1 changes
 /// this importer can even observe are how nullability is spelled — a `null`
 /// member in a `type` array, or a union whose only other variant is `null` —
-/// and [`super::normalize::normalize_nullable_unions`] rewrites both into the
-/// 3.0 forms before anything reads the document. Everything downstream is
-/// version-agnostic, so there is nothing left for a version branch to decide.
+/// and [`super::normalize::normalized_schema`] rewrites both into the 3.0 forms
+/// as each schema is read. Everything downstream is version-agnostic, so there
+/// is nothing left for a version branch to decide.
 ///
 /// The two spellings also coexist in the wild: `OpenAI` publishes a `3.1.0`
 /// document that still uses the 3.0 `nullable` keyword in over a hundred

@@ -296,8 +296,9 @@ impl OpenApiImporter<'_> {
         );
         match walked {
             Ok(merge_result) => merge_result,
-            // Converted rather than propagated: the walk error borrows from the
-            // schema it walked, and the top-level caller passes a local.
+            // Converted rather than propagated: the walk reports why a branch
+            // could not be read, and the merge answers in its own error type,
+            // which distinguishes a property conflict from an unresolvable ref.
             Err(error) => Err(Self::all_of_walk_error(&error, operation_id, diagnostics)),
         }
     }
