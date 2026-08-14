@@ -25,9 +25,11 @@
 //! it — and rewriting the tree in place would leave that pointer dangling, so
 //! the column it describes would import as opaque JSON or the operation would
 //! be dropped. Reading through [`SchemaRoot`](crate::v4::surfaces::json_schema::SchemaRoot)
-//! costs a clone only where a schema actually needs rewriting, and confines the
-//! rewrite to schema positions: an `example` or `default` payload is never
-//! walked, so a sample that merely looks like a schema is never mangled.
+//! costs a clone only where a schema actually reduces — a union that declares a
+//! genuine choice is decided against the borrowed map and left alone — and
+//! confines the rewrite to schema positions: an `example` or `default` payload
+//! is never walked, so a sample that merely looks like a schema is never
+//! mangled.
 //!
 //! Only unions that reduce to exactly one declared shape are rewritten. A
 //! genuine choice between shapes still reads as alternation, because it still
@@ -46,8 +48,8 @@ const MAX_NORMALIZE_PASSES: usize = 8;
 /// already in a spelling they read.
 ///
 /// `None` is the answer for almost every schema in every document, which is
-/// what makes reading through this affordable: the check costs two key lookups,
-/// and nothing is cloned unless a rewrite applies.
+/// what makes reading through this affordable: [`reduces`] decides against the
+/// borrowed map, so nothing is cloned unless a rewrite really applies.
 ///
 /// Applied to 3.0 documents as well as 3.1. Both rewrites require a literal
 /// `null` type, which 3.0 does not have — it spells the same thing with
@@ -58,7 +60,7 @@ const MAX_NORMALIZE_PASSES: usize = 8;
 /// reading `nullable` out of 3.1 documents.
 pub(crate) fn normalized_schema(schema: &Value) -> Option<Value> {
     let object = schema.as_object()?;
-    if !carries_a_rewritable_keyword(object) {
+    if !reduces(object) {
         return None;
     }
     let mut object = object.clone();
@@ -77,15 +79,54 @@ pub(crate) fn normalized_schema(schema: &Value) -> Option<Value> {
     rewritten.then(|| Value::Object(object))
 }
 
-/// Whether the schema declares a keyword either rewrite could act on.
+/// Whether either rewrite would change this schema.
 ///
-/// Deliberately loose — it answers "worth looking at", not "will change" — so
-/// that the common answer costs three key lookups and no clone. A schema that
-/// passes here and then turns out to need nothing is reported as unchanged.
-fn carries_a_rewritable_keyword(object: &Map<String, Value>) -> bool {
-    object.get("type").is_some_and(Value::is_array)
-        || object.contains_key("anyOf")
-        || object.contains_key("oneOf")
+/// Decided against the borrowed map, so the clone below is spent only where a
+/// rewrite really applies. Answering the looser "declares a keyword a rewrite
+/// could act on" would be a line shorter and would clone every union in every
+/// document — including the ones that never reduce, like the `anyOf: [{$ref:
+/// T}]` spelling GitHub's 3.0 document uses throughout, which no 3.1 rewrite
+/// touches and which would pay a clone per read forever.
+///
+/// The common answer still costs three key lookups: a schema declaring no
+/// union and no `type` array leaves both halves on their first lookup.
+///
+/// Each half pairs with the rewrite it predicts — [`unwrappable_union`] with
+/// [`unwrap_nullable_union`], [`collapsible_type_array`] with
+/// [`drop_null_from_type_array`] — and the rewrites re-check through the same
+/// predicates rather than repeating the conditions, so the two cannot drift
+/// into disagreeing about what reduces.
+fn reduces(object: &Map<String, Value>) -> bool {
+    collapsible_type_array(object)
+        || ["anyOf", "oneOf"]
+            .iter()
+            .any(|keyword| unwrappable_union(object, keyword))
+}
+
+/// Whether `keyword` holds a union that reduces to one declared variant, with
+/// nothing beside it that the merge would have to discard.
+fn unwrappable_union(object: &Map<String, Value>, keyword: &str) -> bool {
+    sole_declared_variant(object.get(keyword)).is_some()
+        && !object.keys().any(|key| key != keyword && !annotates(key))
+}
+
+/// Whether `type` is an array of type names that reduces to a single name.
+fn collapsible_type_array(object: &Map<String, Value>) -> bool {
+    let Some(declared) = object.get("type").and_then(Value::as_array) else {
+        return false;
+    };
+    // A `type` array holds type names, and nothing else belongs in one — a
+    // payload that happens to carry a `type` key must be left alone.
+    if !declared
+        .iter()
+        .all(|value| value.is_string() || value.is_null())
+    {
+        return false;
+    }
+    let mut named = declared.iter().filter(|value| !names_null_type(value));
+    // More than one name is a genuine union; none at all is `null` alone,
+    // which says what it means already.
+    named.next().is_some() && named.next().is_none()
 }
 
 /// Replaces `{anyOf | oneOf: [T, {type: null}]}` with `T`, as long as the keys
@@ -116,12 +157,12 @@ fn carries_a_rewritable_keyword(object: &Map<String, Value>) -> bool {
 fn unwrap_nullable_union(object: &mut Map<String, Value>) -> bool {
     let mut unwrapped = false;
     for keyword in ["anyOf", "oneOf"] {
+        if !unwrappable_union(object, keyword) {
+            continue;
+        }
         let Some(variant) = sole_declared_variant(object.get(keyword)).cloned() else {
             continue;
         };
-        if object.keys().any(|key| key != keyword && !annotates(key)) {
-            continue;
-        }
         object.remove(keyword);
         for (key, value) in variant {
             object.entry(key).or_insert(value);
@@ -231,26 +272,17 @@ fn names_null_type(value: &Value) -> bool {
 /// spelling that GitHub's 3.0 document relies on, collapsing it cannot reach a
 /// document that imports correctly today.
 fn drop_null_from_type_array(object: &mut Map<String, Value>) -> bool {
-    let Some(declared) = object.get("type").and_then(Value::as_array) else {
-        return false;
-    };
-    // A `type` array holds type names, and nothing else belongs in one — a
-    // payload that happens to carry a `type` key must be left alone.
-    if !declared
-        .iter()
-        .all(|value| value.is_string() || value.is_null())
-    {
+    if !collapsible_type_array(object) {
         return false;
     }
-    let mut named = declared.iter().filter(|value| !names_null_type(value));
-    let Some(declared_type) = named.next() else {
+    let Some(declared_type) = object
+        .get("type")
+        .and_then(Value::as_array)
+        .and_then(|declared| declared.iter().find(|value| !names_null_type(value)))
+        .cloned()
+    else {
         return false;
     };
-    // More than one name is a genuine union.
-    if named.next().is_some() {
-        return false;
-    }
-    let declared_type = declared_type.clone();
     object.insert("type".to_string(), declared_type);
     true
 }
@@ -265,6 +297,62 @@ mod tests {
     /// readable, so these assertions read the same either way.
     fn normalized(value: serde_json::Value) -> serde_json::Value {
         normalized_schema(&value).unwrap_or(value)
+    }
+
+    /// [`reduces`] is what decides whether a schema is cloned, and it is the
+    /// only place that can be asserted: `normalized_schema` answers `None` for
+    /// everything here either way, because it clones first and reports the
+    /// clone unchanged. The cost is invisible in the return value and real on
+    /// every read.
+    ///
+    /// Worth guarding because the schemas that reduce to nothing are not rare:
+    /// `anyOf: [{$ref: T}]` is how GitHub's 3.0 document spells a nullable ref
+    /// throughout, and it is read on every walk of every operation.
+    #[test]
+    fn decides_that_nothing_reduces_before_cloning_anything() {
+        for schema in [
+            // A union that declares more than one shape.
+            json!({"anyOf": [{"type": "string"}, {"type": "integer"}]}),
+            // A single-variant union with no `null` member.
+            json!({"anyOf": [{"$ref": "#/components/schemas/user"}]}),
+            // Reducible, but sitting beside a shape the merge would discard.
+            json!({
+                "type": "object",
+                "properties": {"id": {"type": "string"}},
+                "anyOf": [{"$ref": "#/components/schemas/user"}, {"type": "null"}],
+            }),
+            // A `type` array naming two real types.
+            json!({"type": ["string", "integer"]}),
+            // Not a schema at all: a payload that happens to carry `type`.
+            json!({"type": ["a", 1]}),
+            json!({"description": "no keyword either rewrite acts on"}),
+        ] {
+            let object = schema.as_object().expect("object");
+            assert!(!super::reduces(object), "{schema}");
+            assert_eq!(normalized_schema(&schema), None, "{schema}");
+        }
+    }
+
+    /// The other half of the same contract: everything that does reduce is
+    /// decided as reducible before the clone, so the predicate cannot drift
+    /// into refusing work the rewrites would have done.
+    #[test]
+    fn decides_that_a_reducible_schema_reduces() {
+        for schema in [
+            json!({"anyOf": [{"type": "string"}, {"type": "null"}]}),
+            json!({"oneOf": [{"$ref": "#/components/schemas/user"}, {"type": "null"}]}),
+            json!({"type": ["array", "null"]}),
+            json!({"type": ["string"]}),
+            // Reducible beside annotations, which the merge keeps.
+            json!({
+                "description": "the user, or nothing",
+                "anyOf": [{"$ref": "#/components/schemas/user"}, {"type": "null"}],
+            }),
+        ] {
+            let object = schema.as_object().expect("object");
+            assert!(super::reduces(object), "{schema}");
+            assert!(normalized_schema(&schema).is_some(), "{schema}");
+        }
     }
 
     #[test]
