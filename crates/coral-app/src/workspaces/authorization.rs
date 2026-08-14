@@ -93,13 +93,8 @@ impl WorkspaceAuthorizer {
         // `ImplicitOwner` there is no membership row to find, and under
         // `NoLocalPrincipal` an injected local principal must not be able to
         // reach the directory or membership tables at all.
-        if principal.id().as_str() == LOCAL_PRINCIPAL_ID {
-            return match self.local_principal {
-                LocalPrincipalPolicy::ImplicitOwner => Ok(()),
-                LocalPrincipalPolicy::NoLocalPrincipal => Err(AppError::PermissionDenied(
-                    "the local principal is not available on this deployment".to_string(),
-                )),
-            };
+        if let Some(decision) = self.decide_for_local_principal(principal) {
+            return decision;
         }
 
         // The control-plane restriction is evaluated before any role, so a
@@ -138,6 +133,66 @@ impl WorkspaceAuthorizer {
                 "owner access is required for workspace '{workspace}'"
             )))
         }
+    }
+
+    /// Decides whether this deployment admits `principal` at all.
+    ///
+    /// A self-scoped request reads nothing but the caller's own row, so this
+    /// is the whole of its check. It still runs first: under
+    /// `NoLocalPrincipal` an injected `coral:local` must be refused before any
+    /// lookup, rather than being handed the built-in row this deployment does
+    /// not recognize.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::PermissionDenied`] for the local principal on a
+    /// deployment that does not admit it.
+    pub(crate) fn admit(&self, principal: &Principal) -> Result<(), AppError> {
+        self.decide_for_local_principal(principal).unwrap_or(Ok(()))
+    }
+
+    /// Decides whether `principal` may read the deployment's user directory.
+    ///
+    /// Directory authority is workspace ownership, not principal kind: the
+    /// directory exists so an owner can name somebody as a member, and a
+    /// caller who owns nothing has nobody to name. The denial is plain rather
+    /// than concealing, because the directory is deployment-wide — refusing it
+    /// hides no particular person's existence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::PermissionDenied`] for a caller this deployment
+    /// admits but who owns no workspace.
+    pub(crate) async fn authorize_directory(&self, principal: &Principal) -> Result<(), AppError> {
+        if let Some(decision) = self.decide_for_local_principal(principal) {
+            return decision;
+        }
+
+        let mut session = self.db.as_ref();
+        let owns_a_workspace = session
+            .workspace_members()
+            .workspaces_for_user_id(principal.id().as_str())
+            .await?
+            .iter()
+            .any(|(_, role)| *role == MemberRole::Owner);
+        if owns_a_workspace {
+            Ok(())
+        } else {
+            Err(AppError::PermissionDenied(
+                "reading the user directory requires owning a workspace".to_string(),
+            ))
+        }
+    }
+
+    /// Settles the built-in local principal, or reports `None` for a caller
+    /// whose authority comes from membership state instead.
+    fn decide_for_local_principal(&self, principal: &Principal) -> Option<Result<(), AppError>> {
+        (principal.id().as_str() == LOCAL_PRINCIPAL_ID).then(|| match self.local_principal {
+            LocalPrincipalPolicy::ImplicitOwner => Ok(()),
+            LocalPrincipalPolicy::NoLocalPrincipal => Err(AppError::PermissionDenied(
+                "the local principal is not available on this deployment".to_string(),
+            )),
+        })
     }
 }
 

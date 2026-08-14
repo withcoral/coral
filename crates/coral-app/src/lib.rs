@@ -68,6 +68,7 @@ pub mod telemetry;
 #[cfg(feature = "test-session-tokens")]
 pub mod test_session_tokens;
 mod transport;
+mod users;
 mod workspaces;
 
 pub use auth::{
