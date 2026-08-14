@@ -15,6 +15,7 @@ use crate::state::db::repositories::task_queries::TaskQueriesRepo;
 use crate::state::db::repositories::tasks::TasksRepo;
 use crate::state::db::repositories::trace_search_responses::TraceSearchResponsesRepo;
 use crate::state::db::repositories::users::UsersRepo;
+use crate::state::db::repositories::workspace_members::WorkspaceMembersRepo;
 use crate::state::db::repositories::workspaces::WorkspacesRepo;
 
 pub(crate) trait DbSession {
@@ -70,6 +71,17 @@ pub(crate) trait DbRepos: DbSession + Sized {
 
     fn users(&mut self) -> UsersRepo<'_, Self> {
         UsersRepo::new(self)
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "membership persistence lands before the transactional state that calls it"
+        )
+    )]
+    fn workspace_members(&mut self) -> WorkspaceMembersRepo<'_, Self> {
+        WorkspaceMembersRepo::new(self)
     }
 
     fn identity_specs(&mut self) -> IdentitySpecsRepo<'_, Self> {

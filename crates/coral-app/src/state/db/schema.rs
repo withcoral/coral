@@ -58,9 +58,12 @@ pub(in crate::state::db) enum Users {
     LastLoginAtUnixNanos,
 }
 
-#[expect(
-    dead_code,
-    reason = "The access-control schema lands before the user and membership repositories that query it."
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the membership repository lands before the transactional state and RPCs that call it"
+    )
 )]
 #[derive(Iden)]
 pub(in crate::state::db) enum WorkspaceMembers {

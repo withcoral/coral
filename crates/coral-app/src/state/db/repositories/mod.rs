@@ -5,6 +5,7 @@ pub(crate) mod task_queries;
 pub(crate) mod tasks;
 pub(crate) mod trace_search_responses;
 pub(crate) mod users;
+pub(crate) mod workspace_members;
 pub(crate) mod workspaces;
 
 #[cfg(test)]
