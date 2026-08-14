@@ -53,6 +53,6 @@ surface:
       from: literal
       value: coral-dsl-v4
 test_queries:
-  - SELECT id, number, title, state FROM github_v4.search_issues_and_pull_requests(q => 'repo:octocat/Hello-World is:issue') LIMIT 5
-  - SELECT id, number, title, state FROM github_v4.issues_list_for_repo(owner => 'octocat', repo => 'Hello-World') LIMIT 5
-  - SELECT id, number, title FROM github_v4.issues_get(owner => 'octocat', repo => 'Hello-World', issue_number => 1)
+  - SELECT id, number, title, state FROM github_v4.search.issues_and_pull_requests(q => 'repo:octocat/Hello-World is:issue') LIMIT 5
+  - SELECT id, number, title, state FROM github_v4.issues.list_for_repo(owner => 'octocat', repo => 'Hello-World') LIMIT 5
+  - SELECT id, number, title FROM github_v4.issues.get(owner => 'octocat', repo => 'Hello-World', issue_number => 1)

@@ -33,7 +33,7 @@ Use this as the Coral entrypoint for external context. Query Coral before answer
 
 ## Query Rules
 
-- Use each table's `sql_reference` when available. Empty `catalog_name` means `schema_name.table_name`; otherwise use `catalog_name.schema_name.table_name`. Quote identifiers separately, never the whole qualified reference.
+- Use each table's `sql_reference` when available. DSL v3 relations have an empty `catalog_name` and use `schema_name.table_name`. DSL v4 relations use the source catalog and require `catalog_name.schema_name.table_name`. Quote identifiers separately, never the whole qualified reference.
 - Use each table function's `sql_call_example`, filling in required arguments before querying it.
 - Keep metadata discovery bounded: page catalog discovery, query `coral.columns` for one table or `coral.table_functions` for one source when possible, and add `LIMIT` when reading broad metadata directly.
 - Virtual columns are filter-only and return `NULL`; check `is_virtual`.

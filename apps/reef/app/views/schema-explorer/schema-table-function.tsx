@@ -12,7 +12,7 @@ import { SchemaColumnsTable } from './schema-table'
 export function SchemaTableFunctionView() {
   const schema = useOutletContext<SchemaResponse>()
   const params = useParams()
-  const catalogName = params.catalogName
+  const catalogName = params.catalogName ?? ''
   const schemaName = params.schemaName ?? ''
   const functionName = params.functionName ?? ''
   const tableFunction = findSchemaTableFunction(schema, catalogName, schemaName, functionName)

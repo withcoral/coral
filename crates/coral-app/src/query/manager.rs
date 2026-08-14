@@ -98,7 +98,6 @@ enum CatalogColumnLoading {
 struct LoadedQuerySource {
     source: InstalledSource,
     query_source: QuerySource,
-    runtime_schema_name: String,
     runtime_contract_fingerprint: RuntimeContractFingerprint,
     credential_material: BTreeMap<String, String>,
 }
@@ -108,27 +107,34 @@ struct QuerySourceLoad {
     failed_source_names: BTreeSet<String>,
 }
 
-/// Maps each loaded runtime schema to its canonical installed source owner.
-fn runtime_schema_owners(
+/// Maps each loaded top-level SQL schema or catalog to its installed source owner.
+fn runtime_namespace_owners(
     loaded_sources: &[LoadedQuerySource],
 ) -> Result<BTreeMap<String, String>, AppError> {
     let mut owners = BTreeMap::new();
     for loaded in loaded_sources {
-        match owners.entry(loaded.runtime_schema_name.clone()) {
-            std::collections::btree_map::Entry::Vacant(entry) => {
-                entry.insert(loaded.source.name.as_str().to_string());
+        for runtime_namespace in loaded
+            .query_source
+            .schema_names()
+            .into_iter()
+            .chain(loaded.query_source.catalog_names())
+        {
+            match owners.entry(runtime_namespace.to_string()) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert(loaded.source.name.as_str().to_string());
+                }
+                std::collections::btree_map::Entry::Occupied(entry)
+                    if entry.get().as_str() != loaded.source.name.as_str() =>
+                {
+                    return Err(AppError::InvalidInput(format!(
+                        "catalog runtime namespace '{}' is owned by both '{}' and '{}'",
+                        entry.key(),
+                        entry.get(),
+                        loaded.source.name
+                    )));
+                }
+                std::collections::btree_map::Entry::Occupied(_) => {}
             }
-            std::collections::btree_map::Entry::Occupied(entry)
-                if entry.get().as_str() != loaded.source.name.as_str() =>
-            {
-                return Err(AppError::InvalidInput(format!(
-                    "catalog runtime schema '{}' is owned by both '{}' and '{}'",
-                    entry.key(),
-                    entry.get(),
-                    loaded.source.name
-                )));
-            }
-            std::collections::btree_map::Entry::Occupied(_) => {}
         }
     }
     Ok(owners)
@@ -397,8 +403,8 @@ impl QueryManager {
                     .await?;
                 let mut failed_source_names = source_load.failed_source_names;
                 failed_source_names.extend(failure_recorder.failed_source_names());
-                let runtime_schema_owners =
-                    runtime_schema_owners(&source_load.loaded).map_err(QueryManagerError::App)?;
+                let runtime_namespace_owners = runtime_namespace_owners(&source_load.loaded)
+                    .map_err(QueryManagerError::App)?;
                 let mut catalog = runtime
                     .list_catalog(catalog_filter, schema_filter)
                     .await
@@ -412,7 +418,7 @@ impl QueryManager {
                 Ok(CatalogResolution {
                     catalog,
                     failed_source_names,
-                    runtime_schema_owners,
+                    runtime_namespace_owners,
                 })
             },
             |resolution| {
@@ -751,7 +757,6 @@ impl QueryManager {
             LoadedQuerySource {
                 source: source.clone(),
                 query_source: loaded_runtime.query_source,
-                runtime_schema_name: installed.source_spec.schema_name().to_string(),
                 runtime_contract_fingerprint: loaded_runtime.runtime_contract_fingerprint,
                 credential_material: stored_secrets,
             },
@@ -1519,6 +1524,7 @@ mod tests {
         EngineExtensions, QueryExecutionProvenance, QueryTableFunctionUsage, QueryTableUsage,
         ResolvedQueryResources, SourceDecorator, SourceDecoratorError,
         SourceInputResolutionContext, SourceInputResolver, SourceInputResolverError, SourceTables,
+        TableFunctionInfo,
     };
     use coral_spec::parse_source_manifest_yaml;
     use coral_spec::v4::ProjectionCatalog;
@@ -1550,6 +1556,46 @@ mod tests {
         let second = required_guide_id(Some("archive"), "public", "events", "Filter by event id.");
 
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn required_guides_match_table_functions_by_catalog() {
+        let function = |catalog_name: &str, guide: &str| TableFunctionInfo {
+            catalog_name: Some(catalog_name.to_string()),
+            schema_name: "public".to_string(),
+            function_name: "search_events".to_string(),
+            description: String::new(),
+            guide: guide.to_string(),
+            require_guide_read: true,
+            arguments: Vec::new(),
+            result_columns: Vec::new(),
+            kind: coral_spec::SourceTableFunctionKind::Table,
+            search_limits: None,
+        };
+        let catalog = CatalogInfo {
+            tables: Vec::new(),
+            table_functions: vec![
+                function("primary", "Use the primary catalog."),
+                function("archive", "Use the archive catalog."),
+            ],
+        };
+        let resources = ResolvedQueryResources::new(
+            vec!["archive".to_string()],
+            Vec::new(),
+            vec![QueryTableFunctionUsage::new(
+                "archive",
+                Some("archive"),
+                "public",
+                "search_events",
+            )],
+        );
+
+        let guides = required_query_guides(&catalog, &resources);
+
+        assert_eq!(guides.len(), 1);
+        let guide = guides.first().expect("required archive guide");
+        assert_eq!(guide.catalog_name.as_deref(), Some("archive"));
+        assert_eq!(guide.guide, "Use the archive catalog.");
     }
 
     #[test]
@@ -2110,9 +2156,9 @@ mod tests {
                 QueryTableUsage::new("warehouse", Some("warehouse"), "public", "users"),
             ],
             vec![QueryTableFunctionUsage::new(
-                "github",
-                None,
-                "github",
+                "github_v4",
+                Some("github_v4"),
+                "issues",
                 "search_issues",
             )],
         );
@@ -2147,7 +2193,7 @@ mod tests {
                 crate::telemetry::QUERY_TRACE_TABLE_FUNCTIONS_ATTR
             ),
             Some(
-                r#"[{"source_name":"github","catalog_name":null,"schema_name":"github","function_name":"search_issues"}]"#
+                r#"[{"source_name":"github_v4","catalog_name":"github_v4","schema_name":"issues","function_name":"search_issues"}]"#
                     .to_string()
             )
         );
@@ -2759,8 +2805,8 @@ surface:
         let issues = projections
             .projections
             .iter_mut()
-            .find(|projection| projection.name == "issues")
-            .expect("issues projection");
+            .find(|projection| projection.name == "list")
+            .expect("list projection");
         issues.guide = "Use issue_search for lookups.".to_string();
         issues.require_guide_read = true;
         let override_path = fixture
@@ -2776,7 +2822,7 @@ surface:
         )
         .expect("write projection override");
 
-        let sql = "SELECT id, title FROM github_v4_query.issues";
+        let sql = "SELECT id, title FROM github_v4_query.public.list";
         let required = fixture
             .manager
             .execute_sql(
@@ -2791,7 +2837,7 @@ surface:
             panic!("overridden projection guide should be required");
         };
         let required = required.first().expect("required projection guide");
-        assert_eq!(required.resource_name, "issues");
+        assert_eq!(required.resource_name, "list");
         assert_eq!(required.guide, "Use issue_search for lookups.");
         assert!(
             server
@@ -2958,7 +3004,7 @@ surface:
             .manager
             .execute_sql(
                 &workspace_name,
-                "SELECT id FROM github_v4_pagination_override.widgets LIMIT 3",
+                "SELECT id FROM github_v4_pagination_override.public.list LIMIT 3",
                 None,
                 &QueryAttribution::default(),
             )
@@ -3773,11 +3819,9 @@ tables:
 ",
         )
         .expect("parse source manifest");
-        let runtime_schema_name = source_spec.schema_name().to_string();
         let loaded_source = LoadedQuerySource {
             source: installed_source,
             query_source: QuerySource::new(source_spec, BTreeMap::new(), BTreeMap::new()),
-            runtime_schema_name,
             runtime_contract_fingerprint: RuntimeContractFingerprint::for_test("contract"),
             credential_material: BTreeMap::from([(
                 "API_TOKEN".to_string(),
@@ -3954,7 +3998,6 @@ tables:
                 credential_revision: uuid::Uuid::default(),
                 origin: SourceOrigin::Bundled,
             },
-            runtime_schema_name: source_spec.schema_name().to_string(),
             query_source: QuerySource::new(source_spec.clone(), BTreeMap::new(), BTreeMap::new()),
             runtime_contract_fingerprint: RuntimeContractFingerprint::for_test("contract"),
             credential_material: BTreeMap::from([(
@@ -4033,7 +4076,6 @@ tables:
                 credential_revision: uuid::Uuid::default(),
                 origin: SourceOrigin::Bundled,
             },
-            runtime_schema_name: source_spec.schema_name().to_string(),
             query_source: QuerySource::new(source_spec.clone(), BTreeMap::new(), BTreeMap::new()),
             runtime_contract_fingerprint: RuntimeContractFingerprint::for_test("contract"),
             credential_material: BTreeMap::new(),

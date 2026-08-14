@@ -186,6 +186,54 @@ async fn catalog_discovery_table_functions_sql_exposes_empty_v3_catalog_name() {
 }
 
 #[tokio::test]
+async fn installed_v4_openapi_discovery_keeps_schema_local_duplicate_names() {
+    let harness = GrpcHarness::new().await;
+    let _server = harness.import_v4_openapi_catalog_fixture().await;
+
+    let response = harness
+        .catalog_client()
+        .list_catalog(Request::new(ListCatalogRequest {
+            workspace: Some(default_workspace()),
+            catalog_name: "openapi_v4".to_string(),
+            schema_name: String::new(),
+            kind: 0,
+            pagination: None,
+        }))
+        .await
+        .expect("list installed v4 catalog")
+        .into_inner();
+    let identities = response
+        .items
+        .iter()
+        .map(|item| match item.item.as_ref().expect("catalog item") {
+            catalog_item::Item::Table(table) => (
+                table.catalog_name.as_str(),
+                table.schema_name.as_str(),
+                table.name.as_str(),
+            ),
+            catalog_item::Item::TableFunction(function) => (
+                function.catalog_name.as_str(),
+                function.schema_name.as_str(),
+                function.name.as_str(),
+            ),
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(identities.len(), 4);
+    assert_eq!(
+        identities
+            .iter()
+            .filter(|(_, _, name)| *name == "list")
+            .count(),
+        3
+    );
+    assert!(identities.contains(&("openapi_v4", "alpha", "list")));
+    assert!(identities.contains(&("openapi_v4", "beta", "list")));
+    assert!(identities.contains(&("openapi_v4", "public", "list")));
+    assert!(identities.contains(&("openapi_v4", "alpha", "get")));
+}
+
+#[tokio::test]
 async fn search_catalog_matches_table_function_guide() {
     let harness = GrpcHarness::new().await;
     harness
@@ -287,6 +335,55 @@ async fn list_columns_filters_required_columns_and_patterns() {
             .matched_fields
             .iter()
             .any(|field| field == "column_name")
+    );
+}
+
+#[tokio::test]
+async fn list_columns_empty_catalog_selects_the_two_part_table() {
+    let harness = GrpcHarness::new().await;
+    harness
+        .import_source(
+            r"
+name: alpha
+version: 0.1.0
+dsl_version: 3
+backend: http
+base_url: https://example.com
+tables:
+  - name: list
+    description: Legacy two-part list
+    request: { method: GET, path: /list }
+    response: {}
+    columns:
+      - { name: legacy_only, type: Utf8 }
+"
+            .to_string(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await;
+    let _server = harness.import_v4_openapi_catalog_fixture().await;
+
+    let response = harness
+        .catalog_client()
+        .list_columns(Request::new(ListColumnsRequest {
+            workspace: Some(default_workspace()),
+            catalog_name: String::new(),
+            schema_name: "alpha".to_string(),
+            table_name: "list".to_string(),
+            pattern: None,
+            ignore_case: true,
+            required_only: false,
+            pagination: None,
+        }))
+        .await
+        .expect("empty catalog should select the two-part table")
+        .into_inner();
+
+    assert_eq!(response.columns.len(), 1);
+    assert_eq!(
+        response.columns[0].column.as_ref().expect("column").name,
+        "legacy_only"
     );
 }
 

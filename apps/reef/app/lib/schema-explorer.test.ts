@@ -54,39 +54,42 @@ describe('fetchSchemaFromCoral', () => {
     await expect(
       fetchSchemaFromCoral({ listCatalog } as unknown as CatalogClient, workspace),
     ).resolves.toEqual({
-      connectors: [
+      roots: [
         {
-          items: [
-            {
-              arguments: [
-                {
-                  name: 'channel',
-                  required: true,
-                  values: ['general', 'random'],
-                },
-              ],
-              description: 'Lists messages in a channel.',
-              kind: 'tableFunction',
-              name: 'messages',
-              resultColumns: [
-                {
-                  description: 'Message text.',
-                  name: 'text',
-                  nullable: false,
-                  type: 'Utf8',
-                },
-              ],
-            },
-            {
-              columns: [],
-              columnsLoaded: false,
-              description: 'Slack users.',
-              kind: 'table',
-              name: 'users',
-              requiredFilters: [],
-            },
-          ],
-          name: 'slack',
+          kind: 'schema',
+          schema: {
+            items: [
+              {
+                arguments: [
+                  {
+                    name: 'channel',
+                    required: true,
+                    values: ['general', 'random'],
+                  },
+                ],
+                description: 'Lists messages in a channel.',
+                kind: 'tableFunction',
+                name: 'messages',
+                resultColumns: [
+                  {
+                    description: 'Message text.',
+                    name: 'text',
+                    nullable: false,
+                    type: 'Utf8',
+                  },
+                ],
+              },
+              {
+                columns: [],
+                columnsLoaded: false,
+                description: 'Slack users.',
+                kind: 'table',
+                name: 'users',
+                requiredFilters: [],
+              },
+            ],
+            name: 'slack',
+          },
         },
       ],
     })
@@ -97,7 +100,7 @@ describe('fetchSchemaFromCoral', () => {
     })
   })
 
-  it('keeps matching schema names in different catalogs separate', async () => {
+  it('groups real catalog metadata as catalog, schema, then relation', async () => {
     const listCatalog = vi.fn().mockResolvedValue({
       items: [
         {
@@ -107,6 +110,37 @@ describe('fetchSchemaFromCoral', () => {
               catalogName: 'github_v4',
               name: 'issues',
               schemaName: 'api',
+            },
+          },
+        },
+        {
+          item: {
+            case: 'table',
+            value: {
+              catalogName: 'github_v4',
+              name: 'issues',
+              schemaName: 'repos',
+            },
+          },
+        },
+        {
+          item: {
+            case: 'tableFunction',
+            value: {
+              arguments: [],
+              catalogName: 'github_v4',
+              name: 'search',
+              resultColumns: [],
+              schemaName: 'api',
+            },
+          },
+        },
+        {
+          item: {
+            case: 'table',
+            value: {
+              name: 'users',
+              schemaName: 'slack',
             },
           },
         },
@@ -127,16 +161,44 @@ describe('fetchSchemaFromCoral', () => {
     await expect(
       fetchSchemaFromCoral({ listCatalog } as unknown as CatalogClient, workspace),
     ).resolves.toEqual({
-      connectors: [
+      roots: [
         {
-          catalogName: 'github_v4',
-          items: [expect.objectContaining({ kind: 'table', name: 'issues' })],
-          name: 'api',
+          catalog: {
+            name: 'github_v4',
+            schemas: [
+              {
+                items: [
+                  expect.objectContaining({ kind: 'table', name: 'issues' }),
+                  expect.objectContaining({ kind: 'tableFunction', name: 'search' }),
+                ],
+                name: 'api',
+              },
+              {
+                items: [expect.objectContaining({ kind: 'table', name: 'issues' })],
+                name: 'repos',
+              },
+            ],
+          },
+          kind: 'catalog',
         },
         {
-          catalogName: 'linear_v4',
-          items: [expect.objectContaining({ kind: 'table', name: 'issues' })],
-          name: 'api',
+          kind: 'schema',
+          schema: {
+            items: [expect.objectContaining({ kind: 'table', name: 'users' })],
+            name: 'slack',
+          },
+        },
+        {
+          catalog: {
+            name: 'linear_v4',
+            schemas: [
+              {
+                items: [expect.objectContaining({ kind: 'table', name: 'issues' })],
+                name: 'api',
+              },
+            ],
+          },
+          kind: 'catalog',
         },
       ],
     })
@@ -149,17 +211,33 @@ describe('fetchTableColumnsFromCoral', () => {
     const workspace = create(WorkspaceSchema, { name: 'analytics' })
 
     await expect(
-      fetchTableColumnsFromCoral(
-        { listColumns } as unknown as CatalogClient,
-        workspace,
-        'github_v4',
-        'api',
-        'issues',
-      ),
+      fetchTableColumnsFromCoral({ listColumns } as unknown as CatalogClient, workspace, {
+        catalogName: 'github_v4',
+        schemaName: 'api',
+        tableName: 'issues',
+      }),
     ).resolves.toEqual([])
     expect(listColumns.mock.calls[0]?.[0]).toMatchObject({
       catalogName: 'github_v4',
       schemaName: 'api',
+      tableName: 'issues',
+      workspace,
+    })
+  })
+
+  it('keeps the established empty catalog coordinate for v3 tables', async () => {
+    const listColumns = vi.fn().mockResolvedValue({ columns: [] })
+    const workspace = create(WorkspaceSchema, { name: 'analytics' })
+
+    await fetchTableColumnsFromCoral({ listColumns } as unknown as CatalogClient, workspace, {
+      catalogName: '',
+      schemaName: 'github',
+      tableName: 'issues',
+    })
+
+    expect(listColumns.mock.calls[0]?.[0]).toMatchObject({
+      catalogName: '',
+      schemaName: 'github',
       tableName: 'issues',
       workspace,
     })

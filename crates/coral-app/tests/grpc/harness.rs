@@ -17,6 +17,8 @@ use coral_client::{
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tonic::Request;
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 pub(crate) struct GrpcHarness {
     temp_dir: TempDir,
@@ -24,6 +26,8 @@ pub(crate) struct GrpcHarness {
     local_trace_store_dir: Option<PathBuf>,
     app: AppClient,
     _server: RunningServer,
+    server_builder: ServerBuilder,
+    feature_overrides: FeatureOverrides,
 }
 
 pub(crate) struct FailingHttpFixture {
@@ -49,6 +53,21 @@ impl GrpcHarness {
     pub(crate) async fn start_with_config_dir(config_dir: PathBuf) -> Self {
         let temp_dir = TempDir::new().expect("temp dir");
         Self::start_with_parts(temp_dir, config_dir, FeatureOverrides::default()).await
+    }
+
+    pub(crate) async fn restart(self) -> Self {
+        let Self {
+            temp_dir,
+            config_dir,
+            app,
+            _server: server,
+            server_builder,
+            feature_overrides,
+            ..
+        } = self;
+        drop(app);
+        drop(server);
+        Self::start_with_builder(temp_dir, config_dir, feature_overrides, server_builder).await
     }
 
     pub(crate) async fn new_with_engine_extensions_provider(
@@ -87,8 +106,9 @@ impl GrpcHarness {
     ) -> Self {
         ensure_file_credentials_config(&config_dir);
         let server = server_builder
+            .clone()
             .with_config_dir(&config_dir)
-            .with_feature_overrides(feature_overrides)
+            .with_feature_overrides(feature_overrides.clone())
             .start()
             .await
             .expect("start server");
@@ -102,6 +122,8 @@ impl GrpcHarness {
             local_trace_store_dir,
             app,
             _server: server,
+            server_builder,
+            feature_overrides,
         }
     }
 
@@ -235,6 +257,247 @@ impl GrpcHarness {
         )
         .expect("query rows")
     }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "The test fixture keeps its complete OpenAPI document next to the mock responses."
+    )]
+    pub(crate) async fn import_v4_openapi_catalog_fixture(&self) -> MockServer {
+        let server = MockServer::start().await;
+        for (request_path, id, label) in [
+            ("/alpha/items", 1, "alpha"),
+            ("/beta/items", 2, "beta"),
+            ("/items", 3, "public"),
+        ] {
+            Mock::given(method("GET"))
+                .and(path(request_path))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                    {"id": id, "label": label}
+                ])))
+                .mount(&server)
+                .await;
+        }
+        Mock::given(method("GET"))
+            .and(path("/alpha/items/42"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": 42,
+                "label": "alpha detail"
+            })))
+            .mount(&server)
+            .await;
+
+        let descriptor = self.temp_path().join("v4-catalog-openapi.yaml");
+        fs::write(
+            &descriptor,
+            format!(
+                r"
+openapi: 3.0.3
+info: {{title: V4 catalog fixture}}
+servers:
+  - url: {}
+paths:
+  /alpha/items:
+    get:
+      tags: [alpha]
+      operationId: alpha/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {{$ref: '#/components/schemas/item'}}
+  /beta/items:
+    get:
+      tags: [beta]
+      operationId: beta/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {{$ref: '#/components/schemas/item'}}
+  /items:
+    get:
+      operationId: public/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {{$ref: '#/components/schemas/item'}}
+  /alpha/items/{{id}}:
+    get:
+      tags: [alpha]
+      operationId: alpha/get
+      parameters:
+        - {{name: id, in: path, required: true, schema: {{type: string}}}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {{$ref: '#/components/schemas/item'}}
+components:
+  schemas:
+    item:
+      type: object
+      properties:
+        id: {{type: integer}}
+        label: {{type: string}}
+",
+                server.uri()
+            ),
+        )
+        .expect("write v4 OpenAPI catalog fixture");
+        self.import_source(
+            format!(
+                r"
+name: openapi_v4
+dsl_version: 4
+surface:
+  type: openapi
+  file: {}
+",
+                descriptor.display()
+            ),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await;
+        server
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "The test fixture keeps the MCP protocol exchange in one mock server."
+    )]
+    pub(crate) async fn import_v4_mcp_catalog_fixture(&self) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(|request: &wiremock::Request| {
+                let body: Value = request.body_json().expect("JSON-RPC request body");
+                let Some(method) = body.get("method").and_then(Value::as_str) else {
+                    return ResponseTemplate::new(400).set_body_string("missing JSON-RPC method");
+                };
+                match method {
+                    "initialize" => mcp_json_rpc_response(
+                        &body,
+                        &json!({
+                            "protocolVersion": "2025-06-18",
+                            "capabilities": {"tools": {}},
+                            "serverInfo": {"name": "v4-test-mcp", "version": "1.0.0"}
+                        }),
+                    ),
+                    "notifications/initialized" => ResponseTemplate::new(202),
+                    "tools/list" => mcp_json_rpc_response(
+                        &body,
+                        &json!({
+                            "tools": [
+                                {
+                                    "name": "list_items",
+                                    "description": "List items",
+                                    "inputSchema": {"type": "object", "properties": {}},
+                                    "outputSchema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "items": {
+                                                "type": "array",
+                                                "items": {
+                                                    "type": "object",
+                                                    "properties": {
+                                                        "id": {"type": "string"},
+                                                        "label": {"type": "string"}
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    },
+                                    "annotations": {"readOnlyHint": true}
+                                },
+                                {
+                                    "name": "get_item",
+                                    "description": "Get one item",
+                                    "inputSchema": {
+                                        "type": "object",
+                                        "properties": {"id": {"type": "string"}},
+                                        "required": ["id"]
+                                    },
+                                    "outputSchema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "id": {"type": "string"},
+                                            "label": {"type": "string"}
+                                        }
+                                    },
+                                    "annotations": {"readOnlyHint": true}
+                                }
+                            ]
+                        }),
+                    ),
+                    "tools/call" => {
+                        let name = body
+                            .pointer("/params/name")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default();
+                        let structured_content = match name {
+                            "list_items" => json!({
+                                "items": [{"id": "1", "label": "from MCP"}]
+                            }),
+                            "get_item" => json!({
+                                "id": body
+                                    .pointer("/params/arguments/id")
+                                    .cloned()
+                                    .unwrap_or(Value::Null),
+                                "label": "MCP detail"
+                            }),
+                            _ => {
+                                return ResponseTemplate::new(404)
+                                    .set_body_string(format!("unexpected MCP tool {name:?}"));
+                            }
+                        };
+                        mcp_json_rpc_response(
+                            &body,
+                            &json!({"structuredContent": structured_content}),
+                        )
+                    }
+                    _ => ResponseTemplate::new(404)
+                        .set_body_string(format!("unexpected MCP method {method:?}")),
+                }
+            })
+            .mount(&server)
+            .await;
+
+        self.import_source(
+            format!(
+                r#"
+name: mcp_v4
+dsl_version: 4
+surface:
+  type: mcp
+  server:
+    transport: streamable_http
+    url: "{}"
+"#,
+                server.uri()
+            ),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await;
+        server
+    }
+}
+
+fn mcp_json_rpc_response(body: &Value, result: &Value) -> ResponseTemplate {
+    ResponseTemplate::new(200)
+        .append_header("Content-Type", "application/json")
+        .set_body_json(json!({
+            "jsonrpc": "2.0",
+            "id": body.get("id").cloned().unwrap_or(Value::Null),
+            "result": result
+        }))
 }
 
 fn ensure_file_credentials_config(config_dir: &Path) {

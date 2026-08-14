@@ -197,7 +197,7 @@ impl CatalogServiceApi for CatalogService {
                 .list_columns(
                     &workspace_name,
                     ListColumnsQuery {
-                        table_ref: CatalogTableRef::new(catalog_name, schema_name, table_name),
+                        table_ref: CatalogTableRef::exact(catalog_name, schema_name, table_name),
                         pattern: request.pattern.as_deref(),
                         ignore_case: request.ignore_case,
                         required_only: request.required_only,

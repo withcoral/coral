@@ -1457,8 +1457,8 @@ secret has been configured.
 
 | Column | Description |
 | ------ | ----------- |
-| `schema_name` | Source schema that owns the input; empty for database sources |
-| `catalog_name` | SQL catalog that owns the input; empty for schema-addressed sources |
+| `schema_name` | Source schema that owns the input; empty for catalog-addressed sources |
+| `catalog_name` | SQL catalog that owns the input; empty for DSL v3 schema-addressed sources |
 | `key` | Input key from the manifest |
 | `kind` | `variable` or `secret` |
 | `value` | Variable value when available; `NULL` for secrets |
@@ -1468,7 +1468,7 @@ secret has been configured.
 | `is_set` | Whether Coral has a saved value for that input |
 
 Sources whose tables are addressed as `schema_name.table_name` populate
-`schema_name` and leave `catalog_name` empty. Database sources are addressed by
+`schema_name` and leave `catalog_name` empty. DSL v4 sources are addressed by
 catalog instead, so their input rows invert that: `schema_name` is empty and
 `catalog_name` carries the source name. Neither column is ever `NULL` — the
 absent side is the empty string, so match it with `= ''` rather than `IS NULL`.
@@ -1476,8 +1476,8 @@ A query that should cover either shape filters on both columns.
 
 The same pair appears on `coral.tables`, `coral.columns`, `coral.filters`, and
 `coral.table_functions`, with one difference: on those tables `schema_name` stays
-populated for database sources because it names the schema inside the database
-(such as `public`), while `catalog_name` names the source.
+populated for DSL v4 sources because it names the schema inside the source
+catalog, while `catalog_name` names the source.
 
 Example queries:
 

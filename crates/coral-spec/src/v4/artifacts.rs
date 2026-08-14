@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -8,7 +8,7 @@ use crate::v4::manifest::{SurfaceType, V4SourceManifest};
 use crate::v4::projections::ProjectionCatalog;
 use crate::v4::{
     OPERATION_METADATA_GENERATOR_VERSION, PROJECTION_GENERATOR_VERSION, SURFACE_IMPORTER_VERSION,
-    V4_ARTIFACT_SCHEMA_VERSION, ValidatedSurfacePlan,
+    V4_ARTIFACT_SCHEMA_VERSION, ValidatedSurfacePlan, operation_sql_schema_name,
 };
 use crate::{ManifestError, Result};
 
@@ -94,12 +94,24 @@ pub fn validate_materialized_source_structure(
             "DSL v4 materialized surface type does not match the manifest",
         ));
     }
+    let operation_schema_names = materialized
+        .surface
+        .plan
+        .semantic_ir()
+        .operations
+        .iter()
+        .map(|operation| (operation.id.as_str(), operation_sql_schema_name(operation)))
+        .collect::<HashMap<_, _>>();
     let mut projection_names = BTreeSet::new();
     for projection in &materialized.projections.projections {
-        if !projection_names.insert(projection.name.as_str()) {
+        let schema_name = operation_schema_names
+            .get(projection.operation_id.as_str())
+            .copied()
+            .unwrap_or("public");
+        if !projection_names.insert((schema_name, projection.name.as_str())) {
             return Err(ManifestError::validation(format!(
-                "DSL v4 projection '{}' is repeated",
-                projection.name
+                "DSL v4 projection '{}.{}' is repeated",
+                schema_name, projection.name
             )));
         }
         crate::validate_required_guide(
@@ -322,7 +334,10 @@ surface:
         let error = validate_materialized_source_structure(&manifest(), &materialized)
             .expect_err("duplicate projection names should fail validation");
 
-        assert_eq!(error.to_string(), "DSL v4 projection 'items' is repeated");
+        assert_eq!(
+            error.to_string(),
+            "DSL v4 projection 'public.items' is repeated"
+        );
     }
 
     #[test]

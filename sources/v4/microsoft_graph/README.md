@@ -112,7 +112,7 @@ SELECT
   chattype,
   lastupdateddatetime,
   weburl
-FROM microsoft_graph_v4.me_chat_me_listchats
+FROM microsoft_graph_v4.me_chat.me_listchats
 ORDER BY lastupdateddatetime DESC
 LIMIT 20;
 ```
@@ -129,7 +129,7 @@ SELECT
     '',
     'g'
   ) AS body
-FROM microsoft_graph_v4.chats_chatmessage_chats_listmessages(
+FROM microsoft_graph_v4.chats_chatmessage.chats_listmessages(
   chat_id => '19:example@thread.v2'
 )
 ORDER BY createddatetime DESC
@@ -140,7 +140,7 @@ List joined Teams:
 
 ```sql
 SELECT id, displayname, tenantid
-FROM microsoft_graph_v4.me_team_me_listjoinedteams
+FROM microsoft_graph_v4.me_team.me_listjoinedteams
 ORDER BY displayname;
 ```
 
@@ -149,7 +149,7 @@ Count the messages in a chat — the question that motivated following
 
 ```sql
 SELECT count(*) AS message_count
-FROM microsoft_graph_v4.chats_chatmessage_chats_listmessages(
+FROM microsoft_graph_v4.chats_chatmessage.chats_listmessages(
   chat_id => '19:example@thread.v2'
 );
 ```
@@ -157,9 +157,9 @@ FROM microsoft_graph_v4.chats_chatmessage_chats_listmessages(
 Find generated Teams/SharePoint table names:
 
 ```sql
-SELECT table_name, description
+SELECT catalog_name, schema_name, table_name, description
 FROM coral.tables
-WHERE schema_name = 'microsoft_graph_v4'
+WHERE catalog_name = 'microsoft_graph_v4'
   AND (
     table_name LIKE '%chat%'
     OR table_name LIKE '%team%'

@@ -268,6 +268,126 @@ async fn search_and_list_catalog_share_runtime_catalog_items() {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "This end-to-end test verifies identity, observation, search, and reinstall state together."
+)]
+async fn v4_search_keeps_complete_sql_identity_and_reinstall_clears_source_owned_state() {
+    let harness = GrpcHarness::new_with_observed_values_search().await;
+    let _server = harness.import_v4_openapi_catalog_fixture().await;
+
+    harness
+        .execute_sql_rows("SELECT label FROM openapi_v4.alpha.list")
+        .await;
+    harness
+        .execute_sql_rows("SELECT label FROM openapi_v4.beta.list")
+        .await;
+
+    let sqlite_path = harness
+        .config_dir()
+        .join("workspaces/default/search/search.sqlite3");
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let queued = rusqlite::Connection::open(&sqlite_path)
+                .ok()
+                .and_then(|connection| {
+                    connection
+                        .query_row("SELECT COUNT(*) FROM observed_queue_jobs", [], |row| {
+                            row.get::<_, i64>(0)
+                        })
+                        .ok()
+                })
+                .unwrap_or_default();
+            if queued >= 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("both v4 observations should reach the durable queue");
+
+    let list_results = search_results(&harness, &default_workspace(), "openapi_v4 list").await;
+    let list_identities = list_results
+        .iter()
+        .filter_map(|result| result.surface.as_ref())
+        .filter(|surface| surface.catalog_name == "openapi_v4" && surface.name == "list")
+        .map(|surface| surface.schema_name.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        list_identities,
+        std::collections::BTreeSet::from(["alpha", "beta", "public"])
+    );
+
+    for (value, schema_name) in [("alpha", "alpha"), ("beta", "beta")] {
+        let results = search_results(&harness, &default_workspace(), value).await;
+        let result = results
+            .iter()
+            .find(|result| {
+                result.surface.as_ref().is_some_and(|surface| {
+                    surface.catalog_name == "openapi_v4"
+                        && surface.schema_name == schema_name
+                        && surface.name == "list"
+                })
+            })
+            .expect("observed value should resolve to its complete v4 SQL identity");
+        assert!(
+            result
+                .providers
+                .contains(&(SearchProvider::ObservedValues as i32))
+        );
+    }
+
+    let function_results = search_results(&harness, &default_workspace(), "alpha get").await;
+    assert!(function_results.iter().any(|result| {
+        result.surface.as_ref().is_some_and(|surface| {
+            surface.catalog_name == "openapi_v4"
+                && surface.schema_name == "alpha"
+                && surface.name == "get"
+        })
+    }));
+
+    let connection = rusqlite::Connection::open(&sqlite_path).expect("open search SQLite");
+    let catalog_documents: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM catalog_documents WHERE workspace = 'default' AND catalog_name = 'openapi_v4'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count source-owned catalog documents");
+    let observed_values: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM observed_values WHERE workspace = 'default' AND source_name = 'openapi_v4'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count source-owned observed values");
+    assert!(catalog_documents > 0);
+    assert!(observed_values >= 2);
+    drop(connection);
+
+    let _replacement_server = harness.import_v4_openapi_catalog_fixture().await;
+
+    let connection = rusqlite::Connection::open(sqlite_path).expect("reopen search SQLite");
+    let catalog_documents: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM catalog_documents WHERE workspace = 'default' AND catalog_name = 'openapi_v4'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count catalog documents after reinstall");
+    let observed_values: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM observed_values WHERE workspace = 'default' AND source_name = 'openapi_v4'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count observed values after reinstall");
+    assert_eq!(catalog_documents, 0);
+    assert_eq!(observed_values, 0);
+}
+
+#[tokio::test]
 async fn search_and_list_catalog_share_installed_udf_metadata() {
     let harness = GrpcHarness::new().await;
     let workspace = default_workspace();
