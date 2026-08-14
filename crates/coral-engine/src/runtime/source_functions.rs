@@ -35,7 +35,7 @@ use datafusion::prelude::SessionContext;
 use crate::backends::shared::filter_expr::literal_to_string;
 use crate::backends::shared::scalar::timestamp_to_rfc3339;
 use crate::backends::{
-    BoundSourceFunctionArg, BoundSourceFunctionValue, RegisteredTableFunction,
+    BoundSourceFunctionArg, BoundSourceFunctionValue, RegisteredSource, RegisteredTableFunction,
     RegisteredTableFunctionArgument, SourceFunctionProviderFactory,
 };
 use crate::runtime::literal_scalar_value;
@@ -54,25 +54,29 @@ const SOURCE_FUNCTION_ANALYZER_RULE_NAME: &str = "coral_source_functions";
 #[derive(Debug)]
 pub(crate) struct SourceFunctionRegistry {
     functions: HashMap<ScopedTableFunctionName, SourceFunction>,
-    source_schemas: HashSet<String>,
+    source_qualifiers: HashSet<(String, String)>,
 }
 
 impl SourceFunctionRegistry {
-    pub(crate) fn new<'a>(
-        functions: impl IntoIterator<Item = &'a RegisteredTableFunction>,
-    ) -> Self {
-        let mut source_schemas = HashSet::new();
+    pub(crate) fn new(sources: &[RegisteredSource]) -> Self {
+        let mut source_qualifiers = HashSet::new();
         let mut functions_by_name = HashMap::new();
 
-        for function in functions {
-            let lookup_key = ScopedTableFunctionName::from_manifest(function);
-            source_schemas.insert(lookup_key.schema.clone());
-            functions_by_name.insert(lookup_key, SourceFunction::from_registered(function));
+        for source in sources {
+            let catalog = source.qualified_name.catalog_name();
+            for function in &source.table_functions {
+                let lookup_key = ScopedTableFunctionName::from_manifest(catalog, function);
+                source_qualifiers.insert((lookup_key.catalog.clone(), lookup_key.schema.clone()));
+                functions_by_name.insert(
+                    lookup_key.clone(),
+                    SourceFunction::from_registered(function, catalog),
+                );
+            }
         }
 
         Self {
             functions: functions_by_name,
-            source_schemas,
+            source_qualifiers,
         }
     }
 
@@ -124,16 +128,41 @@ impl SourceFunctionRegistry {
         self.functions.get(&call.lookup_key)
     }
 
-    fn owns_schema(&self, call: &ScopedTableFunctionCall) -> bool {
-        self.source_schemas.contains(&call.lookup_key.schema)
+    fn owns_qualifier(&self, call: &ScopedTableFunctionCall) -> bool {
+        self.source_qualifiers.contains(&(
+            call.lookup_key.catalog.clone(),
+            call.lookup_key.schema.clone(),
+        ))
     }
 
-    fn available_functions_hint(&self, schema: &str) -> String {
+    fn available_functions_hint(&self, catalog: &str, schema: &str) -> String {
         available_functions_hint(
+            catalog,
             schema,
             self.functions
                 .iter()
                 .map(|(key, function)| (key, function.display_name.as_str())),
+        )
+    }
+
+    fn canonical_catalog_hint(&self, call: &ScopedTableFunctionCall) -> String {
+        if call.lookup_key.catalog != crate::runtime::DATAFUSION_DEFAULT_CATALOG {
+            return String::new();
+        }
+        let mut matches = self.functions.iter().filter(|(key, _)| {
+            key.catalog != crate::runtime::DATAFUSION_DEFAULT_CATALOG
+                && key.schema == call.lookup_key.schema
+                && key.function == call.lookup_key.function
+        });
+        let Some((_, function)) = matches.next() else {
+            return String::new();
+        };
+        if matches.next().is_some() {
+            return String::new();
+        }
+        format!(
+            "; use the canonical function name {}",
+            function.display_name
         )
     }
 }
@@ -149,8 +178,13 @@ impl RelationPlanner for SourceFunctionRegistry {
         };
 
         let Some(function) = self.find(&call) else {
-            if self.owns_schema(&call) {
-                let hint = self.available_functions_hint(&call.lookup_key.schema);
+            let canonical_hint = self.canonical_catalog_hint(&call);
+            if !canonical_hint.is_empty() {
+                return Err(call.unknown_function_error("source table function", &canonical_hint));
+            }
+            if self.owns_qualifier(&call) {
+                let hint = self
+                    .available_functions_hint(&call.lookup_key.catalog, &call.lookup_key.schema);
                 return Err(call.unknown_function_error("source table function", &hint));
             }
             return Ok(original_relation(relation));
@@ -189,18 +223,36 @@ struct SourceFunction {
 }
 
 impl SourceFunction {
-    fn from_registered(function: &RegisteredTableFunction) -> Self {
+    fn from_registered(function: &RegisteredTableFunction, catalog: Option<&str>) -> Self {
         let arguments = function
             .arguments
             .iter()
             .map(SourceFunctionArgument::from_registered)
             .collect::<Vec<_>>();
+        let (display_name, table_reference) = if let Some(catalog) = catalog {
+            (
+                format!(
+                    "{catalog}.{}.{}",
+                    function.schema_name, function.function_name
+                ),
+                TableReference::full(
+                    catalog.to_string(),
+                    function.schema_name.clone(),
+                    function.function_name.clone(),
+                ),
+            )
+        } else {
+            (
+                qualified_name(&function.schema_name, &function.function_name),
+                TableReference::partial(
+                    function.schema_name.clone(),
+                    function.function_name.clone(),
+                ),
+            )
+        };
         Self {
-            display_name: qualified_name(&function.schema_name, &function.function_name),
-            table_reference: TableReference::partial(
-                function.schema_name.clone(),
-                function.function_name.clone(),
-            ),
+            display_name,
+            table_reference,
             arguments,
             factory: Arc::clone(&function.factory),
         }

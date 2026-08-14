@@ -132,6 +132,7 @@ impl CompiledBackendSource for HttpCompiledSource {
         for table in &self.manifest.tables {
             let provider: Arc<dyn TableProvider> = Arc::new(HttpSourceTableProvider::new(
                 backend.clone(),
+                self.source_input_resolution.source_name().to_string(),
                 self.manifest.common.name.clone(),
                 table.clone(),
                 Arc::clone(&self.source_observation_publishers),

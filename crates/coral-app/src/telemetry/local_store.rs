@@ -529,6 +529,9 @@ pub(crate) struct TraceQueryTableUsage {
 pub(crate) struct TraceQueryTableFunctionUsage {
     #[serde(rename = "source_name")]
     pub(crate) source: String,
+    /// Absent on spans recorded before function provenance carried the catalog.
+    #[serde(rename = "catalog_name", default)]
+    pub(crate) catalog: Option<String>,
     #[serde(rename = "schema_name")]
     pub(crate) schema: String,
     #[serde(rename = "function_name")]

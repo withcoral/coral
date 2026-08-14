@@ -54,6 +54,7 @@ impl UdfCallRegistry {
     ) -> Result<Self> {
         let source_function_schemas = source_functions
             .iter()
+            .filter(|function| function.catalog == crate::runtime::DATAFUSION_DEFAULT_CATALOG)
             .map(|function| function.schema.clone())
             .collect();
         let mut registry = Self {
@@ -107,7 +108,8 @@ impl UdfCallRegistry {
     }
 
     fn owns_udf_only_schema(&self, call: &ScopedTableFunctionCall) -> bool {
-        self.udf_schemas.contains(&call.lookup_key.schema)
+        call.lookup_key.catalog == crate::runtime::DATAFUSION_DEFAULT_CATALOG
+            && self.udf_schemas.contains(&call.lookup_key.schema)
             && !self
                 .source_function_schemas
                 .contains(&call.lookup_key.schema)
@@ -115,6 +117,7 @@ impl UdfCallRegistry {
 
     fn available_functions_hint(&self, schema: &str) -> String {
         available_functions_hint(
+            crate::runtime::DATAFUSION_DEFAULT_CATALOG,
             schema,
             self.functions
                 .iter()

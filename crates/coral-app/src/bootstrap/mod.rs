@@ -197,6 +197,7 @@ impl McpQueryTableUsage {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpQueryTableFunctionUsage {
     source: String,
+    catalog: Option<String>,
     schema: String,
     function: String,
 }
@@ -206,6 +207,12 @@ impl McpQueryTableFunctionUsage {
     #[must_use]
     pub fn source_name(&self) -> &str {
         &self.source
+    }
+
+    /// SQL catalog name used in the query, when explicitly qualified.
+    #[must_use]
+    pub fn catalog_name(&self) -> Option<&str> {
+        self.catalog.as_deref()
     }
 
     /// SQL schema name used in the query.
@@ -223,6 +230,7 @@ impl McpQueryTableFunctionUsage {
     fn from_trace(usage: TraceQueryTableFunctionUsage) -> Self {
         Self {
             source: usage.source,
+            catalog: usage.catalog,
             schema: usage.schema,
             function: usage.function,
         }
@@ -435,6 +443,7 @@ mod tests {
             table_functions: (0..table_function_count)
                 .map(|index| McpQueryTableFunctionUsage {
                     source: table_source.to_string(),
+                    catalog: None,
                     schema: "schema".to_string(),
                     function: format!("function_{index}"),
                 })

@@ -7,17 +7,44 @@ use coral_engine::{
     BoundRequestIdentityHttpAuthenticator, CoralQuery, QueryRuntimeConfig, QuerySource,
     RequestIdentityHttpAuthenticatorError, RequestIdentityHttpAuthenticatorFactory,
     RequestIdentitySelectionContext, RequestIdentitySelectionError, RequestIdentitySelector,
-    RuntimeSourceComponent, RuntimeSourcePackage, SelectedRequestIdentity,
+    RuntimeCatalogTarget, RuntimeSourceComponent, RuntimeSourcePackage, SelectedRequestIdentity,
 };
-use coral_spec::parse_source_manifest_yaml;
 use coral_spec::v4::{AcceptedIdentityRequirement, IdentityRequirements};
 use coral_spec::{FilterMode, FilterSpec, ManifestDataType};
+use coral_spec::{parse_source_manifest_value, parse_source_manifest_yaml};
 use reqwest::header::{HeaderName, HeaderValue};
 use serde_json::json;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::harness::{execution_to_rows, test_runtime};
+
+#[tokio::test]
+async fn source_without_runtime_components_registers_nothing() {
+    let source = QuerySource::from_runtime_components(
+        RuntimeSourcePackage {
+            source_name: "empty_v4".to_string(),
+            authored_version: None,
+            description: String::new(),
+            declared_inputs: Vec::new(),
+            test_queries: Vec::new(),
+            identity_requirements: None,
+            catalog_target: RuntimeCatalogTarget::Source,
+            components: Vec::new(),
+        },
+        BTreeMap::new(),
+        BTreeMap::new(),
+    )
+    .expect("empty runtime package");
+
+    let catalog = CoralQuery::list_catalog(&[source], test_runtime(), None, None)
+        .await
+        .expect("empty source should not fail runtime registration");
+
+    assert!(catalog.tables.iter().all(|table| {
+        table.catalog_name.as_deref() != Some("empty_v4") && table.schema_name != "empty_v4"
+    }));
+}
 
 #[tokio::test]
 async fn multi_component_source_executes_across_component_tables() {
@@ -47,6 +74,7 @@ async fn multi_component_source_executes_across_component_tables() {
             declared_inputs: Vec::new(),
             test_queries: Vec::new(),
             identity_requirements: None,
+            catalog_target: RuntimeCatalogTarget::Default,
             components: vec![
                 RuntimeSourceComponent::Http(issues),
                 RuntimeSourceComponent::Http(pulls),
@@ -77,6 +105,72 @@ async fn multi_component_source_executes_across_component_tables() {
 }
 
 #[tokio::test]
+async fn named_static_catalog_invokes_catalog_qualified_function() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/search/issues"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [{"title": "Flaky cleanup"}]
+        })))
+        .mount(&server)
+        .await;
+    let source = QuerySource::from_runtime_components(
+        RuntimeSourcePackage {
+            source_name: "github_v4".to_string(),
+            authored_version: None,
+            description: String::new(),
+            declared_inputs: Vec::new(),
+            test_queries: Vec::new(),
+            identity_requirements: None,
+            catalog_target: RuntimeCatalogTarget::Source,
+            components: vec![RuntimeSourceComponent::Http(http_function_component(
+                &server.uri(),
+                "issues",
+            ))],
+        },
+        BTreeMap::new(),
+        BTreeMap::new(),
+    )
+    .expect("runtime package");
+
+    let legacy_error = CoralQuery::execute_sql(
+        &[source.clone()],
+        test_runtime(),
+        "SELECT title FROM issues.search_issues(q => 'flaky')",
+    )
+    .await
+    .expect_err("the former two-part function name must not resolve");
+    assert!(
+        legacy_error
+            .to_string()
+            .contains("use the canonical function name github_v4.issues.search_issues"),
+        "unexpected error: {legacy_error}"
+    );
+
+    let execution = CoralQuery::execute_sql(
+        &[source],
+        test_runtime(),
+        "SELECT title FROM github_v4.issues.search_issues(q => 'flaky')",
+    )
+    .await
+    .expect("catalog-qualified function query");
+
+    assert_eq!(
+        execution_to_rows(&execution),
+        vec![json!({"title": "Flaky cleanup"})]
+    );
+    let usage = execution
+        .provenance()
+        .table_functions()
+        .first()
+        .expect("function provenance");
+    assert_eq!(usage.source_name(), "github_v4");
+    assert_eq!(usage.catalog_name(), Some("github_v4"));
+    assert_eq!(usage.schema_name(), "issues");
+    assert_eq!(usage.function_name(), "search_issues");
+}
+
+#[tokio::test]
 async fn composite_source_rejects_unsupported_lookup_key_component_backend() {
     let source = QuerySource::from_runtime_components(
         RuntimeSourcePackage {
@@ -86,6 +180,7 @@ async fn composite_source_rejects_unsupported_lookup_key_component_backend() {
             declared_inputs: Vec::new(),
             test_queries: Vec::new(),
             identity_requirements: None,
+            catalog_target: RuntimeCatalogTarget::Default,
             components: vec![RuntimeSourceComponent::File(
                 file_component_with_lookup_key_filter(),
             )],
@@ -108,7 +203,7 @@ async fn composite_source_rejects_unsupported_lookup_key_component_backend() {
 }
 
 #[tokio::test]
-async fn multi_component_source_can_register_multiple_schemas() {
+async fn named_static_catalog_executes_across_component_schemas() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/issues"))
@@ -129,12 +224,13 @@ async fn multi_component_source_can_register_multiple_schemas() {
     let pulls = http_component(&server.uri(), "github_mcp", "pulls", "/pulls");
     let source = QuerySource::from_runtime_components(
         RuntimeSourcePackage {
-            source_name: "github".to_string(),
+            source_name: "github_v4".to_string(),
             authored_version: None,
             description: "Composite GitHub runtime package".to_string(),
             declared_inputs: Vec::new(),
             test_queries: Vec::new(),
             identity_requirements: None,
+            catalog_target: RuntimeCatalogTarget::Source,
             components: vec![
                 RuntimeSourceComponent::Http(issues),
                 RuntimeSourceComponent::Http(pulls),
@@ -145,11 +241,25 @@ async fn multi_component_source_can_register_multiple_schemas() {
     )
     .expect("runtime package");
 
+    let legacy_error = CoralQuery::execute_sql(
+        &[source.clone()],
+        test_runtime(),
+        "SELECT id FROM github_rest.issues",
+    )
+    .await
+    .expect_err("the former two-part table name must not resolve");
+    assert!(
+        legacy_error
+            .to_string()
+            .contains("github_v4.github_rest.issues"),
+        "unexpected error: {legacy_error}"
+    );
+
     let rows = execution_to_rows(
         &CoralQuery::execute_sql(
             &[source],
             test_runtime(),
-            "SELECT 'issue' AS kind, id, title FROM github_rest.issues UNION ALL SELECT 'pull' AS kind, id, title FROM github_mcp.pulls ORDER BY kind",
+            "SELECT 'issue' AS kind, id, title FROM github_v4.github_rest.issues UNION ALL SELECT 'pull' AS kind, id, title FROM github_v4.github_mcp.pulls ORDER BY kind",
         )
         .await
         .expect("query should execute"),
@@ -165,6 +275,44 @@ async fn multi_component_source_can_register_multiple_schemas() {
 }
 
 #[tokio::test]
+async fn named_catalog_rejects_case_insensitive_relation_collisions() {
+    let source = QuerySource::from_runtime_components(
+        RuntimeSourcePackage {
+            source_name: "github_v4".to_string(),
+            authored_version: None,
+            description: String::new(),
+            declared_inputs: Vec::new(),
+            test_queries: Vec::new(),
+            identity_requirements: None,
+            catalog_target: RuntimeCatalogTarget::Source,
+            components: vec![
+                RuntimeSourceComponent::Http(http_component(
+                    "https://example.com",
+                    "issues",
+                    "Events",
+                    "/events",
+                )),
+                RuntimeSourceComponent::Http(http_component(
+                    "https://example.com",
+                    "ISSUES",
+                    "events",
+                    "/other-events",
+                )),
+            ],
+        },
+        BTreeMap::new(),
+        BTreeMap::new(),
+    )
+    .expect("runtime package");
+
+    let error = CoralQuery::validate_source(&source, test_runtime(), &[])
+        .await
+        .expect_err("case-insensitive duplicate relation");
+
+    assert!(error.to_string().contains("duplicate relation"), "{error}");
+}
+
+#[tokio::test]
 async fn selected_sources_reject_runtime_schema_collisions() {
     let server = MockServer::start().await;
     let first = QuerySource::from_runtime_components(
@@ -175,6 +323,7 @@ async fn selected_sources_reject_runtime_schema_collisions() {
             declared_inputs: Vec::new(),
             test_queries: Vec::new(),
             identity_requirements: None,
+            catalog_target: RuntimeCatalogTarget::Default,
             components: vec![RuntimeSourceComponent::Http(http_component(
                 &server.uri(),
                 "github_v4_rest",
@@ -194,6 +343,7 @@ async fn selected_sources_reject_runtime_schema_collisions() {
             declared_inputs: Vec::new(),
             test_queries: Vec::new(),
             identity_requirements: None,
+            catalog_target: RuntimeCatalogTarget::Default,
             components: vec![RuntimeSourceComponent::Http(http_component(
                 &server.uri(),
                 "github_v4_rest",
@@ -231,6 +381,7 @@ async fn validate_source_reports_only_component_schemas_for_multi_schema_source(
             declared_inputs: Vec::new(),
             test_queries: Vec::new(),
             identity_requirements: None,
+            catalog_target: RuntimeCatalogTarget::Default,
             components: vec![
                 RuntimeSourceComponent::Http(issues),
                 RuntimeSourceComponent::Http(pulls),
@@ -444,6 +595,43 @@ tables:
     manifest.as_http().expect("http manifest").clone()
 }
 
+fn http_function_component(
+    base_url: &str,
+    schema_name: &str,
+) -> coral_spec::backends::http::HttpSourceManifest {
+    let manifest = parse_source_manifest_value(json!({
+        "name": schema_name,
+        "version": "1.0.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": base_url,
+        "functions": [{
+            "name": "search_issues",
+            "kind": "search",
+            "description": "Search issues",
+            "search_limits": {
+                "default_top_k": 10,
+                "max_top_k": 100,
+                "max_calls_per_query": 1
+            },
+            "args": [{
+                "name": "q",
+                "required": true,
+                "bind": { "arg": "q" }
+            }],
+            "request": {
+                "method": "GET",
+                "path": "/api/search/issues",
+                "query": [{ "name": "q", "from": "arg", "key": "q" }]
+            },
+            "response": { "rows_path": ["items"] },
+            "columns": [{ "name": "title", "type": "Utf8" }]
+        }]
+    }))
+    .expect("function manifest");
+    manifest.as_http().expect("HTTP manifest").clone()
+}
+
 fn identity_http_component() -> coral_spec::backends::http::HttpSourceManifest {
     let mut manifest = http_component(
         "https://api.example.com",
@@ -472,6 +660,7 @@ fn identity_runtime_source_with_components(
             declared_inputs: Vec::new(),
             test_queries: Vec::new(),
             identity_requirements: Some(identity_requirements()),
+            catalog_target: RuntimeCatalogTarget::Default,
             components: components
                 .into_iter()
                 .map(RuntimeSourceComponent::Http)
