@@ -47,13 +47,6 @@ pub(in crate::state::db) enum TaskQueryRelations {
     RelationName,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "The user directory repository is not yet wired to production consumers."
-    )
-)]
 #[derive(Iden)]
 pub(in crate::state::db) enum Users {
     Table,

@@ -4,14 +4,6 @@
 //! login and rewrites that caller's pre-v1 task attribution in the same
 //! transaction; it never creates, selects, or grants access to a workspace.
 
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "login provisioning is wired to the OIDC callback in a later stack PR"
-    )
-)]
-
 use super::repositories::users::{UpsertLoginOutcome, UserRecord};
 use super::{CoralDb, DbError, DbRepos};
 

@@ -166,13 +166,6 @@ impl TasksRepo<'_, CoralTx<'_>> {
     /// attribution migration, so it must never consult a user, membership,
     /// workspace, or permission, and it deliberately spans every workspace the
     /// pre-v1 identity wrote in.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "login provisioning is wired to the OIDC callback in a later stack PR"
-        )
-    )]
     pub(in crate::state::db) async fn reattribute_pre_v1_creator(
         &mut self,
         pre_v1_principal_id: &str,

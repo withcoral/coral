@@ -35,8 +35,4 @@ pub(crate) use task_query_state::{TaskQueryRelationWrite, TaskQueryWrite, TaskQu
 pub(crate) use task_state::TaskMutationBarrier;
 pub(crate) use task_state::{TaskCreation, TaskCreationResult};
 pub(crate) use transaction::CoralTx;
-#[expect(
-    unused_imports,
-    reason = "login provisioning is wired to the OIDC callback in a later stack PR"
-)]
 pub(crate) use user_state::{LoginIdentity, LoginProvisioning};

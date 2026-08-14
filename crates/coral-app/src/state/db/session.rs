@@ -68,10 +68,6 @@ pub(crate) trait DbRepos: DbSession + Sized {
         TraceSearchResponsesRepo::new(self)
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "login provisioning wires the user directory")
-    )]
     fn users(&mut self) -> UsersRepo<'_, Self> {
         UsersRepo::new(self)
     }

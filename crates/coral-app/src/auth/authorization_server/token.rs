@@ -381,6 +381,7 @@ redirect_uri = "{AUTH_ISSUER}/auth/oidc/callback"
             provider_client: OidcProviderClient::new().expect("client"),
             authorization_resources,
             client_metadata_resolver,
+            database: None,
         };
         (state, store, session_tokens)
     }

@@ -20,10 +20,6 @@ const MAX_DISPLAY_NAME_BYTES: usize = 255;
 /// configured projection of the same token: it is carried only so login
 /// provisioning can recompute the pre-v1 task-attribution digest, and it is
 /// deliberately not derived from — nor allowed to stand in for — the subject.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "consumed by OAuth callback descendants")
-)]
 pub(super) struct ValidatedOidcIdentity {
     /// Issuer the ID token's signature and `iss` claim were verified against.
     pub(super) issuer: String,
