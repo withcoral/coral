@@ -16,8 +16,8 @@ use super::model::{IdentityName, IdentityOwner, IdentitySpecReference};
 use crate::bootstrap::AppError;
 use crate::credentials::CredentialsError;
 use crate::credentials::encryption::{
-    CredentialKeyProvider, ENVELOPE_DOCUMENT_ALGORITHM, EnvelopeContext, open_envelope_document,
-    rewrap_envelope_document, seal_envelope_document,
+    CredentialEncryptionKey, CredentialKeyProvider, ENVELOPE_DOCUMENT_ALGORITHM, EnvelopeContext,
+    open_envelope_document, rewrap_envelope_document, seal_envelope_document,
 };
 use crate::encrypted_document::EncryptedEnvelopeDocument;
 
@@ -82,13 +82,16 @@ pub(super) fn encrypt_identity_document(
 }
 
 /// Decrypt identity setup values for the exact authenticated identity metadata.
+///
+/// Takes the stored KEK the document names, so reading identity material can neither
+/// create nor rotate key material.
 pub(super) fn decrypt_identity_document(
     binding: &IdentityDocumentBinding<'_>,
     document: &EncryptedEnvelopeDocument,
-    key_provider: &dyn CredentialKeyProvider,
+    kek: &CredentialEncryptionKey,
 ) -> Result<BTreeMap<String, String>, CredentialsError> {
     let context = identity_document_context(document.binding_version, binding)?;
-    let plaintext = open_envelope_document(&context, document, key_provider)?;
+    let plaintext = open_envelope_document(&context, document, kek)?;
     let decoded: DecryptedIdentityDocument = serde_json::from_slice(&plaintext)
         .map_err(|error| CredentialsError::Parse(error.to_string()))?;
     if decoded.version != IDENTITY_DOCUMENT_VERSION {
@@ -231,14 +234,14 @@ mod tests {
         for (wrong_owner, wrong_name, wrong_reference) in wrong_cases {
             let wrong_binding = document_binding(wrong_owner, wrong_name, wrong_reference);
             assert_open_failed(
-                &decrypt_identity_document(&wrong_binding, &encrypted, &provider)
+                &decrypt_with_provider(&wrong_binding, &encrypted, &provider)
                     .expect_err("changed identity binding must fail"),
             );
         }
 
         let mut unsupported = encrypted;
         unsupported.binding_version += 1;
-        let error = decrypt_identity_document(&binding, &unsupported, &provider)
+        let error = decrypt_with_provider(&binding, &unsupported, &provider)
             .expect_err("unknown binding version must fail");
         assert!(
             error
@@ -271,7 +274,7 @@ mod tests {
         let split_reference = global_reference(&split_owner, "github", FINGERPRINT);
         let split_binding = document_binding(&split_owner, &split_name, &split_reference);
         assert_open_failed(
-            &decrypt_identity_document(&split_binding, &encrypted, &provider)
+            &decrypt_with_provider(&split_binding, &encrypted, &provider)
                 .expect_err("colon-equivalent fields must not share a binding"),
         );
     }
@@ -292,7 +295,7 @@ mod tests {
             .expect("spec encryption");
         let identity = encrypt(&binding, &values, &provider);
 
-        let credential_error = decrypt_identity_document(&binding, &credential, &provider)
+        let credential_error = decrypt_with_provider(&binding, &credential, &provider)
             .expect_err("credential must not open as identity material");
         assert!(
             credential_error
@@ -301,15 +304,15 @@ mod tests {
             "unexpected error: {credential_error}"
         );
         assert_open_failed(
-            &decrypt_identity_document(&binding, &spec, &provider)
+            &decrypt_with_provider(&binding, &spec, &provider)
                 .expect_err("spec material must not open as identity material"),
         );
         assert_open_failed(
-            &decrypt_credential_values(&workspace, &source, &identity, &provider)
+            &decrypt_credential_values(&workspace, &source, &identity, &provider.0)
                 .expect_err("identity material must not open as credentials"),
         );
         assert_open_failed(
-            &decrypt_identity_spec_document(reference.key(), &identity, &provider)
+            &decrypt_identity_spec_document(reference.key(), &identity, &provider.0)
                 .expect_err("identity material must not open as spec material"),
         );
     }
@@ -337,7 +340,7 @@ mod tests {
         )
         .expect("legacy seal");
         assert_open_failed(
-            &decrypt_identity_document(&binding, &legacy, &provider)
+            &decrypt_with_provider(&binding, &legacy, &provider)
                 .expect_err("legacy owner/name-only AAD must fail"),
         );
 
@@ -348,7 +351,7 @@ mod tests {
             &provider,
         );
         assert!(
-            decrypt_identity_document(&binding, &unknown, &provider)
+            decrypt_with_provider(&binding, &unknown, &provider)
                 .expect_err("unknown version must fail")
                 .to_string()
                 .contains("identity document version 2")
@@ -364,7 +367,7 @@ mod tests {
         ] {
             let invalid = seal_plaintext(&binding, plaintext, &provider);
             assert!(matches!(
-                decrypt_identity_document(&binding, &invalid, &provider),
+                decrypt_with_provider(&binding, &invalid, &provider),
                 Err(CredentialsError::Parse(_))
             ));
         }
@@ -372,7 +375,7 @@ mod tests {
         let mut tampered = encrypt(&binding, &secret_values(), &provider);
         *tampered.ciphertext.first_mut().expect("ciphertext") ^= 1;
         assert_open_failed(
-            &decrypt_identity_document(&binding, &tampered, &provider)
+            &decrypt_with_provider(&binding, &tampered, &provider)
                 .expect_err("tampered ciphertext must fail"),
         );
     }
@@ -440,8 +443,8 @@ mod tests {
                 .any(|window| window == marker.as_bytes())
         );
         *encrypted.ciphertext.first_mut().expect("ciphertext") ^= 1;
-        let error = decrypt_identity_document(&binding, &encrypted, &provider)
-            .expect_err("tampered document");
+        let error =
+            decrypt_with_provider(&binding, &encrypted, &provider).expect_err("tampered document");
         assert!(!error.to_string().contains(marker));
         assert!(!format!("{error:?}").contains(marker));
     }
@@ -527,7 +530,17 @@ mod tests {
         document: &EncryptedEnvelopeDocument,
         provider: &dyn CredentialKeyProvider,
     ) -> BTreeMap<String, String> {
-        decrypt_identity_document(binding, document, provider).expect("identity decryption")
+        decrypt_with_provider(binding, document, provider).expect("identity decryption")
+    }
+
+    /// Resolve the KEK a document names, then decrypt with it.
+    fn decrypt_with_provider(
+        binding: &IdentityDocumentBinding<'_>,
+        document: &EncryptedEnvelopeDocument,
+        provider: &dyn CredentialKeyProvider,
+    ) -> Result<BTreeMap<String, String>, CredentialsError> {
+        let kek = provider.key(&document.key_id)?;
+        decrypt_identity_document(binding, document, &kek)
     }
 
     fn seal_plaintext(
