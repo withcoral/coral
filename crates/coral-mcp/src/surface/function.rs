@@ -225,7 +225,7 @@ select cast($owner as VARCHAR) as owner
         let function = parse_function_artifact(&artifact).expect("rendered artifact should parse");
 
         assert_eq!(function.name(), "open_prs");
-        assert_eq!(function.schema(), "functions");
+        assert_eq!(function.group(), "functions");
         assert_eq!(function.description(), description);
         let FunctionImplementationSpec::CoralSql(implementation) = function.implementation() else {
             panic!("MCP artifact should produce a Coral SQL implementation");

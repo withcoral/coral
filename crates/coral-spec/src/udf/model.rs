@@ -110,12 +110,6 @@ impl FunctionSpec {
         &self.group
     }
 
-    /// Returns the compatibility SQL schema derived from the generic group.
-    #[must_use]
-    pub fn schema(&self) -> &str {
-        self.group()
-    }
-
     /// Returns the user-facing function description.
     #[must_use]
     pub fn description(&self) -> &str {

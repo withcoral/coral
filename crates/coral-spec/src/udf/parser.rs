@@ -167,7 +167,6 @@ export async function run(owner: string): Promise<string> {
 
         assert_eq!(function.name(), "github_review_queue");
         assert_eq!(function.group(), "functions");
-        assert_eq!(function.schema(), "functions");
         assert_eq!(
             function.guide(),
             "Use this function for review queue lookups."
