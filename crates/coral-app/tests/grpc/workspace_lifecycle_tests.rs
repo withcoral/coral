@@ -21,23 +21,15 @@ fn workspace(name: &str) -> Workspace {
 }
 
 async fn workspace_names(harness: &GrpcHarness) -> Vec<String> {
-    let response = harness
+    harness
         .workspace_client()
         .list_workspaces(Request::new(ListWorkspacesRequest {}))
         .await
         .expect("list workspaces")
-        .into_inner();
-    assert_eq!(
-        response.workspaces,
-        response
-            .memberships
-            .iter()
-            .filter_map(|membership| membership.workspace.clone())
-            .collect::<Vec<_>>()
-    );
-    response
-        .workspaces
+        .into_inner()
+        .memberships
         .into_iter()
+        .map(|membership| membership.workspace.expect("membership workspace"))
         .map(|workspace| workspace.name)
         .collect()
 }
