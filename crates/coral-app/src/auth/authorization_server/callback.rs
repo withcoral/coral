@@ -5,10 +5,12 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ring::rand::{SecureRandom as _, SystemRandom};
 use zeroize::Zeroizing;
 
+use super::super::id_token::ValidatedOidcIdentity;
 use super::super::state_store::{OAuthAuthorizationCodeRecord, OAuthAuthorizationSessionRecord};
 use super::AuthorizationServerHttpState;
 use super::query;
 use super::response::{TrustedRedirect, direct_error};
+use crate::state::db::{CoralDb, LoginIdentity, LoginProvisioning, now_unix_nanos_i64};
 
 pub(super) async fn oidc_callback(
     State(state): State<AuthorizationServerHttpState>,
@@ -68,14 +70,16 @@ pub(super) async fn oidc_callback(
             return trusted.error("server_error", "authorization failed");
         }
     };
+    let user_id = match provision(state.database.as_deref(), &identity).await {
+        Ok(user_id) => user_id,
+        Err(outcome) => return outcome.into_error(&trusted),
+    };
     let Ok(authorization_code) = random_code() else {
         tracing::warn!("OIDC callback could not generate an authorization code");
         return trusted.error("server_error", "authorization failed");
     };
     let authorization = OAuthAuthorizationCodeRecord {
-        // Still the configured principal claim, not yet an internal `user_id`:
-        // login provisioning is wired into this callback in a later stack PR.
-        user_id: identity.principal_claim,
+        user_id,
         client_id: session.client_id,
         redirect_uri: session.redirect_uri,
         code_challenge: session.code_challenge,
@@ -90,6 +94,79 @@ pub(super) async fn oidc_callback(
         return trusted.error("server_error", "authorization failed");
     }
     trusted.success(&authorization_code)
+}
+
+/// Guidance for the operator whose directory already binds this subject.
+///
+/// A subject arriving under a second issuer is a directory question, not
+/// something the client or the person signing in can retry their way out of, so
+/// the description names the one action that resolves it.
+const ISSUER_MISMATCH_DESCRIPTION: &str = "this account is already registered under a different \
+     identity provider; ask your Coral operator to reconcile the user directory";
+
+/// Why a verified login could not be turned into an internal `user_id`.
+enum ProvisioningFailure {
+    /// The subject is already bound to a different issuer.
+    IssuerMismatch,
+    /// Coral could not record the login at all.
+    Unavailable,
+}
+
+impl ProvisioningFailure {
+    fn into_error(self, trusted: &TrustedRedirect) -> Response {
+        match self {
+            Self::IssuerMismatch => trusted.error("access_denied", ISSUER_MISMATCH_DESCRIPTION),
+            Self::Unavailable => trusted.error("server_error", "authorization failed"),
+        }
+    }
+}
+
+/// Records the verified login and returns the internal `user_id` a stored
+/// authorization code may name.
+///
+/// This is the boundary the upstream identity stops at: issuer, subject, and
+/// display name reach the user directory and go no further, so the record a
+/// client redeems — and every token and principal id minted from it — carries
+/// only Coral's own identifier. A login that cannot be recorded issues no code.
+async fn provision(
+    database: Option<&CoralDb>,
+    identity: &ValidatedOidcIdentity,
+) -> Result<String, ProvisioningFailure> {
+    let Some(database) = database else {
+        tracing::warn!("OIDC callback has no database to provision a verified login into");
+        return Err(ProvisioningFailure::Unavailable);
+    };
+    let Ok(now_unix_nanos) = now_unix_nanos_i64() else {
+        tracing::warn!("OIDC callback could not read the system clock");
+        return Err(ProvisioningFailure::Unavailable);
+    };
+    let provisioning = database
+        .user_state()
+        .provision_login(LoginIdentity {
+            issuer: &identity.issuer,
+            subject: &identity.subject,
+            display_name: identity.display_name.as_deref(),
+            principal_claim: &identity.principal_claim,
+            now_unix_nanos,
+        })
+        .await;
+    match provisioning {
+        Ok(LoginProvisioning::Provisioned(user)) => Ok(user.user_id),
+        Ok(LoginProvisioning::IssuerMismatch { stored_issuer }) => {
+            // The bound issuer identifies an upstream deployment, so it stays at
+            // `debug`; the guidance an operator reads carries no upstream value.
+            tracing::debug!(%stored_issuer, "OIDC login subject is bound to another issuer");
+            tracing::warn!(
+                "OIDC callback refused a login whose subject is already bound to a different \
+                 provider issuer; reconcile that user directory row before this login can succeed"
+            );
+            Err(ProvisioningFailure::IssuerMismatch)
+        }
+        Err(error) => {
+            tracing::warn!(%error, "OIDC callback could not provision the verified login");
+            Err(ProvisioningFailure::Unavailable)
+        }
+    }
 }
 
 #[derive(Default)]
@@ -164,6 +241,8 @@ mod tests {
     use ring::rand::SystemRandom;
     use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair};
     use serde_json::{Value, json};
+    use tempfile::TempDir;
+    use tracing_subscriber::layer::SubscriberExt as _;
     use url::{Url, form_urlencoded};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -178,6 +257,7 @@ mod tests {
     use crate::auth::provider_client::OidcProviderClient;
     use crate::auth::session::SessionTokenIssuer;
     use crate::auth::state_store::{CodeStore, InMemoryStateStore, SessionStore, StateStoreError};
+    use crate::state::db::{DbRepos, ResolvedDatabaseConfig};
 
     const OIDC_STATE: &str = "oidc-state";
     const CLIENT_STATE: &str = "client&error=injected";
@@ -188,6 +268,8 @@ mod tests {
     const PROVIDER_SECRET: &str = "provider-secret-must-not-leak";
     const AUTH_ISSUER: &str = "https://auth.example.test";
     const RESOURCE: &str = "https://api.example.test/mcp";
+    const UPSTREAM_SUBJECT: &str = "raw-principal";
+    const BOUND_ISSUER: &str = "https://already.bound.example.test";
 
     fn settings(issuer: &str) -> ResolvedAuthSettings {
         let settings = AuthSettings::from_toml(&format!(
@@ -239,7 +321,81 @@ mod tests {
             provider_client: OidcProviderClient::new().expect("client"),
             authorization_resources,
             client_metadata_resolver,
+            database: None,
         }
+    }
+
+    fn state_with(
+        issuer: &str,
+        store: Arc<InMemoryStateStore>,
+        database: Arc<CoralDb>,
+    ) -> AuthorizationServerHttpState {
+        let mut state = state(issuer, store);
+        state.database = Some(database);
+        state
+    }
+
+    /// Opens the private `SQLite` database a callback provisions logins into.
+    async fn database() -> (Arc<CoralDb>, TempDir) {
+        let (database, temp) = unmigrated_database().await;
+        database.migrate().await.expect("migrate sqlite");
+        (database, temp)
+    }
+
+    /// The same database with no schema, standing in for one Coral cannot write.
+    async fn unmigrated_database() -> (Arc<CoralDb>, TempDir) {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let database = CoralDb::open(ResolvedDatabaseConfig::Sqlite {
+            path: temp.path().join("coral.sqlite"),
+        })
+        .await
+        .expect("open sqlite");
+        (Arc::new(database), temp)
+    }
+
+    /// The user directory as `(user_id, subject)` pairs.
+    async fn directory(database: &CoralDb) -> Vec<(String, String)> {
+        let mut session = database;
+        session
+            .users()
+            .list()
+            .await
+            .expect("list users")
+            .into_iter()
+            .map(|user| (user.user_id, user.subject))
+            .collect()
+    }
+
+    async fn workspace_count(database: &CoralDb) -> usize {
+        let mut session = database;
+        session
+            .workspaces()
+            .list()
+            .await
+            .expect("list workspaces")
+            .len()
+    }
+
+    /// Redeems the code a successful callback returned and reports the identity
+    /// the authorization record binds it to.
+    async fn stored_user_id(store: &dyn CodeStore, response: &Response) -> String {
+        let code = redirect_query(response)
+            .into_iter()
+            .find(|(key, _value)| key == "code")
+            .expect("authorization code")
+            .1;
+        store
+            .take_authorization_code_for_request(
+                &code,
+                &session().client_id,
+                REDIRECT_URI,
+                &session().code_challenge,
+                RESOURCE,
+            )
+            .await
+            .expect("store")
+            .expect("authorization")
+            .user_id
     }
 
     fn session() -> OAuthAuthorizationSessionRecord {
@@ -303,7 +459,7 @@ mod tests {
         let mut claims = id_token_claims();
         set_claim(&mut claims, "iss", Value::String(server.uri()));
         set_claim(&mut claims, "nonce", Value::String(nonce.into()));
-        set_claim(&mut claims, "sub", Value::String("raw-principal".into()));
+        set_claim(&mut claims, "sub", Value::String(UPSTREAM_SUBJECT.into()));
         let discovery = json!({
             "issuer": server.uri(),
             "authorization_endpoint": format!("{}/authorize", server.uri()),
@@ -410,12 +566,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn success_is_single_use_and_stores_raw_identity_with_bindings() {
+    async fn success_is_single_use_and_stores_the_internal_identity_with_bindings() {
         let server = MockServer::start().await;
         mount_provider(&server, 200, 200, NONCE).await;
         let store = Arc::new(InMemoryStateStore::new());
+        let (db, _temp) = database().await;
         seed(store.as_ref(), OIDC_STATE).await;
-        let app = state(&server.uri(), store.clone());
+        let app = state_with(&server.uri(), store.clone(), db.clone());
         let raw = query(&[("state", OIDC_STATE), ("code", PROVIDER_CODE)]);
         let (first, second) = tokio::join!(
             callback_raw(app.clone(), raw.clone()),
@@ -450,7 +607,11 @@ mod tests {
             .await
             .expect("store")
             .expect("authorization");
-        assert_eq!(authorization.user_id, "raw-principal");
+        assert_eq!(
+            directory(db.as_ref()).await,
+            vec![(authorization.user_id.clone(), UPSTREAM_SUBJECT.to_string())],
+            "the stored code must name the provisioned user id, never the upstream subject"
+        );
         assert_eq!(authorization.resource, RESOURCE);
         let requests = server.received_requests().await.expect("requests");
         let token_requests = requests
@@ -469,8 +630,185 @@ mod tests {
         let location = success.headers()[header::LOCATION]
             .to_str()
             .expect("location");
-        for secret in [VERIFIER, PROVIDER_SECRET, PROVIDER_CODE] {
+        for secret in [VERIFIER, PROVIDER_SECRET, PROVIDER_CODE, UPSTREAM_SUBJECT] {
             assert!(!location.contains(secret));
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_logins_for_one_subject_converge_on_one_user() {
+        let server = MockServer::start().await;
+        mount_provider(&server, 200, 200, NONCE).await;
+        let store = Arc::new(InMemoryStateStore::new());
+        let (db, _temp) = database().await;
+        seed(store.as_ref(), "state-one").await;
+        seed(store.as_ref(), "state-two").await;
+        let app = state_with(&server.uri(), store.clone(), db.clone());
+
+        let (first, second) = tokio::join!(
+            callback_raw(
+                app.clone(),
+                query(&[("state", "state-one"), ("code", PROVIDER_CODE)])
+            ),
+            callback_raw(
+                app,
+                query(&[("state", "state-two"), ("code", PROVIDER_CODE)])
+            ),
+        );
+
+        assert_eq!(first.status(), StatusCode::FOUND);
+        assert_eq!(second.status(), StatusCode::FOUND);
+        let first_user = stored_user_id(store.as_ref(), &first).await;
+        let second_user = stored_user_id(store.as_ref(), &second).await;
+        assert_eq!(first_user, second_user);
+        assert_eq!(
+            directory(db.as_ref()).await,
+            vec![(first_user, UPSTREAM_SUBJECT.to_string())],
+            "one subject must converge on one directory row"
+        );
+        assert_eq!(
+            workspace_count(db.as_ref()).await,
+            0,
+            "signing in must not create a workspace"
+        );
+    }
+
+    #[tokio::test]
+    async fn issuer_mismatch_fails_login_without_logging_the_upstream_identity() {
+        let server = MockServer::start().await;
+        mount_provider(&server, 200, 200, NONCE).await;
+        let store = Arc::new(InMemoryStateStore::new());
+        let (db, _temp) = database().await;
+        db.user_state()
+            .provision_login(LoginIdentity {
+                issuer: BOUND_ISSUER,
+                subject: UPSTREAM_SUBJECT,
+                display_name: None,
+                principal_claim: "unrelated-claim",
+                now_unix_nanos: 1,
+            })
+            .await
+            .expect("seed the directory");
+        seed(store.as_ref(), OIDC_STATE).await;
+        let mut app = state_with(&server.uri(), store, db.clone());
+        app.code_store = Arc::new(RejectCodeStore);
+
+        let logs = CapturedLogs::default();
+        let response = {
+            let _guard = tracing::subscriber::set_default(
+                tracing_subscriber::Registry::default().with(logs.clone()),
+            );
+            callback(app, &[("state", OIDC_STATE), ("code", PROVIDER_CODE)]).await
+        };
+
+        let values = redirect_query(&response);
+        assert!(values.contains(&("error".into(), "access_denied".into())));
+        assert!(values.contains(&(
+            "error_description".into(),
+            ISSUER_MISMATCH_DESCRIPTION.into()
+        )));
+        assert!(!values.iter().any(|(key, _value)| key == "code"));
+        assert_security(&response);
+        assert_eq!(
+            directory(db.as_ref()).await.len(),
+            1,
+            "a refused login must not mint a second directory row"
+        );
+
+        let captured = logs.captured();
+        assert!(
+            captured.contains("reconcile"),
+            "an operator must be told how to resolve the binding: {captured}"
+        );
+        for upstream in [BOUND_ISSUER, UPSTREAM_SUBJECT, server.uri().as_str()] {
+            assert!(
+                !captured.contains(upstream),
+                "upstream identity must stay below info level: {captured}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn logins_that_cannot_be_provisioned_issue_no_code() {
+        let server = MockServer::start().await;
+        mount_provider(&server, 200, 200, NONCE).await;
+        let (unmigrated, _temp) = unmigrated_database().await;
+        for database in [None, Some(unmigrated)] {
+            let store = Arc::new(InMemoryStateStore::new());
+            seed(store.as_ref(), OIDC_STATE).await;
+            let mut app = state(&server.uri(), store);
+            app.database = database;
+            app.code_store = Arc::new(RejectCodeStore);
+
+            let response = callback(app, &[("state", OIDC_STATE), ("code", PROVIDER_CODE)]).await;
+
+            let values = redirect_query(&response);
+            assert!(values.contains(&("error".into(), "server_error".into())));
+            assert!(!values.iter().any(|(key, _value)| key == "code"));
+            assert_security(&response);
+        }
+    }
+
+    /// Records events at `info` and above, so a test can prove what a failing
+    /// login did *not* put in an operator's logs.
+    #[derive(Clone, Default)]
+    struct CapturedLogs(Arc<std::sync::Mutex<String>>);
+
+    impl CapturedLogs {
+        fn captured(&self) -> String {
+            self.0.lock().expect("captured logs").clone()
+        }
+    }
+
+    impl<S> tracing_subscriber::Layer<S> for CapturedLogs
+    where
+        S: tracing::Subscriber,
+    {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _context: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            // `Level` orders by verbosity, so `info` and above compare as `<=`.
+            if *event.metadata().level() > tracing::Level::INFO {
+                return;
+            }
+            let mut captured = self.0.lock().expect("captured logs");
+            event.record(&mut FieldRecorder(&mut captured));
+        }
+    }
+
+    struct FieldRecorder<'a>(&'a mut String);
+
+    impl tracing::field::Visit for FieldRecorder<'_> {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            use std::fmt::Write as _;
+            let _result = write!(self.0, " {field}={value:?}");
+        }
+    }
+
+    /// Code store that fails the test if an unprovisioned login reaches storage.
+    struct RejectCodeStore;
+
+    #[async_trait::async_trait]
+    impl CodeStore for RejectCodeStore {
+        async fn store_authorization_code(
+            &self,
+            _code: &str,
+            _authorization: OAuthAuthorizationCodeRecord,
+        ) -> Result<(), StateStoreError> {
+            unreachable!("a login that was not provisioned must not store an authorization code")
+        }
+
+        async fn take_authorization_code_for_request(
+            &self,
+            _code: &str,
+            _client_id: &str,
+            _redirect_uri: &str,
+            _challenge: &str,
+            _resource: &str,
+        ) -> Result<Option<OAuthAuthorizationCodeRecord>, StateStoreError> {
+            unreachable!("the OIDC callback issues authorization codes, it never redeems them")
         }
     }
 
@@ -538,8 +876,9 @@ mod tests {
         let server = MockServer::start().await;
         mount_provider(&server, 200, 200, NONCE).await;
         let store = Arc::new(InMemoryStateStore::new());
+        let (db, _temp) = database().await;
         seed(store.as_ref(), OIDC_STATE).await;
-        let mut state = state(&server.uri(), store);
+        let mut state = state_with(&server.uri(), store, db);
         state.code_store = Arc::new(FailCodeStore);
         let response = callback(state, &[("state", OIDC_STATE), ("code", PROVIDER_CODE)]).await;
         let values = redirect_query(&response);

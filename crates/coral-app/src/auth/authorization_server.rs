@@ -13,6 +13,7 @@ use super::provider_client::OidcProviderClient;
 use super::session::SessionTokenIssuer;
 use super::state_store::{ApprovalStore, CodeStore, InMemoryStateStore, SessionStore};
 use crate::oauth_resource::{CanonicalOauthUrl, OauthUrlError};
+use crate::state::db::CoralDb;
 use axum::Router;
 use axum::extract::State;
 use axum::http::header;
@@ -39,6 +40,7 @@ pub struct CoralAuthorizationServer {
     session_tokens: SessionTokenIssuer,
     state_store: Arc<InMemoryStateStore>,
     authorization_resources: BTreeSet<String>,
+    database: Option<Arc<CoralDb>>,
 }
 
 impl CoralAuthorizationServer {
@@ -96,7 +98,27 @@ impl CoralAuthorizationServer {
             session_tokens,
             state_store: Arc::new(InMemoryStateStore::new()),
             authorization_resources: BTreeSet::new(),
+            database: None,
         }
+    }
+
+    /// Attaches the app-owned database this server provisions logins into.
+    ///
+    /// The authorization server never opens a database of its own: the app
+    /// bootstrap owns the single pool and hands it here. Until one is attached
+    /// the OIDC callback has nowhere to provision a verified login, so it fails
+    /// the login closed rather than issuing an authorization code naming an
+    /// identity Coral never recorded.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the app bootstrap attaches the database in a later stack PR, which must drop this expectation"
+        )
+    )]
+    pub(crate) fn with_database(mut self, database: Arc<CoralDb>) -> Self {
+        self.database = Some(database);
+        self
     }
 
     /// Registers a resource identifier that authorization requests may target.
@@ -142,6 +164,7 @@ impl CoralAuthorizationServer {
             self.session_tokens,
             self.state_store,
             Arc::new(self.authorization_resources),
+            self.database,
         )?;
         start_listener(bind_addr, state).await
     }
@@ -260,6 +283,11 @@ struct AuthorizationServerHttpState {
     provider_client: OidcProviderClient,
     authorization_resources: Arc<BTreeSet<String>>,
     client_metadata_resolver: Arc<dyn ClientMetadataResolver>,
+    /// Where the OIDC callback provisions a verified login.
+    ///
+    /// `None` until the app bootstrap attaches one; the callback treats that as
+    /// a provisioning failure rather than issuing an unprovisioned code.
+    database: Option<Arc<CoralDb>>,
 }
 
 impl AuthorizationServerHttpState {
@@ -268,6 +296,7 @@ impl AuthorizationServerHttpState {
         session_tokens: SessionTokenIssuer,
         state_store: Arc<InMemoryStateStore>,
         authorization_resources: Arc<BTreeSet<String>>,
+        database: Option<Arc<CoralDb>>,
     ) -> Result<Self, AuthServerError> {
         let client_metadata_resolver = HttpClientMetadataResolver::new(
             settings.authorization_server().issuer(),
@@ -298,6 +327,7 @@ impl AuthorizationServerHttpState {
                 .map_err(|error| AuthServerError::ProviderClient(error.to_string()))?,
             authorization_resources,
             client_metadata_resolver,
+            database,
         })
     }
 
@@ -318,6 +348,7 @@ impl AuthorizationServerHttpState {
             provider_client: OidcProviderClient::new().map_err(|error| error.to_string())?,
             authorization_resources,
             client_metadata_resolver,
+            database: None,
         })
     }
 }
@@ -363,9 +394,12 @@ mod tests {
     use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair};
     use serde_json::{Value, json};
 
-    use super::{AuthSettings, CoralAuthorizationServer, RunningCoralAuthorizationServer};
+    use super::{
+        Arc, AuthSettings, CoralAuthorizationServer, CoralDb, RunningCoralAuthorizationServer,
+    };
 
     use crate::auth::test_config::{AUTHORIZATION_SERVER, PROVIDER, SESSION};
+    use crate::state::db::ResolvedDatabaseConfig;
 
     fn config(auth: &str) -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -526,6 +560,34 @@ mod tests {
             let server = server(&dir).start().await.expect("start");
             server.shutdown().await.expect("shutdown");
         }
+    }
+
+    #[tokio::test]
+    async fn carries_the_app_owned_database_into_the_served_state() {
+        let dir = authorization_server("");
+        let temp = tempfile::tempdir().expect("temp dir");
+        let database = Arc::new(
+            CoralDb::open(ResolvedDatabaseConfig::Sqlite {
+                path: temp.path().join("coral.sqlite"),
+            })
+            .await
+            .expect("open sqlite"),
+        );
+
+        let prepared = server(&dir).with_database(database);
+
+        let state = super::AuthorizationServerHttpState::new(
+            prepared.settings,
+            prepared.session_tokens,
+            prepared.state_store,
+            Arc::new(prepared.authorization_resources),
+            prepared.database,
+        )
+        .expect("authorization server state");
+        assert!(
+            state.database.is_some(),
+            "the OIDC callback must reach the database the app attached"
+        );
     }
 
     #[tokio::test]
