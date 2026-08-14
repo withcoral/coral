@@ -327,10 +327,11 @@ impl WorkspaceManager {
 ///
 /// Ownership is explicit here and nowhere else: a workspace is created for the
 /// caller who asked for it, and every later change to who may reach it goes
-/// through one of these methods. None of them takes the lifecycle lock, which
-/// guards filesystem artifacts — membership writes are serialized by the
-/// workspace parent row inside the transaction instead, so granting access
-/// cannot stall a query.
+/// through one of these methods. Only creation takes the lifecycle lock, which
+/// guards filesystem artifacts, because it makes them and must not race a
+/// deletion removing them. The membership methods do not: their writes are
+/// serialized by the workspace parent row inside the transaction instead, so
+/// granting or revoking access cannot stall a query.
 #[cfg_attr(
     not(test),
     expect(
