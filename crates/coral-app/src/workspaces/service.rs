@@ -69,7 +69,9 @@ impl WorkspaceServiceApi for WorkspaceService {
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            authorizer.admit(&principal).map_err(app_status)?;
+            authorizer
+                .authorize_creation(&principal)
+                .map_err(app_status)?;
             let creator = principal.id().as_str();
             let workspace = if creator == LOCAL_PRINCIPAL_ID {
                 // Being admitted at all means this deployment treats the local
@@ -564,6 +566,41 @@ mod tests {
                 .expect_err("an agent credential may not enumerate the workspace's people")
                 .code(),
             Code::PermissionDenied,
+        );
+    }
+
+    /// Creation is the one control-plane act with no existing workspace to
+    /// gate, and an agent that reached it would be made Owner of what it
+    /// created — the exact authority no workspace role may grant it.
+    #[tokio::test]
+    async fn an_agent_credential_cannot_create_a_workspace() {
+        let deployment = shared_deployment().await;
+        let ada = deployment.seed_user("ada").await;
+
+        assert_eq!(
+            deployment
+                .create(
+                    &Principal::parse(&ada, PrincipalKind::Agent).expect("agent"),
+                    "team",
+                )
+                .await
+                .expect_err("an agent credential holds no control-plane authority")
+                .code(),
+            Code::PermissionDenied,
+        );
+        assert_eq!(
+            deployment.role_of("team", &ada).await,
+            None,
+            "the refused creation must leave no workspace and no ownership behind"
+        );
+
+        deployment
+            .create(&federated(&ada), "team")
+            .await
+            .expect("the same person's own credential still creates the workspace");
+        assert_eq!(
+            deployment.role_of("team", &ada).await,
+            Some(MemberRole::Owner)
         );
     }
 

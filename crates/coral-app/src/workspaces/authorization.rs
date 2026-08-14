@@ -151,6 +151,35 @@ impl WorkspaceAuthorizer {
         self.decide_for_local_principal(principal).unwrap_or(Ok(()))
     }
 
+    /// Decides whether `principal` may create a workspace at all.
+    ///
+    /// Creation is the one control-plane act with no workspace to check, so
+    /// [`Self::authorize`] cannot reach it: its agent restriction fires only
+    /// against a workspace that already exists. Left to [`Self::admit`] alone,
+    /// an agent credential would create a workspace, be granted `Owner` on it
+    /// by the creation transaction, and hold exactly the authority `authorize`
+    /// refuses to let any role confer on it.
+    ///
+    /// Creation is otherwise open: any authenticated person may make a
+    /// workspace, and no membership state is read to decide it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::PermissionDenied`] for an agent credential, and for
+    /// the local principal on a deployment that does not admit it.
+    pub(crate) fn authorize_creation(&self, principal: &Principal) -> Result<(), AppError> {
+        if let Some(decision) = self.decide_for_local_principal(principal) {
+            return decision;
+        }
+
+        if principal.kind() == PrincipalKind::Agent {
+            return Err(AppError::PermissionDenied(
+                "agent credentials cannot create a workspace".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Decides whether `principal` may read the deployment's user directory.
     ///
     /// Directory authority is workspace ownership, not principal kind: the
@@ -268,6 +297,32 @@ mod tests {
                 .await,
             Err(AppError::PermissionDenied(_))
         ));
+    }
+
+    /// Creation is the control-plane act with no workspace behind it, so the
+    /// unmigrated database is again the proof: the answer is reached without a
+    /// membership row existing anywhere to reach it from.
+    #[tokio::test]
+    async fn an_agent_cannot_create_a_workspace_while_a_person_can() {
+        let (_temp, db) = unmigrated_database().await;
+        let authorizer = WorkspaceAuthorizer::new(db);
+
+        assert!(matches!(
+            authorizer.authorize_creation(
+                &Principal::parse("someone", PrincipalKind::Agent).expect("agent")
+            ),
+            Err(AppError::PermissionDenied(_))
+        ));
+        authorizer
+            .authorize_creation(&Principal::parse("someone", PrincipalKind::User).expect("user"))
+            .expect("any authenticated person may create a workspace");
+        assert!(
+            matches!(
+                authorizer.authorize_creation(&Principal::local()),
+                Err(AppError::PermissionDenied(_))
+            ),
+            "the deployment decision still comes first"
+        );
     }
 
     #[tokio::test]
