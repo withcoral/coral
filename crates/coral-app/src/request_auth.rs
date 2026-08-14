@@ -20,17 +20,23 @@ const UNAUTHENTICATED_MESSAGE: &str = "authentication required";
 /// audiences. A token minted for an agent-only surface therefore authenticates
 /// a [`PrincipalKind::Agent`] even though the `user_id` in it is that person's.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct AcceptedAudience {
+pub struct AcceptedAudience {
     resource: String,
     principal_kind: PrincipalKind,
 }
 
 impl AcceptedAudience {
-    pub(crate) fn new(resource: impl Into<String>, principal_kind: PrincipalKind) -> Self {
+    /// Names `resource` as a surface whose tokens authenticate `principal_kind`.
+    #[must_use]
+    pub fn new(resource: impl Into<String>, principal_kind: PrincipalKind) -> Self {
         Self {
             resource: resource.into(),
             principal_kind,
         }
+    }
+
+    pub(crate) fn resource(&self) -> &str {
+        &self.resource
     }
 }
 
@@ -38,14 +44,12 @@ impl AcceptedAudience {
 /// surface — MCP — has to be tagged with [`AcceptedAudience::new`], because
 /// nothing about the identifier itself says which kind reaches it.
 ///
-/// Every audience a served instance passes today is still a bare `String`:
-/// `SessionAuthSettings::principal_provider` in `bootstrap::server_config`
-/// takes `IntoIterator<Item = String>`, and the CLI's `compose_session_policies`
-/// hands it the public audiences verbatim. The MCP surface therefore
-/// authenticates a [`PrincipalKind::User`] in a running instance for now —
-/// tagging it as an agent is wired by the later stack PR that owns that
-/// wiring, which is also where `AcceptedAudience` becomes reachable from
-/// outside this crate.
+/// This conversion keeps the common case short for the surfaces a person
+/// reaches directly. It is deliberately not the only way an instance names its
+/// audiences: `SessionAuthSettings::principal_provider` in
+/// `bootstrap::server_config` accepts anything convertible into one, and the
+/// audience derived from an authenticated `server.mcp_http` is tagged
+/// [`PrincipalKind::Agent`] there rather than being passed as a bare string.
 impl From<String> for AcceptedAudience {
     fn from(resource: String) -> Self {
         Self::new(resource, PrincipalKind::User)
