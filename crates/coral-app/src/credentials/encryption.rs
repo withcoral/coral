@@ -114,6 +114,12 @@ impl CredentialEncryptionKey {
     }
 }
 
+/// Resolves KEKs, and mints one when a deployment has none yet.
+///
+/// `active_key` is a minting capability: [`LocalFileCredentialKeyProvider`] creates
+/// durable key material on disk when none exists. Only sealing and rewrapping take a
+/// provider; opening takes the [`CredentialEncryptionKey`] its document names, so a
+/// read path cannot create or rotate key material.
 pub(crate) trait CredentialKeyProvider: Send + Sync {
     fn active_key(&self) -> Result<CredentialEncryptionKey, CredentialsError>;
 
@@ -285,10 +291,9 @@ pub(crate) fn decrypt_credential_values(
     workspace_name: &WorkspaceName,
     source_name: &SourceName,
     document: &EncryptedCredentialDocument,
-    key_provider: &dyn CredentialKeyProvider,
+    kek: &CredentialEncryptionKey,
 ) -> Result<BTreeMap<String, String>, CredentialsError> {
-    let plaintext =
-        decrypt_credential_document_bytes(workspace_name, source_name, document, key_provider)?;
+    let plaintext = decrypt_credential_document_bytes(workspace_name, source_name, document, kek)?;
     let decoded: DecryptedCredentialDocument = serde_json::from_slice(&plaintext)
         .map_err(|error| CredentialsError::Parse(error.to_string()))?;
     if decoded.version != CREDENTIAL_DOCUMENT_VERSION {
@@ -311,8 +316,8 @@ pub(crate) fn rewrap_credential_document(
     if document.binding_version == LEGACY_CREDENTIAL_BINDING_VERSION {
         // Binding version 1 includes both historical credential AAD encodings.
         // Authenticate either shape, then reseal once into the exact v2 recipe.
-        let values =
-            decrypt_credential_values(workspace_name, source_name, document, key_provider)?;
+        let kek = key_provider.key(&document.key_id)?;
+        let values = decrypt_credential_values(workspace_name, source_name, document, &kek)?;
         return encrypt_credential_values(workspace_name, source_name, &values, key_provider)
             .map(Some);
     }
@@ -323,13 +328,13 @@ fn decrypt_credential_document_bytes(
     workspace_name: &WorkspaceName,
     source_name: &SourceName,
     document: &EncryptedCredentialDocument,
-    key_provider: &dyn CredentialKeyProvider,
+    kek: &CredentialEncryptionKey,
 ) -> Result<Zeroizing<Vec<u8>>, CredentialsError> {
     let context =
         credential_document_context(document.binding_version, workspace_name, source_name)?;
     validate_document_metadata(document, &context)?;
-    let kek = key_provider.key(&document.key_id)?;
-    let dek = unwrap_credential_dek(document, &kek, &context)?;
+    validate_unwrapping_key(document, kek)?;
+    let dek = unwrap_credential_dek(document, kek, &context)?;
 
     let mut ciphertext = Zeroizing::new(document.ciphertext.clone());
     match open(
@@ -465,6 +470,25 @@ fn validate_document_metadata(
     Ok(())
 }
 
+/// Reject a KEK that is not the one the stored document names.
+///
+/// The wrapped DEK already authenticates `key_id` through its AAD, so a mismatched
+/// KEK cannot unwrap it. Checking first turns that into a precise error instead of a
+/// bare AEAD failure. Key identifiers are non-secret digests, so naming both is safe.
+fn validate_unwrapping_key(
+    document: &EncryptedEnvelopeDocument,
+    kek: &CredentialEncryptionKey,
+) -> Result<(), CredentialsError> {
+    if kek.key_id() != document.key_id {
+        return Err(CredentialsError::Crypto(format!(
+            "envelope key '{}' does not match document key '{}'",
+            kek.key_id(),
+            document.key_id
+        )));
+    }
+    Ok(())
+}
+
 /// Seal serialized plaintext with a random DEK and wrap that DEK with the active KEK.
 pub(crate) fn seal_envelope_document(
     context: &EnvelopeContext,
@@ -499,14 +523,18 @@ pub(crate) fn seal_envelope_document(
 }
 
 /// Open an envelope document when its persisted and expected bindings match.
+///
+/// Takes the KEK the document names rather than a [`CredentialKeyProvider`]: opening
+/// needs no authority to mint or rotate keys, and resolving the KEK in the caller
+/// keeps provider failures distinguishable from authentication failures.
 pub(crate) fn open_envelope_document(
     context: &EnvelopeContext,
     document: &EncryptedEnvelopeDocument,
-    key_provider: &dyn CredentialKeyProvider,
+    kek: &CredentialEncryptionKey,
 ) -> Result<Zeroizing<Vec<u8>>, CredentialsError> {
     validate_document_metadata(document, context)?;
-    let kek = key_provider.key(&document.key_id)?;
-    let dek = unwrap_current_dek(document, &kek, context)?;
+    validate_unwrapping_key(document, kek)?;
+    let dek = unwrap_current_dek(document, kek, context)?;
 
     let mut ciphertext = Zeroizing::new(document.ciphertext.clone());
     open(

@@ -14,6 +14,7 @@ use super::encryption::{
     decrypt_credential_values, encrypt_credential_values, open_envelope_document,
     rewrap_credential_document, rewrap_envelope_document, seal_envelope_document,
 };
+use crate::encrypted_document::EncryptedEnvelopeDocument;
 use crate::sources::SourceName;
 use crate::state::AppStateLayout;
 use crate::workspaces::WorkspaceName;
@@ -34,28 +35,28 @@ fn encrypt_decrypt_authenticates_context_and_redacts_key_debug() {
         CREDENTIAL_DOCUMENT_BINDING_VERSION
     );
     assert_eq!(
-        decrypt_credential_values(&workspace, &source, &document, &provider).expect("decrypt"),
+        decrypt_values_with_provider(&workspace, &source, &document, &provider).expect("decrypt"),
         values
     );
 
     let mut tampered = document.clone();
     *tampered.ciphertext.first_mut().expect("ciphertext byte") ^= 1;
-    decrypt_credential_values(&workspace, &source, &tampered, &provider)
+    decrypt_values_with_provider(&workspace, &source, &tampered, &provider)
         .expect_err("tampered ciphertext should fail");
     let mut tampered = document.clone();
     *tampered.wrapped_dek.first_mut().expect("wrapped DEK byte") ^= 1;
-    decrypt_credential_values(&workspace, &source, &tampered, &provider)
+    decrypt_values_with_provider(&workspace, &source, &tampered, &provider)
         .expect_err("tampered wrapped DEK should fail");
     let other_workspace = WorkspaceName::parse("other").expect("workspace");
-    decrypt_credential_values(&other_workspace, &source, &document, &provider)
+    decrypt_values_with_provider(&other_workspace, &source, &document, &provider)
         .expect_err("wrong workspace should fail");
     let other_source = SourceName::parse("slack").expect("source");
-    decrypt_credential_values(&workspace, &other_source, &document, &provider)
+    decrypt_values_with_provider(&workspace, &other_source, &document, &provider)
         .expect_err("wrong source should fail");
     let mismatch = StaticKeyProvider {
         key: CredentialEncryptionKey::from_static_bytes_for_test([8; 32]),
     };
-    decrypt_credential_values(&workspace, &source, &document, &mismatch)
+    decrypt_values_with_provider(&workspace, &source, &document, &mismatch)
         .expect_err("wrong key should fail");
 
     let debug = format!("{:?}", provider.key);
@@ -81,8 +82,9 @@ fn credential_document_aad_disambiguates_colon_bearing_identities() {
     )
     .expect("encrypt");
 
-    let error = decrypt_credential_values(&replay_workspace, &replay_source, &encrypted, &provider)
-        .expect_err("ambiguous colon-delimited identity should not decrypt");
+    let error =
+        decrypt_values_with_provider(&replay_workspace, &replay_source, &encrypted, &provider)
+            .expect_err("ambiguous colon-delimited identity should not decrypt");
 
     assert!(error.to_string().contains("open failed"));
 }
@@ -105,7 +107,7 @@ fn credential_document_rejects_tampered_nonces() {
     let mut tampered = encrypted.clone();
     *tampered.nonce.first_mut().expect("payload nonce") ^= 0x01;
     assert_open_failed(
-        &decrypt_credential_values(&workspace, &source, &tampered, &provider)
+        &decrypt_values_with_provider(&workspace, &source, &tampered, &provider)
             .expect_err("tampered payload nonce should fail authentication"),
     );
 
@@ -115,7 +117,7 @@ fn credential_document_rejects_tampered_nonces() {
         .first_mut()
         .expect("wrapped DEK nonce") ^= 0x01;
     assert_open_failed(
-        &decrypt_credential_values(&workspace, &source, &tampered, &provider)
+        &decrypt_values_with_provider(&workspace, &source, &tampered, &provider)
             .expect_err("tampered wrapped DEK nonce should fail authentication"),
     );
 }
@@ -170,7 +172,7 @@ fn credential_document_rejects_key_id_aad_mismatch_even_when_key_resolves() {
         .expect("mutated key id should resolve");
 
     assert_open_failed(
-        &decrypt_credential_values(&workspace, &source, &encrypted, &provider)
+        &decrypt_values_with_provider(&workspace, &source, &encrypted, &provider)
             .expect_err("mismatched key-id AAD should fail authentication"),
     );
 }
@@ -191,7 +193,7 @@ fn credential_document_rejects_binding_version_mismatch() {
     .expect("encrypt");
     encrypted.binding_version = CREDENTIAL_DOCUMENT_BINDING_VERSION + 1;
 
-    let error = decrypt_credential_values(&workspace, &source, &encrypted, &provider)
+    let error = decrypt_values_with_provider(&workspace, &source, &encrypted, &provider)
         .expect_err("unsupported binding version should fail");
 
     assert!(
@@ -229,7 +231,7 @@ fn decrypt_accepts_legacy_colon_delimited_dek_aad() {
     encrypted.wrapped_dek_nonce = legacy_nonce.to_vec();
 
     assert_eq!(
-        decrypt_credential_values(&workspace, &source, &encrypted, &provider)
+        decrypt_values_with_provider(&workspace, &source, &encrypted, &provider)
             .expect("legacy DEK AAD should decrypt"),
         values
     );
@@ -262,7 +264,7 @@ fn decrypt_accepts_legacy_length_prefixed_dek_aad() {
     encrypted.wrapped_dek_nonce = legacy_nonce.to_vec();
 
     assert_eq!(
-        decrypt_credential_values(&workspace, &source, &encrypted, &provider)
+        decrypt_values_with_provider(&workspace, &source, &encrypted, &provider)
             .expect("legacy length-prefixed DEK AAD should decrypt"),
         values
     );
@@ -313,7 +315,7 @@ fn credential_document_rewrap_changes_kek_without_reencrypting_payload() {
         "old KEK should not unwrap the rewrapped DEK"
     );
     assert_eq!(
-        decrypt_credential_values(&workspace, &source, &rewrapped, &rotating_provider)
+        decrypt_values_with_provider(&workspace, &source, &rewrapped, &rotating_provider)
             .expect("decrypt rewrapped"),
         values
     );
@@ -368,7 +370,7 @@ fn credential_v1_rewrap_migrates_to_v2_with_same_key() {
     assert_eq!(migrated.key_id, v1.key_id);
     assert_ne!(migrated.ciphertext, v1.ciphertext);
     assert_eq!(
-        decrypt_credential_values(&workspace, &source, &migrated, &provider)
+        decrypt_values_with_provider(&workspace, &source, &migrated, &provider)
             .expect("decrypt migrated credential"),
         values
     );
@@ -425,7 +427,7 @@ fn credential_document_rewrap_migrates_legacy_payload_aad() {
     assert_ne!(migrated.ciphertext, legacy.ciphertext);
     assert_ne!(migrated.nonce, legacy.nonce);
     assert_eq!(
-        decrypt_credential_values(&workspace, &source, &migrated, &rotating_provider)
+        decrypt_values_with_provider(&workspace, &source, &migrated, &rotating_provider)
             .expect("decrypt migrated document"),
         values
     );
@@ -509,7 +511,7 @@ fn shared_envelope_context_authenticates_open_and_rewrap() {
             .expect("seal envelope");
     assert_eq!(encrypted.binding_version, BINDING_VERSION);
     assert_eq!(
-        open_envelope_document(&context, &encrypted, &old_provider)
+        open_with_provider(&context, &encrypted, &old_provider)
             .expect("open envelope")
             .as_slice(),
         plaintext
@@ -521,13 +523,13 @@ fn shared_envelope_context_authenticates_open_and_rewrap() {
     )
     .expect("wrong envelope context");
     assert_open_failed(
-        &open_envelope_document(&wrong_context, &encrypted, &old_provider)
+        &open_with_provider(&wrong_context, &encrypted, &old_provider)
             .expect_err("wrong binding should fail authentication"),
     );
     let wrong_version =
         EnvelopeContext::new("test-envelope", 1, &["workspace", "document"]).expect("context");
     assert!(
-        open_envelope_document(&wrong_version, &encrypted, &old_provider)
+        open_with_provider(&wrong_version, &encrypted, &old_provider)
             .expect_err("wrong expected binding version should fail")
             .to_string()
             .contains("binding version 7 does not match context version 1")
@@ -539,7 +541,7 @@ fn shared_envelope_context_authenticates_open_and_rewrap() {
     let mut unsupported = encrypted.clone();
     unsupported.algorithm = "unsupported".to_string();
     assert!(
-        open_envelope_document(&context, &unsupported, &old_provider)
+        open_with_provider(&context, &unsupported, &old_provider)
             .expect_err("unsupported algorithm should fail")
             .to_string()
             .contains("unsupported envelope encryption algorithm")
@@ -553,7 +555,7 @@ fn shared_envelope_context_authenticates_open_and_rewrap() {
     )
     .expect("rebound context");
     assert_open_failed(
-        &open_envelope_document(&rebound_context, &rebound, &old_provider)
+        &open_with_provider(&rebound_context, &rebound, &old_provider)
             .expect_err("stored version must also bind the wrapped DEK"),
     );
 
@@ -566,7 +568,7 @@ fn shared_envelope_context_authenticates_open_and_rewrap() {
     assert_ne!(rewrapped.wrapped_dek, encrypted.wrapped_dek);
     assert_ne!(rewrapped.wrapped_dek_nonce, encrypted.wrapped_dek_nonce);
     assert_eq!(
-        open_envelope_document(&context, &rewrapped, &rotating_provider)
+        open_with_provider(&context, &rewrapped, &rotating_provider)
             .expect("open rewrapped envelope")
             .as_slice(),
         plaintext
@@ -659,10 +661,36 @@ fn decrypt_rejects_unknown_key_id() {
     .expect("encrypt");
     encrypted.key_id = "missing-key".to_string();
 
-    let error = decrypt_credential_values(&workspace, &source, &encrypted, &provider)
+    let error = decrypt_values_with_provider(&workspace, &source, &encrypted, &provider)
         .expect_err("missing KEK should fail");
 
     assert!(error.to_string().contains("missing test key"));
+}
+
+#[test]
+fn open_rejects_a_key_the_document_does_not_name() {
+    let workspace = WorkspaceName::parse("default").expect("workspace");
+    let source = SourceName::parse("github").expect("source");
+    let stored_key = CredentialEncryptionKey::from_static_bytes_for_test([43; 32]);
+    let other_key = CredentialEncryptionKey::from_static_bytes_for_test([47; 32]);
+    let provider = StaticKeyProvider {
+        key: stored_key.clone(),
+    };
+    let values = BTreeMap::from([("TOKEN".to_string(), "secret".to_string())]);
+    let encrypted =
+        encrypt_credential_values(&workspace, &source, &values, &provider).expect("encrypt");
+
+    let error = decrypt_credential_values(&workspace, &source, &encrypted, &other_key)
+        .expect_err("a key the document does not name must be rejected");
+
+    assert!(
+        error.to_string().contains("does not match document key"),
+        "unexpected error: {error}"
+    );
+    assert_eq!(
+        decrypt_credential_values(&workspace, &source, &encrypted, &stored_key).expect("decrypt"),
+        values
+    );
 }
 
 fn assert_open_failed(error: &CredentialsError) {
@@ -670,6 +698,27 @@ fn assert_open_failed(error: &CredentialsError) {
         error.to_string().contains("open failed"),
         "unexpected error: {error}"
     );
+}
+
+/// Resolve the KEK a document names, then decrypt with it.
+fn decrypt_values_with_provider(
+    workspace: &WorkspaceName,
+    source: &SourceName,
+    document: &EncryptedEnvelopeDocument,
+    key_provider: &dyn CredentialKeyProvider,
+) -> Result<BTreeMap<String, String>, CredentialsError> {
+    let kek = key_provider.key(&document.key_id)?;
+    decrypt_credential_values(workspace, source, document, &kek)
+}
+
+/// Resolve the KEK a document names, then open it.
+fn open_with_provider(
+    context: &EnvelopeContext,
+    document: &EncryptedEnvelopeDocument,
+    key_provider: &dyn CredentialKeyProvider,
+) -> Result<Zeroizing<Vec<u8>>, CredentialsError> {
+    let kek = key_provider.key(&document.key_id)?;
+    open_envelope_document(context, document, &kek)
 }
 
 fn local_file_key_provider(layout: &AppStateLayout) -> LocalFileCredentialKeyProvider {

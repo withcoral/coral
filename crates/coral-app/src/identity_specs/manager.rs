@@ -7,8 +7,7 @@ use std::sync::Arc;
 use coral_spec::{IdentityManifest, IdentitySpecType, parse_identity_manifest_yaml};
 
 use crate::bootstrap::AppError;
-use crate::credentials::CredentialsError;
-use crate::credentials::encryption::{CredentialEncryptionKey, CredentialKeyProvider};
+use crate::credentials::encryption::CredentialKeyProvider;
 use crate::identity::spec_document::decrypt_identity_spec_document;
 use crate::identity_specs::inputs::{
     ResolvedIdentitySpecInputs, resolve_identity_spec_inputs_for_use,
@@ -46,24 +45,6 @@ impl fmt::Debug for ResolvedIdentitySpec {
 struct IdentitySpecUseSnapshot {
     record: IdentitySpecRecord,
     document: Option<IdentitySpecDocumentRecord>,
-}
-
-struct PinnedKeyProvider {
-    key: CredentialEncryptionKey,
-}
-
-impl CredentialKeyProvider for PinnedKeyProvider {
-    fn active_key(&self) -> Result<CredentialEncryptionKey, CredentialsError> {
-        Err(CredentialsError::Crypto(
-            "active key access is not allowed while reading an identity spec".to_string(),
-        ))
-    }
-
-    fn key(&self, key_id: &str) -> Result<CredentialEncryptionKey, CredentialsError> {
-        (key_id == self.key.key_id())
-            .then(|| self.key.clone())
-            .ok_or_else(|| CredentialsError::Crypto("identity spec key id changed".to_string()))
-    }
 }
 
 /// Database-backed identity-spec read and resolution behavior.
@@ -294,16 +275,12 @@ fn decrypt_input_material(
         )
         .into());
     }
-    let resolved_key = key_provider
+    // Resolve the stored key first so an unavailable key provider stays a credential
+    // error; everything the envelope layer rejects afterward is stored-material fault.
+    let kek = key_provider
         .key(&envelope.key_id)
         .map_err(AppError::Credentials)?;
-    if resolved_key.key_id() != envelope.key_id {
-        return Err(AppError::Credentials(CredentialsError::Crypto(
-            "credential key provider returned a different key id".to_string(),
-        )));
-    }
-    let pinned_provider = PinnedKeyProvider { key: resolved_key };
-    decrypt_identity_spec_document(key, &envelope, &pinned_provider).map_err(|_error| {
+    decrypt_identity_spec_document(key, &envelope, &kek).map_err(|_error| {
         AppError::from(corrupt_record(
             key,
             "encrypted setup document failed authentication or decoding",
