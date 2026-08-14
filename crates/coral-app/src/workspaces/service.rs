@@ -2,8 +2,10 @@
 
 use coral_api::v1::workspace_service_server::WorkspaceService as WorkspaceServiceApi;
 use coral_api::v1::{
-    CreateWorkspaceRequest, CreateWorkspaceResponse, DeleteWorkspaceRequest,
-    DeleteWorkspaceResponse, ListWorkspacesRequest, ListWorkspacesResponse, Workspace,
+    AddWorkspaceMemberRequest, AddWorkspaceMemberResponse, CreateWorkspaceRequest,
+    CreateWorkspaceResponse, DeleteWorkspaceRequest, DeleteWorkspaceResponse,
+    ListWorkspaceMembersRequest, ListWorkspaceMembersResponse, ListWorkspacesRequest,
+    ListWorkspacesResponse, RemoveWorkspaceMemberRequest, RemoveWorkspaceMemberResponse, Workspace,
 };
 use tonic::{Request, Response, Status};
 
@@ -83,6 +85,35 @@ impl WorkspaceServiceApi for WorkspaceService {
             }))
         })
         .await
+    }
+
+    /// Placeholder until the membership handlers land with their manager and
+    /// authorizer wiring. Publishing the contract ahead of the behavior keeps
+    /// the generated bindings additive; serving it would be a silent claim
+    /// that membership is enforced.
+    async fn list_workspace_members(
+        &self,
+        _request: Request<ListWorkspaceMembersRequest>,
+    ) -> Result<Response<ListWorkspaceMembersResponse>, Status> {
+        Err(Status::unimplemented("ListWorkspaceMembers"))
+    }
+
+    /// Placeholder until the membership handlers land. See
+    /// [`Self::list_workspace_members`].
+    async fn add_workspace_member(
+        &self,
+        _request: Request<AddWorkspaceMemberRequest>,
+    ) -> Result<Response<AddWorkspaceMemberResponse>, Status> {
+        Err(Status::unimplemented("AddWorkspaceMember"))
+    }
+
+    /// Placeholder until the membership handlers land. See
+    /// [`Self::list_workspace_members`].
+    async fn remove_workspace_member(
+        &self,
+        _request: Request<RemoveWorkspaceMemberRequest>,
+    ) -> Result<Response<RemoveWorkspaceMemberResponse>, Status> {
+        Err(Status::unimplemented("RemoveWorkspaceMember"))
     }
 }
 

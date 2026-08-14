@@ -22,32 +22,34 @@ use coral_api::v1::source_service_server::{SourceService, SourceServiceServer};
 use coral_api::v1::task_service_server::{TaskService, TaskServiceServer};
 use coral_api::v1::workspace_service_server::{WorkspaceService, WorkspaceServiceServer};
 use coral_api::v1::{
-    AddFunctionRequest, AddFunctionResponse, CatalogClearResult, CatalogCounts, CatalogItem,
-    CatalogRebuildResult, CatalogSearchResult, ClearSearchDataRequest, ClearSearchDataResponse,
-    Column, ColumnSearchResult, CreateBundledSourceRequest, CreateBundledSourceResponse,
-    CreateBundledSourceWithOAuthRequest, CreateBundledSourceWithOAuthResponse,
-    CreateWorkspaceRequest, CreateWorkspaceResponse, DeleteFunctionRequest, DeleteFunctionResponse,
-    DeleteSourceRequest, DeleteSourceResponse, DeleteWorkspaceRequest, DeleteWorkspaceResponse,
-    DescribeCatalogSurfaceRequest, DescribeCatalogSurfaceResponse, DescribeSourceManifestRequest,
-    DescribeSourceManifestResponse, DiscoverSourcesRequest, DiscoverSourcesResponse,
+    AddFunctionRequest, AddFunctionResponse, AddWorkspaceMemberRequest, AddWorkspaceMemberResponse,
+    CatalogClearResult, CatalogCounts, CatalogItem, CatalogRebuildResult, CatalogSearchResult,
+    ClearSearchDataRequest, ClearSearchDataResponse, Column, ColumnSearchResult,
+    CreateBundledSourceRequest, CreateBundledSourceResponse, CreateBundledSourceWithOAuthRequest,
+    CreateBundledSourceWithOAuthResponse, CreateWorkspaceRequest, CreateWorkspaceResponse,
+    DeleteFunctionRequest, DeleteFunctionResponse, DeleteSourceRequest, DeleteSourceResponse,
+    DeleteWorkspaceRequest, DeleteWorkspaceResponse, DescribeCatalogSurfaceRequest,
+    DescribeCatalogSurfaceResponse, DescribeSourceManifestRequest, DescribeSourceManifestResponse,
+    DiscoverSourcesRequest, DiscoverSourcesResponse,
     DrainSearchQueueRequest, DrainSearchQueueResponse, EndTaskRequest, EndTaskResponse,
     ExecuteSqlRequest, ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse,
     GetSourceInfoRequest, GetSourceInfoResponse, GetSourceRequest, GetSourceResponse,
     ImportSourceRequest, ImportSourceResponse, ListCatalogRequest, ListCatalogResponse,
     ListColumnsRequest, ListColumnsResponse, ListFunctionsRequest, ListFunctionsResponse,
-    ListSourcesRequest, ListSourcesResponse, ListWorkspacesRequest, ListWorkspacesResponse,
+    ListSourcesRequest, ListSourcesResponse, ListWorkspaceMembersRequest,
+    ListWorkspaceMembersResponse, ListWorkspacesRequest, ListWorkspacesResponse,
     MissingCatalogSurface, ObservedDrainResult, ObservedRebuildResult, PaginationRequest,
     PaginationResponse, QueryPlan, RebuildSearchIndexRequest, RebuildSearchIndexResponse,
-    SearchCatalogRequest, SearchCatalogResponse, SearchField, SearchMaintenanceResult,
-    SearchMaintenanceState, SearchProvider, SearchProviderCoverage, SearchProviderState,
-    SearchRequest, SearchResponse, SearchResult, SearchResultTruncation,
-    SearchStorageCleanupResult, SearchSurfaceRef, SearchTableShape, Source,
-    SourceCredentialStorage, SourceInfo, SourceInputSpec, SourceOrigin, SourceSecretInput,
-    StartTaskRequest, StartTaskResponse, Table, TableFunction, TableSummary, Task as ProtoTask,
-    TaskEnd as ProtoTaskEnd, TaskStatus, ValidateSourceRequest, ValidateSourceResponse, Workspace,
-    catalog_item, create_bundled_source_with_o_auth_response, describe_catalog_surface_response,
-    import_source_response, search_maintenance_result, search_result,
-    source_input_spec::Input as ProtoSourceInput,
+    RemoveWorkspaceMemberRequest, RemoveWorkspaceMemberResponse, SearchCatalogRequest,
+    SearchCatalogResponse, SearchField, SearchMaintenanceResult, SearchMaintenanceState,
+    SearchProvider, SearchProviderCoverage, SearchProviderState, SearchRequest, SearchResponse,
+    SearchResult, SearchResultTruncation, SearchStorageCleanupResult, SearchSurfaceRef,
+    SearchTableShape, Source, SourceCredentialStorage, SourceInfo, SourceInputSpec, SourceOrigin,
+    SourceSecretInput, StartTaskRequest, StartTaskResponse, Table, TableFunction, TableSummary,
+    Task as ProtoTask, TaskEnd as ProtoTaskEnd, TaskStatus, ValidateSourceRequest,
+    ValidateSourceResponse, Workspace, catalog_item, create_bundled_source_with_o_auth_response,
+    describe_catalog_surface_response, import_source_response, search_maintenance_result,
+    search_result, source_input_spec::Input as ProtoSourceInput,
 };
 use coral_api::{
     CORAL_ERROR_DOMAIN, CORAL_ERROR_REASON_SOURCE_NOT_FOUND, CORAL_TASK_ID_METADATA_KEY,
@@ -1450,6 +1452,29 @@ impl WorkspaceService for MockWorkspaceService {
         Ok(Response::new(DeleteWorkspaceResponse {
             workspace: request.workspace,
         }))
+    }
+
+    // The CLI has no membership commands, so these exist only to satisfy the
+    // published service contract.
+    async fn list_workspace_members(
+        &self,
+        _request: Request<ListWorkspaceMembersRequest>,
+    ) -> Result<Response<ListWorkspaceMembersResponse>, Status> {
+        Err(Status::unimplemented("ListWorkspaceMembers"))
+    }
+
+    async fn add_workspace_member(
+        &self,
+        _request: Request<AddWorkspaceMemberRequest>,
+    ) -> Result<Response<AddWorkspaceMemberResponse>, Status> {
+        Err(Status::unimplemented("AddWorkspaceMember"))
+    }
+
+    async fn remove_workspace_member(
+        &self,
+        _request: Request<RemoveWorkspaceMemberRequest>,
+    ) -> Result<Response<RemoveWorkspaceMemberResponse>, Status> {
+        Err(Status::unimplemented("RemoveWorkspaceMember"))
     }
 }
 
