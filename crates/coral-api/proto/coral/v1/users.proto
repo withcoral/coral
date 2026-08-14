@@ -1,0 +1,50 @@
+syntax = "proto3";
+
+package coral.v1;
+
+// One person as everybody but their identity provider sees them.
+//
+// A directory entry exists so one person can be named by another — as the
+// owner of a workspace, or as somebody to add to one. The issuer and subject
+// that authenticate this person upstream are deliberately absent: naming
+// somebody never discloses where they sign in.
+message User {
+  // Coral-internal user identifier, stable across display-name changes.
+  string user_id = 1;
+  // Human-readable name for this person, empty when the identity provider
+  // supplied none.
+  string display_name = 2;
+}
+
+// Reads the calling identity.
+message GetCurrentUserRequest {}
+
+// Returns the calling identity.
+message GetCurrentUserResponse {
+  // Directory entry for the caller.
+  User user = 1;
+  // Workspace routing never belonged on an identity RPC. The field number and
+  // name stay reserved so no future field can silently inherit the old wire
+  // meaning.
+  reserved 2;
+  reserved "default_workspace";
+}
+
+// Lists the deployment's directory.
+message ListUsersRequest {}
+
+// Returns the deployment's directory.
+message ListUsersResponse {
+  // Directory entries, ordered by user identifier.
+  repeated User users = 1;
+}
+
+// User directory APIs.
+service UserService {
+  // Reads the calling identity. It reports who the caller is and nothing about
+  // where they should be routed.
+  rpc GetCurrentUser(GetCurrentUserRequest) returns (GetCurrentUserResponse);
+  // Lists people this caller may name in a workspace membership. Restricted to
+  // callers who own at least one workspace.
+  rpc ListUsers(ListUsersRequest) returns (ListUsersResponse);
+}

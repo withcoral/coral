@@ -37,6 +37,79 @@ message DeleteWorkspaceResponse {
   Workspace workspace = 1;
 }
 
+// One caller's authority in one workspace. The set is closed: a workspace has
+// owners and members and nothing else.
+enum WorkspaceRole {
+  // The role was not recorded.
+  WORKSPACE_ROLE_UNSPECIFIED = 0;
+  // Full authority, including membership and workspace management.
+  WORKSPACE_ROLE_OWNER = 1;
+  // Read access to the workspace and everything it contains.
+  WORKSPACE_ROLE_MEMBER = 2;
+}
+
+// One person's membership in one workspace, as its members see them.
+message WorkspaceMember {
+  // Coral-internal user identifier of the member.
+  string user_id = 1;
+  // Role this member holds in the workspace.
+  WorkspaceRole role = 2;
+  // Human-readable name for this member, empty when the identity provider
+  // supplied none.
+  string display_name = 3;
+}
+
+// One workspace as one caller sees it, paired with that caller's role.
+//
+// The role is relative to the caller, so it belongs here rather than on the
+// reusable `Workspace` resource: this carries both the resource used for
+// navigation and the authority a client needs for role-aware controls.
+message WorkspaceMembership {
+  // Workspace resource this membership grants access to.
+  Workspace workspace = 1;
+  // Role the requesting caller holds in that workspace.
+  WorkspaceRole role = 2;
+}
+
+// Lists the members of one workspace.
+message ListWorkspaceMembersRequest {
+  // Workspace whose members to list.
+  Workspace workspace = 1;
+}
+
+// Returns the members of one workspace.
+message ListWorkspaceMembersResponse {
+  // Workspace members, ordered by user identifier.
+  repeated WorkspaceMember members = 1;
+}
+
+// Adds one person to one workspace, or updates the role they already hold.
+message AddWorkspaceMemberRequest {
+  // Workspace to add the person to.
+  Workspace workspace = 1;
+  // Coral-internal user identifier of the person to add.
+  string user_id = 2;
+  // Role to grant.
+  WorkspaceRole role = 3;
+}
+
+// Returns the resulting membership.
+message AddWorkspaceMemberResponse {
+  // Membership the workspace now holds for that person.
+  WorkspaceMember member = 1;
+}
+
+// Removes one person from one workspace.
+message RemoveWorkspaceMemberRequest {
+  // Workspace to remove the person from.
+  Workspace workspace = 1;
+  // Coral-internal user identifier of the person to remove.
+  string user_id = 2;
+}
+
+// Returns nothing beyond a successful removal.
+message RemoveWorkspaceMemberResponse {}
+
 // Workspace management APIs.
 service WorkspaceService {
   // Lists configured workspaces.
@@ -45,4 +118,10 @@ service WorkspaceService {
   rpc CreateWorkspace(CreateWorkspaceRequest) returns (CreateWorkspaceResponse);
   // Deletes one workspace and its managed artifacts.
   rpc DeleteWorkspace(DeleteWorkspaceRequest) returns (DeleteWorkspaceResponse);
+  // Lists the members of one workspace.
+  rpc ListWorkspaceMembers(ListWorkspaceMembersRequest) returns (ListWorkspaceMembersResponse);
+  // Adds one person to one workspace, or updates the role they already hold.
+  rpc AddWorkspaceMember(AddWorkspaceMemberRequest) returns (AddWorkspaceMemberResponse);
+  // Removes one person from one workspace.
+  rpc RemoveWorkspaceMember(RemoveWorkspaceMemberRequest) returns (RemoveWorkspaceMemberResponse);
 }
