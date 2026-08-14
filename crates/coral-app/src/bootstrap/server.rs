@@ -15,6 +15,7 @@ use coral_api::v1::search_service_server::SearchServiceServer;
 use coral_api::v1::source_service_server::SourceServiceServer;
 use coral_api::v1::task_service_server::TaskServiceServer;
 use coral_api::v1::trace_service_server::TraceServiceServer;
+use coral_api::v1::user_service_server::UserServiceServer;
 use coral_api::v1::workspace_service_server::WorkspaceServiceServer;
 use coral_api::{
     CATALOG_RESPONSE_MAX_MESSAGE_SIZE, HTTP2_MAX_HEADER_LIST_SIZE, QUERY_RESPONSE_MAX_MESSAGE_SIZE,
@@ -65,6 +66,9 @@ use crate::task::store::TaskStore;
 use crate::telemetry::service::TraceService;
 use crate::telemetry::{TelemetryConfig, TraceManager};
 use crate::transport::GrpcRequestContextLayer;
+use crate::users::manager::UserManager;
+use crate::users::service::UserService;
+use crate::workspaces::authorization::WorkspaceAuthorizer;
 use crate::workspaces::{
     WorkspaceLifecycleLock, WorkspaceManager, WorkspacePoolRegistry, WorkspaceService,
 };
@@ -387,6 +391,10 @@ impl ServerBuilder {
     /// Returns [`AppError`] if the config directory cannot be determined,
     /// required directories cannot be created, the config or credential backends
     /// fail to initialize, or the gRPC server cannot be started.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the composition root constructs every app manager in one place, so it grows by one line per service the server gains"
+    )]
     pub async fn start(self) -> Result<RunningServer, AppError> {
         let principal_provider = self.resolve_principal_provider()?;
         let session_auth = self.session_auth;
@@ -472,6 +480,7 @@ impl ServerBuilder {
                 gui_onboarding: GuiOnboardingManager::new(Arc::clone(&coral_db)),
                 source: source_manager,
                 workspace: workspace_manager,
+                users: user_directory_manager(&coral_db),
                 query: query_manager,
                 search: search_manager,
                 search_observations,
@@ -510,6 +519,18 @@ async fn bootstrap_database(
         .map(|session_auth| build_authorization_server(*session_auth, &coral_db))
         .transpose()?;
     Ok((coral_db, authorization_server))
+}
+
+/// Prepares the directory reads this instance serves.
+///
+/// `NoLocalPrincipal` is the safe default: until this deployment resolves its
+/// policy explicitly, an injected `coral:local` principal must not reach the
+/// directory.
+fn user_directory_manager(coral_db: &Arc<CoralDb>) -> UserManager {
+    UserManager::new(
+        Arc::clone(coral_db),
+        WorkspaceAuthorizer::new(Arc::clone(coral_db)),
+    )
 }
 
 /// Prepares the authorization server this instance's logins are provisioned by.
@@ -738,6 +759,7 @@ struct ServerDependencies {
     gui_onboarding: GuiOnboardingManager,
     source: SourceManager,
     workspace: WorkspaceManager,
+    users: UserManager,
     query: QueryManager,
     search: SearchManager,
     search_observations: Option<SearchObservationHandle>,
@@ -759,6 +781,7 @@ fn application_routes(
         gui_onboarding,
         source,
         workspace,
+        users,
         query,
         search,
         search_observations,
@@ -777,6 +800,7 @@ fn application_routes(
     let health_queries = query.clone();
     let source_service = SourceService::new(source, query.clone(), workspace.clone());
     let workspace_service = WorkspaceService::new(workspace);
+    let user_service = UserService::new(users);
     let catalog_service = CatalogService::new(query.clone(), task.clone());
     let function_service = FunctionService::new(query.clone());
     let query_service = QueryService::new(query, task.clone());
@@ -793,6 +817,7 @@ fn application_routes(
                 .max_encoding_message_size(SOURCE_RESPONSE_MAX_MESSAGE_SIZE),
         )
         .add_service(WorkspaceServiceServer::new(workspace_service))
+        .add_service(UserServiceServer::new(user_service))
         .add_service(
             CatalogServiceServer::new(catalog_service)
                 .max_encoding_message_size(CATALOG_RESPONSE_MAX_MESSAGE_SIZE),
@@ -961,6 +986,8 @@ mod tests {
     use crate::task::store::TaskStore;
     use crate::telemetry::{TraceManager, service::TraceService};
     use crate::transport::workspace_to_proto;
+    use crate::users::manager::UserManager;
+    use crate::workspaces::authorization::WorkspaceAuthorizer;
     use crate::workspaces::{WorkspaceManager, WorkspaceName};
     use crate::{
         AwsEngineExtensionsProvider, LocalPrincipalProvider, NoopEngineExtensionsProvider,
@@ -1040,6 +1067,10 @@ enabled = false
             .await
             .expect("run state migrations");
         Arc::new(db)
+    }
+
+    fn test_user_manager(db: &Arc<CoralDb>) -> UserManager {
+        UserManager::new(Arc::clone(db), WorkspaceAuthorizer::new(Arc::clone(db)))
     }
 
     #[tokio::test]
@@ -1843,6 +1874,7 @@ backend = "unsupported"
                 gui_onboarding: GuiOnboardingManager::new(Arc::clone(&db)),
                 source: source_manager,
                 workspace: workspace_manager,
+                users: test_user_manager(&db),
                 query: query_manager,
                 search: search_manager,
                 search_observations: Some(search_observations),
@@ -1991,6 +2023,7 @@ backend = "unsupported"
                 gui_onboarding: GuiOnboardingManager::new(Arc::clone(&db)),
                 source: source_manager,
                 workspace: workspace_manager,
+                users: test_user_manager(&db),
                 query: query_manager,
                 search: search_manager,
                 search_observations: Some(search_observations),
@@ -2123,6 +2156,7 @@ tables:
                 gui_onboarding: GuiOnboardingManager::new(Arc::clone(&db)),
                 source: source_manager,
                 workspace: workspace_manager,
+                users: test_user_manager(&db),
                 query: query_manager,
                 search: search_manager,
                 search_observations: Some(search_observations),
@@ -2255,6 +2289,7 @@ tables:
                 gui_onboarding: GuiOnboardingManager::new(Arc::clone(&db)),
                 source: source_manager,
                 workspace: workspace_manager,
+                users: test_user_manager(&db),
                 query: query_manager,
                 search: search_manager,
                 search_observations: Some(search_observations),

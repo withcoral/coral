@@ -1,13 +1,5 @@
 //! Transport-free directory views.
 
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the directory view lands before the RPCs that return it"
-    )
-)]
-
 /// One directory user as everybody but their identity provider sees them.
 ///
 /// These two fields are the whole of the client-visible directory. The stored

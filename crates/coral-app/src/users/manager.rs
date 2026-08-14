@@ -1,13 +1,5 @@
 //! Self-scoped and directory-wide reads of the user directory.
 
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the directory domain lands before the RPCs that serve it"
-    )
-)]
-
 use std::sync::Arc;
 
 use crate::bootstrap::AppError;
