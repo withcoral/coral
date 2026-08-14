@@ -22,7 +22,6 @@ import {
   useDesktopUpdateState,
 } from '@/components/desktop-update-indicator'
 import { WorkspaceCreationDialog } from '@/components/workspaces'
-import { isCoralDesktopBuild } from '@/lib/coral-desktop'
 import { workspacePathForCurrentSection } from '@/lib/workspace-routing'
 import { routePath } from '@/routing/routemap'
 
@@ -45,7 +44,6 @@ export function Sidebar({
   const location = useLocation()
   const { workspaceId } = useParams()
   const { isMinimized, toggleSidebar } = useSidebarState(initialIsMinimized)
-  const desktop = isCoralDesktopBuild()
   const {
     isPending: isUpdatePending,
     onDownload: onUpdateDownload,
