@@ -100,7 +100,19 @@ impl WorkspaceServiceApi for WorkspaceService {
             let workspace = if creator == LOCAL_PRINCIPAL_ID {
                 // Being admitted at all means this deployment treats the local
                 // principal as owner of everything, and it has no directory row
-                // an ownership grant could reference.
+                // an ownership grant could reference: the `coral:local` user is
+                // written by the one-time local-ownership migration, which does
+                // not exist yet, and the membership foreign key forbids granting
+                // ownership to a subject the directory does not hold.
+                //
+                // This branch is therefore a bridge, not the intended shape. It
+                // persists a workspace with zero owner rows, which a later
+                // switch to shared mode would leave concealed from every
+                // authenticated caller. Once the migration guarantees the
+                // `coral:local` row, local creation routes through
+                // `create_workspace_for_user` like every other creator and this
+                // branch goes away, so that owner insertion stays in the same
+                // transaction as workspace creation for all callers.
                 workspaces.create_workspace(&workspace_name).await
             } else {
                 workspaces
@@ -724,6 +736,11 @@ mod tests {
             .create(&Principal::local(), "team")
             .await
             .expect("the implicit owner creates without a directory row");
+        // The absent membership pins the bridge, not the destination: no
+        // `coral:local` directory row exists to grant ownership to yet. When
+        // the one-time local-ownership migration guarantees that row, local
+        // creation grants ownership like any other creator and this assertion
+        // flips to `Some(MemberRole::Owner)`.
         assert_eq!(local.role_of("team", LOCAL_PRINCIPAL_ID).await, None);
     }
 
