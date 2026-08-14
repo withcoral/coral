@@ -3884,6 +3884,109 @@ paths:
     );
 }
 
+/// A pointer into a subschema ends in an index rather than a name, and every
+/// nullable union in a document offers the same one. Naming the interned type
+/// after that tip alone gives two unrelated schemas the same id, and the second
+/// import answers from the cache with the first one's shape — silently, since
+/// reusing a type that is already interned is the normal path.
+#[test]
+fn importer_keeps_two_subschema_pointers_with_the_same_index_apart() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: pointer_ref
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.1.0
+components:
+  schemas:
+    Page:
+      anyOf:
+        - type: object
+          properties:
+            page_field: {type: string}
+        - type: 'null'
+    Other:
+      anyOf:
+        - type: object
+          properties:
+            other_field: {type: string}
+        - type: 'null'
+paths:
+  /things:
+    get:
+      operationId: things/get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  page:
+                    $ref: '#/components/schemas/Page/anyOf/0'
+                  other:
+                    $ref: '#/components/schemas/Other/anyOf/0'
+"
+        .as_bytes(),
+    )
+    .expect("import");
+
+    let operation = ir.operations.first().expect("operation");
+    let row_type = ir
+        .types
+        .iter()
+        .find(|ty| ty.id == operation.output.type_ref)
+        .expect("row type");
+    let IrTypeShape::Object { fields } = &row_type.shape else {
+        panic!("the response should import as an object: {row_type:?}");
+    };
+    let field_types = fields
+        .iter()
+        .map(|field| (field.name.as_str(), field.type_ref.as_str()))
+        .collect::<BTreeMap<_, _>>();
+    let page_type = field_types.get("page").expect("page field");
+    let other_type = field_types.get("other").expect("other field");
+    assert_ne!(
+        page_type, other_type,
+        "two subschema pointers should not intern as one type"
+    );
+
+    // The shapes are what the collision destroyed: `other` inherited `Page`'s
+    // fields, so `other_field` disappeared from the catalog entirely.
+    let fields_of = |type_ref: &str| {
+        let ty = ir
+            .types
+            .iter()
+            .find(|ty| ty.id == type_ref)
+            .unwrap_or_else(|| panic!("type {type_ref}"));
+        let IrTypeShape::Object { fields } = &ty.shape else {
+            panic!("expected an object: {ty:?}");
+        };
+        fields
+            .iter()
+            .map(|field| field.name.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(fields_of(page_type), ["page_field"]);
+    assert_eq!(fields_of(other_type), ["other_field"]);
+    assert!(
+        operation.diagnostics.is_empty(),
+        "{:?}",
+        operation.diagnostics
+    );
+}
+
 /// Two `allOf` branches may spell one property's nullability differently — a
 /// `type` array in the base, a union in the subtype — and the fold compares
 /// property schemas on validation semantics to decide whether the branches

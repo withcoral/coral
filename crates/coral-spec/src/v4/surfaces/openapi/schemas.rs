@@ -416,6 +416,92 @@ fn enum_value(value: &Value) -> String {
         .map_or_else(|| value.to_string(), ToString::to_string)
 }
 
+/// The containers every schema in a document sits under, which therefore
+/// distinguish nothing between two schemas in the same document.
+const DOCUMENT_CONTAINERS: &[&str] = &["components", "schemas", "definitions", "$defs"];
+
+/// Names an interned type after the `$ref` that reached it.
+///
+/// The last segment is the name for the pointer this mostly sees:
+/// `#/components/schemas/Page` is the `Page` type, and every reference site
+/// interning that one name is the point of naming types this way.
+///
+/// A pointer *into* a subschema ends in an index instead —
+/// `#/components/schemas/Page/anyOf/0` — and that tip is not a name, it is a
+/// position that every such pointer in the document shares. Taking it alone
+/// collides `Page/anyOf/0` with `Other/anyOf/0` on `type_0`, and because
+/// answering from the cache is how a repeated `$ref` is meant to resolve, the
+/// second import silently adopts the first one's shape. 3.1 makes that ordinary
+/// rather than exotic: `anyOf/0` is the index nearly every nullable-union
+/// pointer lands on.
+///
+/// So an index tip is named after the path that reached it, minus the leading
+/// containers every schema shares. Keeping the whole path is what makes the id
+/// unique — stopping at the nearest named segment would still collide two
+/// schemas that spell the same property nullable.
 fn type_id_from_ref(reference: &str) -> String {
-    normalize_identifier(reference.rsplit('/').next().unwrap_or(reference), "type")
+    let segments = reference
+        .split('/')
+        .filter(|segment| !segment.is_empty() && *segment != "#")
+        .collect::<Vec<_>>();
+    let Some(last) = segments.last() else {
+        return normalize_identifier(reference, "type");
+    };
+    if !is_pointer_index(last) {
+        return normalize_identifier(last, "type");
+    }
+    let named = segments
+        .iter()
+        .copied()
+        .skip_while(|segment| DOCUMENT_CONTAINERS.contains(segment))
+        .collect::<Vec<_>>();
+    // A pointer of nothing but containers has no name to take, so it keeps the
+    // whole path rather than reducing to the empty string.
+    let path = if named.is_empty() { &segments } else { &named };
+    normalize_identifier(&path.join("_"), "type")
+}
+
+fn is_pointer_index(segment: &str) -> bool {
+    !segment.is_empty() && segment.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::type_id_from_ref;
+
+    #[test]
+    fn names_a_type_after_the_component_the_ref_points_at() {
+        assert_eq!(type_id_from_ref("#/components/schemas/Page"), "page");
+        assert_eq!(type_id_from_ref("#/definitions/Foo"), "foo");
+        assert_eq!(type_id_from_ref("Page"), "page");
+    }
+
+    #[test]
+    fn keeps_subschema_pointers_that_share_an_index_apart() {
+        assert_eq!(
+            type_id_from_ref("#/components/schemas/Page/anyOf/0"),
+            "page_anyof_0"
+        );
+        assert_eq!(
+            type_id_from_ref("#/components/schemas/Other/anyOf/0"),
+            "other_anyof_0"
+        );
+        // Stopping at the nearest named segment would leave both of these
+        // `meta_anyof_0`: the property name is only unique under its own
+        // schema.
+        assert_eq!(
+            type_id_from_ref("#/components/schemas/Page/properties/meta/anyOf/0"),
+            "page_properties_meta_anyof_0"
+        );
+        assert_eq!(
+            type_id_from_ref("#/components/schemas/Other/properties/meta/anyOf/0"),
+            "other_properties_meta_anyof_0"
+        );
+    }
+
+    #[test]
+    fn falls_back_to_the_prefix_when_a_pointer_names_nothing() {
+        assert_eq!(type_id_from_ref("#/0"), "type_0");
+        assert_eq!(type_id_from_ref("#/components/schemas"), "schemas");
+    }
 }
