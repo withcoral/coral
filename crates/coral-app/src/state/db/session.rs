@@ -73,13 +73,6 @@ pub(crate) trait DbRepos: DbSession + Sized {
         UsersRepo::new(self)
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "membership persistence lands before the transactional state that calls it"
-        )
-    )]
     fn workspace_members(&mut self) -> WorkspaceMembersRepo<'_, Self> {
         WorkspaceMembersRepo::new(self)
     }
