@@ -25,7 +25,7 @@ env:
 jobs:
   changes:
     name: Detect changes
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     permissions:
       contents: read
@@ -188,7 +188,7 @@ jobs:
 
   rust-checks:
     name: Rust checks
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: blacksmith-8vcpu-ubuntu-2404
     needs: changes
     # Healthy runs take 5-7 minutes. This is a backstop for a job that wedges
     # outside nextest's reach — a stuck build, cache restore, or toolchain
@@ -234,7 +234,7 @@ jobs:
 
   postgres-database-tests:
     name: Postgres database tests
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: blacksmith-8vcpu-ubuntu-2404
     needs: changes
     if: ${{ needs.changes.outputs.postgres_database_tests == 'true' }}
     services:
@@ -770,7 +770,7 @@ jobs:
 
   performance-regression:
     name: Performance regression
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: blacksmith-8vcpu-ubuntu-2404
     needs: changes
     if: ${{ needs.changes.outputs.performance-regression == 'true' }}
     steps:
