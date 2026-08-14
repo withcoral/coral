@@ -1862,7 +1862,10 @@ mod tests {
 
         assert_eq!(catalog.table_functions.len(), 1);
         assert_eq!(
-            catalog.table_functions[0].catalog_name.as_deref(),
+            catalog
+                .table_functions
+                .first()
+                .and_then(|function| function.catalog_name.as_deref()),
             Some("github_v4")
         );
     }
