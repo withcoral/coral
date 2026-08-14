@@ -1,7 +1,7 @@
 use sea_query::{Expr, ExprTrait, Func, OnConflict, Order, Query, SelectStatement};
 
 use crate::state::db::DbError;
-use crate::state::db::schema::WorkspaceMembers;
+use crate::state::db::schema::{Users, WorkspaceMembers};
 use crate::state::db::session::DbSession;
 use crate::workspaces::MemberRole;
 
@@ -58,6 +58,46 @@ where
         let rows: Vec<(String, String)> = self.session.fetch_all(statement).await?;
         rows.into_iter()
             .map(|(workspace_id, role)| Ok((workspace_id, decode_role(&role)?)))
+            .collect()
+    }
+
+    /// Lists one workspace's roster, ordered by user id.
+    ///
+    /// The join through `users` is what makes the roster one statement rather
+    /// than a role lookup per person, and it reads only the display name: the
+    /// issuer and subject stay inside the directory row, as they do everywhere
+    /// outside the login seam.
+    ///
+    /// Unlike the request hot path this is deliberately unfiltered by owner
+    /// count. An ownerless workspace is already concealed upstream, so nothing
+    /// reaches here to be listed; filtering again would instead hide the very
+    /// rows an owner-appointment tool needs to see.
+    pub(crate) async fn members_of_workspace(
+        &mut self,
+        workspace_id: &str,
+    ) -> Result<Vec<(String, MemberRole, Option<String>)>, DbError> {
+        let statement = Query::select()
+            .column((WorkspaceMembers::Table, WorkspaceMembers::UserId))
+            .column((WorkspaceMembers::Table, WorkspaceMembers::Role))
+            .column((Users::Table, Users::DisplayName))
+            .from(WorkspaceMembers::Table)
+            .inner_join(
+                Users::Table,
+                Expr::col((Users::Table, Users::UserId))
+                    .equals((WorkspaceMembers::Table, WorkspaceMembers::UserId)),
+            )
+            .and_where(
+                Expr::col((WorkspaceMembers::Table, WorkspaceMembers::WorkspaceId))
+                    .eq(workspace_id),
+            )
+            .order_by(
+                (WorkspaceMembers::Table, WorkspaceMembers::UserId),
+                Order::Asc,
+            )
+            .to_owned();
+        let rows: Vec<(String, String, Option<String>)> = self.session.fetch_all(statement).await?;
+        rows.into_iter()
+            .map(|(user_id, role, display_name)| Ok((user_id, decode_role(&role)?, display_name)))
             .collect()
     }
 

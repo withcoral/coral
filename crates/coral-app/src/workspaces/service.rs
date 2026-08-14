@@ -115,15 +115,38 @@ impl WorkspaceServiceApi for WorkspaceService {
         .await
     }
 
-    /// Placeholder until the membership listing lands with the manager query it
-    /// needs. Publishing the contract ahead of the behavior keeps the generated
-    /// bindings additive; serving it would be a silent claim that membership is
-    /// enforced.
+    /// Lists who may reach one workspace.
+    ///
+    /// The roster is `Manage` rather than `Read`: it is the access-control
+    /// state itself, so reading it is a control-plane act. A member reads the
+    /// workspace's contents without learning who else holds a key to it, and
+    /// an agent credential — which the control-plane restriction turns away
+    /// before any role is read — cannot enumerate the people behind it.
     async fn list_workspace_members(
         &self,
-        _request: Request<ListWorkspaceMembersRequest>,
+        request: Request<ListWorkspaceMembersRequest>,
     ) -> Result<Response<ListWorkspaceMembersResponse>, Status> {
-        Err(Status::unimplemented("ListWorkspaceMembers"))
+        let span = grpc_span(&request);
+        let workspaces = self.workspaces.clone();
+        let authorizer = self.authorizer.clone();
+        let principal = request_context(&request)?.principal().clone();
+        instrument_grpc(span, async move {
+            let request = request.into_inner();
+            let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            authorizer
+                .authorize(&principal, &workspace_name, WorkspaceAction::Manage)
+                .await
+                .map_err(app_status)?;
+            let members = workspaces
+                .list_workspace_members(&workspace_name)
+                .await
+                .map_err(app_status)?
+                .into_iter()
+                .map(member_to_proto)
+                .collect();
+            Ok(Response::new(ListWorkspaceMembersResponse { members }))
+        })
+        .await
     }
 
     async fn add_workspace_member(
@@ -220,7 +243,8 @@ mod tests {
 
     use coral_api::v1::{
         AddWorkspaceMemberRequest, CreateWorkspaceRequest, DeleteWorkspaceRequest,
-        ListWorkspacesRequest, RemoveWorkspaceMemberRequest, WorkspaceMember, WorkspaceRole,
+        ListWorkspaceMembersRequest, ListWorkspacesRequest, RemoveWorkspaceMemberRequest,
+        WorkspaceMember, WorkspaceRole,
     };
     use tempfile::TempDir;
     use tonic::{Code, Request, Status};
@@ -252,7 +276,10 @@ mod tests {
             .await
             .expect("a provisioned caller creates a workspace");
 
-        assert_eq!(deployment.role_of("team", &ada).await, Some(MemberRole::Owner));
+        assert_eq!(
+            deployment.role_of("team", &ada).await,
+            Some(MemberRole::Owner)
+        );
         // The listing keeps its host-wide shape until the membership flip.
         assert_eq!(
             deployment
@@ -366,7 +393,10 @@ mod tests {
             .add(&owner, "team", &ada, WorkspaceRole::Owner)
             .await
             .expect("promote");
-        assert_eq!(deployment.role_of("team", &ada).await, Some(MemberRole::Owner));
+        assert_eq!(
+            deployment.role_of("team", &ada).await,
+            Some(MemberRole::Owner)
+        );
         deployment
             .add(&owner, "team", &ada, WorkspaceRole::Member)
             .await
@@ -465,6 +495,78 @@ mod tests {
         assert_eq!(deployment.role_of("team", &ada).await, None);
     }
 
+    /// The roster is control-plane state, so it answers the same three ways
+    /// every other management RPC does: owners read it, members are denied it,
+    /// and outsiders are told the workspace is not there.
+    #[tokio::test]
+    async fn the_member_roster_is_owner_only_and_concealed_from_outsiders() {
+        let deployment = shared_deployment().await;
+        let owner_id = deployment.seed_user("owner").await;
+        let owner = federated(&owner_id);
+        let ada = deployment.seed_user("ada").await;
+        let outsider = federated(&deployment.seed_user("outsider").await);
+        deployment.create(&owner, "team").await.expect("create");
+        deployment
+            .add(&owner, "team", &ada, WorkspaceRole::Member)
+            .await
+            .expect("grant membership");
+
+        let mut expected = vec![
+            WorkspaceMember {
+                user_id: owner_id.clone(),
+                role: WorkspaceRole::Owner.into(),
+                display_name: "Seeded owner".to_string(),
+            },
+            WorkspaceMember {
+                user_id: ada.clone(),
+                role: WorkspaceRole::Member.into(),
+                display_name: "Seeded ada".to_string(),
+            },
+        ];
+        expected.sort_by(|left, right| left.user_id.cmp(&right.user_id));
+        assert_eq!(
+            deployment
+                .members(&owner, "team")
+                .await
+                .expect("an owner reads the roster"),
+            expected,
+        );
+
+        assert_eq!(
+            deployment
+                .members(&federated(&ada), "team")
+                .await
+                .expect_err("a member reads the workspace, not who else holds a key to it")
+                .code(),
+            Code::PermissionDenied,
+        );
+        for name in ["team", ABSENT] {
+            assert_eq!(
+                deployment
+                    .members(&outsider, name)
+                    .await
+                    .expect_err("an outsider reaches no roster")
+                    .code(),
+                Code::NotFound,
+            );
+        }
+
+        // An agent credential carries the person's read access and none of
+        // their control-plane authority, so the roster is closed to it even
+        // though the person behind it owns the workspace.
+        assert_eq!(
+            deployment
+                .members(
+                    &Principal::parse(&owner_id, PrincipalKind::Agent).expect("agent"),
+                    "team",
+                )
+                .await
+                .expect_err("an agent credential may not enumerate the workspace's people")
+                .code(),
+            Code::PermissionDenied,
+        );
+    }
+
     #[tokio::test]
     async fn the_local_principal_creates_only_where_the_deployment_admits_it() {
         let shared = shared_deployment().await;
@@ -533,6 +635,22 @@ mod tests {
                 ))
                 .await
                 .map(|_| ())
+        }
+
+        async fn members(
+            &self,
+            principal: &Principal,
+            name: &str,
+        ) -> Result<Vec<WorkspaceMember>, Status> {
+            self.service
+                .list_workspace_members(request(
+                    ListWorkspaceMembersRequest {
+                        workspace: Some(workspace_to_proto(&workspace(name))),
+                    },
+                    principal.clone(),
+                ))
+                .await
+                .map(|response| response.into_inner().members)
         }
 
         async fn add(

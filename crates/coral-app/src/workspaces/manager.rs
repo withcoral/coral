@@ -398,6 +398,34 @@ impl WorkspaceManager {
             .collect()
     }
 
+    /// Lists one workspace's members, ordered by user id.
+    ///
+    /// The counterpart of [`Self::list_memberships_for_user`]: that answers
+    /// "which workspaces are mine", this answers "who is in this one". A
+    /// workspace nobody may reach never gets here, because the caller's
+    /// authority over it is settled before the manager is asked.
+    ///
+    /// A workspace that does not exist is indistinguishable from one with no
+    /// members, and deliberately so: both report an empty roster, and the
+    /// caller has already been told which workspaces they may know about.
+    pub(crate) async fn list_workspace_members(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<Vec<WorkspaceMemberRecord>, AppError> {
+        let mut session = self.db.as_ref();
+        Ok(session
+            .workspace_members()
+            .members_of_workspace(workspace_name.as_str())
+            .await?
+            .into_iter()
+            .map(|(user_id, role, display_name)| WorkspaceMemberRecord {
+                user_id,
+                display_name,
+                role,
+            })
+            .collect())
+    }
+
     /// Grants one membership, moving an existing one onto `role`.
     ///
     /// Granting a role somebody already holds succeeds without writing, so a
@@ -486,6 +514,7 @@ mod tests {
     use crate::sources::model::{InstalledSource, SourceOrigin};
     use crate::state::db::{
         CoralDb, DatabaseConfig, DbRepos, LoginIdentity, LoginProvisioning, ResolvedDatabaseConfig,
+        WorkspaceMemberRecord,
     };
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::workspaces::{MemberRole, WorkspaceName, WorkspacePoolRegistry, WorkspaceRecord};
@@ -573,6 +602,15 @@ mod tests {
 
     fn workspace(name: &str) -> WorkspaceName {
         WorkspaceName::parse(name).expect("workspace name")
+    }
+
+    /// The roster row `seed_user` produces for one person in one role.
+    fn member_record(user_id: &str, role: MemberRole) -> WorkspaceMemberRecord {
+        WorkspaceMemberRecord {
+            user_id: user_id.to_string(),
+            display_name: Some("Seeded User".to_string()),
+            role,
+        }
     }
 
     fn membership(name: &WorkspaceName, role: MemberRole) -> WorkspaceMembership {
@@ -681,6 +719,76 @@ mod tests {
                 .len(),
             2,
             "the host-wide inventory stays caller-independent"
+        );
+    }
+
+    /// The roster is the other half of the membership view, and it is one
+    /// query: a workspace's whole membership arrives with each person's
+    /// display name already attached, without a per-row directory lookup.
+    #[tokio::test]
+    async fn listing_a_workspace_roster_names_every_member_once() {
+        let (_temp, db, manager) = membership_manager().await;
+        let owner = seed_user(&db, "owner").await;
+        let member = seed_user(&db, "member").await;
+        let team = workspace("team");
+        let other = workspace("other");
+        manager
+            .create_workspace_for_user(&team, &owner)
+            .await
+            .expect("create team");
+        manager
+            .create_workspace_for_user(&other, &member)
+            .await
+            .expect("create other");
+        manager
+            .add_workspace_member(&team, &member, MemberRole::Member)
+            .await
+            .expect("grant membership");
+
+        let mut expected = vec![
+            member_record(&owner, MemberRole::Owner),
+            member_record(&member, MemberRole::Member),
+        ];
+        expected.sort_by(|left, right| left.user_id.cmp(&right.user_id));
+        assert_eq!(
+            manager
+                .list_workspace_members(&team)
+                .await
+                .expect("list the team roster"),
+            expected,
+            "the roster must carry each member exactly once, ordered by user id"
+        );
+        assert_eq!(
+            manager
+                .list_workspace_members(&other)
+                .await
+                .expect("list the other roster"),
+            vec![member_record(&member, MemberRole::Owner)],
+            "a roster must not leak a membership held in another workspace"
+        );
+
+        // A promotion moves the person's row rather than adding a second one.
+        manager
+            .add_workspace_member(&team, &member, MemberRole::Owner)
+            .await
+            .expect("promote the member");
+        assert_eq!(
+            manager
+                .list_workspace_members(&team)
+                .await
+                .expect("list the promoted roster")
+                .into_iter()
+                .filter(|found| found.user_id == member)
+                .collect::<Vec<_>>(),
+            vec![member_record(&member, MemberRole::Owner)],
+        );
+
+        assert_eq!(
+            manager
+                .list_workspace_members(&workspace("never-created"))
+                .await
+                .expect("a workspace nobody may know about lists nothing"),
+            vec![],
         );
     }
 
