@@ -9,9 +9,11 @@
     not(test),
     expect(
         dead_code,
-        reason = "the role lands with its persistence, before the authorizer and RPCs that read it"
+        reason = "the role lands with its persistence, before the RPCs that read it"
     )
 )]
+
+use crate::workspaces::authorization::WorkspaceAction;
 
 /// One caller's role in one workspace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,11 +48,37 @@ impl MemberRole {
             _ => None,
         }
     }
+
+    /// Reports whether this role by itself permits `action`.
+    ///
+    /// This is only the role half of the decision. Concealment, the local
+    /// principal policy, and the agent control-plane restriction are all
+    /// settled by [`crate::workspaces::authorization::WorkspaceAuthorizer`]
+    /// before a role is ever consulted, so a role can never widen them.
+    pub(crate) const fn allows(self, action: WorkspaceAction) -> bool {
+        match self {
+            Self::Owner => true,
+            Self::Member => matches!(action, WorkspaceAction::Read),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::MemberRole;
+    use crate::workspaces::authorization::WorkspaceAction;
+
+    #[test]
+    fn owner_allows_every_action_and_member_allows_only_reads() {
+        for action in [WorkspaceAction::Read, WorkspaceAction::Manage] {
+            assert!(
+                MemberRole::Owner.allows(action),
+                "owner must allow {action:?}"
+            );
+        }
+        assert!(MemberRole::Member.allows(WorkspaceAction::Read));
+        assert!(!MemberRole::Member.allows(WorkspaceAction::Manage));
+    }
 
     #[test]
     fn member_role_round_trips_through_its_storage_encoding() {

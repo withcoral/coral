@@ -1,3 +1,4 @@
+pub(crate) mod authorization;
 pub(crate) mod manager;
 pub(crate) mod member;
 pub(crate) mod model;
