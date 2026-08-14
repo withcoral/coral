@@ -19,6 +19,26 @@ pub enum AppError {
     /// The request did not present valid authentication.
     #[error("unauthenticated: {0}")]
     Unauthenticated(String),
+    /// The caller authenticated but may not perform the operation.
+    ///
+    /// It is the deliberate opposite of [`Self::WorkspaceNotFound`], which
+    /// conceals. Raising it is only safe where the answer does not depend on
+    /// whether the named resource exists — because the caller has already been
+    /// shown to reach it, or because the rule denies them every resource alike.
+    #[error("permission denied: {0}")]
+    PermissionDenied(String),
+    /// A requested user was not found in the local directory.
+    #[error("user '{0}' not found")]
+    UserNotFound(String),
+    /// A login subject is already bound to a different verified issuer.
+    ///
+    /// The message names neither issuer: which providers a deployment trusts,
+    /// and which one owns a given subject, are not the caller's to learn.
+    #[error("identity provider issuer does not match the stored user")]
+    IssuerMismatch,
+    /// Removing or demoting this member would leave a workspace with no owner.
+    #[error("workspace '{0}' must retain at least one owner")]
+    LastWorkspaceOwner(String),
     /// A requested source was not found in config.
     #[error("source '{0}' not found")]
     SourceNotFound(String),
@@ -305,15 +325,19 @@ fn grpc_code(status: StatusCode) -> Code {
 fn app_code(error: &AppError) -> Code {
     match error {
         AppError::Unauthenticated(_) => Code::Unauthenticated,
+        AppError::PermissionDenied(_) => Code::PermissionDenied,
         AppError::SourceNotFound(_)
         | AppError::FunctionNotFound(_)
         | AppError::IdentitySpecNotFound { .. }
+        | AppError::UserNotFound(_)
         | AppError::WorkspaceNotFound(_) => Code::NotFound,
         AppError::FunctionAlreadyExists(_) | AppError::WorkspaceAlreadyExists(_) => {
             Code::AlreadyExists
         }
         AppError::InvalidInput(_) => Code::InvalidArgument,
         AppError::FailedPrecondition(_)
+        | AppError::IssuerMismatch
+        | AppError::LastWorkspaceOwner(_)
         | AppError::MissingSourceInputs { .. }
         | AppError::UnsupportedV4IdentityRequirements { .. }
         | AppError::MissingOrIncompatibleV4Materialization { .. }
@@ -367,6 +391,86 @@ mod tests {
         assert_eq!(status.code(), Code::Unauthenticated);
         assert!(status.message().len() <= MAX_STATUS_DETAIL_BYTES);
         assert!(status.message().ends_with("… (truncated)"));
+    }
+
+    /// The gRPC code is the binding half of the workspace access-control error
+    /// contract: clients branch on it, so a variant that drifts to another code
+    /// silently changes what a caller is told about their own access.
+    #[test]
+    fn app_status_binds_the_workspace_access_control_codes() {
+        let cases = [
+            (
+                AppError::PermissionDenied("owner access is required".to_string()),
+                Code::PermissionDenied,
+            ),
+            (
+                AppError::UserNotFound("11111111-2222-3333-4444-555555555555".to_string()),
+                Code::NotFound,
+            ),
+            (AppError::IssuerMismatch, Code::FailedPrecondition),
+            (
+                AppError::LastWorkspaceOwner("work".to_string()),
+                Code::FailedPrecondition,
+            ),
+        ];
+
+        for (error, expected) in cases {
+            let rendered = error.to_string();
+            assert_eq!(
+                app_status(error).code(),
+                expected,
+                "unexpected code for {rendered}"
+            );
+        }
+    }
+
+    /// Concealment and denial must stay distinguishable in the structured
+    /// reason too: a concealed workspace carries `WORKSPACE_NOT_FOUND`, and a
+    /// denial carries no Coral reason that would confirm the workspace exists.
+    #[test]
+    fn app_status_reasons_separate_concealment_from_denial() {
+        let concealed = app_status(AppError::WorkspaceNotFound("work".to_string()));
+        let denied = app_status(AppError::PermissionDenied(
+            "owner access is required".to_string(),
+        ));
+
+        assert_eq!(
+            concealed
+                .get_error_details_vec()
+                .iter()
+                .find_map(|detail| match detail {
+                    ErrorDetail::ErrorInfo(info) => Some(info.reason.clone()),
+                    _ => None,
+                }),
+            Some(CORAL_ERROR_REASON_WORKSPACE_NOT_FOUND.to_string())
+        );
+        assert!(
+            denied.get_error_details_vec().is_empty(),
+            "a denial must not carry a Coral reason detail"
+        );
+    }
+
+    /// Telemetry reasons are the other half of the contract, and the mapping is
+    /// exhaustive, so an unmapped variant must be a compile error rather than a
+    /// span attribute that quietly reads `INTERNAL`.
+    #[test]
+    fn telemetry_names_each_workspace_access_control_error() {
+        use crate::telemetry::app_error_type;
+
+        for (error, expected) in [
+            (
+                AppError::PermissionDenied(String::new()),
+                "PERMISSION_DENIED",
+            ),
+            (AppError::UserNotFound(String::new()), "USER_NOT_FOUND"),
+            (AppError::IssuerMismatch, "ISSUER_MISMATCH"),
+            (
+                AppError::LastWorkspaceOwner(String::new()),
+                "LAST_WORKSPACE_OWNER",
+            ),
+        ] {
+            assert_eq!(app_error_type(&error), expected);
+        }
     }
 
     #[test]

@@ -58,6 +58,10 @@ pub(crate) const QUERY_TRACE_TABLE_FUNCTIONS_ATTR: &str = "coral.query.table_fun
 pub(crate) fn app_error_type(error: &AppError) -> &'static str {
     match error {
         AppError::Unauthenticated(_) => "UNAUTHENTICATED",
+        AppError::PermissionDenied(_) => "PERMISSION_DENIED",
+        AppError::UserNotFound(_) => "USER_NOT_FOUND",
+        AppError::IssuerMismatch => "ISSUER_MISMATCH",
+        AppError::LastWorkspaceOwner(_) => "LAST_WORKSPACE_OWNER",
         AppError::SourceNotFound(_) => "SOURCE_NOT_FOUND",
         AppError::FunctionNotFound(_) => "FUNCTION_NOT_FOUND",
         AppError::FunctionAlreadyExists(_) => "FUNCTION_ALREADY_EXISTS",
