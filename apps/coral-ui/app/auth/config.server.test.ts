@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { isCoralDesktopBuild } from '@/lib/coral-desktop'
@@ -255,6 +257,24 @@ describe('Coral UI auth config', () => {
       ).toThrow('CORAL_UI_SESSION_COOKIE_NAME may use a __Host- or __Secure- prefix only')
     },
   )
+
+  // Each of these is derived from `CORAL_UI_PUBLIC_URL` rather than read from
+  // the environment, so documenting one in `.env.example` would advertise a
+  // setting that silently does nothing. The contract is what the file says, so
+  // the file is what this asserts against.
+  it('keeps redundant auth settings out of the documented environment contract', () => {
+    const example = readFileSync(new URL('../../.env.example', import.meta.url), 'utf8')
+    for (const derivedName of [
+      'CORAL_UI_AUTH_CLIENT_ID',
+      'CORAL_UI_AUTH_REDIRECT_URI',
+      'CORAL_UI_AUTH_RESOURCE',
+      'CORAL_UI_AUTH_SCOPE',
+      'CORAL_UI_COOKIE_SECURE',
+      'CORAL_UI_MCP_URL',
+    ]) {
+      expect(example).not.toContain(derivedName)
+    }
+  })
 })
 
 // Every case above hands `resolveAuthConfig` an explicit `isDesktopBuild`, which

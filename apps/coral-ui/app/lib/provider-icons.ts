@@ -3,7 +3,7 @@
 // caller should fall back to the generic Plug glyph.
 //
 // Two reasons a source might not have an entry here:
-// 1. We don't have a logo asset yet — drop a file into coral-ui/public/images/providers/
+// 1. We don't have a logo asset yet — drop a file into apps/coral-ui/public/images/providers/
 //    and add a line below.
 // 2. The source is genuinely generic (e.g. hn, osv). The fallback glyph is fine.
 //
