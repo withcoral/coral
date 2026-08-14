@@ -822,6 +822,7 @@ mod tests {
     #[test]
     fn required_function_argument_does_not_count_as_omitted_evidence() {
         let mut function = TableFunctionInfo {
+            catalog_name: None,
             schema_name: "fixture".to_string(),
             function_name: "search".to_string(),
             description: String::new(),

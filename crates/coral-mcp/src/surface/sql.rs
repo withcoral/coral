@@ -40,6 +40,8 @@ pub(crate) struct SqlBatchValue {
 #[derive(Clone, Serialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub(crate) struct SqlGuideValue {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) catalog: Option<String>,
     pub(crate) schema: String,
     pub(crate) resource: String,
     guide: String,
@@ -95,8 +97,15 @@ enum SqlToolOutputSchema {
 }
 
 impl SqlGuideValue {
-    pub(crate) fn new(schema: String, resource: String, guide: String, id: String) -> Self {
+    pub(crate) fn new(
+        catalog: Option<String>,
+        schema: String,
+        resource: String,
+        guide: String,
+        id: String,
+    ) -> Self {
         Self {
+            catalog,
             schema,
             resource,
             guide,
@@ -268,5 +277,33 @@ fn sql_tool_description(context: &ToolDescriptionContext) -> String {
             context.connected_sources_sentence(),
             context.visible_table_count
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::SqlGuideValue;
+
+    #[test]
+    fn required_guide_value_keeps_catalog_identity() {
+        let guide = SqlGuideValue::new(
+            Some("github_v4".to_string()),
+            "issues".to_string(),
+            "list_for_repo".to_string(),
+            "Use repository lookup.".to_string(),
+            "guide-id".to_string(),
+        );
+
+        assert_eq!(
+            serde_json::to_value(guide).expect("guide serializes"),
+            json!({
+                "catalog": "github_v4",
+                "schema": "issues",
+                "resource": "list_for_repo",
+                "guide": "Use repository lookup."
+            })
+        );
     }
 }
