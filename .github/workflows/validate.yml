@@ -192,19 +192,10 @@ jobs:
     needs: changes
     if: ${{ needs.changes.outputs.rust_checks == 'true' }}
     steps:
-      - name: Free Linux runner disk space
-        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
-        with:
-          # Rust comes from rustup; this job does not use the hosted language tool cache.
-          tool-cache: true
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          # Keep swap for the memory-intensive clippy, test, and docs phases.
-          swap-storage: false
-
+      # No disk-space reclamation step here: the Blacksmith runner boots with a
+      # 145 GB root filesystem and ~81 GB free before any workflow step runs, so
+      # the GitHub-hosted-runner cleanup dance cost ~50s per run to reclaim space
+      # this job never needed (and evicted pre-pulled Docker images along the way).
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
@@ -520,9 +511,9 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - uses: useblacksmith/setup-docker-builder@v2
         with:
-          cache-binary: false
+          cache-key: coral/docker/Dockerfile
 
       - name: Build and smoke the Coral image entrypoint
         run: make coral-docker-stub-test CORAL_DOCKER_IMAGE=coral:stub
@@ -540,9 +531,9 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - uses: useblacksmith/setup-docker-builder@v2
         with:
-          cache-binary: false
+          cache-key: coral/docker/Dockerfile.reef
 
       - name: Check Reef image contract
         run: node --test docker/reef-image.test.mjs docker/reef-publish.test.mjs
