@@ -35,7 +35,11 @@ export default [
       route(routePattern('workspaceTraces'), 'routes/traces.tsx', [
         route(':traceId', 'routes/trace-detail.tsx'),
       ]),
-      route(routePattern('settings'), 'routes/settings.tsx'),
+      route(routePattern('settings'), 'routes/settings.tsx', [
+        index('routes/settings/index.ts'),
+        route('mcp-clients', 'routes/settings/mcp-clients.tsx'),
+        route('runtime-features', 'routes/settings/runtime-features.tsx'),
+      ]),
     ]),
   ]),
 ] satisfies RouteConfig

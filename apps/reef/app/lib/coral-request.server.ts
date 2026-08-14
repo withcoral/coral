@@ -10,6 +10,7 @@ import { createGrpcWebTransport } from '@connectrpc/connect-web'
 
 import { reefAuthConfig } from '@/auth/config.server'
 import { CatalogService } from '@/generated/coral/v1/catalog_pb'
+import { FeatureService } from '@/generated/coral/v1/features_pb'
 import { FunctionService } from '@/generated/coral/v1/functions_pb'
 import { QueryService } from '@/generated/coral/v1/query_pb'
 import { SourceService } from '@/generated/coral/v1/sources_pb'
@@ -30,6 +31,10 @@ export function workspaceClientForRequest(request: Request, accessToken: string 
 
 export function catalogClientForRequest(request: Request, accessToken: string | null) {
   return createClient(CatalogService, coralTransportForRequest(request, accessToken))
+}
+
+export function featureClientForRequest(request: Request, accessToken: string | null) {
+  return createClient(FeatureService, coralTransportForRequest(request, accessToken))
 }
 
 export function functionClientForRequest(request: Request, accessToken: string | null) {

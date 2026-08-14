@@ -10,6 +10,7 @@ inputs:
     paths:
       - ../../crates/coral-api/proto/coral/v1/resources.proto
       - ../../crates/coral-api/proto/coral/v1/catalog.proto
+      - ../../crates/coral-api/proto/coral/v1/features.proto
       - ../../crates/coral-api/proto/coral/v1/functions.proto
       - ../../crates/coral-api/proto/coral/v1/query.proto
       - ../../crates/coral-api/proto/coral/v1/sources.proto
