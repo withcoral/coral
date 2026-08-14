@@ -13,8 +13,7 @@ use super::crypto::{
 };
 use super::model::{IdentityAudience, IdentityName, IdentityOwner, IdentitySpecReference};
 use crate::bootstrap::AppError;
-use crate::credentials::CredentialsError;
-use crate::credentials::encryption::{CredentialEncryptionKey, CredentialKeyProvider};
+use crate::credentials::encryption::CredentialKeyProvider;
 use crate::encrypted_document::EncryptedEnvelopeDocument;
 use crate::identity::Principal;
 use crate::identity_specs::identity_spec_fingerprint;
@@ -114,24 +113,6 @@ struct IdentityUseSnapshot {
     identity_document: Option<IdentityDocumentRecord>,
     identity_spec: Option<IdentitySpecRecord>,
     identity_spec_document: Option<IdentitySpecDocumentRecord>,
-}
-
-struct PinnedKeyProvider {
-    key: CredentialEncryptionKey,
-}
-
-impl CredentialKeyProvider for PinnedKeyProvider {
-    fn active_key(&self) -> Result<CredentialEncryptionKey, CredentialsError> {
-        Err(CredentialsError::Crypto(
-            "active key access is not allowed while reading an identity".to_string(),
-        ))
-    }
-
-    fn key(&self, key_id: &str) -> Result<CredentialEncryptionKey, CredentialsError> {
-        (key_id == self.key.key_id())
-            .then(|| self.key.clone())
-            .ok_or_else(|| CredentialsError::Crypto("identity key id changed".to_string()))
-    }
 }
 
 impl IdentityManager {
@@ -677,15 +658,11 @@ fn decrypt_fixed_token_material(
     key_provider: &dyn CredentialKeyProvider,
 ) -> Result<BTreeMap<String, String>, AppError> {
     let envelope = document.envelope;
-    let resolved_key = key_provider
+    // Resolve the stored key first so an unavailable key provider stays a credential
+    // error; everything the envelope layer rejects afterward is stored-material fault.
+    let kek = key_provider
         .key(&envelope.key_id)
         .map_err(AppError::Credentials)?;
-    if resolved_key.key_id() != envelope.key_id {
-        return Err(AppError::Credentials(CredentialsError::Crypto(
-            "credential key provider returned a different key id".to_string(),
-        )));
-    }
-    let pinned_provider = PinnedKeyProvider { key: resolved_key };
     let binding =
         IdentityDocumentBinding::new(&identity.owner, &identity.name, &identity.spec_reference)
             .map_err(|_error| {
@@ -695,14 +672,13 @@ fn decrypt_fixed_token_material(
                     "has invalid authenticated metadata",
                 )
             })?;
-    let material =
-        decrypt_identity_document(&binding, &envelope, &pinned_provider).map_err(|_error| {
-            AppError::from(corrupt_identity(
-                &identity.owner,
-                &identity.name,
-                "has an encrypted setup document that failed authentication or decoding",
-            ))
-        })?;
+    let material = decrypt_identity_document(&binding, &envelope, &kek).map_err(|_error| {
+        AppError::from(corrupt_identity(
+            &identity.owner,
+            &identity.name,
+            "has an encrypted setup document that failed authentication or decoding",
+        ))
+    })?;
     if material.len() != 1
         || material.get(FIXED_TOKEN_KEY).is_none_or(|token| {
             let trimmed = token.trim();
