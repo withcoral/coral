@@ -105,12 +105,32 @@ mod tests {
         assert!(!rows_match_current_migrations(&bad_checksum));
     }
 
-    #[tokio::test]
-    async fn sqlite_workspace_id_rejects_null() {
+    async fn migrated_sqlite_pool() -> sqlx::SqlitePool {
         let pool = sqlx::SqlitePool::connect(":memory:")
             .await
             .expect("sqlite pool");
         MIGRATOR.run(&pool).await.expect("run migrations");
+        pool
+    }
+
+    async fn insert_user(pool: &sqlx::SqlitePool, user_id: &str, issuer: &str, subject: &str) {
+        sqlx::query(
+            "INSERT INTO users (\
+                user_id, issuer, subject, display_name, \
+                created_at_unix_nanos, last_login_at_unix_nanos\
+            ) VALUES (?, ?, ?, NULL, 0, 0)",
+        )
+        .bind(user_id)
+        .bind(issuer)
+        .bind(subject)
+        .execute(pool)
+        .await
+        .expect("insert user");
+    }
+
+    #[tokio::test]
+    async fn sqlite_workspace_id_rejects_null() {
+        let pool = migrated_sqlite_pool().await;
 
         let error =
             sqlx::query("INSERT INTO workspaces (id, created_at_unix_nanos) VALUES (NULL, 0)")
@@ -120,6 +140,139 @@ mod tests {
 
         assert!(
             error.to_string().contains("NOT NULL"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn sqlite_migrations_provision_no_workspace() {
+        let pool = migrated_sqlite_pool().await;
+
+        let workspaces: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM workspaces")
+            .fetch_one(&pool)
+            .await
+            .expect("count workspaces");
+        let members: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM workspace_members")
+            .fetch_one(&pool)
+            .await
+            .expect("count workspace members");
+
+        assert_eq!(workspaces.0, 0);
+        assert_eq!(members.0, 0);
+    }
+
+    #[tokio::test]
+    async fn sqlite_users_reject_duplicate_subject() {
+        let pool = migrated_sqlite_pool().await;
+        insert_user(&pool, "user-1", "https://issuer.example", "subject-1").await;
+
+        let error = sqlx::query(
+            "INSERT INTO users (\
+                user_id, issuer, subject, display_name, \
+                created_at_unix_nanos, last_login_at_unix_nanos\
+            ) VALUES ('user-2', 'https://other.example', 'subject-1', NULL, 0, 0)",
+        )
+        .execute(&pool)
+        .await
+        .expect_err("duplicate subject must be rejected");
+
+        assert!(
+            error.to_string().contains("UNIQUE constraint failed"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn sqlite_workspace_members_reject_unknown_role() {
+        let pool = migrated_sqlite_pool().await;
+        sqlx::query("INSERT INTO workspaces (id, created_at_unix_nanos) VALUES ('workspace-1', 0)")
+            .execute(&pool)
+            .await
+            .expect("insert workspace");
+        insert_user(&pool, "user-1", "https://issuer.example", "subject-1").await;
+
+        for role in ["owner", "member"] {
+            sqlx::query(
+                "INSERT INTO workspace_members \
+                    (workspace_id, user_id, role, created_at_unix_nanos) \
+                 VALUES ('workspace-1', 'user-1', ?, 0) \
+                 ON CONFLICT (workspace_id, user_id) DO UPDATE SET role = excluded.role",
+            )
+            .bind(role)
+            .execute(&pool)
+            .await
+            .expect("supported role must be accepted");
+        }
+
+        let error = sqlx::query(
+            "INSERT INTO workspace_members \
+                (workspace_id, user_id, role, created_at_unix_nanos) \
+             VALUES ('workspace-1', 'user-1', 'admin', 0)",
+        )
+        .execute(&pool)
+        .await
+        .expect_err("unknown role must be rejected");
+
+        assert!(
+            error.to_string().contains("CHECK constraint failed"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn sqlite_workspace_deletion_cascades_membership() {
+        let pool = migrated_sqlite_pool().await;
+        sqlx::query("INSERT INTO workspaces (id, created_at_unix_nanos) VALUES ('workspace-1', 0)")
+            .execute(&pool)
+            .await
+            .expect("insert workspace");
+        insert_user(&pool, "user-1", "https://issuer.example", "subject-1").await;
+        sqlx::query(
+            "INSERT INTO workspace_members \
+                (workspace_id, user_id, role, created_at_unix_nanos) \
+             VALUES ('workspace-1', 'user-1', 'owner', 0)",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert membership");
+
+        sqlx::query("DELETE FROM workspaces WHERE id = 'workspace-1'")
+            .execute(&pool)
+            .await
+            .expect("delete workspace");
+
+        let members: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM workspace_members")
+            .fetch_one(&pool)
+            .await
+            .expect("count workspace members");
+        let users: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM users")
+            .fetch_one(&pool)
+            .await
+            .expect("count users");
+
+        assert_eq!(members.0, 0);
+        assert_eq!(users.0, 1);
+    }
+
+    #[tokio::test]
+    async fn sqlite_membership_requires_known_user() {
+        let pool = migrated_sqlite_pool().await;
+        sqlx::query("INSERT INTO workspaces (id, created_at_unix_nanos) VALUES ('workspace-1', 0)")
+            .execute(&pool)
+            .await
+            .expect("insert workspace");
+
+        let error = sqlx::query(
+            "INSERT INTO workspace_members \
+                (workspace_id, user_id, role, created_at_unix_nanos) \
+             VALUES ('workspace-1', 'missing-user', 'member', 0)",
+        )
+        .execute(&pool)
+        .await
+        .expect_err("unknown user must be rejected");
+
+        assert!(
+            error.to_string().contains("FOREIGN KEY constraint failed"),
             "unexpected error: {error}"
         );
     }

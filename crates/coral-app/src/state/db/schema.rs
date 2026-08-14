@@ -47,6 +47,34 @@ pub(in crate::state::db) enum TaskQueryRelations {
     RelationName,
 }
 
+#[expect(
+    dead_code,
+    reason = "The access-control schema lands before the user and membership repositories that query it."
+)]
+#[derive(Iden)]
+pub(in crate::state::db) enum Users {
+    Table,
+    UserId,
+    Issuer,
+    Subject,
+    DisplayName,
+    CreatedAtUnixNanos,
+    LastLoginAtUnixNanos,
+}
+
+#[expect(
+    dead_code,
+    reason = "The access-control schema lands before the user and membership repositories that query it."
+)]
+#[derive(Iden)]
+pub(in crate::state::db) enum WorkspaceMembers {
+    Table,
+    WorkspaceId,
+    UserId,
+    Role,
+    CreatedAtUnixNanos,
+}
+
 #[derive(Iden)]
 #[cfg_attr(
     not(test),
