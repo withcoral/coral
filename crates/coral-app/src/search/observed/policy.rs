@@ -5,6 +5,8 @@ use crate::search::observed::sqlite_queue::ObservedValuesSurfaceKind;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ObservedValuesLiveScope {
     pub(crate) source_name: String,
+    pub(crate) catalog_name: Option<String>,
+    pub(crate) schema_name: String,
     pub(crate) source_scope_id: String,
     pub(crate) surface_kind: ObservedValuesSurfaceKind,
     pub(crate) surface_name: String,
@@ -116,6 +118,8 @@ mod tests {
     fn live_scope(source_name: &str, source_scope_id: &str) -> ObservedValuesLiveScope {
         ObservedValuesLiveScope {
             source_name: source_name.to_string(),
+            catalog_name: None,
+            schema_name: source_name.to_string(),
             source_scope_id: source_scope_id.to_string(),
             surface_kind: ObservedValuesSurfaceKind::Table,
             surface_name: "issues".to_string(),

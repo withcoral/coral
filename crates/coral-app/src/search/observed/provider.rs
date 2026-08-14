@@ -241,7 +241,7 @@ fn observed_search_outcome(
     let has_more = hits.retrieval_limited;
     let failed_source_count = policy.failed_source_count();
     let diversified_hits = ranking::diversify_observed_hits(hits.hits, retrieval_limit);
-    let candidates = observed_entry_matches(diversified_hits, terms);
+    let candidates = observed_entry_matches(diversified_hits, terms, policy.live_scopes());
     let state = if has_more
         || drain.budget_exhausted
         || drain.failed_jobs > 0
@@ -298,16 +298,25 @@ fn observed_search_outcome(
 fn observed_entry_matches(
     hits: Vec<ObservedValuesSearchHit>,
     terms: &[String],
+    live_scopes: &[crate::search::observed::ObservedValuesLiveScope],
 ) -> Vec<SurfaceMatch> {
     let mut matches = Vec::<SurfaceMatch>::new();
     for hit in hits {
         if !query_names_value(terms, &hit.display_value) {
             continue;
         }
+        let Some(scope) = live_scopes.iter().find(|scope| {
+            scope.source_scope_id == hit.source_scope_id
+                && scope.source_name == hit.source_name
+                && scope.surface_kind == hit.surface_kind
+                && scope.surface_name == hit.surface_name
+        }) else {
+            continue;
+        };
         let id = SearchSurfaceId {
-            catalog_name: None,
-            schema_name: hit.source_name,
-            name: hit.surface_name,
+            catalog_name: scope.catalog_name.clone(),
+            schema_name: scope.schema_name.clone(),
+            name: scope.surface_name.clone(),
             kind: surface_kind(hit.surface_kind),
         };
         let values = FieldValues {
@@ -822,6 +831,7 @@ fn observed_sqlite_app_error(error: &SqliteSearchError) -> AppError {
 mod entry_match_tests {
     use super::{observed_entry_matches, observed_outcome_failure, query_names_value};
     use crate::hash::sha256_hex;
+    use crate::search::observed::ObservedValuesLiveScope;
     use crate::search::observed::sqlite_projection::ObservedValuesSearchHit;
     use crate::search::observed::sqlite_queue::ObservedValuesSurfaceKind;
     use crate::search::result::{ProviderStatus, SearchProviderKind, SearchProviderState};
@@ -838,7 +848,11 @@ mod entry_match_tests {
         ];
         let terms = vec!["linear".to_string(), "ui-520".to_string()];
 
-        let matches = observed_entry_matches(hits, &terms);
+        let live_scopes = vec![
+            live_scope("linear", "issues"),
+            live_scope("linear", "teams"),
+        ];
+        let matches = observed_entry_matches(hits, &terms, &live_scopes);
 
         assert_eq!(matches.len(), 1, "only the named value elects its entry");
         let entry = matches.first().expect("one match");
@@ -885,7 +899,7 @@ mod entry_match_tests {
     ) -> ObservedValuesSearchHit {
         ObservedValuesSearchHit {
             source_name: source_name.to_string(),
-            source_scope_id: "workspace".to_string(),
+            source_scope_id: format!("{source_name}:{surface_name}"),
             surface_kind: ObservedValuesSurfaceKind::Table,
             surface_name: surface_name.to_string(),
             column_name: column_name.to_string(),
@@ -893,6 +907,17 @@ mod entry_match_tests {
             display_value: display_value.to_string(),
             last_observed_at: "2026-07-09T12:00:00.000Z".to_string(),
             observation_count: 1,
+        }
+    }
+
+    fn live_scope(source_name: &str, surface_name: &str) -> ObservedValuesLiveScope {
+        ObservedValuesLiveScope {
+            source_name: source_name.to_string(),
+            catalog_name: None,
+            schema_name: source_name.to_string(),
+            source_scope_id: format!("{source_name}:{surface_name}"),
+            surface_kind: ObservedValuesSurfaceKind::Table,
+            surface_name: surface_name.to_string(),
         }
     }
 }

@@ -62,7 +62,7 @@ pub(crate) struct ObservedValueCandidate {
 
 #[derive(Debug, Clone)]
 pub(crate) struct ObservedValuesQueueJob {
-    /// Installed source: lifecycle clears, generations, and the SQL namespace.
+    /// Installed source that owns lifecycle clears and generations.
     pub(crate) source_name: String,
     pub(crate) source_scope_id: String,
     pub(crate) surface_kind: ObservedValuesSurfaceKind,
