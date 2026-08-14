@@ -14,12 +14,23 @@ const MAX_SUBJECT_BYTES: usize = 255;
 const MAX_DISPLAY_NAME_BYTES: usize = 255;
 
 /// A fully verified identity. Intentionally does not implement `Debug`.
+///
+/// The upstream identity is the verified `issuer` plus the raw `subject`, and
+/// that pair alone keys the user directory. `principal_claim` is a separately
+/// configured projection of the same token: it is carried only so login
+/// provisioning can recompute the pre-v1 task-attribution digest, and it is
+/// deliberately not derived from — nor allowed to stand in for — the subject.
 #[cfg_attr(
     not(test),
     expect(dead_code, reason = "consumed by OAuth callback descendants")
 )]
 pub(super) struct ValidatedOidcIdentity {
-    pub(super) principal: String,
+    /// Issuer the ID token's signature and `iss` claim were verified against.
+    pub(super) issuer: String,
+    /// Raw upstream `sub` claim, unmodified and non-empty.
+    pub(super) subject: String,
+    /// Value of the provider's configured `principal_claim`.
+    pub(super) principal_claim: String,
     pub(super) display_name: Option<String>,
 }
 
@@ -163,7 +174,7 @@ fn validate_claims(
             return Err(());
         }
     }
-    let principal = claims
+    let principal_claim = claims
         .get(&provider.principal_claim)
         .and_then(Value::as_str)
         .filter(|principal| valid_subject(principal) && PrincipalId::parse(principal).is_ok())
@@ -182,7 +193,9 @@ fn validate_claims(
         Some(_) => return Err(()),
     };
     Ok(ValidatedOidcIdentity {
-        principal,
+        issuer: provider.issuer.clone(),
+        subject: subject.to_string(),
+        principal_claim,
         display_name,
     })
 }
@@ -507,6 +520,29 @@ pub(in crate::auth) mod tests {
             .expect("matching authorized party must allow multiple audiences");
     }
 
+    /// The directory key is the verified issuer plus the raw `sub`. It survives
+    /// whether the configured principal claim happens to be `sub` or names a
+    /// different claim entirely, and the subject keeps a shape the principal
+    /// claim would be rejected for.
+    #[test]
+    fn keeps_verified_issuer_and_raw_subject_independent_of_the_principal_claim() {
+        let default_claim = provider("");
+        let identity = validate_claims(&default_claim, "expected-nonce", &claims())
+            .expect("default principal claim");
+        assert_eq!(identity.issuer, "http://localhost/issuer");
+        assert_eq!(identity.subject, "subject");
+        assert_eq!(identity.principal_claim, "subject");
+
+        let projected = provider("principal_claim = 'uid'");
+        let mut claims = claims();
+        set_claim(&mut claims, "sub", json!("upstream sub/with spaces"));
+        set_claim(&mut claims, "uid", json!("projected-claim"));
+        let identity =
+            validate_claims(&projected, "expected-nonce", &claims).expect("projected identity");
+        assert_eq!(identity.subject, "upstream sub/with spaces");
+        assert_eq!(identity.principal_claim, "projected-claim");
+    }
+
     #[test]
     fn validates_identity_projection_and_required_claim_semantics() {
         let provider = provider(
@@ -523,8 +559,12 @@ pub(in crate::auth) mod tests {
         set_claim(&mut claims, "groups", json!(["dev", "other", "admin"]));
         let identity =
             validate_claims(&provider, "expected-nonce", &claims).expect("projected identity");
-        assert_eq!(identity.principal, "Case-Sensitive");
+        assert_eq!(identity.principal_claim, "Case-Sensitive");
         assert_eq!(identity.display_name.as_deref(), Some("Coral User"));
+        // The directory key is the verified issuer plus the raw `sub`, neither of
+        // which the configured principal claim may displace.
+        assert_eq!(identity.issuer, "http://localhost/issuer");
+        assert_eq!(identity.subject, "subject");
         for display in [Value::Null, json!("   ")] {
             set_claim(&mut claims, "name", display);
             assert!(

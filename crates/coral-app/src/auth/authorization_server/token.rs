@@ -691,7 +691,7 @@ redirect_uri = "{AUTH_ISSUER}/auth/oidc/callback"
             .expect("valid access token");
         assert_eq!(validated.audience, RESOURCE);
         assert_eq!(validated.client_id, CLIENT);
-        assert_eq!(validated.subject, "raw/provider/subject");
+        assert_eq!(validated.user_id, "raw/provider/subject");
         // Single use is the store's guarantee rather than this handler's:
         // `take_authorization_code_for_request` does its get-check-remove under
         // one lock, so two redemptions of a code cannot both observe it. This

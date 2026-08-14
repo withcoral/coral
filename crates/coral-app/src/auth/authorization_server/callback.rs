@@ -73,7 +73,9 @@ pub(super) async fn oidc_callback(
         return trusted.error("server_error", "authorization failed");
     };
     let authorization = OAuthAuthorizationCodeRecord {
-        user_id: identity.principal,
+        // Still the configured principal claim, not yet an internal `user_id`:
+        // login provisioning is wired into this callback in a later stack PR.
+        user_id: identity.principal_claim,
         client_id: session.client_id,
         redirect_uri: session.redirect_uri,
         code_challenge: session.code_challenge,

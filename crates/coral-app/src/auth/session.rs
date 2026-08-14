@@ -14,6 +14,8 @@ use jsonwebtoken::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::identity::PrincipalId;
+
 const DEFAULT_ISSUER: &str = "coral";
 const CLOCK_SKEW: Duration = Duration::from_mins(1);
 const SESSION_TOKEN_ALGORITHM: Algorithm = Algorithm::ES256;
@@ -98,14 +100,22 @@ impl SessionTokenIssuer {
         })
     }
 
+    /// Mints an access token whose `sub` is Coral's internal `user_id`.
+    ///
+    /// No upstream identifier reaches the token: the issuer, the raw OIDC
+    /// subject, and the configured principal claim all stop at login
+    /// provisioning, which exchanges them for this id. The id must already be a
+    /// canonical [`PrincipalId`], because that is what authenticates the token
+    /// back into a request principal — minting one that cannot parse would
+    /// hand out a token no surface can ever accept.
     pub(crate) fn issue_access_token(
         &self,
-        subject: &str,
+        user_id: &str,
         client_id: &str,
         audience: &str,
     ) -> Result<IssuedAccessToken, SessionTokenError> {
-        if subject.trim().is_empty() {
-            return Err(config_error("subject must not be empty"));
+        if PrincipalId::parse(user_id).is_err() {
+            return Err("access token subject must be a canonical Coral user id".to_string());
         }
         if client_id.trim().is_empty()
             || client_id.trim() != client_id
@@ -123,7 +133,7 @@ impl SessionTokenIssuer {
         let claims = SessionTokenClaims {
             iss: self.issuer.clone(),
             aud: audience.to_string(),
-            sub: subject.to_string(),
+            sub: user_id.to_string(),
             jti: Uuid::new_v4().to_string(),
             client_id: client_id.to_string(),
             exp: expires_at,
@@ -255,7 +265,7 @@ impl SessionTokenVerifier {
             token_id: claims.jti,
             audience: claims.aud,
             client_id: claims.client_id,
-            subject: claims.sub,
+            user_id: claims.sub,
         })
     }
 
@@ -357,7 +367,8 @@ pub(crate) struct ValidatedSession {
     pub(crate) token_id: String,
     pub(crate) audience: String,
     pub(crate) client_id: String,
-    pub(crate) subject: String,
+    /// Coral's internal `user_id`, carried in the token's `sub` claim.
+    pub(crate) user_id: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -408,11 +419,13 @@ pub(crate) fn test_signing_key() -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::identity::LOCAL_PRINCIPAL_ID;
 
     const ISSUER: &str = "https://coral.example.test/";
     const MCP_AUDIENCE: &str = "https://coral.example.test/mcp";
     const BFF_AUDIENCE: &str = "https://app.example.test";
     const CLIENT_ID: &str = "https://client.example.test/client.json";
+    const USER_ID: &str = "4f1a0f2c-4c8a-4d21-9a9b-2b1f2f0a5c33";
 
     fn signing_key() -> Vec<u8> {
         test_signing_key()
@@ -502,7 +515,7 @@ mod tests {
         let issuer = test_issuer();
         let verifier = issuer.verifier();
         let access = issuer
-            .issue_access_token("opaque:subject/123", CLIENT_ID, MCP_AUDIENCE)
+            .issue_access_token(USER_ID, CLIENT_ID, MCP_AUDIENCE)
             .unwrap();
         let header = decode_header(&access.access_token).unwrap();
         assert_eq!(header.alg, Algorithm::ES256);
@@ -520,9 +533,20 @@ mod tests {
         assert_eq!(session.token_id, token_id);
         assert_eq!(session.audience, MCP_AUDIENCE);
         assert_eq!(session.client_id, CLIENT_ID);
-        // The subject is the upstream `sub` claim verbatim: a single OIDC provider
-        // is ever configured, so nothing prefixes an issuer onto it.
-        assert_eq!(session.subject, "opaque:subject/123");
+        // The subject is Coral's internal `user_id`. No upstream issuer, `sub`,
+        // or display name is minted into the token or recoverable from it.
+        assert_eq!(session.user_id, USER_ID);
+        assert_eq!(string_claim(&claims, "sub"), USER_ID);
+    }
+
+    #[test]
+    fn issuance_rejects_subjects_that_could_never_authenticate() {
+        let issuer = test_issuer();
+        for user_id in ["", "   ", "user id", "user\tid", LOCAL_PRINCIPAL_ID] {
+            let Err(_error) = issuer.issue_access_token(user_id, CLIENT_ID, MCP_AUDIENCE) else {
+                panic!("token issuance should reject the subject {user_id:?}");
+            };
+        }
     }
 
     #[test]

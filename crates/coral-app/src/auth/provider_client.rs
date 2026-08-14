@@ -1390,7 +1390,7 @@ mod tests {
             .validate_code_exchange(&provider, exchange, "expected-nonce")
             .await
             .expect("identity");
-        assert_eq!(identity.principal, "subject");
+        assert_eq!(identity.principal_claim, "subject");
         assert_eq!(identity.display_name.as_deref(), Some("User"));
     }
 
