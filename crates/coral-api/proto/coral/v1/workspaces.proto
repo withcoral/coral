@@ -4,13 +4,19 @@ package coral.v1;
 
 import "coral/v1/resources.proto";
 
-// Lists configured workspaces.
+// Lists the workspaces the calling principal may reach.
 message ListWorkspacesRequest {}
 
-// Returns configured workspaces.
+// Returns the calling principal's workspaces, each with their role in it.
 message ListWorkspacesResponse {
-  // Configured workspace resources.
-  repeated Workspace workspaces = 1;
+  // The deployment-wide inventory this response used to carry. A caller now
+  // reads only the workspaces they hold a membership in, so the old number and
+  // name stay reserved: reusing either would let a stale client read one
+  // caller's memberships as though they were every workspace on the host.
+  reserved 1;
+  reserved "workspaces";
+  // Caller's memberships, ordered by workspace name.
+  repeated WorkspaceMembership memberships = 2;
 }
 
 // Creates one workspace.
@@ -112,7 +118,7 @@ message RemoveWorkspaceMemberResponse {}
 
 // Workspace management APIs.
 service WorkspaceService {
-  // Lists configured workspaces.
+  // Lists the workspaces the calling principal may reach.
   rpc ListWorkspaces(ListWorkspacesRequest) returns (ListWorkspacesResponse);
   // Creates one workspace.
   rpc CreateWorkspace(CreateWorkspaceRequest) returns (CreateWorkspaceResponse);

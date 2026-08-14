@@ -19,15 +19,15 @@ use coral_api::v1::{
     Function, FunctionArgument, FunctionRuntimeInvalid, FunctionRuntimeReady, FunctionWriteSurface,
     ListFunctionsResponse, ListSourcesResponse, ListWorkspacesResponse, RebuildSearchIndexResponse,
     SearchDataScope, SearchIndexProvider, SearchMaintenanceResult, SearchMaintenanceState,
-    SearchProvider, Source, SourceCredentialStorage, SourceInfo, SourceOrigin, Workspace, function,
-    search_clear_target, search_maintenance_result,
+    SearchProvider, Source, SourceCredentialStorage, SourceInfo, SourceOrigin, WorkspaceRole,
+    function, search_clear_target, search_maintenance_result,
 };
 use tempfile::tempdir;
 use tonic::Code;
 
 use harness::{
     MockServer, MockServerConfig, assert_default_workspace, assert_workspace_name,
-    encode_arrow_ipc_stream,
+    encode_arrow_ipc_stream, membership,
 };
 
 fn nonempty_lines(output: &str) -> Vec<&str> {
@@ -291,16 +291,12 @@ async fn functions_remove_uses_selected_workspace() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn workspace_list_renders_configured_workspaces() {
+async fn workspace_list_renders_each_membership_with_its_role() {
     let server = MockServer::start_with_config(MockServerConfig::default().with_list_workspaces(
         ListWorkspacesResponse {
-            workspaces: vec![
-                Workspace {
-                    name: "default".to_string(),
-                },
-                Workspace {
-                    name: "work".to_string(),
-                },
+            memberships: vec![
+                membership("default", WorkspaceRole::Owner),
+                membership("work", WorkspaceRole::Member),
             ],
         },
     ))
@@ -311,7 +307,12 @@ async fn workspace_list_renders_configured_workspaces() {
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
     assert_eq!(
         nonempty_lines(&stdout),
-        vec!["Workspace", "---------", "default", "work"],
+        vec![
+            "Workspace  Role",
+            "---------  ------",
+            "default    owner",
+            "work       member",
+        ],
         "expected workspace list"
     );
     assert_eq!(

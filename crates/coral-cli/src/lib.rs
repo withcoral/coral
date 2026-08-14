@@ -33,7 +33,7 @@ use coral_api::v1::{
     DeleteWorkspaceRequest, DrainSearchQueueRequest, ExecuteSqlRequest, Function,
     FunctionRuntimeReady, FunctionWriteSurface, ListFunctionsRequest, ListWorkspacesRequest,
     RebuildSearchIndexRequest, SearchClearTarget, SearchDataScope, SearchIndexProvider,
-    SearchProvider, SearchRequest, Workspace, function, search_clear_target,
+    SearchProvider, SearchRequest, Workspace, WorkspaceRole, function, search_clear_target,
     search_maintenance_result,
 };
 use coral_app::{EngineExtensionsProvider, bootstrap::is_loopback_ip};
@@ -1053,18 +1053,23 @@ fn run_features(
 async fn run_workspace(app: &AppClient, args: WorkspaceArgs) -> Result<(), CliError> {
     match args.command {
         WorkspaceCommand::List => {
-            let workspaces = app
+            let memberships = app
                 .workspace_client()
                 .list_workspaces(Request::new(ListWorkspacesRequest {}))
                 .await
                 .map_err(anyhow::Error::from)?
                 .into_inner()
-                .workspaces;
-            if workspaces.is_empty() {
-                println!("No workspaces configured.");
+                .memberships;
+            if memberships.is_empty() {
+                println!("No workspaces available.");
             } else {
-                let rows = workspaces.into_iter().map(|workspace| [workspace.name]);
-                print_text_table(["Workspace"], rows);
+                let rows = memberships.into_iter().map(|membership| {
+                    [
+                        membership.workspace.unwrap_or_default().name,
+                        workspace_role_label(membership.role).to_string(),
+                    ]
+                });
+                print_text_table(["Workspace", "Role"], rows);
             }
         }
         WorkspaceCommand::Create { name } => {
@@ -1097,6 +1102,14 @@ async fn run_workspace(app: &AppClient, args: WorkspaceArgs) -> Result<(), CliEr
         }
     }
     Ok(())
+}
+
+fn workspace_role_label(role: i32) -> &'static str {
+    match WorkspaceRole::try_from(role) {
+        Ok(WorkspaceRole::Owner) => "owner",
+        Ok(WorkspaceRole::Member) => "member",
+        Ok(WorkspaceRole::Unspecified) | Err(_) => "unknown",
+    }
 }
 
 async fn run_source(

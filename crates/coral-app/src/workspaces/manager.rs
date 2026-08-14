@@ -22,13 +22,6 @@ use crate::workspaces::{
 /// The role is caller-relative, so it belongs beside the workspace rather than
 /// on [`WorkspaceRecord`]: the same workspace is an owned one for its creator
 /// and a member's one for everybody they invite.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the caller-relative listing lands before the RPC that returns it"
-    )
-)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WorkspaceMembership {
     pub(crate) workspace: WorkspaceRecord,
@@ -332,13 +325,6 @@ impl WorkspaceManager {
 /// deletion removing them. The membership methods do not: their writes are
 /// serialized by the workspace parent row inside the transaction instead, so
 /// granting or revoking access cannot stall a query.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the creator-owned seam lands before the RPCs that call it"
-    )
-)]
 impl WorkspaceManager {
     /// Creates one workspace owned by `creator_user_id`.
     ///

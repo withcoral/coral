@@ -47,9 +47,10 @@ use coral_api::v1::{
     SearchTableShape, Source, SourceCredentialStorage, SourceInfo, SourceInputSpec, SourceOrigin,
     SourceSecretInput, StartTaskRequest, StartTaskResponse, Table, TableFunction, TableSummary,
     Task as ProtoTask, TaskEnd as ProtoTaskEnd, TaskStatus, ValidateSourceRequest,
-    ValidateSourceResponse, Workspace, catalog_item, create_bundled_source_with_o_auth_response,
-    describe_catalog_surface_response, import_source_response, search_maintenance_result,
-    search_result, source_input_spec::Input as ProtoSourceInput,
+    ValidateSourceResponse, Workspace, WorkspaceMembership, WorkspaceRole, catalog_item,
+    create_bundled_source_with_o_auth_response, describe_catalog_surface_response,
+    import_source_response, search_maintenance_result, search_result,
+    source_input_spec::Input as ProtoSourceInput,
 };
 use coral_api::{
     CORAL_ERROR_DOMAIN, CORAL_ERROR_REASON_SOURCE_NOT_FOUND, CORAL_TASK_ID_METADATA_KEY,
@@ -67,6 +68,16 @@ use tonic_types::{ErrorDetail, StatusExt as _};
 fn workspace() -> Workspace {
     Workspace {
         name: "default".to_string(),
+    }
+}
+
+/// One caller-relative membership, the shape the workspace listing now carries.
+pub(crate) fn membership(name: &str, role: WorkspaceRole) -> WorkspaceMembership {
+    WorkspaceMembership {
+        workspace: Some(Workspace {
+            name: name.to_string(),
+        }),
+        role: role.into(),
     }
 }
 
@@ -722,7 +733,7 @@ impl Default for MockServerConfig {
                 ],
             }),
             list_workspaces: MockResult::ok(ListWorkspacesResponse {
-                workspaces: vec![workspace()],
+                memberships: vec![membership("default", WorkspaceRole::Owner)],
             }),
             validate_source: MockResult::ok(mock_validate_response()),
             delete_source: MockResult::ok(()),

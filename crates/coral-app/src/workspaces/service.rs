@@ -6,7 +6,7 @@ use coral_api::v1::{
     CreateWorkspaceResponse, DeleteWorkspaceRequest, DeleteWorkspaceResponse,
     ListWorkspaceMembersRequest, ListWorkspaceMembersResponse, ListWorkspacesRequest,
     ListWorkspacesResponse, RemoveWorkspaceMemberRequest, RemoveWorkspaceMemberResponse, Workspace,
-    WorkspaceMember, WorkspaceRole,
+    WorkspaceMember, WorkspaceMembership, WorkspaceRole,
 };
 use tonic::{Request, Response, Status};
 
@@ -39,21 +39,45 @@ impl WorkspaceService {
 
 #[tonic::async_trait]
 impl WorkspaceServiceApi for WorkspaceService {
+    /// Lists what the caller may reach, never what the deployment holds.
+    ///
+    /// The listing is self-scoped rather than authorized per workspace: a
+    /// caller's own memberships are the answer, so there is no name to conceal
+    /// and no denial to give. Admission is still checked first, because a
+    /// deployment that does not recognize the local principal must not hand it
+    /// a listing either.
     async fn list_workspaces(
         &self,
         request: Request<ListWorkspacesRequest>,
     ) -> Result<Response<ListWorkspacesResponse>, Status> {
         let span = grpc_span(&request);
         let workspaces = self.workspaces.clone();
+        let authorizer = self.authorizer.clone();
+        let principal = request_context(&request)?.principal().clone();
         instrument_grpc(span, async move {
-            let workspaces = workspaces
-                .list_workspaces()
-                .await
-                .map_err(app_status)?
-                .iter()
-                .map(workspace_record_to_proto)
-                .collect();
-            Ok(Response::new(ListWorkspacesResponse { workspaces }))
+            authorizer.admit(&principal).map_err(app_status)?;
+            let caller = principal.id().as_str();
+            let memberships = if caller == LOCAL_PRINCIPAL_ID {
+                // Being admitted at all means this deployment treats the local
+                // principal as owner of everything, and it holds no membership
+                // rows the listing could be read from.
+                workspaces
+                    .list_workspaces()
+                    .await
+                    .map_err(app_status)?
+                    .into_iter()
+                    .map(|workspace| membership_to_proto(&workspace, MemberRole::Owner))
+                    .collect()
+            } else {
+                workspaces
+                    .list_memberships_for_user(caller)
+                    .await
+                    .map_err(app_status)?
+                    .into_iter()
+                    .map(|membership| membership_to_proto(&membership.workspace, membership.role))
+                    .collect()
+            };
+            Ok(Response::new(ListWorkspacesResponse { memberships }))
         })
         .await
     }
@@ -210,6 +234,13 @@ fn workspace_record_to_proto(record: &WorkspaceRecord) -> Workspace {
     workspace_to_proto(&record.name)
 }
 
+fn membership_to_proto(workspace: &WorkspaceRecord, role: MemberRole) -> WorkspaceMembership {
+    WorkspaceMembership {
+        workspace: Some(workspace_record_to_proto(workspace)),
+        role: member_role_to_proto(role).into(),
+    }
+}
+
 fn member_to_proto(member: WorkspaceMemberRecord) -> WorkspaceMember {
     WorkspaceMember {
         user_id: member.user_id,
@@ -282,19 +313,91 @@ mod tests {
             deployment.role_of("team", &ada).await,
             Some(MemberRole::Owner)
         );
-        // The listing keeps its host-wide shape until the membership flip.
         assert_eq!(
             deployment
-                .service
-                .list_workspaces(request(ListWorkspacesRequest {}, federated(&ada)))
+                .list(&federated(&ada))
                 .await
-                .expect("list workspaces")
-                .into_inner()
-                .workspaces
-                .into_iter()
-                .map(|workspace| workspace.name)
-                .collect::<Vec<_>>(),
-            vec!["team".to_string()],
+                .expect("list workspaces"),
+            vec![("team".to_string(), WorkspaceRole::Owner)],
+        );
+    }
+
+    /// The listing is the caller's own view: a workspace they hold no
+    /// membership in is simply absent from it, and the role travels beside the
+    /// workspace so a client never asks a second question to know what it may
+    /// do there.
+    #[tokio::test]
+    async fn the_listing_carries_only_the_callers_own_memberships_and_their_roles() {
+        let deployment = shared_deployment().await;
+        let owner = federated(&deployment.seed_user("owner").await);
+        let ada = deployment.seed_user("ada").await;
+        let outsider = federated(&deployment.seed_user("outsider").await);
+        deployment.create(&owner, "team").await.expect("create");
+        deployment.create(&owner, "private").await.expect("create");
+        deployment
+            .add(&owner, "team", &ada, WorkspaceRole::Member)
+            .await
+            .expect("grant membership");
+
+        assert_eq!(
+            deployment.list(&owner).await.expect("an owner's listing"),
+            vec![
+                ("private".to_string(), WorkspaceRole::Owner),
+                ("team".to_string(), WorkspaceRole::Owner),
+            ],
+        );
+        assert_eq!(
+            deployment
+                .list(&federated(&ada))
+                .await
+                .expect("a member's listing"),
+            vec![("team".to_string(), WorkspaceRole::Member)],
+            "a member reaches the one workspace they were invited to, not the owner's other one"
+        );
+        assert_eq!(
+            deployment
+                .list(&outsider)
+                .await
+                .expect("an outsider's listing"),
+            Vec::new(),
+            "an outsider is answered with an empty listing rather than a denial"
+        );
+    }
+
+    /// The implicit owner has no membership row anywhere, so its listing comes
+    /// from the deployment inventory with the role that policy already grants
+    /// it. A deployment that does not admit it hands it nothing at all.
+    #[tokio::test]
+    async fn the_implicit_owner_lists_every_workspace_as_its_owner() {
+        let local = local_deployment().await;
+        local
+            .create(&Principal::local(), "team")
+            .await
+            .expect("create");
+        local
+            .create(&Principal::local(), "other")
+            .await
+            .expect("create");
+
+        assert_eq!(
+            local
+                .list(&Principal::local())
+                .await
+                .expect("the implicit owner's listing"),
+            vec![
+                ("other".to_string(), WorkspaceRole::Owner),
+                ("team".to_string(), WorkspaceRole::Owner),
+            ],
+        );
+
+        assert_eq!(
+            shared_deployment()
+                .await
+                .list(&Principal::local())
+                .await
+                .expect_err("a shared deployment does not admit the local principal")
+                .code(),
+            Code::PermissionDenied,
         );
     }
 
@@ -650,6 +753,28 @@ mod tests {
     }
 
     impl Deployment {
+        /// Reads one caller's listing as the workspace names they reach paired
+        /// with the role each membership carries.
+        async fn list(
+            &self,
+            principal: &Principal,
+        ) -> Result<Vec<(String, WorkspaceRole)>, Status> {
+            self.service
+                .list_workspaces(request(ListWorkspacesRequest {}, principal.clone()))
+                .await
+                .map(|response| {
+                    response
+                        .into_inner()
+                        .memberships
+                        .into_iter()
+                        .map(|membership| {
+                            let role = membership.role();
+                            (membership.workspace.expect("listed workspace").name, role)
+                        })
+                        .collect()
+                })
+        }
+
         async fn create(&self, principal: &Principal, name: &str) -> Result<(), Status> {
             self.service
                 .create_workspace(request(

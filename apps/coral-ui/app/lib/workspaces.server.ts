@@ -10,7 +10,12 @@ export async function listWorkspacesForRequest(
   accessToken: string | null,
 ): Promise<Workspace[]> {
   const response = await workspaceClientForRequest(request, accessToken).listWorkspaces({})
-  return response.workspaces
+  // Coral now answers with the caller's memberships. Reef reads only the
+  // workspace each one points at; surfacing the role it carries is a separate
+  // change to Reef's own contract.
+  return response.memberships
+    .map((membership) => membership.workspace)
+    .filter((workspace) => workspace !== undefined)
 }
 
 export const DEFAULT_WORKSPACE_ID = 'default'
