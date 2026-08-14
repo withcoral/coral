@@ -340,6 +340,7 @@ fn compile_sources_with_mcp_manifest(
     let compiled = compile_source_with_caller(
         mcp_manifest,
         source_input_resolution,
+        None,
         source_inputs,
         caller,
         source_observation_publishers(&[]),
@@ -403,6 +404,7 @@ fn compile_sources_with_inputs_and_observation_publishers(
     let compiled = compile_source_with_caller(
         mcp_manifest,
         source_input_resolution,
+        None,
         source_inputs,
         caller,
         source_observation_publishers(publishers),

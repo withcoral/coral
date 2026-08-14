@@ -38,13 +38,15 @@ use crate::backends::{
 };
 use crate::runtime::error::datafusion_to_core;
 use crate::{
-    CoreError, SourceInputResolutionContext, SourceInputResolver, SourceInputResolverError,
+    CoreError, RuntimeCatalogTarget, SourceInputResolutionContext, SourceInputResolver,
+    SourceInputResolverError,
 };
 
 #[derive(Clone)]
 struct McpCompiledSource {
     manifest: McpSourceManifest,
     source_input_resolution: SourceInputResolutionContext,
+    catalog_name: Option<String>,
     source_inputs: Arc<McpSourceInputs>,
     caller: McpSourceClient,
     source_observation_publishers: SourceObservationPublishers,
@@ -127,6 +129,11 @@ pub(crate) fn compile_manifest(
     compile_source_with_caller(
         manifest.clone(),
         source_input_resolution,
+        matches!(
+            request.source.catalog_target(),
+            RuntimeCatalogTarget::Source
+        )
+        .then(|| request.source.source_name().to_string()),
         source_inputs,
         caller,
         source_observation_publishers(request.source_observation_publishers),
@@ -163,6 +170,7 @@ pub async fn discover_tool_catalog(
 fn compile_source_with_caller(
     manifest: McpSourceManifest,
     source_input_resolution: SourceInputResolutionContext,
+    catalog_name: Option<String>,
     source_inputs: Arc<McpSourceInputs>,
     caller: Arc<dyn McpToolCaller>,
     source_observation_publishers: SourceObservationPublishers,
@@ -170,6 +178,7 @@ fn compile_source_with_caller(
     Box::new(McpCompiledSource {
         manifest,
         source_input_resolution,
+        catalog_name,
         source_inputs,
         caller: McpSourceClient::new(caller),
         source_observation_publishers,
@@ -209,6 +218,8 @@ impl CompiledBackendSource for McpCompiledSource {
             let factory: Arc<dyn SourceFunctionProviderFactory> =
                 Arc::new(McpSourceTableFunction::new(
                     self.caller.clone(),
+                    self.source_input_resolution.source_name().to_string(),
+                    self.catalog_name.clone(),
                     self.manifest.common.name.clone(),
                     function.clone(),
                     Arc::clone(&self.source_observation_publishers),
@@ -225,6 +236,8 @@ impl CompiledBackendSource for McpCompiledSource {
         for table in &self.manifest.tables {
             let provider: Arc<dyn TableProvider> = Arc::new(McpTableProvider::new(
                 self.caller.clone(),
+                self.source_input_resolution.source_name().to_string(),
+                self.catalog_name.clone(),
                 self.manifest.common.name.clone(),
                 Arc::clone(&self.source_inputs),
                 table.clone(),

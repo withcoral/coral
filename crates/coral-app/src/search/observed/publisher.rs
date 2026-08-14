@@ -394,6 +394,8 @@ mod tests {
 
         publisher.publish_source_scan(SourceScanObservation {
             source_name: "github",
+            catalog_name: None,
+            schema_name: "github",
             surface_kind: SourceObservationSurfaceKind::Table,
             surface_name: "issues",
             batch: &batch,
@@ -441,6 +443,8 @@ mod tests {
 
         publisher.publish_source_scan(SourceScanObservation {
             source_name: "github",
+            catalog_name: None,
+            schema_name: "github",
             surface_kind: SourceObservationSurfaceKind::Table,
             surface_name: "issues",
             batch: &batch,
@@ -476,6 +480,8 @@ mod tests {
         for source_name in ["github_v4_rest", "github_v4_mcp", "github_mcp_v4"] {
             publisher.publish_source_scan(SourceScanObservation {
                 source_name,
+                catalog_name: None,
+                schema_name: source_name,
                 surface_kind: SourceObservationSurfaceKind::Table,
                 surface_name: "list_issues",
                 batch: &batch,
@@ -529,6 +535,8 @@ mod tests {
         for source_name in ["github_v4", "github_mcp_v4"] {
             publisher.publish_source_scan(SourceScanObservation {
                 source_name,
+                catalog_name: None,
+                schema_name: source_name,
                 surface_kind: SourceObservationSurfaceKind::Table,
                 surface_name: "list_issues",
                 batch: &batch,
@@ -580,6 +588,8 @@ mod tests {
 
         publisher.publish_source_scan(SourceScanObservation {
             source_name: "github",
+            catalog_name: None,
+            schema_name: "github",
             surface_kind: SourceObservationSurfaceKind::Table,
             surface_name: "issues",
             batch: &batch,

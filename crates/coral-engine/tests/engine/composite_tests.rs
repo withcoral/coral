@@ -134,7 +134,7 @@ async fn named_static_catalog_invokes_catalog_qualified_function() {
     .expect("runtime package");
 
     let legacy_error = CoralQuery::execute_sql(
-        &[source.clone()],
+        std::slice::from_ref(&source),
         test_runtime(),
         "SELECT title FROM issues.search_issues(q => 'flaky')",
     )
@@ -242,7 +242,7 @@ async fn named_static_catalog_executes_across_component_schemas() {
     .expect("runtime package");
 
     let legacy_error = CoralQuery::execute_sql(
-        &[source.clone()],
+        std::slice::from_ref(&source),
         test_runtime(),
         "SELECT id FROM github_rest.issues",
     )

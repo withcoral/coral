@@ -18,7 +18,9 @@ use crate::SourceObservationSurfaceKind;
 use crate::backends::schema_from_columns;
 use crate::backends::shared::json_exec::JsonExec;
 use crate::backends::shared::mapping::convert_items;
-use crate::backends::shared::source_observation::SourceObservationPublishers;
+use crate::backends::shared::source_observation::{
+    SourceObservationIdentity, SourceObservationPublishers,
+};
 use crate::backends::{BoundSourceFunctionArg, SourceFunctionProviderFactory};
 
 #[derive(Clone)]
@@ -29,6 +31,8 @@ pub(super) struct McpSourceTableFunction {
 
 struct McpFunctionState {
     backend: McpSourceClient,
+    source_name: String,
+    catalog_name: Option<String>,
     source_schema: String,
     function_name: String,
     tool_name: String,
@@ -64,6 +68,8 @@ impl std::fmt::Debug for McpFunctionState {
 impl McpSourceTableFunction {
     pub(super) fn new(
         backend: McpSourceClient,
+        source_name: String,
+        catalog_name: Option<String>,
         source_schema: String,
         function: McpTableFunctionSpec,
         source_observation_publishers: SourceObservationPublishers,
@@ -80,6 +86,8 @@ impl McpSourceTableFunction {
             spec: Arc::new(function),
             state: Arc::new(McpFunctionState {
                 backend,
+                source_name,
+                catalog_name,
                 source_schema,
                 function_name,
                 tool_name,
@@ -188,6 +196,12 @@ impl TableProvider for McpFunctionCallTableProvider {
             projection.cloned(),
         )?
         .with_source_observation(
+            SourceObservationIdentity::new(
+                &self.state.source_name,
+                self.state.catalog_name.clone(),
+                &self.state.source_schema,
+                &self.state.function_name,
+            ),
             SourceObservationSurfaceKind::Function,
             Arc::clone(&self.state.source_observation_publishers),
         );

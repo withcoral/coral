@@ -20,7 +20,8 @@ use serde_json::Value;
 
 use crate::SourceObservationSurfaceKind;
 use crate::backends::shared::source_observation::{
-    SourceObservationConfig, SourceObservationPublishers, publish_source_scan_batch,
+    SourceObservationConfig, SourceObservationIdentity, SourceObservationPublishers,
+    publish_source_scan_batch,
 };
 
 /// Fetches raw JSON rows for one logical table scan.
@@ -37,8 +38,6 @@ pub(crate) type Fetcher = Arc<dyn RowFetcher>;
 pub(crate) type Converter = Arc<dyn Fn(&[Value]) -> Result<RecordBatch> + Send + Sync>;
 
 fn observe_source_scan_batch(
-    source_name: String,
-    surface_name: String,
     observation: SourceObservationConfig,
     observation_converter: Converter,
     output_converter: Converter,
@@ -47,17 +46,14 @@ fn observe_source_scan_batch(
         let output_batch = output_converter(items)?;
         match observation_converter(items) {
             Ok(observation_batch) => {
-                publish_source_scan_batch(
-                    &source_name,
-                    &surface_name,
-                    &observation,
-                    &observation_batch,
-                );
+                publish_source_scan_batch(&observation, &observation_batch);
             }
             Err(error) => {
                 tracing::debug!(
-                    source = source_name,
-                    surface = surface_name,
+                    source = observation.identity.source_name,
+                    catalog = observation.identity.catalog_name,
+                    schema = observation.identity.schema_name,
+                    surface = observation.identity.surface_name,
                     error = %error,
                     "failed to convert source-scan observation batch; dropping observation"
                 );
@@ -68,14 +64,12 @@ fn observe_source_scan_batch(
 }
 
 fn observe_output_batch(
-    source_name: String,
-    surface_name: String,
     observation: SourceObservationConfig,
     output_converter: Converter,
 ) -> Converter {
     Arc::new(move |items| {
         let output_batch = output_converter(items)?;
-        publish_source_scan_batch(&source_name, &surface_name, &observation, &output_batch);
+        publish_source_scan_batch(&observation, &output_batch);
         Ok(output_batch)
     })
 }
@@ -147,18 +141,15 @@ impl JsonExec {
     #[must_use]
     pub(crate) fn with_source_observation(
         mut self,
+        identity: SourceObservationIdentity,
         surface_kind: SourceObservationSurfaceKind,
         publishers: SourceObservationPublishers,
     ) -> Self {
-        let Some(observation) = SourceObservationConfig::new(surface_kind, publishers) else {
+        let Some(observation) = SourceObservationConfig::new(identity, surface_kind, publishers)
+        else {
             return self;
         };
-        self.converter = observe_output_batch(
-            self.source_name.clone(),
-            self.table_name.clone(),
-            observation,
-            self.converter.clone(),
-        );
+        self.converter = observe_output_batch(observation, self.converter.clone());
         self
     }
 
@@ -170,20 +161,17 @@ impl JsonExec {
     #[must_use]
     pub(crate) fn with_source_observation_converter(
         mut self,
+        identity: SourceObservationIdentity,
         surface_kind: SourceObservationSurfaceKind,
         publishers: SourceObservationPublishers,
         observation_converter: Converter,
     ) -> Self {
-        let Some(observation) = SourceObservationConfig::new(surface_kind, publishers) else {
+        let Some(observation) = SourceObservationConfig::new(identity, surface_kind, publishers)
+        else {
             return self;
         };
-        self.converter = observe_source_scan_batch(
-            self.source_name.clone(),
-            self.table_name.clone(),
-            observation,
-            observation_converter,
-            self.converter.clone(),
-        );
+        self.converter =
+            observe_source_scan_batch(observation, observation_converter, self.converter.clone());
         self
     }
 }
@@ -313,7 +301,8 @@ mod tests {
 
     use super::{ChunkState, Converter, Fetcher, JsonExec, RowFetcher, next_projected_batch};
     use crate::backends::shared::source_observation::{
-        source_observation_publishers, test_support::RecordingSourceObservationPublisher,
+        SourceObservationIdentity, source_observation_publishers,
+        test_support::RecordingSourceObservationPublisher,
     };
     use crate::{SourceObservationPublisher, SourceObservationSurfaceKind};
 
@@ -429,6 +418,7 @@ mod tests {
         )
         .expect("exec should build")
         .with_source_observation(
+            SourceObservationIdentity::new("demo", None, "demo", "items"),
             SourceObservationSurfaceKind::Table,
             source_observation_publishers(&[
                 publisher.clone() as Arc<dyn SourceObservationPublisher>
@@ -485,6 +475,7 @@ mod tests {
         )
         .expect("exec should build")
         .with_source_observation(
+            SourceObservationIdentity::new("demo", None, "demo", "items"),
             SourceObservationSurfaceKind::Table,
             source_observation_publishers(&[
                 publisher.clone() as Arc<dyn SourceObservationPublisher>
@@ -534,6 +525,7 @@ mod tests {
         )
         .expect("exec should build")
         .with_source_observation_converter(
+            SourceObservationIdentity::new("demo", None, "demo", "items"),
             SourceObservationSurfaceKind::Table,
             source_observation_publishers(&[
                 publisher.clone() as Arc<dyn SourceObservationPublisher>
@@ -575,6 +567,7 @@ mod tests {
         )
         .expect("exec should build")
         .with_source_observation_converter(
+            SourceObservationIdentity::new("demo", None, "demo", "items"),
             SourceObservationSurfaceKind::Table,
             source_observation_publishers(&[
                 publisher.clone() as Arc<dyn SourceObservationPublisher>
