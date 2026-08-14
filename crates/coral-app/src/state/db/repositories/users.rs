@@ -2,7 +2,8 @@
     not(test),
     expect(
         dead_code,
-        reason = "the login directory API is not yet wired to production consumers"
+        reason = "login provisioning consumes the write path; the directory reads \
+                  `get_by_user_id` and `list` land before the membership RPCs that serve them"
     )
 )]
 

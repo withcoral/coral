@@ -115,7 +115,9 @@ impl SessionTokenIssuer {
         audience: &str,
     ) -> Result<IssuedAccessToken, SessionTokenError> {
         if PrincipalId::parse(user_id).is_err() {
-            return Err("access token subject must be a canonical Coral user id".to_string());
+            return Err(config_error(
+                "access token subject must be a canonical Coral user id",
+            ));
         }
         if client_id.trim().is_empty()
             || client_id.trim() != client_id
