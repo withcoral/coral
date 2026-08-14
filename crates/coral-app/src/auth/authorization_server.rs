@@ -109,16 +109,16 @@ impl CoralAuthorizationServer {
     /// the OIDC callback has nowhere to provision a verified login, so it fails
     /// the login closed rather than issuing an authorization code naming an
     /// identity Coral never recorded.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the app bootstrap attaches the database in a later stack PR, which must drop this expectation"
-        )
-    )]
     pub(crate) fn with_database(mut self, database: Arc<CoralDb>) -> Self {
         self.database = Some(database);
         self
+    }
+
+    /// Reports whether a database is attached, for assertions outside this
+    /// module.
+    #[cfg(test)]
+    pub(crate) fn has_database(&self) -> bool {
+        self.database.is_some()
     }
 
     /// Registers a resource identifier that authorization requests may target.
