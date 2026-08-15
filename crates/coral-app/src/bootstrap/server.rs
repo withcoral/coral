@@ -447,8 +447,12 @@ impl ServerBuilder {
             CatalogDiscovery::new(query_manager.clone()),
             workspace_lifecycle_lock,
         );
-        let trace_components = trace_components_for_store(active_trace_store);
         let workspace_authorizer = deployment_authorizer(&coral_db, local_principal);
+        let trace_components = trace_components_for_store(
+            active_trace_store,
+            workspace_manager.clone(),
+            workspace_authorizer.clone(),
+        );
         let mut server = start_server(
             ServerDependencies {
                 gui_onboarding: GuiOnboardingManager::new(Arc::clone(&coral_db)),
@@ -552,14 +556,17 @@ fn init_server_telemetry(
 
 fn trace_components_for_store(
     active_trace_store: Option<crate::telemetry::InstalledLocalTraceStore>,
+    workspaces: WorkspaceManager,
+    workspace_authorizer: WorkspaceAuthorizer,
 ) -> TraceServerComponents {
     active_trace_store.map_or_else(TraceServerComponents::default, |store| {
         TraceServerComponents {
             local_trace_store_dir: Some(store.dir.clone()),
-            service: Some(TraceService::new(TraceManager::new(
-                store.dir,
-                store.retention,
-            ))),
+            service: Some(TraceService::new(
+                TraceManager::new(store.dir, store.retention),
+                workspaces,
+                workspace_authorizer,
+            )),
         }
     })
 }
@@ -1837,10 +1844,11 @@ backend = "unsupported"
             CatalogDiscovery::new(query_manager.clone()),
             lifecycle_lock,
         );
-        let trace_service = TraceService::new(TraceManager::new(
-            temp.path().join("trace-store"),
-            Duration::from_mins(1),
-        ));
+        let trace_service = TraceService::new(
+            TraceManager::new(temp.path().join("trace-store"), Duration::from_mins(1)),
+            workspace_manager.clone(),
+            local_authorizer(&db),
+        );
         let server = start_server(
             ServerDependencies {
                 gui_onboarding: GuiOnboardingManager::new(Arc::clone(&db)),
