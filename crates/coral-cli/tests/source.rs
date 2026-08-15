@@ -19,6 +19,14 @@ use coral_api::v1::{
 #[cfg(feature = "cli-test-server")]
 use harness::MockServer;
 
+/// The ordinary workspace this suite targets explicitly.
+///
+/// Mirrors `harness::TEST_WORKSPACE`, which the filesystem-only test below
+/// cannot import because the harness is `cli-test-server`-gated. Nothing provisions
+/// a workspace any more, so naming one here keeps these fixtures off the CLI's
+/// `DEFAULT_WORKSPACE_ID` resolver fallback.
+const TEST_WORKSPACE: &str = "analytics";
+
 #[test]
 fn source_test_errors_when_required_secret_is_missing() {
     let config_dir = tempdir().expect("failed to create temp dir");
@@ -52,7 +60,7 @@ fn source_test_errors_when_required_secret_is_missing() {
     let manifest_dir = config_dir
         .path()
         .join("workspaces")
-        .join("default")
+        .join(TEST_WORKSPACE)
         .join("sources")
         .join("fake");
     let manifest_file_path = manifest_dir.join("manifest.yaml");
@@ -62,19 +70,22 @@ fn source_test_errors_when_required_secret_is_missing() {
     std::fs::write(secrets_env_path, "").expect("failed to write secrets.env");
 
     // Write a basic config that references the fake source, but don't set the required secret.
-    let config = r#"
-        [workspaces.default.sources.fake]
+    let config = format!(
+        r#"
+        [workspaces.{TEST_WORKSPACE}.sources.fake]
         version = "1.0.0"
-        variables = {}
+        variables = {{}}
         secrets = []
         origin = "imported"
-    "#;
+    "#
+    );
     std::fs::write(config_dir.path().join("config.toml"), config).expect("failed to write config");
 
     let output = Command::new(env!("CARGO_BIN_EXE_coral"))
         .arg("source")
         .arg("test")
         .arg("fake")
+        .args(["--workspace", TEST_WORKSPACE])
         .env("CORAL_CONFIG_DIR", config_dir.path())
         .output()
         .expect("failed to run coral source test");
@@ -93,7 +104,7 @@ async fn source_test_exits_non_zero_when_query_tests_fail() {
     let server = MockServer::start_with_validate_source_response(ValidateSourceResponse {
         source: Some(Source {
             workspace: Some(Workspace {
-                name: "default".to_string(),
+                name: TEST_WORKSPACE.to_string(),
             }),
             name: "local_messages".to_string(),
             version: "0.1.0".to_string(),
@@ -144,7 +155,7 @@ async fn source_test_succeeds_when_query_tests_pass() {
     let server = MockServer::start_with_validate_source_response(ValidateSourceResponse {
         source: Some(Source {
             workspace: Some(Workspace {
-                name: "default".to_string(),
+                name: TEST_WORKSPACE.to_string(),
             }),
             name: "local_messages".to_string(),
             version: "0.1.0".to_string(),

@@ -26,7 +26,7 @@ use tempfile::tempdir;
 use tonic::Code;
 
 use harness::{
-    MockServer, MockServerConfig, assert_default_workspace, assert_workspace_name,
+    MockServer, MockServerConfig, TEST_WORKSPACE, assert_test_workspace, assert_workspace_name,
     encode_arrow_ipc_stream, membership,
 };
 
@@ -55,7 +55,7 @@ async fn sql_command_renders_table_output() {
     let requests = server.execute_sql_requests();
     assert_eq!(requests.len(), 1, "expected one execute_sql call");
     assert_eq!(requests[0].sql, "select 1 as value");
-    assert_default_workspace(requests[0].workspace.as_ref());
+    assert_test_workspace(requests[0].workspace.as_ref());
 
     server.shutdown().await;
 }
@@ -295,7 +295,7 @@ async fn workspace_list_renders_each_membership_with_its_role() {
     let server = MockServer::start_with_config(MockServerConfig::default().with_list_workspaces(
         ListWorkspacesResponse {
             memberships: vec![
-                membership("default", WorkspaceRole::Owner),
+                membership(TEST_WORKSPACE, WorkspaceRole::Owner),
                 membership("work", WorkspaceRole::Member),
             ],
         },
@@ -310,10 +310,34 @@ async fn workspace_list_renders_each_membership_with_its_role() {
         vec![
             "Workspace  Role",
             "---------  ------",
-            "default    owner",
+            "analytics  owner",
             "work       member",
         ],
         "expected workspace list"
+    );
+    assert_eq!(
+        server.list_workspaces_requests().len(),
+        1,
+        "expected one list_workspaces call"
+    );
+
+    server.shutdown().await;
+}
+
+/// Nothing provisions a workspace any more, so a caller who has not been
+/// granted one must be told it holds no membership rather than shown a
+/// `default` row the server never created.
+#[tokio::test(flavor = "multi_thread")]
+async fn workspace_list_reports_no_memberships_on_fresh_state() {
+    let server = MockServer::start().await;
+
+    let assert = server.cmd().args(["workspace", "list"]).assert().success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert_eq!(
+        nonempty_lines(&stdout),
+        vec!["No workspaces available."],
+        "fresh state must list no workspace"
     );
     assert_eq!(
         server.list_workspaces_requests().len(),
@@ -382,7 +406,7 @@ async fn source_list_renders_configured_sources() {
 
     let requests = server.list_sources_requests();
     assert_eq!(requests.len(), 1, "expected one list_sources call");
-    assert_default_workspace(requests[0].workspace.as_ref());
+    assert_test_workspace(requests[0].workspace.as_ref());
 
     server.shutdown().await;
 }
@@ -436,7 +460,7 @@ async fn sql_command_renders_json_output() {
     let requests = server.execute_sql_requests();
     assert_eq!(requests.len(), 1, "expected one execute_sql call");
     assert_eq!(requests[0].sql, "select 1 as value");
-    assert_default_workspace(requests[0].workspace.as_ref());
+    assert_test_workspace(requests[0].workspace.as_ref());
 
     server.shutdown().await;
 }
@@ -461,7 +485,7 @@ async fn source_discover_renders_available_sources() {
 
     let requests = server.discover_sources_requests();
     assert_eq!(requests.len(), 1, "expected one discover_sources call");
-    assert_default_workspace(requests[0].workspace.as_ref());
+    assert_test_workspace(requests[0].workspace.as_ref());
 
     server.shutdown().await;
 }
@@ -486,7 +510,7 @@ async fn source_discover_renders_empty_state() {
 
     let requests = server.discover_sources_requests();
     assert_eq!(requests.len(), 1, "expected one discover_sources call");
-    assert_default_workspace(requests[0].workspace.as_ref());
+    assert_test_workspace(requests[0].workspace.as_ref());
 
     server.shutdown().await;
 }
@@ -529,7 +553,7 @@ async fn source_info_renders_metadata_for_installed_source() {
     let requests = server.get_source_info_requests();
     assert_eq!(requests.len(), 1, "expected one get_source_info call");
     assert_eq!(requests[0].name, "github");
-    assert_default_workspace(requests[0].workspace.as_ref());
+    assert_test_workspace(requests[0].workspace.as_ref());
 
     server.shutdown().await;
 }
@@ -602,7 +626,7 @@ async fn source_info_renders_installed_imported_source() {
     let requests = server.get_source_info_requests();
     assert_eq!(requests.len(), 1, "expected one get_source_info call");
     assert_eq!(requests[0].name, "jira");
-    assert_default_workspace(requests[0].workspace.as_ref());
+    assert_test_workspace(requests[0].workspace.as_ref());
 
     server.shutdown().await;
 }
@@ -669,7 +693,7 @@ async fn source_list_renders_empty_state() {
 
     let requests = server.list_sources_requests();
     assert_eq!(requests.len(), 1, "expected one list_sources call");
-    assert_default_workspace(requests[0].workspace.as_ref());
+    assert_test_workspace(requests[0].workspace.as_ref());
 
     server.shutdown().await;
 }
@@ -714,7 +738,7 @@ async fn source_test_renders_validation_summary() {
     let requests = server.validate_source_requests();
     assert_eq!(requests.len(), 1, "expected one validate_source call");
     assert_eq!(requests[0].name, "github");
-    assert_default_workspace(requests[0].workspace.as_ref());
+    assert_test_workspace(requests[0].workspace.as_ref());
 
     server.shutdown().await;
 }
@@ -739,7 +763,7 @@ async fn source_remove_reports_removed_source() {
     let requests = server.delete_source_requests();
     assert_eq!(requests.len(), 1, "expected one delete_source call");
     assert_eq!(requests[0].name, "github");
-    assert_default_workspace(requests[0].workspace.as_ref());
+    assert_test_workspace(requests[0].workspace.as_ref());
 
     server.shutdown().await;
 }
@@ -863,7 +887,7 @@ async fn sql_table_output_renders_multiple_columns_and_rows() {
     let requests = server.execute_sql_requests();
     assert_eq!(requests.len(), 1, "expected one execute_sql call");
     assert_eq!(requests[0].sql, "select id, name from users");
-    assert_default_workspace(requests[0].workspace.as_ref());
+    assert_test_workspace(requests[0].workspace.as_ref());
 
     server.shutdown().await;
 }
@@ -912,7 +936,7 @@ async fn sql_json_output_renders_multiple_rows() {
     let requests = server.execute_sql_requests();
     assert_eq!(requests.len(), 1, "expected one execute_sql call");
     assert_eq!(requests[0].sql, "select id, name from users");
-    assert_default_workspace(requests[0].workspace.as_ref());
+    assert_test_workspace(requests[0].workspace.as_ref());
 
     server.shutdown().await;
 }
@@ -957,7 +981,7 @@ async fn search_command_renders_text_output_and_provider_statuses() {
     assert_eq!(requests.len(), 1, "expected one search call");
     assert_eq!(requests[0].query, "messages text");
     assert_eq!(requests[0].limit, 10);
-    assert_default_workspace(requests[0].workspace.as_ref());
+    assert_test_workspace(requests[0].workspace.as_ref());
 
     server.shutdown().await;
 }
@@ -1002,7 +1026,7 @@ async fn search_json_output_preserves_typed_payloads_and_statuses() {
     assert_eq!(requests.len(), 1, "expected one search call");
     assert_eq!(requests[0].query, "messages");
     assert_eq!(requests[0].limit, 5);
-    assert_default_workspace(requests[0].workspace.as_ref());
+    assert_test_workspace(requests[0].workspace.as_ref());
 
     server.shutdown().await;
 }
@@ -1055,7 +1079,7 @@ async fn search_index_rebuild_calls_app_maintenance_rpc() {
     );
     let requests = server.rebuild_search_index_requests();
     assert_eq!(requests.len(), 1, "expected one rebuild call");
-    assert_default_workspace(requests[0].workspace.as_ref());
+    assert_test_workspace(requests[0].workspace.as_ref());
     assert_eq!(requests[0].provider, SearchIndexProvider::All as i32);
     assert!(requests[0].force);
 
@@ -1130,7 +1154,7 @@ async fn search_index_drain_calls_app_maintenance_rpc() {
     );
     let requests = server.drain_search_queue_requests();
     assert_eq!(requests.len(), 1, "expected one drain call");
-    assert_default_workspace(requests[0].workspace.as_ref());
+    assert_test_workspace(requests[0].workspace.as_ref());
     assert_eq!(requests[0].budget_ms, 2500);
 
     server
@@ -1157,7 +1181,7 @@ async fn search_index_clear_calls_app_maintenance_rpc() {
             "--scope",
             "all",
             "--workspace",
-            "default",
+            TEST_WORKSPACE,
             "--yes",
         ])
         .assert()
@@ -1179,7 +1203,7 @@ async fn search_index_clear_calls_app_maintenance_rpc() {
     );
     let requests = server.clear_search_data_requests();
     assert_eq!(requests.len(), 1, "expected one clear call");
-    assert_default_workspace(requests[0].workspace.as_ref());
+    assert_test_workspace(requests[0].workspace.as_ref());
     assert_eq!(requests[0].scope, SearchDataScope::All as i32);
     match requests[0]
         .target
@@ -1219,14 +1243,14 @@ async fn search_index_clear_calls_app_maintenance_rpc() {
             "--source",
             "searchable",
             "--workspace",
-            "default",
+            TEST_WORKSPACE,
             "--yes",
         ])
         .assert()
         .success();
     let requests = server.clear_search_data_requests();
     assert_eq!(requests.len(), 3, "expected source clear call");
-    assert_default_workspace(requests[2].workspace.as_ref());
+    assert_test_workspace(requests[2].workspace.as_ref());
     assert_eq!(requests[2].scope, SearchDataScope::All as i32);
     match requests[2]
         .target
@@ -1305,7 +1329,7 @@ async fn sql_table_output_renders_empty_result() {
     let requests = server.execute_sql_requests();
     assert_eq!(requests.len(), 1, "expected one execute_sql call");
     assert_eq!(requests[0].sql, "select id, name from empty_table");
-    assert_default_workspace(requests[0].workspace.as_ref());
+    assert_test_workspace(requests[0].workspace.as_ref());
 
     server.shutdown().await;
 }
@@ -1332,7 +1356,7 @@ async fn sql_json_output_renders_empty_result() {
     let requests = server.execute_sql_requests();
     assert_eq!(requests.len(), 1, "expected one execute_sql call");
     assert_eq!(requests[0].sql, "select id from empty_table");
-    assert_default_workspace(requests[0].workspace.as_ref());
+    assert_test_workspace(requests[0].workspace.as_ref());
 
     server.shutdown().await;
 }

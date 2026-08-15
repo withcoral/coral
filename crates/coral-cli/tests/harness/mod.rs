@@ -64,9 +64,19 @@ use tonic::transport::Server;
 use tonic::{Code, Request, Response, Status};
 use tonic_types::{ErrorDetail, StatusExt as _};
 
+/// The ordinary workspace every fixture selects explicitly.
+///
+/// Nothing provisions a workspace any more, so a fixture that names no
+/// workspace would fall through to `selected_workspace_name`'s
+/// `DEFAULT_WORKSPACE_ID` fallback — which still exists, is exercised only by
+/// its own resolver unit test, and is itself due for removal. Fixtures
+/// therefore select this name through the ordinary `CORAL_WORKSPACE` selector
+/// (see [`MockServer::cmd`]) rather than leaning on that fallback.
+pub(crate) const TEST_WORKSPACE: &str = "analytics";
+
 fn workspace() -> Workspace {
     Workspace {
-        name: "default".to_string(),
+        name: TEST_WORKSPACE.to_string(),
     }
 }
 
@@ -80,8 +90,8 @@ pub(crate) fn membership(name: &str, role: WorkspaceRole) -> WorkspaceMembership
     }
 }
 
-pub(crate) fn assert_default_workspace(workspace: Option<&Workspace>) {
-    assert_workspace_name(workspace, "default");
+pub(crate) fn assert_test_workspace(workspace: Option<&Workspace>) {
+    assert_workspace_name(workspace, TEST_WORKSPACE);
 }
 
 pub(crate) fn assert_workspace_name(workspace: Option<&Workspace>, expected: &str) {
@@ -731,8 +741,9 @@ impl Default for MockServerConfig {
                     },
                 ],
             }),
+            // Fresh state: the caller holds no membership until a test says so.
             list_workspaces: MockResult::ok(ListWorkspacesResponse {
-                memberships: vec![membership("default", WorkspaceRole::Owner)],
+                memberships: Vec::new(),
             }),
             validate_source: MockResult::ok(mock_validate_response()),
             delete_source: MockResult::ok(()),
@@ -1656,10 +1667,17 @@ impl MockServer {
         .await
     }
 
+    /// Builds a `coral` invocation that explicitly targets [`TEST_WORKSPACE`].
+    ///
+    /// The selection is a plain `CORAL_WORKSPACE` value, so `--workspace` still
+    /// overrides it and the precedence tests keep working. Selecting it here
+    /// keeps every other fixture off the resolver fallback, so removing that
+    /// fallback stays a change to the resolver and its own test.
     pub(crate) fn cmd(&self) -> Command {
         let mut cmd = Command::cargo_bin("coral").expect("cargo bin");
         cmd.env("CORAL_ENDPOINT", &self.endpoint_uri);
         cmd.env("CORAL_CONFIG_DIR", self.config_dir.path());
+        cmd.env("CORAL_WORKSPACE", TEST_WORKSPACE);
         cmd
     }
 

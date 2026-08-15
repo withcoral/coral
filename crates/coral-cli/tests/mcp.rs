@@ -16,12 +16,14 @@ use std::time::Duration;
 use std::{fs, io};
 
 use coral_api::v1::{
-    ExecuteSqlRequest, ImportSourceRequest, ListSourcesResponse, Source, SourceCredentialStorage,
-    SourceOrigin, Workspace, import_source_response,
+    CreateWorkspaceRequest, ExecuteSqlRequest, ImportSourceRequest, ListSourcesResponse, Source,
+    SourceCredentialStorage, SourceOrigin, Workspace, import_source_response,
 };
 use coral_app::{ServerBuilder, shutdown_tracing};
-use coral_client::{AppClient, default_workspace};
-use harness::{MockServer, MockServerConfig, assert_default_workspace, assert_workspace_name};
+use coral_client::{AppClient, workspace as workspace_resource};
+use harness::{
+    MockServer, MockServerConfig, TEST_WORKSPACE, assert_test_workspace, assert_workspace_name,
+};
 use rmcp::{
     RoleClient, ServiceExt,
     model::{CallToolRequestParams, CallToolResult, ReadResourceRequestParams},
@@ -81,13 +83,15 @@ fn write_config(server: &MockServer, raw: &str) -> Result<(), io::Error> {
 fn write_workspace_scoped_source_config(server: &MockServer) -> Result<(), io::Error> {
     write_config(
         server,
-        r#"
-[workspaces.default.sources.github]
+        &format!(
+            r#"
+[workspaces.{TEST_WORKSPACE}.sources.github]
 origin = "bundled"
 
 [workspaces.work.sources.jira]
 origin = "bundled"
-"#,
+"#
+        ),
     )
 }
 
@@ -184,7 +188,8 @@ async fn start_mcp_client_with_args(
             cmd.arg("mcp-stdio")
                 .args(args)
                 .env("CORAL_ENDPOINT", server.endpoint_uri())
-                .env("CORAL_CONFIG_DIR", server.config_dir());
+                .env("CORAL_CONFIG_DIR", server.config_dir())
+                .env("CORAL_WORKSPACE", TEST_WORKSPACE);
         }),
     )?;
     let client = ().serve(transport).await?;
@@ -202,7 +207,7 @@ async fn coral_client_task_id_metadata_reaches_execute_sql()
     coral_client::with_task_metadata(Some(task_id_metadata), async {
         app.query_client()
             .execute_sql(Request::new(ExecuteSqlRequest {
-                workspace: Some(default_workspace()),
+                workspace: Some(workspace_resource(TEST_WORKSPACE)),
                 sql: "SELECT 1".to_string(),
                 guide_read_context: None,
                 task_attribution: None,
@@ -255,6 +260,16 @@ tables:
     ))
 }
 
+/// Creates [`TEST_WORKSPACE`] on a real server, which now provisions none.
+async fn create_test_workspace(app: &AppClient) -> Result<(), Box<dyn std::error::Error>> {
+    app.workspace_client()
+        .create_workspace(Request::new(CreateWorkspaceRequest {
+            workspace: Some(workspace_resource(TEST_WORKSPACE)),
+        }))
+        .await?;
+    Ok(())
+}
+
 async fn import_real_fixture_source(
     app: &AppClient,
     manifest_yaml: String,
@@ -262,7 +277,7 @@ async fn import_real_fixture_source(
     let mut source_client = app.source_client();
     let mut stream = source_client
         .import_source(Request::new(ImportSourceRequest {
-            workspace: Some(default_workspace()),
+            workspace: Some(workspace_resource(TEST_WORKSPACE)),
             manifest_yaml,
             variables: Vec::new(),
             secrets: Vec::new(),
@@ -436,18 +451,21 @@ async fn mcp_stdio_raw_tools_list_advertises_client_compatible_schemas()
     let server = MockServer::start().await;
     write_config(
         &server,
-        r#"
-[workspaces.default.sources.jira]
+        &format!(
+            r#"
+[workspaces.{TEST_WORKSPACE}.sources.jira]
 origin = "bundled"
 
-[workspaces.default.sources.github]
+[workspaces.{TEST_WORKSPACE}.sources.github]
 origin = "bundled"
-"#,
+"#
+        ),
     )?;
     let mut child = Command::new(env!("CARGO_BIN_EXE_coral"))
         .arg("mcp-stdio")
         .env("CORAL_ENDPOINT", server.endpoint_uri())
         .env("CORAL_CONFIG_DIR", server.config_dir())
+        .env("CORAL_WORKSPACE", TEST_WORKSPACE)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -538,11 +556,12 @@ storage = "file"
         .start()
         .await?;
     let app = AppClient::connect(server.endpoint_uri()).await?;
+    create_test_workspace(&app).await?;
     import_real_fixture_source(&app, write_real_fixture_manifest(temp.path())?).await?;
     let sql = "SELECT text FROM local_messages.messages ORDER BY text";
     app.query_client()
         .execute_sql(Request::new(ExecuteSqlRequest {
-            workspace: Some(default_workspace()),
+            workspace: Some(workspace_resource(TEST_WORKSPACE)),
             sql: sql.to_string(),
             guide_read_context: None,
             task_attribution: None,
@@ -552,6 +571,7 @@ storage = "file"
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_coral"))
         .arg("mcp-stdio")
+        .args(["--workspace", TEST_WORKSPACE])
         .env("CORAL_ENDPOINT", server.endpoint_uri())
         .env("CORAL_CONFIG_DIR", &config_dir)
         .stdin(Stdio::piped())
@@ -623,8 +643,8 @@ async fn mcp_stdio_workspace_flag_scopes_server_instance() -> Result<(), Box<dyn
         server.config_dir(),
         &[
             query_history_trace_record(
-                "default",
-                "default-history",
+                TEST_WORKSPACE,
+                "analytics-history",
                 "SELECT title FROM github.issues",
                 &["github"],
                 7,
@@ -1021,7 +1041,7 @@ async fn mcp_stdio_task_tools_send_lifecycle_requests() -> Result<(), Box<dyn st
     let task_id = start_test_task(&client).await?;
     let start_requests = server.start_task_requests();
     assert_eq!(start_requests.len(), 1);
-    assert_default_workspace(start_requests[0].workspace.as_ref());
+    assert_test_workspace(start_requests[0].workspace.as_ref());
     assert_eq!(
         start_requests[0].intent,
         "Exercise the MCP CLI test contract"
@@ -1040,7 +1060,7 @@ async fn mcp_stdio_task_tools_send_lifecycle_requests() -> Result<(), Box<dyn st
 
     let end_requests = server.end_task_requests();
     assert_eq!(end_requests.len(), 1);
-    assert_default_workspace(end_requests[0].workspace.as_ref());
+    assert_test_workspace(end_requests[0].workspace.as_ref());
     assert_eq!(end_requests[0].task_id, task_id);
     assert_eq!(
         end_requests[0].task_status,
@@ -1229,6 +1249,7 @@ future_flag = true
         .arg("mcp-stdio")
         .env("CORAL_ENDPOINT", server.endpoint_uri())
         .env("CORAL_CONFIG_DIR", server.config_dir())
+        .env("CORAL_WORKSPACE", TEST_WORKSPACE)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -1442,7 +1463,7 @@ async fn assert_search_tool(
     let request = search_requests.last().expect("search request");
     assert_eq!(request.query, "messages");
     assert_eq!(request.limit, 5);
-    assert_default_workspace(request.workspace.as_ref());
+    assert_test_workspace(request.workspace.as_ref());
     Ok(())
 }
 
