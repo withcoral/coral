@@ -7,10 +7,13 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use coral_api::v1::{ImportSourceRequest, Workspace, import_source_response};
+use coral_api::v1::{
+    CreateWorkspaceRequest, ImportSourceRequest, Workspace, import_source_response,
+};
 use coral_client::{
-    AppClient, SourceClient, default_workspace,
+    AppClient, SourceClient,
     local::{RunningServer, ServerBuilder},
+    workspace,
 };
 use futures::future::BoxFuture;
 use jsonschema::Validator;
@@ -347,10 +350,36 @@ async fn start_test_task(client: &RunningService<RoleClient, ()>) -> String {
     task_id
 }
 
+/// The one ordinary workspace these fixtures work in.
+///
+/// Nothing provisions a workspace any more, so a session that reaches a
+/// workspace-scoped tool has to create this one and name it in [`McpOptions`].
+const TEST_WORKSPACE: &str = "analytics";
+
+fn test_workspace() -> Workspace {
+    workspace(TEST_WORKSPACE)
+}
+
+async fn create_test_workspace(app: &AppClient) {
+    app.workspace_client()
+        .create_workspace(Request::new(CreateWorkspaceRequest {
+            workspace: Some(test_workspace()),
+        }))
+        .await
+        .expect("create test workspace");
+}
+
+/// Where the feedback tool records reports for [`TEST_WORKSPACE`].
+fn feedback_reports_path(root: &Path) -> PathBuf {
+    root.join("coral-config/workspaces")
+        .join(TEST_WORKSPACE)
+        .join("feedback/reports.jsonl")
+}
+
 async fn add_demo_source(source_client: &mut SourceClient, manifest_yaml: String) {
     let mut stream = source_client
         .import_source(Request::new(ImportSourceRequest {
-            workspace: Some(default_workspace()),
+            workspace: Some(test_workspace()),
             manifest_yaml,
             variables: Vec::new(),
             secrets: Vec::new(),
@@ -404,6 +433,7 @@ async fn start_session_with_options(temp: &TempDir, options: McpOptions) -> Test
     let app = AppClient::connect(server.endpoint_uri())
         .await
         .expect("connect client");
+    let options = with_created_workspace(&app, options).await;
     let source_client = app.source_client();
     let factory = CoralMcpServerFactory::new(app, options);
     let (client, mcp_server_task) = start_mcp_session(factory.create()).await;
@@ -413,6 +443,21 @@ async fn start_session_with_options(temp: &TempDir, options: McpOptions) -> Test
         client,
         app_server: server,
         mcp_server_task,
+    }
+}
+
+/// Creates [`TEST_WORKSPACE`] and scopes the session to it, unless the caller
+/// already named the workspace it wants to exercise. Leaving `workspace` unset
+/// would fall through to the server's own choice, which is exactly what these
+/// fixtures must not depend on.
+async fn with_created_workspace(app: &AppClient, options: McpOptions) -> McpOptions {
+    if options.workspace.is_some() {
+        return options;
+    }
+    create_test_workspace(app).await;
+    McpOptions {
+        workspace: Some(test_workspace()),
+        ..options
     }
 }
 
@@ -2155,12 +2200,14 @@ async fn factory_shares_configuration_and_task_guide_state_across_sessions() {
     let app = AppClient::connect(app_server.endpoint_uri())
         .await
         .expect("connect client");
+    create_test_workspace(&app).await;
     let mut source_client = app.source_client();
     add_demo_source(&mut source_client, manifest_yaml).await;
     let factory = CoralMcpServerFactory::new(
         app,
         McpOptions {
             feedback_enabled: true,
+            workspace: Some(test_workspace()),
             ..McpOptions::default()
         },
     );
@@ -2438,16 +2485,13 @@ async fn mcp_feedback_tool_persists_blocked_agent_report() {
     assert_eq!(structured["message"], "Feedback report stored.");
     assert!(structured.get("upload").is_none());
 
-    let raw = fs::read_to_string(
-        temp.path()
-            .join("coral-config/workspaces/default/feedback/reports.jsonl"),
-    )
-    .expect("feedback file should exist");
+    let raw =
+        fs::read_to_string(feedback_reports_path(temp.path())).expect("feedback file should exist");
     let records = raw.lines().collect::<Vec<_>>();
     assert_eq!(records.len(), 1);
     let record: Value = serde_json::from_str(records[0]).expect("feedback JSONL should parse");
     assert_eq!(record["id"], structured["feedback_id"]);
-    assert_eq!(record["workspace"], "default");
+    assert_eq!(record["workspace"], TEST_WORKSPACE);
     assert_eq!(record["trying_to_do"], "Fix failing tests");
     assert_eq!(
         record["tried"],
@@ -2477,11 +2521,8 @@ async fn mcp_feedback_tool_persists_blocked_agent_report() {
             .contains("missing string argument 'tried'")
     );
 
-    let raw_after_error = fs::read_to_string(
-        temp.path()
-            .join("coral-config/workspaces/default/feedback/reports.jsonl"),
-    )
-    .expect("feedback file should still exist");
+    let raw_after_error = fs::read_to_string(feedback_reports_path(temp.path()))
+        .expect("feedback file should still exist");
     assert_eq!(raw_after_error.lines().count(), 1);
 
     session.shutdown().await;
@@ -2524,11 +2565,8 @@ async fn mcp_feedback_tool_always_accepts_task_context() {
         "Feedback report stored."
     );
 
-    let raw = fs::read_to_string(
-        temp.path()
-            .join("coral-config/workspaces/default/feedback/reports.jsonl"),
-    )
-    .expect("feedback file should exist");
+    let raw =
+        fs::read_to_string(feedback_reports_path(temp.path())).expect("feedback file should exist");
     let records = raw.lines().collect::<Vec<_>>();
     assert_eq!(records.len(), 1);
     let record: Value = serde_json::from_str(records[0]).expect("feedback JSONL should parse");
@@ -2572,12 +2610,7 @@ async fn mcp_feedback_tool_is_disabled_by_default() {
         .await
         .expect_err("feedback should not be exposed by default");
     assert!(feedback.to_string().contains("tool 'feedback' not found"));
-    assert!(
-        !temp
-            .path()
-            .join("coral-config/workspaces/default/feedback/reports.jsonl")
-            .exists()
-    );
+    assert!(!feedback_reports_path(temp.path()).exists());
 
     session.shutdown().await;
 }

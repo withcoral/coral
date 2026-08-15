@@ -7,7 +7,8 @@ use std::time::Duration;
 use axum::body::{Body, to_bytes};
 use axum::http::{HeaderValue, Method, Request, StatusCode, header};
 use axum::{Router, response::Response};
-use coral_client::{AppClient, local::ServerBuilder};
+use coral_api::v1::CreateWorkspaceRequest;
+use coral_client::{AppClient, local::ServerBuilder, workspace};
 use futures::{future::BoxFuture, poll};
 use rmcp::handler::server::router::tool::IntoToolRoute;
 use rmcp::model::{CallToolRequestParams, ClientJsonRpcMessage};
@@ -23,6 +24,7 @@ use rmcp::{ErrorData, Json, ServiceExt as _};
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::TcpStream;
+use tonic::Request as GrpcRequest;
 use tower::ServiceExt as _;
 
 use crate::{McpOptions, McpSurface, McpToolContext};
@@ -150,6 +152,26 @@ async fn assert_invalid_initialize_protocols_rejected(router: &Router) {
             send(router, invalid).await.status(),
             StatusCode::BAD_REQUEST
         );
+    }
+}
+
+/// The one ordinary workspace the HTTP fixtures work in. A fresh app owns no
+/// workspace, so only the tests that reach a workspace-scoped tool create it,
+/// and they name it in their [`McpOptions`] rather than leaving the choice to
+/// the server.
+const TEST_WORKSPACE: &str = "analytics";
+
+/// Creates [`TEST_WORKSPACE`] and returns options scoped to it.
+async fn workspace_scoped_options(app: &AppClient) -> McpOptions {
+    app.workspace_client()
+        .create_workspace(GrpcRequest::new(CreateWorkspaceRequest {
+            workspace: Some(workspace(TEST_WORKSPACE)),
+        }))
+        .await
+        .expect("create test workspace");
+    McpOptions {
+        workspace: Some(workspace(TEST_WORKSPACE)),
+        ..McpOptions::default()
     }
 }
 
@@ -503,10 +525,10 @@ async fn streamable_http_executes_tools_and_shutdown_is_bounded() {
         McpHttpConfig::new(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).expect("loopback config");
     let server = start_auth_disabled(
         config,
-        app,
+        app.clone(),
         McpOptions {
             feedback_enabled: true,
-            ..McpOptions::default()
+            ..workspace_scoped_options(&app).await
         },
     )
     .await
