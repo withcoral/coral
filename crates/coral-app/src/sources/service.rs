@@ -867,7 +867,7 @@ mod tests {
     use super::*;
     use crate::identity::Principal;
     use crate::state::db::CoralDb;
-    use crate::test_support::{migrated_deployment, seed_principal};
+    use crate::test_support::{create_workspace, migrated_deployment, seed_principal};
     use crate::workspaces::MemberRole;
     use coral_engine::QueryRuntimeContext;
     use coral_spec::{
@@ -901,10 +901,20 @@ mod tests {
         config_file: PathBuf,
     }
 
-    /// A shared deployment over one migrated database holding the default
+    /// The workspace these fixtures run in.
+    ///
+    /// An install provisions none, so [`fixture`] creates it explicitly. The
+    /// name is ordinary on purpose: a fixture that leaned on a well-known one
+    /// would prove the workspace was resolved by name rather than created.
+    fn test_workspace() -> WorkspaceName {
+        WorkspaceName::parse("work").expect("workspace name")
+    }
+
+    /// A shared deployment over one migrated database holding one created
     /// workspace, so every caller's authority comes from a membership row.
     async fn fixture() -> Fixture {
         let deployment = migrated_deployment().await;
+        create_workspace(&deployment.db, &test_workspace()).await;
         let (temp, layout, db, workspaces, credentials) = (
             deployment.temp,
             deployment.layout,
@@ -948,8 +958,8 @@ mod tests {
         request
     }
 
-    fn default_workspace() -> coral_api::v1::Workspace {
-        workspace_to_proto(&WorkspaceName::default())
+    fn workspace() -> coral_api::v1::Workspace {
+        workspace_to_proto(&test_workspace())
     }
 
     /// The OAuth half of a request, missing the method index the conversion
@@ -997,7 +1007,7 @@ mod tests {
                 service
                     .discover_sources(request(
                         DiscoverSourcesRequest {
-                            workspace: Some(default_workspace()),
+                            workspace: Some(workspace()),
                         },
                         principal,
                     ))
@@ -1008,7 +1018,7 @@ mod tests {
                 service
                     .list_sources(request(
                         ListSourcesRequest {
-                            workspace: Some(default_workspace()),
+                            workspace: Some(workspace()),
                         },
                         principal,
                     ))
@@ -1019,7 +1029,7 @@ mod tests {
                 service
                     .get_source(request(
                         GetSourceRequest {
-                            workspace: Some(default_workspace()),
+                            workspace: Some(workspace()),
                             name: ABSENT_SOURCE.to_string(),
                         },
                         principal,
@@ -1031,7 +1041,7 @@ mod tests {
                 service
                     .get_source_info(request(
                         GetSourceInfoRequest {
-                            workspace: Some(default_workspace()),
+                            workspace: Some(workspace()),
                             name: ABSENT_SOURCE.to_string(),
                         },
                         principal,
@@ -1049,7 +1059,7 @@ mod tests {
                 service
                     .create_bundled_source(request(
                         CreateBundledSourceRequest {
-                            workspace: Some(default_workspace()),
+                            workspace: Some(workspace()),
                             name: ABSENT_SOURCE.to_string(),
                             variables: Vec::new(),
                             secrets: Vec::new(),
@@ -1063,7 +1073,7 @@ mod tests {
                 service
                     .create_bundled_source_with_o_auth(request(
                         CreateBundledSourceWithOAuthRequest {
-                            workspace: Some(default_workspace()),
+                            workspace: Some(workspace()),
                             name: ABSENT_SOURCE.to_string(),
                             variables: Vec::new(),
                             secrets: Vec::new(),
@@ -1078,7 +1088,7 @@ mod tests {
                 service
                     .import_source(request(
                         ImportSourceRequest {
-                            workspace: Some(default_workspace()),
+                            workspace: Some(workspace()),
                             manifest_yaml: String::new(),
                             variables: Vec::new(),
                             secrets: Vec::new(),
@@ -1100,7 +1110,7 @@ mod tests {
                 service
                     .delete_source(request(
                         DeleteSourceRequest {
-                            workspace: Some(default_workspace()),
+                            workspace: Some(workspace()),
                             name: ABSENT_SOURCE.to_string(),
                         },
                         principal,
@@ -1112,7 +1122,7 @@ mod tests {
                 service
                     .validate_source(request(
                         ValidateSourceRequest {
-                            workspace: Some(default_workspace()),
+                            workspace: Some(workspace()),
                             name: ABSENT_SOURCE.to_string(),
                         },
                         principal,
@@ -1139,9 +1149,9 @@ mod tests {
     #[tokio::test]
     async fn source_configuration_reaches_only_workspace_owners() {
         let fixture = fixture().await;
-        let owner = seed_principal(&fixture.db, ISSUER, "owner", Some(MemberRole::Owner)).await;
-        let member = seed_principal(&fixture.db, ISSUER, "member", Some(MemberRole::Member)).await;
-        let outsider = seed_principal(&fixture.db, ISSUER, "outsider", None).await;
+        let owner = seed_principal(&fixture.db, ISSUER, &test_workspace(), "owner", Some(MemberRole::Owner)).await;
+        let member = seed_principal(&fixture.db, ISSUER, &test_workspace(), "member", Some(MemberRole::Member)).await;
+        let outsider = seed_principal(&fixture.db, ISSUER, &test_workspace(), "outsider", None).await;
         std::fs::write(&fixture.config_file, UNPARSEABLE_CONFIG).expect("poison the app config");
 
         for status in every_source_rpc(&fixture.service, &member).await {

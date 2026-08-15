@@ -575,7 +575,7 @@ mod tests {
     use crate::state::db::CoralDb;
     use crate::task::manager::TaskManager;
     use crate::task::store::TaskStore;
-    use crate::test_support::{migrated_deployment, seed_principal};
+    use crate::test_support::{create_workspace, migrated_deployment, seed_principal};
     use crate::workspaces::authorization::WorkspaceAuthorizer;
     use crate::workspaces::{MemberRole, WorkspaceName};
 
@@ -595,10 +595,20 @@ mod tests {
         db: Arc<CoralDb>,
     }
 
-    /// A shared deployment over one migrated database holding the default
+    /// The workspace these fixtures run in.
+    ///
+    /// An install provisions none, so [`fixture`] creates it explicitly. The
+    /// name is ordinary on purpose: a fixture that leaned on a well-known one
+    /// would prove the workspace was resolved by name rather than created.
+    fn test_workspace() -> WorkspaceName {
+        WorkspaceName::parse("work").expect("workspace name")
+    }
+
+    /// A shared deployment over one migrated database holding one created
     /// workspace, so every caller's authority comes from a membership row.
     async fn fixture() -> Fixture {
         let deployment = migrated_deployment().await;
+        create_workspace(&deployment.db, &test_workspace()).await;
         let (temp, layout, config_store, db, workspaces) = (
             deployment.temp,
             deployment.layout,
@@ -642,15 +652,15 @@ mod tests {
         request
     }
 
-    fn default_workspace() -> coral_api::v1::Workspace {
-        crate::transport::workspace_to_proto(&WorkspaceName::default())
+    fn workspace() -> coral_api::v1::Workspace {
+        crate::transport::workspace_to_proto(&test_workspace())
     }
 
     /// An empty query is what search preparation rejects, so it stands as the
     /// probe for whether preparation was reached at all.
     fn search_request() -> ProtoSearchRequest {
         ProtoSearchRequest {
-            workspace: Some(default_workspace()),
+            workspace: Some(workspace()),
             query: String::new(),
             limit: 0,
         }
@@ -658,7 +668,7 @@ mod tests {
 
     fn rebuild_request() -> ProtoRebuildSearchIndexRequest {
         ProtoRebuildSearchIndexRequest {
-            workspace: Some(default_workspace()),
+            workspace: Some(workspace()),
             provider: UNDECODABLE_PROVIDER,
             force: true,
         }
@@ -666,7 +676,7 @@ mod tests {
 
     fn clear_request() -> ProtoClearSearchDataRequest {
         ProtoClearSearchDataRequest {
-            workspace: Some(default_workspace()),
+            workspace: Some(workspace()),
             scope: ProtoSearchDataScope::Unspecified as i32,
             target: None,
         }
@@ -682,9 +692,9 @@ mod tests {
     #[tokio::test]
     async fn members_search_while_only_owners_maintain_the_index() {
         let fixture = fixture().await;
-        let owner = seed_principal(&fixture.db, ISSUER, "owner", Some(MemberRole::Owner)).await;
-        let member = seed_principal(&fixture.db, ISSUER, "member", Some(MemberRole::Member)).await;
-        let outsider = seed_principal(&fixture.db, ISSUER, "outsider", None).await;
+        let owner = seed_principal(&fixture.db, ISSUER, &test_workspace(), "owner", Some(MemberRole::Owner)).await;
+        let member = seed_principal(&fixture.db, ISSUER, &test_workspace(), "member", Some(MemberRole::Member)).await;
+        let outsider = seed_principal(&fixture.db, ISSUER, &test_workspace(), "outsider", None).await;
 
         assert_eq!(
             fixture
@@ -720,7 +730,7 @@ mod tests {
                 .service
                 .drain_search_queue(request(
                     ProtoDrainSearchQueueRequest {
-                        workspace: Some(default_workspace()),
+                        workspace: Some(workspace()),
                         budget_ms: 1,
                     },
                     &member,

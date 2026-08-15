@@ -140,9 +140,9 @@ mod tests {
         tx.commit().await.expect("commit workspace creation");
         // The workspace needs an owner before any membership in it grants
         // anything, so one is seeded beside the member under test.
-        let _owner = seed_principal(&db, ISSUER, "owner", Some(MemberRole::Owner)).await;
-        let member = seed_principal(&db, ISSUER, "member", Some(MemberRole::Member)).await;
-        let outsider = seed_principal(&db, ISSUER, "outsider", None).await;
+        let _owner = seed_principal(&db, ISSUER, &WorkspaceName::default(), "owner", Some(MemberRole::Owner)).await;
+        let member = seed_principal(&db, ISSUER, &WorkspaceName::default(), "member", Some(MemberRole::Member)).await;
+        let outsider = seed_principal(&db, ISSUER, &WorkspaceName::default(), "outsider", None).await;
         let workspace = WorkspaceName::default();
         let service = FeedbackService::new(
             crate::feedback::manager::FeedbackManager::new(layout.clone()),

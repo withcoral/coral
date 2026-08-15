@@ -160,7 +160,7 @@ mod tests {
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::task::manager::TaskManager;
     use crate::task::store::TaskStore;
-    use crate::test_support::seed_principal;
+    use crate::test_support::{create_workspace, seed_principal};
     use crate::workspaces::authorization::WorkspaceAuthorizer;
     use crate::workspaces::{MemberRole, WorkspaceName};
 
@@ -195,8 +195,18 @@ mod tests {
         let config_store = ConfigStore::new(layout.clone());
         run_state_migrations(&db, &config_store, &layout)
             .await
-            .expect("import default workspace");
+            .expect("run state migrations");
+        create_workspace(&db, &test_workspace()).await;
         (dir, db)
+    }
+
+    /// The workspace these fixtures run in.
+    ///
+    /// An install provisions none, so [`task_database`] creates it explicitly.
+    /// The name is ordinary on purpose: a fixture that leaned on a well-known
+    /// one would prove the workspace was resolved by name rather than created.
+    fn test_workspace() -> WorkspaceName {
+        WorkspaceName::parse("work").expect("workspace name")
     }
 
     fn workspace(name: &str) -> Workspace {
@@ -223,7 +233,7 @@ mod tests {
 
         let response = service
             .start_task(request(StartTaskRequest {
-                workspace: Some(workspace("default")),
+                workspace: Some(workspace(test_workspace().as_str())),
                 intent: "Find renewal risk".to_string(),
             }))
             .await
@@ -240,8 +250,8 @@ mod tests {
     #[tokio::test]
     async fn end_task_returns_success_status() {
         let (_dir, db) = task_database().await;
-        let _owner = seed_principal(&db, ISSUER, "owner", Some(MemberRole::Owner)).await;
-        let principal = seed_principal(&db, ISSUER, "member", Some(MemberRole::Member)).await;
+        let _owner = seed_principal(&db, ISSUER, &test_workspace(), "owner", Some(MemberRole::Owner)).await;
+        let principal = seed_principal(&db, ISSUER, &test_workspace(), "member", Some(MemberRole::Member)).await;
         let service = TaskService::new(
             TaskManager::new(TaskStore::new(Arc::clone(&db))),
             WorkspaceAuthorizer::new(db),
@@ -250,7 +260,7 @@ mod tests {
         let task = service
             .start_task(request_for_principal(
                 StartTaskRequest {
-                    workspace: Some(workspace("default")),
+                    workspace: Some(workspace(test_workspace().as_str())),
                     intent: "Find renewal risk".to_string(),
                 },
                 principal.clone(),
@@ -263,7 +273,7 @@ mod tests {
         let response = service
             .end_task(request_for_principal(
                 EndTaskRequest {
-                    workspace: Some(workspace("default")),
+                    workspace: Some(workspace(test_workspace().as_str())),
                     task_id: task.task_id.clone(),
                     task_status: TaskStatus::Success as i32,
                 },
@@ -280,7 +290,7 @@ mod tests {
         let status = service
             .end_task(request_for_principal(
                 EndTaskRequest {
-                    workspace: Some(workspace("default")),
+                    workspace: Some(workspace(test_workspace().as_str())),
                     task_id: task.task_id,
                     task_status: TaskStatus::Failure as i32,
                 },
@@ -312,7 +322,7 @@ mod tests {
 
         let status = service
             .start_task(request(StartTaskRequest {
-                workspace: Some(workspace("default")),
+                workspace: Some(workspace(test_workspace().as_str())),
                 intent: " ".to_string(),
             }))
             .await
@@ -327,7 +337,7 @@ mod tests {
 
         let status = service
             .end_task(request(EndTaskRequest {
-                workspace: Some(workspace("default")),
+                workspace: Some(workspace(test_workspace().as_str())),
                 task_id: UNKNOWN_TASK_ID.to_string(),
                 task_status: TaskStatus::Success as i32,
             }))
@@ -343,7 +353,7 @@ mod tests {
 
         let status = service
             .end_task(request(EndTaskRequest {
-                workspace: Some(workspace("default")),
+                workspace: Some(workspace(test_workspace().as_str())),
                 task_id: "not-a-uuid".to_string(),
                 task_status: TaskStatus::Success as i32,
             }))
@@ -363,14 +373,14 @@ mod tests {
         let tasks = TaskManager::new(TaskStore::new(Arc::clone(&db)));
         // The workspace needs an owner before any membership in it grants
         // anything, so one is seeded beside the member under test.
-        let _owner = seed_principal(&db, ISSUER, "owner", Some(MemberRole::Owner)).await;
-        let member = seed_principal(&db, ISSUER, "member", Some(MemberRole::Member)).await;
-        let outsider = seed_principal(&db, ISSUER, "outsider", None).await;
+        let _owner = seed_principal(&db, ISSUER, &test_workspace(), "owner", Some(MemberRole::Owner)).await;
+        let member = seed_principal(&db, ISSUER, &test_workspace(), "member", Some(MemberRole::Member)).await;
+        let outsider = seed_principal(&db, ISSUER, &test_workspace(), "outsider", None).await;
         let service = TaskService::new(tasks.clone(), WorkspaceAuthorizer::new(db));
         let active = service
             .start_task(request_for_principal(
                 StartTaskRequest {
-                    workspace: Some(workspace("default")),
+                    workspace: Some(workspace(test_workspace().as_str())),
                     intent: "Find renewal risk".to_string(),
                 },
                 member.clone(),
@@ -382,11 +392,14 @@ mod tests {
             .expect("task");
         let task_id = crate::task::id::TaskId::parse(&active.task_id).expect("task id");
 
-        for (name, blank_intent) in [("default", " "), ("absent", " ")] {
+        for (target, blank_intent) in [
+            (workspace(test_workspace().as_str()), " "),
+            (workspace("absent"), " "),
+        ] {
             let status = service
                 .start_task(request_for_principal(
                     StartTaskRequest {
-                        workspace: Some(workspace(name)),
+                        workspace: Some(target),
                         intent: blank_intent.to_string(),
                     },
                     outsider.clone(),
@@ -399,7 +412,7 @@ mod tests {
             let status = service
                 .end_task(request_for_principal(
                     EndTaskRequest {
-                        workspace: Some(workspace("default")),
+                        workspace: Some(workspace(test_workspace().as_str())),
                         task_id: task.to_string(),
                         task_status: TaskStatus::Success as i32,
                     },
@@ -412,7 +425,7 @@ mod tests {
 
         assert_eq!(
             tasks
-                .validate_attribution(&WorkspaceName::default(), Some(task_id))
+                .validate_attribution(&test_workspace(), Some(task_id))
                 .await
                 .expect("the task is untouched"),
             Some(task_id),
@@ -425,7 +438,7 @@ mod tests {
         let (_dir, service) = service().await;
         let task = service
             .start_task(request(StartTaskRequest {
-                workspace: Some(workspace("default")),
+                workspace: Some(workspace(test_workspace().as_str())),
                 intent: "Find renewal risk".to_string(),
             }))
             .await
@@ -436,7 +449,7 @@ mod tests {
 
         let status = service
             .end_task(request(EndTaskRequest {
-                workspace: Some(workspace("default")),
+                workspace: Some(workspace(test_workspace().as_str())),
                 task_id: task.task_id,
                 task_status: TaskStatus::Unspecified as i32,
             }))

@@ -421,7 +421,7 @@ mod tests {
     ) -> McpQueryHistoryEntry {
         let table_source = sources.first().copied().unwrap_or("source");
         McpQueryHistoryEntry {
-            workspace_name: "default".to_string(),
+            workspace_name: "work".to_string(),
             sql: sql.to_string(),
             sources: sources.iter().map(|source| (*source).to_string()).collect(),
             tables: (0..table_count)

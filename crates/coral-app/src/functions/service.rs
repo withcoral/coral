@@ -247,7 +247,7 @@ mod tests {
     use crate::request_context::RequestContext;
     use crate::state::ConfigStore;
     use crate::state::db::CoralDb;
-    use crate::test_support::{migrated_deployment, seed_principal};
+    use crate::test_support::{create_workspace, migrated_deployment, seed_principal};
     use crate::workspaces::{MemberRole, WorkspaceName};
 
     /// This suite's login issuer. Each suite provisions under its own, so a
@@ -267,10 +267,20 @@ mod tests {
         db: Arc<CoralDb>,
     }
 
-    /// A shared deployment over one migrated database holding the default
+    /// The workspace these fixtures run in.
+    ///
+    /// An install provisions none, so [`fixture`] creates it explicitly. The
+    /// name is ordinary on purpose: a fixture that leaned on a well-known one
+    /// would prove the workspace was resolved by name rather than created.
+    fn test_workspace() -> WorkspaceName {
+        WorkspaceName::parse("work").expect("workspace name")
+    }
+
+    /// A shared deployment over one migrated database holding one created
     /// workspace, so every caller's authority comes from a membership row.
     async fn fixture() -> Fixture {
         let deployment = migrated_deployment().await;
+        create_workspace(&deployment.db, &test_workspace()).await;
         let queries = QueryManager::new_for_tests(
             deployment.config_store.clone(),
             deployment.workspaces,
@@ -298,13 +308,13 @@ mod tests {
         request
     }
 
-    fn default_workspace() -> coral_api::v1::Workspace {
-        crate::transport::workspace_to_proto(&WorkspaceName::default())
+    fn workspace() -> coral_api::v1::Workspace {
+        crate::transport::workspace_to_proto(&test_workspace())
     }
 
     fn add_request() -> AddFunctionRequest {
         AddFunctionRequest {
-            workspace: Some(default_workspace()),
+            workspace: Some(workspace()),
             sql: UNPARSEABLE_SQL.to_string(),
             fail_if_exists: false,
             write_surface: ProtoFunctionWriteSurface::Cli as i32,
@@ -313,14 +323,14 @@ mod tests {
 
     fn delete_request() -> DeleteFunctionRequest {
         DeleteFunctionRequest {
-            workspace: Some(default_workspace()),
+            workspace: Some(workspace()),
             name: "not a function name".to_string(),
         }
     }
 
     fn list_request() -> ListFunctionsRequest {
         ListFunctionsRequest {
-            workspace: Some(default_workspace()),
+            workspace: Some(workspace()),
         }
     }
 
@@ -336,9 +346,9 @@ mod tests {
     #[tokio::test]
     async fn only_owners_change_the_function_set_and_never_through_an_agent() {
         let fixture = fixture().await;
-        let owner = seed_principal(&fixture.db, ISSUER, "owner", Some(MemberRole::Owner)).await;
-        let member = seed_principal(&fixture.db, ISSUER, "member", Some(MemberRole::Member)).await;
-        let outsider = seed_principal(&fixture.db, ISSUER, "outsider", None).await;
+        let owner = seed_principal(&fixture.db, ISSUER, &test_workspace(), "owner", Some(MemberRole::Owner)).await;
+        let member = seed_principal(&fixture.db, ISSUER, &test_workspace(), "member", Some(MemberRole::Member)).await;
+        let outsider = seed_principal(&fixture.db, ISSUER, &test_workspace(), "outsider", None).await;
         let agent = Principal::parse(owner.id().as_str(), PrincipalKind::Agent).expect("agent");
 
         for reader in [&member, &agent] {
@@ -394,7 +404,7 @@ mod tests {
         assert!(
             fixture
                 .config_store
-                .list_workspace_functions(&WorkspaceName::default())
+                .list_workspace_functions(&test_workspace())
                 .expect("list installed functions")
                 .is_empty(),
             "no refused caller may have installed a function"
@@ -403,7 +413,7 @@ mod tests {
 
     #[test]
     fn invalid_function_listing_keeps_inventory_identity_and_error() {
-        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let workspace = test_workspace();
         let listing = FunctionListing {
             name: FunctionName::parse("review_queue").expect("function"),
             write_surface: FunctionWriteSurface::Unknown,

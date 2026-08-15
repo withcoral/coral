@@ -1483,6 +1483,20 @@ mod tests {
         db: Arc<CoralDb>,
     }
 
+    /// The workspace these fixtures run in.
+    ///
+    /// An install provisions none, so every fixture that needs one creates it
+    /// through [`create_test_workspace`]. The name is ordinary on purpose: a
+    /// fixture that leaned on a well-known one would prove the workspace was
+    /// resolved by name rather than by having been created.
+    fn test_workspace() -> WorkspaceName {
+        WorkspaceName::parse("work").expect("workspace name")
+    }
+
+    async fn create_test_workspace(db: &Arc<CoralDb>) {
+        crate::test_support::create_workspace(db, &test_workspace()).await;
+    }
+
     async fn query_manager_with(
         runtime_context: QueryRuntimeContext,
         providers: Vec<Arc<dyn EngineExtensionsProvider>>,
@@ -1493,6 +1507,7 @@ mod tests {
         layout.ensure().expect("ensure layout");
         let config_store = ConfigStore::new(layout.clone());
         let db = test_db(&layout, &config_store).await;
+        create_test_workspace(&db).await;
         let credential_manager = CredentialManager::new(CredentialStore::new(layout.clone()));
         let workspace_manager = WorkspaceManager::new_for_tests(
             config_store.clone(),
@@ -1524,6 +1539,7 @@ mod tests {
         layout.ensure().expect("ensure layout");
         let config_store = ConfigStore::new(layout.clone());
         let db = test_db(&layout, &config_store).await;
+        create_test_workspace(&db).await;
         let credential_store = CredentialStore::with_unavailable_keychain_for_test(
             layout.clone(),
             CredentialStoragePreference::Keychain,
@@ -1588,7 +1604,7 @@ mod tests {
         let principal = Principal::local();
         let started = task
             .start_task(
-                WorkspaceName::default(),
+                test_workspace(),
                 principal.clone(),
                 "Exercise query attribution".to_string(),
             )
@@ -1606,16 +1622,16 @@ mod tests {
     }
 
     /// A shared deployment over the fixture's database, with one member of the
-    /// default workspace and one authenticated caller who is not.
+    /// fixture's workspace and one authenticated caller who is not.
     struct ReadAccess {
         authorizer: WorkspaceAuthorizer,
         member: Principal,
         outsider: Principal,
     }
 
-    /// Seeds the memberships that make `default` a workspace a member reaches
-    /// and an outsider does not. A separate owner is seeded because a workspace
-    /// with no owner conceals its own members too.
+    /// Seeds the memberships that make the fixture's workspace one a member
+    /// reaches and an outsider does not. A separate owner is seeded because a
+    /// workspace with no owner conceals its own members too.
     async fn read_access(db: &Arc<CoralDb>) -> ReadAccess {
         use crate::test_support::seed_principal;
         use crate::workspaces::MemberRole;
@@ -1625,10 +1641,10 @@ mod tests {
         /// seeded elsewhere.
         const ISSUER: &str = "https://issuer.test/read-authorization";
 
-        let _owner = seed_principal(db, ISSUER, "owner", Some(MemberRole::Owner)).await;
+        let _owner = seed_principal(db, ISSUER, &test_workspace(), "owner", Some(MemberRole::Owner)).await;
         ReadAccess {
-            member: seed_principal(db, ISSUER, "member", Some(MemberRole::Member)).await,
-            outsider: seed_principal(db, ISSUER, "outsider", None).await,
+            member: seed_principal(db, ISSUER, &test_workspace(), "member", Some(MemberRole::Member)).await,
+            outsider: seed_principal(db, ISSUER, &test_workspace(), "outsider", None).await,
             authorizer: WorkspaceAuthorizer::new(Arc::clone(db)),
         }
     }
@@ -1642,12 +1658,12 @@ mod tests {
             .count()
     }
 
-    /// The task ids the default workspace's recorded query activity carries.
+    /// The task ids the fixture workspace's recorded query activity carries.
     async fn recorded_task_ids(fixture: &QueryManagerFixture) -> Vec<String> {
         fixture
             .db
             .task_query_state()
-            .list_for_workspace(WorkspaceName::default().as_str())
+            .list_for_workspace(test_workspace().as_str())
             .await
             .expect("load task query activity")
             .into_iter()
@@ -1657,8 +1673,12 @@ mod tests {
 
     /// Replaces the workspace name the caller themselves asked about, so two
     /// answers about different names are still comparable.
+    ///
+    /// Only the quoted occurrence is replaced: a bare replacement would also
+    /// rewrite the name where it happens to sit inside another word, and turn
+    /// two identical messages into different ones.
     fn normalize(message: &str, name: &str) -> String {
-        message.replace(name, "<workspace>")
+        message.replace(&format!("'{name}'"), "'<workspace>'")
     }
 
     fn assert_workspace_not_found(error: AppError, workspace_name: &WorkspaceName) {
@@ -1732,7 +1752,7 @@ mod tests {
 
         let mut request = Request::new(ExecuteSqlRequest {
             workspace: Some(Workspace {
-                name: WorkspaceName::default().as_str().to_string(),
+                name: test_workspace().as_str().to_string(),
             }),
             sql: "SELECT 1".to_string(),
             guide_read_context: None,
@@ -1783,7 +1803,7 @@ mod tests {
         let service = QueryService::new(fixture.manager.clone(), tasks, local_authorizer(&fixture));
         let mut request = Request::new(ExecuteSqlRequest {
             workspace: Some(Workspace {
-                name: WorkspaceName::default().as_str().to_string(),
+                name: test_workspace().as_str().to_string(),
             }),
             sql: "SELECT 1".to_string(),
             guide_read_context: None,
@@ -1801,7 +1821,7 @@ mod tests {
         let recorded = fixture
             .db
             .task_query_state()
-            .list_for_workspace(WorkspaceName::default().as_str())
+            .list_for_workspace(test_workspace().as_str())
             .await
             .expect("load task query activity");
         let record = recorded.first().expect("recorded task query");
@@ -1866,7 +1886,7 @@ mod tests {
         };
 
         let concealed = queries
-            .execute_sql(denied_sql(WorkspaceName::default().as_str()))
+            .execute_sql(denied_sql(test_workspace().as_str()))
             .await
             .expect_err("a non-member reaches nothing");
         let missing = queries
@@ -1878,7 +1898,7 @@ mod tests {
         assert_eq!(concealed.code(), Code::NotFound);
         assert_eq!(concealed.code(), missing.code());
         assert_eq!(
-            normalize(concealed.message(), WorkspaceName::default().as_str()),
+            normalize(concealed.message(), test_workspace().as_str()),
             normalize(missing.message(), "absent"),
         );
         provider.force_flush().expect("flush spans");
@@ -1895,7 +1915,7 @@ mod tests {
         let member = RequestContext::new(access.member).with_task_id(task_context.task_id());
         let mut allowed = Request::new(ExecuteSqlRequest {
             workspace: Some(Workspace {
-                name: WorkspaceName::default().as_str().to_string(),
+                name: test_workspace().as_str().to_string(),
             }),
             sql: "SELECT 1".to_string(),
             guide_read_context: None,
@@ -1920,7 +1940,7 @@ mod tests {
     async fn execute_sql_records_success_and_error_task_activity() {
         let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
         let (tasks, request_context, task_id) = active_task_context(&fixture.db).await;
-        let workspace = WorkspaceName::default();
+        let workspace = test_workspace();
         let attribution = QueryAttribution::new(
             tasks
                 .validate_attribution(&workspace, request_context.task_id())
@@ -1973,7 +1993,7 @@ mod tests {
     async fn successful_task_activity_records_resolved_relations() {
         let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
         let (tasks, request_context, _) = active_task_context(&fixture.db).await;
-        let workspace = WorkspaceName::default();
+        let workspace = test_workspace();
         let attribution = QueryAttribution::new(
             tasks
                 .validate_attribution(&workspace, request_context.task_id())
@@ -2047,7 +2067,7 @@ mod tests {
     #[tokio::test]
     async fn task_activity_write_failure_does_not_change_the_sql_result() {
         let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
-        let workspace = WorkspaceName::default();
+        let workspace = test_workspace();
         let task_id = TaskId::parse(&uuid::Uuid::new_v4().to_string()).expect("task id");
         let attribution = QueryAttribution::new(Some(task_id))
             .with_tool_intent(Some("Exercise non-fatal activity writes"));
@@ -2065,7 +2085,7 @@ mod tests {
     async fn oversized_sql_executes_without_task_activity_record() {
         let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
         let (tasks, request_context, _) = active_task_context(&fixture.db).await;
-        let workspace = WorkspaceName::default();
+        let workspace = test_workspace();
         let attribution = QueryAttribution::new(
             tasks
                 .validate_attribution(&workspace, request_context.task_id())
@@ -2111,7 +2131,7 @@ mod tests {
             .with(tracing_opentelemetry::layer().with_tracer(tracer));
         let _guard = tracing::subscriber::set_default(subscriber);
 
-        let workspace = WorkspaceName::default();
+        let workspace = test_workspace();
         let mut operation = Box::pin(run_query_operation(
             QueryOperation::ListTables,
             &workspace,
@@ -2185,7 +2205,7 @@ mod tests {
 
         let span = create_query_span(
             QueryOperation::ExecuteSql,
-            &WorkspaceName::default(),
+            &test_workspace(),
             "SELECT title FROM github.issues",
             None,
         );
@@ -2313,7 +2333,7 @@ mod tests {
 
     fn default_workspace_proto() -> coral_api::v1::Workspace {
         coral_api::v1::Workspace {
-            name: WorkspaceName::default().as_str().to_string(),
+            name: test_workspace().as_str().to_string(),
         }
     }
 
@@ -2398,7 +2418,7 @@ mod tests {
 
         let runtime = fixture
             .manager
-            .runtime_config(&WorkspaceName::default(), &[], &AppConfig::default())
+            .runtime_config(&test_workspace(), &[], &AppConfig::default())
             .expect("runtime config");
 
         let config = runtime
@@ -2411,7 +2431,7 @@ mod tests {
     #[tokio::test]
     async fn metadata_runtime_config_skips_observed_values_publishers() {
         let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
-        let workspace_name = WorkspaceName::default();
+        let workspace_name = test_workspace();
         let manager =
             fixture
                 .manager
@@ -2439,7 +2459,7 @@ mod tests {
     #[tokio::test]
     async fn execution_runtime_config_attaches_observed_values_publishers() {
         let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
-        let workspace_name = WorkspaceName::default();
+        let workspace_name = test_workspace();
         let manager =
             fixture
                 .manager
@@ -2475,7 +2495,7 @@ mod tests {
             Vec::new(),
         )
         .await;
-        let workspace_name = WorkspaceName::default();
+        let workspace_name = test_workspace();
         install_function_demo_source(&fixture.manager, &workspace_name, fake_home.path());
         let function_sql = r"/*
 name: demo_items
@@ -2528,7 +2548,7 @@ select text from function_demo.messages
     async fn load_query_source_passes_present_optional_secrets_to_runtime() {
         let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
         fixture.manager.layout.ensure().expect("ensure layout");
-        let workspace_name = WorkspaceName::default();
+        let workspace_name = test_workspace();
         let source_name = SourceName::parse("optional_auth").expect("source name");
         let manifest_path = fixture
             .manager
@@ -2649,7 +2669,7 @@ tables:
             fixture.manager.credential_manager.clone(),
             fixture.manager.layout.clone(),
         );
-        let workspace_name = WorkspaceName::default();
+        let workspace_name = test_workspace();
         let (tasks, request_context, _) = active_task_context(&fixture.db).await;
         let attribution = QueryAttribution::new(
             tasks
@@ -2779,7 +2799,7 @@ tables:
             fixture.manager.credential_manager.clone(),
             fixture.manager.layout.clone(),
         );
-        let workspace_name = WorkspaceName::default();
+        let workspace_name = test_workspace();
         let descriptor_temp = tempfile::tempdir().expect("descriptor temp dir");
         let openapi_file = descriptor_temp.path().join("github-openapi.yaml");
         std::fs::write(
@@ -2913,7 +2933,7 @@ surface:
             fixture.manager.credential_manager.clone(),
             fixture.manager.layout.clone(),
         );
-        let workspace_name = WorkspaceName::default();
+        let workspace_name = test_workspace();
         let descriptor_temp = tempfile::tempdir().expect("descriptor temp dir");
         let openapi_file = descriptor_temp.path().join("identity-guard-openapi.yaml");
         std::fs::write(
@@ -3008,7 +3028,7 @@ surface:
             fixture.manager.credential_manager.clone(),
             fixture.manager.layout.clone(),
         );
-        let workspace_name = WorkspaceName::default();
+        let workspace_name = test_workspace();
         let descriptor_temp = tempfile::tempdir().expect("descriptor temp dir");
         let openapi_file = descriptor_temp.path().join("widgets-openapi.yaml");
         std::fs::write(&openapi_file, widgets_pagination_openapi(&server.uri()))
@@ -3167,7 +3187,7 @@ paths:
             Vec::new(),
         )
         .await;
-        let workspace_name = WorkspaceName::default();
+        let workspace_name = test_workspace();
         install_function_demo_source(&fixture.manager, &workspace_name, fake_home.path());
         let calls = Arc::new(AtomicUsize::new(0));
         let config_store = fixture.manager.config_store.clone();
@@ -3236,7 +3256,7 @@ select text from function_demo.messages
             Vec::new(),
         )
         .await;
-        let workspace_name = WorkspaceName::default();
+        let workspace_name = test_workspace();
         install_function_demo_source(&fixture.manager, &workspace_name, fake_home.path());
         let function_sql = r"/*
 name: messages_by_type
@@ -3474,7 +3494,7 @@ tables:
     async fn load_query_sources_skips_missing_v4_materialization() {
         let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
         fixture.manager.layout.ensure().expect("ensure layout");
-        let workspace_name = WorkspaceName::default();
+        let workspace_name = test_workspace();
         let source_name =
             install_missing_v4_materialization_source(&fixture.manager, &workspace_name);
 
@@ -3502,7 +3522,7 @@ tables:
             Vec::new(),
         )
         .await;
-        let workspace_name = WorkspaceName::default();
+        let workspace_name = test_workspace();
         install_function_demo_source(&fixture.manager, &workspace_name, fake_home.path());
         let failed_source =
             install_missing_v4_materialization_source(&fixture.manager, &workspace_name);
@@ -3533,7 +3553,7 @@ tables:
             Vec::new(),
         )
         .await;
-        let workspace_name = WorkspaceName::default();
+        let workspace_name = test_workspace();
         install_function_demo_source(&fixture.manager, &workspace_name, fake_home.path());
 
         let summary = fixture
@@ -3589,7 +3609,7 @@ tables:
             Vec::new(),
         )
         .await;
-        let workspace_name = WorkspaceName::default();
+        let workspace_name = test_workspace();
         install_function_demo_source(&fixture.manager, &workspace_name, fake_home.path());
         let failed_source =
             install_corrupt_parquet_source(&fixture.manager, &workspace_name, fake_home.path());
@@ -3619,7 +3639,7 @@ tables:
     #[tokio::test]
     async fn load_query_sources_skips_unavailable_keychain_source() {
         let fixture = query_manager_with_unavailable_keychain().await;
-        let workspace_name = WorkspaceName::default();
+        let workspace_name = test_workspace();
         install_keychain_github_source(&fixture.manager.config_store, &workspace_name);
 
         let (source_load, _) = fixture
@@ -3637,7 +3657,7 @@ tables:
     #[tokio::test]
     async fn list_functions_keeps_unrelated_function_ready_when_source_preparation_fails() {
         let fixture = query_manager_with_unavailable_keychain().await;
-        let workspace_name = WorkspaceName::default();
+        let workspace_name = test_workspace();
         let function_sql = r"/*
 name: constant_value
 schema: functions
@@ -3730,7 +3750,7 @@ select 1 as value
             on_first_prepare: None,
         });
         let fixture = query_manager_with(QueryRuntimeContext::default(), vec![provider]).await;
-        let workspace_name = WorkspaceName::default();
+        let workspace_name = test_workspace();
         let function_sql = r"/*
 name: constant_value
 schema: functions
@@ -3808,7 +3828,7 @@ select 1 as value
     async fn runtime_input_resolver_uses_loaded_credential_snapshot() {
         let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
         fixture.manager.layout.ensure().expect("ensure layout");
-        let workspace_name = WorkspaceName::default();
+        let workspace_name = test_workspace();
         let source_name = SourceName::parse("secured_messages").expect("source name");
         let credential_set_id = CredentialSetId::for_source(&source_name);
         let installed_source = InstalledSource {
@@ -3907,7 +3927,7 @@ tables:
     async fn runtime_contract_fingerprint_ignores_refreshed_credential_material() {
         let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
         fixture.manager.layout.ensure().expect("ensure layout");
-        let workspace = WorkspaceName::default();
+        let workspace = test_workspace();
         let source_name = SourceName::parse("secured_messages").expect("source name");
         let credential_set_id = CredentialSetId::for_source(&source_name);
         let installed_source = InstalledSource {
@@ -4047,7 +4067,7 @@ tables:
         let runtime = fixture
             .manager
             .runtime_config(
-                &WorkspaceName::default(),
+                &test_workspace(),
                 std::slice::from_ref(&loaded_source),
                 &AppConfig::default(),
             )
