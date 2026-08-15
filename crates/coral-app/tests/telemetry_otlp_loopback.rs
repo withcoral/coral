@@ -20,12 +20,13 @@ use tonic::Request;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request as WiremockRequest, ResponseTemplate};
 
-use coral_api::v1::{ExecuteSqlRequest, SearchRequest};
+use coral_api::v1::{CreateWorkspaceRequest, ExecuteSqlRequest, SearchRequest};
 use coral_app::{ServerBuilder, shutdown_tracing};
-use coral_client::{AppClient, decode_execute_sql_response, default_workspace};
+use coral_client::{AppClient, decode_execute_sql_response, workspace};
 
 const LOCAL_ONLY_SENTINEL: &str = "LOCAL_ONLY_FUTURE_TOOL_SENTINEL";
 const SEARCH_QUERY_SENTINEL: &str = "LOCAL_ONLY_SEARCH_QUERY_SENTINEL";
+const WORKSPACE: &str = "otlp-loopback";
 
 #[tokio::test]
 async fn otlp_export_loopback_covers_traces_logs_and_metrics() {
@@ -104,10 +105,20 @@ async fn emit_test_telemetry(endpoint_uri: &str) {
     let app = AppClient::connect(endpoint_uri)
         .await
         .expect("connect loopback client");
+    // A fresh install owns no workspace, so the one this test queries through
+    // has to be created before any workspace-scoped call.
+    let test_workspace = workspace(WORKSPACE);
+    app.workspace_client()
+        .create_workspace(Request::new(CreateWorkspaceRequest {
+            workspace: Some(test_workspace.clone()),
+        }))
+        .await
+        .expect("create the workspace this test queries through");
+
     let response = app
         .query_client()
         .execute_sql(Request::new(ExecuteSqlRequest {
-            workspace: Some(default_workspace()),
+            workspace: Some(test_workspace.clone()),
             sql: "SELECT 1 AS loopback_value".to_string(),
             guide_read_context: None,
             task_attribution: None,
@@ -120,7 +131,7 @@ async fn emit_test_telemetry(endpoint_uri: &str) {
 
     app.search_client()
         .search(Request::new(SearchRequest {
-            workspace: Some(default_workspace()),
+            workspace: Some(test_workspace),
             query: SEARCH_QUERY_SENTINEL.to_string(),
             limit: 0,
         }))

@@ -22,8 +22,10 @@
 )]
 
 use coral_api::v1::trace_service_client::TraceServiceClient;
-use coral_api::v1::{ListSourcesRequest, ListTracesRequest, SearchRequest, TraceView};
-use coral_client::{AppClient, default_workspace, local::ServerBuilder};
+use coral_api::v1::{
+    CreateWorkspaceRequest, ListSourcesRequest, ListTracesRequest, SearchRequest, TraceView,
+};
+use coral_client::{AppClient, local::ServerBuilder, workspace};
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
 use tempfile::TempDir;
@@ -33,6 +35,7 @@ use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::util::SubscriberInitExt as _;
 
 const SEARCH_SENTINEL: &str = "HOST_SUBSCRIBER_LOCAL_SEARCH_SENTINEL";
+const WORKSPACE: &str = "host-subscriber";
 
 #[tokio::test]
 async fn host_subscriber_keeps_server_available_without_local_only_attributes() {
@@ -58,10 +61,20 @@ async fn host_subscriber_keeps_server_available_without_local_only_attributes() 
         .await
         .expect("connect client");
 
+    // A fresh install owns no workspace, so the one this test reads through has
+    // to be created before any workspace-scoped call.
+    let test_workspace = workspace(WORKSPACE);
+    app.workspace_client()
+        .create_workspace(Request::new(CreateWorkspaceRequest {
+            workspace: Some(test_workspace.clone()),
+        }))
+        .await
+        .expect("create the workspace this test reads through");
+
     let sources = app
         .source_client()
         .list_sources(Request::new(ListSourcesRequest {
-            workspace: Some(default_workspace()),
+            workspace: Some(test_workspace.clone()),
         }))
         .await
         .expect("list sources")
@@ -71,7 +84,7 @@ async fn host_subscriber_keeps_server_available_without_local_only_attributes() 
 
     app.search_client()
         .search(Request::new(SearchRequest {
-            workspace: Some(default_workspace()),
+            workspace: Some(test_workspace),
             query: SEARCH_SENTINEL.to_string(),
             limit: 0,
         }))
