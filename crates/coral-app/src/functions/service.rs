@@ -15,19 +15,23 @@ use crate::functions::manager::{FunctionInstallMode, FunctionListing, FunctionRu
 use crate::functions::model::{FunctionName, FunctionWriteSurface};
 use crate::query::manager::QueryManager;
 use crate::transport::{
-    grpc_span, instrument_grpc, query_status, workspace_name_from_proto, workspace_to_proto,
+    grpc_span, instrument_grpc, query_status, request_context, workspace_name_from_proto,
+    workspace_to_proto,
 };
 use crate::workspaces::WorkspaceName;
+use crate::workspaces::authorization::{WorkspaceAction, WorkspaceAuthorizer};
 
 #[derive(Clone)]
 pub(crate) struct FunctionService {
     queries: QueryManager,
+    authorizer: WorkspaceAuthorizer,
 }
 
 impl FunctionService {
-    pub(crate) fn new(query_manager: QueryManager) -> Self {
+    pub(crate) const fn new(query_manager: QueryManager, authorizer: WorkspaceAuthorizer) -> Self {
         Self {
             queries: query_manager,
+            authorizer,
         }
     }
 }
@@ -40,9 +44,23 @@ impl FunctionServiceApi for FunctionService {
     ) -> Result<Response<AddFunctionResponse>, Status> {
         let span = grpc_span(&request);
         let queries = self.queries.clone();
+        let authorizer = self.authorizer.clone();
+        let request_context = request_context(&request)?.clone();
         Box::pin(instrument_grpc(span, async move {
             let inner = request.into_inner();
             let workspace_name = workspace_name_from_proto(inner.workspace.as_ref())?;
+            // A function is installed for the whole workspace, so adding one
+            // changes what every member can run. Settled before the SQL is
+            // read: a caller who may not manage the workspace must not learn
+            // from it whether their SQL compiles against its catalog.
+            authorizer
+                .authorize(
+                    request_context.principal(),
+                    &workspace_name,
+                    WorkspaceAction::Manage,
+                )
+                .await
+                .map_err(app_status)?;
             let mode = if inner.fail_if_exists {
                 FunctionInstallMode::CreateOnly
             } else {
@@ -72,9 +90,20 @@ impl FunctionServiceApi for FunctionService {
     ) -> Result<Response<ListFunctionsResponse>, Status> {
         let span = grpc_span(&request);
         let queries = self.queries.clone();
+        let authorizer = self.authorizer.clone();
+        let request_context = request_context(&request)?.clone();
         instrument_grpc(span, async move {
             let inner = request.into_inner();
             let workspace_name = workspace_name_from_proto(inner.workspace.as_ref())?;
+            // Listing what a workspace can run is reading its contents.
+            authorizer
+                .authorize(
+                    request_context.principal(),
+                    &workspace_name,
+                    WorkspaceAction::Read,
+                )
+                .await
+                .map_err(app_status)?;
             let functions = queries
                 .list_functions(&workspace_name)
                 .await
@@ -93,9 +122,21 @@ impl FunctionServiceApi for FunctionService {
     ) -> Result<Response<DeleteFunctionResponse>, Status> {
         let span = grpc_span(&request);
         let queries = self.queries.clone();
+        let authorizer = self.authorizer.clone();
+        let request_context = request_context(&request)?.clone();
         instrument_grpc(span, async move {
             let inner = request.into_inner();
             let workspace_name = workspace_name_from_proto(inner.workspace.as_ref())?;
+            // Settled before the name is parsed, so the workspace's function
+            // inventory stays unreadable to a caller who may not manage it.
+            authorizer
+                .authorize(
+                    request_context.principal(),
+                    &workspace_name,
+                    WorkspaceAction::Manage,
+                )
+                .await
+                .map_err(app_status)?;
             let function_name = FunctionName::parse(&inner.name).map_err(app_status)?;
             queries
                 .function_manager()
@@ -195,7 +236,224 @@ fn function_table_function_publish_to_proto(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use coral_engine::QueryRuntimeContext;
+    use tempfile::TempDir;
+    use tonic::Code;
+
     use super::*;
+    use crate::credentials::{CredentialManager, CredentialStore};
+    use crate::identity::{Principal, PrincipalKind};
+    use crate::request_context::RequestContext;
+    use crate::state::db::{
+        CoralDb, DatabaseConfig, DbRepos as _, LoginIdentity, LoginProvisioning,
+        ResolvedDatabaseConfig, run_state_migrations,
+    };
+    use crate::state::{AppStateLayout, ConfigStore};
+    use crate::workspaces::manager::WorkspaceManager;
+    use crate::workspaces::{MemberRole, WorkspaceName};
+
+    /// SQL no compiler accepts. Reaching function installation with it answers
+    /// `InvalidArgument`, so a refusal that answers anything else proves the
+    /// SQL was never looked at.
+    const UNPARSEABLE_SQL: &str = "this is not sql";
+
+    struct Fixture {
+        _temp: TempDir,
+        service: FunctionService,
+        config_store: ConfigStore,
+        db: Arc<CoralDb>,
+    }
+
+    /// A shared deployment over one migrated database holding the default
+    /// workspace, so every caller's authority comes from a membership row.
+    async fn fixture() -> Fixture {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let DatabaseConfig::Sqlite { path } = DatabaseConfig::load(&layout).expect("db config")
+        else {
+            panic!("the default test database is sqlite")
+        };
+        let db = Arc::new(
+            CoralDb::open(ResolvedDatabaseConfig::Sqlite { path })
+                .await
+                .expect("open sqlite"),
+        );
+        db.migrate().await.expect("migrate sqlite");
+        run_state_migrations(&db, &config_store, &layout)
+            .await
+            .expect("import the default workspace");
+        let credentials = CredentialManager::new(CredentialStore::new(layout.clone()));
+        let workspaces = WorkspaceManager::new_for_tests(
+            config_store.clone(),
+            credentials.clone(),
+            layout.clone(),
+            None,
+            Arc::clone(&db),
+        );
+        let queries = QueryManager::new_for_tests(
+            config_store.clone(),
+            workspaces,
+            credentials,
+            QueryRuntimeContext::default(),
+            layout,
+            Vec::new(),
+        );
+        Fixture {
+            _temp: temp,
+            service: FunctionService::new(queries, WorkspaceAuthorizer::new(Arc::clone(&db))),
+            config_store,
+            db,
+        }
+    }
+
+    /// Provisions one directory user through the production login seam and
+    /// grants it `role` on the default workspace, so the principal the
+    /// authorizer is handed is the one a real login carries.
+    async fn seed_principal(
+        db: &Arc<CoralDb>,
+        subject: &str,
+        role: Option<MemberRole>,
+    ) -> Principal {
+        let LoginProvisioning::Provisioned(user) = db
+            .user_state()
+            .provision_login(LoginIdentity {
+                issuer: "https://issuer.test/function-authorization",
+                subject,
+                display_name: None,
+                principal_claim: subject,
+                now_unix_nanos: 1,
+            })
+            .await
+            .expect("provision user")
+        else {
+            panic!("expected a provisioned user rather than an issuer mismatch")
+        };
+        if let Some(role) = role {
+            let mut session = db.as_ref();
+            session
+                .workspace_members()
+                .upsert(WorkspaceName::default().as_str(), &user.user_id, role, 2)
+                .await
+                .expect("grant membership");
+        }
+        Principal::parse(&user.user_id, PrincipalKind::User).expect("federated principal")
+    }
+
+    fn request<T>(message: T, principal: &Principal) -> Request<T> {
+        let mut request = Request::new(message);
+        request
+            .extensions_mut()
+            .insert(RequestContext::new(principal.clone()));
+        request
+    }
+
+    fn default_workspace() -> coral_api::v1::Workspace {
+        crate::transport::workspace_to_proto(&WorkspaceName::default())
+    }
+
+    fn add_request() -> AddFunctionRequest {
+        AddFunctionRequest {
+            workspace: Some(default_workspace()),
+            sql: UNPARSEABLE_SQL.to_string(),
+            fail_if_exists: false,
+            write_surface: ProtoFunctionWriteSurface::Cli as i32,
+        }
+    }
+
+    fn delete_request() -> DeleteFunctionRequest {
+        DeleteFunctionRequest {
+            workspace: Some(default_workspace()),
+            name: "not a function name".to_string(),
+        }
+    }
+
+    fn list_request() -> ListFunctionsRequest {
+        ListFunctionsRequest {
+            workspace: Some(default_workspace()),
+        }
+    }
+
+    /// Installing a function changes what every member of the workspace can
+    /// run, so it is an owner's act while listing is a member's — and the
+    /// owner's own agent credential is not promoted by their role, so a
+    /// prompt-injected agent cannot publish SQL every member then runs.
+    ///
+    /// The unparseable SQL and the unparseable function name are what make
+    /// each refusal an absence rather than an error code: the owner reaches
+    /// the work and is told what is wrong with the request, and everyone else
+    /// is refused before the request is looked at.
+    #[tokio::test]
+    async fn only_owners_change_the_function_set_and_never_through_an_agent() {
+        let fixture = fixture().await;
+        let owner = seed_principal(&fixture.db, "owner", Some(MemberRole::Owner)).await;
+        let member = seed_principal(&fixture.db, "member", Some(MemberRole::Member)).await;
+        let outsider = seed_principal(&fixture.db, "outsider", None).await;
+        let agent = Principal::parse(owner.id().as_str(), PrincipalKind::Agent).expect("agent");
+
+        for reader in [&member, &agent] {
+            let listed = fixture
+                .service
+                .list_functions(request(list_request(), reader))
+                .await
+                .expect("a member, and a member's agent, read the function set")
+                .into_inner();
+            assert!(listed.functions.is_empty());
+        }
+        assert_eq!(
+            fixture
+                .service
+                .list_functions(request(list_request(), &outsider))
+                .await
+                .expect_err("a non-member is told nothing about the workspace")
+                .code(),
+            Code::NotFound
+        );
+
+        // A member and an owner's agent are denied; a non-member is concealed.
+        for (writer, expected) in [
+            (&member, Code::PermissionDenied),
+            (&agent, Code::PermissionDenied),
+            (&outsider, Code::NotFound),
+        ] {
+            for status in [
+                fixture
+                    .service
+                    .add_function(request(add_request(), writer))
+                    .await
+                    .expect_err("only an owner installs a function"),
+                fixture
+                    .service
+                    .delete_function(request(delete_request(), writer))
+                    .await
+                    .expect_err("only an owner removes a function"),
+            ] {
+                assert_eq!(status.code(), expected, "{status:?}");
+            }
+        }
+
+        assert_eq!(
+            fixture
+                .service
+                .add_function(request(add_request(), &owner))
+                .await
+                .expect_err("the SQL is what the owner is stopped by")
+                .code(),
+            Code::InvalidArgument
+        );
+        assert!(
+            fixture
+                .config_store
+                .list_workspace_functions(&WorkspaceName::default())
+                .expect("list installed functions")
+                .is_empty(),
+            "no refused caller may have installed a function"
+        );
+    }
 
     #[test]
     fn invalid_function_listing_keeps_inventory_identity_and_error() {

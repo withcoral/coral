@@ -781,7 +781,7 @@ fn application_routes(
     let user_service = UserService::new(users);
     let catalog_service =
         CatalogService::new(query.clone(), task.clone(), workspace_authorizer.clone());
-    let function_service = FunctionService::new(query.clone());
+    let function_service = FunctionService::new(query.clone(), workspace_authorizer.clone());
     let query_service = QueryService::new(query, task.clone(), workspace_authorizer.clone());
     let search_service = SearchService::new(search, task.clone(), workspace_authorizer.clone());
     let feedback_service =
