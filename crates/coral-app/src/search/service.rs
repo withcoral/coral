@@ -30,6 +30,7 @@ use tonic::{Request, Response, Status};
 
 use crate::bootstrap::{AppError, app_status};
 use crate::query::QueryAttribution;
+use crate::request_context::RequestContext;
 use crate::search::maintenance::{
     CatalogClearMaintenanceResult, CatalogRebuildMaintenanceResult,
     ClearSearchDataRequest as DomainClearSearchDataRequest,
@@ -52,18 +53,26 @@ use crate::sources::SourceName;
 use crate::task::manager::TaskManager;
 use crate::task::service::task_manager_status;
 use crate::transport::{grpc_span, instrument_grpc, request_context, workspace_name_from_proto};
+use crate::workspaces::WorkspaceName;
+use crate::workspaces::authorization::{WorkspaceAction, WorkspaceAuthorizer};
 
 #[derive(Clone)]
 pub(crate) struct SearchService {
     search: SearchManager,
     tasks: TaskManager,
+    authorizer: WorkspaceAuthorizer,
 }
 
 impl SearchService {
-    pub(crate) fn new(search_manager: SearchManager, task_manager: TaskManager) -> Self {
+    pub(crate) const fn new(
+        search_manager: SearchManager,
+        task_manager: TaskManager,
+        authorizer: WorkspaceAuthorizer,
+    ) -> Self {
         Self {
             search: search_manager,
             tasks: task_manager,
+            authorizer,
         }
     }
 }
@@ -77,10 +86,22 @@ impl SearchServiceApi for SearchService {
         let span = grpc_span(&request);
         let search = self.search.clone();
         let tasks = self.tasks.clone();
+        let authorizer = self.authorizer.clone();
         let request_context = request_context(&request)?.clone();
         Box::pin(instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            // Settled before anything else is read from the request: a caller
+            // who may not reach this workspace must not be able to learn from
+            // it whether their task id exists or their query is searchable.
+            authorizer
+                .authorize(
+                    request_context.principal(),
+                    &workspace_name,
+                    WorkspaceAction::Read,
+                )
+                .await
+                .map_err(app_status)?;
             let attribution = QueryAttribution::new(
                 tasks
                     .validate_attribution(&workspace_name, request_context.task_id())
@@ -104,9 +125,12 @@ impl SearchServiceApi for SearchService {
     ) -> Result<Response<ProtoRebuildSearchIndexResponse>, Status> {
         let span = grpc_span(&request);
         let search = self.search.clone();
+        let authorizer = self.authorizer.clone();
+        let request_context = request_context(&request)?.clone();
         Box::pin(instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            authorize_maintenance(&authorizer, &workspace_name, &request_context).await?;
             let request = DomainRebuildSearchIndexRequest {
                 workspace_name,
                 provider: index_provider_from_proto(proto_index_provider(request.provider)?),
@@ -127,9 +151,12 @@ impl SearchServiceApi for SearchService {
     ) -> Result<Response<ProtoDrainSearchQueueResponse>, Status> {
         let span = grpc_span(&request);
         let search = self.search.clone();
+        let authorizer = self.authorizer.clone();
+        let request_context = request_context(&request)?.clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            authorize_maintenance(&authorizer, &workspace_name, &request_context).await?;
             let request = DomainDrainSearchQueueRequest {
                 workspace_name,
                 budget_ms: request.budget_ms,
@@ -146,9 +173,12 @@ impl SearchServiceApi for SearchService {
     ) -> Result<Response<ProtoClearSearchDataResponse>, Status> {
         let span = grpc_span(&request);
         let search = self.search.clone();
+        let authorizer = self.authorizer.clone();
+        let request_context = request_context(&request)?.clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            authorize_maintenance(&authorizer, &workspace_name, &request_context).await?;
             let request = DomainClearSearchDataRequest {
                 workspace_name,
                 scope: data_scope_from_proto(proto_data_scope(request.scope)?)?,
@@ -159,6 +189,27 @@ impl SearchServiceApi for SearchService {
         })
         .await
     }
+}
+
+/// Settles owner access to `workspace` before any maintenance work.
+///
+/// The order is the point: rebuilding, draining, and clearing all reach this
+/// immediately after parsing their workspace, so a caller who may not manage
+/// it never causes an index to be read or a stored row to be removed, and
+/// never learns from the request's own validation that the workspace is there.
+async fn authorize_maintenance(
+    authorizer: &WorkspaceAuthorizer,
+    workspace: &WorkspaceName,
+    request_context: &RequestContext,
+) -> Result<(), Status> {
+    authorizer
+        .authorize(
+            request_context.principal(),
+            workspace,
+            WorkspaceAction::Manage,
+        )
+        .await
+        .map_err(app_status)
 }
 
 fn search_status(error: SearchManagerError) -> Status {
@@ -496,18 +547,256 @@ fn provider_coverage_to_proto(coverage: &ProviderCoverage) -> SearchProviderCove
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use coral_api::v1::{
         SearchClearTarget as ProtoSearchClearTarget,
         SearchProviderState as ProtoSearchProviderState, search_clear_target,
     };
-    use tonic::Code;
+    use coral_engine::QueryRuntimeContext;
+    use tempfile::TempDir;
+    use tonic::{Code, Request};
 
-    use super::{clear_target_from_proto, provider_status_to_proto};
+    use super::{
+        ProtoClearSearchDataRequest, ProtoDrainSearchQueueRequest, ProtoRebuildSearchIndexRequest,
+        ProtoSearchDataScope, ProtoSearchRequest, SearchService, SearchServiceApi,
+        clear_target_from_proto, provider_status_to_proto,
+    };
+    use crate::catalog::discovery::CatalogDiscovery;
+    use crate::credentials::{CredentialManager, CredentialStore};
+    use crate::identity::{Principal, PrincipalKind};
+    use crate::query::manager::QueryManager;
+    use crate::request_context::RequestContext;
     use crate::search::maintenance::SearchClearTarget;
+    use crate::search::manager::SearchManager;
     use crate::search::result::{
         ProviderCoverage, ProviderStatus, SearchProviderKind,
         SearchProviderState as DomainProviderState,
     };
+    use crate::state::db::{
+        CoralDb, DatabaseConfig, DbRepos as _, LoginIdentity, LoginProvisioning,
+        ResolvedDatabaseConfig, run_state_migrations,
+    };
+    use crate::state::{AppStateLayout, ConfigStore};
+    use crate::task::manager::TaskManager;
+    use crate::task::store::TaskStore;
+    use crate::workspaces::authorization::WorkspaceAuthorizer;
+    use crate::workspaces::manager::WorkspaceManager;
+    use crate::workspaces::{MemberRole, WorkspaceName};
+
+    /// A provider value no enum admits. Reaching the maintenance request build
+    /// with it answers `InvalidArgument`, so a refusal that answers anything
+    /// else proves the request was never interpreted.
+    const UNDECODABLE_PROVIDER: i32 = 9_999;
+
+    struct Fixture {
+        _temp: TempDir,
+        service: SearchService,
+        db: Arc<CoralDb>,
+    }
+
+    /// A shared deployment over one migrated database holding the default
+    /// workspace, so every caller's authority comes from a membership row.
+    async fn fixture() -> Fixture {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let DatabaseConfig::Sqlite { path } = DatabaseConfig::load(&layout).expect("db config")
+        else {
+            panic!("the default test database is sqlite")
+        };
+        let db = Arc::new(
+            CoralDb::open(ResolvedDatabaseConfig::Sqlite { path })
+                .await
+                .expect("open sqlite"),
+        );
+        db.migrate().await.expect("migrate sqlite");
+        run_state_migrations(&db, &config_store, &layout)
+            .await
+            .expect("import the default workspace");
+        let credentials = CredentialManager::new(CredentialStore::new(layout.clone()));
+        let workspaces = WorkspaceManager::new_for_tests(
+            config_store.clone(),
+            credentials.clone(),
+            layout.clone(),
+            None,
+            Arc::clone(&db),
+        );
+        let queries = QueryManager::new_for_tests(
+            config_store.clone(),
+            workspaces.clone(),
+            credentials,
+            QueryRuntimeContext::default(),
+            layout.clone(),
+            Vec::new(),
+        );
+        let lifecycle_lock = workspaces.lifecycle_lock();
+        let search = SearchManager::new(
+            layout,
+            &config_store,
+            workspaces,
+            true,
+            CatalogDiscovery::new(queries),
+            lifecycle_lock,
+        );
+        Fixture {
+            _temp: temp,
+            service: SearchService::new(
+                search,
+                TaskManager::new(TaskStore::new(Arc::clone(&db))),
+                WorkspaceAuthorizer::new(Arc::clone(&db)),
+            ),
+            db,
+        }
+    }
+
+    /// Provisions one directory user through the production login seam and
+    /// grants it `role` on the default workspace, so the principal the
+    /// authorizer is handed is the one a real login carries.
+    async fn seed_principal(
+        db: &Arc<CoralDb>,
+        subject: &str,
+        role: Option<MemberRole>,
+    ) -> Principal {
+        let LoginProvisioning::Provisioned(user) = db
+            .user_state()
+            .provision_login(LoginIdentity {
+                issuer: "https://issuer.test/search-authorization",
+                subject,
+                display_name: None,
+                principal_claim: subject,
+                now_unix_nanos: 1,
+            })
+            .await
+            .expect("provision user")
+        else {
+            panic!("expected a provisioned user rather than an issuer mismatch")
+        };
+        if let Some(role) = role {
+            let mut session = db.as_ref();
+            session
+                .workspace_members()
+                .upsert(WorkspaceName::default().as_str(), &user.user_id, role, 2)
+                .await
+                .expect("grant membership");
+        }
+        Principal::parse(&user.user_id, PrincipalKind::User).expect("federated principal")
+    }
+
+    fn request<T>(message: T, principal: &Principal) -> Request<T> {
+        let mut request = Request::new(message);
+        request
+            .extensions_mut()
+            .insert(RequestContext::new(principal.clone()));
+        request
+    }
+
+    fn default_workspace() -> coral_api::v1::Workspace {
+        crate::transport::workspace_to_proto(&WorkspaceName::default())
+    }
+
+    /// An empty query is what search preparation rejects, so it stands as the
+    /// probe for whether preparation was reached at all.
+    fn search_request() -> ProtoSearchRequest {
+        ProtoSearchRequest {
+            workspace: Some(default_workspace()),
+            query: String::new(),
+            limit: 0,
+        }
+    }
+
+    fn rebuild_request() -> ProtoRebuildSearchIndexRequest {
+        ProtoRebuildSearchIndexRequest {
+            workspace: Some(default_workspace()),
+            provider: UNDECODABLE_PROVIDER,
+            force: true,
+        }
+    }
+
+    fn clear_request() -> ProtoClearSearchDataRequest {
+        ProtoClearSearchDataRequest {
+            workspace: Some(default_workspace()),
+            scope: ProtoSearchDataScope::Unspecified as i32,
+            target: None,
+        }
+    }
+
+    /// Searching reads the workspace; rebuilding, draining, and clearing its
+    /// index are maintenance of it.
+    ///
+    /// Every request here carries input the work itself rejects, so each
+    /// refusal is an absence rather than an error code: the caller who is
+    /// allowed through is told what is wrong with the request, and the caller
+    /// who is not never gets that far.
+    #[tokio::test]
+    async fn members_search_while_only_owners_maintain_the_index() {
+        let fixture = fixture().await;
+        let owner = seed_principal(&fixture.db, "owner", Some(MemberRole::Owner)).await;
+        let member = seed_principal(&fixture.db, "member", Some(MemberRole::Member)).await;
+        let outsider = seed_principal(&fixture.db, "outsider", None).await;
+
+        assert_eq!(
+            fixture
+                .service
+                .search(request(search_request(), &member))
+                .await
+                .expect_err("the query is what the member is stopped by")
+                .code(),
+            Code::InvalidArgument
+        );
+        assert_eq!(
+            fixture
+                .service
+                .search(request(search_request(), &outsider))
+                .await
+                .expect_err("a non-member searches nothing")
+                .code(),
+            Code::NotFound
+        );
+
+        for status in [
+            fixture
+                .service
+                .rebuild_search_index(request(rebuild_request(), &member))
+                .await
+                .expect_err("a member rebuilds nothing"),
+            fixture
+                .service
+                .clear_search_data(request(clear_request(), &member))
+                .await
+                .expect_err("a member clears nothing"),
+            fixture
+                .service
+                .drain_search_queue(request(
+                    ProtoDrainSearchQueueRequest {
+                        workspace: Some(default_workspace()),
+                        budget_ms: 1,
+                    },
+                    &member,
+                ))
+                .await
+                .expect_err("a member drains nothing"),
+        ] {
+            assert_eq!(status.code(), Code::PermissionDenied);
+        }
+
+        for status in [
+            fixture
+                .service
+                .rebuild_search_index(request(rebuild_request(), &owner))
+                .await
+                .expect_err("the provider is what the owner is stopped by"),
+            fixture
+                .service
+                .clear_search_data(request(clear_request(), &owner))
+                .await
+                .expect_err("the scope is what the owner is stopped by"),
+        ] {
+            assert_eq!(status.code(), Code::InvalidArgument);
+        }
+    }
 
     #[test]
     fn skipped_provider_status_maps_without_coverage() {

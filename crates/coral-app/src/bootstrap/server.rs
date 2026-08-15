@@ -783,7 +783,7 @@ fn application_routes(
         CatalogService::new(query.clone(), task.clone(), workspace_authorizer.clone());
     let function_service = FunctionService::new(query.clone());
     let query_service = QueryService::new(query, task.clone(), workspace_authorizer.clone());
-    let search_service = SearchService::new(search, task.clone());
+    let search_service = SearchService::new(search, task.clone(), workspace_authorizer.clone());
     let feedback_service =
         FeedbackService::new(feedback, task.clone(), workspace_authorizer.clone());
     let feature_service = FeatureService::new(feature_store, active_features);
