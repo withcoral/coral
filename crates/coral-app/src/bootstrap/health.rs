@@ -234,15 +234,23 @@ impl EngineReadiness {
 /// Turns one catalog resolution into a readiness answer.
 ///
 /// A rejection is not automatically an unready instance. The auth-disabled
-/// `/readyz` asks the identical question through `ListCatalog` and classifies
-/// the answer with `catalog_rejection_is_reachable` in coral-mcp's `http`
-/// module, which deliberately reads request-shaped codes — a workspace deleted
-/// between the listing and the resolution, two sources claiming one runtime
-/// schema — as proof the engine is reachable. Those faults are instance-wide
-/// and therefore identical on every replica, so calling them unready here would
-/// pull a whole fleet out of rotation for a condition the other surface reports
-/// as reachable. The two predicates must stay in step: change one and change
-/// the other.
+/// `/readyz` classifies its own answer with `catalog_rejection_is_reachable` in
+/// coral-mcp's `http` module, which deliberately reads request-shaped codes — a
+/// workspace deleted between the listing and the resolution, two sources
+/// claiming one runtime schema — as proof the engine is reachable. Those faults
+/// are instance-wide and therefore identical on every replica, so calling them
+/// unready here would pull a whole fleet out of rotation for a condition the
+/// other surface reports as reachable.
+///
+/// The two surfaces no longer ask the same question, and `/readyz` is currently
+/// the weaker one. This probe resolves the first workspace the instance
+/// actually has; `/readyz` still names the literal `default`, which nothing
+/// provisions any more, so it reads `NotFound` — a code this predicate's
+/// counterpart treats as reachable — and answers ready even for an engine that
+/// cannot resolve a real catalog. Repairing that is owned by the local
+/// MCP-resolution work, which requires readiness to stop probing a default
+/// workspace. Until then, do not read a green `/readyz` as agreement with this
+/// function.
 fn readiness_from_catalog<T>(outcome: Result<T, QueryManagerError>) -> bool {
     match outcome {
         Ok(_) => true,
