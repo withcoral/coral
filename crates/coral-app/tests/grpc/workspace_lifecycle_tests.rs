@@ -118,10 +118,13 @@ fn local_trace_store_dir(harness: &GrpcHarness) -> std::path::PathBuf {
 }
 
 #[tokio::test]
-async fn lists_default_workspace_when_config_is_missing() {
+async fn lists_no_workspace_when_config_is_missing() {
     let harness = GrpcHarness::new().await;
 
-    assert_eq!(workspace_names(&harness).await, vec!["default"]);
+    assert!(
+        workspace_names(&harness).await.is_empty(),
+        "a fresh install owns no workspace until someone creates one",
+    );
 }
 
 #[tokio::test]
@@ -132,7 +135,10 @@ async fn startup_cutover_removes_stale_shadow_workspace_rows() {
 
     let harness = GrpcHarness::start_with_config_dir(config_dir).await;
 
-    assert_eq!(workspace_names(&harness).await, vec!["default"]);
+    assert!(
+        workspace_names(&harness).await.is_empty(),
+        "the cutover keeps what legacy config held and invents nothing",
+    );
 }
 
 #[tokio::test]
@@ -151,7 +157,7 @@ async fn create_workspace_persists_database_row_without_config_scaffolding() {
         .expect("create workspace response");
 
     assert_eq!(created.name, "work");
-    assert_eq!(workspace_names(&harness).await, vec!["default", "work"]);
+    assert_eq!(workspace_names(&harness).await, vec!["work"]);
 
     let raw = fs::read_to_string(harness.config_dir().join("config.toml")).expect("read config");
     assert!(
@@ -184,7 +190,7 @@ async fn list_workspaces_reads_database_after_config_becomes_invalid() {
         .expect("create workspace");
     fs::write(harness.config_dir().join("config.toml"), "[[workspaces]\n").expect("corrupt config");
 
-    assert_eq!(workspace_names(&harness).await, vec!["default", "work"]);
+    assert_eq!(workspace_names(&harness).await, vec!["work"]);
 }
 
 #[tokio::test]
@@ -347,7 +353,10 @@ async fn delete_workspace_removes_config_entry_and_workspace_artifacts() {
         .expect("delete workspace response");
     assert_eq!(deleted.name, "work");
 
-    assert_eq!(workspace_names(&harness).await, vec!["default"]);
+    assert!(
+        workspace_names(&harness).await.is_empty(),
+        "deleting the only workspace leaves the deployment with none",
+    );
     assert!(
         !source_dir.exists(),
         "delete should remove workspace artifacts"
@@ -484,7 +493,10 @@ async fn delete_workspace_ignores_malformed_trace_history() {
         .workspace
         .expect("delete workspace response");
     assert_eq!(deleted.name, "work");
-    assert_eq!(workspace_names(&harness).await, vec!["default"]);
+    assert!(
+        workspace_names(&harness).await.is_empty(),
+        "deleting the only workspace leaves the deployment with none",
+    );
 
     let raw = fs::read_to_string(harness.config_dir().join("config.toml")).expect("read config");
     assert!(
@@ -574,7 +586,10 @@ async fn delete_workspace_removes_state_when_trace_cleanup_fails() {
         .expect("restore trace file permissions");
 
     assert_eq!(deleted.name, "work");
-    assert_eq!(workspace_names(&harness).await, vec!["default"]);
+    assert!(
+        workspace_names(&harness).await.is_empty(),
+        "deleting the only workspace leaves the deployment with none",
+    );
 
     let raw = fs::read_to_string(harness.config_dir().join("config.toml")).expect("read config");
     assert!(
@@ -634,7 +649,10 @@ async fn delete_workspace_ignores_stale_trace_files_when_trace_history_disabled(
         .expect("delete workspace response");
 
     assert_eq!(deleted.name, "work");
-    assert_eq!(workspace_names(&harness).await, vec!["default"]);
+    assert!(
+        workspace_names(&harness).await.is_empty(),
+        "deleting the only workspace leaves the deployment with none",
+    );
     assert!(
         stale_trace_file.exists(),
         "disabled trace history should skip trace cleanup"
@@ -701,7 +719,10 @@ async fn delete_workspace_succeeds_when_backup_cleanup_fails_after_config_delete
         .expect("restore backup sources permissions");
     fs::remove_dir_all(&backup).expect("remove backup after assertion");
 
-    assert_eq!(workspace_names(&harness).await, vec!["default"]);
+    assert!(
+        workspace_names(&harness).await.is_empty(),
+        "deleting the only workspace leaves the deployment with none",
+    );
     assert!(
         !workspace_dir.exists(),
         "deleted workspace should no longer exist at its normal artifact path"
@@ -714,26 +735,34 @@ async fn delete_workspace_succeeds_when_backup_cleanup_fails_after_config_delete
     );
 }
 
+/// `default` is a name like any other now that nothing provisions it. A caller
+/// who wants one creates it, and may delete it again — the reserved-name guard
+/// that used to refuse that is gone, so a deployment left holding an
+/// undeletable workspace nobody asked for would be the regression.
 #[tokio::test]
-async fn delete_default_workspace_returns_failed_precondition() {
+async fn default_like_names_are_created_and_deleted_like_any_other() {
     let harness = GrpcHarness::new().await;
+    let default_name = default_workspace().name;
 
-    let error = harness
-        .workspace_client()
-        .delete_workspace(Request::new(DeleteWorkspaceRequest {
-            workspace: Some(default_workspace()),
-        }))
-        .await
-        .expect_err("default workspace delete should fail");
+    for name in [default_name.as_str(), "default-2", "work"] {
+        harness
+            .workspace_client()
+            .create_workspace(Request::new(CreateWorkspaceRequest {
+                workspace: Some(workspace(name)),
+            }))
+            .await
+            .unwrap_or_else(|error| panic!("create workspace '{name}': {error}"));
+        assert_eq!(workspace_names(&harness).await, vec![name.to_string()]);
 
-    assert_eq!(error.code(), tonic::Code::FailedPrecondition);
-    assert!(
-        error
-            .message()
-            .contains("default workspace cannot be removed"),
-        "expected default workspace guard, got: {}",
-        error.message()
-    );
+        harness
+            .workspace_client()
+            .delete_workspace(Request::new(DeleteWorkspaceRequest {
+                workspace: Some(workspace(name)),
+            }))
+            .await
+            .unwrap_or_else(|error| panic!("delete workspace '{name}': {error}"));
+        assert!(workspace_names(&harness).await.is_empty());
+    }
 }
 
 async fn delete_workspace(
@@ -805,6 +834,11 @@ async fn control_plane_refusals(
 
 /// A caller who belongs to nothing is answered, not refused: the listing is
 /// their own view, and an empty view is a complete answer to it.
+///
+/// Signing in also creates nothing to belong to. The empty listing alone would
+/// not show that — it reads the same whether the deployment holds no workspace
+/// or one this caller cannot reach — so the deployment's own state is checked
+/// beside it.
 #[tokio::test]
 async fn a_caller_with_no_membership_is_listed_nothing_rather_than_denied() {
     let deployment = SharedDeployment::start().await;
@@ -812,6 +846,10 @@ async fn a_caller_with_no_membership_is_listed_nothing_rather_than_denied() {
     let newcomer = deployment.as_person(&ada).await;
 
     assert_eq!(membership_rows(&newcomer).await, Vec::new());
+    assert!(
+        deployment.workspace_names().await.is_empty(),
+        "provisioning a login must not create a workspace",
+    );
 }
 
 #[tokio::test]
