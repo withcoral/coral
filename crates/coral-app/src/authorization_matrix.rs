@@ -15,7 +15,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "the declared matrix is proved by its own tests; the enforcement paths that read it land with the per-service authorization work"
+        reason = "the matrix is a declaration proved by its own tests, not a dispatcher: by design no runtime path reads it, so every item is dead outside them"
     )
 )]
 
