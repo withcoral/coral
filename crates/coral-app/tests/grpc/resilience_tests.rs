@@ -15,6 +15,7 @@ use crate::harness::{GrpcHarness, fixture_manifest_with_inputs_yaml, fixture_man
 #[tokio::test]
 async fn broken_source_does_not_block_healthy_sources() {
     let harness = GrpcHarness::new().await;
+    harness.seed_workspace().await;
 
     harness
         .import_source(

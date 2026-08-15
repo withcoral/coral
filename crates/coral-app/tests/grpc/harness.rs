@@ -39,6 +39,8 @@ pub(crate) struct FailingHttpFixture {
 }
 
 impl GrpcHarness {
+    /// Starts a server on empty state, the way a fresh install comes up: it
+    /// owns no workspace until someone creates one.
     pub(crate) async fn new() -> Self {
         let temp_dir = TempDir::new().expect("temp dir");
         let config_dir = temp_dir.path().join("coral-config");
@@ -110,6 +112,17 @@ impl GrpcHarness {
             app,
             _server: server,
         }
+    }
+
+    /// Creates the one workspace the scoped fixtures work in.
+    ///
+    /// Nothing provisions it: a fixture that needs workspace state asks for it
+    /// here, through the same public RPC any client would use, and
+    /// `default_workspace()` then names it on every request that follows.
+    pub(crate) async fn seed_workspace(&self) {
+        create_workspace(&self.app, &default_workspace().name)
+            .await
+            .expect("seed the workspace this fixture works in");
     }
 
     pub(crate) fn temp_path(&self) -> &Path {
@@ -391,6 +404,20 @@ impl SharedDeployment {
         )
         .await
         .expect("connect a test client")
+    }
+
+    /// Every workspace this deployment holds, read from its own state rather
+    /// than through a listing that answers only for the caller who asked. Each
+    /// deployment keeps its own database, so this counts nothing another test
+    /// owns.
+    pub(crate) async fn workspace_names(&self) -> Vec<String> {
+        let pool = self.app_database().await;
+        let names = sqlx::query_scalar::<_, String>("SELECT id FROM workspaces ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .expect("read the workspaces this deployment holds");
+        pool.close().await;
+        names
     }
 
     /// Reads what `workspace_name` has on record, straight from the state the

@@ -28,6 +28,7 @@ use crate::harness::{GrpcHarness, fixture_manifest_yaml, source_dir};
 async fn query_refreshes_expired_oauth_access_token_at_request_time() {
     let fixture = RefreshingHttpFixture::new().await;
     let harness = GrpcHarness::new().await;
+    harness.seed_workspace().await;
     harness
         .import_source(
             oauth_refresh_manifest_yaml(&fixture.base_url, &fixture.token_url),
@@ -86,6 +87,7 @@ async fn query_refreshes_expired_oauth_access_token_at_request_time() {
 async fn query_against_other_source_does_not_refresh_expired_oauth_source() {
     let fixture = RefreshingHttpFixture::new().await;
     let harness = GrpcHarness::new().await;
+    harness.seed_workspace().await;
     harness
         .import_source(
             oauth_refresh_manifest_yaml(&fixture.base_url, &fixture.token_url),
@@ -135,6 +137,7 @@ async fn query_against_other_source_does_not_refresh_expired_oauth_source() {
 async fn list_catalog_does_not_refresh_expired_oauth_access_token() {
     let fixture = RefreshingHttpFixture::new().await;
     let harness = GrpcHarness::new().await;
+    harness.seed_workspace().await;
     harness
         .import_source(
             oauth_refresh_manifest_yaml(&fixture.base_url, &fixture.token_url),
@@ -176,6 +179,7 @@ async fn list_catalog_does_not_refresh_expired_oauth_access_token() {
 async fn search_catalog_does_not_refresh_expired_oauth_access_token() {
     let fixture = RefreshingHttpFixture::new().await;
     let harness = GrpcHarness::new().await;
+    harness.seed_workspace().await;
     harness
         .import_source(
             oauth_refresh_manifest_yaml(&fixture.base_url, &fixture.token_url),
@@ -226,6 +230,7 @@ async fn search_catalog_does_not_refresh_expired_oauth_access_token() {
 async fn query_surfaces_oauth_refresh_failure_instead_of_skipping_source() {
     let fixture = RefreshingHttpFixture::new().await;
     let harness = GrpcHarness::new().await;
+    harness.seed_workspace().await;
     harness
         .import_source(
             oauth_refresh_manifest_yaml(&fixture.base_url, &fixture.token_url),
@@ -271,6 +276,7 @@ async fn query_surfaces_oauth_refresh_failure_instead_of_skipping_source() {
 async fn expired_oauth_access_token_without_refresh_token_tells_user_to_reconnect() {
     let fixture = RefreshingHttpFixture::new().await;
     let harness = GrpcHarness::new().await;
+    harness.seed_workspace().await;
     harness
         .import_source(
             oauth_refresh_manifest_yaml(&fixture.base_url, &fixture.token_url),
@@ -314,6 +320,7 @@ async fn expired_oauth_access_token_without_refresh_token_tells_user_to_reconnec
 async fn concurrent_queries_share_one_expired_oauth_refresh() {
     let fixture = RefreshingHttpFixture::new().await;
     let harness = GrpcHarness::new().await;
+    harness.seed_workspace().await;
     harness
         .import_source(
             oauth_refresh_manifest_yaml(&fixture.base_url, &fixture.token_url),
@@ -363,6 +370,7 @@ async fn concurrent_servers_share_one_expired_oauth_refresh() {
     let config_root = TempDir::new().expect("config root");
     let config_dir = config_root.path().join("coral-config");
     let first_harness = GrpcHarness::start_with_config_dir(config_dir.clone()).await;
+    first_harness.seed_workspace().await;
     first_harness
         .import_source(
             oauth_refresh_manifest_yaml(&fixture.base_url, &fixture.token_url),
@@ -411,6 +419,7 @@ async fn concurrent_servers_share_one_expired_oauth_refresh() {
 async fn manual_credential_replacement_waits_for_in_flight_refresh() {
     let fixture = RefreshingHttpFixture::new_blocked_token_response().await;
     let harness = GrpcHarness::new().await;
+    harness.seed_workspace().await;
     harness
         .import_source(
             oauth_refresh_manifest_yaml(&fixture.base_url, &fixture.token_url),
@@ -508,6 +517,7 @@ async fn manual_credential_replacement_waits_for_in_flight_refresh() {
 async fn successful_refresh_is_persisted_before_later_oauth_input_failure() {
     let fixture = RefreshingHttpFixture::new().await;
     let harness = GrpcHarness::new().await;
+    harness.seed_workspace().await;
     harness
         .import_source(
             two_oauth_inputs_manifest_yaml(&fixture.base_url, &fixture.token_url),

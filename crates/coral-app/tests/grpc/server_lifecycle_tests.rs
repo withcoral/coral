@@ -8,7 +8,7 @@
 
 use std::fs;
 
-use coral_api::v1::ListSourcesRequest;
+use coral_api::v1::{CreateWorkspaceRequest, ListSourcesRequest};
 use coral_client::{
     AppClient, default_workspace,
     local::{LocalServerError, ServerBuilder},
@@ -22,7 +22,7 @@ async fn server_lifecycle_can_repeat_within_process() {
     let temp = TempDir::new().expect("temp dir");
     let config_dir = temp.path().join("coral-config");
 
-    for _ in 0..2 {
+    for start in 0..2 {
         let server = ServerBuilder::new()
             .with_config_dir(&config_dir)
             .start()
@@ -32,6 +32,18 @@ async fn server_lifecycle_can_repeat_within_process() {
         let app = AppClient::connect(server.endpoint_uri())
             .await
             .expect("connect client");
+
+        // Only the first start has a workspace to create: the second reaches
+        // the one the first left behind, which is what makes the repeat a
+        // lifecycle claim rather than two unrelated starts.
+        if start == 0 {
+            app.workspace_client()
+                .create_workspace(Request::new(CreateWorkspaceRequest {
+                    workspace: Some(default_workspace()),
+                }))
+                .await
+                .expect("create the workspace this fixture lists");
+        }
 
         let sources = app
             .source_client()

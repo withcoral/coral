@@ -32,6 +32,7 @@ guide: Use this function to echo a typed value.
 #[tokio::test]
 async fn function_lifecycle_is_scoped_to_the_selected_workspace() {
     let harness = GrpcHarness::new().await;
+    harness.seed_workspace().await;
     let work = workspace("work");
     harness
         .workspace_client()
@@ -125,6 +126,7 @@ async fn function_lifecycle_is_scoped_to_the_selected_workspace() {
 #[tokio::test]
 async fn function_sources_are_returned_when_added_and_listed() {
     let harness = GrpcHarness::new().await;
+    harness.seed_workspace().await;
     harness
         .import_source(
             fixture_manifest_yaml(harness.temp_path()),
@@ -170,6 +172,7 @@ async fn function_sources_are_returned_when_added_and_listed() {
 #[tokio::test]
 async fn untyped_function_is_not_persisted() {
     let harness = GrpcHarness::new().await;
+    harness.seed_workspace().await;
 
     let error = harness
         .function_client()
@@ -264,6 +267,7 @@ export async function run(owner: string): Promise<string> {
 #[tokio::test]
 async fn create_only_preserves_an_existing_function_and_legacy_add_replaces_it() {
     let harness = GrpcHarness::new().await;
+    harness.seed_workspace().await;
     let workspace = default_workspace();
     let original = function_sql("select cast($value as VARCHAR) as value");
     let added = harness
