@@ -786,7 +786,8 @@ fn application_routes(
     let search_service = SearchService::new(search, task.clone(), workspace_authorizer.clone());
     let feedback_service =
         FeedbackService::new(feedback, task.clone(), workspace_authorizer.clone());
-    let feature_service = FeatureService::new(feature_store, active_features);
+    let feature_service =
+        FeatureService::new(feature_store, active_features, workspace_authorizer.clone());
     let task_service = TaskService::new(task, workspace_authorizer);
     let gui_onboarding_service = GuiOnboardingService::new(gui_onboarding);
     let mut routes = Routes::default()
