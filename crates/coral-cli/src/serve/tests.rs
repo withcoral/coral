@@ -73,13 +73,10 @@ fn grpc_addr(server: &RunningServer) -> SocketAddr {
         .expect("socket address")
 }
 
-async fn assert_catalog_tool(endpoint: String, bearer: Option<&str>) {
+async fn assert_catalog_tool(endpoint: String) {
     const INTENT: &str = "Exercise the composite server";
 
-    let mut config = StreamableHttpClientTransportConfig::with_uri(endpoint);
-    if let Some(bearer) = bearer {
-        config = config.auth_header(bearer);
-    }
+    let config = StreamableHttpClientTransportConfig::with_uri(endpoint);
     let client =
         ().serve(StreamableHttpClientTransport::from_config(config))
             .await
@@ -133,16 +130,38 @@ async fn assert_cli_extension_filter(endpoint: String) {
     client.cancel().await.expect("stop MCP client");
 }
 
-async fn assert_unauthorized(base: &str, authorization: &str) {
-    let rejected = reqwest::Client::new()
-        .post(format!("{base}/mcp"))
+async fn initialize_mcp(endpoint: &str, authorization: &str) -> reqwest::Response {
+    reqwest::Client::new()
+        .post(endpoint)
         .header("accept", "application/json, text/event-stream")
         .header("content-type", "application/json")
         .header("authorization", authorization)
         .body(INITIALIZE)
         .send()
         .await
-        .expect("MCP response");
+        .expect("MCP response")
+}
+
+/// Asserts the MCP surface admits a bearer token past authentication.
+///
+/// The mirror of [`assert_unauthorized`], and it stops at the handshake because
+/// that is where authentication is decided: everything after it is
+/// workspace-scoped — even `tools/list`, which enumerates a workspace's table
+/// functions — so a caller holding no membership is legitimately refused there
+/// while its audience was accepted here. `coral-app`'s workspace authorization
+/// tests own the boundary behind it.
+async fn assert_mcp_authenticated(endpoint: &str, token: &str) {
+    let accepted = initialize_mcp(endpoint, &format!("Bearer {token}")).await;
+    assert!(
+        accepted.status().is_success(),
+        "an accepted audience must initialize an MCP session: {}",
+        accepted.status()
+    );
+    assert!(accepted.headers().get(WWW_AUTHENTICATE).is_none());
+}
+
+async fn assert_unauthorized(base: &str, authorization: &str) {
+    let rejected = initialize_mcp(&format!("{base}/mcp"), authorization).await;
     assert_eq!(rejected.status(), reqwest::StatusCode::UNAUTHORIZED);
     assert_eq!(
         rejected.headers().get_all(WWW_AUTHENTICATE).iter().count(),
@@ -294,6 +313,13 @@ redirect_uri = 'https://auth.example/auth/oidc/callback'
     );
 }
 
+/// Asserts the private gRPC data plane admits a token past authentication.
+///
+/// The probe call is workspace-scoped, so a caller who holds no membership is
+/// legitimately refused *after* authentication has already succeeded, and that
+/// refusal still proves the audience was accepted. Only `Unauthenticated`, or a
+/// status meaning the call never reached the service, falsifies what these tests
+/// own. `coral-app`'s workspace authorization tests own the boundary itself.
 async fn assert_grpc_authenticated(server: &RunningServer, token: &str) {
     let authenticated = connect_with_loopback_bearer(
         server.endpoint_uri(),
@@ -301,16 +327,24 @@ async fn assert_grpc_authenticated(server: &RunningServer, token: &str) {
     )
     .await
     .expect("authenticated gRPC client");
-    authenticated
+    if let Err(refused) = authenticated
         .catalog_client()
         .list_catalog(Request::new(catalog_request()))
         .await
-        .expect("authenticated catalog call");
+    {
+        assert!(
+            !matches!(
+                refused.code(),
+                Code::Unauthenticated | Code::Unavailable | Code::Unknown
+            ),
+            "an accepted audience must reach the service: {refused:?}"
+        );
+    }
 }
 
-async fn assert_authenticated_data(server: &RunningServer, mcp_endpoint: &str, token: &str) {
+async fn assert_authenticated_surfaces(server: &RunningServer, mcp_endpoint: &str, token: &str) {
     assert_grpc_authenticated(server, token).await;
-    assert_catalog_tool(mcp_endpoint.to_string(), Some(token)).await;
+    assert_mcp_authenticated(mcp_endpoint, token).await;
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -439,7 +473,7 @@ async fn auth_disabled_companion_serves_and_shuts_down() {
     assert!(!server.mcp_http_authentication_enabled());
     let mcp_addr = server.mcp_http_addr().expect("MCP HTTP endpoint");
     assert!(server.oauth_addr().is_none());
-    assert_catalog_tool(format!("http://{mcp_addr}/mcp"), None).await;
+    assert_catalog_tool(format!("http://{mcp_addr}/mcp")).await;
     assert_cli_extension_filter(format!("http://{mcp_addr}/mcp")).await;
     server.shutdown().await.expect("shutdown composite server");
     let grpc_rebound = TcpListener::bind(grpc_addr).expect("gRPC port must be released");
@@ -495,7 +529,7 @@ async fn opted_in_auth_disabled_companion_serves_off_loopback() {
     // Dial through loopback: the point here is that the listener started and
     // serves; reachability from other interfaces is the operator's affair.
     let dial = SocketAddr::from((Ipv4Addr::LOCALHOST, mcp_addr.port()));
-    assert_catalog_tool(format!("http://{dial}/mcp"), None).await;
+    assert_catalog_tool(format!("http://{dial}/mcp")).await;
     server.shutdown().await.expect("shutdown composite server");
 }
 
@@ -643,7 +677,7 @@ async fn session_authenticated_companion_gates_grpc_and_mcp() {
     assert_grpc_rejects_unauthenticated(server.endpoint_uri()).await;
 
     let token = session_token(signing_key.as_ref(), &resource);
-    assert_authenticated_data(&server, &format!("{base}/mcp"), &token).await;
+    assert_authenticated_surfaces(&server, &format!("{base}/mcp"), &token).await;
 
     let coral_ui_token = session_token(signing_key.as_ref(), CORAL_UI_RESOURCE);
     assert_grpc_authenticated(&server, &coral_ui_token).await;
@@ -816,7 +850,7 @@ async fn session_failures_and_restart_are_fail_closed() {
     assert_eq!(expired_rejection, wrong_audience_rejection);
     assert_eq!(expired_rejection, malformed_rejection);
     assert_eq!(expired_rejection, forged_rejection);
-    assert_authenticated_data(&server, &mcp_endpoint, &valid).await;
+    assert_authenticated_surfaces(&server, &mcp_endpoint, &valid).await;
     server.shutdown().await.expect("first shutdown");
 
     let restarted = start(
@@ -832,7 +866,7 @@ async fn session_failures_and_restart_are_fail_closed() {
         "http://{}/mcp",
         restarted.mcp_http_addr().expect("restarted MCP endpoint")
     );
-    assert_authenticated_data(&restarted, &restarted_mcp, &valid).await;
+    assert_authenticated_surfaces(&restarted, &restarted_mcp, &valid).await;
     restarted.shutdown().await.expect("restarted shutdown");
 }
 
