@@ -29,5 +29,7 @@ mod server_lifecycle_tests;
 mod session_auth;
 #[path = "grpc/source_lifecycle_tests.rs"]
 mod source_lifecycle_tests;
+#[path = "grpc/workspace_access_read_tests.rs"]
+mod workspace_access_read_tests;
 #[path = "grpc/workspace_lifecycle_tests.rs"]
 mod workspace_lifecycle_tests;

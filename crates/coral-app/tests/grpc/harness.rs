@@ -3,20 +3,24 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use coral_api::v1::{
-    ExecuteSqlRequest, ImportSourceRequest, ListCatalogRequest, ListSourcesRequest,
-    PaginationRequest, Source, SourceSecret, SourceVariable, TableSummary, ValidateSourceRequest,
-    ValidateSourceResponse, catalog_item, import_source_response,
+    AddWorkspaceMemberRequest, CreateWorkspaceRequest, ExecuteSqlRequest, ImportSourceRequest,
+    ListCatalogRequest, ListSourcesRequest, PaginationRequest, RemoveWorkspaceMemberRequest,
+    Source, SourceSecret, SourceVariable, TableSummary, ValidateSourceRequest,
+    ValidateSourceResponse, Workspace, WorkspaceRole, catalog_item, import_source_response,
 };
-use coral_app::EngineExtensionsProvider;
 use coral_app::features::{Feature, FeatureOverrides};
+use coral_app::{
+    EngineExtensionsProvider, Principal, PrincipalKind, PrincipalProvider, PrincipalProviderError,
+};
 use coral_client::{
-    AppClient, CatalogClient, FunctionClient, QueryClient, SearchClient, SourceClient,
+    AppClient, BearerToken, CatalogClient, FunctionClient, QueryClient, SearchClient, SourceClient,
     WorkspaceClient, batches_to_json_rows, decode_execute_sql_response, default_workspace,
-    local::{RunningServer, ServerBuilder},
+    local::{RunningServer, ServerBuilder, connect_with_loopback_bearer},
 };
 use serde_json::{Value, json};
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use tempfile::TempDir;
-use tonic::Request;
+use tonic::{Request, Status};
 
 pub(crate) struct GrpcHarness {
     temp_dir: TempDir,
@@ -251,6 +255,283 @@ fn ensure_file_credentials_config(config_dir: &Path) {
     };
     let updated = format!("{raw}{separator}\n[credentials]\nstorage = \"file\"\n");
     std::fs::write(config_file, updated).expect("write test credential config");
+}
+
+/// Upstream issuer written into every seeded directory row, so a response that
+/// leaked one would be recognizable on the wire.
+const TEST_ISSUER: &str = "https://issuer.test/authorization";
+
+/// Authenticates a `"<kind>:<user_id>"` bearer token.
+///
+/// It stands in for the session tokens the public surfaces mint, where the
+/// audience a token was minted for decides the kind: an MCP-audience token
+/// authenticates an agent and a human surface's token a user, both carrying the
+/// same internal user id. Installing any provider is also what makes a
+/// deployment a shared one — it retires the implicit local owner, so each
+/// request arrives as a distinct person or agent rather than as the host.
+#[derive(Debug)]
+struct TokenPrincipals;
+
+#[tonic::async_trait]
+impl PrincipalProvider for TokenPrincipals {
+    async fn principal_for_metadata(
+        &self,
+        metadata: &tonic::metadata::MetadataMap,
+    ) -> Result<Principal, PrincipalProviderError> {
+        let credential = metadata
+            .get("authorization")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.strip_prefix("Bearer "))
+            .ok_or_else(|| PrincipalProviderError::unauthenticated("missing bearer credential"))?;
+        let (kind, user_id) = credential
+            .split_once(':')
+            .ok_or_else(|| PrincipalProviderError::unauthenticated("malformed test credential"))?;
+        let kind = if kind == "agent" {
+            PrincipalKind::Agent
+        } else {
+            PrincipalKind::User
+        };
+        Principal::parse(user_id, kind)
+            .map_err(|error| PrincipalProviderError::unauthenticated(error.to_string()))
+    }
+}
+
+/// A running server that authenticates its callers, plus the directory rows
+/// login provisioning would have written for them.
+pub(crate) struct SharedDeployment {
+    _temp: Option<TempDir>,
+    config_dir: PathBuf,
+    endpoint_uri: String,
+    trace_store_dir: Option<PathBuf>,
+    _server: RunningServer,
+}
+
+/// What one workspace has on record from work its callers asked for.
+///
+/// A refused request must move none of these: a task row, a query recorded
+/// under one, or a span attributed to the workspace would each be a side effect
+/// of work the caller was never allowed to start.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct WorkspaceWork {
+    pub(crate) tasks: i64,
+    pub(crate) queries: i64,
+    pub(crate) attributed_spans: usize,
+}
+
+impl SharedDeployment {
+    pub(crate) async fn start() -> Self {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+        ensure_file_credentials_config(&config_dir);
+        let server = ServerBuilder::new()
+            .with_config_dir(&config_dir)
+            .with_principal_provider(Arc::new(TokenPrincipals))
+            .start()
+            .await
+            .expect("start an authenticated server");
+        let endpoint_uri = server.endpoint_uri().to_string();
+        let trace_store_dir = server.local_trace_store_dir().map(Path::to_path_buf);
+        // The local trace store is installed once per process, by whichever
+        // server starts first, and the trace-history tests write into whatever
+        // directory that turned out to be. When it is this one's, the temp dir
+        // must outlive the deployment: removing it would delete the installed
+        // store out from under a concurrently running test.
+        let temp = if trace_store_dir
+            .as_ref()
+            .is_some_and(|dir| dir.starts_with(temp.path()))
+        {
+            let _installed_store_root: PathBuf = temp.keep();
+            None
+        } else {
+            Some(temp)
+        };
+        Self {
+            _temp: temp,
+            config_dir,
+            endpoint_uri,
+            trace_store_dir,
+            _server: server,
+        }
+    }
+
+    /// Writes one directory row the way a completed login would, and returns
+    /// the internal user id every credential for that person then carries.
+    ///
+    /// The login flow itself is upstream of this contract, so it is the row —
+    /// not the OIDC round trip — that these transport tests need. Authorization
+    /// never sees the upstream subject: it is stored here and nowhere else.
+    pub(crate) async fn seed_user(&self, handle: &str, display_name: &str) -> String {
+        let user_id = format!("user-{handle}");
+        let pool = self.app_database().await;
+        sqlx::query(
+            "INSERT INTO users (user_id, issuer, subject, display_name, created_at_unix_nanos, last_login_at_unix_nanos) VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&user_id)
+        .bind(TEST_ISSUER)
+        .bind(format!("upstream-subject-{handle}"))
+        .bind(display_name)
+        .bind(1_i64)
+        .bind(1_i64)
+        .execute(&pool)
+        .await
+        .expect("seed a provisioned login");
+        pool.close().await;
+        user_id
+    }
+
+    pub(crate) async fn as_person(&self, user_id: &str) -> AppClient {
+        self.connect("user", user_id).await
+    }
+
+    /// Connects the session an MCP-audience token authenticates: the same
+    /// person's id, admitted as an agent rather than as themselves.
+    pub(crate) async fn as_agent(&self, user_id: &str) -> AppClient {
+        self.connect("agent", user_id).await
+    }
+
+    async fn connect(&self, kind: &str, user_id: &str) -> AppClient {
+        connect_with_loopback_bearer(
+            &self.endpoint_uri,
+            BearerToken::new(format!("{kind}:{user_id}")).expect("test bearer token"),
+        )
+        .await
+        .expect("connect a test client")
+    }
+
+    /// Reads what `workspace_name` has on record, straight from the state the
+    /// server keeps rather than from an RPC the caller under test could be
+    /// refused.
+    pub(crate) async fn workspace_work(&self, workspace_name: &str) -> WorkspaceWork {
+        let pool = self.app_database().await;
+        let tasks =
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM tasks WHERE workspace_id = ?")
+                .bind(workspace_name)
+                .fetch_one(&pool)
+                .await
+                .expect("count workspace tasks");
+        let queries = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM task_queries JOIN tasks ON tasks.id = task_queries.task_id WHERE tasks.workspace_id = ?",
+        )
+        .bind(workspace_name)
+        .fetch_one(&pool)
+        .await
+        .expect("count workspace queries");
+        pool.close().await;
+        WorkspaceWork {
+            tasks,
+            queries,
+            attributed_spans: self.attributed_spans(workspace_name),
+        }
+    }
+
+    /// Counts exported spans carrying this workspace's attribution. Every
+    /// deployment in the process shares one store, so the workspace name is
+    /// what separates one test's spans from another's.
+    fn attributed_spans(&self, workspace_name: &str) -> usize {
+        let Some(dir) = &self.trace_store_dir else {
+            return 0;
+        };
+        fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "jsonl")
+            })
+            .filter_map(|path| fs::read_to_string(path).ok())
+            .map(|raw| {
+                raw.lines()
+                    .filter(|line| span_names_workspace(line, workspace_name))
+                    .count()
+            })
+            .sum()
+    }
+
+    async fn app_database(&self) -> sqlx::SqlitePool {
+        SqlitePoolOptions::new()
+            .connect_with(SqliteConnectOptions::new().filename(self.config_dir.join("coral.db")))
+            .await
+            .expect("open the app database")
+    }
+}
+
+fn span_names_workspace(line: &str, workspace_name: &str) -> bool {
+    serde_json::from_str::<Value>(line)
+        .ok()
+        .and_then(|span| Some(span.get("attributes_json")?.as_str()?.to_string()))
+        .and_then(|attributes| serde_json::from_str::<Value>(&attributes).ok())
+        .and_then(|attributes| Some(attributes.get("workspace")?.as_str()?.to_string()))
+        .is_some_and(|workspace| workspace == workspace_name)
+}
+
+pub(crate) fn named_workspace(name: &str) -> Workspace {
+    Workspace {
+        name: name.to_string(),
+    }
+}
+
+pub(crate) async fn create_workspace(client: &AppClient, name: &str) -> Result<Workspace, Status> {
+    client
+        .workspace_client()
+        .create_workspace(Request::new(CreateWorkspaceRequest {
+            workspace: Some(named_workspace(name)),
+        }))
+        .await
+        .map(|response| {
+            response
+                .into_inner()
+                .workspace
+                .expect("create workspace response")
+        })
+}
+
+pub(crate) async fn add_member(
+    client: &AppClient,
+    name: &str,
+    user_id: &str,
+    role: WorkspaceRole,
+) -> Result<(), Status> {
+    client
+        .workspace_client()
+        .add_workspace_member(Request::new(AddWorkspaceMemberRequest {
+            workspace: Some(named_workspace(name)),
+            user_id: user_id.to_string(),
+            role: role.into(),
+        }))
+        .await
+        .map(|_| ())
+}
+
+pub(crate) async fn remove_member(
+    client: &AppClient,
+    name: &str,
+    user_id: &str,
+) -> Result<(), Status> {
+    client
+        .workspace_client()
+        .remove_workspace_member(Request::new(RemoveWorkspaceMemberRequest {
+            workspace: Some(named_workspace(name)),
+            user_id: user_id.to_string(),
+        }))
+        .await
+        .map(|_| ())
+}
+
+/// Runs one statement as `client`, discarding the rows: these tests ask whether
+/// the read was allowed, not what it returned.
+pub(crate) async fn execute_sql(client: &AppClient, name: &str, sql: &str) -> Result<(), Status> {
+    client
+        .query_client()
+        .execute_sql(Request::new(ExecuteSqlRequest {
+            workspace: Some(named_workspace(name)),
+            sql: sql.to_string(),
+            guide_read_context: None,
+            task_attribution: None,
+        }))
+        .await
+        .map(|_| ())
 }
 
 impl FailingHttpFixture {
