@@ -24,7 +24,7 @@ use crate::catalog::discovery::CatalogDiscovery;
 use crate::query::QueryAttribution;
 use crate::query::manager::{QueryManager, QueryManagerError};
 use crate::transport::query_status;
-use crate::workspaces::WorkspaceName;
+use crate::workspaces::WorkspaceManager;
 
 /// Health service name reporting whether the engine can answer for its catalog.
 ///
@@ -91,23 +91,46 @@ impl EngineReadiness {
         }
     }
 
-    /// Reports readiness by resolving the default workspace's catalog, the same
-    /// work the auth-disabled readiness probe drives through `ListCatalog`.
-    pub(super) fn from_query_manager(queries: QueryManager) -> Self {
+    /// Reports readiness by resolving one existing workspace's catalog, the
+    /// same work the auth-disabled readiness probe drives through `ListCatalog`.
+    ///
+    /// The workspace comes from the instance's own listing rather than a
+    /// well-known name, because no workspace is provisioned any more: naming
+    /// one would resolve a workspace that does not exist, and the missing
+    /// workspace is classified as reachable, so the probe would answer ready
+    /// without ever reaching the engine it exists to ask about.
+    ///
+    /// Which one it picks does not matter — readiness is instance-wide, and
+    /// every workspace's catalog runs through the same engine — so it takes the
+    /// first listed and pays for one resolution rather than one per workspace.
+    pub(super) fn from_catalog_resolution(
+        queries: QueryManager,
+        workspaces: WorkspaceManager,
+    ) -> Self {
         Self::new(Arc::new(move || {
             let catalog = CatalogDiscovery::new(queries.clone());
+            let workspaces = workspaces.clone();
             Box::pin(async move {
+                let listed = match workspaces.list_workspaces().await {
+                    Ok(listed) => listed,
+                    // Classified the same way a catalog rejection is, so a
+                    // store that cannot answer reports unready under one rule.
+                    Err(error) => {
+                        return readiness_from_catalog::<()>(Err(QueryManagerError::App(error)));
+                    }
+                };
+                let Some(workspace) = listed.first() else {
+                    // An instance that owns no workspace has no catalog to fail
+                    // on. A fresh install is waiting to be given one, not
+                    // broken, so it must not be held out of rotation.
+                    return true;
+                };
                 readiness_from_catalog(
                     catalog
                         // Neither the catalog nor the schema is filtered: the
                         // probe asks the same unqualified question `ListCatalog`
                         // does.
-                        .catalog_info(
-                            &WorkspaceName::default(),
-                            None,
-                            None,
-                            &QueryAttribution::new(None),
-                        )
+                        .catalog_info(&workspace.name, None, None, &QueryAttribution::new(None))
                         .await,
                 )
             })
@@ -213,13 +236,13 @@ impl EngineReadiness {
 /// A rejection is not automatically an unready instance. The auth-disabled
 /// `/readyz` asks the identical question through `ListCatalog` and classifies
 /// the answer with `catalog_rejection_is_reachable` in coral-mcp's `http`
-/// module, which deliberately reads request-shaped codes — a missing default
-/// workspace, two sources claiming one runtime schema — as proof the engine is
-/// reachable. Those faults are instance-wide and therefore identical on every
-/// replica, so calling them unready here would pull a whole fleet out of
-/// rotation for a condition the other surface reports as reachable. The two
-/// predicates must
-/// stay in step: change one and change the other.
+/// module, which deliberately reads request-shaped codes — a workspace deleted
+/// between the listing and the resolution, two sources claiming one runtime
+/// schema — as proof the engine is reachable. Those faults are instance-wide
+/// and therefore identical on every replica, so calling them unready here would
+/// pull a whole fleet out of rotation for a condition the other surface reports
+/// as reachable. The two predicates must stay in step: change one and change
+/// the other.
 fn readiness_from_catalog<T>(outcome: Result<T, QueryManagerError>) -> bool {
     match outcome {
         Ok(_) => true,
@@ -300,18 +323,119 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
+    use tempfile::TempDir;
     use tonic_health::pb::HealthCheckRequest;
     use tonic_health::pb::health_check_response::ServingStatus;
     use tonic_health::pb::health_server::Health as _;
 
-    use coral_engine::CoreError;
+    use coral_engine::{CoreError, QueryRuntimeContext};
 
     use super::{
         AggregateHealthService, EngineReadiness, READINESS_PROBE_TIMEOUT, READINESS_SERVICE_NAME,
         readiness_from_catalog,
     };
     use crate::bootstrap::AppError;
-    use crate::query::manager::QueryManagerError;
+    use crate::credentials::{CredentialManager, CredentialStore};
+    use crate::query::manager::{QueryManager, QueryManagerError};
+    use crate::state::db::{
+        CoralDb, DatabaseConfig, DbRepos as _, ResolvedDatabaseConfig, run_state_migrations,
+    };
+    use crate::state::{AppStateLayout, ConfigStore};
+    use crate::workspaces::{WorkspaceManager, WorkspaceName};
+
+    /// One instance's own state, database and managers, with the readiness
+    /// probe the server mounts over them and no workspace until a test creates
+    /// one.
+    struct ReadinessFixture {
+        _temp: TempDir,
+        layout: AppStateLayout,
+        db: Arc<CoralDb>,
+        readiness: EngineReadiness,
+    }
+
+    async fn readiness_fixture() -> ReadinessFixture {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let DatabaseConfig::Sqlite { path } = DatabaseConfig::load(&layout).expect("db config")
+        else {
+            panic!("the default test database is sqlite")
+        };
+        let db = Arc::new(
+            CoralDb::open(ResolvedDatabaseConfig::Sqlite { path })
+                .await
+                .expect("open sqlite"),
+        );
+        db.migrate().await.expect("migrate sqlite");
+        run_state_migrations(&db, &config_store, &layout)
+            .await
+            .expect("run state migrations");
+        let credentials = CredentialManager::new(CredentialStore::new(layout.clone()));
+        let workspaces = WorkspaceManager::new_for_tests(
+            config_store.clone(),
+            credentials.clone(),
+            layout.clone(),
+            None,
+            Arc::clone(&db),
+        );
+        let queries = QueryManager::new_for_tests(
+            config_store,
+            workspaces.clone(),
+            credentials,
+            QueryRuntimeContext::default(),
+            layout.clone(),
+            Vec::new(),
+        );
+        ReadinessFixture {
+            _temp: temp,
+            readiness: EngineReadiness::from_catalog_resolution(queries, workspaces),
+            layout,
+            db,
+        }
+    }
+
+    async fn create_workspace(db: &Arc<CoralDb>, name: &str) {
+        let workspace = WorkspaceName::parse(name).expect("workspace name");
+        let mut tx = db.begin().await.expect("begin workspace creation");
+        tx.workspaces()
+            .create(workspace.as_str(), 1)
+            .await
+            .expect("create workspace");
+        tx.commit().await.expect("commit workspace creation");
+    }
+
+    /// A fresh install owns no workspace, so the probe has no catalog to
+    /// resolve. Nothing about that is a fault, and reporting unready would
+    /// hold an instance out of rotation for having nothing in it yet.
+    #[tokio::test]
+    async fn an_instance_that_owns_no_workspace_reports_ready() {
+        let fixture = readiness_fixture().await;
+
+        assert!(fixture.readiness.is_ready().await);
+    }
+
+    /// The regression that makes this probe worth having: it must resolve a
+    /// catalog the instance actually owns. Naming a workspace instead would
+    /// resolve one no install provisions any more, and a missing workspace is
+    /// deliberately classified as reachable — so an engine that cannot read
+    /// its own state would still report ready.
+    ///
+    /// The unparseable config file is that engine: catalog resolution reads it
+    /// after the workspace check, and fails with an infrastructure code.
+    #[tokio::test]
+    async fn an_engine_that_cannot_answer_for_a_real_workspace_reports_unready() {
+        let fixture = readiness_fixture().await;
+        create_workspace(&fixture.db, "work").await;
+        std::fs::write(fixture.layout.config_file(), "this is not toml")
+            .expect("write unparseable config");
+
+        assert!(
+            !fixture.readiness.is_ready().await,
+            "a catalog the instance owns and cannot resolve is an unready engine"
+        );
+    }
 
     async fn check(service: &str, ready: bool) -> Result<i32, tonic::Status> {
         AggregateHealthService::new(EngineReadiness::fixed(ready))
@@ -507,7 +631,7 @@ mod tests {
         // would empty the fleet for a rejection the auth-disabled `/readyz`
         // reports as reachable.
         for error in [
-            AppError::WorkspaceNotFound("default".to_string()),
+            AppError::WorkspaceNotFound("work".to_string()),
             AppError::InvalidInput(
                 "catalog runtime schema 'public' is owned by both 'a' and 'b'".to_string(),
             ),

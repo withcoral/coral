@@ -755,12 +755,12 @@ struct ServerDependencies {
     active_features: Features,
 }
 
-/// Builds the gRPC routes for every application service, and returns the query
-/// manager the health service reads readiness from.
+/// Builds the gRPC routes for every application service, and returns the probe
+/// the health service reads readiness from.
 fn application_routes(
     dependencies: ServerDependencies,
     trace_service: Option<TraceService>,
-) -> (Routes, QueryManager) {
+) -> (Routes, EngineReadiness) {
     let ServerDependencies {
         gui_onboarding,
         source,
@@ -782,7 +782,7 @@ fn application_routes(
         ),
         None => (source, query),
     };
-    let health_queries = query.clone();
+    let readiness = EngineReadiness::from_catalog_resolution(query.clone(), workspace.clone());
     let source_service = SourceService::new(
         source,
         query.clone(),
@@ -833,7 +833,7 @@ fn application_routes(
                 .max_encoding_message_size(TRACE_RESPONSE_MAX_MESSAGE_SIZE),
         );
     }
-    (routes, health_queries)
+    (routes, readiness)
 }
 
 async fn start_server(
@@ -850,7 +850,7 @@ async fn start_server(
     // `RunningServer` owns both for shutdown; the routes only borrow them.
     let search = dependencies.search.clone();
     let search_observations = dependencies.search_observations.clone();
-    let (application_routes, health_queries) = application_routes(dependencies, trace_service);
+    let (application_routes, readiness) = application_routes(dependencies, trace_service);
     let routes = Routes::from(
         application_routes
             .into_axum_router()
@@ -859,7 +859,7 @@ async fn start_server(
     // Health must not depend on principal selection: it is the readiness signal
     // an orchestrator reaches without a credential.
     .add_service(tonic_health::pb::health_server::HealthServer::new(
-        AggregateHealthService::new(EngineReadiness::from_query_manager(health_queries)),
+        AggregateHealthService::new(readiness),
     ));
 
     let listener = match grpc_listener {
@@ -973,7 +973,9 @@ mod tests {
         SqliteObservedValuesStore,
     };
     use crate::sources::manager::SourceManager;
-    use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig, run_state_migrations};
+    use crate::state::db::{
+        CoralDb, DatabaseConfig, DbRepos as _, ResolvedDatabaseConfig, run_state_migrations,
+    };
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::task::manager::TaskManager;
     use crate::task::store::TaskStore;
@@ -987,8 +989,33 @@ mod tests {
         PrincipalKind,
     };
 
-    fn default_workspace() -> Workspace {
-        workspace_to_proto(&WorkspaceName::default())
+    /// The workspace these fixtures run in.
+    ///
+    /// An install provisions none, so every fixture that needs one creates it:
+    /// [`test_db`] for the in-process assemblies, [`create_test_workspace_in`] for
+    /// the ones that hand a config directory to `ServerBuilder`. The name is
+    /// ordinary on purpose — a fixture that leaned on a well-known one would
+    /// prove the workspace was resolved by name rather than created.
+    fn test_workspace() -> WorkspaceName {
+        WorkspaceName::parse("work").expect("workspace name")
+    }
+
+    fn workspace() -> Workspace {
+        workspace_to_proto(&test_workspace())
+    }
+
+    /// Creates the workspace a `ServerBuilder` fixture runs in, in the state
+    /// the server is about to open.
+    ///
+    /// It has to happen up front: the server owns its state once it is
+    /// serving, and the RPCs under test are the ones that need the workspace
+    /// to already be there. Call it after any config file the fixture writes,
+    /// because the state migrations read that config.
+    async fn create_test_workspace_in(config_dir: &Path) {
+        let layout = AppStateLayout::discover(Some(config_dir.to_path_buf())).expect("layout");
+        layout.ensure().expect("layout dirs");
+        let config_store = ConfigStore::new(layout.clone());
+        drop(test_db(&layout, &config_store).await);
     }
 
     fn disable_internal_tracing(config_dir: &Path) {
@@ -1044,6 +1071,12 @@ enabled = false
         run_state_migrations(&db, config_store, layout)
             .await
             .expect("run state migrations");
+        let mut tx = db.begin().await.expect("begin workspace creation");
+        tx.workspaces()
+            .create(test_workspace().as_str(), 1)
+            .await
+            .expect("create workspace");
+        tx.commit().await.expect("commit workspace creation");
         Arc::new(db)
     }
 
@@ -1095,7 +1128,7 @@ enabled = false
             CatalogDiscovery::new(query_manager),
             lifecycle_lock,
         );
-        let workspace = WorkspaceName::default();
+        let workspace = test_workspace();
         let store = SqliteObservedValuesStore::new(layout.clone());
         let generation = store
             .capture_epoch(&workspace, "github")
@@ -1666,6 +1699,7 @@ backend = "unsupported"
         let temp = TempDir::new().expect("temp dir");
         let config_dir = temp.path().join("coral-config");
         disable_internal_tracing(&config_dir);
+        create_test_workspace_in(&config_dir).await;
         let server = ServerBuilder::new()
             .with_config_dir(config_dir)
             .start()
@@ -1680,7 +1714,7 @@ backend = "unsupported"
 
         let task = task_client
             .start_task(Request::new(StartTaskRequest {
-                workspace: Some(default_workspace()),
+                workspace: Some(workspace()),
                 intent: "find the HR onboarding form".to_string(),
             }))
             .await
@@ -1692,7 +1726,7 @@ backend = "unsupported"
 
         let task_end = task_client
             .end_task(Request::new(EndTaskRequest {
-                workspace: Some(default_workspace()),
+                workspace: Some(workspace()),
                 task_id: task.task_id.clone(),
                 task_status: TaskStatus::Success as i32,
             }))
@@ -1711,9 +1745,10 @@ backend = "unsupported"
         let temp = TempDir::new().expect("temp dir");
         let config_dir = temp.path().join("coral-config");
         configure_observed_values_search(&config_dir, true);
+        create_test_workspace_in(&config_dir).await;
         let layout = AppStateLayout::discover(Some(config_dir.clone())).expect("layout");
         layout.ensure().expect("layout dirs");
-        let workspace = WorkspaceName::default();
+        let workspace = test_workspace();
         let store = SqliteObservedValuesStore::new(layout);
         let generation = store
             .capture_epoch(&workspace, "github")
@@ -1759,9 +1794,10 @@ backend = "unsupported"
         let temp = TempDir::new().expect("temp dir");
         let config_dir = temp.path().join("coral-config");
         disable_internal_tracing(&config_dir);
+        create_test_workspace_in(&config_dir).await;
         let layout = AppStateLayout::discover(Some(config_dir.clone())).expect("layout");
         layout.ensure().expect("layout dirs");
-        let workspace = WorkspaceName::default();
+        let workspace = test_workspace();
         let store = SqliteObservedValuesStore::new(layout);
         let generation = store
             .capture_epoch(&workspace, "github")
@@ -1926,7 +1962,7 @@ backend = "unsupported"
 
         let status = SourceServiceClient::new(channel.clone())
             .list_sources(Request::new(ListSourcesRequest {
-                workspace: Some(default_workspace()),
+                workspace: Some(workspace()),
             }))
             .await
             .expect_err("request should be rejected");
@@ -2042,7 +2078,7 @@ backend = "unsupported"
 
         let mut import_stream = source_client
             .import_source(Request::new(ImportSourceRequest {
-                workspace: Some(default_workspace()),
+                workspace: Some(workspace()),
                 manifest_yaml: r#"
 name: tilde_demo
 version: 0.1.0
@@ -2082,7 +2118,7 @@ tables:
 
         let response = query_client
             .execute_sql(Request::new(ExecuteSqlRequest {
-                workspace: Some(default_workspace()),
+                workspace: Some(workspace()),
                 sql: "SELECT text FROM tilde_demo.messages ORDER BY text".to_string(),
                 guide_read_context: None,
                 task_attribution: None,
@@ -2178,7 +2214,7 @@ tables:
         let sql = "SELECT repeat('x', 5000000) AS pad";
         let response = query_client
             .execute_sql(Request::new(ExecuteSqlRequest {
-                workspace: Some(default_workspace()),
+                workspace: Some(workspace()),
                 sql: sql.to_string(),
                 guide_read_context: None,
                 task_attribution: None,
@@ -2310,7 +2346,7 @@ tables:
 
         let mut import_stream = source_client
             .import_source(Request::new(ImportSourceRequest {
-                workspace: Some(default_workspace()),
+                workspace: Some(workspace()),
                 manifest_yaml: manifest,
                 variables: Vec::new(),
                 secrets: Vec::new(),
@@ -2332,7 +2368,7 @@ tables:
 
         let status = query_client
             .execute_sql(Request::new(ExecuteSqlRequest {
-                workspace: Some(default_workspace()),
+                workspace: Some(workspace()),
                 sql: "SELECT bogus_column FROM wide_demo.wide LIMIT 0".to_string(),
                 guide_read_context: None,
                 task_attribution: None,
