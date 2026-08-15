@@ -81,6 +81,15 @@ redirect_uri = '{ISSUER}/auth/oidc/callback'
     /// mints through the real issuer rather than replaying the OAuth round
     /// trip: the token's wire format stays the server's own.
     pub(crate) fn access_token(&self, user_id: &str) -> String {
+        self.access_token_for(user_id, PrincipalKind::User)
+    }
+
+    /// Mints the token an actor of `principal_kind` carries for `user_id`.
+    ///
+    /// Two callers differing only in kind is the whole point: the audience is
+    /// the same either way, so a test that separates an agent from a person is
+    /// separating them by what the issuer declared and by nothing else.
+    pub(crate) fn access_token_for(&self, user_id: &str, principal_kind: PrincipalKind) -> String {
         coral_app::test_session_tokens::issue_access_token(
             ISSUER,
             &self.signing_key,
@@ -88,7 +97,7 @@ redirect_uri = '{ISSUER}/auth/oidc/callback'
             user_id,
             CLIENT_ID,
             AUDIENCE,
-            PrincipalKind::User,
+            principal_kind,
         )
         .expect("issue a session access token")
     }

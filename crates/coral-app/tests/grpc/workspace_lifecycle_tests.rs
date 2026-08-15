@@ -1,34 +1,26 @@
 use std::fs;
-use std::path::PathBuf;
 
 use coral_api::CORAL_ERROR_REASON_WORKSPACE_NOT_FOUND;
 use coral_api::v1::{
-    AddWorkspaceMemberRequest, AddWorkspaceMemberResponse, CreateWorkspaceRequest,
-    CreateWorkspaceResponse, DeleteWorkspaceRequest, DeleteWorkspaceResponse,
-    GetCurrentUserRequest, ImportSourceRequest, ListSourcesRequest, ListUsersRequest,
-    ListWorkspaceMembersRequest, ListWorkspaceMembersResponse, ListWorkspacesRequest,
-    ListWorkspacesResponse, RemoveWorkspaceMemberRequest, RemoveWorkspaceMemberResponse, Source,
-    SourceSecret, SourceVariable, Workspace, WorkspaceRole, import_source_response,
+    CreateWorkspaceRequest, DeleteWorkspaceRequest, DeleteWorkspaceResponse, GetCurrentUserRequest,
+    ImportSourceRequest, ListSourcesRequest, ListUsersRequest, ListWorkspaceMembersRequest,
+    ListWorkspaceMembersResponse, ListWorkspacesRequest, Source, SourceSecret, SourceVariable,
+    WorkspaceRole, import_source_response,
 };
-use coral_client::local::{RunningServer, connect_with_loopback_bearer};
-use coral_client::{AppClient, BearerToken, default_workspace};
+use coral_client::{AppClient, default_workspace};
 use prost::Message as _;
 use serde_json::json;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use tempfile::TempDir;
 use tonic::{Code, Request, Response, Status};
-use tonic_types::{ErrorDetail, StatusExt as _};
 
-use crate::harness::{GrpcHarness, fixture_manifest_with_inputs_yaml, fixture_manifest_yaml};
-use crate::session_auth::{SessionAuthFixture, session_authenticated_server};
+use crate::harness::{
+    GrpcHarness, SharedDeployment, TEST_ISSUER, add_member, concealed_refusal, create_workspace,
+    fixture_manifest_with_inputs_yaml, fixture_manifest_yaml, membership_rows,
+    named_workspace as workspace, remove_member,
+};
 
 static TRACE_STORE_DELETE_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
-fn workspace(name: &str) -> Workspace {
-    Workspace {
-        name: name.to_string(),
-    }
-}
 
 async fn workspace_names(harness: &GrpcHarness) -> Vec<String> {
     harness
@@ -744,106 +736,6 @@ async fn delete_default_workspace_returns_failed_precondition() {
     );
 }
 
-/// Upstream issuer written into every seeded directory row, so a response that
-/// leaked it would be recognizable on the wire.
-const TEST_ISSUER: &str = "https://issuer.test/authorization";
-
-/// A running server that authenticates its callers, plus the directory rows
-/// login provisioning would have written for them.
-struct SharedDeployment {
-    _temp: Option<TempDir>,
-    config_dir: PathBuf,
-    endpoint_uri: String,
-    session_auth: SessionAuthFixture,
-    _server: RunningServer,
-}
-
-impl SharedDeployment {
-    async fn start() -> Self {
-        let temp = TempDir::new().expect("temp dir");
-        let config_dir = temp.path().join("coral-config");
-        // Configuring session authentication is what makes a deployment a
-        // shared one: it retires the implicit local owner, so each request over
-        // these tests' transport arrives as a distinct person instead of as the
-        // host.
-        let session_auth = SessionAuthFixture::write(&config_dir);
-        let server = session_authenticated_server(&session_auth)
-            .await
-            .expect("start an authenticated server");
-        let endpoint_uri = server.endpoint_uri().to_string();
-        // The local trace store is installed once per process, by whichever
-        // server starts first, and the trace-history tests write into whatever
-        // directory that turned out to be. When it is this one's, the temp dir
-        // must outlive the deployment: removing it would delete the installed
-        // store out from under a concurrently running test.
-        let temp = if server
-            .local_trace_store_dir()
-            .is_some_and(|dir| dir.starts_with(temp.path()))
-        {
-            let _installed_store_root: PathBuf = temp.keep();
-            None
-        } else {
-            Some(temp)
-        };
-        Self {
-            _temp: temp,
-            config_dir,
-            endpoint_uri,
-            session_auth,
-            _server: server,
-        }
-    }
-
-    /// Writes one directory row the way a completed login would.
-    ///
-    /// The login flow itself is upstream of this contract, so it is the row —
-    /// not the OIDC round trip — that these transport tests need. Every row
-    /// shares one timestamp, leaving the directory ordered by user id.
-    async fn seed_user(&self, handle: &str, display_name: &str) -> String {
-        let user_id = format!("user-{handle}");
-        let pool = SqlitePoolOptions::new()
-            .connect_with(SqliteConnectOptions::new().filename(self.config_dir.join("coral.db")))
-            .await
-            .expect("open the app database");
-        sqlx::query(
-            "INSERT INTO users (user_id, issuer, subject, display_name, created_at_unix_nanos, last_login_at_unix_nanos) VALUES (?, ?, ?, ?, ?, ?)",
-        )
-        .bind(&user_id)
-        .bind(TEST_ISSUER)
-        .bind(format!("upstream-subject-{handle}"))
-        .bind(display_name)
-        .bind(1_i64)
-        .bind(1_i64)
-        .execute(&pool)
-        .await
-        .expect("seed a provisioned login");
-        pool.close().await;
-        user_id
-    }
-
-    async fn as_person(&self, user_id: &str) -> AppClient {
-        connect_with_loopback_bearer(
-            &self.endpoint_uri,
-            BearerToken::new(self.session_auth.access_token(user_id)).expect("test bearer token"),
-        )
-        .await
-        .expect("connect a test client")
-    }
-}
-
-async fn create_workspace(
-    client: &AppClient,
-    name: &str,
-) -> Result<CreateWorkspaceResponse, Status> {
-    client
-        .workspace_client()
-        .create_workspace(Request::new(CreateWorkspaceRequest {
-            workspace: Some(workspace(name)),
-        }))
-        .await
-        .map(Response::into_inner)
-}
-
 async fn delete_workspace(
     client: &AppClient,
     name: &str,
@@ -853,14 +745,6 @@ async fn delete_workspace(
         .delete_workspace(Request::new(DeleteWorkspaceRequest {
             workspace: Some(workspace(name)),
         }))
-        .await
-        .map(Response::into_inner)
-}
-
-async fn list_workspaces(client: &AppClient) -> Result<ListWorkspacesResponse, Status> {
-    client
-        .workspace_client()
-        .list_workspaces(Request::new(ListWorkspacesRequest {}))
         .await
         .map(Response::into_inner)
 }
@@ -878,53 +762,6 @@ async fn list_members(
         .map(Response::into_inner)
 }
 
-async fn add_member(
-    client: &AppClient,
-    name: &str,
-    user_id: &str,
-    role: WorkspaceRole,
-) -> Result<AddWorkspaceMemberResponse, Status> {
-    client
-        .workspace_client()
-        .add_workspace_member(Request::new(AddWorkspaceMemberRequest {
-            workspace: Some(workspace(name)),
-            user_id: user_id.to_string(),
-            role: role.into(),
-        }))
-        .await
-        .map(Response::into_inner)
-}
-
-async fn remove_member(
-    client: &AppClient,
-    name: &str,
-    user_id: &str,
-) -> Result<RemoveWorkspaceMemberResponse, Status> {
-    client
-        .workspace_client()
-        .remove_workspace_member(Request::new(RemoveWorkspaceMemberRequest {
-            workspace: Some(workspace(name)),
-            user_id: user_id.to_string(),
-        }))
-        .await
-        .map(Response::into_inner)
-}
-
-/// Reads a listing the way a client does: workspace name beside the caller's
-/// own role, with no second request needed to learn it.
-fn membership_rows(response: ListWorkspacesResponse) -> Vec<(String, WorkspaceRole)> {
-    response
-        .memberships
-        .into_iter()
-        .map(|membership| {
-            (
-                membership.workspace.expect("listed workspace").name,
-                membership.role.try_into().expect("listed role"),
-            )
-        })
-        .collect()
-}
-
 fn member_rows(response: ListWorkspaceMembersResponse) -> Vec<(String, WorkspaceRole, String)> {
     response
         .members
@@ -939,10 +776,9 @@ fn member_rows(response: ListWorkspaceMembersResponse) -> Vec<(String, Workspace
         .collect()
 }
 
-/// Probes one workspace name across every control-plane RPC and reports only
-/// what the caller is told: the code, the message with the name they supplied
-/// themselves factored out, and the structured reason. Two names that agree
-/// here are indistinguishable to that caller.
+/// Probes one workspace name across every control-plane RPC and reports what
+/// each of them told the caller. Two names that agree here are
+/// indistinguishable to that caller.
 async fn control_plane_refusals(
     client: &AppClient,
     name: &str,
@@ -963,20 +799,7 @@ async fn control_plane_refusals(
             .expect_err("a non-member must not revoke membership"),
     ]
     .iter()
-    .map(|status| {
-        (
-            status.code(),
-            status.message().replace(name, "<workspace>"),
-            status
-                .get_error_details_vec()
-                .iter()
-                .filter_map(|detail| match detail {
-                    ErrorDetail::ErrorInfo(info) => Some(info.reason.clone()),
-                    _ => None,
-                })
-                .collect(),
-        )
-    })
+    .map(|status| concealed_refusal(status, name))
     .collect()
 }
 
@@ -988,11 +811,7 @@ async fn a_caller_with_no_membership_is_listed_nothing_rather_than_denied() {
     let ada = deployment.seed_user("ada", "Ada").await;
     let newcomer = deployment.as_person(&ada).await;
 
-    let listing = list_workspaces(&newcomer)
-        .await
-        .expect("a caller with no membership is still answered");
-
-    assert_eq!(membership_rows(listing), Vec::new());
+    assert_eq!(membership_rows(&newcomer).await, Vec::new());
 }
 
 #[tokio::test]
@@ -1009,7 +828,7 @@ async fn creating_a_workspace_makes_its_caller_its_only_owner() {
 
     assert_eq!(created.name, "team");
     assert_eq!(
-        membership_rows(list_workspaces(&creator).await.expect("list workspaces")),
+        membership_rows(&creator).await,
         vec![("team".to_string(), WorkspaceRole::Owner)],
         "the creator reaches the workspace they asked for, as its owner"
     );
@@ -1189,7 +1008,7 @@ async fn a_non_member_cannot_tell_an_existing_workspace_from_an_absent_one() {
         "both must read as the absent workspace, not as a denial that confirms one: {existing:?}",
     );
     assert_eq!(
-        membership_rows(list_workspaces(&owner).await.expect("the owner's listing")),
+        membership_rows(&owner).await,
         vec![("team".to_string(), WorkspaceRole::Owner)],
         "a refused probe must not have changed the workspace it probed",
     );
@@ -1210,11 +1029,7 @@ async fn deleting_a_workspace_takes_its_memberships_with_it() {
         .await
         .expect("grant membership");
     assert_eq!(
-        membership_rows(
-            list_workspaces(&member)
-                .await
-                .expect("the member's listing")
-        ),
+        membership_rows(&member).await,
         vec![("team".to_string(), WorkspaceRole::Member)],
     );
 
@@ -1227,7 +1042,7 @@ async fn deleting_a_workspace_takes_its_memberships_with_it() {
     assert_eq!(deleted.name, "team");
     for (client, whose) in [(&owner, "owner"), (&member, "member")] {
         assert_eq!(
-            membership_rows(list_workspaces(client).await.expect("listing")),
+            membership_rows(client).await,
             Vec::new(),
             "the deleted workspace must leave the {whose}'s listing",
         );

@@ -1,16 +1,14 @@
 use coral_api::CORAL_ERROR_REASON_WORKSPACE_NOT_FOUND;
 use coral_api::v1::{
-    EndTaskRequest, ExecuteSqlRequest, ListCatalogRequest, ListWorkspacesRequest,
-    PaginationRequest, StartTaskRequest, SubmitFeedbackRequest, TaskAttribution, TaskStatus,
-    WorkspaceRole,
+    EndTaskRequest, ExecuteSqlRequest, ListCatalogRequest, PaginationRequest, StartTaskRequest,
+    SubmitFeedbackRequest, TaskAttribution, TaskStatus, WorkspaceRole,
 };
 use coral_client::AppClient;
 use tonic::{Code, Request, Status};
-use tonic_types::{ErrorDetail, StatusExt as _};
 
 use crate::harness::{
-    SharedDeployment, WorkspaceWork, add_member, create_workspace, execute_sql, named_workspace,
-    remove_member,
+    SharedDeployment, WorkspaceWork, add_member, concealed_refusal, create_workspace, execute_sql,
+    membership_rows, named_workspace, remove_member,
 };
 
 /// A task id that was never minted anywhere, so `EndTask` cannot be answered
@@ -93,28 +91,9 @@ async fn execute_sql_in_task(
         .map(|_| ())
 }
 
-async fn membership_rows(client: &AppClient) -> Vec<(String, WorkspaceRole)> {
-    client
-        .workspace_client()
-        .list_workspaces(Request::new(ListWorkspacesRequest {}))
-        .await
-        .expect("a caller is always answered about their own memberships")
-        .into_inner()
-        .memberships
-        .into_iter()
-        .map(|membership| {
-            (
-                membership.workspace.expect("listed workspace").name,
-                membership.role.try_into().expect("listed role"),
-            )
-        })
-        .collect()
-}
-
-/// Probes one workspace name across every classified read RPC and reports only
-/// what the caller is told: the surface, the code, the message with the name
-/// they supplied themselves factored out, and the structured reason. Two names
-/// that agree here are indistinguishable to that caller.
+/// Probes one workspace name across every classified read RPC and reports the
+/// surface beside what that surface told the caller. Two names that agree here
+/// are indistinguishable to that caller.
 async fn read_refusals(
     client: &AppClient,
     name: &str,
@@ -154,19 +133,8 @@ async fn read_refusals(
     probes
         .iter()
         .map(|(surface, status)| {
-            (
-                *surface,
-                status.code(),
-                status.message().replace(name, "<workspace>"),
-                status
-                    .get_error_details_vec()
-                    .iter()
-                    .filter_map(|detail| match detail {
-                        ErrorDetail::ErrorInfo(info) => Some(info.reason.clone()),
-                        _ => None,
-                    })
-                    .collect(),
-            )
+            let (code, message, reasons) = concealed_refusal(status, name);
+            (*surface, code, message, reasons)
         })
         .collect()
 }
@@ -205,7 +173,9 @@ async fn workspace_access_read_harness_seats_two_people_around_one_workspace() {
     let outsider = deployment.as_person(&bob).await;
     let created = create_workspace(&owner, "read-harness")
         .await
-        .expect("the creator makes their own workspace");
+        .expect("the creator makes their own workspace")
+        .workspace
+        .expect("create workspace response");
     assert_eq!(created.name, "read-harness");
 
     assert_eq!(
@@ -329,14 +299,16 @@ async fn an_inaccessible_workspace_reads_exactly_like_an_absent_one() {
     // the workspace rule rather than from the task id being unknown. The owner
     // asking the same impossible question is what separates the two: they are
     // told about the task, and told it without a Coral reason attached.
-    let known_workspace = end_task(&owner, "read-conceal", UNMINTED_TASK_ID)
-        .await
-        .expect_err("the task id was never minted");
-    assert_eq!(known_workspace.code(), Code::NotFound);
+    let (code, message, reasons) = concealed_refusal(
+        &end_task(&owner, "read-conceal", UNMINTED_TASK_ID)
+            .await
+            .expect_err("the task id was never minted"),
+        "read-conceal",
+    );
+    assert_eq!(code, Code::NotFound);
     assert!(
-        known_workspace.get_error_details_vec().is_empty()
-            && known_workspace.message().contains(UNMINTED_TASK_ID),
-        "a member's unknown task must not read as the absent workspace: {known_workspace:?}",
+        reasons.is_empty() && message.contains(UNMINTED_TASK_ID),
+        "a member's unknown task must not read as the absent workspace: {message} {reasons:?}",
     );
 }
 

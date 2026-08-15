@@ -3,15 +3,15 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use coral_api::v1::{
-    AddWorkspaceMemberRequest, CreateWorkspaceRequest, ExecuteSqlRequest, ImportSourceRequest,
-    ListCatalogRequest, ListSourcesRequest, PaginationRequest, RemoveWorkspaceMemberRequest,
-    Source, SourceSecret, SourceVariable, TableSummary, ValidateSourceRequest,
-    ValidateSourceResponse, Workspace, WorkspaceRole, catalog_item, import_source_response,
+    AddWorkspaceMemberRequest, AddWorkspaceMemberResponse, CreateWorkspaceRequest,
+    CreateWorkspaceResponse, ExecuteSqlRequest, ImportSourceRequest, ListCatalogRequest,
+    ListSourcesRequest, ListWorkspacesRequest, PaginationRequest, RemoveWorkspaceMemberRequest,
+    RemoveWorkspaceMemberResponse, Source, SourceSecret, SourceVariable, TableSummary,
+    ValidateSourceRequest, ValidateSourceResponse, Workspace, WorkspaceRole, catalog_item,
+    import_source_response,
 };
 use coral_app::features::{Feature, FeatureOverrides};
-use coral_app::{
-    EngineExtensionsProvider, Principal, PrincipalKind, PrincipalProvider, PrincipalProviderError,
-};
+use coral_app::{EngineExtensionsProvider, PrincipalKind};
 use coral_client::{
     AppClient, BearerToken, CatalogClient, FunctionClient, QueryClient, SearchClient, SourceClient,
     WorkspaceClient, batches_to_json_rows, decode_execute_sql_response, default_workspace,
@@ -20,7 +20,10 @@ use coral_client::{
 use serde_json::{Value, json};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use tempfile::TempDir;
-use tonic::{Request, Status};
+use tonic::{Code, Request, Response, Status};
+use tonic_types::{ErrorDetail, StatusExt as _};
+
+use crate::session_auth::{SessionAuthFixture, session_authenticated_server};
 
 pub(crate) struct GrpcHarness {
     temp_dir: TempDir,
@@ -259,42 +262,7 @@ fn ensure_file_credentials_config(config_dir: &Path) {
 
 /// Upstream issuer written into every seeded directory row, so a response that
 /// leaked one would be recognizable on the wire.
-const TEST_ISSUER: &str = "https://issuer.test/authorization";
-
-/// Authenticates a `"<kind>:<user_id>"` bearer token.
-///
-/// It stands in for the session tokens the public surfaces mint, where the
-/// audience a token was minted for decides the kind: an MCP-audience token
-/// authenticates an agent and a human surface's token a user, both carrying the
-/// same internal user id. Installing any provider is also what makes a
-/// deployment a shared one — it retires the implicit local owner, so each
-/// request arrives as a distinct person or agent rather than as the host.
-#[derive(Debug)]
-struct TokenPrincipals;
-
-#[tonic::async_trait]
-impl PrincipalProvider for TokenPrincipals {
-    async fn principal_for_metadata(
-        &self,
-        metadata: &tonic::metadata::MetadataMap,
-    ) -> Result<Principal, PrincipalProviderError> {
-        let credential = metadata
-            .get("authorization")
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.strip_prefix("Bearer "))
-            .ok_or_else(|| PrincipalProviderError::unauthenticated("missing bearer credential"))?;
-        let (kind, user_id) = credential
-            .split_once(':')
-            .ok_or_else(|| PrincipalProviderError::unauthenticated("malformed test credential"))?;
-        let kind = if kind == "agent" {
-            PrincipalKind::Agent
-        } else {
-            PrincipalKind::User
-        };
-        Principal::parse(user_id, kind)
-            .map_err(|error| PrincipalProviderError::unauthenticated(error.to_string()))
-    }
-}
+pub(crate) const TEST_ISSUER: &str = "https://issuer.test/authorization";
 
 /// A running server that authenticates its callers, plus the directory rows
 /// login provisioning would have written for them.
@@ -303,6 +271,7 @@ pub(crate) struct SharedDeployment {
     config_dir: PathBuf,
     endpoint_uri: String,
     trace_store_dir: Option<PathBuf>,
+    session_auth: SessionAuthFixture,
     _server: RunningServer,
 }
 
@@ -322,11 +291,12 @@ impl SharedDeployment {
     pub(crate) async fn start() -> Self {
         let temp = TempDir::new().expect("temp dir");
         let config_dir = temp.path().join("coral-config");
-        ensure_file_credentials_config(&config_dir);
-        let server = ServerBuilder::new()
-            .with_config_dir(&config_dir)
-            .with_principal_provider(Arc::new(TokenPrincipals))
-            .start()
+        // Configuring session authentication is what makes a deployment a
+        // shared one: it retires the implicit local owner, so each request over
+        // this transport arrives as a distinct person or agent rather than as
+        // the host. The fixture writes the credentials config too.
+        let session_auth = SessionAuthFixture::write(&config_dir);
+        let server = session_authenticated_server(&session_auth)
             .await
             .expect("start an authenticated server");
         let endpoint_uri = server.endpoint_uri().to_string();
@@ -350,6 +320,7 @@ impl SharedDeployment {
             config_dir,
             endpoint_uri,
             trace_store_dir,
+            session_auth,
             _server: server,
         }
     }
@@ -380,19 +351,25 @@ impl SharedDeployment {
     }
 
     pub(crate) async fn as_person(&self, user_id: &str) -> AppClient {
-        self.connect("user", user_id).await
+        self.connect(user_id, PrincipalKind::User).await
     }
 
-    /// Connects the session an MCP-audience token authenticates: the same
-    /// person's id, admitted as an agent rather than as themselves.
+    /// Connects the same person's id, admitted as an agent rather than as
+    /// themselves.
+    ///
+    /// Only the token's actor-kind claim separates this from [`Self::as_person`]
+    /// — same id, same audience, same issuer — so a refusal one of them meets
+    /// and the other does not is a refusal of the actor kind and of nothing
+    /// else.
     pub(crate) async fn as_agent(&self, user_id: &str) -> AppClient {
-        self.connect("agent", user_id).await
+        self.connect(user_id, PrincipalKind::Agent).await
     }
 
-    async fn connect(&self, kind: &str, user_id: &str) -> AppClient {
+    async fn connect(&self, user_id: &str, principal_kind: PrincipalKind) -> AppClient {
         connect_with_loopback_bearer(
             &self.endpoint_uri,
-            BearerToken::new(format!("{kind}:{user_id}")).expect("test bearer token"),
+            BearerToken::new(self.session_auth.access_token_for(user_id, principal_kind))
+                .expect("test bearer token"),
         )
         .await
         .expect("connect a test client")
@@ -472,19 +449,20 @@ pub(crate) fn named_workspace(name: &str) -> Workspace {
     }
 }
 
-pub(crate) async fn create_workspace(client: &AppClient, name: &str) -> Result<Workspace, Status> {
+/// The workspace and membership helpers hand back the whole response rather
+/// than the one part a given caller asserts on: what the server said about a
+/// change is as much of the contract as whether it allowed it.
+pub(crate) async fn create_workspace(
+    client: &AppClient,
+    name: &str,
+) -> Result<CreateWorkspaceResponse, Status> {
     client
         .workspace_client()
         .create_workspace(Request::new(CreateWorkspaceRequest {
             workspace: Some(named_workspace(name)),
         }))
         .await
-        .map(|response| {
-            response
-                .into_inner()
-                .workspace
-                .expect("create workspace response")
-        })
+        .map(Response::into_inner)
 }
 
 pub(crate) async fn add_member(
@@ -492,7 +470,7 @@ pub(crate) async fn add_member(
     name: &str,
     user_id: &str,
     role: WorkspaceRole,
-) -> Result<(), Status> {
+) -> Result<AddWorkspaceMemberResponse, Status> {
     client
         .workspace_client()
         .add_workspace_member(Request::new(AddWorkspaceMemberRequest {
@@ -501,14 +479,14 @@ pub(crate) async fn add_member(
             role: role.into(),
         }))
         .await
-        .map(|_| ())
+        .map(Response::into_inner)
 }
 
 pub(crate) async fn remove_member(
     client: &AppClient,
     name: &str,
     user_id: &str,
-) -> Result<(), Status> {
+) -> Result<RemoveWorkspaceMemberResponse, Status> {
     client
         .workspace_client()
         .remove_workspace_member(Request::new(RemoveWorkspaceMemberRequest {
@@ -516,7 +494,48 @@ pub(crate) async fn remove_member(
             user_id: user_id.to_string(),
         }))
         .await
-        .map(|_| ())
+        .map(Response::into_inner)
+}
+
+/// Reads a listing the way a client does: workspace name beside the caller's
+/// own role, with no second request needed to learn it. A caller is always
+/// answered about their own memberships, so this asks for the rows rather than
+/// for a result.
+pub(crate) async fn membership_rows(client: &AppClient) -> Vec<(String, WorkspaceRole)> {
+    client
+        .workspace_client()
+        .list_workspaces(Request::new(ListWorkspacesRequest {}))
+        .await
+        .expect("a caller is always answered about their own memberships")
+        .into_inner()
+        .memberships
+        .into_iter()
+        .map(|membership| {
+            (
+                membership.workspace.expect("listed workspace").name,
+                membership.role.try_into().expect("listed role"),
+            )
+        })
+        .collect()
+}
+
+/// Reports only what a refused caller is told: the code, the message with the
+/// workspace name they supplied themselves factored out, and the structured
+/// reasons. Two refusals that agree here are indistinguishable to that caller,
+/// which is what separates a concealed workspace from a denial confirming one.
+pub(crate) fn concealed_refusal(status: &Status, name: &str) -> (Code, String, Vec<String>) {
+    (
+        status.code(),
+        status.message().replace(name, "<workspace>"),
+        status
+            .get_error_details_vec()
+            .iter()
+            .filter_map(|detail| match detail {
+                ErrorDetail::ErrorInfo(info) => Some(info.reason.clone()),
+                _ => None,
+            })
+            .collect(),
+    )
 }
 
 /// Runs one statement as `client`, discarding the rows: these tests ask whether
