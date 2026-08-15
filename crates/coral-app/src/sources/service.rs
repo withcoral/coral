@@ -37,6 +37,7 @@ use tonic::{Request, Response, Status};
 use crate::bootstrap::{AppError, app_status};
 use crate::credentials::CredentialStorageKind;
 use crate::query::manager::QueryManager;
+use crate::request_context::RequestContext;
 use crate::sources::SourceName;
 use crate::sources::manager::{
     CreateBundledSourceCommand, CreateBundledSourceWithOAuthCommand, ImportSourceCommand,
@@ -46,9 +47,10 @@ use crate::sources::manager::{
 };
 use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
 use crate::transport::{
-    grpc_span, instrument_grpc, query_status, validate_source_response_to_proto,
+    grpc_span, instrument_grpc, query_status, request_context, validate_source_response_to_proto,
     workspace_name_from_proto, workspace_to_proto,
 };
+use crate::workspaces::authorization::{WorkspaceAction, WorkspaceAuthorizer};
 use crate::workspaces::{WorkspaceLifecycleRevision, WorkspaceManager, WorkspaceName};
 use tokio::sync::mpsc;
 use tokio_stream::Stream;
@@ -59,18 +61,21 @@ pub(crate) struct SourceService {
     sources: SourceManager,
     queries: QueryManager,
     workspaces: WorkspaceManager,
+    authorizer: WorkspaceAuthorizer,
 }
 
 impl SourceService {
-    pub(crate) fn new(
+    pub(crate) const fn new(
         source_manager: SourceManager,
         query_manager: QueryManager,
         workspace_manager: WorkspaceManager,
+        authorizer: WorkspaceAuthorizer,
     ) -> Self {
         Self {
             sources: source_manager,
             queries: query_manager,
             workspaces: workspace_manager,
+            authorizer,
         }
     }
 }
@@ -87,9 +92,12 @@ impl SourceServiceApi for SourceService {
         let span = grpc_span(&request);
         let sources = self.sources.clone();
         let workspaces = self.workspaces.clone();
+        let authorizer = self.authorizer.clone();
+        let request_context = request_context(&request)?.clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            authorize_source_access(&authorizer, &workspace_name, &request_context).await?;
             require_workspace(&workspaces, &workspace_name).await?;
             let sources = sources
                 .discover_sources(&workspace_name)
@@ -109,9 +117,12 @@ impl SourceServiceApi for SourceService {
         let span = grpc_span(&request);
         let sources = self.sources.clone();
         let workspaces = self.workspaces.clone();
+        let authorizer = self.authorizer.clone();
+        let request_context = request_context(&request)?.clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            authorize_source_access(&authorizer, &workspace_name, &request_context).await?;
             require_workspace(&workspaces, &workspace_name).await?;
             let sources: Vec<_> = sources
                 .list_workspace_sources(&workspace_name)
@@ -131,9 +142,12 @@ impl SourceServiceApi for SourceService {
         let span = grpc_span(&request);
         let sources = self.sources.clone();
         let workspaces = self.workspaces.clone();
+        let authorizer = self.authorizer.clone();
+        let request_context = request_context(&request)?.clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            authorize_source_access(&authorizer, &workspace_name, &request_context).await?;
             require_workspace(&workspaces, &workspace_name).await?;
             let source_name = SourceName::parse(&request.name).map_err(app_status)?;
             let source = sources
@@ -153,9 +167,12 @@ impl SourceServiceApi for SourceService {
         let span = grpc_span(&request);
         let sources = self.sources.clone();
         let workspaces = self.workspaces.clone();
+        let authorizer = self.authorizer.clone();
+        let request_context = request_context(&request)?.clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            authorize_source_access(&authorizer, &workspace_name, &request_context).await?;
             require_workspace(&workspaces, &workspace_name).await?;
             let source_name = SourceName::parse(&request.name).map_err(app_status)?;
             let source = sources
@@ -175,9 +192,12 @@ impl SourceServiceApi for SourceService {
         let span = grpc_span(&request);
         let sources = self.sources.clone();
         let workspaces = self.workspaces.clone();
+        let authorizer = self.authorizer.clone();
+        let request_context = request_context(&request)?.clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            authorize_source_access(&authorizer, &workspace_name, &request_context).await?;
             let revision = require_active_workspace_revision(&workspaces, &workspace_name).await?;
             let bundled_name = SourceName::parse(&request.name).map_err(app_status)?;
             let command = CreateBundledSourceCommand {
@@ -206,9 +226,12 @@ impl SourceServiceApi for SourceService {
         let span = grpc_span(&request);
         let sources = self.sources.clone();
         let workspaces = self.workspaces.clone();
+        let authorizer = self.authorizer.clone();
+        let request_context = request_context(&request)?.clone();
         instrument_grpc(span.clone(), async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            authorize_source_access(&authorizer, &workspace_name, &request_context).await?;
             let revision = require_active_workspace_revision(&workspaces, &workspace_name).await?;
             let response_workspace_name = workspace_name.clone();
             let command = CreateBundledSourceWithOAuthCommand {
@@ -250,9 +273,12 @@ impl SourceServiceApi for SourceService {
         let span = grpc_span(&request);
         let sources = self.sources.clone();
         let workspaces = self.workspaces.clone();
+        let authorizer = self.authorizer.clone();
+        let request_context = request_context(&request)?.clone();
         instrument_grpc(span.clone(), async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            authorize_source_access(&authorizer, &workspace_name, &request_context).await?;
             let revision = require_active_workspace_revision(&workspaces, &workspace_name).await?;
             let response_workspace_name = workspace_name.clone();
             if request.oauth_credential_retrievals.is_empty() {
@@ -309,9 +335,12 @@ impl SourceServiceApi for SourceService {
         let span = grpc_span(&request);
         let sources = self.sources.clone();
         let workspaces = self.workspaces.clone();
+        let authorizer = self.authorizer.clone();
+        let request_context = request_context(&request)?.clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            authorize_source_access(&authorizer, &workspace_name, &request_context).await?;
             let revision = require_active_workspace_revision(&workspaces, &workspace_name).await?;
             let source_name = SourceName::parse(&request.name).map_err(app_status)?;
             sources
@@ -330,9 +359,12 @@ impl SourceServiceApi for SourceService {
         let span = grpc_span(&request);
         let queries = self.queries.clone();
         let workspaces = self.workspaces.clone();
+        let authorizer = self.authorizer.clone();
+        let request_context = request_context(&request)?.clone();
         Box::pin(instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            authorize_source_access(&authorizer, &workspace_name, &request_context).await?;
             require_workspace(&workspaces, &workspace_name).await?;
             let source_name = SourceName::parse(&request.name).map_err(app_status)?;
             let result = queries
@@ -370,6 +402,34 @@ impl SourceServiceApi for SourceService {
         })
         .await
     }
+}
+
+/// Settles owner access to `workspace` before any source work.
+///
+/// Every source RPC reaches this immediately after parsing its workspace, the
+/// reads included: a source response carries the variables, secret keys, and
+/// credential-setup metadata that configure a connection, so reading one is
+/// managing the workspace rather than reading its contents. A member is
+/// refused a source's configuration outright; there is deliberately no
+/// redacted projection for them to receive instead.
+///
+/// The order is the point. A refused caller must not cause a config file,
+/// credential store, manifest, or runtime package to be read, nor an import
+/// stream to start, and must not learn from the request's own validation
+/// whether a source is installed.
+async fn authorize_source_access(
+    authorizer: &WorkspaceAuthorizer,
+    workspace: &WorkspaceName,
+    request_context: &RequestContext,
+) -> Result<(), Status> {
+    authorizer
+        .authorize(
+            request_context.principal(),
+            workspace,
+            WorkspaceAction::Manage,
+        )
+        .await
+        .map_err(app_status)
 }
 
 async fn require_workspace(
@@ -801,7 +861,11 @@ mod tests {
         reason = "credential method order assertions intentionally fail loudly in tests"
     )]
 
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
     use super::*;
+    use coral_engine::QueryRuntimeContext;
     use coral_spec::{
         ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestCredentialSpec,
         ManifestOAuthClientIdSpec, ManifestOAuthClientSpec, ManifestOAuthCredentialSpec,
@@ -809,6 +873,370 @@ mod tests {
         ManifestOAuthDynamicClientRegistrationSpec, ManifestOAuthFlowKind, ManifestOAuthFlowSpec,
         ManifestOAuthPkceMode, ManifestOAuthRedirectUriPortMode,
     };
+    use tempfile::TempDir;
+    use tonic::Code;
+
+    use crate::credentials::{CredentialManager, CredentialStore};
+    use crate::identity::{Principal, PrincipalKind};
+    use crate::state::db::{
+        CoralDb, DatabaseConfig, DbRepos as _, LoginIdentity, LoginProvisioning,
+        ResolvedDatabaseConfig, run_state_migrations,
+    };
+    use crate::state::{AppStateLayout, ConfigStore};
+    use crate::workspaces::MemberRole;
+
+    /// TOML that no parse accepts. The source RPCs all read the app config on
+    /// their way to an answer, so leaving this on disk turns every read into a
+    /// loud failure — which is what lets a refusal be read as an absence.
+    const UNPARSEABLE_CONFIG: &str = "[workspaces\n";
+
+    /// A source name that is neither installed nor bundled, so a caller who
+    /// reaches the source work is stopped by the work rather than by the gate.
+    const ABSENT_SOURCE: &str = "probe";
+
+    struct Fixture {
+        _temp: TempDir,
+        service: SourceService,
+        db: Arc<CoralDb>,
+        config_file: PathBuf,
+    }
+
+    /// A shared deployment over one migrated database holding the default
+    /// workspace, so every caller's authority comes from a membership row.
+    async fn fixture() -> Fixture {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let DatabaseConfig::Sqlite { path } = DatabaseConfig::load(&layout).expect("db config")
+        else {
+            panic!("the default test database is sqlite")
+        };
+        let db = Arc::new(
+            CoralDb::open(ResolvedDatabaseConfig::Sqlite { path })
+                .await
+                .expect("open sqlite"),
+        );
+        db.migrate().await.expect("migrate sqlite");
+        run_state_migrations(&db, &config_store, &layout)
+            .await
+            .expect("import the default workspace");
+        let credentials = CredentialManager::new(CredentialStore::new(layout.clone()));
+        let workspaces = WorkspaceManager::new_for_tests(
+            config_store.clone(),
+            credentials.clone(),
+            layout.clone(),
+            None,
+            Arc::clone(&db),
+        );
+        let sources = SourceManager::new(
+            config_store.clone(),
+            credentials.clone(),
+            layout.clone(),
+            workspaces.lifecycle_lock(),
+        );
+        let queries = QueryManager::new_for_tests(
+            config_store,
+            workspaces.clone(),
+            credentials,
+            QueryRuntimeContext::default(),
+            layout.clone(),
+            Vec::new(),
+        );
+        let config_file = layout.config_file().to_path_buf();
+        Fixture {
+            _temp: temp,
+            service: SourceService::new(
+                sources,
+                queries,
+                workspaces,
+                WorkspaceAuthorizer::new(Arc::clone(&db)),
+            ),
+            db,
+            config_file,
+        }
+    }
+
+    /// Provisions one directory user through the production login seam and
+    /// grants it `role` on the default workspace, so the principal the
+    /// authorizer is handed is the one a real login carries.
+    async fn seed_principal(
+        db: &Arc<CoralDb>,
+        subject: &str,
+        role: Option<MemberRole>,
+    ) -> Principal {
+        let LoginProvisioning::Provisioned(user) = db
+            .user_state()
+            .provision_login(LoginIdentity {
+                issuer: "https://issuer.test/source-authorization",
+                subject,
+                display_name: None,
+                principal_claim: subject,
+                now_unix_nanos: 1,
+            })
+            .await
+            .expect("provision user")
+        else {
+            panic!("expected a provisioned user rather than an issuer mismatch")
+        };
+        if let Some(role) = role {
+            let mut session = db.as_ref();
+            session
+                .workspace_members()
+                .upsert(WorkspaceName::default().as_str(), &user.user_id, role, 2)
+                .await
+                .expect("grant membership");
+        }
+        Principal::parse(&user.user_id, PrincipalKind::User).expect("federated principal")
+    }
+
+    fn request<T>(message: T, principal: &Principal) -> Request<T> {
+        let mut request = Request::new(message);
+        request
+            .extensions_mut()
+            .insert(RequestContext::new(principal.clone()));
+        request
+    }
+
+    fn default_workspace() -> coral_api::v1::Workspace {
+        workspace_to_proto(&WorkspaceName::default())
+    }
+
+    /// The OAuth half of a request, missing the method index the conversion
+    /// requires. Reaching that conversion answers `InvalidArgument`, so a
+    /// refusal that answers anything else proves it was never reached.
+    fn incomplete_oauth_retrieval() -> Vec<OAuthCredentialRetrieval> {
+        vec![OAuthCredentialRetrieval {
+            input_key: "API_TOKEN".to_string(),
+            method_index: None,
+            credential_inputs: Vec::new(),
+        }]
+    }
+
+    /// Takes the status `rpc` refused with, and panics if it answered instead.
+    ///
+    /// For the two streaming installs that panic is itself part of the claim:
+    /// a status can only come back where no response did, so a refused caller
+    /// was never handed an import stream to read from.
+    fn status<T>(result: Result<T, Status>, rpc: &str) -> Status {
+        result.err().unwrap_or_else(|| {
+            panic!("{rpc} answered; every request here is one some layer must refuse")
+        })
+    }
+
+    /// Calls every source RPC as `principal` and returns what each answered,
+    /// in the order the authorization matrix lists them.
+    ///
+    /// Each request is one the source work itself rejects — an absent source
+    /// name, an empty manifest, an OAuth retrieval with no method index — over
+    /// state whose config file cannot be parsed. So the caller who is let
+    /// through is told what is wrong with the request or the state, and the
+    /// caller who is not never gets that far.
+    async fn every_source_rpc(service: &SourceService, principal: &Principal) -> Vec<Status> {
+        let mut statuses = source_lookup_rpcs(service, principal).await;
+        statuses.extend(source_install_rpcs(service, principal).await);
+        statuses.extend(source_removal_rpcs(service, principal).await);
+        statuses
+    }
+
+    /// Discovery and configuration reads: the four that answer with what a
+    /// source is configured with.
+    async fn source_lookup_rpcs(service: &SourceService, principal: &Principal) -> Vec<Status> {
+        vec![
+            status(
+                service
+                    .discover_sources(request(
+                        DiscoverSourcesRequest {
+                            workspace: Some(default_workspace()),
+                        },
+                        principal,
+                    ))
+                    .await,
+                "DiscoverSources",
+            ),
+            status(
+                service
+                    .list_sources(request(
+                        ListSourcesRequest {
+                            workspace: Some(default_workspace()),
+                        },
+                        principal,
+                    ))
+                    .await,
+                "ListSources",
+            ),
+            status(
+                service
+                    .get_source(request(
+                        GetSourceRequest {
+                            workspace: Some(default_workspace()),
+                            name: ABSENT_SOURCE.to_string(),
+                        },
+                        principal,
+                    ))
+                    .await,
+                "GetSource",
+            ),
+            status(
+                service
+                    .get_source_info(request(
+                        GetSourceInfoRequest {
+                            workspace: Some(default_workspace()),
+                            name: ABSENT_SOURCE.to_string(),
+                        },
+                        principal,
+                    ))
+                    .await,
+                "GetSourceInfo",
+            ),
+        ]
+    }
+
+    /// The three install paths, each of which takes credential material.
+    async fn source_install_rpcs(service: &SourceService, principal: &Principal) -> Vec<Status> {
+        vec![
+            status(
+                service
+                    .create_bundled_source(request(
+                        CreateBundledSourceRequest {
+                            workspace: Some(default_workspace()),
+                            name: ABSENT_SOURCE.to_string(),
+                            variables: Vec::new(),
+                            secrets: Vec::new(),
+                        },
+                        principal,
+                    ))
+                    .await,
+                "CreateBundledSource",
+            ),
+            status(
+                service
+                    .create_bundled_source_with_o_auth(request(
+                        CreateBundledSourceWithOAuthRequest {
+                            workspace: Some(default_workspace()),
+                            name: ABSENT_SOURCE.to_string(),
+                            variables: Vec::new(),
+                            secrets: Vec::new(),
+                            oauth_credential_retrievals: incomplete_oauth_retrieval(),
+                        },
+                        principal,
+                    ))
+                    .await,
+                "CreateBundledSourceWithOAuth",
+            ),
+            status(
+                service
+                    .import_source(request(
+                        ImportSourceRequest {
+                            workspace: Some(default_workspace()),
+                            manifest_yaml: String::new(),
+                            variables: Vec::new(),
+                            secrets: Vec::new(),
+                            oauth_credential_retrievals: incomplete_oauth_retrieval(),
+                        },
+                        principal,
+                    ))
+                    .await,
+                "ImportSource",
+            ),
+        ]
+    }
+
+    /// Removal and revalidation, which reach installed state and its
+    /// credentials without adding any.
+    async fn source_removal_rpcs(service: &SourceService, principal: &Principal) -> Vec<Status> {
+        vec![
+            status(
+                service
+                    .delete_source(request(
+                        DeleteSourceRequest {
+                            workspace: Some(default_workspace()),
+                            name: ABSENT_SOURCE.to_string(),
+                        },
+                        principal,
+                    ))
+                    .await,
+                "DeleteSource",
+            ),
+            status(
+                service
+                    .validate_source(request(
+                        ValidateSourceRequest {
+                            workspace: Some(default_workspace()),
+                            name: ABSENT_SOURCE.to_string(),
+                        },
+                        principal,
+                    ))
+                    .await,
+                "ValidateSource",
+            ),
+        ]
+    }
+
+    /// Source responses carry the variables, secret keys, and credential-setup
+    /// metadata that configure a connection, so every source RPC is an owner's
+    /// act — the reads included. A member is refused outright rather than
+    /// handed a redacted view, and a non-member is told nothing.
+    ///
+    /// The refusals are proved to be absences rather than error codes. The
+    /// config file on disk is unparseable, so any read of installed state
+    /// chokes on it, and the owner does choke on it: the four discovery and
+    /// lookup calls, the delete, and the validate all answer `Internal` from
+    /// that read, while the three install paths answer `InvalidArgument` from
+    /// the bundled catalog and the OAuth conversion they reach first. Every
+    /// refused caller answers `PermissionDenied` or `NotFound` instead, and
+    /// leaves the file with the bytes it started with.
+    #[tokio::test]
+    async fn source_configuration_reaches_only_workspace_owners() {
+        let fixture = fixture().await;
+        let owner = seed_principal(&fixture.db, "owner", Some(MemberRole::Owner)).await;
+        let member = seed_principal(&fixture.db, "member", Some(MemberRole::Member)).await;
+        let outsider = seed_principal(&fixture.db, "outsider", None).await;
+        std::fs::write(&fixture.config_file, UNPARSEABLE_CONFIG).expect("poison the app config");
+
+        for status in every_source_rpc(&fixture.service, &member).await {
+            assert_eq!(
+                status.code(),
+                Code::PermissionDenied,
+                "a member reads and changes no source configuration: {}",
+                status.message()
+            );
+        }
+        for status in every_source_rpc(&fixture.service, &outsider).await {
+            assert_eq!(
+                status.code(),
+                Code::NotFound,
+                "a non-member learns nothing about the workspace: {}",
+                status.message()
+            );
+        }
+
+        assert_eq!(
+            every_source_rpc(&fixture.service, &owner)
+                .await
+                .iter()
+                .map(Status::code)
+                .collect::<Vec<_>>(),
+            vec![
+                Code::Internal,
+                Code::Internal,
+                Code::Internal,
+                Code::Internal,
+                Code::InvalidArgument,
+                Code::InvalidArgument,
+                Code::InvalidArgument,
+                Code::Internal,
+                Code::Internal,
+            ],
+            "the owner must be stopped by the state or the request, never by the gate"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&fixture.config_file).expect("config file"),
+            UNPARSEABLE_CONFIG,
+            "a refused caller must not have rewritten installed source state"
+        );
+    }
 
     #[test]
     fn converts_credential_methods_to_source_input_spec() {

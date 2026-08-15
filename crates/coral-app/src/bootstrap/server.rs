@@ -776,7 +776,12 @@ fn application_routes(
         None => (source, query),
     };
     let health_queries = query.clone();
-    let source_service = SourceService::new(source, query.clone(), workspace.clone());
+    let source_service = SourceService::new(
+        source,
+        query.clone(),
+        workspace.clone(),
+        workspace_authorizer.clone(),
+    );
     let workspace_service = WorkspaceService::new(workspace, workspace_authorizer.clone());
     let user_service = UserService::new(users);
     let catalog_service =
