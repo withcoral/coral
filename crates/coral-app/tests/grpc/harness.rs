@@ -365,9 +365,21 @@ impl SharedDeployment {
         self.connect(user_id, PrincipalKind::Agent).await
     }
 
+    /// The address to dial for a service `AppClient` does not carry, such as
+    /// `TraceService` or `FeatureService`.
+    pub(crate) fn endpoint_uri(&self) -> &str {
+        &self.endpoint_uri
+    }
+
+    /// The store this deployment answers trace requests out of, for tests that
+    /// need a row on record that no request would produce.
+    pub(crate) fn trace_store_dir(&self) -> Option<&Path> {
+        self.trace_store_dir.as_deref()
+    }
+
     async fn connect(&self, user_id: &str, principal_kind: PrincipalKind) -> AppClient {
         connect_with_loopback_bearer(
-            &self.endpoint_uri,
+            self.endpoint_uri(),
             BearerToken::new(self.session_auth.access_token_for(user_id, principal_kind))
                 .expect("test bearer token"),
         )
@@ -405,7 +417,7 @@ impl SharedDeployment {
     /// deployment in the process shares one store, so the workspace name is
     /// what separates one test's spans from another's.
     fn attributed_spans(&self, workspace_name: &str) -> usize {
-        let Some(dir) = &self.trace_store_dir else {
+        let Some(dir) = self.trace_store_dir() else {
             return 0;
         };
         fs::read_dir(dir)
