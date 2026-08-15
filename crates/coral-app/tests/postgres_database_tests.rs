@@ -8,6 +8,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 
+use coral_client::default_workspace;
 use coral_client::local::ServerBuilder;
 use coral_engine::{
     CoralQuery, QueryRuntimeConfig, QuerySource, RuntimeSourceComponent, RuntimeSourcePackage,
@@ -39,7 +40,7 @@ async fn server_lifecycle_can_start_with_postgres_database_config() {
         .start()
         .await
         .expect("start server with Postgres config");
-    assert_postgres_db_is_migrated(&database_url).await;
+    assert_postgres_db_is_migrated_and_unprovisioned(&database_url).await;
 
     server.shutdown().await.expect("shutdown server");
 }
@@ -154,7 +155,13 @@ fn postgres_source(database_url: &str) -> QuerySource {
     .expect("build Postgres inventory source")
 }
 
-async fn assert_postgres_db_is_migrated(database_url: &str) {
+/// Checks that startup migrated the schema and provisioned nothing into it.
+///
+/// The absent name is the one a fresh install used to be given. Asking about
+/// that one name rather than about a total is deliberate: `make postgres-tests`
+/// points every Postgres test at a single database, so the row count belongs to
+/// no test in particular.
+async fn assert_postgres_db_is_migrated_and_unprovisioned(database_url: &str) {
     let pool = PgPoolOptions::new()
         .connect(database_url)
         .await
@@ -165,6 +172,17 @@ async fn assert_postgres_db_is_migrated(database_url: &str) {
             .await
             .expect("inspect migrated Postgres schema");
     assert!(table_exists, "workspaces table should be migrated");
+
+    let legacy_default = default_workspace().name;
+    let provisioned: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM workspaces WHERE id = $1")
+        .bind(&legacy_default)
+        .fetch_one(&pool)
+        .await
+        .expect("look for a provisioned workspace row");
+    assert_eq!(
+        provisioned, 0,
+        "startup must not invent a '{legacy_default}' workspace"
+    );
 }
 
 #[expect(
