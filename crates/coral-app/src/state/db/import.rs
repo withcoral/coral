@@ -152,7 +152,7 @@ mod tests {
         assert_eq!(
             report,
             WorkspaceCatalogCutoverReport {
-                workspace_count: 2,
+                workspace_count: 1,
                 cutover_performed: true
             }
         );
@@ -166,10 +166,8 @@ mod tests {
                 .into_iter()
                 .map(|workspace| workspace.id)
                 .collect::<Vec<_>>(),
-            vec![
-                "analytics".to_string(),
-                WorkspaceName::default().as_str().to_string(),
-            ]
+            vec!["analytics".to_string()],
+            "the cutover carries the legacy names across and invents none"
         );
         assert!(
             session
@@ -212,10 +210,7 @@ mod tests {
                 .into_iter()
                 .map(|workspace| workspace.id)
                 .collect::<Vec<_>>(),
-            vec![
-                "analytics".to_string(),
-                WorkspaceName::default().as_str().to_string(),
-            ]
+            vec!["analytics".to_string()]
         );
     }
 
@@ -239,9 +234,41 @@ mod tests {
         assert_eq!(
             report,
             WorkspaceCatalogCutoverReport {
-                workspace_count: 1,
+                workspace_count: 0,
                 cutover_performed: false
             }
+        );
+    }
+
+    /// A legacy config that never named a workspace describes an install with
+    /// none, so the cutover must not seed one on its way into the database.
+    #[tokio::test]
+    async fn cutover_without_legacy_workspaces_creates_none() {
+        let temp = tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let db = open_sqlite(&layout).await;
+
+        let report = cutover_legacy_workspace_catalog_at(&db, &config_store, 11)
+            .await
+            .expect("cut over legacy workspace catalog");
+
+        assert_eq!(
+            report,
+            WorkspaceCatalogCutoverReport {
+                workspace_count: 0,
+                cutover_performed: true
+            }
+        );
+        let mut session = &db;
+        assert!(
+            session
+                .workspaces()
+                .list()
+                .await
+                .expect("list workspaces")
+                .is_empty()
         );
     }
 
@@ -256,12 +283,13 @@ mod tests {
         second_layout.ensure().expect("ensure second layout");
         let first_config_store = ConfigStore::new(first_layout.clone());
         let second_config_store = ConfigStore::new(second_layout.clone());
+        let legacy_workspace = WorkspaceName::parse("analytics").expect("workspace");
         let first_legacy_file = first_layout
-            .workspace_dir(&WorkspaceName::default())
+            .workspace_dir(&legacy_workspace)
             .join("tasks")
             .join("tasks.jsonl");
         let second_legacy_file = second_layout
-            .workspace_dir(&WorkspaceName::default())
+            .workspace_dir(&legacy_workspace)
             .join("tasks")
             .join("tasks.jsonl");
         for path in [&first_legacy_file, &second_legacy_file] {

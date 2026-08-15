@@ -158,12 +158,6 @@ impl WorkspaceManager {
         &self,
         workspace_name: &WorkspaceName,
     ) -> Result<WorkspaceRecord, AppError> {
-        if workspace_name.is_default() {
-            return Err(AppError::FailedPrecondition(
-                "default workspace cannot be removed".to_string(),
-            ));
-        }
-
         let deletion_marker = self
             .lifecycle_lock
             .mark_workspace_deleting(workspace_name)
@@ -614,6 +608,45 @@ mod tests {
     /// are ordinary caller-chosen names, so a caller cannot reach a workspace
     /// they never created by guessing a reserved-looking one.
     #[tokio::test]
+    async fn deleting_a_workspace_owns_every_valid_name_alike() {
+        let (_temp, db, manager) = membership_manager().await;
+        let creator = seed_user(&db, "creator").await;
+
+        for name in [
+            "default".to_string(),
+            format!("default-{}", uuid::Uuid::new_v4()),
+            "default-team".to_string(),
+            "work".to_string(),
+        ] {
+            let workspace = workspace(&name);
+            manager
+                .create_workspace_for_user(&workspace, &creator)
+                .await
+                .expect("create workspace");
+
+            assert_eq!(
+                manager
+                    .delete_workspace(&workspace)
+                    .await
+                    .unwrap_or_else(|error| panic!("'{name}' should be deletable: {error}"))
+                    .name,
+                workspace
+            );
+            assert!(
+                matches!(
+                    manager.delete_workspace(&workspace).await,
+                    Err(AppError::WorkspaceNotFound(_))
+                ),
+                "'{name}' must be gone once deleted"
+            );
+            manager
+                .create_workspace_for_user(&workspace, &creator)
+                .await
+                .unwrap_or_else(|error| panic!("'{name}' should be creatable again: {error}"));
+        }
+    }
+
+    #[tokio::test]
     async fn creating_a_workspace_owns_every_valid_name_alike() {
         let (_temp, db, manager) = membership_manager().await;
         let creator = seed_user(&db, "creator").await;
@@ -997,7 +1030,7 @@ mod tests {
             diagnostic_reporter.clone(),
         )
         .with_pool_registry(Arc::clone(&pool_registry));
-        let workspace_name = WorkspaceName::default();
+        let workspace_name = WorkspaceName::parse("work").expect("workspace");
         let pool_registry_before_delete = pool_registry.for_workspace(&workspace_name);
         let source_name = SourceName::parse("github").expect("source name");
         diagnostic_reporter.report_source_load_failure(
@@ -1007,10 +1040,12 @@ mod tests {
             "test failure",
         );
 
+        // The workspace was never created, so deletion fails before it can
+        // touch any of the state a successful deletion sweeps.
         manager
             .delete_workspace(&workspace_name)
             .await
-            .expect_err("default workspace deletion should fail");
+            .expect_err("deleting a workspace that was never created should fail");
 
         assert!(diagnostic_reporter.tracks_diagnostic(
             &workspace_name,

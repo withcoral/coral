@@ -26,11 +26,6 @@ impl WorkspaceName {
     pub(crate) fn as_str(&self) -> &str {
         &self.0
     }
-
-    #[must_use]
-    pub(crate) fn is_default(&self) -> bool {
-        self.0 == DEFAULT_WORKSPACE_ID
-    }
 }
 
 impl fmt::Display for WorkspaceName {
@@ -39,6 +34,12 @@ impl fmt::Display for WorkspaceName {
     }
 }
 
+/// Names the legacy `default` workspace, which is now an ordinary name.
+///
+/// Nothing provisions, protects, or resolves this name any more: it exists so
+/// legacy on-disk state and fixtures can still spell the one workspace older
+/// installs were given. Do not reach for it to stand in for "the caller's
+/// workspace" — a caller's workspace comes from their memberships.
 impl Default for WorkspaceName {
     fn default() -> Self {
         Self(DEFAULT_WORKSPACE_ID.to_string())
@@ -52,5 +53,21 @@ mod tests {
     #[test]
     fn parses_default_workspace_name() {
         assert_eq!(WorkspaceName::default().as_str(), DEFAULT_WORKSPACE_ID);
+    }
+
+    /// `default` carries no reserved status, so it round-trips through the same
+    /// parser every other name does and compares equal to nothing else.
+    #[test]
+    fn the_legacy_default_name_is_an_ordinary_parsed_name() {
+        assert_eq!(
+            WorkspaceName::parse(DEFAULT_WORKSPACE_ID).expect("parse legacy default name"),
+            WorkspaceName::default()
+        );
+        for ordinary in ["default-team", "work"] {
+            assert_ne!(
+                WorkspaceName::parse(ordinary).expect("parse ordinary name"),
+                WorkspaceName::default()
+            );
+        }
     }
 }

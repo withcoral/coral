@@ -232,14 +232,13 @@ impl From<&InstalledSource> for PersistedInstalledSource {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The legacy workspace inventory as `config.toml` recorded it.
+///
+/// A fresh catalog is empty. Nothing is provisioned here: every entry came from
+/// an explicit creation, so a config that names no workspace describes an
+/// install that has none.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct WorkspaceCatalog(BTreeSet<WorkspaceName>);
-
-impl Default for WorkspaceCatalog {
-    fn default() -> Self {
-        Self(BTreeSet::from([WorkspaceName::default()]))
-    }
-}
 
 impl WorkspaceCatalog {
     pub(crate) fn list(&self) -> Vec<WorkspaceRecord> {
@@ -623,11 +622,6 @@ impl ConfigStore {
         workspace_name: &WorkspaceName,
     ) -> Result<Option<DeletedWorkspace>, AppError> {
         self.update_config(|config| {
-            if workspace_name.is_default() {
-                return Err(AppError::FailedPrecondition(
-                    "default workspace cannot be removed".to_string(),
-                ));
-            }
             let removed = config.workspaces.remove(workspace_name);
             if removed {
                 let sources = config
@@ -1242,8 +1236,12 @@ mod tests {
     use crate::state::AppStateLayout;
     use crate::workspaces::WorkspaceName;
 
-    fn default_workspace() -> WorkspaceName {
-        WorkspaceName::default()
+    /// One ordinary, explicitly named workspace.
+    ///
+    /// These tests seed the workspace they need rather than leaning on a name
+    /// the config once provisioned on its own.
+    fn test_workspace() -> WorkspaceName {
+        WorkspaceName::parse("analytics").expect("workspace")
     }
 
     fn installed_source(name: &str) -> InstalledSource {
@@ -1306,9 +1304,48 @@ mod tests {
         assert_eq!(AppConfig::default().version, 1);
     }
 
+    /// A fresh install owns no workspace at all: the first one appears when
+    /// somebody creates it, and it belongs to whoever did.
+    #[test]
+    fn fresh_config_holds_no_workspaces() {
+        assert_eq!(AppConfig::default().legacy_workspace_records(), vec![]);
+
+        let raw = render_config(&PersistedAppConfig::from(&AppConfig::default()), None);
+        assert!(
+            !raw.contains("[workspaces."),
+            "rendered fresh config: {raw}"
+        );
+    }
+
+    /// Reading legacy state must report the workspaces it actually found. An
+    /// invented `default` row would hand a legacy install a workspace nobody
+    /// created and nobody owns.
+    #[test]
+    fn loading_a_config_without_a_default_table_invents_no_workspace() {
+        let raw = r"
+version = 1
+
+[workspaces.work]
+";
+
+        let config = AppConfig::try_from(
+            toml::from_str::<PersistedAppConfig>(raw).expect("workspace config should parse"),
+        )
+        .expect("config");
+
+        assert_eq!(
+            config
+                .legacy_workspace_records()
+                .into_iter()
+                .map(|workspace| workspace.name.as_str().to_string())
+                .collect::<Vec<_>>(),
+            vec!["work".to_string()]
+        );
+    }
+
     #[test]
     fn renders_sources_under_workspace_keyed_tables() {
-        let workspace_name = default_workspace();
+        let workspace_name = test_workspace();
         let mut catalog = SourceCatalog::default();
         catalog.upsert_source(&workspace_name, installed_source("github"));
         let config = AppConfig {
@@ -1320,18 +1357,19 @@ mod tests {
         };
 
         let raw = render_config(&PersistedAppConfig::from(&config), None);
-        assert!(raw.contains("[workspaces.default.sources.github]"));
+        assert!(raw.contains("[workspaces.analytics.sources.github]"));
         assert!(raw.contains("variables = { GITHUB_API_BASE = \"https://api.github.com\" }"));
         assert!(raw.contains("secrets = [\"GITHUB_TOKEN\"]"));
         assert!(raw.contains("version = \"1.1.4\""));
         assert!(!raw.contains("[[sources]]"));
-        assert!(!raw.contains("workspace = { name = \"default\" }"));
+        assert!(!raw.contains("workspace = { name = \"analytics\" }"));
         assert!(!raw.contains("manifest_file"));
     }
 
     #[test]
     fn renders_empty_workspaces_as_explicit_tables() {
         let mut workspaces = WorkspaceCatalog::default();
+        workspaces.insert(test_workspace());
         workspaces.insert(WorkspaceName::parse("work").expect("workspace"));
         let config = AppConfig {
             version: 1,
@@ -1343,7 +1381,7 @@ mod tests {
 
         let raw = render_config(&PersistedAppConfig::from(&config), None);
 
-        assert!(raw.contains("[workspaces.default]"));
+        assert!(raw.contains("[workspaces.analytics]"));
         assert!(raw.contains("[workspaces.work]"));
     }
 
@@ -1352,7 +1390,7 @@ mod tests {
         let raw = r"
 version = 1
 
-[workspaces.default]
+[workspaces.analytics]
 
 [workspaces.work]
 ";
@@ -1367,12 +1405,12 @@ version = 1
             .map(|workspace| workspace.name.as_str().to_string())
             .collect::<Vec<_>>();
 
-        assert_eq!(names, vec!["default", "work"]);
+        assert_eq!(names, vec!["analytics", "work"]);
     }
 
     #[test]
     fn renders_functions_under_workspace_keyed_tables() {
-        let workspace_name = default_workspace();
+        let workspace_name = test_workspace();
         let mut functions = FunctionCatalog::default();
         functions.upsert_function(&workspace_name, installed_function("review_queue"));
         let config = AppConfig {
@@ -1385,7 +1423,7 @@ version = 1
 
         let raw = render_config(&PersistedAppConfig::from(&config), None);
 
-        assert!(raw.contains("[workspaces.default.functions.review_queue]"));
+        assert!(raw.contains("[workspaces.analytics.functions.review_queue]"));
         assert!(raw.contains("write_surface = \"unknown\""));
         assert!(!raw.contains("origin = \"user\""));
         assert!(!raw.contains("enabled = true"));
@@ -1396,11 +1434,11 @@ version = 1
         let existing = r#"
 version = 1
 
-[workspaces.default.functions.review_queue]
+[workspaces.analytics.functions.review_queue]
 origin = "user"
 enabled = true
 "#;
-        let workspace_name = default_workspace();
+        let workspace_name = test_workspace();
         let mut functions = FunctionCatalog::default();
         functions.upsert_function(&workspace_name, installed_function("review_queue"));
         let config = AppConfig {
@@ -1413,7 +1451,7 @@ enabled = true
 
         let raw = render_config(&PersistedAppConfig::from(&config), Some(existing));
 
-        assert!(raw.contains("[workspaces.default.functions.review_queue]"));
+        assert!(raw.contains("[workspaces.analytics.functions.review_queue]"));
         assert!(raw.contains("write_surface = \"unknown\""));
         assert!(!raw.contains("origin = \"user\""));
         assert!(!raw.contains("enabled = true"));
@@ -1421,7 +1459,7 @@ enabled = true
 
     #[test]
     fn omits_empty_versions_from_rendered_source_entries() {
-        let workspace_name = default_workspace();
+        let workspace_name = test_workspace();
         let mut source = installed_source("github");
         source.version = None;
         source.origin = SourceOrigin::Bundled;
@@ -1445,7 +1483,7 @@ enabled = true
         let raw = r#"
 version = 1
 
-[workspaces.default.sources.github]
+[workspaces.analytics.sources.github]
 version = "1.1.4"
 variables = { GITHUB_API_BASE = "https://api.github.com" }
 secrets = ["GITHUB_TOKEN"]
@@ -1456,7 +1494,7 @@ origin = "bundled"
             toml::from_str::<PersistedAppConfig>(raw).expect("workspace-keyed config should parse"),
         )
         .expect("config");
-        let sources = config.catalog.workspace_sources(&default_workspace());
+        let sources = config.catalog.workspace_sources(&test_workspace());
         assert_eq!(sources.len(), 1);
         assert_eq!(sources[0].name.as_str(), "github");
         assert_eq!(sources[0].version.as_deref(), Some("1.1.4"));
@@ -1577,19 +1615,54 @@ origin = "bundled"
         assert!(!rendered.contains("[workspaces.work.functions.review_queue]"));
     }
 
+    /// Removal reads the name as data. `default` and the `default-*` shapes
+    /// were the ones a reserved-name rule used to protect, so they are the ones
+    /// that prove no name is protected any more.
+    #[test]
+    fn removing_workspace_config_entries_protects_no_name() {
+        let temp = TempDir::new().expect("temp dir");
+        let store = ConfigStore::new(test_layout(&temp));
+
+        for name in [
+            "default".to_string(),
+            format!("default-{}", uuid::Uuid::new_v4()),
+            "default-team".to_string(),
+            "work".to_string(),
+        ] {
+            let workspace_name = WorkspaceName::parse(&name).expect("workspace");
+            store
+                .create_legacy_workspace_entry_for_tests(&workspace_name)
+                .expect("create legacy workspace entry");
+
+            let deleted = store
+                .remove_workspace_config_entries(&workspace_name)
+                .expect("remove workspace config entries")
+                .unwrap_or_else(|| panic!("'{name}' should be removable"));
+
+            assert_eq!(deleted.workspace.name, workspace_name);
+            assert!(
+                store
+                    .remove_workspace_config_entries(&workspace_name)
+                    .expect("remove an already removed workspace")
+                    .is_none(),
+                "'{name}' must report nothing left to remove the second time"
+            );
+        }
+    }
+
     #[test]
     fn loads_functions_from_workspace_keyed_tables() {
         let raw = r"
 version = 1
 
-	[workspaces.default.functions.review_queue]
+	[workspaces.analytics.functions.review_queue]
 	";
 
         let config = AppConfig::try_from(
             toml::from_str::<PersistedAppConfig>(raw).expect("workspace-keyed config should parse"),
         )
         .expect("config");
-        let functions = config.functions.workspace_functions(&default_workspace());
+        let functions = config.functions.workspace_functions(&test_workspace());
 
         assert_eq!(functions.len(), 1);
         assert_eq!(functions[0].name.as_str(), "review_queue");
@@ -1904,7 +1977,7 @@ max_concurrency = 0
 
     #[test]
     fn round_trips_source_credential_storage() {
-        let workspace_name = default_workspace();
+        let workspace_name = test_workspace();
         let mut source = installed_source("github");
         source.credential_storage = Some(CredentialStorageKind::Keychain);
         let mut catalog = SourceCatalog::default();
@@ -1933,7 +2006,7 @@ max_concurrency = 0
 
     #[test]
     fn round_trips_non_nil_source_credential_revision() {
-        let workspace_name = default_workspace();
+        let workspace_name = test_workspace();
         let mut source = installed_source("github");
         source.credential_revision = uuid::Uuid::parse_str("c59a9c41-0e51-45d4-bfb7-f05df71eed53")
             .expect("credential revision");
@@ -1966,9 +2039,9 @@ max_concurrency = 0
         let raw = r#"
 version = 1
 
-[workspaces.default]
+[workspaces.analytics]
 
-[workspaces.default.sources.github]
+[workspaces.analytics.sources.github]
 variables = {}
 secrets = ["GITHUB_TOKEN"]
 credential_storage = "file"
@@ -1978,14 +2051,14 @@ origin = "imported"
             toml::from_str::<PersistedAppConfig>(raw).expect("legacy config should parse"),
         )
         .expect("config");
-        let sources = loaded.catalog.workspace_sources(&default_workspace());
+        let sources = loaded.catalog.workspace_sources(&test_workspace());
 
         assert!(sources[0].credential_revision.is_nil());
     }
 
     #[test]
     fn catalog_upsert_replaces_existing_workspace_source_entry() {
-        let workspace_name = default_workspace();
+        let workspace_name = test_workspace();
         let mut catalog = SourceCatalog::default();
         catalog.upsert_source(&workspace_name, installed_source("github"));
 
@@ -2007,26 +2080,26 @@ origin = "imported"
 
     #[test]
     fn catalog_remove_drops_empty_workspace_bucket() {
-        let default_workspace = default_workspace();
+        let workspace_name = test_workspace();
         let other_workspace_name = WorkspaceName::parse("other").expect("workspace");
         let mut catalog = SourceCatalog::default();
-        catalog.upsert_source(&default_workspace, installed_source("github"));
+        catalog.upsert_source(&workspace_name, installed_source("github"));
         catalog.upsert_source(&other_workspace_name, installed_source("slack"));
 
         catalog.remove_source(
-            &default_workspace,
+            &workspace_name,
             &SourceName::parse("github").expect("source"),
         );
 
         assert!(
             catalog
                 .get_source(
-                    &default_workspace,
+                    &workspace_name,
                     &SourceName::parse("github").expect("source")
                 )
                 .is_none()
         );
-        assert!(catalog.workspace_sources(&default_workspace).is_empty());
+        assert!(catalog.workspace_sources(&workspace_name).is_empty());
         assert!(
             catalog
                 .get_source(
@@ -2061,14 +2134,14 @@ bind_addr = "127.0.0.1:14555"
 enabled = false
 max_bindings = 250
 
-	[workspaces.default.sources.github]
+	[workspaces.analytics.sources.github]
 version = "1.0.0"
 variables = {}
 secrets = []
 origin = "bundled"
 "#;
 
-        let workspace_name = default_workspace();
+        let workspace_name = test_workspace();
         let mut catalog = SourceCatalog::default();
         catalog.upsert_source(&workspace_name, installed_source("slack"));
         let config = AppConfig {
@@ -2133,10 +2206,10 @@ origin = "bundled"
         );
 
         // The newly added source must be present.
-        assert!(raw.contains("[workspaces.default.sources.slack]"));
+        assert!(raw.contains("[workspaces.analytics.sources.slack]"));
 
         // The old source that was not in the updated catalog must be gone.
-        assert!(!raw.contains("[workspaces.default.sources.github]"));
+        assert!(!raw.contains("[workspaces.analytics.sources.github]"));
     }
 
     #[test]
@@ -2157,7 +2230,7 @@ origin = "bundled"
         let invalid_source = r#"
 version = 1
 
-[workspaces.default.sources."bad\\source"]
+[workspaces.analytics.sources."bad\\source"]
 origin = "bundled"
 "#;
         let error = AppConfig::try_from(
@@ -2170,7 +2243,7 @@ origin = "bundled"
         let invalid_function = r#"
 version = 1
 
-	[workspaces.default.functions."bad\\function"]
+	[workspaces.analytics.functions."bad\\function"]
 	"#;
         let error = AppConfig::try_from(
             toml::from_str::<PersistedAppConfig>(invalid_function)
