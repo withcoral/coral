@@ -1475,6 +1475,7 @@ mod tests {
     use crate::task::activity::TaskActivityRecorder;
     use crate::task::manager::TaskManager;
     use crate::task::store::TaskStore;
+    use crate::workspaces::authorization::WorkspaceAuthorizer;
 
     struct QueryManagerFixture {
         _temp: TempDir,
@@ -1598,6 +1599,98 @@ mod tests {
         (task, context, task_id)
     }
 
+    /// The policy these fixtures run under: they call as `Principal::local()`,
+    /// which only a single-user deployment admits.
+    fn local_authorizer(fixture: &QueryManagerFixture) -> WorkspaceAuthorizer {
+        WorkspaceAuthorizer::trusting_local_principal(Arc::clone(&fixture.db))
+    }
+
+    /// A shared deployment over the fixture's database, with one member of the
+    /// default workspace and one authenticated caller who is not.
+    struct ReadAccess {
+        authorizer: WorkspaceAuthorizer,
+        member: Principal,
+        outsider: Principal,
+    }
+
+    /// Seeds the memberships that make `default` a workspace a member reaches
+    /// and an outsider does not. A separate owner is seeded because a workspace
+    /// with no owner conceals its own members too.
+    async fn read_access(db: &Arc<CoralDb>) -> ReadAccess {
+        use crate::workspaces::MemberRole;
+
+        let _owner = seed_principal(db, "owner", Some(MemberRole::Owner)).await;
+        ReadAccess {
+            member: seed_principal(db, "member", Some(MemberRole::Member)).await,
+            outsider: seed_principal(db, "outsider", None).await,
+            authorizer: WorkspaceAuthorizer::new(Arc::clone(db)),
+        }
+    }
+
+    /// Provisions one directory user through the production login seam and
+    /// grants it `role` on the default workspace, so the principal the
+    /// authorizer is handed is the one a real login carries.
+    async fn seed_principal(
+        db: &Arc<CoralDb>,
+        subject: &str,
+        role: Option<crate::workspaces::MemberRole>,
+    ) -> Principal {
+        use crate::state::db::{DbRepos as _, LoginIdentity, LoginProvisioning};
+
+        let LoginProvisioning::Provisioned(user) = db
+            .user_state()
+            .provision_login(LoginIdentity {
+                issuer: "https://issuer.test/read-authorization",
+                subject,
+                display_name: None,
+                principal_claim: subject,
+                now_unix_nanos: 1,
+            })
+            .await
+            .expect("provision user")
+        else {
+            panic!("expected a provisioned user rather than an issuer mismatch")
+        };
+        if let Some(role) = role {
+            let mut session = db.as_ref();
+            session
+                .workspace_members()
+                .upsert(WorkspaceName::default().as_str(), &user.user_id, role, 2)
+                .await
+                .expect("grant membership");
+        }
+        Principal::parse(&user.user_id, crate::identity::PrincipalKind::User)
+            .expect("federated principal")
+    }
+
+    fn query_span_count(exporter: &opentelemetry_sdk::trace::InMemorySpanExporter) -> usize {
+        exporter
+            .get_finished_spans()
+            .expect("finished spans")
+            .iter()
+            .filter(|span| span.name == "coral.query")
+            .count()
+    }
+
+    /// The task ids the default workspace's recorded query activity carries.
+    async fn recorded_task_ids(fixture: &QueryManagerFixture) -> Vec<String> {
+        fixture
+            .db
+            .task_query_state()
+            .list_for_workspace(WorkspaceName::default().as_str())
+            .await
+            .expect("load task query activity")
+            .into_iter()
+            .map(|record| record.task_id)
+            .collect()
+    }
+
+    /// Replaces the workspace name the caller themselves asked about, so two
+    /// answers about different names are still comparable.
+    fn normalize(message: &str, name: &str) -> String {
+        message.replace(name, "<workspace>")
+    }
+
     fn assert_workspace_not_found(error: AppError, workspace_name: &WorkspaceName) {
         match error {
             AppError::WorkspaceNotFound(actual) => assert_eq!(actual, workspace_name.as_str()),
@@ -1665,7 +1758,7 @@ mod tests {
 
         let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
         let (task, request_context, task_id) = active_task_context(&fixture.db).await;
-        let service = QueryService::new(fixture.manager.clone(), task);
+        let service = QueryService::new(fixture.manager.clone(), task, local_authorizer(&fixture));
 
         let mut request = Request::new(ExecuteSqlRequest {
             workspace: Some(Workspace {
@@ -1717,7 +1810,7 @@ mod tests {
 
         let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
         let (tasks, request_context, task_id) = active_task_context(&fixture.db).await;
-        let service = QueryService::new(fixture.manager.clone(), tasks);
+        let service = QueryService::new(fixture.manager.clone(), tasks, local_authorizer(&fixture));
         let mut request = Request::new(ExecuteSqlRequest {
             workspace: Some(Workspace {
                 name: WorkspaceName::default().as_str().to_string(),
@@ -1746,6 +1839,111 @@ mod tests {
         assert_eq!(record.intent, "Check renewal risk");
         assert_eq!(record.sql, "SELECT 1");
         assert_eq!(record.status, "success");
+    }
+
+    /// Access is settled before either read service does anything, so a denied
+    /// caller opens no workspace-attributed query span and records no attributed
+    /// activity — and is answered about a workspace that exists exactly as about
+    /// one that does not. The malformed SQL and task attribution are the probe:
+    /// reaching either would answer `InvalidArgument` instead of the ordinary
+    /// workspace miss. The member pass afterwards is the control that the
+    /// absences were the denial rather than a fixture that records nothing.
+    #[tokio::test(flavor = "current_thread")]
+    async fn query_and_catalog_deny_before_read_work_reach_no_runtime() {
+        use coral_api::v1::query_service_server::QueryService as QueryServiceApi;
+        use coral_api::v1::{ExecuteSqlRequest, TaskAttribution, Workspace};
+        use opentelemetry::trace::TracerProvider as _;
+        use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+        use tonic::{Code, Request};
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        use crate::catalog::service::CatalogService;
+        use crate::query::service::QueryService;
+
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let tracer = provider.tracer("read-denial-test");
+        let subscriber = tracing_subscriber::Registry::default()
+            .with(tracing_opentelemetry::layer().with_tracer(tracer));
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
+        let (tasks, task_context, task_id) = active_task_context(&fixture.db).await;
+        let access = read_access(&fixture.db).await;
+        let queries = QueryService::new(
+            fixture.manager.clone(),
+            tasks.clone(),
+            access.authorizer.clone(),
+        );
+        let catalog = CatalogService::new(fixture.manager.clone(), tasks, access.authorizer);
+        let outsider = RequestContext::new(access.outsider).with_task_id(task_context.task_id());
+        let denied_sql = |workspace: &str| {
+            let mut request = Request::new(ExecuteSqlRequest {
+                workspace: Some(Workspace {
+                    name: workspace.to_string(),
+                }),
+                sql: "SELECT FROM".to_string(),
+                guide_read_context: None,
+                task_attribution: Some(TaskAttribution {
+                    task_id: "not-a-uuid".to_string(),
+                    intent: "Probe the denied path".to_string(),
+                }),
+            });
+            request.extensions_mut().insert(outsider.clone());
+            request
+        };
+
+        let concealed = queries
+            .execute_sql(denied_sql(WorkspaceName::default().as_str()))
+            .await
+            .expect_err("a non-member reaches nothing");
+        let missing = queries
+            .execute_sql(denied_sql("absent"))
+            .await
+            .expect_err("a missing workspace reaches nothing");
+        call_catalog_tools_with_task(&catalog, &outsider).await;
+
+        assert_eq!(concealed.code(), Code::NotFound);
+        assert_eq!(concealed.code(), missing.code());
+        assert_eq!(
+            normalize(concealed.message(), WorkspaceName::default().as_str()),
+            normalize(missing.message(), "absent"),
+        );
+        provider.force_flush().expect("flush spans");
+        assert_eq!(
+            query_span_count(&exporter),
+            0,
+            "a denied call must not parse SQL or build catalog state"
+        );
+        assert!(
+            recorded_task_ids(&fixture).await.is_empty(),
+            "a denied call must record no attributed query activity"
+        );
+
+        let member = RequestContext::new(access.member).with_task_id(task_context.task_id());
+        let mut allowed = Request::new(ExecuteSqlRequest {
+            workspace: Some(Workspace {
+                name: WorkspaceName::default().as_str().to_string(),
+            }),
+            sql: "SELECT 1".to_string(),
+            guide_read_context: None,
+            task_attribution: Some(TaskAttribution {
+                task_id: task_id.clone(),
+                intent: "Check renewal risk".to_string(),
+            }),
+        });
+        allowed.extensions_mut().insert(member.clone());
+        queries.execute_sql(allowed).await.expect("a member reads");
+        call_catalog_tools_with_task(&catalog, &member).await;
+
+        provider.force_flush().expect("flush spans");
+        assert_catalog_task_spans(
+            &exporter.get_finished_spans().expect("finished spans"),
+            &task_id,
+        );
+        assert_eq!(recorded_task_ids(&fixture).await, vec![task_id]);
     }
 
     #[tokio::test]
@@ -1990,7 +2188,8 @@ mod tests {
 
         let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
         let (task, request_context, task_id) = active_task_context(&fixture.db).await;
-        let service = CatalogService::new(fixture.manager.clone(), task);
+        let service =
+            CatalogService::new(fixture.manager.clone(), task, local_authorizer(&fixture));
 
         call_catalog_tools_with_task(&service, &request_context).await;
 

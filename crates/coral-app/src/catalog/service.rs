@@ -25,18 +25,25 @@ use crate::transport::{
     query_status, request_context, workspace_name_from_proto,
 };
 use crate::workspaces::WorkspaceName;
+use crate::workspaces::authorization::{WorkspaceAction, WorkspaceAuthorizer};
 
 #[derive(Clone)]
 pub(crate) struct CatalogService {
     catalog: CatalogDiscovery,
     tasks: TaskManager,
+    authorizer: WorkspaceAuthorizer,
 }
 
 impl CatalogService {
-    pub(crate) fn new(query_manager: QueryManager, task_manager: TaskManager) -> Self {
+    pub(crate) fn new(
+        query_manager: QueryManager,
+        task_manager: TaskManager,
+        authorizer: WorkspaceAuthorizer,
+    ) -> Self {
         Self {
             catalog: CatalogDiscovery::new(query_manager),
             tasks: task_manager,
+            authorizer,
         }
     }
 }
@@ -50,12 +57,19 @@ impl CatalogServiceApi for CatalogService {
         let span = grpc_span(&request);
         let catalog = self.catalog.clone();
         let tasks = self.tasks.clone();
+        let authorizer = self.authorizer.clone();
         let request_context = request_context(&request)?.clone();
         Box::pin(instrument_grpc(span, async move {
             let request = request.into_inner();
             let pagination = pagination_from_proto(request.pagination.unwrap_or_default());
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            let attribution = query_attribution(&tasks, &workspace_name, &request_context).await?;
+            let attribution = authorized_query_attribution(
+                &authorizer,
+                &tasks,
+                &workspace_name,
+                &request_context,
+            )
+            .await?;
             let catalog_name = optional_trimmed(&request.catalog_name);
             let schema_name = optional_trimmed(&request.schema_name);
             let kind = catalog_item_kind_from_proto(request.kind)?;
@@ -101,11 +115,18 @@ impl CatalogServiceApi for CatalogService {
         let span = grpc_span(&request);
         let catalog = self.catalog.clone();
         let tasks = self.tasks.clone();
+        let authorizer = self.authorizer.clone();
         let request_context = request_context(&request)?.clone();
         Box::pin(instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            let attribution = query_attribution(&tasks, &workspace_name, &request_context).await?;
+            let attribution = authorized_query_attribution(
+                &authorizer,
+                &tasks,
+                &workspace_name,
+                &request_context,
+            )
+            .await?;
             let catalog_name = optional_trimmed(&request.catalog_name);
             let schema_name = optional_trimmed(&request.schema_name);
             let kind = catalog_item_kind_from_proto(request.kind)?;
@@ -152,11 +173,18 @@ impl CatalogServiceApi for CatalogService {
         let span = grpc_span(&request);
         let catalog = self.catalog.clone();
         let tasks = self.tasks.clone();
+        let authorizer = self.authorizer.clone();
         let request_context = request_context(&request)?.clone();
         Box::pin(instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            let attribution = query_attribution(&tasks, &workspace_name, &request_context).await?;
+            let attribution = authorized_query_attribution(
+                &authorizer,
+                &tasks,
+                &workspace_name,
+                &request_context,
+            )
+            .await?;
             let catalog_name = optional_exact(&request.catalog_name, "catalog_name")?;
             let schema_name = required_exact(&request.schema_name, "schema_name")?;
             let surface_name = required_exact(&request.surface_name, "surface_name")?;
@@ -183,11 +211,18 @@ impl CatalogServiceApi for CatalogService {
         let span = grpc_span(&request);
         let catalog = self.catalog.clone();
         let tasks = self.tasks.clone();
+        let authorizer = self.authorizer.clone();
         let request_context = request_context(&request)?.clone();
         Box::pin(instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            let attribution = query_attribution(&tasks, &workspace_name, &request_context).await?;
+            let attribution = authorized_query_attribution(
+                &authorizer,
+                &tasks,
+                &workspace_name,
+                &request_context,
+            )
+            .await?;
             let catalog_name = optional_exact(&request.catalog_name, "catalog_name")?;
             let schema_name = required_exact(&request.schema_name, "schema_name")?;
             let table_name = required_exact(&request.table_name, "table_name")?;
@@ -234,11 +269,24 @@ impl CatalogServiceApi for CatalogService {
     }
 }
 
-async fn query_attribution(
+/// Settles access to `workspace` before any discovery work, then labels the
+/// work that follows. The order is the point: every catalog RPC reaches this
+/// immediately after parsing its workspace, so a caller who may not reach the
+/// workspace never causes a task lookup or a runtime build.
+async fn authorized_query_attribution(
+    authorizer: &WorkspaceAuthorizer,
     tasks: &TaskManager,
     workspace: &WorkspaceName,
     request_context: &RequestContext,
 ) -> Result<QueryAttribution, Status> {
+    authorizer
+        .authorize(
+            request_context.principal(),
+            workspace,
+            WorkspaceAction::Read,
+        )
+        .await
+        .map_err(app_status)?;
     tasks
         .validate_attribution(workspace, request_context.task_id())
         .await

@@ -18,18 +18,6 @@ use crate::workspaces::{MemberRole, WorkspaceName};
 /// reach it. Every RPC classifies into one of them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WorkspaceAction {
-    /// Every workspace-scoped RPC that exists today manages, so only
-    /// [`MemberRole::allows`] and its tests name this arm so far. The read
-    /// paths that classify into it arrive with the read-path authorization
-    /// work; the arm is declared here because the role table it feeds is
-    /// already complete.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the read paths that classify into it land after the manage RPCs"
-        )
-    )]
     Read,
     Manage,
 }

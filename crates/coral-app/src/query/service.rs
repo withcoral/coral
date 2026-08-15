@@ -22,18 +22,25 @@ use crate::task::service::task_manager_status;
 use crate::transport::{
     grpc_span, instrument_grpc, query_status, request_context, workspace_name_from_proto,
 };
+use crate::workspaces::authorization::{WorkspaceAction, WorkspaceAuthorizer};
 
 #[derive(Clone)]
 pub(crate) struct QueryService {
     queries: QueryManager,
     tasks: TaskManager,
+    authorizer: WorkspaceAuthorizer,
 }
 
 impl QueryService {
-    pub(crate) fn new(query_manager: QueryManager, task_manager: TaskManager) -> Self {
+    pub(crate) const fn new(
+        query_manager: QueryManager,
+        task_manager: TaskManager,
+        authorizer: WorkspaceAuthorizer,
+    ) -> Self {
         Self {
             queries: query_manager,
             tasks: task_manager,
+            authorizer,
         }
     }
 }
@@ -47,10 +54,23 @@ impl QueryServiceApi for QueryService {
         let span = grpc_span(&request);
         let queries = self.queries.clone();
         let tasks = self.tasks.clone();
+        let authorizer = self.authorizer.clone();
         let request_context = request_context(&request)?.clone();
         Box::pin(instrument_grpc(span, async move {
             let inner = request.into_inner();
             let workspace_name = workspace_name_from_proto(inner.workspace.as_ref())?;
+            // Access is settled before anything else is read from the request:
+            // a caller who may not reach this workspace must not be able to
+            // learn from it whether their task id exists or their SQL parses,
+            // and must leave no attributed query behind.
+            authorizer
+                .authorize(
+                    request_context.principal(),
+                    &workspace_name,
+                    WorkspaceAction::Read,
+                )
+                .await
+                .map_err(app_status)?;
             let shown_guide_ids = shown_guide_ids(inner.guide_read_context);
             let (requested_task_id, tool_intent) = query_attribution_from_proto(
                 inner.task_attribution.as_ref(),
@@ -105,10 +125,19 @@ impl QueryServiceApi for QueryService {
         let span = grpc_span(&request);
         let queries = self.queries.clone();
         let tasks = self.tasks.clone();
+        let authorizer = self.authorizer.clone();
         let request_context = request_context(&request)?.clone();
         Box::pin(instrument_grpc(span, async move {
             let inner = request.into_inner();
             let workspace_name = workspace_name_from_proto(inner.workspace.as_ref())?;
+            authorizer
+                .authorize(
+                    request_context.principal(),
+                    &workspace_name,
+                    WorkspaceAction::Read,
+                )
+                .await
+                .map_err(app_status)?;
             let attribution = QueryAttribution::new(
                 tasks
                     .validate_attribution(&workspace_name, request_context.task_id())
