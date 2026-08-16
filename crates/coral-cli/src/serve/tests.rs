@@ -522,6 +522,7 @@ async fn unconsented_non_loopback_settings_fail_closed_in_serve() {
         bind_addr: SocketAddr::from((Ipv4Addr::new(192, 0, 2, 1), 0)),
         expose_non_loopback: false,
         allowed_hosts: Vec::new(),
+        workspace: None,
     };
     let result = start_mcp_http(
         Some(settings),

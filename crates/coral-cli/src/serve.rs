@@ -307,10 +307,14 @@ async fn start_mcp_http(
     };
     let grpc_endpoint_uri = loopback_grpc_endpoint_uri(grpc_addr)?;
     let server = match settings {
+        // The configured workspace is not forwarded yet: the auth-disabled MCP
+        // adapter still resolves its own, so naming one here would have no
+        // effect until it accepts the selection.
         McpHttpServeConfig::AuthDisabled {
             bind_addr,
             expose_non_loopback,
             allowed_hosts,
+            workspace: _,
         } => {
             // Configuration resolution only sets `expose_non_loopback` for a
             // non-loopback bind the operator opted into, so a loopback bind

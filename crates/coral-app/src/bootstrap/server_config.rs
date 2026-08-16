@@ -15,6 +15,7 @@ use crate::auth::{AuthSettings, CoralAuthorizationServer, ResolvedAuthSettings};
 use crate::oauth_resource::CanonicalOauthUrl;
 use crate::request_auth::SessionPrincipalProvider;
 use crate::state::AppStateLayout;
+use crate::workspaces::WorkspaceName;
 
 #[derive(Debug, Default, Deserialize)]
 struct GrpcConfigFile {
@@ -184,6 +185,7 @@ struct RawMcpHttpSettings {
     public_url: Option<String>,
     allow_unauthenticated_non_loopback: bool,
     allowed_hosts: Vec<String>,
+    workspace: Option<String>,
 }
 
 impl Default for RawMcpHttpSettings {
@@ -194,6 +196,7 @@ impl Default for RawMcpHttpSettings {
             public_url: None,
             allow_unauthenticated_non_loopback: false,
             allowed_hosts: Vec::new(),
+            workspace: None,
         }
     }
 }
@@ -226,6 +229,7 @@ impl RawMcpHttpSettings {
                 bind_addr: self.bind,
                 expose_non_loopback,
                 allowed_hosts: validated_mcp_allowed_hosts(&self.allowed_hosts)?,
+                workspace: self.workspace()?,
             }));
         };
 
@@ -243,6 +247,12 @@ impl RawMcpHttpSettings {
                     .to_string(),
             ));
         }
+        if self.workspace.is_some() {
+            return Err(AppError::FailedPrecondition(
+                "server.mcp_http.workspace applies only to auth-disabled MCP HTTP; an authenticated session's workspace comes from its memberships"
+                    .to_string(),
+            ));
+        }
         let public_url =
             required_oauth_url("server.mcp_http.public_url", self.public_url.as_deref())?;
         let authorization_server = authorization_server.to_string();
@@ -252,6 +262,25 @@ impl RawMcpHttpSettings {
             public_url,
             authorization_server,
         }))
+    }
+
+    /// Normalizes the configured workspace name without asking whether it
+    /// exists.
+    ///
+    /// Existence is a request-time question answered against the caller's
+    /// memberships, so checking it here would make startup depend on workspace
+    /// state that may legitimately be created later.
+    fn workspace(&self) -> Result<Option<String>, AppError> {
+        self.workspace
+            .as_deref()
+            .map(|name| {
+                WorkspaceName::parse(name)
+                    .map(|name| name.as_str().to_string())
+                    .map_err(|error| {
+                        AppError::FailedPrecondition(format!("server.mcp_http.workspace: {error}"))
+                    })
+            })
+            .transpose()
     }
 }
 
@@ -294,6 +323,14 @@ pub enum McpHttpServeConfig {
         /// Extra Host header values accepted beside the loopback defaults,
         /// e.g. a Docker Compose service name.
         allowed_hosts: Vec<String>,
+        /// Validated name of the workspace this local surface serves.
+        ///
+        /// `None` means the operator named none, which is distinct from any
+        /// name they could have written: no default is substituted here, and
+        /// the adapter resolves the sole local workspace instead. The name is
+        /// only checked for shape — whether a workspace by that name exists is
+        /// answered when a request needs it.
+        workspace: Option<String>,
     },
     /// Session-authenticated MCP HTTP backed by per-session clients.
     Authenticated {
@@ -583,6 +620,7 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
             bind_addr,
             expose_non_loopback,
             allowed_hosts,
+            workspace,
         }) = McpHttpServeConfig::load(&layout).expect("MCP HTTP config")
         else {
             panic!("loopback MCP must be explicitly auth-disabled");
@@ -590,6 +628,89 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
         assert_eq!(bind_addr, SocketAddr::from((Ipv6Addr::LOCALHOST, 14556)));
         assert!(!expose_non_loopback);
         assert!(allowed_hosts.is_empty());
+        assert_eq!(workspace, None);
+    }
+
+    /// An explicitly named workspace is normalized and carried through, and an
+    /// absent one stays absent: no name is invented for the operator who wrote
+    /// none, so the adapter can still tell "unnamed" from every real name.
+    #[test]
+    fn auth_disabled_workspace_carries_an_explicit_name_and_nothing_otherwise() {
+        for (workspace_field, expected) in [
+            ("", None),
+            ("workspace = 'analytics'\n", Some("analytics")),
+            // Whitespace is trimmed by the same parser every other workspace
+            // name goes through, so configuration cannot name a workspace the
+            // rest of the app could never match.
+            ("workspace = '  analytics  '\n", Some("analytics")),
+            // `default` carries no reserved status; it is an ordinary name that
+            // resolves only if such a workspace actually exists.
+            ("workspace = 'default'\n", Some("default")),
+        ] {
+            let temp = TempDir::new().expect("temp dir");
+            let layout =
+                AppStateLayout::discover(Some(temp.path().join("config"))).expect("layout");
+            layout.ensure().expect("config dir");
+            fs::write(
+                layout.config_file(),
+                format!("[server.mcp_http]\nenabled = true\n{workspace_field}"),
+            )
+            .expect("config file");
+
+            let Some(McpHttpServeConfig::AuthDisabled { workspace, .. }) =
+                McpHttpServeConfig::load(&layout).expect("MCP HTTP config")
+            else {
+                panic!("loopback MCP must be explicitly auth-disabled");
+            };
+            assert_eq!(workspace.as_deref(), expected, "config: {workspace_field}");
+        }
+    }
+
+    #[test]
+    fn auth_disabled_workspace_rejects_an_unusable_name() {
+        for invalid in ["", "   ", "..", "team/analytics"] {
+            let temp = TempDir::new().expect("temp dir");
+            let layout =
+                AppStateLayout::discover(Some(temp.path().join("config"))).expect("layout");
+            layout.ensure().expect("config dir");
+            fs::write(
+                layout.config_file(),
+                format!("[server.mcp_http]\nenabled = true\nworkspace = '{invalid}'\n"),
+            )
+            .expect("config file");
+
+            let error = McpHttpServeConfig::load(&layout)
+                .expect_err("an unusable workspace name must fail");
+            assert!(
+                error.to_string().contains("server.mcp_http.workspace"),
+                "error: {error}"
+            );
+        }
+    }
+
+    /// An authenticated session's workspace comes from the caller's
+    /// memberships, so a configured name there would be silently ignored.
+    #[test]
+    fn auth_disabled_workspace_is_rejected_when_auth_is_configured() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("config"))).expect("layout");
+        write_authenticated_config(
+            &layout,
+            "[server.mcp_http]\nenabled = true\nbind = '127.0.0.1:0'\npublic_url = 'https://mcp.example.test/'\nworkspace = 'analytics'\n",
+        );
+
+        let error = LoadedServerConfig::load(&layout)
+            .expect("load")
+            .companion_settings()
+            .err()
+            .expect("a configured workspace must not be silently ignored");
+
+        assert!(
+            error
+                .to_string()
+                .contains("server.mcp_http.workspace applies only to auth-disabled MCP HTTP"),
+            "error: {error}"
+        );
     }
 
     #[test]
@@ -631,6 +752,7 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
             bind_addr,
             expose_non_loopback,
             allowed_hosts,
+            ..
         }) = McpHttpServeConfig::load(&layout).expect("MCP HTTP config")
         else {
             panic!("opted-in non-loopback MCP must stay auth-disabled");
