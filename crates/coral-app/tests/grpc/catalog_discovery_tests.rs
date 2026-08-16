@@ -7,12 +7,11 @@ use coral_api::v1::{
     DescribeCatalogSurfaceRequest, ListCatalogRequest, ListColumnsRequest, PaginationRequest,
     SearchCatalogRequest, catalog_item, describe_catalog_surface_response,
 };
-use coral_client::default_workspace;
 use tonic::Request;
 
 use super::harness::{
-    GrpcHarness, fixture_manifest_with_functions_yaml, fixture_manifest_with_multiple_tables_yaml,
-    fixture_manifest_with_required_filter_yaml,
+    GrpcHarness, default_workspace, fixture_manifest_with_functions_yaml,
+    fixture_manifest_with_multiple_tables_yaml, fixture_manifest_with_required_filter_yaml,
 };
 
 #[tokio::test]

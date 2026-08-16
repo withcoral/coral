@@ -30,17 +30,6 @@ use crate::propagation::{
     AUTHORIZATION_METADATA_KEY, BearerToken, ClientMetadataInterceptor, StaticClientMetadata,
 };
 
-/// Default workspace used by local Coral clients.
-pub use coral_api::DEFAULT_WORKSPACE_ID;
-
-#[must_use]
-/// Returns the default workspace used by local Coral clients.
-pub fn default_workspace() -> Workspace {
-    Workspace {
-        name: DEFAULT_WORKSPACE_ID.to_string(),
-    }
-}
-
 #[must_use]
 /// Returns a workspace resource with the provided name.
 pub fn workspace(name: impl Into<String>) -> Workspace {

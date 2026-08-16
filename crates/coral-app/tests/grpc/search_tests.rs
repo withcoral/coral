@@ -17,7 +17,6 @@ use coral_api::v1::{
     search_result,
 };
 use coral_app::EngineExtensionsProvider;
-use coral_client::default_workspace;
 use coral_engine::{
     EngineExtensions, QuerySource, SourceDecorator, SourceDecoratorError, SourceTables,
 };
@@ -27,7 +26,7 @@ use tonic::{Code, Request};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use super::harness::{GrpcHarness, manifest_yaml, source_dir};
+use super::harness::{GrpcHarness, default_workspace, manifest_yaml, source_dir};
 
 // The old live-scope VALUES CTE bound five fields per surface. At 6,553 surfaces, the
 // count query's two additional fields exceeded bundled SQLite's 32,766-variable limit.

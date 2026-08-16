@@ -15,14 +15,14 @@ use coral_api::v1::{
     ExecuteSqlRequest, ImportSourceRequest, SearchRequest, SourceSecret, SourceVariable,
     import_source_response,
 };
-use coral_client::{batches_to_json_rows, decode_execute_sql_response, default_workspace};
+use coral_client::{batches_to_json_rows, decode_execute_sql_response};
 use serde_json::json;
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::sync::Notify;
 use tonic::{Code, Request};
 
-use crate::harness::{GrpcHarness, fixture_manifest_yaml, source_dir};
+use crate::harness::{GrpcHarness, default_workspace, fixture_manifest_yaml, source_dir};
 
 #[tokio::test]
 async fn query_refreshes_expired_oauth_access_token_at_request_time() {

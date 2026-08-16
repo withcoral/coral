@@ -4,10 +4,9 @@ use coral_api::v1::{
     AddFunctionRequest, CreateWorkspaceRequest, DeleteFunctionRequest, FunctionWriteSurface,
     ListFunctionsRequest, Workspace, function,
 };
-use coral_client::default_workspace;
 use tonic::Request;
 
-use crate::harness::{GrpcHarness, fixture_manifest_yaml};
+use crate::harness::{GrpcHarness, default_workspace, fixture_manifest_yaml};
 
 fn workspace(name: &str) -> Workspace {
     Workspace {

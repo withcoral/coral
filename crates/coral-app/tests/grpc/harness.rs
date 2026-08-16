@@ -14,7 +14,7 @@ use coral_app::features::{Feature, FeatureOverrides};
 use coral_app::{EngineExtensionsProvider, PrincipalKind};
 use coral_client::{
     AppClient, BearerToken, CatalogClient, FunctionClient, QueryClient, SearchClient, SourceClient,
-    WorkspaceClient, batches_to_json_rows, decode_execute_sql_response, default_workspace,
+    WorkspaceClient, batches_to_json_rows, decode_execute_sql_response,
     local::{RunningServer, ServerBuilder, connect_with_loopback_bearer},
 };
 use serde_json::{Value, json};
@@ -830,6 +830,16 @@ pub(crate) fn named_workspace(name: &str) -> Workspace {
     Workspace {
         name: name.to_string(),
     }
+}
+
+/// Names the one workspace [`GrpcHarness::seed_workspace`] creates.
+///
+/// It is a fixture's own name for state it created itself, not a name any
+/// client library hands out: nothing reconstructs this workspace on a caller's
+/// behalf, so a request naming it before `seed_workspace` runs is refused like
+/// any other unknown workspace.
+pub(crate) fn default_workspace() -> Workspace {
+    named_workspace("default")
 }
 
 /// The workspace and membership helpers hand back the whole response rather

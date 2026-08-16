@@ -8,7 +8,6 @@
 use std::collections::BTreeMap;
 use std::fs;
 
-use coral_client::default_workspace;
 use coral_client::local::ServerBuilder;
 use coral_engine::{
     CoralQuery, QueryRuntimeConfig, QuerySource, RuntimeSourceComponent, RuntimeSourcePackage,
@@ -52,10 +51,8 @@ async fn server_lifecycle_can_start_with_postgres_database_config() {
         .await
         .expect("startup should migrate the workspaces table");
     assert_eq!(
-        legacy_default_after,
-        legacy_default_before,
-        "startup must not invent a '{}' workspace",
-        default_workspace().name
+        legacy_default_after, legacy_default_before,
+        "startup must not invent a 'default' workspace"
     );
 
     server.shutdown().await.expect("shutdown server");
@@ -193,7 +190,7 @@ async fn count_legacy_default_workspaces(database_url: &str) -> Option<i64> {
     }
 
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM workspaces WHERE id = $1")
-        .bind(default_workspace().name)
+        .bind("default")
         .fetch_one(&pool)
         .await
         .expect("count the workspace rows holding the legacy default name");

@@ -7,10 +7,12 @@
 use std::fs;
 
 use coral_api::v1::{ExecuteSqlRequest, SourceSecret, SourceVariable};
-use coral_client::{batches_to_json_rows, decode_execute_sql_response, default_workspace};
+use coral_client::{batches_to_json_rows, decode_execute_sql_response};
 use tonic::Request;
 
-use crate::harness::{GrpcHarness, fixture_manifest_with_inputs_yaml, fixture_manifest_yaml};
+use crate::harness::{
+    GrpcHarness, default_workspace, fixture_manifest_with_inputs_yaml, fixture_manifest_yaml,
+};
 
 #[tokio::test]
 async fn broken_source_does_not_block_healthy_sources() {

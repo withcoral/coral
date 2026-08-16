@@ -10,12 +10,14 @@ use std::fs;
 
 use coral_api::v1::{CreateWorkspaceRequest, ListSourcesRequest};
 use coral_client::{
-    AppClient, default_workspace,
+    AppClient,
     local::{LocalServerError, ServerBuilder},
 };
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use tempfile::TempDir;
 use tonic::Request;
+
+use crate::harness::default_workspace;
 
 #[tokio::test]
 async fn server_lifecycle_can_repeat_within_process() {

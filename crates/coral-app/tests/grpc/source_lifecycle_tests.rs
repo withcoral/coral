@@ -15,12 +15,11 @@ use coral_api::v1::{
     query_test_result, source_credential_method::Method as ProtoCredentialMethod,
     source_input_spec::Input as ProtoSourceInput,
 };
-use coral_client::default_workspace;
 use tempfile::TempDir;
 use tonic::Request;
 
 use crate::harness::{
-    FailingHttpFixture, GrpcHarness, fixture_function_only_manifest_yaml,
+    FailingHttpFixture, GrpcHarness, default_workspace, fixture_function_only_manifest_yaml,
     fixture_manifest_with_inputs_yaml, fixture_manifest_with_multiple_tables_yaml,
     fixture_manifest_with_required_inputs_yaml, fixture_manifest_with_test_queries_yaml,
     fixture_manifest_yaml, invalid_manifest_yaml, source_dir,

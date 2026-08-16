@@ -41,9 +41,8 @@ use coral_api::v1::ExecuteSqlResponse;
 use serde_json::Value;
 
 pub use client::{
-    AppClient, CatalogClient, DEFAULT_WORKSPACE_ID, FeedbackClient, FunctionClient,
-    HealthCheckClient, QueryClient, SearchClient, SourceClient, TaskClient, UserClient,
-    WorkspaceClient, default_workspace, workspace,
+    AppClient, CatalogClient, FeedbackClient, FunctionClient, HealthCheckClient, QueryClient,
+    SearchClient, SourceClient, TaskClient, UserClient, WorkspaceClient, workspace,
 };
 pub use error::{ClientError, QueryResultError};
 pub use propagation::{BearerToken, with_task_metadata};

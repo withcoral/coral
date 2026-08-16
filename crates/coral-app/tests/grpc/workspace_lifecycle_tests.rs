@@ -7,7 +7,7 @@ use coral_api::v1::{
     ListWorkspaceMembersResponse, ListWorkspacesRequest, Source, SourceSecret, SourceVariable,
     WorkspaceRole, import_source_response,
 };
-use coral_client::{AppClient, default_workspace};
+use coral_client::AppClient;
 use prost::Message as _;
 use serde_json::json;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -770,9 +770,8 @@ async fn delete_workspace_succeeds_when_backup_cleanup_fails_after_config_delete
 #[tokio::test]
 async fn default_like_names_are_created_and_deleted_like_any_other() {
     let harness = GrpcHarness::new().await;
-    let default_name = default_workspace().name;
 
-    for name in [default_name.as_str(), "default-2", "work"] {
+    for name in ["default", "default-2", "work"] {
         harness
             .workspace_client()
             .create_workspace(Request::new(CreateWorkspaceRequest {
