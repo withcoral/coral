@@ -164,15 +164,21 @@ async fn initialize_mcp(endpoint: &str, authorization: &str) -> reqwest::Respons
 /// The mirror of [`assert_unauthorized`], and it stops at the handshake because
 /// that is where authentication is decided: everything after it is
 /// workspace-scoped — even `tools/list`, which enumerates a workspace's table
-/// functions — so a caller holding no membership is legitimately refused there
-/// while its audience was accepted here. `coral-app`'s workspace authorization
-/// tests own the boundary behind it.
+/// functions — so `coral-app`'s workspace authorization tests own the boundary
+/// behind it.
+///
+/// An accepted audience is then refused a *session*: nothing names the
+/// workspace an authenticated surface serves, and binding one anyway would
+/// either hand back a session inert at the protocol layer or substitute a
+/// workspace the caller never asked for. The absent challenge is what tells
+/// that refusal apart from a refused audience, which is answered `401` and
+/// carries one.
 async fn assert_mcp_authenticated(endpoint: &str, token: &str) {
     let accepted = initialize_mcp(endpoint, &format!("Bearer {token}")).await;
-    assert!(
-        accepted.status().is_success(),
-        "an accepted audience must initialize an MCP session: {}",
-        accepted.status()
+    assert_eq!(
+        accepted.status(),
+        reqwest::StatusCode::SERVICE_UNAVAILABLE,
+        "an accepted audience must pass authentication and be refused only its workspaceless session"
     );
     assert!(accepted.headers().get(WWW_AUTHENTICATE).is_none());
 }
@@ -214,10 +220,10 @@ async fn assert_grpc_rejects_unauthenticated(endpoint: &str) {
 
 /// The ordinary workspace these fixtures name.
 ///
-/// Nothing provisions a workspace any more, so naming one keeps these fixtures
-/// off the `DEFAULT_WORKSPACE_ID` fallback. Most call sites never create it: the
-/// probes below assert on authentication, which is decided before the workspace
-/// is ever looked up.
+/// Nothing provisions a workspace any more, and no helper reconstructs one, so
+/// these fixtures name the workspace they mean. Most call sites never create it:
+/// the probes below assert on authentication, which is decided before the
+/// workspace is ever looked up.
 fn test_workspace() -> Workspace {
     workspace(TEST_WORKSPACE_NAME)
 }
