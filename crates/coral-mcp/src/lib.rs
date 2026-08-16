@@ -130,11 +130,15 @@ pub struct McpOptions {
 ///
 /// # Errors
 ///
-/// Returns [`McpError`] if the stdio server cannot complete its `MCP`
-/// lifecycle.
+/// Returns [`McpError`] if `options` names no workspace, or if the stdio server
+/// cannot complete its `MCP` lifecycle. Stdio's launcher resolves the workspace
+/// before it gets here, so the missing one is reported as the failed
+/// precondition it is rather than served against an invented name.
 pub async fn run_stdio_with_client(app: AppClient, options: McpOptions) -> Result<(), McpError> {
     options.surface.validate(options.feedback_enabled)?;
-    let handler = CoralMcpServerFactory::new(app, options).create();
+    let handler = CoralMcpServerFactory::new(app, options)
+        .map_err(|error| tonic::Status::failed_precondition(error.to_string()))?
+        .create();
     let server = Box::pin(handler.serve((tokio::io::stdin(), tokio::io::stdout()))).await?;
     let _ = server.waiting().await?;
     Ok(())

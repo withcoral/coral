@@ -52,7 +52,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tower::ServiceExt;
 use url::{Position, Url};
 
-use crate::{CoralMcpServerFactory, McpOptions};
+use crate::{CoralMcpServerFactory, McpOptions, server::WorkspaceRequired};
 
 /// How long `/readyz` waits on the gRPC readiness probe before answering itself.
 ///
@@ -527,6 +527,11 @@ pub enum McpHttpError {
     /// MCP HTTP serving configuration is invalid.
     #[error("invalid MCP HTTP configuration: {0}")]
     InvalidAuthConfig(&'static str),
+    /// Nothing names a workspace and the local user belongs to none.
+    #[error(
+        "no workspace is available for the local MCP server. Create one with `coral workspace create NAME`, then name it in `server.mcp_http.workspace`."
+    )]
+    NoLocalWorkspace,
     /// The TCP listener could not bind.
     #[error("failed to bind MCP HTTP server to {address}")]
     Bind {
@@ -627,7 +632,8 @@ fn join_server(
 ///
 /// # Errors
 ///
-/// Returns [`McpHttpError`] if the listener cannot bind.
+/// Returns [`McpHttpError`] if the surface has no resolved workspace to serve
+/// or the listener cannot bind.
 pub async fn start_auth_disabled(
     config: McpHttpConfig,
     app: AppClient,
@@ -648,7 +654,7 @@ pub async fn start_auth_disabled(
         readiness,
         local_addr.ip(),
         &config.extra_allowed_hosts,
-    );
+    )?;
     Ok(spawn_http_server(
         listener,
         local_addr,
@@ -742,14 +748,20 @@ impl ReadinessProbe {
     }
 }
 
+/// Builds the loopback router around one workspace-scoped session factory.
+///
+/// The workspace must already be resolved: `HttpState` holds the factory
+/// outright, so a router that could be built without one would serve sessions
+/// with no workspace to reach.
 fn auth_disabled_router(
     app: AppClient,
     options: McpOptions,
     readiness: ReadinessProbe,
     advertised_ip: IpAddr,
     extra_allowed_hosts: &[String],
-) -> (Router, Arc<HttpState>) {
-    let factory = CoralMcpServerFactory::new(app, options);
+) -> Result<(Router, Arc<HttpState>), McpHttpError> {
+    let factory = CoralMcpServerFactory::new(app, options)
+        .map_err(|WorkspaceRequired| McpHttpError::NoLocalWorkspace)?;
     // These are the same loopback names the authenticated listener accepts, so
     // a client dialing `localhost` is not rejected for the bind being
     // `127.0.0.1`. The allowlist stays exact beyond that baseline: it is the
@@ -780,7 +792,7 @@ fn auth_disabled_router(
         .route("/livez", get(livez))
         .route("/readyz", get(readyz))
         .with_state(state.clone());
-    (router, state)
+    Ok((router, state))
 }
 
 struct HttpState {
@@ -984,6 +996,13 @@ async fn authenticated_mcp(State(state): State<AuthState>, request: Request<Body
     serve_mcp_request(request, factory, sessions, state.server.config.clone()).await
 }
 
+/// Builds the bearer-bound session factory admitted for one initialize request.
+///
+/// A session is refused when the runtime names no workspace. Admitting one
+/// anyway would hand back a session that is inert at the protocol layer —
+/// `tools/list` enumerates the workspace's table functions, so it is itself
+/// workspace-scoped — and the only way to make it answer would be to substitute
+/// a workspace the caller never asked for.
 async fn create_session_factory(
     state: &AuthenticatedHttpState,
     token: String,
@@ -993,10 +1012,8 @@ async fn create_session_factory(
         () = state.server.config.cancellation_token.cancelled() => Err(StatusCode::SERVICE_UNAVAILABLE),
         client = (state.runtime.session_client_factory)(token) => client.map_err(|()| StatusCode::SERVICE_UNAVAILABLE),
     }?;
-    Ok(CoralMcpServerFactory::new(
-        client,
-        state.runtime.options.clone(),
-    ))
+    CoralMcpServerFactory::new(client, state.runtime.options.clone())
+        .map_err(|WorkspaceRequired| StatusCode::SERVICE_UNAVAILABLE)
 }
 
 async fn authorize_bound_session(

@@ -169,6 +169,16 @@ async fn workspace_scoped_options(app: &AppClient) -> McpOptions {
         }))
         .await
         .expect("create test workspace");
+    workspace_named_options()
+}
+
+/// Names [`TEST_WORKSPACE`] without creating it.
+///
+/// A session factory demands a *resolved* workspace, not an existing one:
+/// whether the name resolves is answered by the request that needs it. Fixtures
+/// below that never reach a workspace-scoped tool therefore only have to name
+/// one, and naming it is what keeps them from exercising a fallback.
+fn workspace_named_options() -> McpOptions {
     McpOptions {
         workspace: Some(workspace(TEST_WORKSPACE)),
         ..McpOptions::default()
@@ -275,7 +285,8 @@ async fn auth_disabled_router_accepts_loopback_names_and_configured_hosts() {
         ReadinessProbe::from_app(app),
         IpAddr::V4(Ipv4Addr::LOCALHOST),
         &["coral".to_string()],
-    );
+    )
+    .expect("router scoped to a workspace");
 
     // The baseline loopback names and the operator-listed host all initialize;
     // anything else keeps hitting the DNS-rebinding 403.
@@ -328,11 +339,12 @@ async fn raw_routes_enforce_health_and_host_contracts() {
     let advertised_ip = IpAddr::V4(Ipv4Addr::new(127, 42, 3, 9));
     let (router, state) = auth_disabled_router(
         app.clone(),
-        McpOptions::default(),
+        workspace_named_options(),
         ReadinessProbe::from_app(app),
         advertised_ip,
         &[],
-    );
+    )
+    .expect("router scoped to a workspace");
 
     for path in ["/livez", "/readyz"] {
         let response = router
@@ -407,11 +419,12 @@ async fn mcp_rejects_uninitialized_and_oversized_requests_without_leaking_sessio
     let (_temp, app_server, app) = local_app().await;
     let (router, state) = auth_disabled_router(
         app.clone(),
-        McpOptions::default(),
+        workspace_named_options(),
         ReadinessProbe::from_app(app),
         IpAddr::V4(Ipv4Addr::LOCALHOST),
         &[],
-    );
+    )
+    .expect("router scoped to a workspace");
 
     for body in [
         PING,
@@ -624,7 +637,7 @@ async fn shutdown_timeout_matches_one_second_contract() {
     let (_temp, app_server, app) = local_app().await;
     let config =
         McpHttpConfig::new(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).expect("loopback config");
-    let server = start_auth_disabled(config, app, McpOptions::default())
+    let server = start_auth_disabled(config, app, workspace_named_options())
         .await
         .expect("start MCP HTTP server");
     let state = server.state.clone();
@@ -648,7 +661,7 @@ async fn dropping_server_cancels_requests_and_releases_state() {
     let (_temp, app_server, app) = local_app().await;
     let config =
         McpHttpConfig::new(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).expect("loopback config");
-    let server = start_auth_disabled(config, app, McpOptions::default())
+    let server = start_auth_disabled(config, app, workspace_named_options())
         .await
         .expect("start MCP HTTP server");
     let transport =
@@ -703,7 +716,7 @@ async fn authenticated_session_lifecycle_is_coherent() {
             counted_factory_calls.fetch_add(1, Ordering::Relaxed);
             std::future::ready(Ok::<_, ()>(app.clone()))
         },
-        McpOptions::default(),
+        workspace_named_options(),
         || async { Ok::<_, tonic::Code>(()) },
     );
     let (router, state) = authenticated_router(config, runtime);
@@ -789,7 +802,7 @@ async fn authenticated_requests_are_bounded_before_and_after_initialization() {
             counted_factory_calls.fetch_add(1, Ordering::Relaxed);
             std::future::ready(Ok::<_, ()>(app.clone()))
         },
-        McpOptions::default(),
+        workspace_named_options(),
         || async { Ok::<_, tonic::Code>(()) },
     );
     let (router, state) = authenticated_router(authenticated_config(), runtime);
@@ -844,7 +857,7 @@ async fn authenticated_sessions_remain_isolated() {
     let runtime = AuthenticatedMcpHttpRuntime::new(
         |_| async { Ok::<_, ()>(()) },
         move |_| std::future::ready(Ok::<_, ()>(app.clone())),
-        McpOptions::default(),
+        workspace_named_options(),
         || async { Ok::<_, tonic::Code>(()) },
     );
     let (router, state) = authenticated_router(authenticated_config(), runtime);
@@ -896,7 +909,7 @@ async fn authenticated_session_admission_rejects_before_client_creation() {
             counted_factory_calls.fetch_add(1, Ordering::Relaxed);
             std::future::ready(Ok::<_, ()>(app.clone()))
         },
-        McpOptions::default(),
+        workspace_named_options(),
         || async { Ok::<_, tonic::Code>(()) },
     );
     let sessions = Arc::new(AuthenticatedSessions::new(1));
@@ -935,7 +948,7 @@ async fn authenticated_session_honors_the_declared_idle_timeout() {
     let runtime = AuthenticatedMcpHttpRuntime::new(
         |_| async { Ok::<_, ()>(()) },
         move |_| std::future::ready(Ok::<_, ()>(app.clone())),
-        McpOptions::default(),
+        workspace_named_options(),
         || async { Ok::<_, tonic::Code>(()) },
     );
     let sessions = Arc::new(AuthenticatedSessions::new(1));
@@ -1087,7 +1100,7 @@ async fn authenticated_discovery_and_challenge_do_not_advertise_scopes() {
     let runtime = AuthenticatedMcpHttpRuntime::new(
         |_| async { Ok::<_, ()>(()) },
         |_| std::future::ready(Err::<AppClient, ()>(())),
-        McpOptions::default(),
+        workspace_named_options(),
         || async { Ok::<_, tonic::Code>(()) },
     );
     let (router, _state) = authenticated_router(config, runtime);

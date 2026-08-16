@@ -8,12 +8,13 @@ use coral_api::v1::{
     ListCatalogRequest, ListCatalogResponse, ListColumnsRequest, ListSourcesRequest,
     PaginationRequest, QueryGuideReadContext, SearchRequest, Source, StartTaskRequest,
     SubmitFeedbackRequest, TableSummary as ProtoTableSummary,
-    TaskAttribution as ProtoTaskAttribution, TaskStatus as ProtoTaskStatus, catalog_item,
+    TaskAttribution as ProtoTaskAttribution, TaskStatus as ProtoTaskStatus, Workspace,
+    catalog_item,
 };
 use coral_client::{
     AppClient, CatalogClient, FeedbackClient, FunctionClient, QueryClient, SearchClient,
     SourceClient, TaskClient, batches_to_json_rows_json_safe_numbers, decode_execute_sql_response,
-    default_workspace, search_response_json_value, with_task_metadata,
+    search_response_json_value, with_task_metadata,
 };
 use rmcp::{
     ErrorData, ServerHandler,
@@ -249,10 +250,21 @@ fn task_context_requirement(options: &McpOptions, tool_name: ToolName) -> TaskCo
     }
 }
 
+/// A handler factory was asked for before a workspace was resolved.
+///
+/// Every MCP tool and resource is workspace-scoped, so a factory without a
+/// concrete workspace could only serve sessions that invent one. Each transport
+/// resolves its own workspace first and reports this refusal in the terms its
+/// caller understands.
+#[derive(Debug, thiserror::Error)]
+#[error("MCP sessions require a resolved workspace")]
+pub(crate) struct WorkspaceRequired;
+
 /// Cloneable factory for constructing an independent MCP handler per session.
 #[derive(Clone)]
 pub(crate) struct CoralMcpServerFactory {
     app: AppClient,
+    workspace: Workspace,
     options: McpOptions,
     guide_block: Arc<GuideBlockState>,
 }
@@ -265,13 +277,20 @@ impl CoralMcpServerFactory {
     /// those sessions share the same authorization context. An authenticated
     /// transport must use a client bound to the validated session and must not
     /// fall back to a shared unauthenticated client.
-    #[must_use]
-    pub(crate) fn new(app: AppClient, options: McpOptions) -> Self {
-        Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkspaceRequired`] when `options` names no workspace. The
+    /// workspace is taken once here rather than read per request, so a live
+    /// handler can only ever reach the one it was scoped to.
+    pub(crate) fn new(app: AppClient, options: McpOptions) -> Result<Self, WorkspaceRequired> {
+        let workspace = options.workspace.clone().ok_or(WorkspaceRequired)?;
+        Ok(Self {
             app,
+            workspace,
             options,
             guide_block: Arc::new(GuideBlockState::default()),
-        }
+        })
     }
 
     /// Constructs a fresh handler for one MCP session.
@@ -281,6 +300,7 @@ impl CoralMcpServerFactory {
     pub(crate) fn create(&self) -> CoralMcpServer {
         CoralMcpServer::new(
             &self.app,
+            self.workspace.clone(),
             self.options.clone(),
             Arc::clone(&self.guide_block),
         )
@@ -293,11 +313,7 @@ impl CoralMcpServerFactory {
     /// Substituting the source client is how tests reach that refusal.
     #[cfg(test)]
     pub(crate) fn create_with_source_client(&self, source: SourceClient) -> CoralMcpServer {
-        let mut server = CoralMcpServer::new(
-            &self.app,
-            self.options.clone(),
-            Arc::clone(&self.guide_block),
-        );
+        let mut server = self.create();
         server.core_tools.source = source;
         server
     }
@@ -315,6 +331,7 @@ pub struct CoralToolset {
     task: TaskClient,
     guide_block: Arc<GuideBlockState>,
     startup_context: McpStartupContext,
+    workspace: Workspace,
     options: McpOptions,
     retained_tool_names: Option<Arc<BTreeSet<String>>>,
 }
@@ -358,13 +375,20 @@ impl McpStartupContext {
 }
 
 impl CoralToolset {
-    fn new(app: &AppClient, options: McpOptions, guide_block: Arc<GuideBlockState>) -> Self {
+    fn new(
+        app: &AppClient,
+        workspace: Workspace,
+        options: McpOptions,
+        guide_block: Arc<GuideBlockState>,
+    ) -> Self {
+
         let startup_context = McpStartupContext::from_options(&options);
-        Self::new_with_startup_context(app, options, startup_context, guide_block)
+        Self::new_with_startup_context(app, workspace, options, startup_context, guide_block)
     }
 
     fn new_with_startup_context(
         app: &AppClient,
+        workspace: Workspace,
         options: McpOptions,
         startup_context: McpStartupContext,
         guide_block: Arc<GuideBlockState>,
@@ -379,6 +403,7 @@ impl CoralToolset {
             task: app.task_client(),
             guide_block,
             startup_context,
+            workspace,
             options,
             retained_tool_names: None,
         }
@@ -396,11 +421,8 @@ impl CoralToolset {
                 .is_none_or(|names| names.contains(tool.as_str()))
     }
 
-    fn workspace(&self) -> coral_api::v1::Workspace {
-        self.options
-            .workspace
-            .clone()
-            .unwrap_or_else(default_workspace)
+    fn workspace(&self) -> Workspace {
+        self.workspace.clone()
     }
 
     /// Returns an enforced view containing only the named core tools.
@@ -1063,9 +1085,14 @@ pub(crate) struct CoralMcpServer {
 }
 
 impl CoralMcpServer {
-    fn new(app: &AppClient, options: McpOptions, guide_block: Arc<GuideBlockState>) -> Self {
+    fn new(
+        app: &AppClient,
+        workspace: Workspace,
+        options: McpOptions,
+        guide_block: Arc<GuideBlockState>,
+    ) -> Self {
         let surface = options.surface.clone();
-        let core_tools = CoralToolset::new(app, options, guide_block);
+        let core_tools = CoralToolset::new(app, workspace, options, guide_block);
         let tool_context = McpToolContext::new(core_tools.clone(), core_tools.workspace());
         let public_core_tools = surface.public_core_tool_names().map_or_else(
             || core_tools.clone(),

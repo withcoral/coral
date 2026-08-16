@@ -461,7 +461,7 @@ async fn start_session_with_options(temp: &TempDir, options: McpOptions) -> Test
         .expect("connect client");
     let options = with_created_workspace(&app, options).await;
     let source_client = app.source_client();
-    let factory = CoralMcpServerFactory::new(app, options);
+    let factory = CoralMcpServerFactory::new(app, options).expect("session scoped to a workspace");
     let (client, mcp_server_task) = start_mcp_session(factory.create()).await;
 
     TestSession {
@@ -2236,7 +2236,8 @@ async fn factory_shares_configuration_and_task_guide_state_across_sessions() {
             workspace: Some(test_workspace()),
             ..McpOptions::default()
         },
-    );
+    )
+    .expect("session scoped to a workspace");
 
     let (first_client, first_task) = start_mcp_session(factory.create()).await;
     let (second_client, second_task) = start_mcp_session(factory.create()).await;
@@ -2959,7 +2960,8 @@ async fn discovery_surfaces_degrade_when_source_listing_is_refused() {
             workspace: Some(test_workspace()),
             ..McpOptions::default()
         },
-    );
+    )
+    .expect("session scoped to a workspace");
     let (client, mcp_task) =
         start_mcp_session(factory.create_with_source_client(refusing_source)).await;
 
@@ -3032,14 +3034,16 @@ async fn workspace_scoped_sessions_read_only_their_own_workspace() {
             workspace: Some(test_workspace()),
             ..McpOptions::default()
         },
-    );
+    )
+    .expect("session scoped to a workspace");
     let sourced = CoralMcpServerFactory::new(
         app,
         McpOptions {
             workspace: Some(workspace(OTHER_TEST_WORKSPACE)),
             ..McpOptions::default()
         },
-    );
+    )
+    .expect("session scoped to a workspace");
     let (sourceless_client, sourceless_task) = start_mcp_session(sourceless.create()).await;
     let (sourced_client, sourced_task) = start_mcp_session(sourced.create()).await;
 
