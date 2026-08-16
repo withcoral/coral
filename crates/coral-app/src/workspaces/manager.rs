@@ -124,36 +124,6 @@ impl WorkspaceManager {
         self.lifecycle_lock.clone()
     }
 
-    pub(crate) async fn create_workspace(
-        &self,
-        workspace_name: &WorkspaceName,
-    ) -> Result<WorkspaceRecord, AppError> {
-        let _lifecycle_guard = self.lifecycle_lock.lock_async().await;
-        let mut tx = self.db.begin().await?;
-        if tx
-            .workspaces()
-            .get(workspace_name.as_str())
-            .await?
-            .is_some()
-        {
-            return Err(AppError::WorkspaceAlreadyExists(workspace_name.to_string()));
-        }
-        if let Err(error) = tx
-            .workspaces()
-            .create(workspace_name.as_str(), now_unix_nanos_i64()?)
-            .await
-        {
-            if error.is_unique_violation() {
-                return Err(AppError::WorkspaceAlreadyExists(workspace_name.to_string()));
-            }
-            return Err(error.into());
-        }
-        tx.commit().await?;
-        Ok(WorkspaceRecord {
-            name: workspace_name.clone(),
-        })
-    }
-
     pub(crate) async fn delete_workspace(
         &self,
         workspace_name: &WorkspaceName,
@@ -942,9 +912,10 @@ mod tests {
         let source = installed_source("github");
         let source_name = source.name.clone();
         let credential_set_id = CredentialSetId::for_source(&source.name);
+        let owner = seed_user(&db, "owner").await;
 
         manager
-            .create_workspace(&workspace_name)
+            .create_workspace_for_user(&workspace_name, &owner)
             .await
             .expect("create workspace");
         store

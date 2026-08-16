@@ -36,10 +36,12 @@ impl fmt::Display for WorkspaceName {
 
 /// Names the legacy `default` workspace, which is now an ordinary name.
 ///
-/// Nothing provisions, protects, or resolves this name any more: it exists so
-/// legacy on-disk state and fixtures can still spell the one workspace older
-/// installs were given. Do not reach for it to stand in for "the caller's
-/// workspace" — a caller's workspace comes from their memberships.
+/// Test-only, and gated so the compiler enforces it: nothing provisions,
+/// protects, or resolves this name any more, so no production path may reach
+/// for it to stand in for "the caller's workspace" — a caller's workspace comes
+/// from their memberships. It exists so fixtures can still spell the one
+/// workspace older installs were given.
+#[cfg(test)]
 impl Default for WorkspaceName {
     fn default() -> Self {
         Self(DEFAULT_WORKSPACE_ID.to_string())

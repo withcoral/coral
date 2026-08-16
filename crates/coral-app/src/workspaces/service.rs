@@ -83,6 +83,14 @@ impl WorkspaceServiceApi for WorkspaceService {
         .await
     }
 
+    /// Creates one workspace owned by the caller who asked for it.
+    ///
+    /// The local principal is no exception. Its `coral:local` directory row is
+    /// guaranteed by the one-time local-ownership migration the composition
+    /// root runs at startup, so its ownership grant commits in the same
+    /// transaction as the workspace itself. No caller creates a workspace with
+    /// no owner, which a later switch to shared mode would conceal from
+    /// everyone.
     async fn create_workspace(
         &self,
         request: Request<CreateWorkspaceRequest>,
@@ -97,30 +105,10 @@ impl WorkspaceServiceApi for WorkspaceService {
             authorizer
                 .authorize_creation(&principal)
                 .map_err(app_status)?;
-            let creator = principal.id().as_str();
-            let workspace = if principal.is_local() {
-                // Being admitted at all means this deployment treats the local
-                // principal as owner of everything, and it has no directory row
-                // an ownership grant could reference: the `coral:local` user is
-                // written by the one-time local-ownership migration, which does
-                // not exist yet, and the membership foreign key forbids granting
-                // ownership to a subject the directory does not hold.
-                //
-                // This branch is therefore a bridge, not the intended shape. It
-                // persists a workspace with zero owner rows, which a later
-                // switch to shared mode would leave concealed from every
-                // authenticated caller. Once the migration guarantees the
-                // `coral:local` row, local creation routes through
-                // `create_workspace_for_user` like every other creator and this
-                // branch goes away, so that owner insertion stays in the same
-                // transaction as workspace creation for all callers.
-                workspaces.create_workspace(&workspace_name).await
-            } else {
-                workspaces
-                    .create_workspace_for_user(&workspace_name, creator)
-                    .await
-            }
-            .map_err(app_status)?;
+            let workspace = workspaces
+                .create_workspace_for_user(&workspace_name, principal.id().as_str())
+                .await
+                .map_err(app_status)?;
             Ok(Response::new(CreateWorkspaceResponse {
                 workspace: Some(workspace_record_to_proto(&workspace)),
             }))
@@ -306,6 +294,7 @@ mod tests {
     use crate::request_context::RequestContext;
     use crate::state::db::{
         CoralDb, DatabaseConfig, DbRepos, LoginIdentity, LoginProvisioning, ResolvedDatabaseConfig,
+        inaccessible_workspaces, migrate_local_ownership_once,
     };
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::transport::workspace_to_proto;
@@ -817,13 +806,24 @@ mod tests {
         local
             .create(&Principal::local(), "team")
             .await
-            .expect("the implicit owner creates without a directory row");
-        // The absent membership pins the bridge, not the destination: no
-        // `coral:local` directory row exists to grant ownership to yet. When
-        // the one-time local-ownership migration guarantees that row, local
-        // creation grants ownership like any other creator and this assertion
-        // flips to `Some(MemberRole::Owner)`.
-        assert_eq!(local.role_of("team", LOCAL_PRINCIPAL_ID).await, None);
+            .expect("the implicit owner creates against its migrated directory row");
+        assert_eq!(
+            local.role_of("team", LOCAL_PRINCIPAL_ID).await,
+            Some(MemberRole::Owner),
+            "the local principal owns what it creates, in the same transaction"
+        );
+        let inaccessible = inaccessible_workspaces(&local.db)
+            .await
+            .expect("report the workspaces nobody can reach");
+        assert!(
+            inaccessible.without_owner.is_empty(),
+            "an ownerless workspace would be concealed from everyone once this deployment became a shared one"
+        );
+        assert_eq!(
+            inaccessible.local_owner_only,
+            vec!["team".to_string()],
+            "it is owned, so a shared deployment reports it as ownership to transfer rather than as lost"
+        );
     }
 
     /// The adapter reads its caller from request context, so a request that
@@ -989,8 +989,15 @@ mod tests {
         deployment(WorkspaceAuthorizer::new).await
     }
 
+    /// Builds a single-user deployment the way the composition root does: the
+    /// one-time local-ownership migration runs at startup, so the `coral:local`
+    /// directory row an ownership grant references is already there.
     async fn local_deployment() -> Deployment {
-        deployment(WorkspaceAuthorizer::trusting_local_principal).await
+        let deployment = deployment(WorkspaceAuthorizer::trusting_local_principal).await;
+        migrate_local_ownership_once(&deployment.db)
+            .await
+            .expect("run the one-time local-ownership migration");
+        deployment
     }
 
     async fn deployment(
