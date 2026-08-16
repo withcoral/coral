@@ -386,6 +386,189 @@ async fn workspace_remove_sends_request() {
     server.shutdown().await;
 }
 
+// ---------------------------------------------------------------------------
+// Workspace resolution
+//
+// The resolver's own unit tests can only see the values handed to it. These
+// spawn the real binary, so the flag, the environment variable, the process
+// exit status, and the request that does or does not reach the server are all
+// part of what is asserted.
+// ---------------------------------------------------------------------------
+
+fn workspaces(names: &[&str]) -> MockServerConfig {
+    MockServerConfig::default().with_list_workspaces(ListWorkspacesResponse {
+        memberships: names
+            .iter()
+            .map(|name| membership(name, WorkspaceRole::Owner))
+            .collect(),
+    })
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn workspace_resolution_without_memberships_names_the_actions_that_fix_it() {
+    let server = MockServer::start().await;
+
+    let assert = server
+        .cmd()
+        .env_remove("CORAL_WORKSPACE")
+        .args(["sql", "select 1 as value"])
+        .assert()
+        .failure();
+
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    assert!(
+        stderr.contains("coral workspace create NAME")
+            && stderr.contains("--workspace NAME")
+            && stderr.contains("CORAL_WORKSPACE"),
+        "expected guidance naming every way to obtain a workspace: {stderr}"
+    );
+    assert!(
+        server.execute_sql_requests().is_empty(),
+        "a command with no workspace must not reach the server with a guessed name"
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn workspace_resolution_selects_the_sole_membership() {
+    let server = MockServer::start_with_config(workspaces(&["only-work"])).await;
+
+    server
+        .cmd()
+        .env_remove("CORAL_WORKSPACE")
+        .args(["sql", "select 1 as value"])
+        .assert()
+        .success();
+
+    let requests = server.execute_sql_requests();
+    assert_eq!(requests.len(), 1, "expected one execute_sql call");
+    assert_workspace_name(requests[0].workspace.as_ref(), "only-work");
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn workspace_resolution_refuses_to_choose_between_memberships() {
+    let server = MockServer::start_with_config(workspaces(&[TEST_WORKSPACE, "work"])).await;
+
+    let assert = server
+        .cmd()
+        .env_remove("CORAL_WORKSPACE")
+        .args(["sql", "select 1 as value"])
+        .assert()
+        .failure();
+
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    assert!(
+        stderr.contains("analytics, work") && stderr.contains("--workspace NAME"),
+        "expected the candidates and how to pick one: {stderr}"
+    );
+    assert!(
+        server.execute_sql_requests().is_empty(),
+        "an ambiguous membership set must not be resolved by picking one"
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn workspace_resolution_prefers_the_flag_over_every_other_source() {
+    let server = MockServer::start_with_config(workspaces(&["only-work"])).await;
+
+    server
+        .cmd()
+        .env("CORAL_WORKSPACE", "env-work")
+        .args(["--workspace", "flag-work", "sql", "select 1 as value"])
+        .assert()
+        .success();
+
+    let requests = server.execute_sql_requests();
+    assert_eq!(requests.len(), 1, "expected one execute_sql call");
+    assert_workspace_name(requests[0].workspace.as_ref(), "flag-work");
+    assert!(
+        server.list_workspaces_requests().is_empty(),
+        "an explicit selection must not consult memberships"
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn workspace_resolution_honors_a_non_empty_environment_value() {
+    let server = MockServer::start_with_config(workspaces(&["only-work"])).await;
+
+    server
+        .cmd()
+        .env("CORAL_WORKSPACE", "env-work")
+        .args(["sql", "select 1 as value"])
+        .assert()
+        .success();
+
+    let requests = server.execute_sql_requests();
+    assert_eq!(requests.len(), 1, "expected one execute_sql call");
+    assert_workspace_name(requests[0].workspace.as_ref(), "env-work");
+    assert!(
+        server.list_workspaces_requests().is_empty(),
+        "an explicit selection must not consult memberships"
+    );
+
+    server.shutdown().await;
+}
+
+/// An empty variable is how a shell reports one that was never set, so it has
+/// to fall through to the membership rather than travel to the server as a
+/// workspace named "".
+#[tokio::test(flavor = "multi_thread")]
+async fn workspace_resolution_treats_an_empty_environment_value_as_unset() {
+    let server = MockServer::start_with_config(workspaces(&["only-work"])).await;
+
+    server
+        .cmd()
+        .env("CORAL_WORKSPACE", "")
+        .args(["sql", "select 1 as value"])
+        .assert()
+        .success();
+
+    let requests = server.execute_sql_requests();
+    assert_eq!(requests.len(), 1, "expected one execute_sql call");
+    assert_workspace_name(requests[0].workspace.as_ref(), "only-work");
+
+    server.shutdown().await;
+}
+
+/// A name the caller typed is sent as typed: the command has to fail on the
+/// server's own not-found answer, never on a workspace the CLI substituted.
+#[tokio::test(flavor = "multi_thread")]
+async fn workspace_resolution_sends_an_explicit_missing_name_unchanged() {
+    let server = MockServer::start_with_config(
+        workspaces(&[TEST_WORKSPACE])
+            .with_execute_sql_error(Code::NotFound, "workspace 'ghost' was not found"),
+    )
+    .await;
+
+    let assert = server
+        .cmd()
+        .args(["--workspace", "ghost", "sql", "select 1 as value"])
+        .assert()
+        .failure();
+
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    assert!(
+        stderr.contains("workspace 'ghost' was not found"),
+        "expected the server's not-found error: {stderr}"
+    );
+    let requests = server.execute_sql_requests();
+    assert_eq!(requests.len(), 1, "expected one execute_sql call");
+    assert_workspace_name(requests[0].workspace.as_ref(), "ghost");
+    assert!(
+        server.list_workspaces_requests().is_empty(),
+        "a missing explicit name must not fall back to the caller's memberships"
+    );
+
+    server.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn source_list_renders_configured_sources() {
     let server = MockServer::start().await;

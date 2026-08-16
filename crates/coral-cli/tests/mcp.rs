@@ -776,6 +776,81 @@ async fn assert_workspace_initialize_instructions(
     Ok(())
 }
 
+/// `--workspace` is covered above; `CORAL_WORKSPACE` reaches the MCP session
+/// only through the environment of the spawned process, so nothing short of
+/// spawning it can show that the selection survives the handoff.
+#[tokio::test(flavor = "multi_thread")]
+async fn workspace_resolution_env_scopes_the_spawned_mcp_stdio_process()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start_with_config(MockServerConfig::default().with_list_sources(
+        ListSourcesResponse {
+            sources: vec![source_fixture("work", "linear")],
+        },
+    ))
+    .await;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_coral"))
+        .arg("mcp-stdio")
+        .env("CORAL_ENDPOINT", server.endpoint_uri())
+        .env("CORAL_CONFIG_DIR", server.config_dir())
+        .env("CORAL_WORKSPACE", "work")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()?;
+    let mut stdin = child.stdin.take().expect("mcp stdio stdin");
+    let stdout = child.stdout.take().expect("mcp stdio stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {
+                    "name": "coral-cli-workspace-env-stdio-test",
+                    "version": "0.0.0"
+                }
+            }
+        }),
+    )
+    .await?;
+    let initialize = read_jsonrpc_response(&mut stdout, 1).await?;
+    let instructions = initialize
+        .pointer("/result/instructions")
+        .and_then(Value::as_str)
+        .expect("initialize response should include instructions");
+    assert!(
+        instructions.contains("Current Coral workspace: work."),
+        "the environment selection should scope the MCP session: {instructions}"
+    );
+
+    let list_sources_requests = server.list_sources_requests();
+    assert!(
+        !list_sources_requests.is_empty(),
+        "expected at least one list_sources call"
+    );
+    for request in &list_sources_requests {
+        assert_workspace_name(request.workspace.as_ref(), "work");
+    }
+    assert!(
+        server.list_workspaces_requests().is_empty(),
+        "an explicit selection must not consult memberships"
+    );
+
+    drop(stdin);
+    if timeout(Duration::from_secs(5), child.wait()).await.is_err() {
+        child.start_kill()?;
+        child.wait().await?;
+    }
+    server.shutdown().await;
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn mcp_stdio_lists_tools_and_resources() -> Result<(), Box<dyn std::error::Error>> {
     let server = MockServer::start().await;
