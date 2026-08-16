@@ -370,6 +370,10 @@ fn test_workspace() -> Workspace {
     workspace(TEST_WORKSPACE)
 }
 
+/// A second ordinary workspace, used to prove that a session only ever reaches
+/// the workspace it was scoped to.
+const OTHER_TEST_WORKSPACE: &str = "reporting";
+
 async fn create_test_workspace(app: &AppClient) {
     create_workspace(app, test_workspace()).await;
 }
@@ -2992,5 +2996,101 @@ async fn discovery_surfaces_degrade_when_source_listing_is_refused() {
 
     shutdown_mcp_session(client, mcp_task).await;
     refusing_task.abort();
+    app_server.shutdown().await.expect("shutdown app server");
+}
+
+/// Every discovery surface must read the workspace the session was scoped to.
+///
+/// The fixture source is installed in one workspace only, so a session scoped
+/// to the other one must report an empty catalog and no configured sources.
+#[tokio::test]
+async fn workspace_scoped_sessions_read_only_their_own_workspace() {
+    let temp = TempDir::new().expect("temp dir");
+    let manifest_path = write_fixture_manifest(temp.path());
+    let manifest_yaml = fs::read_to_string(&manifest_path).expect("read manifest");
+    let app_server = ServerBuilder::new()
+        .with_config_dir(temp.path().join("coral-config"))
+        .with_noop_feedback_uploads()
+        .start()
+        .await
+        .expect("start server");
+    let app = AppClient::connect(app_server.endpoint_uri())
+        .await
+        .expect("connect client");
+    create_test_workspace(&app).await;
+    create_workspace(&app, workspace(OTHER_TEST_WORKSPACE)).await;
+    add_demo_source_to(
+        &mut app.source_client(),
+        workspace(OTHER_TEST_WORKSPACE),
+        manifest_yaml,
+    )
+    .await;
+
+    let sourceless = CoralMcpServerFactory::new(
+        app.clone(),
+        McpOptions {
+            workspace: Some(test_workspace()),
+            ..McpOptions::default()
+        },
+    );
+    let sourced = CoralMcpServerFactory::new(
+        app,
+        McpOptions {
+            workspace: Some(workspace(OTHER_TEST_WORKSPACE)),
+            ..McpOptions::default()
+        },
+    );
+    let (sourceless_client, sourceless_task) = start_mcp_session(sourceless.create()).await;
+    let (sourced_client, sourced_task) = start_mcp_session(sourced.create()).await;
+
+    for (client, expected_workspace) in [
+        (&sourceless_client, TEST_WORKSPACE),
+        (&sourced_client, OTHER_TEST_WORKSPACE),
+    ] {
+        let instructions = client
+            .peer_info()
+            .expect("initialize result")
+            .instructions
+            .clone()
+            .expect("initialize instructions");
+        assert!(instructions.contains(&format!("Current Coral workspace: {expected_workspace}.")));
+    }
+
+    let sourceless_guide_description = sourceless_client
+        .list_all_resources()
+        .await
+        .expect("resources for the source-free workspace")[0]
+        .description
+        .as_deref()
+        .expect("guide description")
+        .to_string();
+    assert!(sourceless_guide_description.contains("0 configured connection(s)"));
+    assert!(sourceless_guide_description.contains("5 visible table(s)"));
+
+    let sourced_guide_description = sourced_client
+        .list_all_resources()
+        .await
+        .expect("resources for the workspace holding the source")[0]
+        .description
+        .as_deref()
+        .expect("guide description")
+        .to_string();
+    assert!(sourced_guide_description.contains("1 configured connection(s)"));
+    assert!(sourced_guide_description.contains("8 visible table(s)"));
+
+    let sourceless_guide = sourceless_client
+        .read_resource(ReadResourceRequestParams::new("coral://guide"))
+        .await
+        .expect("guide for the source-free workspace");
+    assert!(text_content(&sourceless_guide).contains("No user schemas are currently configured."));
+
+    let sourced_guide = sourced_client
+        .read_resource(ReadResourceRequestParams::new("coral://guide"))
+        .await
+        .expect("guide for the workspace holding the source");
+    assert!(text_content(&sourced_guide).contains("- local_messages"));
+
+    shutdown_mcp_session(sourceless_client, sourceless_task).await;
+    shutdown_mcp_session(sourced_client, sourced_task).await;
     app_server.shutdown().await.expect("shutdown app server");
 }
