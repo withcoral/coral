@@ -163,13 +163,18 @@ const TEST_WORKSPACE: &str = "analytics";
 
 /// Creates [`TEST_WORKSPACE`] and returns options scoped to it.
 async fn workspace_scoped_options(app: &AppClient) -> McpOptions {
+    create_workspace(app, TEST_WORKSPACE).await;
+    workspace_named_options()
+}
+
+/// Creates one workspace through the same public RPC any client would use.
+async fn create_workspace(app: &AppClient, name: &str) {
     app.workspace_client()
         .create_workspace(GrpcRequest::new(CreateWorkspaceRequest {
-            workspace: Some(workspace(TEST_WORKSPACE)),
+            workspace: Some(workspace(name)),
         }))
         .await
         .expect("create test workspace");
-    workspace_named_options()
 }
 
 /// Names [`TEST_WORKSPACE`] without creating it.
@@ -529,6 +534,152 @@ async fn readyz_classifies_auth_transport_and_timeout_results() {
         readiness_status(&pending, Duration::from_millis(10)).await,
         StatusCode::SERVICE_UNAVAILABLE
     );
+}
+
+/// Reads the workspace an initialized session was scoped to.
+async fn session_workspace_line(server: &RunningMcpHttpServer) -> String {
+    let transport =
+        StreamableHttpClientTransport::from_uri(format!("http://{}/mcp", server.local_addr()));
+    let client = ().serve(transport).await.expect("initialize MCP client");
+    let line = client
+        .peer_info()
+        .expect("initialize result")
+        .instructions
+        .as_deref()
+        .expect("initialize instructions")
+        .lines()
+        .find(|line| line.starts_with("Current Coral workspace:"))
+        .expect("workspace line")
+        .to_string();
+    let _cancel_result = client.cancel().await;
+    line
+}
+
+/// A configured name is used exactly, including one no workspace answers to.
+///
+/// Composition validated the name's shape already, so the adapter wraps it
+/// rather than re-deriving it, and it never consults memberships: a surface
+/// configured today has to start for a workspace created tomorrow. The unnamed
+/// second workspace here would make any membership-based choice ambiguous, so
+/// starting at all proves the configured name was taken as authoritative.
+#[tokio::test]
+async fn auth_disabled_workspace_selection_uses_the_configured_name() {
+    let (_temp, app_server, app) = local_app().await;
+    let options = workspace_scoped_options(&app).await;
+    create_workspace(&app, "reporting").await;
+    let config =
+        McpHttpConfig::new(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).expect("loopback config");
+    let server = start_auth_disabled(config, app, options)
+        .await
+        .expect("start MCP HTTP server");
+
+    assert_eq!(
+        session_workspace_line(&server).await,
+        format!("Current Coral workspace: {TEST_WORKSPACE}.")
+    );
+
+    server.shutdown().await.expect("shutdown MCP HTTP server");
+    app_server.shutdown().await.expect("shutdown app server");
+}
+
+/// Naming none is answered by the local user's one membership.
+#[tokio::test]
+async fn auth_disabled_workspace_selection_uses_the_sole_membership() {
+    let (_temp, app_server, app) = local_app().await;
+    create_workspace(&app, "reporting").await;
+    let config =
+        McpHttpConfig::new(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).expect("loopback config");
+    let server = start_auth_disabled(config, app, McpOptions::default())
+        .await
+        .expect("start MCP HTTP server");
+
+    assert_eq!(
+        session_workspace_line(&server).await,
+        "Current Coral workspace: reporting."
+    );
+
+    server.shutdown().await.expect("shutdown MCP HTTP server");
+    app_server.shutdown().await.expect("shutdown app server");
+}
+
+/// Owning nothing and owning several are different problems for the operator,
+/// so they get different guidance instead of one workspace picked for them.
+#[tokio::test]
+async fn auth_disabled_workspace_selection_reports_zero_and_several_distinctly() {
+    let (_temp, app_server, app) = local_app().await;
+    let config =
+        McpHttpConfig::new(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).expect("loopback config");
+
+    let Err(McpHttpError::NoLocalWorkspace) =
+        start_auth_disabled(config, app.clone(), McpOptions::default()).await
+    else {
+        panic!("a local user with no workspace must be told to create one");
+    };
+
+    create_workspace(&app, TEST_WORKSPACE).await;
+    create_workspace(&app, "reporting").await;
+    let Err(McpHttpError::AmbiguousLocalWorkspace(available)) =
+        start_auth_disabled(config, app, McpOptions::default()).await
+    else {
+        panic!("a local user with several workspaces must be told to name one");
+    };
+    for name in [TEST_WORKSPACE, "reporting"] {
+        assert!(
+            available.contains(name),
+            "the guidance must name the workspaces to choose between, got {available}"
+        );
+    }
+
+    app_server.shutdown().await.expect("shutdown app server");
+}
+
+/// A configured name nothing answers to is a request-time not-found, not a
+/// startup failure: the surface serves, and the tool that needs the workspace
+/// reports the ordinary contract rather than reaching another workspace.
+#[tokio::test]
+async fn auth_disabled_workspace_selection_defers_a_missing_name_to_the_request() {
+    let (_temp, app_server, app) = local_app().await;
+    create_workspace(&app, "reporting").await;
+    let config =
+        McpHttpConfig::new(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).expect("loopback config");
+    let server = start_auth_disabled(
+        config,
+        app,
+        McpOptions {
+            workspace: Some(workspace("never-created")),
+            ..McpOptions::default()
+        },
+    )
+    .await
+    .expect("a configured name is not checked for existence at startup");
+
+    let transport =
+        StreamableHttpClientTransport::from_uri(format!("http://{}/mcp", server.local_addr()));
+    let client = ().serve(transport).await.expect("initialize MCP client");
+    let refused = client
+        .call_tool(CallToolRequestParams::new("start_task").with_arguments(
+            serde_json::Map::from_iter([(
+                "intent".to_string(),
+                serde_json::json!("Reach the workspace that was configured"),
+            )]),
+        ))
+        .await
+        .expect("a workspace rejection is an in-band tool result");
+
+    assert_eq!(
+        refused.is_error,
+        Some(true),
+        "a configured workspace that does not exist must be reported, not replaced"
+    );
+    let reported = format!("{:?}", refused.content);
+    assert!(
+        reported.contains("never-created"),
+        "the refusal must name the workspace that was asked for, got {reported}"
+    );
+
+    let _cancel_result = client.cancel().await;
+    server.shutdown().await.expect("shutdown MCP HTTP server");
+    app_server.shutdown().await.expect("shutdown app server");
 }
 
 #[tokio::test]

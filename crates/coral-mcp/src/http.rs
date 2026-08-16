@@ -22,8 +22,9 @@ use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, Method, Request, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get};
+use coral_api::v1::ListWorkspacesRequest;
 use coral_app::{CanonicalOauthUrl, OauthUrlError};
-use coral_client::AppClient;
+use coral_client::{AppClient, workspace as workspace_resource};
 use futures::{Stream, StreamExt as _};
 use rmcp::model::{ClientJsonRpcMessage, ClientRequest, ServerJsonRpcMessage};
 use rmcp::transport::{
@@ -49,6 +50,7 @@ use tokio::net::TcpListener;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore, oneshot};
 use tokio::task::JoinHandle;
 use tokio_stream::wrappers::ReceiverStream;
+use tonic::Request as GrpcRequest;
 use tower::ServiceExt;
 use url::{Position, Url};
 
@@ -532,6 +534,14 @@ pub enum McpHttpError {
         "no workspace is available for the local MCP server. Create one with `coral workspace create NAME`, then name it in `server.mcp_http.workspace`."
     )]
     NoLocalWorkspace,
+    /// Nothing names a workspace and the local user belongs to several.
+    #[error(
+        "several workspaces are available ({0}). Name the one the local MCP server serves in `server.mcp_http.workspace`."
+    )]
+    AmbiguousLocalWorkspace(String),
+    /// The membership listing that resolves the local workspace failed.
+    #[error("failed to list the local workspaces the MCP server could serve")]
+    LocalWorkspaceLookup(#[source] tonic::Status),
     /// The TCP listener could not bind.
     #[error("failed to bind MCP HTTP server to {address}")]
     Bind {
@@ -632,14 +642,16 @@ fn join_server(
 ///
 /// # Errors
 ///
-/// Returns [`McpHttpError`] if the surface has no resolved workspace to serve
-/// or the listener cannot bind.
+/// Returns [`McpHttpError`] if no workspace can be resolved for the surface or
+/// if the listener cannot bind. Resolution runs first so an unservable
+/// configuration is reported without ever holding the port.
 pub async fn start_auth_disabled(
     config: McpHttpConfig,
     app: AppClient,
     options: McpOptions,
 ) -> Result<RunningMcpHttpServer, McpHttpError> {
     options.surface.validate(options.feedback_enabled)?;
+    let options = resolve_local_workspace(&app, options).await?;
     let listener = TcpListener::bind(config.bind_addr())
         .await
         .map_err(|source| McpHttpError::Bind {
@@ -661,6 +673,53 @@ pub async fn start_auth_disabled(
         router,
         state.server.clone(),
     ))
+}
+
+/// Scopes the loopback surface to a workspace the local user actually holds.
+///
+/// A configured name is authoritative and is used byte for byte: composition
+/// already validated its shape, and whether a workspace by that name exists is
+/// answered by the request that needs it, under the ordinary not-found
+/// contract. That keeps a surface configured today servable for a workspace
+/// created tomorrow.
+///
+/// With nothing configured the local user must hold exactly one workspace.
+/// Zero and several are different problems — one person has nothing to serve,
+/// the other has not said which — so they are reported as different errors
+/// naming the action that resolves each, rather than settled by picking one.
+async fn resolve_local_workspace(
+    app: &AppClient,
+    options: McpOptions,
+) -> Result<McpOptions, McpHttpError> {
+    if options.workspace.is_some() {
+        return Ok(options);
+    }
+    let mut names = local_workspace_names(app).await?;
+    if names.len() != 1 {
+        return Err(if names.is_empty() {
+            McpHttpError::NoLocalWorkspace
+        } else {
+            McpHttpError::AmbiguousLocalWorkspace(names.join(", "))
+        });
+    }
+    Ok(McpOptions {
+        workspace: Some(workspace_resource(names.remove(0))),
+        ..options
+    })
+}
+
+/// Names the workspaces the local user belongs to, in listing order.
+async fn local_workspace_names(app: &AppClient) -> Result<Vec<String>, McpHttpError> {
+    Ok(app
+        .workspace_client()
+        .list_workspaces(GrpcRequest::new(ListWorkspacesRequest {}))
+        .await
+        .map_err(McpHttpError::LocalWorkspaceLookup)?
+        .into_inner()
+        .memberships
+        .into_iter()
+        .map(|membership| membership.workspace.unwrap_or_default().name)
+        .collect())
 }
 
 /// Starts authenticated serving; fails when the listener cannot bind.
