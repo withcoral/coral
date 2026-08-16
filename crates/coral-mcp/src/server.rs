@@ -285,6 +285,22 @@ impl CoralMcpServerFactory {
             Arc::clone(&self.guide_block),
         )
     }
+
+    /// Constructs a handler whose source client is replaced.
+    ///
+    /// A shared deployment refuses owner-only source configuration to agent
+    /// credentials, which a local unauthenticated fixture cannot reproduce.
+    /// Substituting the source client is how tests reach that refusal.
+    #[cfg(test)]
+    pub(crate) fn create_with_source_client(&self, source: SourceClient) -> CoralMcpServer {
+        let mut server = CoralMcpServer::new(
+            &self.app,
+            self.options.clone(),
+            Arc::clone(&self.guide_block),
+        );
+        server.core_tools.source = source;
+        server
+    }
 }
 
 /// Session-bound implementation of Coral's built-in MCP tools.
@@ -410,6 +426,27 @@ impl CoralToolset {
             .sources)
     }
 
+    /// Lists installed sources for a discovery surface, degrading to none when
+    /// the caller may not read source configuration.
+    ///
+    /// Source configuration is owner-only because it carries credential setup
+    /// metadata, so an MCP agent credential is refused even while acting for a
+    /// person who owns the workspace. Sources are advisory context on
+    /// discovery surfaces, so a refusal must shrink the answer rather than fail
+    /// the request.
+    async fn load_sources_for_discovery(&self) -> Vec<Source> {
+        match self.load_sources().await {
+            Ok(sources) => sources,
+            Err(status) => {
+                tracing::warn!(
+                    error = %status,
+                    "failed to load sources for an MCP discovery surface"
+                );
+                Vec::new()
+            }
+        }
+    }
+
     async fn load_catalog(
         &self,
         catalog_name: Option<&str>,
@@ -512,16 +549,20 @@ impl CoralToolset {
     async fn load_sources_and_catalog_counts(
         &self,
     ) -> Result<(Vec<Source>, usize, usize), tonic::Status> {
-        let (sources, (table_count, table_function_count)) =
-            tokio::try_join!(self.load_sources(), self.load_catalog_counts())?;
+        let (sources, counts) = tokio::join!(
+            self.load_sources_for_discovery(),
+            self.load_catalog_counts()
+        );
+        let (table_count, table_function_count) = counts?;
         Ok((sources, table_count, table_function_count))
     }
 
     async fn load_sources_and_guide_catalog(
         &self,
     ) -> Result<(Vec<Source>, Vec<ProtoTableSummary>, Vec<String>), tonic::Status> {
-        let (sources, (tables, table_function_schema_names)) =
-            tokio::try_join!(self.load_sources(), self.load_guide_catalog())?;
+        let (sources, catalog) =
+            tokio::join!(self.load_sources_for_discovery(), self.load_guide_catalog());
+        let (tables, table_function_schema_names) = catalog?;
         Ok((sources, tables, table_function_schema_names))
     }
 
@@ -934,16 +975,12 @@ impl CoralToolset {
             .load_catalog_counts()
             .await
             .map_err(|status| status_to_error_data(&status))?;
-        let source_names = match self.load_sources().await {
-            Ok(sources) => sources.into_iter().map(|source| source.name).collect(),
-            Err(status) => {
-                tracing::warn!(
-                    error = %status,
-                    "failed to load source names for MCP tool descriptions"
-                );
-                Vec::new()
-            }
-        };
+        let source_names = self
+            .load_sources_for_discovery()
+            .await
+            .into_iter()
+            .map(|source| source.name)
+            .collect();
         let tool_context =
             ToolDescriptionContext::new(visible_table_count, visible_function_count, source_names);
         Ok(available_tools(

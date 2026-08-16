@@ -5,10 +5,18 @@
 )]
 
 use std::fs;
+use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 
 use coral_api::v1::{
-    CreateWorkspaceRequest, ImportSourceRequest, Workspace, import_source_response,
+    CreateBundledSourceRequest, CreateBundledSourceResponse, CreateBundledSourceWithOAuthRequest,
+    CreateBundledSourceWithOAuthResponse, CreateWorkspaceRequest, DeleteSourceRequest,
+    DeleteSourceResponse, DescribeSourceManifestRequest, DescribeSourceManifestResponse,
+    DiscoverSourcesRequest, DiscoverSourcesResponse, GetSourceInfoRequest,
+    GetSourceInfoResponse, GetSourceRequest, GetSourceResponse, ImportSourceRequest,
+    ImportSourceResponse, ListSourcesRequest, ListSourcesResponse, ValidateSourceRequest,
+    ValidateSourceResponse, Workspace, import_source_response,
+    source_service_server::{SourceService, SourceServiceServer},
 };
 use coral_client::{
     AppClient, SourceClient,
@@ -16,6 +24,7 @@ use coral_client::{
     workspace,
 };
 use futures::future::BoxFuture;
+use futures::stream::Empty;
 use jsonschema::Validator;
 use opentelemetry::trace::{SpanId, SpanKind, TracerProvider as _};
 use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider, SpanData};
@@ -27,7 +36,8 @@ use rmcp::{
 };
 use serde_json::{Map, Value, json};
 use tempfile::TempDir;
-use tonic::Request;
+use tokio_stream::wrappers::TcpListenerStream;
+use tonic::{Request, Response, Status, transport::Server};
 use tracing_subscriber::Layer as _;
 use tracing_subscriber::filter::Targets;
 use tracing_subscriber::layer::SubscriberExt as _;
@@ -361,9 +371,13 @@ fn test_workspace() -> Workspace {
 }
 
 async fn create_test_workspace(app: &AppClient) {
+    create_workspace(app, test_workspace()).await;
+}
+
+async fn create_workspace(app: &AppClient, workspace: Workspace) {
     app.workspace_client()
         .create_workspace(Request::new(CreateWorkspaceRequest {
-            workspace: Some(test_workspace()),
+            workspace: Some(workspace),
         }))
         .await
         .expect("create test workspace");
@@ -377,9 +391,17 @@ fn feedback_reports_path(root: &Path) -> PathBuf {
 }
 
 async fn add_demo_source(source_client: &mut SourceClient, manifest_yaml: String) {
+    add_demo_source_to(source_client, test_workspace(), manifest_yaml).await;
+}
+
+async fn add_demo_source_to(
+    source_client: &mut SourceClient,
+    workspace: Workspace,
+    manifest_yaml: String,
+) {
     let mut stream = source_client
         .import_source(Request::new(ImportSourceRequest {
-            workspace: Some(test_workspace()),
+            workspace: Some(workspace),
             manifest_yaml,
             variables: Vec::new(),
             secrets: Vec::new(),
@@ -2783,4 +2805,192 @@ async fn mcp_sql_returns_large_int64_as_string() {
     );
 
     session.shutdown().await;
+}
+
+/// The refusal a shared deployment returns for owner-only source configuration.
+const SOURCE_REFUSAL: &str = "workspace source configuration is owner-only";
+
+fn source_refusal<T>() -> Result<T, Status> {
+    Err(Status::permission_denied(SOURCE_REFUSAL))
+}
+
+/// A source service that refuses every call.
+///
+/// Source configuration is owner-only and `WorkspaceAuthorizer` denies `Manage`
+/// to an agent principal before any role is read, so an MCP agent credential is
+/// refused even while acting for a person who owns the workspace. A local
+/// unauthenticated fixture always speaks as an owner, so the refusal has to be
+/// served rather than provoked.
+#[derive(Clone, Copy)]
+struct RefusingSourceService;
+
+#[tonic::async_trait]
+impl SourceService for RefusingSourceService {
+    type CreateBundledSourceWithOAuthStream =
+        Empty<Result<CreateBundledSourceWithOAuthResponse, Status>>;
+    type ImportSourceStream = Empty<Result<ImportSourceResponse, Status>>;
+
+    async fn discover_sources(
+        &self,
+        _request: Request<DiscoverSourcesRequest>,
+    ) -> Result<Response<DiscoverSourcesResponse>, Status> {
+        source_refusal()
+    }
+
+    async fn list_sources(
+        &self,
+        _request: Request<ListSourcesRequest>,
+    ) -> Result<Response<ListSourcesResponse>, Status> {
+        source_refusal()
+    }
+
+    async fn get_source(
+        &self,
+        _request: Request<GetSourceRequest>,
+    ) -> Result<Response<GetSourceResponse>, Status> {
+        source_refusal()
+    }
+
+    async fn get_source_info(
+        &self,
+        _request: Request<GetSourceInfoRequest>,
+    ) -> Result<Response<GetSourceInfoResponse>, Status> {
+        source_refusal()
+    }
+
+    async fn describe_source_manifest(
+        &self,
+        _request: Request<DescribeSourceManifestRequest>,
+    ) -> Result<Response<DescribeSourceManifestResponse>, Status> {
+        source_refusal()
+    }
+
+    async fn create_bundled_source(
+        &self,
+        _request: Request<CreateBundledSourceRequest>,
+    ) -> Result<Response<CreateBundledSourceResponse>, Status> {
+        source_refusal()
+    }
+
+    async fn create_bundled_source_with_o_auth(
+        &self,
+        _request: Request<CreateBundledSourceWithOAuthRequest>,
+    ) -> Result<Response<Self::CreateBundledSourceWithOAuthStream>, Status> {
+        source_refusal()
+    }
+
+    async fn import_source(
+        &self,
+        _request: Request<ImportSourceRequest>,
+    ) -> Result<Response<Self::ImportSourceStream>, Status> {
+        source_refusal()
+    }
+
+    async fn delete_source(
+        &self,
+        _request: Request<DeleteSourceRequest>,
+    ) -> Result<Response<DeleteSourceResponse>, Status> {
+        source_refusal()
+    }
+
+    async fn validate_source(
+        &self,
+        _request: Request<ValidateSourceRequest>,
+    ) -> Result<Response<ValidateSourceResponse>, Status> {
+        source_refusal()
+    }
+}
+
+/// Serves [`RefusingSourceService`] on loopback and returns a client for it.
+async fn start_refusing_source_client() -> (SourceClient, tokio::task::JoinHandle<()>) {
+    let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("bind refusing source server");
+    let addr = listener
+        .local_addr()
+        .expect("refusing source server address");
+    let task = tokio::spawn(async move {
+        let _served = Server::builder()
+            .add_service(SourceServiceServer::new(RefusingSourceService))
+            .serve_with_incoming(TcpListenerStream::new(listener))
+            .await;
+    });
+    let app = AppClient::connect(&format!("http://{addr}"))
+        .await
+        .expect("connect refusing source client");
+    (app.source_client(), task)
+}
+
+/// A refused source listing must shrink each discovery surface, not fail it.
+///
+/// `list_tools`, `list_resources`, and the `coral://guide` resource each blend
+/// installed sources with catalog contents. Sources are advisory context there,
+/// so the catalog half must still answer when source configuration is refused.
+#[tokio::test]
+async fn discovery_surfaces_degrade_when_source_listing_is_refused() {
+    let temp = TempDir::new().expect("temp dir");
+    let manifest_path = write_fixture_manifest(temp.path());
+    let manifest_yaml = fs::read_to_string(&manifest_path).expect("read manifest");
+    let app_server = ServerBuilder::new()
+        .with_config_dir(temp.path().join("coral-config"))
+        .with_noop_feedback_uploads()
+        .start()
+        .await
+        .expect("start server");
+    let app = AppClient::connect(app_server.endpoint_uri())
+        .await
+        .expect("connect client");
+    create_test_workspace(&app).await;
+    add_demo_source_to(
+        &mut app.source_client(),
+        test_workspace(),
+        manifest_yaml.clone(),
+    )
+    .await;
+
+    let (refusing_source, refusing_task) = start_refusing_source_client().await;
+    let factory = CoralMcpServerFactory::new(
+        app,
+        McpOptions {
+            workspace: Some(test_workspace()),
+            ..McpOptions::default()
+        },
+    );
+    let (client, mcp_task) =
+        start_mcp_session(factory.create_with_source_client(refusing_source)).await;
+
+    let tools = client
+        .list_all_tools()
+        .await
+        .expect("tools despite a refused source listing");
+    let sql_description = tool_by_name(&tools, "sql")
+        .description
+        .as_deref()
+        .expect("sql description")
+        .to_string();
+    assert!(sql_description.contains("8 table(s) are currently visible"));
+    assert!(sql_description.contains("No connected user sources are currently configured"));
+
+    let resources = client
+        .list_all_resources()
+        .await
+        .expect("resources despite a refused source listing");
+    let guide_description = resources[0]
+        .description
+        .as_deref()
+        .expect("guide description");
+    assert!(guide_description.contains("0 configured connection(s)"));
+    assert!(guide_description.contains("8 visible table(s)"));
+
+    let guide = client
+        .read_resource(ReadResourceRequestParams::new("coral://guide"))
+        .await
+        .expect("guide despite a refused source listing");
+    let guide_text = text_content(&guide);
+    assert!(guide_text.contains("Visible schemas:"));
+    assert!(guide_text.contains("- local_messages"));
+
+    shutdown_mcp_session(client, mcp_task).await;
+    refusing_task.abort();
+    app_server.shutdown().await.expect("shutdown app server");
 }
