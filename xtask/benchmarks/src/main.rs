@@ -13,8 +13,10 @@ use std::process::ExitCode;
 
 use anyhow::{Context, Result, ensure};
 use clap::{Parser, Subcommand};
-use coral_api::v1::{ImportSourceRequest, import_source_response};
-use coral_client::{AppClient, default_workspace, local::ServerBuilder};
+use coral_api::v1::{
+    CreateWorkspaceRequest, ImportSourceRequest, Workspace, import_source_response,
+};
+use coral_client::{AppClient, local::ServerBuilder, workspace};
 use coral_mcp::{
     McpOptions,
     http::{McpHttpConfig, start_auth_disabled},
@@ -31,6 +33,13 @@ mod universal_search;
 const SCHEMA: &str = "benchmark_columns";
 const TABLE: &str = "wide_table";
 const COLUMN_COUNT: usize = 50;
+
+/// The workspace this benchmark creates and imports its fixture into.
+///
+/// A fresh state directory owns no workspace, so the harness has to create the
+/// one it measures against and name it on every request that follows.
+const WORKSPACE: &str = "benchmarks";
+const TASK_INTENT: &str = "Measure the token cost of list_columns";
 
 #[derive(Debug, Parser)]
 #[command(
@@ -96,6 +105,7 @@ async fn run_list_columns_benchmark() -> Result<()> {
     let app = AppClient::connect(app_server.endpoint_uri())
         .await
         .context("connecting benchmark Coral client")?;
+    create_benchmark_workspace(&app).await?;
     import_fixture(&app, manifest_yaml).await?;
 
     let mcp_server = start_auth_disabled(
@@ -104,6 +114,7 @@ async fn run_list_columns_benchmark() -> Result<()> {
         app,
         McpOptions {
             source_names: vec![SCHEMA.to_string()],
+            workspace: Some(benchmark_workspace()),
             ..McpOptions::default()
         },
     )
@@ -112,12 +123,18 @@ async fn run_list_columns_benchmark() -> Result<()> {
     let transport =
         StreamableHttpClientTransport::from_uri(format!("http://{}/mcp", mcp_server.local_addr()));
     let client = ().serve(transport).await.context("starting benchmark MCP client")?;
+    // `list_columns` is task-attributed, so the measurement runs inside a real
+    // task exactly as an agent's would: the attribution travels with the call
+    // rather than being measured as a special case.
+    let task_id = start_benchmark_task(&client).await?;
     let response = client
         .call_tool(
             CallToolRequestParams::new("list_columns").with_arguments(Map::from_iter([
                 ("schema".to_string(), Value::String(SCHEMA.to_string())),
                 ("table".to_string(), Value::String(TABLE.to_string())),
                 ("limit".to_string(), Value::from(COLUMN_COUNT)),
+                ("task_id".to_string(), Value::String(task_id.clone())),
+                ("intent".to_string(), Value::String(TASK_INTENT.to_string())),
             ])),
         )
         .await
@@ -166,11 +183,46 @@ async fn run_list_columns_benchmark() -> Result<()> {
     Ok(())
 }
 
+fn benchmark_workspace() -> Workspace {
+    workspace(WORKSPACE)
+}
+
+async fn start_benchmark_task(
+    client: &rmcp::service::RunningService<rmcp::RoleClient, ()>,
+) -> Result<String> {
+    let started = client
+        .call_tool(
+            CallToolRequestParams::new("start_task").with_arguments(Map::from_iter([(
+                "intent".to_string(),
+                Value::String(TASK_INTENT.to_string()),
+            )])),
+        )
+        .await
+        .context("starting the benchmark MCP task")?;
+    let task_id = started
+        .structured_content
+        .as_ref()
+        .and_then(|content| content.get("task_id"))
+        .and_then(Value::as_str)
+        .context("start_task response has no task ID")?;
+    Ok(task_id.to_string())
+}
+
+async fn create_benchmark_workspace(app: &AppClient) -> Result<()> {
+    app.workspace_client()
+        .create_workspace(Request::new(CreateWorkspaceRequest {
+            workspace: Some(benchmark_workspace()),
+        }))
+        .await
+        .context("creating the benchmark workspace")?;
+    Ok(())
+}
+
 async fn import_fixture(app: &AppClient, manifest_yaml: String) -> Result<()> {
     let mut stream = app
         .source_client()
         .import_source(Request::new(ImportSourceRequest {
-            workspace: Some(default_workspace()),
+            workspace: Some(benchmark_workspace()),
             manifest_yaml,
             variables: Vec::new(),
             secrets: Vec::new(),
