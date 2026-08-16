@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use coral_api::v1::{
     AddWorkspaceMemberRequest, AddWorkspaceMemberResponse, CreateWorkspaceRequest,
@@ -257,6 +257,29 @@ impl GrpcHarness {
     }
 }
 
+/// The configuration an unauthenticated deployment reads: no `[auth]` at all,
+/// which is what leaves the local principal owning everything.
+const LOCAL_PRINCIPAL_CONFIG: &str = "[credentials]\nstorage = \"file\"\n";
+
+/// Writes `config.toml` as the install's own configuration plus `mode`.
+///
+/// Composing from the base each time is what lets one install move between
+/// modes: an `[auth]` section a previous start wrote is gone rather than
+/// lingering to contradict the mode being started now.
+fn write_config(config_dir: &Path, base: &str, mode: &str) {
+    std::fs::create_dir_all(config_dir).expect("create config dir");
+    let separator = if base.is_empty() || base.ends_with('\n') {
+        ""
+    } else {
+        "\n"
+    };
+    std::fs::write(
+        config_dir.join("config.toml"),
+        format!("{base}{separator}\n{mode}"),
+    )
+    .expect("write the deployment config");
+}
+
 fn ensure_file_credentials_config(config_dir: &Path) {
     std::fs::create_dir_all(config_dir).expect("create config dir");
     let config_file = config_dir.join("config.toml");
@@ -277,15 +300,132 @@ fn ensure_file_credentials_config(config_dir: &Path) {
 /// leaked one would be recognizable on the wire.
 pub(crate) const TEST_ISSUER: &str = "https://issuer.test/authorization";
 
+/// How a deployment admits its callers, which is also what settles whether it
+/// honors the built-in local principal: installing any provider retires it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Admission {
+    /// Nothing authenticates callers, so every request arrives as the host.
+    LocalPrincipal,
+    /// Bearer tokens name each caller, the way a shared deployment admits them.
+    Tokens,
+}
+
+/// One install's state directory, which outlives the servers started over it.
+///
+/// A deployment's mode is settled when its server starts, so moving an install
+/// between modes means shutting one server down and starting the next over the
+/// same directory.
+pub(crate) struct Install {
+    temp: Mutex<Option<TempDir>>,
+    config_dir: PathBuf,
+    /// The `config.toml` this install started life with, captured before any
+    /// mode wrote its own sections over it.
+    ///
+    /// The legacy tables a test seeds here are the subject of these tests, so
+    /// each start composes its configuration on top of them rather than
+    /// replacing them.
+    base_config: Mutex<Option<String>>,
+}
+
+impl Install {
+    pub(crate) fn new() -> Arc<Self> {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+        Arc::new(Self {
+            temp: Mutex::new(Some(temp)),
+            config_dir,
+            base_config: Mutex::new(None),
+        })
+    }
+
+    pub(crate) fn config_dir(&self) -> &Path {
+        &self.config_dir
+    }
+
+    /// The configuration this install held before any server started over it.
+    fn base_config(&self) -> String {
+        let mut base = self.base_config.lock().expect("install base config");
+        base.get_or_insert_with(|| {
+            std::fs::read_to_string(self.config_dir.join("config.toml")).unwrap_or_default()
+        })
+        .clone()
+    }
+
+    /// Starts a server over whatever this install already holds, so a restart
+    /// reads the state the previous one left behind.
+    ///
+    /// The error is reported as text rather than swallowed: a startup that
+    /// refuses because of the state on disk is itself part of the contract.
+    pub(crate) async fn start(
+        self: &Arc<Self>,
+        admission: Admission,
+    ) -> Result<SharedDeployment, String> {
+        // What admits a deployment's callers is what its configuration says, so
+        // moving an install between modes rewrites that configuration rather
+        // than varying how the server is built. The `[auth]` section is the
+        // whole of the difference: with it the server authenticates session
+        // tokens, and without it the local principal owns everything.
+        let base = self.base_config();
+        let session_auth = match admission {
+            Admission::LocalPrincipal => {
+                write_config(&self.config_dir, &base, LOCAL_PRINCIPAL_CONFIG);
+                None
+            }
+            Admission::Tokens => {
+                let session_auth = SessionAuthFixture::key_in(&self.config_dir);
+                write_config(&self.config_dir, &base, &SessionAuthFixture::config_toml());
+                Some(session_auth)
+            }
+        };
+        let server = match &session_auth {
+            Some(session_auth) => session_authenticated_server(session_auth)
+                .await
+                .map_err(|error| error.to_string())?,
+            None => ServerBuilder::new()
+                .with_config_dir(&self.config_dir)
+                .start()
+                .await
+                .map_err(|error| error.to_string())?,
+        };
+        let trace_store_dir = server.local_trace_store_dir().map(Path::to_path_buf);
+        self.keep_when_it_holds_the_installed_trace_store(trace_store_dir.as_deref());
+        Ok(SharedDeployment {
+            endpoint_uri: server.endpoint_uri().to_string(),
+            trace_store_dir,
+            install: Arc::clone(self),
+            session_auth,
+            server,
+        })
+    }
+
+    /// The local trace store is installed once per process, by whichever server
+    /// starts first, and the trace-history tests write into whatever directory
+    /// that turned out to be. When it is this install's, the directory must
+    /// outlive every server started over it: removing it would delete the
+    /// installed store out from under a concurrently running test.
+    fn keep_when_it_holds_the_installed_trace_store(&self, trace_store_dir: Option<&Path>) {
+        let mut temp = self.temp.lock().expect("install state directory");
+        let Some(owned) = temp.take() else {
+            return;
+        };
+        if trace_store_dir.is_some_and(|dir| dir.starts_with(owned.path())) {
+            let _installed_store_root: PathBuf = owned.keep();
+        } else {
+            *temp = Some(owned);
+        }
+    }
+}
+
 /// A running server that authenticates its callers, plus the directory rows
 /// login provisioning would have written for them.
 pub(crate) struct SharedDeployment {
-    _temp: Option<TempDir>,
-    config_dir: PathBuf,
+    install: Arc<Install>,
     endpoint_uri: String,
     trace_store_dir: Option<PathBuf>,
-    session_auth: SessionAuthFixture,
-    _server: RunningServer,
+    /// Present only while this deployment authenticates its callers; a
+    /// local-principal deployment has no tokens to mint.
+    session_auth: Option<SessionAuthFixture>,
+    server: RunningServer,
 }
 
 /// What one workspace has on record from work its callers asked for.
@@ -302,40 +442,20 @@ pub(crate) struct WorkspaceWork {
 
 impl SharedDeployment {
     pub(crate) async fn start() -> Self {
-        let temp = TempDir::new().expect("temp dir");
-        let config_dir = temp.path().join("coral-config");
-        // Configuring session authentication is what makes a deployment a
-        // shared one: it retires the implicit local owner, so each request over
-        // this transport arrives as a distinct person or agent rather than as
-        // the host. The fixture writes the credentials config too.
-        let session_auth = SessionAuthFixture::write(&config_dir);
-        let server = session_authenticated_server(&session_auth)
+        Install::new()
+            .start(Admission::Tokens)
             .await
-            .expect("start an authenticated server");
-        let endpoint_uri = server.endpoint_uri().to_string();
-        let trace_store_dir = server.local_trace_store_dir().map(Path::to_path_buf);
-        // The local trace store is installed once per process, by whichever
-        // server starts first, and the trace-history tests write into whatever
-        // directory that turned out to be. When it is this one's, the temp dir
-        // must outlive the deployment: removing it would delete the installed
-        // store out from under a concurrently running test.
-        let temp = if trace_store_dir
-            .as_ref()
-            .is_some_and(|dir| dir.starts_with(temp.path()))
-        {
-            let _installed_store_root: PathBuf = temp.keep();
-            None
-        } else {
-            Some(temp)
-        };
-        Self {
-            _temp: temp,
-            config_dir,
-            endpoint_uri,
-            trace_store_dir,
-            session_auth,
-            _server: server,
-        }
+            .expect("start an authenticated server")
+    }
+
+    /// Shuts this server down and hands back the install it ran over, so the
+    /// next start can bring the same state up under another admission mode.
+    pub(crate) async fn shutdown(self) -> Arc<Install> {
+        let Self {
+            install, server, ..
+        } = self;
+        server.shutdown().await.expect("shut the server down");
+        install
     }
 
     /// Writes one directory row the way a completed login would, and returns
@@ -345,6 +465,20 @@ impl SharedDeployment {
     /// not the OIDC round trip — that these transport tests need. Authorization
     /// never sees the upstream subject: it is stored here and nowhere else.
     pub(crate) async fn seed_user(&self, handle: &str, display_name: &str) -> String {
+        self.seed_user_with_subject(handle, &format!("upstream-subject-{handle}"), display_name)
+            .await
+    }
+
+    /// Writes a directory row carrying `subject` verbatim.
+    ///
+    /// A verified identity always carries a non-empty `sub`, so this is the
+    /// only way to put on record the corrupted rows a login could not produce.
+    pub(crate) async fn seed_user_with_subject(
+        &self,
+        handle: &str,
+        subject: &str,
+        display_name: &str,
+    ) -> String {
         let user_id = format!("user-{handle}");
         let pool = self.app_database().await;
         sqlx::query(
@@ -352,7 +486,7 @@ impl SharedDeployment {
         )
         .bind(&user_id)
         .bind(TEST_ISSUER)
-        .bind(format!("upstream-subject-{handle}"))
+        .bind(subject)
         .bind(display_name)
         .bind(1_i64)
         .bind(1_i64)
@@ -361,6 +495,62 @@ impl SharedDeployment {
         .expect("seed a provisioned login");
         pool.close().await;
         user_id
+    }
+
+    /// Removes one directory row, for the corrupted state an operator repairs
+    /// between two starts.
+    pub(crate) async fn remove_user(&self, user_id: &str) {
+        let pool = self.app_database().await;
+        sqlx::query("DELETE FROM users WHERE user_id = ?")
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .expect("remove a directory row");
+        pool.close().await;
+    }
+
+    /// Writes the workspace row a pre-membership install left behind: one that
+    /// exists with no memberships at all, which is what the upgrade adopts.
+    pub(crate) async fn seed_ownerless_workspace(&self, name: &str) {
+        let pool = self.app_database().await;
+        sqlx::query("INSERT INTO workspaces (id, created_at_unix_nanos) VALUES (?, ?)")
+            .bind(name)
+            .bind(1_i64)
+            .execute(&pool)
+            .await
+            .expect("seed an ownerless workspace");
+        pool.close().await;
+    }
+
+    /// Every membership on record as `(workspace, user, role)`, read from the
+    /// deployment's own state rather than through a listing that answers only
+    /// for the caller who asked — and which the local principal is answered
+    /// without any membership row existing at all.
+    pub(crate) async fn memberships(&self) -> Vec<(String, String, String)> {
+        let pool = self.app_database().await;
+        let rows = sqlx::query_as::<_, (String, String, String)>(
+            "SELECT workspace_id, user_id, role FROM workspace_members ORDER BY workspace_id, user_id",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("read the memberships this deployment holds");
+        pool.close().await;
+        rows
+    }
+
+    /// Whether the one-time local-ownership upgrade has been claimed against
+    /// this state directory. A claim that a failed upgrade rolled back leaves
+    /// no row, which is what lets a later start retry it.
+    pub(crate) async fn local_ownership_migration_claimed(&self) -> bool {
+        let pool = self.app_database().await;
+        let claims = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM app_state_migrations WHERE id = 'local_workspace_ownership_v1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("read the migration marker");
+        pool.close().await;
+        claims == 1
     }
 
     pub(crate) async fn as_person(&self, user_id: &str) -> AppClient {
@@ -378,6 +568,14 @@ impl SharedDeployment {
         self.connect(agent_id, PrincipalKind::Agent).await
     }
 
+    /// Connects the way a no-login install's only caller does: unauthenticated,
+    /// and therefore admitted as the built-in local principal.
+    pub(crate) async fn as_host(&self) -> AppClient {
+        AppClient::connect(self.endpoint_uri())
+            .await
+            .expect("connect a test client")
+    }
+
     /// The address to dial for a service `AppClient` does not carry, such as
     /// `TraceService` or `FeatureService`.
     pub(crate) fn endpoint_uri(&self) -> &str {
@@ -393,13 +591,20 @@ impl SharedDeployment {
     /// The bearer credential an actor of `principal_kind` presents for
     /// `user_id`, for tests that dial a service `AppClient` does not carry.
     pub(crate) fn credential(&self, user_id: &str, principal_kind: PrincipalKind) -> String {
-        self.session_auth.access_token_for(user_id, principal_kind)
+        self.session_auth
+            .as_ref()
+            .expect("a local-principal deployment admits the host, not a named caller")
+            .access_token_for(user_id, principal_kind)
     }
 
     async fn connect(&self, user_id: &str, principal_kind: PrincipalKind) -> AppClient {
+        let session_auth = self
+            .session_auth
+            .as_ref()
+            .expect("a local-principal deployment admits the host, not a named caller");
         connect_with_loopback_bearer(
             self.endpoint_uri(),
-            BearerToken::new(self.session_auth.access_token_for(user_id, principal_kind))
+            BearerToken::new(session_auth.access_token_for(user_id, principal_kind))
                 .expect("test bearer token"),
         )
         .await
@@ -473,7 +678,9 @@ impl SharedDeployment {
 
     async fn app_database(&self) -> sqlx::SqlitePool {
         SqlitePoolOptions::new()
-            .connect_with(SqliteConnectOptions::new().filename(self.config_dir.join("coral.db")))
+            .connect_with(
+                SqliteConnectOptions::new().filename(self.install.config_dir().join("coral.db")),
+            )
             .await
             .expect("open the app database")
     }

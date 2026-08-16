@@ -28,20 +28,51 @@ pub(crate) struct SessionAuthFixture {
 
 impl SessionAuthFixture {
     /// Writes the signing key and the config an authenticated server needs.
+    ///
+    /// A directory that already holds a key keeps it. A deployment restarted
+    /// over its own state is the same deployment, and re-minting its key would
+    /// silently invalidate every token the previous server handed out.
     pub(crate) fn write(config_dir: &Path) -> Self {
+        let fixture = Self::key_in(config_dir);
+        fs::write(config_dir.join("config.toml"), Self::config_toml())
+            .expect("write the session auth config");
+        fixture
+    }
+
+    /// Resolves the signing key in `config_dir` without touching its config.
+    ///
+    /// A caller that owns the rest of `config.toml` — an install whose contents
+    /// are the subject of the test — composes it from [`Self::config_toml`]
+    /// instead, so the configuration it started from survives the write.
+    pub(crate) fn key_in(config_dir: &Path) -> Self {
         fs::create_dir_all(config_dir).expect("create config dir");
-        let signing_key =
-            EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
+        let key_file = config_dir.join("session.key");
+        let signing_key = match fs::read(&key_file) {
+            Ok(existing) => existing,
+            Err(_absent) => {
+                let generated = EcdsaKeyPair::generate_pkcs8(
+                    &ECDSA_P256_SHA256_FIXED_SIGNING,
+                    &SystemRandom::new(),
+                )
                 .expect("generate a session signing key");
-        fs::write(config_dir.join("session.key"), signing_key.as_ref())
-            .expect("write the session signing key");
-        // The MCP HTTP surface is what gives the deployment a public audience;
-        // the private gRPC API admits every audience that fronts it, so tokens
-        // minted for this one reach the services under test.
-        fs::write(
-            config_dir.join("config.toml"),
-            format!(
-                "[credentials]
+                fs::write(&key_file, generated.as_ref()).expect("write the session signing key");
+                generated.as_ref().to_vec()
+            }
+        };
+        Self {
+            config_dir: config_dir.to_path_buf(),
+            signing_key,
+        }
+    }
+
+    /// The configuration that turns a deployment into an authenticated one.
+    ///
+    /// The MCP HTTP surface is what gives the deployment a public audience; the
+    /// private gRPC API admits every audience that fronts it, so tokens minted
+    /// for this one reach the services under test.
+    pub(crate) fn config_toml() -> String {
+        format!(
+            "[credentials]
 storage = \"file\"
 
 [server.mcp_http]
@@ -61,14 +92,7 @@ client_id = 'upstream-client'
 client_secret = 'test-secret'
 redirect_uri = '{ISSUER}/auth/oidc/callback'
 "
-            ),
         )
-        .expect("write the session auth config");
-
-        Self {
-            config_dir: config_dir.to_path_buf(),
-            signing_key: signing_key.as_ref().to_vec(),
-        }
     }
 
     pub(crate) fn config_dir(&self) -> &Path {

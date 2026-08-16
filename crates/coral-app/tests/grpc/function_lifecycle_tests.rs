@@ -207,6 +207,7 @@ async fn untyped_function_is_not_persisted() {
 #[tokio::test]
 async fn typescript_function_is_rejected_without_persistence() {
     let harness = GrpcHarness::new().await;
+    harness.seed_workspace().await;
     let artifact = r"/*
 name: review_summary
 schema: functions

@@ -23,6 +23,8 @@ mod harness;
 mod health_service_tests;
 #[path = "grpc/oauth_refresh_tests.rs"]
 mod oauth_refresh_tests;
+#[path = "grpc/ownership_migration_tests.rs"]
+mod ownership_migration_tests;
 #[path = "grpc/resilience_tests.rs"]
 mod resilience_tests;
 #[path = "grpc/search_tests.rs"]
