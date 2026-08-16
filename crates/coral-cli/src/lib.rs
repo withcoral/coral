@@ -33,8 +33,8 @@ use coral_api::v1::{
     DeleteWorkspaceRequest, DrainSearchQueueRequest, ExecuteSqlRequest, Function,
     FunctionRuntimeReady, FunctionWriteSurface, ListFunctionsRequest, ListWorkspacesRequest,
     RebuildSearchIndexRequest, SearchClearTarget, SearchDataScope, SearchIndexProvider,
-    SearchProvider, SearchRequest, Workspace, WorkspaceRole, function, search_clear_target,
-    search_maintenance_result,
+    SearchProvider, SearchRequest, Source, SourceInfo, Workspace, WorkspaceRole, function,
+    search_clear_target, search_maintenance_result,
 };
 use coral_app::{EngineExtensionsProvider, bootstrap::is_loopback_ip};
 use coral_client::{
@@ -1025,92 +1025,14 @@ async fn run_app_command(
     mcp_surface_provider: Option<&dyn McpSurfaceProvider>,
 ) -> Result<(), CliError> {
     match command {
-        Command::Sql(args) => {
-            let response = match app
-                .query_client()
-                .execute_sql(Request::new(ExecuteSqlRequest {
-                    workspace: Some(workspace.clone()),
-                    sql: args.sql,
-                    guide_read_context: None,
-                    task_attribution: None,
-                }))
-                .await
-            {
-                Ok(response) => response.into_inner(),
-                Err(status) => {
-                    return Err(CliError::Query {
-                        error_message: query_error::telemetry_error_message(&status),
-                        error_type: query_error::telemetry_error_type(&status),
-                        rendered_stderr: query_error::render_query_error(&status),
-                    });
-                }
-            };
-            let result = decode_execute_sql_response(&response).map_err(anyhow::Error::from)?;
-            print_batches(result.batches(), args.format)?;
-        }
-        Command::Search(args) => run_search(&app, workspace, args).await?,
-        Command::SearchIndex(args) => run_search_index(&app, workspace, args).await?,
-        Command::Source(args) => run_source(&app, workspace, args).await?,
-        Command::Function(args) => run_function(&app, workspace, args).await?,
-        Command::Onboard => {
-            onboard::run(&app, workspace).await?;
-        }
+        Command::Sql(args) => run_sql(&app, workspace, args).await,
+        Command::Search(args) => run_search(&app, workspace, args).await,
+        Command::SearchIndex(args) => run_search_index(&app, workspace, args).await,
+        Command::Source(args) => run_source(&app, workspace, args).await,
+        Command::Function(args) => run_function(&app, workspace, args).await,
+        Command::Onboard => onboard::run(&app, workspace).await.map_err(CliError::from),
         Command::McpStdio(_) => {
-            let features = coral_app::features::FeatureStore::discover(None)
-                .and_then(|store| store.load_with_overrides(feature_overrides))
-                .map_err(anyhow::Error::from)?;
-            let source_names = match source_ops::list_sources(&app, workspace).await {
-                Ok(sources) => sources.into_iter().map(|source| source.name).collect(),
-                Err(error) => {
-                    eprintln!(
-                        "warning: failed to load source names for MCP initialize instructions: {error}"
-                    );
-                    Vec::new()
-                }
-            };
-            let (source_names, query_examples) =
-                match coral_app::bootstrap::workspace_mcp_startup_context(
-                    &workspace.name,
-                    source_names.clone(),
-                    MCP_INITIAL_QUERY_EXAMPLE_LIMIT,
-                ) {
-                    Ok(context) => (
-                        context.source_names().to_vec(),
-                        context
-                            .query_history()
-                            .iter()
-                            .map(|entry| {
-                                coral_mcp::McpQueryExample::new(entry.sql())
-                                    .with_sources(entry.sources().iter().cloned())
-                                    .with_row_count(entry.row_count())
-                            })
-                            .collect(),
-                    ),
-                    Err(error) => {
-                        eprintln!(
-                            "warning: failed to load MCP startup context for initialize instructions: {error}"
-                        );
-                        (source_names, Vec::new())
-                    }
-                };
-            Box::pin(coral_mcp::run_stdio_with_client(
-                app,
-                coral_mcp::McpOptions {
-                    feedback_enabled: features.enabled(coral_app::features::Feature::Feedback),
-                    observed_values_search_enabled: features
-                        .enabled(coral_app::features::Feature::ObservedValuesSearch),
-                    trace_parent: ctx.and_then(|ctx| ctx.trace_parent.clone()),
-                    source_names,
-                    query_examples,
-                    workspace: Some(workspace.clone()),
-                    surface: match mcp_surface_provider {
-                        Some(provider) => provider.surface().map_err(anyhow::Error::from_boxed)?,
-                        None => McpSurface::default(),
-                    },
-                },
-            ))
-            .await
-            .map_err(anyhow::Error::from)?;
+            run_mcp_stdio(app, workspace, ctx, feature_overrides, mcp_surface_provider).await
         }
         Command::Workspace(_) => {
             unreachable!("workspace management is routed without a selected workspace")
@@ -1119,8 +1041,122 @@ async fn run_app_command(
             unreachable!("no-runtime commands are routed without an app client")
         }
     }
+}
 
+/// Executes one SQL statement and renders the decoded batches.
+async fn run_sql(app: &AppClient, workspace: &Workspace, args: SqlArgs) -> Result<(), CliError> {
+    let response = app
+        .query_client()
+        .execute_sql(Request::new(ExecuteSqlRequest {
+            workspace: Some(workspace.clone()),
+            sql: args.sql,
+            guide_read_context: None,
+            task_attribution: None,
+        }))
+        .await
+        .map_err(|status| query_failure(&status))?
+        .into_inner();
+    let result = decode_execute_sql_response(&response).map_err(anyhow::Error::from)?;
+    print_batches(result.batches(), args.format)?;
     Ok(())
+}
+
+/// Reports a failed query the way the user and telemetry each need it: the
+/// rendered guidance goes to stderr while the classification travels with the
+/// run, both derived from the one status the server returned.
+fn query_failure(status: &tonic::Status) -> CliError {
+    CliError::Query {
+        error_message: query_error::telemetry_error_message(status),
+        error_type: query_error::telemetry_error_type(status),
+        rendered_stderr: query_error::render_query_error(status),
+    }
+}
+
+/// Serves MCP over stdio for the selected workspace.
+async fn run_mcp_stdio(
+    app: AppClient,
+    workspace: &Workspace,
+    ctx: Option<&coral_app::RunContext>,
+    feature_overrides: &coral_app::features::FeatureOverrides,
+    mcp_surface_provider: Option<&dyn McpSurfaceProvider>,
+) -> Result<(), CliError> {
+    let features = coral_app::features::FeatureStore::discover(None)
+        .and_then(|store| store.load_with_overrides(feature_overrides))
+        .map_err(anyhow::Error::from)?;
+    let source_names = mcp_source_names(&app, workspace).await;
+    let (source_names, query_examples) = mcp_startup_context(&workspace.name, source_names);
+    Box::pin(coral_mcp::run_stdio_with_client(
+        app,
+        coral_mcp::McpOptions {
+            feedback_enabled: features.enabled(coral_app::features::Feature::Feedback),
+            observed_values_search_enabled: features
+                .enabled(coral_app::features::Feature::ObservedValuesSearch),
+            trace_parent: ctx.and_then(|ctx| ctx.trace_parent.clone()),
+            source_names,
+            query_examples,
+            workspace: Some(workspace.clone()),
+            surface: match mcp_surface_provider {
+                Some(provider) => provider.surface().map_err(anyhow::Error::from_boxed)?,
+                None => McpSurface::default(),
+            },
+        },
+    ))
+    .await
+    .map_err(anyhow::Error::from)?;
+    Ok(())
+}
+
+/// Names the installed sources for the MCP initialize instructions.
+///
+/// The instructions are advisory, so a listing failure costs them their source
+/// list rather than the whole MCP session.
+async fn mcp_source_names(app: &AppClient, workspace: &Workspace) -> Vec<String> {
+    match source_ops::list_sources(app, workspace).await {
+        Ok(sources) => sources.into_iter().map(|source| source.name).collect(),
+        Err(error) => {
+            eprintln!(
+                "warning: failed to load source names for MCP initialize instructions: {error}"
+            );
+            Vec::new()
+        }
+    }
+}
+
+/// Loads the source names and query examples the MCP initialize instructions
+/// open with, falling back to the names alone when local history is unreadable.
+fn mcp_startup_context(
+    workspace_name: &str,
+    source_names: Vec<String>,
+) -> (Vec<String>, Vec<coral_mcp::McpQueryExample>) {
+    match coral_app::bootstrap::workspace_mcp_startup_context(
+        workspace_name,
+        source_names.clone(),
+        MCP_INITIAL_QUERY_EXAMPLE_LIMIT,
+    ) {
+        Ok(context) => (
+            context.source_names().to_vec(),
+            context
+                .query_history()
+                .iter()
+                .map(mcp_query_example)
+                .collect(),
+        ),
+        Err(error) => {
+            eprintln!(
+                "warning: failed to load MCP startup context for initialize instructions: {error}"
+            );
+            (source_names, Vec::new())
+        }
+    }
+}
+
+/// Presents one recorded query as an MCP startup example.
+fn mcp_query_example(
+    entry: &coral_app::bootstrap::McpQueryHistoryEntry,
+) -> coral_mcp::McpQueryExample {
+    coral_mcp::McpQueryExample::new(entry.sql())
+        .with_sources(entry.sources().iter().cloned())
+        .with_row_count(entry.row_count())
 }
 
 fn run_features(
@@ -1230,41 +1266,10 @@ async fn run_source(
 ) -> Result<(), CliError> {
     match args.command {
         SourceCommand::Discover => {
-            let sources = source_ops::discover_sources(app, workspace).await?;
-            if sources.is_empty() {
-                println!("No bundled sources available.");
-            } else {
-                let rows = sources.into_iter().map(|source| {
-                    let status = if source.installed {
-                        "installed".to_string()
-                    } else {
-                        "available".to_string()
-                    };
-                    [
-                        source.name,
-                        source_ops::display_version(&source.version),
-                        status,
-                    ]
-                });
-                print_text_table(["Source", "Version", "Status"], rows);
-            }
+            print_bundled_sources(source_ops::discover_sources(app, workspace).await?);
         }
         SourceCommand::List => {
-            let sources = source_ops::list_sources(app, workspace).await?;
-            if sources.is_empty() {
-                println!("No sources configured.");
-            } else {
-                let rows = sources.into_iter().map(|source| {
-                    [
-                        source.name,
-                        source_ops::display_version(&source.version),
-                        source_ops::source_origin_label(source.origin).to_string(),
-                        source_ops::source_credential_storage_label(source.credential_storage)
-                            .to_string(),
-                    ]
-                });
-                print_text_table(["Source", "Version", "Origin", "Secrets"], rows);
-            }
+            print_configured_sources(source_ops::list_sources(app, workspace).await?);
         }
         SourceCommand::Info { name, verbose } => {
             source_ops::print_source_info(app, workspace, &name, verbose).await?;
@@ -1288,6 +1293,54 @@ async fn run_source(
         }
     }
     Ok(())
+}
+
+/// Renders the sources Coral bundles, with the install state that says whether
+/// `coral source add` still has work to do for each one.
+fn print_bundled_sources(sources: Vec<SourceInfo>) {
+    if sources.is_empty() {
+        println!("No bundled sources available.");
+        return;
+    }
+    print_text_table(
+        ["Source", "Version", "Status"],
+        sources.into_iter().map(bundled_source_row),
+    );
+}
+
+/// Renders the sources installed in the selected workspace, naming where each
+/// one came from and where its secrets live.
+fn print_configured_sources(sources: Vec<Source>) {
+    if sources.is_empty() {
+        println!("No sources configured.");
+        return;
+    }
+    print_text_table(
+        ["Source", "Version", "Origin", "Secrets"],
+        sources.into_iter().map(configured_source_row),
+    );
+}
+
+fn bundled_source_row(source: SourceInfo) -> [String; 3] {
+    let status = if source.installed {
+        "installed"
+    } else {
+        "available"
+    };
+    [
+        source.name,
+        source_ops::display_version(&source.version),
+        status.to_string(),
+    ]
+}
+
+fn configured_source_row(source: Source) -> [String; 4] {
+    [
+        source.name,
+        source_ops::display_version(&source.version),
+        source_ops::source_origin_label(source.origin).to_string(),
+        source_ops::source_credential_storage_label(source.credential_storage).to_string(),
+    ]
 }
 
 async fn run_search(
@@ -1901,7 +1954,8 @@ mod tests {
 
     use clap::{CommandFactory, Parser};
     use coral_api::v1::{
-        Function, FunctionRuntimeInvalid, FunctionRuntimeReady, TableFunctionResultColumn, function,
+        Function, FunctionRuntimeInvalid, FunctionRuntimeReady, Source, SourceCredentialStorage,
+        SourceInfo, SourceOrigin, TableFunctionResultColumn, function,
     };
 
     use super::{
@@ -2321,6 +2375,98 @@ mod tests {
 
         assert!(!manifest_lint.command.uses_selected_workspace());
         assert!(installed_sources.command.uses_selected_workspace());
+    }
+
+    #[test]
+    fn query_failure_renders_guidance_and_classifies_the_status() {
+        let error = super::query_failure(&tonic::Status::unavailable("connection refused"));
+
+        let super::CliError::Query {
+            rendered_stderr,
+            error_type,
+            error_message,
+        } = &error
+        else {
+            panic!("a query status must stay a renderable query failure: {error:?}");
+        };
+        assert_eq!(rendered_stderr, "Error (unavailable): connection refused\n");
+        assert_eq!(error_message, "connection refused");
+        assert!(
+            !error_type.is_empty(),
+            "telemetry needs a failure class for an undecodable status"
+        );
+    }
+
+    #[test]
+    fn bundled_source_rows_separate_installed_from_available() {
+        let installed = super::bundled_source_row(SourceInfo {
+            name: "github".to_string(),
+            version: "1.2.0".to_string(),
+            installed: true,
+            ..SourceInfo::default()
+        });
+        let available = super::bundled_source_row(SourceInfo {
+            name: "slack".to_string(),
+            version: String::new(),
+            installed: false,
+            ..SourceInfo::default()
+        });
+
+        assert_eq!(
+            installed,
+            [
+                "github".to_string(),
+                "1.2.0".to_string(),
+                "installed".to_string()
+            ]
+        );
+        assert_eq!(
+            available,
+            [
+                "slack".to_string(),
+                "-".to_string(),
+                "available".to_string()
+            ],
+            "an unversioned bundled source still reports as available"
+        );
+    }
+
+    #[test]
+    fn configured_source_rows_label_origin_and_secret_storage() {
+        let row = super::configured_source_row(Source {
+            name: "github".to_string(),
+            version: "1.2.0".to_string(),
+            origin: SourceOrigin::Bundled as i32,
+            credential_storage: SourceCredentialStorage::Keychain as i32,
+            ..Source::default()
+        });
+        let unknown = super::configured_source_row(Source {
+            name: "custom".to_string(),
+            version: String::new(),
+            origin: SourceOrigin::Unspecified as i32,
+            credential_storage: SourceCredentialStorage::Unspecified as i32,
+            ..Source::default()
+        });
+
+        assert_eq!(
+            row,
+            [
+                "github".to_string(),
+                "1.2.0".to_string(),
+                "bundled".to_string(),
+                "keychain".to_string(),
+            ]
+        );
+        assert_eq!(
+            unknown,
+            [
+                "custom".to_string(),
+                "-".to_string(),
+                "unknown".to_string(),
+                "none".to_string(),
+            ],
+            "unset enum values must render as words, not numbers"
+        );
     }
 
     #[test]
