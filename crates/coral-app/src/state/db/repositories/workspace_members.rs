@@ -190,13 +190,6 @@ impl WorkspaceMembersRepo<'_, CoralTx<'_>> {
     /// place rather than duplicated.
     ///
     /// [`hold_for_child_mutation`]: super::workspaces::WorkspacesRepo::hold_for_child_mutation
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the one-time local ownership migration writes the memberships"
-        )
-    )]
     pub(crate) async fn claim_ownership_if_unowned(
         &mut self,
         workspace_id: &str,

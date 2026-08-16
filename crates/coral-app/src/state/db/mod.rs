@@ -23,11 +23,15 @@ pub(crate) use config::{DatabaseConfig, ResolvedDatabaseConfig};
 pub(crate) use coral_db::CoralDb;
 pub(crate) use error::DbError;
 pub(crate) use import::run_state_migrations;
+pub(crate) use ownership_bootstrap::{inaccessible_workspaces, migrate_local_ownership_once};
 pub(crate) use repositories::identity_specs::{
     IdentitySpecDocumentRecord, IdentitySpecId, IdentitySpecKey, IdentitySpecRecord,
     IdentitySpecScope,
 };
+#[cfg(test)]
+pub(crate) use repositories::state_migrations::LOCAL_WORKSPACE_OWNERSHIP_MIGRATION_ID;
 pub(crate) use repositories::tasks::{TaskCompletionUpdate, TaskLifecycleState};
+pub(crate) use repositories::workspaces::InaccessibleWorkspaces;
 pub(crate) use session::{DbRepos, DbSession};
 #[cfg(test)]
 pub(crate) use task_query_state::TaskQueryRelationRecord;

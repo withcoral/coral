@@ -10,10 +10,6 @@ use crate::state::db::{CoralTx, DbError, DbSession};
 ///
 /// The id is part of the on-disk contract: it is what an already-upgraded
 /// state directory matches against, so it must never change.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the one-time local ownership migration claims it")
-)]
 pub(crate) const LOCAL_WORKSPACE_OWNERSHIP_MIGRATION_ID: &str = "local_workspace_ownership_v1";
 
 #[cfg(test)]

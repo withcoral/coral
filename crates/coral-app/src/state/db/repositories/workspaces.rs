@@ -16,13 +16,6 @@ pub(crate) struct WorkspaceRecord {
 /// The two categories are different operator situations — one needs an owner
 /// appointed, the other needs ownership moved off the local principal — so
 /// they are reported apart rather than merged into one list.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "shared startup warns with this after telemetry is installed"
-    )
-)]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct InaccessibleWorkspaces {
     /// Ids with no owner at all, concealed from every caller including their
@@ -105,13 +98,6 @@ where
     }
 
     /// Reports the workspaces an authenticated caller cannot reach.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "shared startup warns with this after telemetry is installed"
-        )
-    )]
     pub(crate) async fn inaccessible(&mut self) -> Result<InaccessibleWorkspaces, DbError> {
         let without_owner = self
             .ids(

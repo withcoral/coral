@@ -1,19 +1,13 @@
 //! The one-time upgrade that gives legacy ownerless workspaces a local owner.
 
 use super::repositories::state_migrations::LOCAL_WORKSPACE_OWNERSHIP_MIGRATION_ID;
+use super::repositories::workspaces::InaccessibleWorkspaces;
 use super::session::DbRepos;
 use super::{CoralDb, CoralTx, now_unix_nanos_i64};
 use crate::bootstrap::AppError;
 use crate::identity::LOCAL_PRINCIPAL_ID;
 
 /// What one attempt at the local ownership migration did.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the single-user composition root logs this after the deployment policy lands"
-    )
-)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct LocalOwnershipMigrationReport {
     /// Whether this process was the one that claimed and ran the migration.
@@ -31,17 +25,22 @@ pub(crate) struct LocalOwnershipMigrationReport {
 /// a failed upgrade leaves no half-migrated state and the next start retries
 /// the whole thing. Workspaces that already have an owner are untouched, and
 /// nothing here creates, renames, or deletes a workspace.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the single-user composition root runs this after the deployment policy lands"
-    )
-)]
 pub(crate) async fn migrate_local_ownership_once(
     db: &CoralDb,
 ) -> Result<LocalOwnershipMigrationReport, AppError> {
     migrate_local_ownership_once_at(db, now_unix_nanos_i64()?).await
+}
+
+/// Reports the workspaces a shared deployment currently serves to nobody.
+///
+/// This is the counterpart of the migration above, for the deployments that
+/// must not run it: the workspaces stay in place and the server keeps serving
+/// the rest, so an operator needs to be told which ones await an owner.
+pub(crate) async fn inaccessible_workspaces(
+    db: &CoralDb,
+) -> Result<InaccessibleWorkspaces, AppError> {
+    let mut session = db;
+    Ok(session.workspaces().inaccessible().await?)
 }
 
 async fn migrate_local_ownership_once_at(

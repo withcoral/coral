@@ -110,13 +110,6 @@ where
     /// though `users.subject` is unique. Re-running leaves an existing row
     /// exactly as it stands, so a retried migration never rewrites the local
     /// user's timestamps.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the one-time local ownership migration writes the row"
-        )
-    )]
     pub(crate) async fn ensure_local(&mut self, now_unix_nanos: i64) -> Result<(), DbError> {
         let statement = Query::insert()
             .into_table(Users::Table)

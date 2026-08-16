@@ -58,7 +58,10 @@ use crate::search::service::SearchService;
 use crate::sources::manager::SourceManager;
 use crate::sources::materialization::SourceDiagnosticReporter;
 use crate::sources::service::SourceService;
-use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig, run_state_migrations};
+use crate::state::db::{
+    CoralDb, DatabaseConfig, InaccessibleWorkspaces, ResolvedDatabaseConfig,
+    inaccessible_workspaces, migrate_local_ownership_once, run_state_migrations,
+};
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::task::manager::TaskManager;
 use crate::task::service::TaskService;
@@ -383,6 +386,7 @@ impl ServerBuilder {
             bootstrap_database(&layout, &config_store, session_auth).await?;
         let (telemetry_config, active_trace_store) =
             init_server_telemetry(&layout, self.config.enable_stderr_logs)?;
+        apply_local_principal_policy(&coral_db, local_principal).await?;
         let active_trace_store_dir = active_trace_store.as_ref().map(|store| store.dir.clone());
         let credential_config = CredentialStorageConfig::load(&layout)?;
         let credential_store =
@@ -498,6 +502,70 @@ async fn bootstrap_database(
         .map(|session_auth| build_authorization_server(*session_auth, &coral_db))
         .transpose()?;
     Ok((coral_db, authorization_server))
+}
+
+/// Settles what this deployment's local-principal policy means for the
+/// durable ownership already on disk.
+///
+/// Placed after [`bootstrap_database`] because the workspaces it reasons about
+/// only exist once the schema migration and the legacy cutover have run, and
+/// after [`init_server_telemetry`] because the shared-deployment warning is
+/// only worth emitting into an installed subscriber.
+///
+/// A shared deployment keeps serving whatever it can: workspaces nobody can
+/// reach are an operator's job to fix, not a reason to deny every other
+/// workspace its server.
+async fn apply_local_principal_policy(
+    coral_db: &CoralDb,
+    local_principal: LocalPrincipalPolicy,
+) -> Result<(), AppError> {
+    match local_principal {
+        LocalPrincipalPolicy::ImplicitOwner => {
+            let report = migrate_local_ownership_once(coral_db).await?;
+            if report.performed {
+                tracing::info!(
+                    workspaces_claimed = report.workspaces_claimed,
+                    "gave the built-in local user ownership of this install's existing workspaces"
+                );
+            }
+        }
+        LocalPrincipalPolicy::NoLocalPrincipal => {
+            if let Some(warning) =
+                inaccessible_workspaces_warning(&inaccessible_workspaces(coral_db).await?)
+            {
+                tracing::warn!("{warning}");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Describes, by category, the workspaces this deployment currently serves to
+/// nobody, or `None` when every workspace has a reachable owner.
+///
+/// The two categories need different operator actions - appoint an owner
+/// versus transfer ownership off the local principal - so a single warning
+/// names both rather than collapsing them into one count.
+fn inaccessible_workspaces_warning(report: &InaccessibleWorkspaces) -> Option<String> {
+    let mut categories = Vec::new();
+    if !report.without_owner.is_empty() {
+        categories.push(format!(
+            "with no owner at all: {}",
+            report.without_owner.join(", ")
+        ));
+    }
+    if !report.local_owner_only.is_empty() {
+        categories.push(format!(
+            "owned only by the built-in local user: {}",
+            report.local_owner_only.join(", ")
+        ));
+    }
+    (!categories.is_empty()).then(|| {
+        format!(
+            "these workspaces are unreachable until an operator grants ownership - {}",
+            categories.join("; ")
+        )
+    })
 }
 
 /// Prepares the one access decision every workspace-scoped service shares.
@@ -957,7 +1025,7 @@ mod tests {
 
     use super::{
         RunningServer, ServerBuilder, ServerDependencies, ServerMode, SessionAuthSettings,
-        TraceServerComponents, start_server,
+        TraceServerComponents, inaccessible_workspaces_warning, start_server,
     };
     use crate::auth::session::test_signing_key;
     use crate::bootstrap::AppError;
@@ -966,6 +1034,7 @@ mod tests {
     use crate::features::{Feature, FeatureOverrides, FeatureStore, Features};
     use crate::feedback::manager::FeedbackManager;
     use crate::gui_onboarding::manager::GuiOnboardingManager;
+    use crate::identity::LOCAL_PRINCIPAL_ID;
     use crate::query::manager::QueryManager;
     use crate::search::manager::SearchManager;
     use crate::search::observed::{
@@ -974,7 +1043,8 @@ mod tests {
     };
     use crate::sources::manager::SourceManager;
     use crate::state::db::{
-        CoralDb, DatabaseConfig, DbRepos as _, ResolvedDatabaseConfig, run_state_migrations,
+        CoralDb, DatabaseConfig, DbRepos as _, InaccessibleWorkspaces,
+        LOCAL_WORKSPACE_OWNERSHIP_MIGRATION_ID, ResolvedDatabaseConfig, run_state_migrations,
     };
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::task::manager::TaskManager;
@@ -983,7 +1053,7 @@ mod tests {
     use crate::transport::workspace_to_proto;
     use crate::users::manager::UserManager;
     use crate::workspaces::authorization::{LocalPrincipalPolicy, WorkspaceAuthorizer};
-    use crate::workspaces::{WorkspaceManager, WorkspaceName};
+    use crate::workspaces::{MemberRole, WorkspaceManager, WorkspaceName};
     use crate::{
         AwsEngineExtensionsProvider, LocalPrincipalProvider, NoopEngineExtensionsProvider,
         PrincipalKind,
@@ -1435,6 +1505,168 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
             policy(with_session_auth.with_session_auth(session_auth)),
             LocalPrincipalPolicy::NoLocalPrincipal,
             "session authentication is an identity system the local principal bypasses"
+        );
+    }
+
+    /// Writes a legacy config whose only workspace exists in `config.toml`, so
+    /// the workspace under test comes into being during the very startup that
+    /// is supposed to give it an owner.
+    fn configure_legacy_workspace(config_dir: &Path) {
+        std::fs::create_dir_all(config_dir).expect("create config dir");
+        std::fs::write(
+            config_dir.join("config.toml"),
+            r"
+version = 1
+
+[trace_history]
+enabled = false
+
+[workspaces.legacy]
+",
+        )
+        .expect("write legacy workspace config");
+    }
+
+    /// Adds a legacy workspace to a config another fixture already wrote.
+    fn append_legacy_workspace(config_dir: &Path) {
+        let path = config_dir.join("config.toml");
+        let mut config = std::fs::read_to_string(&path).expect("read config");
+        config.push_str("\n[workspaces.legacy]\n");
+        std::fs::write(&path, config).expect("append legacy workspace");
+    }
+
+    /// Opens the state a server just wrote, to read what its startup did.
+    async fn open_started_state(config_dir: &Path) -> CoralDb {
+        let layout = AppStateLayout::discover(Some(config_dir.to_path_buf())).expect("layout");
+        let DatabaseConfig::Sqlite { path } = DatabaseConfig::load(&layout).expect("db config")
+        else {
+            panic!("default test config should be sqlite");
+        };
+        CoralDb::open(ResolvedDatabaseConfig::Sqlite { path })
+            .await
+            .expect("open sqlite")
+    }
+
+    async fn local_role_for(db: &CoralDb, workspace_id: &str) -> Option<MemberRole> {
+        let mut session = db;
+        session
+            .workspace_members()
+            .role_for_user_id(workspace_id, LOCAL_PRINCIPAL_ID)
+            .await
+            .expect("read the local principal's role")
+    }
+
+    async fn local_ownership_migrated(db: &CoralDb) -> bool {
+        let mut session = db;
+        session
+            .state_migrations()
+            .has_completed(LOCAL_WORKSPACE_OWNERSHIP_MIGRATION_ID)
+            .await
+            .expect("read the migration marker")
+    }
+
+    /// The upgrade adopts the workspaces the legacy cutover imports, which it
+    /// can only do by running after it. Ordering them the other way round
+    /// leaves this install's one workspace ownerless forever, because the
+    /// marker retires the upgrade whether or not it found anything.
+    #[tokio::test]
+    async fn local_ownership_migration_adopts_the_workspaces_cutover_just_imported() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+        configure_legacy_workspace(&config_dir);
+
+        let server = ServerBuilder::new()
+            .with_config_dir(config_dir.clone())
+            .start()
+            .await
+            .expect("start a deployment with no login configured");
+        server.shutdown().await.expect("shutdown gRPC server");
+
+        let db = open_started_state(&config_dir).await;
+        assert_eq!(
+            local_role_for(&db, "legacy").await,
+            Some(MemberRole::Owner),
+            "a workspace that only existed in config.toml must come out of startup owned"
+        );
+        assert!(local_ownership_migrated(&db).await);
+    }
+
+    /// A shared deployment leaves ownership entirely alone - it neither claims
+    /// the upgrade nor provisions the local user - and keeps serving, because
+    /// workspaces awaiting an owner are an operator's task rather than grounds
+    /// to deny every other workspace its server.
+    #[tokio::test]
+    async fn local_ownership_is_untouched_by_a_shared_deployment_that_still_serves() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+        configure_serve_session_auth(&config_dir);
+        append_legacy_workspace(&config_dir);
+        let (builder, session_auth) = serve_session_auth(&config_dir);
+
+        let server = builder
+            .with_session_auth(session_auth)
+            .start()
+            .await
+            .expect("an ownerless workspace must not refuse a shared server its startup");
+        server.shutdown().await.expect("shutdown gRPC server");
+
+        let db = open_started_state(&config_dir).await;
+        assert!(
+            !local_ownership_migrated(&db).await,
+            "claiming the marker here would retire the upgrade for a later single-user start"
+        );
+        assert_eq!(local_role_for(&db, "legacy").await, None);
+        let mut session = &db;
+        assert!(
+            session
+                .users()
+                .get_by_user_id(LOCAL_PRINCIPAL_ID)
+                .await
+                .expect("read the local user")
+                .is_none(),
+            "a shared deployment must not even provision the local principal"
+        );
+    }
+
+    /// The one warning has to say which of the two operator situations each
+    /// workspace is in, and stay silent when there is nothing to fix.
+    #[test]
+    fn local_ownership_warning_reports_each_inaccessible_category_separately() {
+        assert_eq!(
+            inaccessible_workspaces_warning(&InaccessibleWorkspaces::default()),
+            None,
+            "a deployment every workspace of which has a reachable owner has nothing to say"
+        );
+
+        let both = inaccessible_workspaces_warning(&InaccessibleWorkspaces {
+            without_owner: vec!["orphan".to_string()],
+            local_owner_only: vec!["adopted".to_string()],
+        })
+        .expect("a warning covering both categories");
+        assert!(both.contains("with no owner at all: orphan"), "{both}");
+        assert!(
+            both.contains("owned only by the built-in local user: adopted"),
+            "{both}"
+        );
+
+        let ownerless_only = inaccessible_workspaces_warning(&InaccessibleWorkspaces {
+            without_owner: vec!["orphan".to_string()],
+            local_owner_only: Vec::new(),
+        })
+        .expect("a warning for the category that has workspaces");
+        assert!(
+            !ownerless_only.contains("built-in local user"),
+            "an empty category must not be named: {ownerless_only}"
+        );
+
+        let local_only = inaccessible_workspaces_warning(&InaccessibleWorkspaces {
+            without_owner: Vec::new(),
+            local_owner_only: vec!["adopted".to_string()],
+        })
+        .expect("a warning for the category that has workspaces");
+        assert!(
+            !local_only.contains("no owner at all"),
+            "an empty category must not be named: {local_only}"
         );
     }
 
