@@ -416,8 +416,15 @@ impl Install {
     }
 }
 
-/// A running server that authenticates its callers, plus the directory rows
-/// login provisioning would have written for them.
+/// One running server over an [`Install`], plus the directory rows login
+/// provisioning would have written for its callers.
+///
+/// It authenticates its callers under [`Admission::Tokens`], which is how
+/// [`SharedDeployment::start`] builds it and what every test predating the
+/// mode-transition work gets. Started under [`Admission::LocalPrincipal`] the
+/// same server admits unauthenticated requests as the built-in local principal
+/// instead — see [`SharedDeployment::as_host`] — because a mode transition has
+/// to bring one install up both ways.
 pub(crate) struct SharedDeployment {
     install: Arc<Install>,
     endpoint_uri: String,
