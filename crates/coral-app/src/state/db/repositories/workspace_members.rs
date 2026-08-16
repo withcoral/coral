@@ -2,9 +2,10 @@ use sea_query::{
     Alias, Expr, ExprTrait, Func, OnConflict, Order, Query, SelectStatement, SimpleExpr,
 };
 
-use crate::state::db::DbError;
+use crate::identity::LOCAL_PRINCIPAL_ID;
 use crate::state::db::schema::{Users, WorkspaceMembers};
 use crate::state::db::session::DbSession;
+use crate::state::db::{CoralTx, DbError};
 use crate::workspaces::MemberRole;
 
 pub(crate) struct WorkspaceMembersRepo<'a, S> {
@@ -176,6 +177,58 @@ where
     }
 }
 
+impl WorkspaceMembersRepo<'_, CoralTx<'_>> {
+    /// Grants `user_id` ownership of `workspace_id`, but only while that
+    /// workspace has no owner at all, reporting whether it wrote.
+    ///
+    /// The caller must already hold the workspace parent row through
+    /// [`hold_for_child_mutation`]: that hold is the one serialization point
+    /// for owner-floor writes, and without it this count and write could
+    /// straddle a concurrent membership mutation. A workspace that already has
+    /// any owner is left completely untouched — no row is added for `user_id`
+    /// there — while an existing non-owner row for `user_id` is promoted in
+    /// place rather than duplicated.
+    ///
+    /// [`hold_for_child_mutation`]: super::workspaces::WorkspacesRepo::hold_for_child_mutation
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the one-time local ownership migration writes the memberships"
+        )
+    )]
+    pub(crate) async fn claim_ownership_if_unowned(
+        &mut self,
+        workspace_id: &str,
+        user_id: &str,
+        created_at_unix_nanos: i64,
+    ) -> Result<bool, DbError> {
+        if self.owner_count(workspace_id).await? > 0 {
+            return Ok(false);
+        }
+        self.upsert(
+            workspace_id,
+            user_id,
+            MemberRole::Owner,
+            created_at_unix_nanos,
+        )
+        .await?;
+        Ok(true)
+    }
+}
+
+/// Selects every workspace id that still has at least one owner.
+///
+/// The set form, for callers that need the whole list — `NOT IN` cannot be
+/// correlated away. The per-row question has its own helper below.
+pub(super) fn owner_bearing_workspaces() -> SelectStatement {
+    Query::select()
+        .column(WorkspaceMembers::WorkspaceId)
+        .from(WorkspaceMembers::Table)
+        .and_where(Expr::col(WorkspaceMembers::Role).eq(MemberRole::Owner.as_storage_str()))
+        .to_owned()
+}
+
 /// Table alias the ownership probe reads under, so its predicates cannot be
 /// mistaken for the outer row's.
 fn owner_probe() -> Alias {
@@ -204,6 +257,15 @@ fn owner_bearing_workspace(workspace_id: SimpleExpr) -> SelectStatement {
         .to_owned()
 }
 
+/// Selects every workspace id owned by someone other than the synthetic local
+/// principal — that is, every workspace an authenticated caller can still
+/// reach through an owner.
+pub(super) fn non_local_owner_bearing_workspaces() -> SelectStatement {
+    owner_bearing_workspaces()
+        .and_where(Expr::col(WorkspaceMembers::UserId).ne(LOCAL_PRINCIPAL_ID))
+        .to_owned()
+}
+
 /// Decodes one stored role, failing closed on anything unrecognized.
 fn decode_role(value: &str) -> Result<MemberRole, DbError> {
     MemberRole::from_storage_str(value).ok_or_else(|| {
@@ -220,7 +282,10 @@ mod tests {
 
     use super::decode_role;
     use crate::bootstrap;
-    use crate::state::db::repositories::users::UpsertLoginOutcome;
+    use crate::identity::LOCAL_PRINCIPAL_ID;
+    use crate::state::db::repositories::state_migrations::LOCAL_WORKSPACE_OWNERSHIP_MIGRATION_ID;
+    use crate::state::db::repositories::users::{UpsertLoginOutcome, UserRecord};
+    use crate::state::db::repositories::workspaces::InaccessibleWorkspaces;
     use crate::state::db::schema::WorkspaceMembers;
     use crate::state::db::{CoralDb, DbError, DbRepos, DbSession, ResolvedDatabaseConfig};
     use crate::workspaces::MemberRole;
@@ -268,6 +333,21 @@ mod tests {
             return;
         };
         assert_identical_adds_converge(&db).await;
+    }
+
+    #[tokio::test]
+    async fn local_ownership_repository_contract_holds_against_sqlite() {
+        let (db, _temp) = open_sqlite().await;
+        assert_local_ownership_contract(&db).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "set CORAL_TEST_POSTGRES_URL to run the shared contract against Postgres"]
+    async fn local_ownership_repository_contract_on_postgres() {
+        let Some(db) = open_postgres().await else {
+            return;
+        };
+        assert_local_ownership_contract(&db).await;
     }
 
     #[test]
@@ -402,6 +482,243 @@ mod tests {
             1,
             "revoking a member must not touch the owner floor"
         );
+    }
+
+    /// One legacy state per test run: a workspace with nothing, one whose only
+    /// local row is a plain membership, and one an authenticated person owns.
+    struct LegacyOwnership {
+        migration_id: String,
+        unowned: String,
+        local_member: String,
+        owned: String,
+        human: String,
+    }
+
+    /// Drives the whole one-time local ownership migration through the
+    /// primitives it is built from, inside the caller's own transaction.
+    async fn assert_local_ownership_contract(db: &CoralDb) {
+        let legacy = seed_legacy_ownership(db).await;
+
+        let before = inaccessible(db).await;
+        assert!(before.without_owner.contains(&legacy.unowned));
+        assert!(
+            before.without_owner.contains(&legacy.local_member),
+            "a workspace whose only member is not an owner has no owner"
+        );
+        assert!(!before.without_owner.contains(&legacy.owned));
+        assert!(!before.local_owner_only.contains(&legacy.owned));
+
+        assert_rolled_back_migration_writes_nothing(db, &legacy).await;
+        migrate_local_ownership(db, &legacy).await;
+        assert_migration_wrote_only_where_unowned(db, &legacy).await;
+
+        let after = inaccessible(db).await;
+        assert!(!after.without_owner.contains(&legacy.unowned));
+        assert!(!after.without_owner.contains(&legacy.local_member));
+        assert!(after.local_owner_only.contains(&legacy.unowned));
+        assert!(after.local_owner_only.contains(&legacy.local_member));
+        assert!(!after.local_owner_only.contains(&legacy.owned));
+
+        // A workspace an authenticated owner shares with the local principal
+        // is reachable, so holding a local owner is not on its own enough to
+        // report it.
+        grant(
+            db,
+            &legacy.local_member,
+            &legacy.human,
+            MemberRole::Owner,
+            110,
+        )
+        .await;
+        let shared = inaccessible(db).await;
+        assert!(!shared.local_owner_only.contains(&legacy.local_member));
+        assert!(!shared.without_owner.contains(&legacy.local_member));
+
+        let mut tx = db.begin().await.expect("begin duplicate migration");
+        assert!(
+            !tx.state_migrations()
+                .try_claim(&legacy.migration_id, 100)
+                .await
+                .expect("reject a completed migration"),
+            "a completed marker must stop the migration before it scans"
+        );
+        tx.rollback()
+            .await
+            .expect("roll back the duplicate migration");
+    }
+
+    async fn seed_legacy_ownership(db: &CoralDb) -> LegacyOwnership {
+        let suffix = uuid::Uuid::new_v4().simple().to_string();
+        let legacy = LegacyOwnership {
+            // The real marker id would stay claimed in the shared Postgres
+            // test database and fail every later run, so the shape is
+            // exercised under a per-run id derived from it.
+            migration_id: format!("{LOCAL_WORKSPACE_OWNERSHIP_MIGRATION_ID}_{suffix}"),
+            unowned: format!("workspace_unowned_{suffix}"),
+            local_member: format!("workspace_local_member_{suffix}"),
+            owned: format!("workspace_owned_{suffix}"),
+            human: seed_user(db, &format!("human_{suffix}"), None).await,
+        };
+
+        let mut tx = db.begin().await.expect("begin legacy seed");
+        for workspace_id in [&legacy.unowned, &legacy.local_member, &legacy.owned] {
+            tx.workspaces()
+                .create(workspace_id, 1)
+                .await
+                .expect("create legacy workspace");
+        }
+        tx.users().ensure_local(5).await.expect("ensure local user");
+        tx.workspace_members()
+            .upsert(
+                &legacy.local_member,
+                LOCAL_PRINCIPAL_ID,
+                MemberRole::Member,
+                30,
+            )
+            .await
+            .expect("seed a local member");
+        tx.workspace_members()
+            .upsert(&legacy.owned, &legacy.human, MemberRole::Owner, 40)
+            .await
+            .expect("seed a human owner");
+        tx.commit().await.expect("commit legacy seed");
+
+        assert_eq!(
+            local_user(db).await,
+            UserRecord {
+                user_id: LOCAL_PRINCIPAL_ID.to_string(),
+                issuer: LOCAL_PRINCIPAL_ID.to_string(),
+                subject: String::new(),
+                display_name: Some("Local".to_string()),
+                created_at_unix_nanos: 5,
+                last_login_at_unix_nanos: 5,
+            }
+        );
+        legacy
+    }
+
+    /// A failed migration must leave neither its marker nor its ownership
+    /// writes behind, so the next startup can retry the whole thing.
+    async fn assert_rolled_back_migration_writes_nothing(db: &CoralDb, legacy: &LegacyOwnership) {
+        let mut tx = db.begin().await.expect("begin rolled-back migration");
+        assert!(
+            tx.state_migrations()
+                .try_claim(&legacy.migration_id, 50)
+                .await
+                .expect("claim the migration")
+        );
+        assert!(
+            tx.workspaces()
+                .hold_for_child_mutation(&legacy.unowned)
+                .await
+                .expect("hold the workspace parent")
+        );
+        assert!(
+            tx.workspace_members()
+                .claim_ownership_if_unowned(&legacy.unowned, LOCAL_PRINCIPAL_ID, 60)
+                .await
+                .expect("claim ownership")
+        );
+        tx.rollback().await.expect("roll back the migration");
+
+        assert_eq!(
+            role_for(db, &legacy.unowned, LOCAL_PRINCIPAL_ID).await,
+            None,
+            "a rolled-back migration must leave no ownership behind"
+        );
+    }
+
+    /// Runs the migration shape once: one claim, one local user, and one
+    /// hold-then-conditional-write per workspace, all in one transaction.
+    async fn migrate_local_ownership(db: &CoralDb, legacy: &LegacyOwnership) {
+        let mut tx = db.begin().await.expect("begin migration");
+        assert!(
+            tx.state_migrations()
+                .try_claim(&legacy.migration_id, 70)
+                .await
+                .expect("claim the migration after a rollback")
+        );
+        tx.users()
+            .ensure_local(80)
+            .await
+            .expect("ensure local user again");
+        for (workspace_id, claimed) in [
+            (&legacy.unowned, true),
+            (&legacy.local_member, true),
+            (&legacy.owned, false),
+        ] {
+            assert!(
+                tx.workspaces()
+                    .hold_for_child_mutation(workspace_id)
+                    .await
+                    .expect("hold the workspace parent")
+            );
+            assert_eq!(
+                tx.workspace_members()
+                    .claim_ownership_if_unowned(workspace_id, LOCAL_PRINCIPAL_ID, 90)
+                    .await
+                    .expect("claim ownership"),
+                claimed,
+                "{workspace_id} took the wrong conditional ownership decision"
+            );
+        }
+        assert!(
+            !tx.workspaces()
+                .hold_for_child_mutation(&format!("{}_missing", legacy.unowned))
+                .await
+                .expect("hold a missing workspace")
+        );
+        tx.commit().await.expect("commit migration");
+    }
+
+    async fn assert_migration_wrote_only_where_unowned(db: &CoralDb, legacy: &LegacyOwnership) {
+        assert_eq!(
+            role_for(db, &legacy.unowned, LOCAL_PRINCIPAL_ID).await,
+            Some(MemberRole::Owner)
+        );
+        assert_eq!(
+            role_for(db, &legacy.local_member, LOCAL_PRINCIPAL_ID).await,
+            Some(MemberRole::Owner),
+            "an existing local member must be promoted rather than duplicated"
+        );
+        assert_eq!(
+            granted_at(db, &legacy.local_member, LOCAL_PRINCIPAL_ID).await,
+            30,
+            "a promotion must keep recording the first grant"
+        );
+        assert_eq!(
+            role_for(db, &legacy.owned, LOCAL_PRINCIPAL_ID).await,
+            None,
+            "an already-owned workspace must be left completely untouched"
+        );
+        assert_eq!(
+            role_for(db, &legacy.owned, &legacy.human).await,
+            Some(MemberRole::Owner)
+        );
+        assert_eq!(
+            local_user(db).await.last_login_at_unix_nanos,
+            5,
+            "re-ensuring the local user must not rewrite the stored row"
+        );
+    }
+
+    async fn local_user(db: &CoralDb) -> UserRecord {
+        let mut session = db;
+        session
+            .users()
+            .get_by_user_id(LOCAL_PRINCIPAL_ID)
+            .await
+            .expect("read the local user")
+            .expect("the local user row exists")
+    }
+
+    async fn inaccessible(db: &CoralDb) -> InaccessibleWorkspaces {
+        let mut session = db;
+        session
+            .workspaces()
+            .inaccessible()
+            .await
+            .expect("report inaccessible workspaces")
     }
 
     async fn assert_identical_adds_converge(db: &CoralDb) {

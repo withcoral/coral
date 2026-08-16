@@ -1,5 +1,6 @@
-use sea_query::{Expr, ExprTrait, OnConflict, Query};
+use sea_query::{Expr, ExprTrait, OnConflict, Order, Query, SelectStatement};
 
+use super::workspace_members::{non_local_owner_bearing_workspaces, owner_bearing_workspaces};
 use crate::state::db::schema::Workspaces;
 use crate::state::db::session::DbSession;
 use crate::state::db::{CoralTx, DbError};
@@ -8,6 +9,29 @@ use crate::state::db::{CoralTx, DbError};
 pub(crate) struct WorkspaceRecord {
     pub(crate) id: String,
     pub(crate) created_at_unix_nanos: i64,
+}
+
+/// The workspaces no authenticated caller can reach, split by why.
+///
+/// The two categories are different operator situations — one needs an owner
+/// appointed, the other needs ownership moved off the local principal — so
+/// they are reported apart rather than merged into one list.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "shared startup warns with this after telemetry is installed"
+    )
+)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct InaccessibleWorkspaces {
+    /// Ids with no owner at all, concealed from every caller including their
+    /// own members.
+    pub(crate) without_owner: Vec<String>,
+    /// Ids whose only owner is the synthetic local principal. Storage-wise
+    /// these are validly owned and preserve the owner floor, but no
+    /// authenticated caller can reach them until ownership is transferred.
+    pub(crate) local_owner_only: Vec<String>,
 }
 
 pub(crate) struct WorkspacesRepo<'a, S> {
@@ -79,6 +103,54 @@ where
         let statement = Query::delete().from_table(Workspaces::Table).to_owned();
         self.session.execute(statement).await
     }
+
+    /// Reports the workspaces an authenticated caller cannot reach.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "shared startup warns with this after telemetry is installed"
+        )
+    )]
+    pub(crate) async fn inaccessible(&mut self) -> Result<InaccessibleWorkspaces, DbError> {
+        let without_owner = self
+            .ids(
+                select_workspace_ids()
+                    .and_where(
+                        Expr::col(Workspaces::Id).not_in_subquery(owner_bearing_workspaces()),
+                    )
+                    .to_owned(),
+            )
+            .await?;
+        let local_owner_only = self
+            .ids(
+                select_workspace_ids()
+                    .and_where(Expr::col(Workspaces::Id).in_subquery(owner_bearing_workspaces()))
+                    .and_where(
+                        Expr::col(Workspaces::Id)
+                            .not_in_subquery(non_local_owner_bearing_workspaces()),
+                    )
+                    .to_owned(),
+            )
+            .await?;
+        Ok(InaccessibleWorkspaces {
+            without_owner,
+            local_owner_only,
+        })
+    }
+
+    async fn ids(&mut self, statement: SelectStatement) -> Result<Vec<String>, DbError> {
+        let rows: Vec<(String,)> = self.session.fetch_all(statement).await?;
+        Ok(rows.into_iter().map(|(id,)| id).collect())
+    }
+}
+
+fn select_workspace_ids() -> SelectStatement {
+    Query::select()
+        .column(Workspaces::Id)
+        .from(Workspaces::Table)
+        .order_by(Workspaces::Id, Order::Asc)
+        .to_owned()
 }
 
 impl WorkspacesRepo<'_, CoralTx<'_>> {
