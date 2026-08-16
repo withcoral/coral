@@ -66,12 +66,12 @@ use tonic_types::{ErrorDetail, StatusExt as _};
 
 /// The ordinary workspace every fixture selects explicitly.
 ///
-/// Nothing provisions a workspace any more, so a fixture that names no
-/// workspace would fall through to `selected_workspace_name`'s
-/// `DEFAULT_WORKSPACE_ID` fallback — which still exists, is exercised only by
-/// its own resolver unit test, and is itself due for removal. Fixtures
-/// therefore select this name through the ordinary `CORAL_WORKSPACE` selector
-/// (see [`MockServer::cmd`]) rather than leaning on that fallback.
+/// The CLI no longer substitutes a name for the caller who gives none: without
+/// a selector it resolves the caller's sole membership, and this mock lists
+/// none by default, so an unselected fixture would fail workspace selection
+/// before reaching the RPC it means to exercise. Fixtures therefore select this
+/// name through the ordinary `CORAL_WORKSPACE` selector (see
+/// [`MockServer::cmd`]), which is also the path a real user takes.
 pub(crate) const TEST_WORKSPACE: &str = "analytics";
 
 fn workspace() -> Workspace {

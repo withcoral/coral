@@ -22,9 +22,10 @@ use harness::MockServer;
 /// The ordinary workspace this suite targets explicitly.
 ///
 /// Mirrors `harness::TEST_WORKSPACE`, which the filesystem-only test below
-/// cannot import because the harness is `cli-test-server`-gated. Nothing provisions
-/// a workspace any more, so naming one here keeps these fixtures off the CLI's
-/// `DEFAULT_WORKSPACE_ID` resolver fallback.
+/// cannot import because the harness is `cli-test-server`-gated. The CLI
+/// resolves an unselected workspace from the caller's memberships rather than
+/// substituting a name, so these fixtures name one instead of leaving the
+/// command to resolve against a membership set they do not control.
 const TEST_WORKSPACE: &str = "analytics";
 
 #[test]
