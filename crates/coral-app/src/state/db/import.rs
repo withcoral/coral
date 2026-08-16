@@ -4,9 +4,17 @@ use super::session::DbRepos;
 use super::{CoralDb, now_unix_nanos_i64};
 use crate::bootstrap::AppError;
 use crate::state::{AppStateLayout, ConfigStore};
-use crate::workspaces::WorkspaceRecord;
+use crate::workspaces::{WorkspaceName, WorkspaceRecord};
 
 const WORKSPACE_CATALOG_CUTOVER_ID: &str = "workspace_catalog_cutover_v1";
+
+/// Marks the directory a workspace deletion moved aside before removing it.
+///
+/// Deletion stages the workspace directory under this name and only then
+/// removes it, so a leftover is a workspace on its way out rather than one to
+/// carry into the database. It is spelled here because the cutover reads the
+/// directory layout a `DirectoryBackup` leaves behind, not the type itself.
+const DELETION_BACKUP_MARKER: &str = ".delete.rollback.";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WorkspaceCatalogCutoverReport {
@@ -19,7 +27,7 @@ pub(crate) async fn run_state_migrations(
     config_store: &ConfigStore,
     layout: &AppStateLayout,
 ) -> Result<(), AppError> {
-    cutover_legacy_workspace_catalog(db, config_store).await?;
+    cutover_legacy_workspace_catalog(db, config_store, layout).await?;
     remove_legacy_task_jsonl(config_store, layout)?;
     Ok(())
 }
@@ -36,13 +44,15 @@ fn remove_legacy_task_jsonl(
 async fn cutover_legacy_workspace_catalog(
     db: &CoralDb,
     config_store: &ConfigStore,
+    layout: &AppStateLayout,
 ) -> Result<WorkspaceCatalogCutoverReport, AppError> {
-    cutover_legacy_workspace_catalog_at(db, config_store, now_unix_nanos_i64()?).await
+    cutover_legacy_workspace_catalog_at(db, config_store, layout, now_unix_nanos_i64()?).await
 }
 
 async fn cutover_legacy_workspace_catalog_at(
     db: &CoralDb,
     config_store: &ConfigStore,
+    layout: &AppStateLayout,
     now_unix_nanos: i64,
 ) -> Result<WorkspaceCatalogCutoverReport, AppError> {
     let _state_lock = config_store.state_lock_exclusive()?;
@@ -60,9 +70,12 @@ async fn cutover_legacy_workspace_catalog_at(
         });
     }
 
-    let workspaces = config_store
+    let mut workspaces = config_store
         .load_config_unlocked()?
         .legacy_workspace_records();
+    if workspaces.is_empty() {
+        workspaces = implicitly_provisioned_workspaces(layout)?;
+    }
     let workspace_count = workspaces.len();
 
     tx.workspaces().delete_all().await?;
@@ -74,6 +87,44 @@ async fn cutover_legacy_workspace_catalog_at(
         workspace_count,
         cutover_performed: true,
     })
+}
+
+/// Lists the workspaces on-disk state proves an install had, for a legacy
+/// config that names none itself.
+///
+/// Workspaces were once implicit: the catalog seeded one, so a `config.toml`
+/// with no workspace tables still described an install that had a workspace,
+/// with sources, tasks, and search state under its directory. Nothing records
+/// that name any more except the directory itself, so the cutover reads it
+/// from there. It does not fall back to a fixed `default`: a genuinely fresh
+/// install has no workspace directory and must cut over to no workspaces.
+fn implicitly_provisioned_workspaces(
+    layout: &AppStateLayout,
+) -> Result<Vec<WorkspaceRecord>, AppError> {
+    let entries = match std::fs::read_dir(layout.workspaces_root()) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.into()),
+    };
+
+    let mut workspaces = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let directory_name = entry.file_name();
+        let Some(name) = directory_name
+            .to_str()
+            .filter(|name| !name.contains(DELETION_BACKUP_MARKER))
+            .and_then(|name| WorkspaceName::parse(name).ok())
+        else {
+            continue;
+        };
+        workspaces.push(WorkspaceRecord { name });
+    }
+    workspaces.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(workspaces)
 }
 
 async fn import_legacy_workspaces<S>(
@@ -143,9 +194,14 @@ mod tests {
         config_store
             .create_legacy_workspace_entry_for_tests(&analytics_workspace)
             .expect("create legacy workspace entry");
+        // A config that names workspaces is authoritative, so a directory left
+        // behind by a deleted workspace must not come back beside them.
+        let deleted_workspace = WorkspaceName::parse("removed").expect("workspace");
+        std::fs::create_dir_all(layout.workspace_dir(&deleted_workspace))
+            .expect("create leftover workspace dir");
         let db = open_sqlite(&layout).await;
 
-        let report = cutover_legacy_workspace_catalog_at(&db, &config_store, 11)
+        let report = cutover_legacy_workspace_catalog_at(&db, &config_store, &layout, 11)
             .await
             .expect("cut over legacy workspace catalog");
 
@@ -156,19 +212,12 @@ mod tests {
                 cutover_performed: true
             }
         );
-        let mut session = &db;
         assert_eq!(
-            session
-                .workspaces()
-                .list()
-                .await
-                .expect("list workspaces")
-                .into_iter()
-                .map(|workspace| workspace.id)
-                .collect::<Vec<_>>(),
+            workspace_ids(&db).await,
             vec!["analytics".to_string()],
             "the cutover carries the legacy names across and invents none"
         );
+        let mut session = &db;
         assert!(
             session
                 .state_migrations()
@@ -196,7 +245,7 @@ mod tests {
             .expect("seed stale workspace");
         tx.commit().await.expect("commit stale seed tx");
 
-        cutover_legacy_workspace_catalog_at(&db, &config_store, 11)
+        cutover_legacy_workspace_catalog_at(&db, &config_store, &layout, 11)
             .await
             .expect("cut over legacy workspace catalog");
 
@@ -222,12 +271,12 @@ mod tests {
         let config_store = ConfigStore::new(layout.clone());
         let db = open_sqlite(&layout).await;
 
-        cutover_legacy_workspace_catalog_at(&db, &config_store, 11)
+        cutover_legacy_workspace_catalog_at(&db, &config_store, &layout, 11)
             .await
             .expect("initial cutover");
         std::fs::write(layout.config_file(), "[[workspaces]\n").expect("corrupt config");
 
-        let report = cutover_legacy_workspace_catalog(&db, &config_store)
+        let report = cutover_legacy_workspace_catalog(&db, &config_store, &layout)
             .await
             .expect("marker should skip legacy config reload");
 
@@ -240,17 +289,26 @@ mod tests {
         );
     }
 
-    /// A legacy config that never named a workspace describes an install with
-    /// none, so the cutover must not seed one on its way into the database.
+    /// A fresh install names no workspace and holds none on disk, so the
+    /// cutover must not seed one on its way into the database.
     #[tokio::test]
     async fn cutover_without_legacy_workspaces_creates_none() {
         let temp = tempdir().expect("temp dir");
         let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
         layout.ensure().expect("ensure layout");
+        // An install that has held a workspace and lost it looks the same as
+        // one that never had one: an emptied root, and at most a directory a
+        // deletion staged aside and failed to remove.
+        std::fs::create_dir_all(
+            layout
+                .workspaces_root()
+                .join("default.delete.rollback.7f1c5a4e"),
+        )
+        .expect("create workspaces root");
         let config_store = ConfigStore::new(layout.clone());
         let db = open_sqlite(&layout).await;
 
-        let report = cutover_legacy_workspace_catalog_at(&db, &config_store, 11)
+        let report = cutover_legacy_workspace_catalog_at(&db, &config_store, &layout, 11)
             .await
             .expect("cut over legacy workspace catalog");
 
@@ -270,6 +328,56 @@ mod tests {
                 .expect("list workspaces")
                 .is_empty()
         );
+    }
+
+    /// Workspaces were once implicit, so an older install can hold one whose
+    /// name only its directory records. The cutover happens once and marks
+    /// itself done, so a workspace it drops is orphaned for good: its name and
+    /// its contents have to come across.
+    #[tokio::test]
+    async fn cutover_preserves_an_implicitly_provisioned_legacy_workspace() {
+        let temp = tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let implicit_workspace = WorkspaceName::parse("default").expect("workspace");
+        let installed_source = layout
+            .sources_root(&implicit_workspace)
+            .join("github")
+            .join("manifest.yaml");
+        std::fs::create_dir_all(installed_source.parent().expect("source dir"))
+            .expect("create legacy source dir");
+        std::fs::write(&installed_source, "name: github").expect("write legacy manifest");
+        let db = open_sqlite(&layout).await;
+
+        let report = cutover_legacy_workspace_catalog_at(&db, &config_store, &layout, 11)
+            .await
+            .expect("cut over legacy workspace catalog");
+
+        assert_eq!(
+            report,
+            WorkspaceCatalogCutoverReport {
+                workspace_count: 1,
+                cutover_performed: true
+            }
+        );
+        assert_eq!(workspace_ids(&db).await, vec!["default".to_string()]);
+        assert!(
+            installed_source.exists(),
+            "the preserved workspace keeps its contents"
+        );
+    }
+
+    async fn workspace_ids(db: &CoralDb) -> Vec<String> {
+        let mut session = db;
+        session
+            .workspaces()
+            .list()
+            .await
+            .expect("list workspaces")
+            .into_iter()
+            .map(|workspace| workspace.id)
+            .collect()
     }
 
     #[tokio::test]

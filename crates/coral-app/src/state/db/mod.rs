@@ -7,6 +7,7 @@ mod coral_db;
 mod error;
 mod import;
 mod migrations;
+mod ownership_bootstrap;
 mod repositories;
 mod schema;
 mod session;
