@@ -27,6 +27,7 @@ const OAUTH_RESOURCE: &str = "http://localhost:1457";
 const SESSION_ISSUER: &str = "https://auth.example";
 const SESSION_RESOURCE: &str = "https://coral.example/mcp";
 const CORAL_UI_RESOURCE: &str = "https://coral-ui.example";
+const TEST_WORKSPACE_NAME: &str = "analytics";
 
 struct TestMcpProvider;
 
@@ -50,6 +51,20 @@ impl McpSurfaceProvider for UnexpectedMcpProvider {
 
 fn write_config(temp: &TempDir, config: &str) {
     std::fs::write(temp.path().join("config.toml"), config).expect("write config");
+}
+
+/// Writes an auth-disabled companion config naming the workspace MCP serves.
+///
+/// Naming it here rather than in the passed [`McpOptions`] is what makes the
+/// fixtures below exercise the composition: an operator's only way to scope this
+/// surface is `config.toml`.
+fn write_auth_disabled_config(temp: &TempDir, workspace: &str) {
+    write_config(
+        temp,
+        &format!(
+            "[trace_history]\nenabled = false\n\n[server.mcp_http]\nenabled = true\nbind = '127.0.0.1:0'\nworkspace = '{workspace}'\n"
+        ),
+    );
 }
 
 fn write_oauth_config(temp: &TempDir, oauth_bind: SocketAddr, mcp_bind: Option<SocketAddr>) {
@@ -204,7 +219,7 @@ async fn assert_grpc_rejects_unauthenticated(endpoint: &str) {
 /// probes below assert on authentication, which is decided before the workspace
 /// is ever looked up.
 fn test_workspace() -> Workspace {
-    workspace("analytics")
+    workspace(TEST_WORKSPACE_NAME)
 }
 
 /// Creates [`test_workspace`] over the unauthenticated loopback gRPC endpoint.
@@ -477,21 +492,45 @@ fn shutdown_failures_retain_every_component_in_order() {
     );
 }
 
+/// The configured selection reaches the adapter unchanged, in both directions.
+///
+/// A name is forwarded byte for byte, and naming none stays none: substituting
+/// one for the absent case is the failure this guards, because the adapter can
+/// only resolve the sole local workspace while it can still tell that nobody
+/// chose. The remaining options are carried through untouched, so scoping the
+/// surface does not quietly reset the feature flags composed alongside it.
+#[test]
+fn auth_disabled_workspace_selection_is_forwarded_without_substitution() {
+    let composed = McpOptions {
+        feedback_enabled: true,
+        workspace: Some(workspace("carried-by-the-caller")),
+        ..McpOptions::default()
+    };
+
+    let named = auth_disabled_options(composed.clone(), Some(TEST_WORKSPACE_NAME.to_string()));
+    assert_eq!(named.workspace, Some(test_workspace()));
+    assert!(named.feedback_enabled);
+
+    let unnamed = auth_disabled_options(composed, None);
+    assert_eq!(
+        unnamed.workspace, None,
+        "an unnamed workspace must reach the adapter unresolved"
+    );
+    assert!(unnamed.feedback_enabled);
+}
+
+/// Also proves the configured workspace reaches the running MCP surface: the
+/// tools asserted here are workspace-scoped, and nothing but `config.toml` names
+/// the workspace they resolve against.
 #[tokio::test]
 async fn auth_disabled_companion_serves_and_shuts_down() {
     let temp = TempDir::new().expect("temp dir");
-    write_config(
-        &temp,
-        "[trace_history]\nenabled = false\n\n[server.mcp_http]\nenabled = true\nbind = '127.0.0.1:0'\n",
-    );
+    write_auth_disabled_config(&temp, TEST_WORKSPACE_NAME);
     let server = start(
         ServerBuilder::configured_standalone_grpc()
             .with_config_dir(temp.path())
             .with_noop_feedback_uploads(),
-        McpOptions {
-            workspace: Some(test_workspace()),
-            ..McpOptions::default()
-        },
+        McpOptions::default(),
         Some(Arc::new(TestMcpProvider)),
     )
     .await
@@ -502,7 +541,8 @@ async fn auth_disabled_companion_serves_and_shuts_down() {
     let mcp_addr = server.mcp_http_addr().expect("MCP HTTP endpoint");
     assert!(server.oauth_addr().is_none());
     // The tools this asserts are workspace-scoped, and nothing provisions a
-    // workspace any more, so the fixture creates the one it scopes MCP to.
+    // workspace any more, so the fixture creates the one the config scopes MCP
+    // to. Nothing else names it: composition carries it from `config.toml`.
     create_test_workspace(server.endpoint_uri()).await;
     assert_catalog_tool(format!("http://{mcp_addr}/mcp")).await;
     assert_cli_extension_filter(format!("http://{mcp_addr}/mcp")).await;
@@ -574,17 +614,13 @@ async fn opted_in_auth_disabled_companion_serves_off_loopback() {
 #[tokio::test]
 async fn companion_uses_supplied_mcp_options() {
     let temp = TempDir::new().expect("temp dir");
-    write_config(
-        &temp,
-        "[trace_history]\nenabled = false\n\n[server.mcp_http]\nenabled = true\nbind = '127.0.0.1:0'\n",
-    );
+    write_auth_disabled_config(&temp, TEST_WORKSPACE_NAME);
     let server = start(
         ServerBuilder::configured_standalone_grpc()
             .with_config_dir(temp.path())
             .with_noop_feedback_uploads(),
         McpOptions {
             feedback_enabled: true,
-            workspace: Some(test_workspace()),
             ..McpOptions::default()
         },
         None,

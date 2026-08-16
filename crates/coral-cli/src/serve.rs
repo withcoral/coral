@@ -307,14 +307,11 @@ async fn start_mcp_http(
     };
     let grpc_endpoint_uri = loopback_grpc_endpoint_uri(grpc_addr)?;
     let server = match settings {
-        // The configured workspace is not forwarded yet: the auth-disabled MCP
-        // adapter still resolves its own, so naming one here would have no
-        // effect until it accepts the selection.
         McpHttpServeConfig::AuthDisabled {
             bind_addr,
             expose_non_loopback,
             allowed_hosts,
-            workspace: _,
+            workspace,
         } => {
             // Configuration resolution only sets `expose_non_loopback` for a
             // non-loopback bind the operator opted into, so a loopback bind
@@ -326,7 +323,7 @@ async fn start_mcp_http(
             };
             let config = config.with_allowed_hosts(allowed_hosts)?;
             let app = AppClient::connect(&grpc_endpoint_uri).await?;
-            start_auth_disabled(config, app, mcp_options).await?
+            start_auth_disabled(config, app, auth_disabled_options(mcp_options, workspace)).await?
         }
         McpHttpServeConfig::Authenticated {
             bind_addr,
@@ -371,6 +368,21 @@ async fn start_mcp_http(
         }
     };
     Ok(Some(server))
+}
+
+/// Scopes the auth-disabled MCP surface to the workspace its configuration names.
+///
+/// The configuration is the operator's selection for this surface, so it
+/// replaces whatever the caller carried rather than merging with it: a name they
+/// wrote is forwarded byte for byte, and naming none stays `None`. Substituting
+/// a name for the absent case would be this adapter guessing at local
+/// membership state it does not read; the MCP adapter resolves it against the
+/// memberships behind the loopback connection instead.
+fn auth_disabled_options(options: McpOptions, workspace: Option<String>) -> McpOptions {
+    McpOptions {
+        workspace: workspace.map(coral_client::workspace),
+        ..options
+    }
 }
 
 /// Probes server readiness over the unauthenticated gRPC health service.
