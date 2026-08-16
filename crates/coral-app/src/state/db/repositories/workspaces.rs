@@ -11,19 +11,28 @@ pub(crate) struct WorkspaceRecord {
     pub(crate) created_at_unix_nanos: i64,
 }
 
-/// The workspaces no authenticated caller can reach, split by why.
+/// The workspaces no authenticated caller can *own*, split by why.
 ///
 /// The two categories are different operator situations — one needs an owner
 /// appointed, the other needs ownership moved off the local principal — so
 /// they are reported apart rather than merged into one list.
+///
+/// Deliberately about owners, not reachability. The classifying query looks
+/// only at owner rows, so a workspace can appear here while a Member still
+/// reads and queries it — a local host can grant membership to a directory
+/// user before the install is switched to shared mode. What both categories
+/// prove is that nobody left can *manage* the workspace, which is what makes
+/// operator action necessary.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct InaccessibleWorkspaces {
-    /// Ids with no owner at all, concealed from every caller including their
-    /// own members.
+    /// Ids with no owner at all. These are concealed from every caller,
+    /// members included, because concealment treats ownerless exactly as it
+    /// treats nonexistent.
     pub(crate) without_owner: Vec<String>,
     /// Ids whose only owner is the synthetic local principal. Storage-wise
     /// these are validly owned and preserve the owner floor, but no
-    /// authenticated caller can reach them until ownership is transferred.
+    /// authenticated caller can manage them until ownership is transferred.
+    /// Any member they already have keeps its read access.
     pub(crate) local_owner_only: Vec<String>,
 }
 

@@ -562,7 +562,7 @@ fn inaccessible_workspaces_warning(report: &InaccessibleWorkspaces) -> Option<St
     }
     (!categories.is_empty()).then(|| {
         format!(
-            "these workspaces are unreachable until an operator grants ownership - {}",
+            "no authenticated caller can manage these workspaces until an operator grants ownership - {}",
             categories.join("; ")
         )
     })

@@ -98,6 +98,18 @@ async fn cutover_legacy_workspace_catalog_at(
 /// that name any more except the directory itself, so the cutover reads it
 /// from there. It does not fall back to a fixed `default`: a genuinely fresh
 /// install has no workspace directory and must cut over to no workspaces.
+///
+/// Deliberately a fallback and not a union with the config's own names, which
+/// leaves one residual open. A config that named `analytics` and nothing else
+/// could still have had a live implicit workspace beside it, and that one is
+/// orphaned for good because the cutover marker never re-runs. Closing it by
+/// unioning is not safe from here: a directory alone cannot distinguish a
+/// workspace that was implicitly provisioned from one a user deleted, and
+/// `cuts_over_legacy_workspaces_into_database` pins that a leftover directory
+/// must not come back — resurrecting deleted content is the worse failure. Any
+/// real fix needs evidence a directory scan does not carry. The exposed
+/// population is narrow: every config Coral itself persisted serializes its
+/// workspaces back, so only a hand-edited config reaches this shape.
 fn implicitly_provisioned_workspaces(
     layout: &AppStateLayout,
 ) -> Result<Vec<WorkspaceRecord>, AppError> {
