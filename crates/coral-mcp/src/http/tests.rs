@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -7,8 +8,16 @@ use std::time::Duration;
 use axum::body::{Body, to_bytes};
 use axum::http::{HeaderValue, Method, Request, StatusCode, header};
 use axum::{Router, response::Response};
-use coral_api::v1::CreateWorkspaceRequest;
-use coral_client::{AppClient, local::ServerBuilder, workspace};
+use coral_api::v1::workspace_service_server::{WorkspaceService, WorkspaceServiceServer};
+use coral_api::v1::{
+    AddWorkspaceMemberRequest, AddWorkspaceMemberResponse, CreateWorkspaceRequest,
+    CreateWorkspaceResponse, DeleteWorkspaceRequest, DeleteWorkspaceResponse,
+    ListWorkspaceMembersRequest, ListWorkspaceMembersResponse, ListWorkspacesRequest,
+    ListWorkspacesResponse, RemoveWorkspaceMemberRequest, RemoveWorkspaceMemberResponse,
+    WorkspaceMembership, WorkspaceRole,
+};
+use coral_client::local::{ServerBuilder, connect_with_loopback_bearer};
+use coral_client::{AppClient, BearerToken, workspace};
 use futures::{future::BoxFuture, poll};
 use rmcp::handler::server::router::tool::IntoToolRoute;
 use rmcp::model::{CallToolRequestParams, ClientJsonRpcMessage};
@@ -23,8 +32,11 @@ use rmcp::transport::{
 use rmcp::{ErrorData, Json, ServiceExt as _};
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-use tokio::net::TcpStream;
-use tonic::Request as GrpcRequest;
+use tokio::net::{TcpListener, TcpStream};
+use tokio_stream::wrappers::TcpListenerStream;
+use tonic::metadata::MetadataMap;
+use tonic::transport::Server;
+use tonic::{Request as GrpcRequest, Response as GrpcResponse, Status};
 use tower::ServiceExt as _;
 
 use crate::{McpOptions, McpSurface, McpToolContext};
@@ -179,10 +191,13 @@ async fn create_workspace(app: &AppClient, name: &str) {
 
 /// Names [`TEST_WORKSPACE`] without creating it.
 ///
-/// A session factory demands a *resolved* workspace, not an existing one:
-/// whether the name resolves is answered by the request that needs it. Fixtures
-/// below that never reach a workspace-scoped tool therefore only have to name
-/// one, and naming it is what keeps them from exercising a fallback.
+/// The auth-disabled session factory demands a *resolved* workspace, not an
+/// existing one: whether the name resolves is answered by the request that
+/// needs it. Loopback fixtures that never reach a workspace-scoped tool
+/// therefore only have to name one, and naming it is what keeps them from
+/// exercising a fallback. Authenticated fixtures need
+/// [`workspace_scoped_options`] instead, because admission there checks the
+/// name against the caller's memberships before opening a session.
 fn workspace_named_options() -> McpOptions {
     McpOptions {
         workspace: Some(workspace(TEST_WORKSPACE)),
@@ -908,6 +923,7 @@ async fn dropping_server_cancels_requests_and_releases_state() {
 async fn authenticated_session_lifecycle_is_coherent() {
     let config = authenticated_config();
     let (_temp, app_server, app) = local_app().await;
+    let options = workspace_scoped_options(&app).await;
     let factory_calls = Arc::new(AtomicUsize::new(0));
     let counted_factory_calls = factory_calls.clone();
     let runtime = AuthenticatedMcpHttpRuntime::new(
@@ -916,7 +932,7 @@ async fn authenticated_session_lifecycle_is_coherent() {
             counted_factory_calls.fetch_add(1, Ordering::Relaxed);
             std::future::ready(Ok::<_, ()>(app.clone()))
         },
-        workspace_named_options(),
+        options,
         || async { Ok::<_, tonic::Code>(()) },
     );
     let (router, state) = authenticated_router(config, runtime);
@@ -994,6 +1010,7 @@ async fn authenticated_session_lifecycle_is_coherent() {
 #[tokio::test]
 async fn authenticated_requests_are_bounded_before_and_after_initialization() {
     let (_temp, app_server, app) = local_app().await;
+    let options = workspace_scoped_options(&app).await;
     let factory_calls = Arc::new(AtomicUsize::new(0));
     let counted_factory_calls = factory_calls.clone();
     let runtime = AuthenticatedMcpHttpRuntime::new(
@@ -1002,7 +1019,7 @@ async fn authenticated_requests_are_bounded_before_and_after_initialization() {
             counted_factory_calls.fetch_add(1, Ordering::Relaxed);
             std::future::ready(Ok::<_, ()>(app.clone()))
         },
-        workspace_named_options(),
+        options,
         || async { Ok::<_, tonic::Code>(()) },
     );
     let (router, state) = authenticated_router(authenticated_config(), runtime);
@@ -1054,10 +1071,11 @@ async fn authenticated_requests_are_bounded_before_and_after_initialization() {
 #[tokio::test]
 async fn authenticated_sessions_remain_isolated() {
     let (_temp, app_server, app) = local_app().await;
+    let options = workspace_scoped_options(&app).await;
     let runtime = AuthenticatedMcpHttpRuntime::new(
         |_| async { Ok::<_, ()>(()) },
         move |_| std::future::ready(Ok::<_, ()>(app.clone())),
-        workspace_named_options(),
+        options,
         || async { Ok::<_, tonic::Code>(()) },
     );
     let (router, state) = authenticated_router(authenticated_config(), runtime);
@@ -1101,6 +1119,7 @@ async fn authenticated_sessions_remain_isolated() {
 #[tokio::test]
 async fn authenticated_session_admission_rejects_before_client_creation() {
     let (_temp, app_server, app) = local_app().await;
+    let options = workspace_scoped_options(&app).await;
     let factory_calls = Arc::new(AtomicUsize::new(0));
     let counted_factory_calls = factory_calls.clone();
     let runtime = AuthenticatedMcpHttpRuntime::new(
@@ -1109,7 +1128,7 @@ async fn authenticated_session_admission_rejects_before_client_creation() {
             counted_factory_calls.fetch_add(1, Ordering::Relaxed);
             std::future::ready(Ok::<_, ()>(app.clone()))
         },
-        workspace_named_options(),
+        options,
         || async { Ok::<_, tonic::Code>(()) },
     );
     let sessions = Arc::new(AuthenticatedSessions::new(1));
@@ -1141,14 +1160,387 @@ async fn authenticated_session_admission_rejects_before_client_creation() {
     app_server.shutdown().await.unwrap();
 }
 
+/// Reads the JSON-RPC error a refused `initialize` is answered with.
+///
+/// A refusal has to arrive as the initialize response itself, addressed to that
+/// request: every later exchange on this surface is workspace-scoped, so a
+/// caller refused any other way would learn only that something failed.
+async fn refusal_error(response: Response) -> serde_json::Value {
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        response.headers().get(SESSION_ID_HEADER).is_none(),
+        "a refused initialize must not hand back a session"
+    );
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let message: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        message.get("id"),
+        Some(&serde_json::json!(1)),
+        "the refusal must answer the initialize request: {message}"
+    );
+    message
+        .get("error")
+        .expect("a refusal carries a JSON-RPC error")
+        .clone()
+}
+
+fn refusal_guidance(error: &serde_json::Value) -> &str {
+    error
+        .get("message")
+        .and_then(serde_json::Value::as_str)
+        .expect("a refusal carries guidance text")
+}
+
+/// One RPC a workspace directory answered, and the credential it carried.
+///
+/// Which credential asked is the whole of a membership listing's meaning: the
+/// same question put on a shared unauthenticated connection returns one
+/// deployment-wide answer, so recording the authorization is what separates a
+/// per-caller admission decision from a per-deployment one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DirectoryCall {
+    rpc: &'static str,
+    authorization: Option<String>,
+}
+
+/// Every RPC one workspace directory answered, in order.
+type DirectoryCalls = Arc<std::sync::Mutex<Vec<DirectoryCall>>>;
+
+/// A workspace directory that reveals only the caller's own memberships.
+///
+/// Memberships are keyed by the bearer the request carries, as the real service
+/// scopes them to the authenticated caller. Every RPC is recorded, not only the
+/// listing, so a test can claim admission asked one question and no other: a
+/// second listing, or any question that could tell a concealed workspace from
+/// an absent one, lands in the same log.
+struct WorkspaceDirectory {
+    memberships: HashMap<String, Vec<String>>,
+    calls: DirectoryCalls,
+}
+
+impl WorkspaceDirectory {
+    fn record(&self, rpc: &'static str, metadata: &MetadataMap) -> Option<String> {
+        let authorization = metadata
+            .get("authorization")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        self.calls
+            .lock()
+            .expect("record directory call")
+            .push(DirectoryCall {
+                rpc,
+                authorization: authorization.clone(),
+            });
+        authorization
+    }
+
+    /// Records a question admission has no business asking, then refuses it.
+    ///
+    /// Refusing alone would leave the attempt invisible once the caller
+    /// recovers from the error, so the log sees it first.
+    fn refuse(&self, rpc: &'static str, metadata: &MetadataMap) -> Status {
+        self.record(rpc, metadata);
+        Status::unimplemented(rpc)
+    }
+}
+
+#[tonic::async_trait]
+impl WorkspaceService for WorkspaceDirectory {
+    async fn list_workspaces(
+        &self,
+        request: GrpcRequest<ListWorkspacesRequest>,
+    ) -> Result<GrpcResponse<ListWorkspacesResponse>, Status> {
+        let memberships = self
+            .record("ListWorkspaces", request.metadata())
+            .and_then(|authorization| self.memberships.get(&authorization))
+            .into_iter()
+            .flatten()
+            .map(|name| WorkspaceMembership {
+                workspace: Some(workspace(name.as_str())),
+                role: WorkspaceRole::Owner as i32,
+            })
+            .collect();
+        Ok(GrpcResponse::new(ListWorkspacesResponse { memberships }))
+    }
+
+    async fn create_workspace(
+        &self,
+        request: GrpcRequest<CreateWorkspaceRequest>,
+    ) -> Result<GrpcResponse<CreateWorkspaceResponse>, Status> {
+        Err(self.refuse("CreateWorkspace", request.metadata()))
+    }
+
+    async fn delete_workspace(
+        &self,
+        request: GrpcRequest<DeleteWorkspaceRequest>,
+    ) -> Result<GrpcResponse<DeleteWorkspaceResponse>, Status> {
+        Err(self.refuse("DeleteWorkspace", request.metadata()))
+    }
+
+    async fn list_workspace_members(
+        &self,
+        request: GrpcRequest<ListWorkspaceMembersRequest>,
+    ) -> Result<GrpcResponse<ListWorkspaceMembersResponse>, Status> {
+        Err(self.refuse("ListWorkspaceMembers", request.metadata()))
+    }
+
+    async fn add_workspace_member(
+        &self,
+        request: GrpcRequest<AddWorkspaceMemberRequest>,
+    ) -> Result<GrpcResponse<AddWorkspaceMemberResponse>, Status> {
+        Err(self.refuse("AddWorkspaceMember", request.metadata()))
+    }
+
+    async fn remove_workspace_member(
+        &self,
+        request: GrpcRequest<RemoveWorkspaceMemberRequest>,
+    ) -> Result<GrpcResponse<RemoveWorkspaceMemberResponse>, Status> {
+        Err(self.refuse("RemoveWorkspaceMember", request.metadata()))
+    }
+}
+
+/// One workspace directory served over loopback gRPC for the length of a test.
+struct RunningDirectory {
+    endpoint: String,
+    calls: DirectoryCalls,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl RunningDirectory {
+    /// The RPCs this directory has answered so far.
+    fn calls(&self) -> Vec<DirectoryCall> {
+        self.calls.lock().expect("read directory calls").clone()
+    }
+}
+
+impl Drop for RunningDirectory {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+/// Serves one directory whose memberships are keyed by bearer token.
+///
+/// A directory is a whole world: the workspaces it contains are exactly the
+/// ones somebody in it holds. Two directories are therefore what it takes to
+/// pose a workspace that exists but is out of reach against one that was never
+/// created at all.
+async fn serve_directory(memberships: Vec<(&str, Vec<String>)>) -> RunningDirectory {
+    let calls = DirectoryCalls::default();
+    let directory = WorkspaceDirectory {
+        memberships: memberships
+            .into_iter()
+            .map(|(token, names)| (format!("Bearer {token}"), names))
+            .collect(),
+        calls: Arc::clone(&calls),
+    };
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("bind workspace directory");
+    let endpoint = format!(
+        "http://{}",
+        listener.local_addr().expect("directory address")
+    );
+    let task = tokio::spawn(async move {
+        let _served = Server::builder()
+            .add_service(WorkspaceServiceServer::new(directory))
+            .serve_with_incoming(TcpListenerStream::new(listener))
+            .await;
+    });
+    RunningDirectory {
+        endpoint,
+        calls,
+        task,
+    }
+}
+
+/// The one question admission may ask, put on one caller's own bearer.
+fn listing_by(token: &str) -> DirectoryCall {
+    DirectoryCall {
+        rpc: "ListWorkspaces",
+        authorization: Some(format!("Bearer {token}")),
+    }
+}
+
+/// Connects one caller's own bearer-bound client, the way serving does.
+async fn bearer_client(endpoint: &str, token: &str) -> Result<AppClient, ()> {
+    let bearer = BearerToken::new(token).map_err(|_error| ())?;
+    connect_with_loopback_bearer(endpoint, bearer)
+        .await
+        .map_err(|_error| ())
+}
+
+/// A surface that names no workspace admits nobody, and says what to do.
+///
+/// The caller holds a workspace here, and it is still not substituted for the
+/// one nothing named: an unnamed workspace is a configuration answer, so no
+/// bearer-bound client is built and the directory is asked nothing at all —
+/// admission cannot pick what it never read. The unauthenticated readiness
+/// probe stays untouched too; it is not a way to find a workspace.
+#[tokio::test]
+async fn authenticated_admission_requires_a_configured_workspace() {
+    let directory = serve_directory(vec![("member", vec![TEST_WORKSPACE.to_string()])]).await;
+    let endpoint = directory.endpoint.clone();
+    let client_calls = Arc::new(AtomicUsize::new(0));
+    let counted_client_calls = Arc::clone(&client_calls);
+    let readiness_calls = Arc::new(AtomicUsize::new(0));
+    let counted_readiness_calls = Arc::clone(&readiness_calls);
+    let runtime = AuthenticatedMcpHttpRuntime::new(
+        |_| async { Ok::<_, ()>(()) },
+        move |token: String| {
+            counted_client_calls.fetch_add(1, Ordering::Relaxed);
+            let endpoint = endpoint.clone();
+            async move { bearer_client(&endpoint, &token).await }
+        },
+        McpOptions::default(),
+        move || {
+            counted_readiness_calls.fetch_add(1, Ordering::Relaxed);
+            async { Ok::<_, tonic::Code>(()) }
+        },
+    );
+    let (router, state) = authenticated_router(authenticated_config(), runtime);
+
+    let refused = send(&router, auth_request("Bearer member", None, INITIALIZE)).await;
+    let error = refusal_error(refused).await;
+
+    let guidance = refusal_guidance(&error);
+    assert!(
+        guidance.contains("no workspace configured"),
+        "guidance: {guidance}"
+    );
+    assert!(
+        guidance.contains("Reef") && guidance.contains("server.mcp_http.workspace"),
+        "guidance must name both ways out: {guidance}"
+    );
+    assert_eq!(client_calls.load(Ordering::Relaxed), 0);
+    assert_eq!(readiness_calls.load(Ordering::Relaxed), 0);
+    assert_eq!(
+        directory.calls(),
+        Vec::new(),
+        "with nothing configured there is no membership question to ask"
+    );
+    assert_eq!(state.sessions.len().await, 0);
+    assert_eq!(
+        state.sessions.available_permits(),
+        MAX_AUTHENTICATED_SESSIONS
+    );
+}
+
+/// Admission binds a session only to the exact workspace the caller holds, and
+/// learns that from one question asked on the caller's own connection.
+///
+/// One configured name meets three callers. The member holds it and is
+/// admitted. The outsider is in the same directory, where the workspace exists
+/// and they simply do not belong to it — they hold only a name that starts the
+/// same way, so admitting anyone's first membership would show up here. The
+/// stranger is in a directory where no such workspace was ever created. Both
+/// are refused with the identical sentence, so nothing in the answer separates
+/// a concealed workspace from an absent one — and the member's admission is
+/// what keeps that sameness from being "deny everyone".
+///
+/// The directories record every RPC, so three claims are observable rather than
+/// assumed: each admission listed exactly once, each listing carried its own
+/// caller's bearer rather than a shared one, and nothing else was ever asked.
+#[tokio::test]
+async fn authenticated_admission_binds_only_an_exact_membership() {
+    let holders = serve_directory(vec![
+        ("member", vec![TEST_WORKSPACE.to_string()]),
+        ("outsider", vec![format!("{TEST_WORKSPACE}-staging")]),
+    ])
+    .await;
+    let elsewhere = serve_directory(vec![("stranger", Vec::new())]).await;
+    let holders_endpoint = holders.endpoint.clone();
+    let elsewhere_endpoint = elsewhere.endpoint.clone();
+    let readiness_calls = Arc::new(AtomicUsize::new(0));
+    let counted_readiness_calls = Arc::clone(&readiness_calls);
+    let runtime = AuthenticatedMcpHttpRuntime::new(
+        |_| async { Ok::<_, ()>(()) },
+        move |token: String| {
+            let endpoint = if token == "stranger" {
+                elsewhere_endpoint.clone()
+            } else {
+                holders_endpoint.clone()
+            };
+            async move { bearer_client(&endpoint, &token).await }
+        },
+        workspace_named_options(),
+        move || {
+            counted_readiness_calls.fetch_add(1, Ordering::Relaxed);
+            async { Ok::<_, tonic::Code>(()) }
+        },
+    );
+    let (router, state) = authenticated_router(authenticated_config(), runtime);
+
+    let admitted = send(&router, auth_request("Bearer member", None, INITIALIZE)).await;
+    assert_eq!(admitted.status(), StatusCode::OK);
+    let session = admitted.headers()[SESSION_ID_HEADER]
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(state.sessions.len().await, 1);
+    assert_eq!(
+        holders.calls(),
+        vec![listing_by("member")],
+        "admission asks the caller's own connection once, and asks nothing else"
+    );
+
+    let mut ping = auth_request("Bearer member", Some(&session), PING);
+    ping.headers_mut()
+        .insert("mcp-protocol-version", "2025-03-26".parse().unwrap());
+    assert!(send(&router, ping).await.status().is_success());
+    assert_eq!(
+        holders.calls().len(),
+        1,
+        "the decision is made once at admission, not again per request"
+    );
+
+    let outsider_refusal =
+        refusal_error(send(&router, auth_request("Bearer outsider", None, INITIALIZE)).await).await;
+    let stranger_refusal =
+        refusal_error(send(&router, auth_request("Bearer stranger", None, INITIALIZE)).await).await;
+
+    assert_eq!(
+        outsider_refusal, stranger_refusal,
+        "a workspace out of reach and one that does not exist must read alike"
+    );
+    let guidance = refusal_guidance(&outsider_refusal);
+    assert!(
+        guidance.contains(&format!("Workspace `{TEST_WORKSPACE}` was not found")),
+        "the answer they share must be the not-found contract: {guidance}"
+    );
+    assert_eq!(
+        holders.calls(),
+        vec![listing_by("member"), listing_by("outsider")],
+        "every admission lists once, on its own caller's bearer"
+    );
+    assert_eq!(elsewhere.calls(), vec![listing_by("stranger")]);
+    assert_eq!(
+        readiness_calls.load(Ordering::Relaxed),
+        0,
+        "the unauthenticated client stays restricted to health readiness"
+    );
+    assert_eq!(
+        state.sessions.len().await,
+        1,
+        "a refused caller opens no session"
+    );
+    assert_eq!(
+        state.sessions.available_permits(),
+        MAX_AUTHENTICATED_SESSIONS - 1,
+        "a refusal releases the admission it reserved"
+    );
+
+    state.sessions.close_all().await;
+}
+
 #[tokio::test]
 async fn authenticated_session_honors_the_declared_idle_timeout() {
     let (_temp, app_server, app) = local_app().await;
-    tokio::time::pause();
+    let options = workspace_scoped_options(&app).await;
     let runtime = AuthenticatedMcpHttpRuntime::new(
         |_| async { Ok::<_, ()>(()) },
         move |_| std::future::ready(Ok::<_, ()>(app.clone())),
-        workspace_named_options(),
+        options,
         || async { Ok::<_, tonic::Code>(()) },
     );
     let sessions = Arc::new(AuthenticatedSessions::new(1));
@@ -1163,6 +1555,10 @@ async fn authenticated_session_honors_the_declared_idle_timeout() {
         .to_string();
     assert_eq!(state.sessions.available_permits(), 0);
 
+    // Admission is a live gRPC exchange with the app server, so the clock is
+    // taken over only once it has finished: auto-advance can otherwise run a
+    // request's own deadline out from under it while it waits on the socket.
+    tokio::time::pause();
     tokio::task::yield_now().await;
     tokio::time::advance(SessionConfig::DEFAULT_KEEP_ALIVE + Duration::from_secs(1)).await;
     tokio::task::yield_now().await;

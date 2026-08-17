@@ -26,7 +26,9 @@ use coral_api::v1::ListWorkspacesRequest;
 use coral_app::{CanonicalOauthUrl, OauthUrlError};
 use coral_client::{AppClient, workspace as workspace_resource};
 use futures::{Stream, StreamExt as _};
-use rmcp::model::{ClientJsonRpcMessage, ClientRequest, ServerJsonRpcMessage};
+use rmcp::model::{
+    ClientJsonRpcMessage, ClientRequest, ErrorData, RequestId, ServerJsonRpcMessage,
+};
 use rmcp::transport::{
     WorkerTransport,
     common::{
@@ -694,7 +696,9 @@ async fn resolve_local_workspace(
     if options.workspace.is_some() {
         return Ok(options);
     }
-    let mut names = local_workspace_names(app).await?;
+    let mut names = membership_workspace_names(app)
+        .await
+        .map_err(McpHttpError::LocalWorkspaceLookup)?;
     if names.len() != 1 {
         return Err(if names.is_empty() {
             McpHttpError::NoLocalWorkspace
@@ -708,13 +712,15 @@ async fn resolve_local_workspace(
     })
 }
 
-/// Names the workspaces the local user belongs to, in listing order.
-async fn local_workspace_names(app: &AppClient) -> Result<Vec<String>, McpHttpError> {
+/// Names the workspaces the client's own caller belongs to, in listing order.
+///
+/// The listing is scoped to whoever the client authenticates as, so which
+/// client this is asked with is the whole of the answer's meaning.
+async fn membership_workspace_names(app: &AppClient) -> Result<Vec<String>, tonic::Status> {
     Ok(app
         .workspace_client()
         .list_workspaces(GrpcRequest::new(ListWorkspacesRequest {}))
-        .await
-        .map_err(McpHttpError::LocalWorkspaceLookup)?
+        .await?
         .into_inner()
         .memberships
         .into_iter()
@@ -891,13 +897,13 @@ async fn mcp(State(state): State<Arc<HttpState>>, request: Request<Body>) -> Res
     if request.headers().contains_key(header::ORIGIN) {
         return StatusCode::FORBIDDEN.into_response();
     }
-    let request = tokio::select! {
+    let (request, _initialize_id) = tokio::select! {
         biased;
         () = state.server.config.cancellation_token.cancelled() => {
             return StatusCode::SERVICE_UNAVAILABLE.into_response();
         }
         request = validate_mcp_request(request) => match request {
-            Ok(request) => request,
+            Ok(validated) => validated,
             Err(response) => return response,
         },
     };
@@ -910,9 +916,16 @@ async fn mcp(State(state): State<Arc<HttpState>>, request: Request<Body>) -> Res
     .await
 }
 
-async fn validate_mcp_request(request: Request<Body>) -> Result<Request<Body>, Response> {
+/// Validates one MCP request, reporting the id of the `initialize` it carries.
+///
+/// The id is `Some` exactly for the sessionless POST that opens a session, so a
+/// caller that refuses admission can answer that request in its own terms
+/// instead of re-parsing the body it just handed on.
+async fn validate_mcp_request(
+    request: Request<Body>,
+) -> Result<(Request<Body>, Option<RequestId>), Response> {
     if request.method() != Method::POST {
-        return Ok(request);
+        return Ok((request, None));
     }
 
     let has_session = request
@@ -924,12 +937,14 @@ async fn validate_mcp_request(request: Request<Body>) -> Result<Request<Body>, R
     let bytes = axum::body::to_bytes(body, MAX_MCP_REQUEST_BODY_SIZE)
         .await
         .map_err(|_error| StatusCode::PAYLOAD_TOO_LARGE.into_response())?;
+    let mut initialize_id = None;
     if !has_session {
         let message = serde_json::from_slice::<ClientJsonRpcMessage>(&bytes)
             .map_err(|_error| StatusCode::UNSUPPORTED_MEDIA_TYPE.into_response())?;
         let ClientJsonRpcMessage::Request(request) = message else {
             return Err(StatusCode::BAD_REQUEST.into_response());
         };
+        let request_id = request.id;
         let ClientRequest::InitializeRequest(initialize) = request.request else {
             return Err(StatusCode::BAD_REQUEST.into_response());
         };
@@ -939,8 +954,9 @@ async fn validate_mcp_request(request: Request<Body>) -> Result<Request<Body>, R
         ) {
             return Err(StatusCode::BAD_REQUEST.into_response());
         }
+        initialize_id = Some(request_id);
     }
-    Ok(Request::from_parts(parts, Body::from(bytes)))
+    Ok((Request::from_parts(parts, Body::from(bytes)), initialize_id))
 }
 
 fn initialize_protocol_header_matches(headers: &HeaderMap, body_protocol: &str) -> bool {
@@ -1015,13 +1031,13 @@ async fn authenticated_mcp(State(state): State<AuthState>, request: Request<Body
     if validation.is_err() {
         return unauthorized_response(&state.config);
     }
-    let request = tokio::select! {
+    let (request, initialize_id) = tokio::select! {
         biased;
         () = state.server.config.cancellation_token.cancelled() => {
             return StatusCode::SERVICE_UNAVAILABLE.into_response();
         }
         request = validate_mcp_request(request) => match request {
-            Ok(request) => request,
+            Ok(validated) => validated,
             Err(response) => return response,
         },
     };
@@ -1042,7 +1058,7 @@ async fn authenticated_mcp(State(state): State<AuthState>, request: Request<Body
         };
         match create_session_factory(&state, token).await {
             Ok(factory) => (Some(factory), Some(admission_permit)),
-            Err(status) => return status.into_response(),
+            Err(refusal) => return refusal.into_response(initialize_id),
         }
     } else {
         (None, None)
@@ -1057,22 +1073,105 @@ async fn authenticated_mcp(State(state): State<AuthState>, request: Request<Body
 
 /// Builds the bearer-bound session factory admitted for one initialize request.
 ///
-/// A session is refused when the runtime names no workspace. Admitting one
-/// anyway would hand back a session that is inert at the protocol layer —
-/// `tools/list` enumerates the workspace's table functions, so it is itself
-/// workspace-scoped — and the only way to make it answer would be to substitute
-/// a workspace the caller never asked for.
+/// The membership listing that decides admission runs on the caller's own
+/// bearer-bound client and on nothing else. The unauthenticated client this
+/// surface holds serves health readiness only: listing with it would hand every
+/// caller one deployment-wide answer and collapse the per-caller concealment
+/// this admission exists to provide.
+///
+/// A session is refused rather than admitted unbound, because every later
+/// exchange is workspace-scoped — `tools/list` enumerates the workspace's table
+/// functions — so an unbound session could only fail opaquely, and the only way
+/// to make it answer would be to substitute a workspace nobody asked for.
 async fn create_session_factory(
     state: &AuthenticatedHttpState,
     token: String,
-) -> Result<CoralMcpServerFactory, StatusCode> {
+) -> Result<CoralMcpServerFactory, SessionRefusal> {
+    let configured = state
+        .runtime
+        .options
+        .workspace
+        .as_ref()
+        .ok_or(SessionRefusal::NoWorkspaceConfigured)?;
     let client = tokio::select! {
         biased;
-        () = state.server.config.cancellation_token.cancelled() => Err(StatusCode::SERVICE_UNAVAILABLE),
-        client = (state.runtime.session_client_factory)(token) => client.map_err(|()| StatusCode::SERVICE_UNAVAILABLE),
+        () = state.server.config.cancellation_token.cancelled() => Err(SessionRefusal::Unavailable),
+        client = (state.runtime.session_client_factory)(token) => client.map_err(|()| SessionRefusal::Unavailable),
     }?;
+    require_configured_membership(&client, &configured.name).await?;
     CoralMcpServerFactory::new(client, state.runtime.options.clone())
-        .map_err(|WorkspaceRequired| StatusCode::SERVICE_UNAVAILABLE)
+        .map_err(|WorkspaceRequired| SessionRefusal::Unavailable)
+}
+
+/// Admits the session only when the caller already holds the configured name.
+///
+/// The single listing this makes is the entire authorization decision: an exact
+/// name match admits, and every other outcome is the one concealed refusal. No
+/// membership is picked on the caller's behalf and no other workspace is
+/// substituted, so nothing here needs to know who the caller is — a listing
+/// scoped to the caller answers the only question admission has.
+async fn require_configured_membership(
+    client: &AppClient,
+    configured: &str,
+) -> Result<(), SessionRefusal> {
+    let memberships = membership_workspace_names(client).await.map_err(|status| {
+        tracing::warn!(%status, "listing memberships for MCP session admission failed");
+        SessionRefusal::Unavailable
+    })?;
+    if memberships.iter().any(|name| name == configured) {
+        return Ok(());
+    }
+    Err(SessionRefusal::WorkspaceNotFound(configured.to_string()))
+}
+
+/// Why an authenticated MCP session was not admitted.
+///
+/// [`Self::WorkspaceNotFound`] is deliberately the only membership answer.
+/// Admission reads the caller's own memberships and never asks whether the
+/// configured name exists, so a workspace the caller may not reach and one that
+/// was never created are indistinguishable from here — and from the caller.
+enum SessionRefusal {
+    /// Nothing names a workspace for this surface to serve.
+    NoWorkspaceConfigured,
+    /// The configured workspace is not one of the caller's memberships.
+    WorkspaceNotFound(String),
+    /// Admission could not be decided; not an answer about any workspace.
+    Unavailable,
+}
+
+impl SessionRefusal {
+    /// Answers the `initialize` request that asked to be admitted.
+    ///
+    /// The handshake is the only exchange on this surface that is not
+    /// workspace-scoped, so it is the one place guidance can reach a caller who
+    /// has no workspace to reach. A transport-level status would surface as a
+    /// bare connection failure instead.
+    fn into_response(self, initialize_id: Option<RequestId>) -> Response {
+        let guidance = match self {
+            Self::Unavailable => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+            Self::NoWorkspaceConfigured => NO_WORKSPACE_CONFIGURED.to_string(),
+            Self::WorkspaceNotFound(name) => workspace_not_found(&name),
+        };
+        let refusal =
+            ServerJsonRpcMessage::error(ErrorData::invalid_request(guidance, None), initialize_id);
+        match serde_json::to_string(&refusal) {
+            Ok(body) => ([(header::CONTENT_TYPE, "application/json")], body).into_response(),
+            Err(_error) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        }
+    }
+}
+
+/// Guidance for a surface that names no workspace at all.
+const NO_WORKSPACE_CONFIGURED: &str = "This MCP server has no workspace configured. Create a workspace in Reef, then name one you can access in `server.mcp_http.workspace`.";
+
+/// The one answer for a configured workspace the caller does not hold.
+///
+/// It must stay identical for a name that does not exist and a name the caller
+/// may not reach; the two are the same sentence on purpose.
+fn workspace_not_found(name: &str) -> String {
+    format!(
+        "Workspace `{name}` was not found. Name a workspace you can access in `server.mcp_http.workspace`, or create one in Reef."
+    )
 }
 
 async fn authorize_bound_session(
