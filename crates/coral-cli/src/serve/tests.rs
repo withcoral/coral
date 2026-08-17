@@ -167,20 +167,34 @@ async fn initialize_mcp(endpoint: &str, authorization: &str) -> reqwest::Respons
 /// functions — so `coral-app`'s workspace authorization tests own the boundary
 /// behind it.
 ///
-/// An accepted audience is then refused a *session*: nothing names the
-/// workspace an authenticated surface serves, and binding one anyway would
-/// either hand back a session inert at the protocol layer or substitute a
-/// workspace the caller never asked for. The absent challenge is what tells
-/// that refusal apart from a refused audience, which is answered `401` and
-/// carries one.
+/// An accepted audience is then refused a *session*: this composition still
+/// names no workspace for the authenticated surface to serve, and binding one
+/// anyway would either hand back a session inert at the protocol layer or
+/// substitute a workspace the caller never asked for. The refusal answers the
+/// handshake itself, because the handshake is the only exchange here that is
+/// not workspace-scoped and so the only one that can carry guidance. The absent
+/// challenge is what tells that refusal apart from a refused audience, which is
+/// answered `401` and carries one.
 async fn assert_mcp_authenticated(endpoint: &str, token: &str) {
     let accepted = initialize_mcp(endpoint, &format!("Bearer {token}")).await;
     assert_eq!(
         accepted.status(),
-        reqwest::StatusCode::SERVICE_UNAVAILABLE,
-        "an accepted audience must pass authentication and be refused only its workspaceless session"
+        reqwest::StatusCode::OK,
+        "an accepted audience must pass authentication and be answered its handshake"
     );
     assert!(accepted.headers().get(WWW_AUTHENTICATE).is_none());
+    let refusal = accepted
+        .json::<serde_json::Value>()
+        .await
+        .expect("JSON-RPC handshake answer");
+    let guidance = refusal
+        .pointer("/error/message")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_else(|| panic!("a refused handshake carries guidance: {refusal}"));
+    assert!(
+        guidance.contains("no workspace configured"),
+        "an accepted audience must be refused only its workspaceless session: {guidance}"
+    );
 }
 
 async fn assert_unauthorized(base: &str, authorization: &str) {
