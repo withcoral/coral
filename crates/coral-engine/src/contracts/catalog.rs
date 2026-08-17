@@ -92,6 +92,8 @@ pub struct TableFunctionResultColumnInfo {
 /// Describes one table function.
 #[derive(Debug, Clone)]
 pub struct TableFunctionInfo {
+    /// `SQL` catalog name. Absent for two-part function references.
+    pub catalog_name: Option<String>,
     /// `SQL` schema name.
     pub schema_name: String,
     /// Function name within the schema.
