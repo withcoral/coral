@@ -204,8 +204,13 @@ async fn create_workspace(app: &AppClient, name: &str) {
 /// [`workspace_scoped_options`] instead, because admission there checks the
 /// name against the caller's memberships before opening a session.
 fn workspace_named_options() -> McpOptions {
+    options_naming(TEST_WORKSPACE)
+}
+
+/// Names one workspace for a surface, without creating it.
+fn options_naming(name: &str) -> McpOptions {
     McpOptions {
-        workspace: Some(workspace(TEST_WORKSPACE)),
+        workspace: Some(workspace(name)),
         ..McpOptions::default()
     }
 }
@@ -1196,6 +1201,93 @@ fn refusal_guidance(error: &serde_json::Value) -> &str {
         .expect("a refusal carries guidance text")
 }
 
+/// The session an admitted `initialize` opened, and the result it answered with.
+///
+/// A handshake answered as one JSON object and one answered as an event stream
+/// carry the same result, so this reads whichever framing arrived rather than
+/// pinning one — an event stream opens with an empty priming frame, so the
+/// payload is the last one carrying anything. The read is bounded, because a
+/// body that never ends is a failure to report rather than a test that hangs
+/// until something else gives up on it.
+async fn admitted_result(response: Response) -> (String, serde_json::Value) {
+    assert_eq!(response.status(), StatusCode::OK);
+    let session = response
+        .headers()
+        .get(SESSION_ID_HEADER)
+        .expect("an admitted handshake hands back a session")
+        .to_str()
+        .expect("the session id is text")
+        .to_string();
+    let body = tokio::time::timeout(
+        Duration::from_secs(5),
+        to_bytes(response.into_body(), usize::MAX),
+    )
+    .await
+    .expect("the handshake response body ends")
+    .expect("read the handshake response body");
+    let text = String::from_utf8(body.to_vec()).expect("the handshake response is text");
+    let payload = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("data:"))
+        .map(str::trim)
+        .rfind(|payload| !payload.is_empty())
+        .unwrap_or_else(|| text.trim());
+    let message: serde_json::Value = serde_json::from_str(payload)
+        .unwrap_or_else(|error| panic!("the handshake response is JSON ({error}): {text}"));
+    let result = message
+        .get("result")
+        .unwrap_or_else(|| panic!("an admitted handshake carries a result: {message}"))
+        .clone();
+    (session, result)
+}
+
+/// The instructions an admitted session opened with.
+///
+/// They carry the workspace the session was scoped to, which is the only place
+/// a caller is told what their session reaches — so it is where a session bound
+/// to a workspace nobody configured would show.
+fn admitted_instructions(result: &serde_json::Value) -> &str {
+    result
+        .get("instructions")
+        .and_then(serde_json::Value::as_str)
+        .expect("an initialize result carries the session's instructions")
+}
+
+/// Admits one caller, and says the session reaches `configured` and not `other`.
+///
+/// Returns the session, so what the caller goes on to hold is the session the
+/// workspace claim was made about.
+async fn admitted_session_scoped_to(response: Response, configured: &str, other: &str) -> String {
+    let (session, result) = admitted_result(response).await;
+    let instructions = admitted_instructions(&result);
+    assert!(
+        instructions.contains(&format!("Current Coral workspace: {configured}.")),
+        "the session opens in the workspace its surface configured: {instructions}"
+    );
+    assert!(
+        !instructions.contains(other),
+        "no part of the session mentions the other caller's workspace: {instructions}"
+    );
+    session
+}
+
+/// Refuses one caller the configured workspace without offering the one they
+/// hold.
+///
+/// `held` is the accessible workspace a fallback would reach for, so naming it
+/// here is what separates "refused" from "refused, and not quietly rerouted".
+fn assert_refused_without_a_substitute(error: &serde_json::Value, configured: &str, held: &str) {
+    let guidance = refusal_guidance(error);
+    assert!(
+        guidance.contains(&format!("Workspace `{configured}` was not found")),
+        "guidance: {guidance}"
+    );
+    assert!(
+        !guidance.contains(held),
+        "the workspace this caller does hold is never offered in place of the configured one: {guidance}"
+    );
+}
+
 /// One RPC a workspace directory answered, and the credential it carried.
 ///
 /// Which credential asked is the whole of a membership listing's meaning: the
@@ -1211,6 +1303,13 @@ struct DirectoryCall {
 /// Every RPC one workspace directory answered, in order.
 type DirectoryCalls = Arc<std::sync::Mutex<Vec<DirectoryCall>>>;
 
+/// The memberships a directory answers with, editable while it keeps serving.
+///
+/// A membership that can only change across a restart cannot tell a decision
+/// made per handshake from one cached at startup, so the map the running
+/// directory reads is the same map a test revokes from.
+type DirectoryMemberships = Arc<std::sync::Mutex<HashMap<String, Vec<String>>>>;
+
 /// A workspace directory that reveals only the caller's own memberships.
 ///
 /// Memberships are keyed by the bearer the request carries, as the real service
@@ -1219,7 +1318,7 @@ type DirectoryCalls = Arc<std::sync::Mutex<Vec<DirectoryCall>>>;
 /// second listing, or any question that could tell a concealed workspace from
 /// an absent one, lands in the same log.
 struct WorkspaceDirectory {
-    memberships: HashMap<String, Vec<String>>,
+    memberships: DirectoryMemberships,
     calls: DirectoryCalls,
 }
 
@@ -1266,7 +1365,13 @@ impl WorkspaceService for WorkspaceDirectory {
     ) -> Result<GrpcResponse<ListWorkspacesResponse>, Status> {
         let memberships = self
             .record("ListWorkspaces", request.metadata())
-            .and_then(|authorization| self.memberships.get(&authorization))
+            .and_then(|authorization| {
+                self.memberships
+                    .lock()
+                    .expect("read directory memberships")
+                    .get(&authorization)
+                    .cloned()
+            })
             .into_iter()
             .flatten()
             .map(|name| WorkspaceMembership {
@@ -1353,6 +1458,7 @@ impl UserService for IdentityDirectory {
 struct RunningDirectory {
     endpoint: String,
     calls: DirectoryCalls,
+    memberships: DirectoryMemberships,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -1360,6 +1466,27 @@ impl RunningDirectory {
     /// The RPCs this directory has answered so far.
     fn calls(&self) -> Vec<DirectoryCall> {
         self.calls.lock().expect("read directory calls").clone()
+    }
+
+    /// Takes one workspace away from one caller, on the directory now serving.
+    ///
+    /// Nothing is restarted, rebuilt or reconnected: the map this edits is the
+    /// one the running directory answers listings from, so whatever asks next
+    /// asks the changed world. The count assertion is what keeps a revocation
+    /// from silently doing nothing — a revocation that removed no membership
+    /// would leave a test green for the wrong reason.
+    fn revoke(&self, token: &str, name: &str) {
+        let mut memberships = self.memberships.lock().expect("revoke a membership");
+        let held = memberships
+            .get_mut(&format!("Bearer {token}"))
+            .expect("revoke from a caller this directory knows");
+        let before = held.len();
+        held.retain(|workspace| workspace != name);
+        assert_eq!(
+            held.len() + 1,
+            before,
+            "revoking `{name}` from `{token}` must remove exactly the named membership"
+        );
     }
 }
 
@@ -1377,11 +1504,14 @@ impl Drop for RunningDirectory {
 /// created at all.
 async fn serve_directory(memberships: Vec<(&str, Vec<String>)>) -> RunningDirectory {
     let calls = DirectoryCalls::default();
-    let directory = WorkspaceDirectory {
-        memberships: memberships
+    let memberships: DirectoryMemberships = Arc::new(std::sync::Mutex::new(
+        memberships
             .into_iter()
             .map(|(token, names)| (format!("Bearer {token}"), names))
             .collect(),
+    ));
+    let directory = WorkspaceDirectory {
+        memberships: Arc::clone(&memberships),
         calls: Arc::clone(&calls),
     };
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
@@ -1404,6 +1534,7 @@ async fn serve_directory(memberships: Vec<(&str, Vec<String>)>) -> RunningDirect
     RunningDirectory {
         endpoint,
         calls,
+        memberships,
         task,
     }
 }
@@ -1420,6 +1551,18 @@ fn listing_by(token: &str) -> DirectoryCall {
 fn identity_by(token: &str) -> DirectoryCall {
     DirectoryCall {
         rpc: "GetCurrentUser",
+        authorization: Some(format!("Bearer {token}")),
+    }
+}
+
+/// A control-plane RPC, recorded against the credential that attempted it.
+///
+/// Creating a workspace is an administrator's act, performed by a person in
+/// Reef. It is named here only so a test can say the MCP surface never reached
+/// it — and so the log can be shown to notice when something does.
+fn control_plane_by(token: &str) -> DirectoryCall {
+    DirectoryCall {
+        rpc: "CreateWorkspace",
         authorization: Some(format!("Bearer {token}")),
     }
 }
@@ -1455,6 +1598,22 @@ async fn bearer_client(endpoint: &str, token: &str) -> Result<AppClient, ()> {
     connect_with_loopback_bearer(endpoint, bearer)
         .await
         .map_err(|_error| ())
+}
+
+/// One authenticated surface, configured for one workspace of one directory.
+///
+/// Two of these over the same directory is what a deployment looks like from
+/// two people's desks: one world of workspaces, and a surface each, naming the
+/// workspace its own operator meant to serve.
+fn surface_naming(directory: &RunningDirectory, configured: &str) -> (Router, super::AuthState) {
+    authenticated_router(
+        authenticated_config(),
+        admission_runtime(
+            directory.endpoint.clone(),
+            options_naming(configured),
+            "impostor",
+        ),
+    )
 }
 
 /// A surface that names no workspace admits nobody, and says what to do.
@@ -1884,6 +2043,325 @@ async fn authenticated_admission_refuses_the_handshake_not_the_first_tool_call()
         vec![listing_by("orphan")],
         "the handshake asked once and nothing after it asked again"
     );
+}
+
+/// Two callers in one deployment, each holding a workspace the other does not.
+///
+/// Neither name contains the other, so "this answer never mentioned the other
+/// workspace" cannot be satisfied by the other name hiding inside this one.
+const ALPHA_WORKSPACE: &str = "alpha-ledger";
+const BETA_WORKSPACE: &str = "beta-ledger";
+
+/// Two callers, two surfaces, and neither is ever served the other's workspace.
+///
+/// A configured workspace belongs to the surface, not to the caller, so two
+/// people sharing one deployment reach it through two surfaces — each naming the
+/// workspace that person holds. What has to hold is that the pairing is the only
+/// one that works: each caller is admitted on their own surface, scoped to the
+/// name that surface configured, and turned away on the other's.
+///
+/// The refusals are where a fallback would surface. Both of these callers hold a
+/// workspace, and it is an accessible one — exactly the material a "serve
+/// whatever they can reach" rule needs — so being refused the name they do not
+/// hold, and never being offered the name they do, is the claim. A rule that
+/// substituted an accessible workspace would pass every test that only checks a
+/// caller can reach their own.
+///
+/// Nothing here asks the directory anything but a membership listing, and the
+/// log proves the absence rather than assuming it: one control-plane attempt at
+/// the end lands in the same log, so the RPCs an MCP credential must never
+/// reach are ones this fixture demonstrably notices.
+#[tokio::test]
+async fn authenticated_admission_binds_two_callers_to_their_own_surfaces() {
+    let directory = serve_directory(vec![
+        ("alpha", vec![ALPHA_WORKSPACE.to_string()]),
+        ("beta", vec![BETA_WORKSPACE.to_string()]),
+    ])
+    .await;
+    let (alpha_router, alpha_state) = surface_naming(&directory, ALPHA_WORKSPACE);
+    let (beta_router, beta_state) = surface_naming(&directory, BETA_WORKSPACE);
+
+    let alpha_session = admitted_session_scoped_to(
+        send(
+            &alpha_router,
+            auth_request("Bearer alpha", None, INITIALIZE),
+        )
+        .await,
+        ALPHA_WORKSPACE,
+        BETA_WORKSPACE,
+    )
+    .await;
+    let beta_session = admitted_session_scoped_to(
+        send(&beta_router, auth_request("Bearer beta", None, INITIALIZE)).await,
+        BETA_WORKSPACE,
+        ALPHA_WORKSPACE,
+    )
+    .await;
+
+    let mut ping = auth_request("Bearer alpha", Some(&alpha_session), PING);
+    ping.headers_mut()
+        .insert("mcp-protocol-version", "2025-03-26".parse().unwrap());
+    assert!(send(&alpha_router, ping).await.status().is_success());
+    assert_eq!(
+        send(
+            &alpha_router,
+            auth_request("Bearer beta", Some(&alpha_session), PING)
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN,
+        "one caller's session is not a credential the other can present"
+    );
+    assert_eq!(
+        send(
+            &alpha_router,
+            auth_request("Bearer beta", Some(&beta_session), PING)
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND,
+        "a session opened on one surface does not exist on the other"
+    );
+
+    let beta_on_alpha =
+        refusal_error(send(&alpha_router, auth_request("Bearer beta", None, INITIALIZE)).await)
+            .await;
+    assert_refused_without_a_substitute(&beta_on_alpha, ALPHA_WORKSPACE, BETA_WORKSPACE);
+
+    let alpha_on_beta =
+        refusal_error(send(&beta_router, auth_request("Bearer alpha", None, INITIALIZE)).await)
+            .await;
+    assert_refused_without_a_substitute(&alpha_on_beta, BETA_WORKSPACE, ALPHA_WORKSPACE);
+
+    assert_eq!(alpha_state.sessions.len().await, 1);
+    assert_eq!(beta_state.sessions.len().await, 1);
+    assert_eq!(
+        alpha_state.sessions.available_permits(),
+        MAX_AUTHENTICATED_SESSIONS - 1,
+        "the refused caller left no admission reserved behind"
+    );
+    assert_eq!(
+        beta_state.sessions.available_permits(),
+        MAX_AUTHENTICATED_SESSIONS - 1,
+        "the refused caller left no admission reserved behind"
+    );
+
+    assert_eq!(
+        directory.calls(),
+        vec![
+            listing_by("alpha"),
+            listing_by("beta"),
+            listing_by("beta"),
+            listing_by("alpha"),
+        ],
+        "every handshake asked once, on its own caller's bearer, and nothing else asked at all"
+    );
+
+    let asker = bearer_client(&directory.endpoint, "alpha")
+        .await
+        .expect("bearer client");
+    let attempted = asker
+        .workspace_client()
+        .create_workspace(GrpcRequest::new(CreateWorkspaceRequest {
+            workspace: Some(workspace(BETA_WORKSPACE)),
+        }))
+        .await;
+    assert!(
+        attempted.is_err(),
+        "an MCP credential is not an administrator"
+    );
+    assert_eq!(
+        directory.calls().last(),
+        Some(&control_plane_by("alpha")),
+        "a control-plane RPC is one this log records, so its absence above was observed"
+    );
+
+    alpha_state.sessions.close_all().await;
+    beta_state.sessions.close_all().await;
+}
+
+/// One sentence covers every reason the configured workspace is out of reach.
+///
+/// The debt is concealment, not refusal: a caller must not be able to read an
+/// answer and learn whether the name they were configured for exists. So the
+/// three situations that could each have grown their own wording are compared
+/// against one another whole — code, message and structured data together —
+/// rather than each being checked to be *some* error, which is a check that
+/// survives exactly the leak it is supposed to catch.
+///
+/// The three differ in everything the surface could key a leak on. One caller
+/// holds a workspace and the configured one exists beside it, held by somebody
+/// else. One holds a workspace in a world where the configured name was never
+/// created. One holds nothing at all. And the caller who does hold the
+/// configured name is admitted from the same surface, so the sameness of the
+/// other three is concealment rather than a door that is simply shut.
+#[tokio::test]
+async fn authenticated_admission_conceals_why_a_workspace_is_out_of_reach() {
+    let deployment = serve_directory(vec![
+        ("alpha", vec![ALPHA_WORKSPACE.to_string()]),
+        ("beta", vec![BETA_WORKSPACE.to_string()]),
+    ])
+    .await;
+    let elsewhere = serve_directory(vec![
+        ("nomad", vec!["nomad-ledger".to_string()]),
+        ("hermit", Vec::new()),
+    ])
+    .await;
+    let deployment_endpoint = deployment.endpoint.clone();
+    let elsewhere_endpoint = elsewhere.endpoint.clone();
+    let runtime = AuthenticatedMcpHttpRuntime::new(
+        |_| async { Ok::<_, ()>(()) },
+        move |token: String| {
+            let endpoint = if token == "alpha" || token == "beta" {
+                deployment_endpoint.clone()
+            } else {
+                elsewhere_endpoint.clone()
+            };
+            async move { bearer_client(&endpoint, &token).await }
+        },
+        options_naming(BETA_WORKSPACE),
+        || async { Ok::<_, tonic::Code>(()) },
+    );
+    let (router, state) = authenticated_router(authenticated_config(), runtime);
+
+    let held_by_another =
+        refusal_error(send(&router, auth_request("Bearer alpha", None, INITIALIZE)).await).await;
+    let never_created =
+        refusal_error(send(&router, auth_request("Bearer nomad", None, INITIALIZE)).await).await;
+    let holds_nothing =
+        refusal_error(send(&router, auth_request("Bearer hermit", None, INITIALIZE)).await).await;
+
+    assert_eq!(
+        held_by_another, never_created,
+        "a workspace somebody else holds must read exactly as one that was never created"
+    );
+    assert_eq!(
+        never_created, holds_nothing,
+        "holding a workspace elsewhere must not change the answer either"
+    );
+
+    let guidance = refusal_guidance(&held_by_another);
+    assert!(
+        guidance.contains(&format!("Workspace `{BETA_WORKSPACE}` was not found")),
+        "the answer they share is the not-found contract: {guidance}"
+    );
+    assert!(
+        !guidance.contains(ALPHA_WORKSPACE) && !guidance.contains("nomad-ledger"),
+        "the shared answer names only the workspace that was asked for: {guidance}"
+    );
+
+    let (_session, admitted) =
+        admitted_result(send(&router, auth_request("Bearer beta", None, INITIALIZE)).await).await;
+    let instructions = admitted_instructions(&admitted);
+    assert!(
+        instructions.contains(&format!("Current Coral workspace: {BETA_WORKSPACE}.")),
+        "one sentence for everyone else is concealment only because the holder gets in: {instructions}"
+    );
+
+    assert_eq!(
+        deployment.calls(),
+        vec![listing_by("alpha"), listing_by("beta")],
+        "each caller was answered from their own connection"
+    );
+    assert_eq!(
+        elsewhere.calls(),
+        vec![listing_by("nomad"), listing_by("hermit")],
+        "and the surface never asked the other world whether the name exists there"
+    );
+    assert_eq!(state.sessions.len().await, 1);
+    assert_eq!(
+        state.sessions.available_permits(),
+        MAX_AUTHENTICATED_SESSIONS - 1,
+        "three refusals released the admissions they reserved"
+    );
+
+    state.sessions.close_all().await;
+}
+
+/// A membership taken away lands on the next handshake, with nothing restarted.
+///
+/// The server, its session store, its runtime and the directory it asks are the
+/// same objects throughout: the only thing that changes is one entry in the
+/// directory the running surface reads. So a decision cached anywhere — at
+/// startup, per token, per process — would keep admitting the revoked caller,
+/// and this is where that shows.
+///
+/// Two things bound the claim. A colleague who still holds the workspace is
+/// still admitted afterwards, so what changed was one membership and not the
+/// world. And the session already open goes on working: admission is decided
+/// once, at the handshake, and this fixes what "affects the next session"
+/// actually buys — a revoked caller cannot open another session, while the one
+/// they hold lasts until it is closed or idles out. That is the boundary, stated
+/// rather than implied.
+#[tokio::test]
+async fn authenticated_admission_follows_a_revocation_without_a_restart() {
+    let directory = serve_directory(vec![
+        ("alpha", vec![ALPHA_WORKSPACE.to_string()]),
+        ("colleague", vec![ALPHA_WORKSPACE.to_string()]),
+        ("beta", vec![BETA_WORKSPACE.to_string()]),
+    ])
+    .await;
+    let (router, state) = surface_naming(&directory, ALPHA_WORKSPACE);
+
+    let (session, admitted) =
+        admitted_result(send(&router, auth_request("Bearer alpha", None, INITIALIZE)).await).await;
+    let instructions = admitted_instructions(&admitted);
+    assert!(
+        instructions.contains(&format!("Current Coral workspace: {ALPHA_WORKSPACE}.")),
+        "instructions: {instructions}"
+    );
+
+    directory.revoke("alpha", ALPHA_WORKSPACE);
+
+    let mut ping = auth_request("Bearer alpha", Some(&session), PING);
+    ping.headers_mut()
+        .insert("mcp-protocol-version", "2025-03-26".parse().unwrap());
+    assert!(
+        send(&router, ping).await.status().is_success(),
+        "the session already admitted is not re-decided per request"
+    );
+
+    let after_revocation =
+        refusal_error(send(&router, auth_request("Bearer alpha", None, INITIALIZE)).await).await;
+    let guidance = refusal_guidance(&after_revocation);
+    assert!(
+        guidance.contains(&format!("Workspace `{ALPHA_WORKSPACE}` was not found")),
+        "the same server that admitted this caller a moment ago now refuses them: {guidance}"
+    );
+
+    let never_held =
+        refusal_error(send(&router, auth_request("Bearer beta", None, INITIALIZE)).await).await;
+    assert_eq!(
+        after_revocation, never_held,
+        "a membership taken away reads exactly like one never held"
+    );
+
+    let (_colleague_session, colleague) =
+        admitted_result(send(&router, auth_request("Bearer colleague", None, INITIALIZE)).await)
+            .await;
+    let instructions = admitted_instructions(&colleague);
+    assert!(
+        instructions.contains(&format!("Current Coral workspace: {ALPHA_WORKSPACE}.")),
+        "one membership was revoked, not the workspace: {instructions}"
+    );
+
+    assert_eq!(
+        directory.calls(),
+        vec![
+            listing_by("alpha"),
+            listing_by("alpha"),
+            listing_by("beta"),
+            listing_by("colleague"),
+        ],
+        "the second handshake asked the live directory again rather than reusing the first answer"
+    );
+    assert_eq!(
+        state.sessions.len().await,
+        2,
+        "the refusals opened no sessions, and the revoked caller's first one was not closed"
+    );
+
+    state.sessions.close_all().await;
 }
 
 #[tokio::test]
