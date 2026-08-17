@@ -63,6 +63,10 @@ impl RuntimeValueNamespace {
 }
 
 /// Resolve one declarative value source into an optional JSON value.
+#[expect(
+    clippy::too_many_lines,
+    reason = "One arm per value source keeps the whole vocabulary visible in one dispatch table; splitting it by family would hide which variants exist."
+)]
 pub(crate) fn resolve_value_source(
     value: &ValueSourceSpec,
     context: &RenderContext<'_>,
@@ -99,7 +103,10 @@ pub(crate) fn resolve_value_source(
             parse_bool_value(context, RuntimeValueNamespace::Filter, key, *default)
         }
         ValueSourceSpec::FilterStringArray { key, default } => {
-            parse_filter_strings(context, key, default.as_deref())
+            Ok(parse_filter_strings(context, key, default.as_deref()))
+        }
+        ValueSourceSpec::ArgStringArray { key, default } => {
+            Ok(parse_arg_strings(context, key, default.as_deref()))
         }
         ValueSourceSpec::FilterSplit {
             key,
@@ -244,30 +251,57 @@ fn parse_bool_value(
     Ok(Some(json!(parsed)))
 }
 
+/// Reads a list-valued filter or argument out of the string-keyed runtime maps.
+///
+/// The wire form is a JSON array literal, but a bare value is accepted as a
+/// one-element list. SQL callers reach for `= 'id'` long before `= '["id"]'`,
+/// and failing that mid-scan reads as a bug rather than as a syntax lesson.
+/// Items are stringified rather than required to be JSON strings, so a numeric
+/// list such as `[1,2]` works for integer-item parameters.
 fn parse_string_array_value(
     context: &RenderContext<'_>,
     namespace: RuntimeValueNamespace,
     key: &str,
     default: Option<&[String]>,
-) -> Result<Option<Value>> {
+) -> Option<Value> {
     let Some(raw) = namespace.values(context).get(key) else {
-        return Ok(default.map(|values| json!(values)));
+        return default.map(|values| json!(values));
     };
-    let parsed = serde_json::from_str::<Vec<String>>(raw).map_err(|error| {
-        let label = namespace.label();
-        DataFusionError::Execution(format!(
-            "{label} '{key}' value '{raw}' is not a valid JSON array of strings: {error}"
-        ))
-    })?;
-    Ok(Some(json!(parsed)))
+    let parsed = serde_json::from_str::<Vec<Value>>(raw)
+        .ok()
+        .and_then(|items| {
+            items
+                .iter()
+                .map(|item| match item {
+                    Value::Null | Value::Array(_) | Value::Object(_) => None,
+                    Value::String(item) => Some(item.clone()),
+                    item => Some(item.to_string()),
+                })
+                .collect::<Option<Vec<String>>>()
+        })
+        .unwrap_or_else(|| vec![raw.clone()]);
+    Some(json!(parsed))
 }
 
 fn parse_filter_strings(
     context: &RenderContext<'_>,
     key: &str,
     default: Option<&[String]>,
-) -> Result<Option<Value>> {
+) -> Option<Value> {
     parse_string_array_value(context, RuntimeValueNamespace::Filter, key, default)
+}
+
+fn parse_arg_strings(
+    context: &RenderContext<'_>,
+    key: &str,
+    default: Option<&[String]>,
+) -> Option<Value> {
+    parse_string_array_value(
+        context,
+        RuntimeValueNamespace::FunctionArgument,
+        key,
+        default,
+    )
 }
 
 fn parse_split_i64_value(
@@ -463,6 +497,7 @@ pub(crate) fn validate_value_source_inputs(
         | ValueSourceSpec::Arg { .. }
         | ValueSourceSpec::ArgInt { .. }
         | ValueSourceSpec::ArgBool { .. }
+        | ValueSourceSpec::ArgStringArray { .. }
         | ValueSourceSpec::ArgSplit { .. }
         | ValueSourceSpec::ArgSplitInt { .. }
         | ValueSourceSpec::State { .. }
@@ -748,26 +783,87 @@ mod tests {
     }
 
     #[test]
-    fn resolve_value_source_rejects_invalid_filter_string_arrays() {
-        let filters = HashMap::from([(
-            "log_stream_names".to_string(),
-            r#"["stream-a",42]"#.to_string(),
-        )]);
+    fn resolve_value_source_stringifies_non_string_array_entries() {
+        // OpenAPI array parameters are not all arrays of strings — GitHub's
+        // `creator_id` takes integers — and the wire form is text either way.
+        let filters = HashMap::from([("creator_id".to_string(), "[1,2]".to_string())]);
 
-        let error = resolve_value_source(
+        let value = resolve_value_source(
             &ValueSourceSpec::FilterStringArray {
-                key: "log_stream_names".to_string(),
+                key: "creator_id".to_string(),
                 default: None,
             },
             &test_render_context(&filters, &HashMap::new(), &BTreeMap::new()),
         )
-        .expect_err("non-string array entries should fail");
+        .expect("numeric array entries should resolve");
 
-        assert!(
-            error.to_string().contains(
-                "filter 'log_stream_names' value '[\"stream-a\",42]' is not a valid JSON array of strings"
-            )
-        );
+        assert_eq!(value, Some(json!(["1", "2"])));
+    }
+
+    #[test]
+    fn resolve_value_source_reads_a_bare_value_as_a_one_element_array() {
+        // `WHERE exclude = 'repositories'` is the first thing a SQL caller
+        // reaches for, and failing it mid-scan reads as a bug rather than as a
+        // syntax lesson.
+        let filters = HashMap::from([("exclude".to_string(), "repositories".to_string())]);
+
+        let value = resolve_value_source(
+            &ValueSourceSpec::FilterStringArray {
+                key: "exclude".to_string(),
+                default: None,
+            },
+            &test_render_context(&filters, &HashMap::new(), &BTreeMap::new()),
+        )
+        .expect("bare values should resolve");
+
+        assert_eq!(value, Some(json!(["repositories"])));
+    }
+
+    #[test]
+    fn resolve_value_source_parses_arg_string_arrays_as_json_arrays() {
+        let args = HashMap::from([("exclude".to_string(), r#"["repositories"]"#.to_string())]);
+
+        let value = resolve_value_source(
+            &ValueSourceSpec::ArgStringArray {
+                key: "exclude".to_string(),
+                default: None,
+            },
+            &test_render_context(&HashMap::new(), &args, &BTreeMap::new()),
+        )
+        .expect("string array arg should resolve");
+
+        assert_eq!(value, Some(json!(["repositories"])));
+    }
+
+    #[test]
+    fn resolve_value_source_reads_arg_string_arrays_only_from_arguments() {
+        // The filter namespace must not satisfy an argument value source.
+        let filters = HashMap::from([("exclude".to_string(), r#"["repositories"]"#.to_string())]);
+
+        let value = resolve_value_source(
+            &ValueSourceSpec::ArgStringArray {
+                key: "exclude".to_string(),
+                default: None,
+            },
+            &test_render_context(&filters, &HashMap::new(), &BTreeMap::new()),
+        )
+        .expect("unbound arg should resolve to nothing");
+
+        assert_eq!(value, None);
+    }
+
+    #[test]
+    fn resolve_value_source_uses_arg_string_array_default() {
+        let value = resolve_value_source(
+            &ValueSourceSpec::ArgStringArray {
+                key: "exclude".to_string(),
+                default: Some(vec!["repositories".to_string()]),
+            },
+            &test_render_context(&HashMap::new(), &HashMap::new(), &BTreeMap::new()),
+        )
+        .expect("string array arg default should resolve");
+
+        assert_eq!(value, Some(json!(["repositories"])));
     }
 
     #[test]

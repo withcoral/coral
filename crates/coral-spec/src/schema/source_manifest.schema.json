@@ -1178,6 +1178,17 @@
         },
         {
           "properties": {
+            "from": { "const": "arg_string_array" },
+            "key": { "type": "string", "minLength": 1 },
+            "default": {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          },
+          "required": ["key"]
+        },
+        {
+          "properties": {
             "from": { "const": "arg_split" },
             "key": { "type": "string", "minLength": 1 },
             "separator": { "type": "string", "minLength": 1 },

@@ -5,7 +5,8 @@ use super::test_support::github_openapi;
 use super::*;
 use crate::backends::mcp::McpPaginationSpec;
 use crate::{
-    ManifestDataType, PaginationMode, SourceTableFunctionKind, parse_source_manifest_yaml,
+    CollectionEncoding, ManifestDataType, PaginationMode, SourceTableFunctionKind,
+    parse_source_manifest_yaml,
 };
 
 #[test]
@@ -2410,4 +2411,224 @@ fn projection_compatibility_accepts_empty_operation_and_projection_catalogs() {
     assert!(catalog.projections.is_empty());
     validate_projection_compatibility(&plan, &catalog)
         .expect("empty operation and projection catalogs are compatible");
+}
+
+fn collection_catalog() -> ProjectionCatalog {
+    collection_surface().0
+}
+
+fn collection_surface() -> (ProjectionCatalog, ImportedSurface) {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: collections_api
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = &v4.surface;
+    // `list_items` has no required input, so it is a table whose inputs are
+    // filters; `list_project_items` requires a path input, so it is a table
+    // function whose inputs are arguments. Both exposures matter.
+    let spec = r"
+openapi: 3.0.3
+paths:
+  /items:
+    get:
+      operationId: list_items
+      parameters:
+        - name: exclude
+          in: query
+          schema: {type: array, items: {type: string}}
+        - name: $select
+          in: query
+          explode: false
+          schema: {type: array, items: {type: string}}
+        - {name: state, in: query, schema: {type: string}}
+      responses: {'200': {content: {application/json: {schema: {type: array, items: {type: object, properties: {id: {type: string}}}}}}}}
+  /projects/{project_id}/items:
+    get:
+      operationId: list_project_items
+      parameters:
+        - {name: project_id, in: path, required: true, schema: {type: string}}
+        - name: exclude
+          in: query
+          schema: {type: array, items: {type: string}}
+      responses: {'200': {content: {application/json: {schema: {type: array, items: {type: object, properties: {id: {type: string}}}}}}}}
+";
+    let ir = import_openapi_surface(v4, surface, spec.as_bytes()).expect("import");
+    let catalog =
+        generate_projection_catalog(v4, &ir.validated_plan().expect("plan")).expect("catalog");
+    (catalog, ir)
+}
+
+fn projection<'a>(catalog: &'a ProjectionCatalog, operation_id: &str) -> &'a Projection {
+    catalog
+        .projections
+        .iter()
+        .find(|projection| projection.operation_id == operation_id)
+        .expect("projection")
+}
+
+fn input<'a>(projection: &'a Projection, name: &str) -> &'a ProjectionInput {
+    projection
+        .inputs
+        .iter()
+        .find(|input| input.name == name)
+        .unwrap_or_else(|| panic!("input '{name}' is missing"))
+}
+
+#[test]
+fn collection_inputs_lower_to_json_and_keep_their_encoding() {
+    let catalog = collection_catalog();
+    let items = projection(&catalog, "list_items");
+
+    let exclude = input(items, "exclude");
+    assert_eq!(exclude.sql_exposure, SqlInputExposure::Filter);
+    assert_eq!(exclude.data_type, ManifestDataType::Json);
+    assert_eq!(
+        exclude.collection_encoding,
+        Some(CollectionEncoding::Repeated)
+    );
+
+    let select = input(items, "select");
+    assert_eq!(select.wire_name, "$select");
+    assert_eq!(select.data_type, ManifestDataType::Json);
+    assert_eq!(select.collection_encoding, Some(CollectionEncoding::Comma));
+
+    let state = input(items, "state");
+    assert_eq!(state.data_type, ManifestDataType::Utf8);
+    assert_eq!(state.collection_encoding, None);
+}
+
+#[test]
+fn collection_inputs_document_the_json_array_convention() {
+    let catalog = collection_catalog();
+    let items = projection(&catalog, "list_items");
+
+    assert!(
+        input(items, "exclude").description.contains("JSON array"),
+        "{:?}",
+        input(items, "exclude").description
+    );
+
+    // Function arguments carry no description of their own, so the guide is
+    // the only place a caller of the table-function form can learn this.
+    let project_items = projection(&catalog, "list_project_items");
+    assert_eq!(
+        input(project_items, "exclude").sql_exposure,
+        SqlInputExposure::FunctionArg
+    );
+    assert!(
+        project_items.guide.contains("JSON array"),
+        "{:?}",
+        project_items.guide
+    );
+}
+
+#[test]
+fn collection_inputs_stay_out_of_the_most_useful_filters_hint() {
+    let catalog = collection_catalog();
+    let items = projection(&catalog, "list_items");
+
+    // `$select`/`exclude` sort ahead of `state`, so without the exclusion they
+    // would crowd the only genuinely selective filter out of the hint.
+    assert!(
+        items.guide.contains("Most useful optional filters: state."),
+        "{:?}",
+        items.guide
+    );
+}
+
+#[test]
+fn collection_filters_are_not_indexed_as_observed_values() {
+    let catalog = collection_catalog();
+    let items = projection(&catalog, "list_items");
+    let columns = projection_column_specs(items);
+
+    let exclude = columns
+        .iter()
+        .find(|column| column.name == "exclude")
+        .expect("virtual column");
+    assert!(exclude.r#virtual);
+    assert!(exclude.do_not_index);
+
+    let state = columns
+        .iter()
+        .find(|column| column.name == "state")
+        .expect("virtual column");
+    assert!(!state.do_not_index);
+}
+
+#[test]
+fn collection_query_params_lower_to_array_value_sources() {
+    let (catalog, ir) = collection_surface();
+
+    let items = projection(&catalog, "list_items");
+    let items_operation = ir
+        .operations
+        .iter()
+        .find(|operation| operation.id == "list_items")
+        .expect("operation");
+    let request = request_spec_for_projection(items, items_operation).expect("request");
+
+    let exclude = request
+        .query
+        .iter()
+        .find(|param| param.name == "exclude")
+        .expect("exclude query param");
+    assert!(exclude.explode);
+    assert!(
+        matches!(
+            &exclude.value,
+            crate::ValueSourceSpec::FilterStringArray { key, .. } if key == "exclude"
+        ),
+        "{:?}",
+        exclude.value
+    );
+
+    let select = request
+        .query
+        .iter()
+        .find(|param| param.name == "$select")
+        .expect("$select query param");
+    assert!(!select.explode);
+
+    // A scalar filter keeps the single-valued value source, and its `explode`
+    // is inert.
+    let state = request
+        .query
+        .iter()
+        .find(|param| param.name == "state")
+        .expect("state query param");
+    assert!(matches!(
+        &state.value,
+        crate::ValueSourceSpec::Filter { .. }
+    ));
+
+    // The table-function form binds the same parameter as an argument.
+    let project_items = projection(&catalog, "list_project_items");
+    let project_operation = ir
+        .operations
+        .iter()
+        .find(|operation| operation.id == "list_project_items")
+        .expect("operation");
+    let request = request_spec_for_projection(project_items, project_operation).expect("request");
+    let exclude = request
+        .query
+        .iter()
+        .find(|param| param.name == "exclude")
+        .expect("exclude query param");
+    assert!(
+        matches!(
+            &exclude.value,
+            crate::ValueSourceSpec::ArgStringArray { key, .. } if key == "exclude"
+        ),
+        "{:?}",
+        exclude.value
+    );
 }

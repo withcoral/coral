@@ -116,6 +116,9 @@ fn value_source_json(value: &ValueSourceSpec) -> Value {
         ValueSourceSpec::ArgBool { key, default } => {
             key_default_json("arg_bool", key, default.as_ref())
         }
+        ValueSourceSpec::ArgStringArray { key, default } => {
+            key_default_json("arg_string_array", key, default.as_ref())
+        }
         ValueSourceSpec::ArgSplit {
             key,
             separator,

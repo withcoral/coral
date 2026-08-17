@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::CollectionEncoding;
 use crate::v4::diagnostics::Diagnostic;
 use crate::v4::ir::mcp::McpExecutionAttachment;
 use crate::v4::ir::rest::RestExecutionAttachment;
@@ -49,6 +50,16 @@ pub struct IrOperationInput {
     pub location: IrInputLocation,
     pub required: bool,
     pub data_type: IrScalarType,
+    /// Set when this input takes a list of values rather than one, and how
+    /// that list is encoded onto the wire.
+    ///
+    /// `data_type` is [`IrScalarType::Json`] whenever this is set, and the SQL
+    /// value is a JSON array literal. Keeping the list out of `data_type`
+    /// means every match on the scalar vocabulary — pagination inference,
+    /// operation-metadata policy — excludes lists by construction rather than
+    /// by remembering to guard.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collection_encoding: Option<CollectionEncoding>,
     pub default_value: Option<String>,
     pub description: String,
 }
@@ -251,6 +262,7 @@ mod tests {
                     location: IrInputLocation::ToolArg,
                     required: false,
                     data_type: IrScalarType::String,
+                    collection_encoding: None,
                     default_value: None,
                     description: String::new(),
                 }],
@@ -351,6 +363,7 @@ future_generator_metadata:
             location: IrInputLocation::Path,
             required: true,
             data_type: IrScalarType::String,
+            collection_encoding: None,
             default_value: None,
             description: String::new(),
         };

@@ -831,6 +831,7 @@ fn validate_table_tool_arg_value_source(
         ValueSourceSpec::Arg { key, .. }
         | ValueSourceSpec::ArgInt { key, .. }
         | ValueSourceSpec::ArgBool { key, .. }
+        | ValueSourceSpec::ArgStringArray { key, .. }
         | ValueSourceSpec::ArgSplit { key, .. }
         | ValueSourceSpec::ArgSplitInt { key, .. } => Err(ManifestError::validation(format!(
             "{context} uses function argument '{key}' but tables do not take arguments",
@@ -898,6 +899,7 @@ fn validate_source_scoped_value_source(source: &ValueSourceSpec, context: &str) 
         ValueSourceSpec::Arg { key, .. }
         | ValueSourceSpec::ArgInt { key, .. }
         | ValueSourceSpec::ArgBool { key, .. }
+        | ValueSourceSpec::ArgStringArray { key, .. }
         | ValueSourceSpec::ArgSplit { key, .. }
         | ValueSourceSpec::ArgSplitInt { key, .. } => Err(ManifestError::validation(format!(
             "{context} uses function argument '{key}' but the value is source-scoped",

@@ -180,6 +180,11 @@ pub(super) fn projection_guide(
         .iter()
         .filter(|input| !input.required)
         .filter(|input| !matches!(input.name.as_str(), "page" | "per_page"))
+        // List-valued inputs are overwhelmingly presentation knobs such as
+        // OData's `$select` and `$expand`, and they sort ahead of real filters
+        // because `$` precedes every letter. Promoting them here would push
+        // genuinely selective filters out of a list capped at three.
+        .filter(|input| input.collection_encoding.is_none())
         .map(|input| input.name.as_str())
         .take(3)
         .collect::<Vec<_>>();
@@ -202,6 +207,21 @@ pub(super) fn projection_guide(
         sentences.push(format!(
             "Most useful optional filters: {}.",
             optional.join(", ")
+        ));
+    }
+
+    // Function arguments have no description field of their own, so this is the
+    // only place a caller learns that a `Json` input wants a JSON array rather
+    // than a bare value.
+    let collections = exposed_inputs
+        .iter()
+        .filter(|input| input.collection_encoding.is_some())
+        .map(|input| input.name.as_str())
+        .collect::<Vec<_>>();
+    if !collections.is_empty() {
+        sentences.push(format!(
+            "{} take a JSON array of values, for example '[\"a\",\"b\"]'.",
+            human_join(&collections)
         ));
     }
 

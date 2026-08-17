@@ -123,8 +123,9 @@ fn generate_projection(
                 wire_name: input.name.clone(),
                 required: projection_input_required(input),
                 data_type: input.data_type.lower(),
+                collection_encoding: input.collection_encoding,
                 default_value: input.default_value.clone(),
-                description: input.description.clone(),
+                description: projection_input_description(input),
                 lookup_key: rest_filter_is_lookup_key(plan, operation, input, exposure),
             }
         })
@@ -233,6 +234,25 @@ fn generated_projection_name(operation: &IrOperation, is_search: bool) -> String
         normalize_identifier(&operation.id, "projection")
     } else {
         name
+    }
+}
+
+/// The description SQL callers see, with the JSON-array convention spelled out
+/// for list-valued inputs.
+///
+/// This reaches filter inputs through `coral.filters` and the virtual column in
+/// `coral.columns`. Function arguments carry no description at all, so the
+/// projection guide states the convention for them.
+fn projection_input_description(input: &IrOperationInput) -> String {
+    if input.collection_encoding.is_none() {
+        return input.description.clone();
+    }
+    let description = input.description.trim_end();
+    let hint = "Takes a JSON array of values, for example '[\"a\",\"b\"]'.";
+    if description.is_empty() {
+        hint.to_string()
+    } else {
+        format!("{description}\n\n{hint}")
     }
 }
 

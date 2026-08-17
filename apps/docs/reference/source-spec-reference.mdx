@@ -1036,11 +1036,13 @@ Request query params, body fields, and headers support these `from` values:
 | `filter` | Read a table filter captured from the query `WHERE` clause and serialize it as a string |
 | `filter_int` | Read a table filter captured from the query `WHERE` clause and serialize it as a JSON integer |
 | `filter_bool` | Read a table filter captured from the query `WHERE` clause and serialize it as a JSON boolean |
+| `filter_string_array` | Read a table filter holding a JSON array literal and serialize it as a JSON array |
 | `filter_split` | Split a table filter string and serialize one part as a string |
 | `filter_split_int` | Split a table filter string and serialize one part as a JSON integer |
 | `arg` | Read a source function argument captured from the function call and serialize it as a string |
 | `arg_int` | Read a source function argument captured from the function call and serialize it as a JSON integer |
 | `arg_bool` | Read a source function argument captured from the function call and serialize it as a JSON boolean |
+| `arg_string_array` | Read a source function argument holding a JSON array literal and serialize it as a JSON array |
 | `arg_split` | Split a source function argument string and serialize one part as a string |
 | `arg_split_int` | Split a source function argument string and serialize one part as a JSON integer |
 | `input` | Read a manifest-declared source input (variable/secret) by key |
@@ -1056,11 +1058,41 @@ arg value sources because their request values come from named function
 arguments such as `github.search_issues(q => 'flaky')`.
 
 The suffix controls the value type sent to the provider. Use the bare form for a
-string request value, `_int` for a JSON integer, and `_bool` for a JSON boolean.
+string request value, `_int` for a JSON integer, `_bool` for a JSON boolean, and
+`_string_array` for a JSON array.
 
 Boolean filters used with `filter_bool` can be written as normal SQL boolean
 predicates, for example `WHERE include_archived IS FALSE` or
 `WHERE include_archived = false`.
+
+### Multi-valued request values
+
+`filter_string_array` and `arg_string_array` read a list. The SQL value is a JSON
+array literal, and a bare value is accepted as a one-element list:
+
+```sql
+SELECT * FROM github.list_org_migrations(org => 'withcoral', exclude => '["repositories"]');
+SELECT * FROM github.list_org_migrations(org => 'withcoral', exclude => 'repositories');
+```
+
+In a request body the list becomes a JSON array. In a query parameter it expands
+according to the parameter's `explode` setting, which defaults to `true`:
+
+```yaml
+query:
+  # explode: true (the default) sends ?exclude=a&exclude=b
+  - name: exclude
+    from: filter_string_array
+    key: exclude
+  # explode: false sends ?$select=a,b
+  - name: $select
+    explode: false
+    from: filter_string_array
+    key: select
+```
+
+An empty list sends no query parameter at all. `explode` has no effect on
+single-valued value sources.
 
 Use `filter_split` and `filter_split_int` when a provider requires structured
 request fields but users naturally have one compound identifier. For example,

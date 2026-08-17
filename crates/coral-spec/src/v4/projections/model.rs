@@ -2,7 +2,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::v4::diagnostics::Diagnostic;
 use crate::v4::ir::IrInputLocation;
-use crate::{DetailHintSpec, ManifestDataType, SearchLimitsSpec, SourceTableFunctionKind};
+use crate::{
+    CollectionEncoding, DetailHintSpec, ManifestDataType, SearchLimitsSpec, SourceTableFunctionKind,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectionCatalog {
@@ -55,6 +57,11 @@ pub struct ProjectionInput {
     pub wire_name: String,
     pub required: bool,
     pub data_type: ManifestDataType,
+    /// Set when this input takes a list of values rather than one, and how
+    /// that list is encoded onto the wire. `data_type` is
+    /// [`ManifestDataType::Json`] whenever this is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collection_encoding: Option<CollectionEncoding>,
     pub default_value: Option<String>,
     pub description: String,
     /// Whether this filter input is a complete exact lookup: the API returns
@@ -87,11 +94,12 @@ pub struct ProjectionColumn {
 #[cfg(test)]
 mod tests {
     use super::{
-        Projection, ProjectionCatalog, ProjectionColumn, ProjectionKind, ProjectionVisibility,
-        SqlInputExposure,
+        Projection, ProjectionCatalog, ProjectionColumn, ProjectionInput, ProjectionKind,
+        ProjectionVisibility, SqlInputExposure,
     };
+    use crate::v4::ir::IrInputLocation;
     use crate::v4::{PROJECTION_GENERATOR_VERSION, V4_ARTIFACT_SCHEMA_VERSION};
-    use crate::{ManifestDataType, SearchLimitsSpec, SourceTableFunctionKind};
+    use crate::{CollectionEncoding, ManifestDataType, SearchLimitsSpec, SourceTableFunctionKind};
 
     #[test]
     fn projection_catalog_yaml_uses_editor_friendly_enum_shapes() {
@@ -238,5 +246,59 @@ diagnostics: []
 
         assert_eq!(exposure.trim(), "filter");
         assert_eq!(data_type.trim(), "Utf8");
+    }
+
+    #[test]
+    fn projection_input_collection_encoding_round_trips_as_a_plain_scalar() {
+        let input = ProjectionInput {
+            name: "select".to_string(),
+            sql_exposure: SqlInputExposure::Filter,
+            source_location: IrInputLocation::Query,
+            wire_name: "$select".to_string(),
+            required: false,
+            data_type: ManifestDataType::Json,
+            collection_encoding: Some(CollectionEncoding::Comma),
+            default_value: None,
+            description: String::new(),
+            lookup_key: false,
+        };
+
+        let yaml = serde_yaml::to_string(&input).expect("serialize input");
+        assert!(
+            yaml.contains("collection_encoding: comma"),
+            "unexpected serialized input: {yaml}"
+        );
+        assert!(
+            !yaml.contains('!'),
+            "projection input should not use YAML local tags: {yaml}"
+        );
+
+        let decoded: ProjectionInput = serde_yaml::from_str(&yaml).expect("deserialize input");
+        assert_eq!(decoded.collection_encoding, Some(CollectionEncoding::Comma));
+    }
+
+    #[test]
+    fn projection_input_omits_collection_encoding_for_scalars() {
+        let input = ProjectionInput {
+            name: "state".to_string(),
+            sql_exposure: SqlInputExposure::Filter,
+            source_location: IrInputLocation::Query,
+            wire_name: "state".to_string(),
+            required: false,
+            data_type: ManifestDataType::Utf8,
+            collection_encoding: None,
+            default_value: None,
+            description: String::new(),
+            lookup_key: false,
+        };
+
+        let yaml = serde_yaml::to_string(&input).expect("serialize input");
+        assert!(
+            !yaml.contains("collection_encoding"),
+            "scalar inputs should not carry the key: {yaml}"
+        );
+
+        let decoded: ProjectionInput = serde_yaml::from_str(&yaml).expect("deserialize input");
+        assert_eq!(decoded.collection_encoding, None);
     }
 }

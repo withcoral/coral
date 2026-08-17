@@ -468,12 +468,38 @@ pub enum HttpMethod {
     POST,
 }
 
+/// How a multi-valued request parameter is serialized onto the wire.
+///
+/// Coral only models OpenAPI's `form` style, which is the only style that
+/// appears across the ingested catalog. The two variants are that style's two
+/// `explode` settings.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CollectionEncoding {
+    /// OpenAPI `style: form, explode: true` — one `k=v` pair per item.
+    Repeated,
+    /// OpenAPI `style: form, explode: false` — one `k=v1,v2` pair.
+    Comma,
+}
+
 /// One query parameter emitted into an HTTP request.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct QueryParamSpec {
     pub name: String,
+    /// Whether a multi-valued parameter repeats its name once per item
+    /// (`k=a&k=b`) instead of joining the items with commas (`k=a,b`).
+    ///
+    /// Applies only when the resolved value is a JSON array; a scalar value
+    /// ignores it. Defaults to `true`, matching OpenAPI's default for the
+    /// `form` style.
+    #[serde(default = "default_explode")]
+    pub explode: bool,
     #[serde(flatten)]
     pub value: ValueSourceSpec,
+}
+
+const fn default_explode() -> bool {
+    true
 }
 
 /// One body field emitted into an HTTP request payload.
@@ -634,6 +660,11 @@ pub enum ValueSourceSpec {
         key: String,
         #[serde(default)]
         default: Option<bool>,
+    },
+    ArgStringArray {
+        key: String,
+        #[serde(default)]
+        default: Option<Vec<String>>,
     },
     ArgSplit {
         key: String,

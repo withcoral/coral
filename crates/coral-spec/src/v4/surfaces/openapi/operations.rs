@@ -18,7 +18,7 @@ use crate::v4::surfaces::json_schema::{
 };
 use crate::v4::wrapped_lists::{WrappedListInferenceContext, infer_wrapped_list_row_path};
 use crate::{
-    ManifestError, PageSizeSpec, PaginationMode, PaginationSpec, Result,
+    CollectionEncoding, ManifestError, PageSizeSpec, PaginationMode, PaginationSpec, Result,
     v4::resolve_output_row_type_ref,
 };
 
@@ -209,13 +209,20 @@ impl OpenApiImporter<'_> {
                     .and_then(Value::as_str)
                     .and_then(parse_parameter_location)?;
                 let schema = self.read_schema(parameter_obj.get("schema").unwrap_or(&Value::Null));
-                let scalar =
-                    self.import_parameter_scalar(&schema, &name, operation_id, diagnostics)?;
+                let (scalar, collection_encoding) = self.import_parameter_type(
+                    parameter_obj,
+                    &schema,
+                    &name,
+                    location,
+                    operation_id,
+                    diagnostics,
+                )?;
                 Some(IrOperationInput {
                     name,
                     location,
                     required: parameter_is_required(parameter_obj, location),
                     data_type: scalar,
+                    collection_encoding,
                     // A null default declares that the parameter has none, so
                     // it is dropped rather than stringified. `default: null`
                     // beside a nullable union is what Pydantic emits for
@@ -237,25 +244,124 @@ impl OpenApiImporter<'_> {
             .collect()
     }
 
-    fn import_parameter_scalar(
+    /// Reads a parameter's declared type as a scalar, or as a list of scalars
+    /// plus the wire encoding that list needs.
+    ///
+    /// Lists lower to [`IrScalarType::Json`] rather than to a list-shaped data
+    /// type: the SQL value is a JSON array literal, which is the same
+    /// convention the MCP importer already uses for array tool arguments.
+    fn import_parameter_type(
         &mut self,
+        parameter_obj: &Map<String, Value>,
         schema: &Value,
         name: &str,
+        location: IrInputLocation,
         operation_id: &str,
         diagnostics: &mut Vec<Diagnostic>,
-    ) -> Option<IrScalarType> {
+    ) -> Option<(IrScalarType, Option<CollectionEncoding>)> {
         let resolved = self.resolve_ref(schema, operation_id, diagnostics)?;
-        let Some(scalar) = json_schema_scalar_type_or_string(&resolved) else {
-            diagnostics.push(Diagnostic::new(
-                format!(
-                    "parameter '{name}' has unsupported schema type '{}'",
-                    json_schema_type_display(&resolved)
-                ),
-                Some(operation_id.to_string()),
-            ));
-            return None;
+        if let Some(scalar) = json_schema_scalar_type_or_string(&resolved) {
+            return Some((scalar, None));
+        }
+        if json_schema_type_contains(&resolved, "array") {
+            let encoding = self.import_collection_encoding(
+                parameter_obj,
+                &resolved,
+                name,
+                location,
+                operation_id,
+                diagnostics,
+            )?;
+            return Some((IrScalarType::Json, Some(encoding)));
+        }
+        diagnostics.push(Diagnostic::new(
+            format!(
+                "parameter '{name}' has unsupported schema type '{}'",
+                json_schema_type_display(&resolved)
+            ),
+            Some(operation_id.to_string()),
+        ));
+        None
+    }
+
+    /// Validates that an array parameter is one Coral can put on the wire, and
+    /// returns how its items are serialized.
+    ///
+    /// Every rejection keeps a diagnostic naming the actual cause, so the
+    /// parameter is still dropped but the reason is no longer the misleading
+    /// "unsupported schema type 'array'".
+    fn import_collection_encoding(
+        &mut self,
+        parameter_obj: &Map<String, Value>,
+        resolved: &Value,
+        name: &str,
+        location: IrInputLocation,
+        operation_id: &str,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) -> Option<CollectionEncoding> {
+        let reject = |reason: String, diagnostics: &mut Vec<Diagnostic>| {
+            diagnostics.push(Diagnostic::new(reason, Some(operation_id.to_string())));
+            None::<CollectionEncoding>
         };
-        Some(scalar)
+
+        // Only query parameters expand into repeated or delimited values. Path
+        // and header lowering render a single string, and no array parameter in
+        // either ingested descriptor sits outside the query.
+        if location != IrInputLocation::Query {
+            return reject(
+                format!(
+                    "parameter '{name}' is an array in {location:?} position, which is not supported"
+                ),
+                diagnostics,
+            );
+        }
+
+        // `style` and `explode` are siblings of `schema` on the parameter
+        // object, not properties of the schema itself.
+        if let Some(style) = parameter_obj.get("style").and_then(Value::as_str)
+            && style != "form"
+        {
+            return reject(
+                format!(
+                    "parameter '{name}' is an array with unsupported serialization style '{style}'"
+                ),
+                diagnostics,
+            );
+        }
+
+        let items = self.read_schema(resolved.get("items").unwrap_or(&Value::Null));
+        let Some(items) = self.resolve_ref(&items, operation_id, diagnostics) else {
+            return reject(
+                format!("parameter '{name}' is an array whose item type could not be resolved"),
+                diagnostics,
+            );
+        };
+        if items.as_object().is_none_or(Map::is_empty) {
+            return reject(
+                format!("parameter '{name}' is an array without a declared item type"),
+                diagnostics,
+            );
+        }
+        if json_schema_scalar_type_or_string(&items).is_none() {
+            return reject(
+                format!(
+                    "parameter '{name}' has unsupported array item type '{}'",
+                    json_schema_type_display(&items)
+                ),
+                diagnostics,
+            );
+        }
+
+        // OpenAPI defaults `explode` to true for the `form` style.
+        let explode = parameter_obj
+            .get("explode")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        Some(if explode {
+            CollectionEncoding::Repeated
+        } else {
+            CollectionEncoding::Comma
+        })
     }
 
     fn import_request_body(
@@ -624,16 +730,6 @@ fn find_numeric_page_input(inputs: &[IrOperationInput]) -> Option<&IrOperationIn
     )
 }
 
-fn find_query_input<'a>(
-    inputs: &'a [IrOperationInput],
-    candidate_tokens: &[&str],
-) -> Option<&'a IrOperationInput> {
-    inputs
-        .iter()
-        .filter(|input| input.location == IrInputLocation::Query)
-        .find(|input| candidate_tokens.contains(&name_token(&input.name).as_str()))
-}
-
 /// Pagination metadata validation only accepts numeric inputs for page,
 /// offset, and page-size parameters, so detection must not select inputs of
 /// any other type.
@@ -641,12 +737,20 @@ fn find_numeric_query_input<'a>(
     inputs: &'a [IrOperationInput],
     candidate_tokens: &[&str],
 ) -> Option<&'a IrOperationInput> {
-    find_query_input(inputs, candidate_tokens).filter(|input| {
-        matches!(
-            input.data_type,
-            IrScalarType::Integer | IrScalarType::Number
-        )
-    })
+    // The type predicate belongs inside the search, not after it. Filtering
+    // afterwards lets a same-named non-numeric input shadow a numeric one that
+    // appears later in the list and abandon pagination entirely — reachable as
+    // soon as a parameter the importer used to drop starts being imported.
+    inputs
+        .iter()
+        .filter(|input| input.location == IrInputLocation::Query)
+        .filter(|input| {
+            matches!(
+                input.data_type,
+                IrScalarType::Integer | IrScalarType::Number
+            )
+        })
+        .find(|input| candidate_tokens.contains(&name_token(&input.name).as_str()))
 }
 
 fn find_optional_string_query_input<'a>(

@@ -998,6 +998,7 @@ mod tests {
             location,
             required: false,
             data_type: IrScalarType::Integer,
+            collection_encoding: None,
             default_value: None,
             description: String::new(),
         }
@@ -1063,6 +1064,7 @@ mod tests {
             wire_name: name.to_string(),
             required: false,
             data_type: ManifestDataType::Int64,
+            collection_encoding: None,
             default_value: None,
             description: String::new(),
             lookup_key,
