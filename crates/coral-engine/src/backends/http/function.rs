@@ -35,6 +35,8 @@ struct FunctionCallContext<'a> {
 /// table function.
 struct HttpSourceFunctionState {
     backend: HttpSourceClient,
+    source_name: String,
+    catalog_name: Option<String>,
     source_schema: String,
     function_name: String,
     target: Arc<HttpFetchTarget>,
@@ -61,6 +63,8 @@ impl fmt::Debug for HttpSourceTableFunction {
 impl HttpSourceTableFunction {
     pub(crate) fn new(
         backend: HttpSourceClient,
+        source_name: String,
+        catalog_name: Option<String>,
         source_schema: String,
         function: SourceTableFunctionSpec,
         source_observation_publishers: SourceObservationPublishers,
@@ -72,6 +76,8 @@ impl HttpSourceTableFunction {
             spec: Arc::new(function),
             state: Arc::new(HttpSourceFunctionState {
                 backend,
+                source_name,
+                catalog_name,
                 source_schema,
                 function_name,
                 target: Arc::new(target),
@@ -144,6 +150,8 @@ impl TableProvider for HttpSourceFunctionCallTableProvider {
     ) -> Result<Arc<dyn ExecutionPlan>> {
         http_json_exec(HttpJsonExecRequest {
             backend: self.state.backend.clone(),
+            source_name: &self.state.source_name,
+            catalog_name: self.state.catalog_name.as_deref(),
             source_schema: &self.state.source_schema,
             target: (*self.state.target).clone(),
             schema: self.state.schema.clone(),

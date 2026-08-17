@@ -32,29 +32,31 @@ pub(crate) trait ScopedTableFunctionSignature {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct ScopedTableFunctionName {
+    pub(crate) catalog: String,
     pub(crate) schema: String,
     pub(crate) function: String,
 }
 
 impl ScopedTableFunctionName {
     pub(crate) fn from_parts(schema: &str, function: &str) -> Self {
+        Self::from_catalog_parts(crate::runtime::DATAFUSION_DEFAULT_CATALOG, schema, function)
+    }
+
+    pub(crate) fn from_catalog_parts(catalog: &str, schema: &str, function: &str) -> Self {
         Self {
+            catalog: normalize_runtime_identifier(catalog),
             schema: normalize_runtime_identifier(schema),
             function: normalize_runtime_identifier(function),
         }
     }
 
-    pub(crate) fn from_manifest(function: &RegisteredTableFunction) -> Self {
+    pub(crate) fn from_manifest(catalog: Option<&str>, function: &RegisteredTableFunction) -> Self {
         Self {
+            catalog: catalog
+                .unwrap_or(crate::runtime::DATAFUSION_DEFAULT_CATALOG)
+                .to_string(),
             schema: function.schema_name.clone(),
             function: function.function_name.clone(),
-        }
-    }
-
-    fn from_sql(schema: Ident, function: Ident, context: &dyn RelationPlannerContext) -> Self {
-        Self {
-            schema: context.normalize_ident(schema),
-            function: context.normalize_ident(function),
         }
     }
 }
@@ -83,16 +85,32 @@ impl ScopedTableFunctionCall {
             return None;
         };
 
-        // Coral function surfaces are exactly `schema.function(...)`. Longer
-        // names belong to DataFusion's normal relation/function planner.
-        let [schema, function] = name.0.as_slice() else {
-            return None;
+        let (lookup_key, display_name) = match name.0.as_slice() {
+            [schema, function] => {
+                let schema = schema.as_ident()?.clone();
+                let function = function.as_ident()?.clone();
+                let display_name = qualified_name(&schema.value, &function.value);
+                let lookup_key = ScopedTableFunctionName {
+                    catalog: crate::runtime::DATAFUSION_DEFAULT_CATALOG.to_string(),
+                    schema: context.normalize_ident(schema),
+                    function: context.normalize_ident(function),
+                };
+                (lookup_key, display_name)
+            }
+            [catalog, schema, function] => {
+                let catalog = catalog.as_ident()?.clone();
+                let schema = schema.as_ident()?.clone();
+                let function = function.as_ident()?.clone();
+                let display_name = format!("{}.{}.{}", catalog.value, schema.value, function.value);
+                let lookup_key = ScopedTableFunctionName {
+                    catalog: context.normalize_ident(catalog),
+                    schema: context.normalize_ident(schema),
+                    function: context.normalize_ident(function),
+                };
+                (lookup_key, display_name)
+            }
+            _ => return None,
         };
-
-        let schema = schema.as_ident()?.clone();
-        let function = function.as_ident()?.clone();
-        let display_name = qualified_name(&schema.value, &function.value);
-        let lookup_key = ScopedTableFunctionName::from_sql(schema, function, context);
 
         Some(Self {
             lookup_key,
@@ -123,12 +141,15 @@ pub(crate) fn qualified_name(schema: &str, function: &str) -> String {
 }
 
 pub(crate) fn available_functions_hint<'a>(
+    catalog: &str,
     schema: &str,
     functions: impl IntoIterator<Item = (&'a ScopedTableFunctionName, &'a str)>,
 ) -> String {
     let mut names: Vec<&str> = functions
         .into_iter()
-        .filter_map(|(key, display_name)| (key.schema == schema).then_some(display_name))
+        .filter_map(|(key, display_name)| {
+            (key.catalog == catalog && key.schema == schema).then_some(display_name)
+        })
         .collect();
     names.sort_unstable();
 

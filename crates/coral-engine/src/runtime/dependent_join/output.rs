@@ -62,12 +62,7 @@ pub(crate) fn build_joined_batches(
             rows,
         )?;
         if let Some(source_observation) = config.source_observation {
-            publish_source_scan_batch(
-                config.dependent_source_schema,
-                config.dependent_table.name(),
-                source_observation,
-                &dependent_batch,
-            );
+            publish_source_scan_batch(source_observation, &dependent_batch);
         }
         // The rewrite replaced the Join node, so nothing downstream re-applies
         // the ON condition. APIs can resolve keyed lookups loosely (rename

@@ -31,6 +31,7 @@ pub struct QuerySource {
     declared_inputs: Vec<ManifestInputSpec>,
     test_queries: Vec<String>,
     identity_requirements: Option<IdentityRequirements>,
+    catalog_target: RuntimeCatalogTarget,
     components: Vec<RuntimeSourceComponent>,
     variables: BTreeMap<String, String>,
     secrets: BTreeMap<String, String>,
@@ -51,8 +52,19 @@ pub struct RuntimeSourcePackage {
     pub test_queries: Vec<String>,
     /// Source-level request identity requirements, when declared.
     pub identity_requirements: Option<IdentityRequirements>,
+    /// SQL catalog that receives the source's static runtime components.
+    pub catalog_target: RuntimeCatalogTarget,
     /// Backend-ready runtime components that make up the logical source.
     pub components: Vec<RuntimeSourceComponent>,
+}
+
+/// SQL catalog placement for one app-assembled runtime package.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RuntimeCatalogTarget {
+    /// Publish static component schemas into `DataFusion`'s default catalog.
+    Default,
+    /// Publish static component schemas together under the installed source name.
+    Source,
 }
 
 /// One backend-ready component inside an app-assembled query source package.
@@ -77,6 +89,7 @@ impl fmt::Debug for QuerySource {
             .field("description", &self.description)
             .field("declared_inputs", &self.declared_inputs)
             .field("test_queries", &self.test_queries)
+            .field("catalog_target", &self.catalog_target)
             .field("components", &self.components)
             .field("variables", &self.variables)
             .field("secret_count", &self.secrets.len())
@@ -146,6 +159,7 @@ impl QuerySource {
             declared_inputs: source_spec.declared_inputs().to_vec(),
             test_queries: source_spec.test_queries().to_vec(),
             identity_requirements: None,
+            catalog_target: RuntimeCatalogTarget::Default,
             components,
             variables,
             secrets,
@@ -167,6 +181,7 @@ impl QuerySource {
                 "runtime source package source_name must not be empty".to_string(),
             ));
         }
+        validate_runtime_catalog_target(&package)?;
         for component in &package.components {
             let schema_name = component.source_name();
             if schema_name.trim().is_empty() {
@@ -184,6 +199,7 @@ impl QuerySource {
             declared_inputs: package.declared_inputs,
             test_queries: package.test_queries,
             identity_requirements: package.identity_requirements,
+            catalog_target: package.catalog_target,
             components: package.components,
             variables,
             secrets,
@@ -234,19 +250,24 @@ impl QuerySource {
         })
     }
 
+    /// Returns the SQL catalog placement for this source's static components.
     #[must_use]
+    pub fn catalog_target(&self) -> &RuntimeCatalogTarget {
+        &self.catalog_target
+    }
+
     /// Returns backend-ready runtime components supplied by the app.
+    #[must_use]
     pub fn components(&self) -> &[RuntimeSourceComponent] {
         &self.components
     }
 
     #[must_use]
-    /// Returns the SQL schema names published by this source's two-part
-    /// components. Database components publish catalogs instead; see
-    /// [`Self::catalog_names`]. A source with no components claims its source
-    /// name as a schema. Schema and catalog names of all selected sources
-    /// share one flat namespace.
+    /// Returns the top-level SQL schema names claimed by a default-catalog source.
     pub fn schema_names(&self) -> Vec<&str> {
+        if matches!(self.catalog_target, RuntimeCatalogTarget::Source) {
+            return Vec::new();
+        }
         let mut names = Vec::new();
         for component in &self.components {
             if matches!(component, RuntimeSourceComponent::Database(_)) {
@@ -264,10 +285,11 @@ impl QuerySource {
     }
 
     #[must_use]
-    /// Returns the SQL catalog names published by this source's database
-    /// components. Tables of these components resolve as
-    /// `catalog.schema.table`, with schemas discovered at registration time.
+    /// Returns the top-level SQL catalog names claimed by this source.
     pub fn catalog_names(&self) -> Vec<&str> {
+        if matches!(self.catalog_target, RuntimeCatalogTarget::Source) {
+            return vec![self.source_name()];
+        }
         let mut names = Vec::new();
         for component in &self.components {
             let RuntimeSourceComponent::Database(manifest) = component else {
@@ -306,6 +328,42 @@ impl RuntimeSourceComponent {
             Self::Mcp(manifest) => &manifest.common.name,
         }
     }
+}
+
+fn validate_runtime_catalog_target(package: &RuntimeSourcePackage) -> Result<(), crate::CoreError> {
+    let database_components = package
+        .components
+        .iter()
+        .filter_map(|component| match component {
+            RuntimeSourceComponent::Database(manifest) => Some(manifest),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if !database_components.is_empty() && package.components.len() != 1 {
+        return Err(crate::CoreError::InvalidInput(format!(
+            "runtime source package '{}' mixes a discovered database catalog with static components",
+            package.source_name
+        )));
+    }
+
+    if matches!(package.catalog_target, RuntimeCatalogTarget::Default) {
+        if let Some(database) = database_components.first() {
+            return Err(crate::CoreError::InvalidInput(format!(
+                "database component '{}' requires the source-named catalog target",
+                database.common.name
+            )));
+        }
+        return Ok(());
+    }
+    if let Some(database) = database_components.first()
+        && database.common.name != package.source_name
+    {
+        return Err(crate::CoreError::InvalidInput(format!(
+            "runtime source package '{}' uses its source-named catalog, but its database component owns catalog '{}'",
+            package.source_name, database.common.name
+        )));
+    }
+    Ok(())
 }
 
 fn validate_runtime_source_identity_requirements(
@@ -1224,6 +1282,7 @@ impl QueryTableUsage {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct QueryTableFunctionUsage {
     source: String,
+    catalog: Option<String>,
     schema: String,
     function: String,
 }
@@ -1233,11 +1292,13 @@ impl QueryTableFunctionUsage {
     /// Builds one source-scoped table function usage entry.
     pub fn new(
         source_name: impl Into<String>,
+        catalog_name: Option<&str>,
         schema_name: impl Into<String>,
         function_name: impl Into<String>,
     ) -> Self {
         Self {
             source: source_name.into(),
+            catalog: catalog_name.map(ToString::to_string),
             schema: schema_name.into(),
             function: function_name.into(),
         }
@@ -1249,8 +1310,14 @@ impl QueryTableFunctionUsage {
         &self.source
     }
 
+    /// Returns the SQL catalog for this function, or `None` for two-part calls.
     #[must_use]
+    pub fn catalog_name(&self) -> Option<&str> {
+        self.catalog.as_deref()
+    }
+
     /// Returns the SQL schema name for this table function.
+    #[must_use]
     pub fn schema_name(&self) -> &str {
         &self.schema
     }
@@ -1271,7 +1338,9 @@ mod tests {
     use coral_spec::v4::{AcceptedIdentityRequirement, IdentityRequirements};
     use serde_json::json;
 
-    use super::{MemorySize, QuerySource, RuntimeSourceComponent, RuntimeSourcePackage};
+    use super::{
+        MemorySize, QuerySource, RuntimeCatalogTarget, RuntimeSourceComponent, RuntimeSourcePackage,
+    };
 
     #[test]
     fn memory_size_parses_binary_units() {
@@ -1310,6 +1379,7 @@ mod tests {
                 declared_inputs: Vec::new(),
                 test_queries: Vec::new(),
                 identity_requirements: Some(identity_requirements()),
+                catalog_target: RuntimeCatalogTarget::Default,
                 components: vec![RuntimeSourceComponent::Http(http_manifest())],
             },
             BTreeMap::new(),
@@ -1339,6 +1409,7 @@ mod tests {
                 declared_inputs: Vec::new(),
                 test_queries: Vec::new(),
                 identity_requirements: Some(requirements.clone()),
+                catalog_target: RuntimeCatalogTarget::Source,
                 components: vec![RuntimeSourceComponent::Http(manifest)],
             },
             BTreeMap::new(),

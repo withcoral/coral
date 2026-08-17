@@ -650,7 +650,7 @@ fn peel_dependent_side(plan: &LogicalPlan) -> PeelOutcome {
             };
 
             PeelOutcome::Match(PeeledDependentScan {
-                source_name: provider.source_schema().to_string(),
+                source_name: provider.source_name().to_string(),
                 table_ref: scan.table_name.clone(),
                 table_schema: scan.projected_schema.clone(),
                 table: Arc::clone(provider.table_spec()),

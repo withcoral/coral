@@ -345,12 +345,7 @@ async fn build_registered_runtime(
         config.source_decorators,
     )
     .await?;
-    let source_functions = SourceFunctionRegistry::new(
-        registration
-            .active_sources
-            .iter()
-            .flat_map(|source| source.table_functions.iter()),
-    );
+    let source_functions = SourceFunctionRegistry::new(&registration.active_sources);
     let source_function_names = source_functions.names();
     let udf_table_functions = published_table_functions(config.udfs, &source_function_names)
         .map_err(|err| datafusion_to_core(&err, &[]))?;
@@ -427,20 +422,40 @@ fn validate_catalog_surface_namespace(
     tables: &[TableInfo],
     table_functions: &[TableFunctionInfo],
 ) -> Result<(), CoreError> {
-    let two_part_tables = tables
+    let table_names = tables
         .iter()
-        .filter(|table| table.catalog_name.is_none())
-        .map(|table| ScopedTableFunctionName::from_parts(&table.schema_name, &table.table_name))
+        .map(|table| {
+            ScopedTableFunctionName::from_catalog_parts(
+                table
+                    .catalog_name
+                    .as_deref()
+                    .unwrap_or(crate::runtime::DATAFUSION_DEFAULT_CATALOG),
+                &table.schema_name,
+                &table.table_name,
+            )
+        })
         .collect::<HashSet<_>>();
     if let Some(function) = table_functions.iter().find(|function| {
-        two_part_tables.contains(&ScopedTableFunctionName::from_parts(
+        table_names.contains(&ScopedTableFunctionName::from_catalog_parts(
+            function
+                .catalog_name
+                .as_deref()
+                .unwrap_or(crate::runtime::DATAFUSION_DEFAULT_CATALOG),
             &function.schema_name,
             &function.function_name,
         ))
     }) {
+        let name = function.catalog_name.as_ref().map_or_else(
+            || format!("{}.{}", function.schema_name, function.function_name),
+            |catalog| {
+                format!(
+                    "{catalog}.{}.{}",
+                    function.schema_name, function.function_name
+                )
+            },
+        );
         return Err(CoreError::FailedPrecondition(format!(
-            "catalog surface '{}.{}' is registered as both a table and a table function",
-            function.schema_name, function.function_name
+            "catalog surface '{name}' is registered as both a table and a table function"
         )));
     }
     Ok(())
@@ -531,7 +546,7 @@ async fn register_runtime_sources(
             &extension_hooks.source_observation_publishers,
             request_identity_http_authenticators,
         ) {
-            Ok(compiled) => {
+            Ok(Some(compiled)) => {
                 source_candidates.push(SourceRegistrationCandidate::Compiled(
                     CompiledQuerySource {
                         source: source.clone(),
@@ -539,6 +554,7 @@ async fn register_runtime_sources(
                     },
                 ));
             }
+            Ok(None) => {}
             Err(error) => source_candidates.push(SourceRegistrationCandidate::CompileFailed {
                 source: source.clone(),
                 error,
@@ -969,6 +985,7 @@ impl QueryRuntimeAdapter {
             return self.tables.clone();
         }
         match self.table_metadata_for_error_context(&filters).await {
+            Ok(tables) if tables.is_empty() => self.tables.clone(),
             Ok(tables) => tables,
             Err(error) => {
                 tracing::debug!(
@@ -1036,7 +1053,10 @@ impl QueryRuntimeAdapter {
         sources.extend(
             table_functions
                 .iter()
-                .filter(|usage| self.name_to_source.contains_key(usage.schema_name()))
+                .filter(|usage| {
+                    self.name_to_source
+                        .contains_key(usage.catalog_name().unwrap_or(usage.schema_name()))
+                })
                 .map(|usage| usage.source_name().to_string()),
         );
 
@@ -1114,8 +1134,11 @@ impl QueryRuntimeAdapter {
         let Some((schema_name, function_name)) = relation_parts(table_reference) else {
             return false;
         };
+        let catalog_name = normalize_catalog_name(table_reference.catalog());
         if self.table_functions.iter().any(|function| {
-            function.schema_name == schema_name && function.function_name == function_name
+            function.catalog_name.as_deref() == catalog_name
+                && function.schema_name == schema_name
+                && function.function_name == function_name
         }) {
             return self.record_table_function_usage(table_reference, table_functions);
         }
@@ -1130,8 +1153,10 @@ impl QueryRuntimeAdapter {
         let Some((schema_name, function_name)) = relation_parts(table_reference) else {
             return false;
         };
+        let catalog_name = normalize_catalog_name(table_reference.catalog());
         table_functions.insert(QueryTableFunctionUsage::new(
-            self.source_name_for(schema_name),
+            self.source_name_for(catalog_name.unwrap_or(schema_name)),
+            catalog_name,
             schema_name,
             function_name,
         ));

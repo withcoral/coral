@@ -21,7 +21,7 @@ use futures::{StreamExt, stream};
 use crate::SourceObservationSurfaceKind;
 use crate::backends::http::HttpSourceClient;
 use crate::backends::shared::source_observation::{
-    SourceObservationConfig, SourceObservationPublishers,
+    SourceObservationConfig, SourceObservationIdentity, SourceObservationPublishers,
 };
 use crate::runtime::dependent_join::bindings::BindingProjector;
 use crate::runtime::dependent_join::driver::run_binding_phase;
@@ -35,6 +35,7 @@ pub(crate) struct DependentJoinExec {
     resolver: Arc<dyn ExecutionPlan>,
     dependent: HttpSourceClient,
     dependent_source_schema: String,
+    source_observation_identity: SourceObservationIdentity,
     table: Arc<HttpTableSpec>,
     binding_keys: Arc<[BindingKey]>,
     literal_filters: Arc<BTreeMap<String, String>>,
@@ -57,6 +58,7 @@ pub(crate) struct DependentJoinExecConfig {
     pub(crate) resolver: Arc<dyn ExecutionPlan>,
     pub(crate) dependent: HttpSourceClient,
     pub(crate) dependent_source_schema: String,
+    pub(crate) source_observation_identity: SourceObservationIdentity,
     pub(crate) table: Arc<HttpTableSpec>,
     pub(crate) binding_keys: Arc<[BindingKey]>,
     pub(crate) literal_filters: Arc<BTreeMap<String, String>>,
@@ -84,6 +86,7 @@ impl DependentJoinExec {
             resolver: config.resolver,
             dependent: config.dependent,
             dependent_source_schema: config.dependent_source_schema,
+            source_observation_identity: config.source_observation_identity,
             table: config.table,
             binding_keys: config.binding_keys,
             literal_filters: config.literal_filters,
@@ -110,6 +113,7 @@ impl DependentJoinExec {
             resolver,
             dependent: self.dependent.clone(),
             dependent_source_schema: self.dependent_source_schema.clone(),
+            source_observation_identity: self.source_observation_identity.clone(),
             table: Arc::clone(&self.table),
             binding_keys: Arc::clone(&self.binding_keys),
             literal_filters: Arc::clone(&self.literal_filters),
@@ -286,6 +290,7 @@ impl ExecutionPlan for DependentJoinExec {
             .partition_count();
         let dependent = self.dependent.clone();
         let dependent_source_schema = self.dependent_source_schema.clone();
+        let source_observation_identity = self.source_observation_identity.clone();
         let table = Arc::clone(&self.table);
         let binding_keys = Arc::clone(&self.binding_keys);
         let dependent_projection = Arc::clone(&self.dependent_projection);
@@ -339,6 +344,7 @@ impl ExecutionPlan for DependentJoinExec {
                 max_concurrency,
                 max_rows_per_binding,
                 page_hint,
+                source_observation_identity,
                 source_observation_publishers,
                 metrics,
                 output_schema,
@@ -385,6 +391,7 @@ async fn execute_dependent_join(
     max_concurrency: usize,
     max_rows_per_binding: usize,
     page_hint: Option<usize>,
+    source_observation_identity: SourceObservationIdentity,
     source_observation_publishers: SourceObservationPublishers,
     metrics: DependentJoinMetrics,
     output_schema: SchemaRef,
@@ -416,6 +423,7 @@ async fn execute_dependent_join(
 
     let output_memory = state.memory().new_empty();
     let source_observation = SourceObservationConfig::new(
+        source_observation_identity,
         SourceObservationSurfaceKind::Table,
         source_observation_publishers,
     );

@@ -87,8 +87,8 @@ pub use contracts::{
     QueryExecutionProvenance, QueryMemoryConfig, QueryParameterValue, QueryParameters, QueryPlan,
     QueryRuntimeConfig, QueryRuntimeContext, QuerySource, QueryTableFunctionUsage, QueryTableUsage,
     QueryTestFailure, QueryTestResult, QueryTestSuccess, ResolvedQueryResources,
-    RuntimeSourceComponent, RuntimeSourcePackage, SourceValidationReport, StatusCode,
-    StructuredQueryError, TableFunctionArgumentInfo, TableFunctionInfo,
+    RuntimeCatalogTarget, RuntimeSourceComponent, RuntimeSourcePackage, SourceValidationReport,
+    StatusCode, StructuredQueryError, TableFunctionArgumentInfo, TableFunctionInfo,
     TableFunctionResultColumnInfo, TableInfo,
 };
 pub use runtime::normalize_catalog_name;

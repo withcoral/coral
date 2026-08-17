@@ -21,10 +21,14 @@ use crate::backends::schema_from_columns;
 use crate::backends::shared::filter_expr::{classify_filter_pushdown, extract_filter_values};
 use crate::backends::shared::json_exec::JsonExec;
 use crate::backends::shared::mapping::convert_items;
-use crate::backends::shared::source_observation::SourceObservationPublishers;
+use crate::backends::shared::source_observation::{
+    SourceObservationIdentity, SourceObservationPublishers,
+};
 
 pub(super) struct McpTableProvider {
     backend: McpSourceClient,
+    source_name: String,
+    catalog_name: Option<String>,
     source_schema: String,
     source_inputs: Arc<McpSourceInputs>,
     table: Arc<McpTableSpec>,
@@ -45,6 +49,8 @@ impl std::fmt::Debug for McpTableProvider {
 impl McpTableProvider {
     pub(super) fn new(
         backend: McpSourceClient,
+        source_name: String,
+        catalog_name: Option<String>,
         source_schema: String,
         source_inputs: Arc<McpSourceInputs>,
         table: McpTableSpec,
@@ -53,6 +59,8 @@ impl McpTableProvider {
         let schema = schema_from_columns(table.columns(), &source_schema, table.name())?;
         Ok(Self {
             backend,
+            source_name,
+            catalog_name,
             source_schema,
             source_inputs,
             table: Arc::new(table),
@@ -172,6 +180,12 @@ impl TableProvider for McpTableProvider {
             projection.cloned(),
         )?
         .with_source_observation(
+            SourceObservationIdentity::new(
+                &self.source_name,
+                self.catalog_name.clone(),
+                &self.source_schema,
+                self.table.name(),
+            ),
             SourceObservationSurfaceKind::Table,
             Arc::clone(&self.source_observation_publishers),
         );

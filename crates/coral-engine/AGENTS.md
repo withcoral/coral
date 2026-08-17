@@ -30,9 +30,10 @@ registration, and query execution.
   validated source-spec types and backend-specific spec structs from there.
 - Runtime code should work with compiled sources and generic metadata, not app
   policy or transport concerns.
-- Runtime components are the app-to-engine package boundary. Do not add a
-  backend that reaches back into DSL v4 materialization or authored-manifest
-  types when `coral-app` can assemble existing backend-ready component specs.
+- Runtime components plus their explicit catalog target are the app-to-engine
+  package boundary. `coral-app` decides SQL catalog placement; backends compile
+  existing backend-ready component specs and must not infer placement from DSL
+  version or reach back into v4 materialization and authored-manifest types.
 - Installed-function inputs are executable Coral SQL definitions. Do not add
   placeholder variants for languages that `DataFusion` cannot execute.
 - Reuse database connection pools only through an explicit

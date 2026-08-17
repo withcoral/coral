@@ -20,8 +20,8 @@ use crate::backends::{
     required_filter_names, validate_lookup_key_filter_backend_support,
 };
 use crate::{
-    BoundRequestIdentityHttpAuthenticator, RequestAuthenticator, SourceInputResolutionContext,
-    SourceInputResolver,
+    BoundRequestIdentityHttpAuthenticator, RequestAuthenticator, RuntimeCatalogTarget,
+    SourceInputResolutionContext, SourceInputResolver,
 };
 use coral_spec::SourceBackend;
 use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
@@ -52,6 +52,7 @@ pub(crate) use provider::HttpSourceTableProvider;
 struct HttpCompiledSource {
     manifest: HttpSourceManifest,
     source_input_resolution: SourceInputResolutionContext,
+    catalog_name: Option<String>,
     request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
     body_capture_max_bytes: Option<usize>,
     trace_context: Option<opentelemetry::Context>,
@@ -68,6 +69,11 @@ pub(crate) fn compile_manifest(
     Box::new(HttpCompiledSource {
         manifest: manifest.clone(),
         source_input_resolution: SourceInputResolutionContext::from_query_source(request.source),
+        catalog_name: matches!(
+            request.source.catalog_target(),
+            RuntimeCatalogTarget::Source
+        )
+        .then(|| request.source.source_name().to_string()),
         request_authenticators: request.request_authenticators.clone(),
         body_capture_max_bytes: request.runtime_context.body_capture_max_bytes,
         trace_context: request.runtime_context.trace_context.clone(),
@@ -132,6 +138,8 @@ impl CompiledBackendSource for HttpCompiledSource {
         for table in &self.manifest.tables {
             let provider: Arc<dyn TableProvider> = Arc::new(HttpSourceTableProvider::new(
                 backend.clone(),
+                self.source_input_resolution.source_name().to_string(),
+                self.catalog_name.clone(),
                 self.manifest.common.name.clone(),
                 table.clone(),
                 Arc::clone(&self.source_observation_publishers),
@@ -144,6 +152,8 @@ impl CompiledBackendSource for HttpCompiledSource {
             let factory: Arc<dyn SourceFunctionProviderFactory> =
                 Arc::new(function::HttpSourceTableFunction::new(
                     backend.clone(),
+                    self.source_input_resolution.source_name().to_string(),
+                    self.catalog_name.clone(),
                     self.manifest.common.name.clone(),
                     function.clone(),
                     Arc::clone(&self.source_observation_publishers),
