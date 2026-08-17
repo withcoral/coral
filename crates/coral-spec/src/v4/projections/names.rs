@@ -219,8 +219,13 @@ pub(super) fn projection_guide(
         .map(|input| input.name.as_str())
         .collect::<Vec<_>>();
     if !collections.is_empty() {
+        let takes = if collections.len() == 1 {
+            "takes"
+        } else {
+            "take"
+        };
         sentences.push(format!(
-            "{} take a JSON array of values, for example '[\"a\",\"b\"]'.",
+            "{} {takes} a JSON array of values, for example '[\"a\",\"b\"]'.",
             human_join(&collections)
         ));
     }

@@ -103,10 +103,10 @@ pub(crate) fn resolve_value_source(
             parse_bool_value(context, RuntimeValueNamespace::Filter, key, *default)
         }
         ValueSourceSpec::FilterStringArray { key, default } => {
-            Ok(parse_filter_strings(context, key, default.as_deref()))
+            parse_filter_strings(context, key, default.as_deref())
         }
         ValueSourceSpec::ArgStringArray { key, default } => {
-            Ok(parse_arg_strings(context, key, default.as_deref()))
+            parse_arg_strings(context, key, default.as_deref())
         }
         ValueSourceSpec::FilterSplit {
             key,
@@ -258,36 +258,50 @@ fn parse_bool_value(
 /// and failing that mid-scan reads as a bug rather than as a syntax lesson.
 /// Items are stringified rather than required to be JSON strings, so a numeric
 /// list such as `[1,2]` works for integer-item parameters.
+///
+/// Text that opens a `[` was *meant* as an array, so a parse failure there is a
+/// malformed value and stays an error. Without that split the bare-value
+/// fallback would quietly forward `["a" "b"]` as one element literally named
+/// `["a" "b"]`.
 fn parse_string_array_value(
     context: &RenderContext<'_>,
     namespace: RuntimeValueNamespace,
     key: &str,
     default: Option<&[String]>,
-) -> Option<Value> {
+) -> Result<Option<Value>> {
     let Some(raw) = namespace.values(context).get(key) else {
-        return default.map(|values| json!(values));
+        return Ok(default.map(|values| json!(values)));
     };
-    let parsed = serde_json::from_str::<Vec<Value>>(raw)
-        .ok()
-        .and_then(|items| {
-            items
-                .iter()
-                .map(|item| match item {
-                    Value::Null | Value::Array(_) | Value::Object(_) => None,
-                    Value::String(item) => Some(item.clone()),
-                    item => Some(item.to_string()),
-                })
-                .collect::<Option<Vec<String>>>()
+    if !raw.trim_start().starts_with('[') {
+        return Ok(Some(json!([raw])));
+    }
+    let items = serde_json::from_str::<Vec<Value>>(raw).map_err(|error| {
+        let label = namespace.label();
+        DataFusionError::Execution(format!(
+            "{label} '{key}' value '{raw}' is not a valid JSON array: {error}"
+        ))
+    })?;
+    let items = items
+        .iter()
+        .map(|item| match item {
+            Value::String(item) => Ok(item.clone()),
+            Value::Null | Value::Array(_) | Value::Object(_) => {
+                let label = namespace.label();
+                Err(DataFusionError::Execution(format!(
+                    "{label} '{key}' value '{raw}' must be a JSON array of scalars"
+                )))
+            }
+            item => Ok(item.to_string()),
         })
-        .unwrap_or_else(|| vec![raw.clone()]);
-    Some(json!(parsed))
+        .collect::<Result<Vec<String>>>()?;
+    Ok(Some(json!(items)))
 }
 
 fn parse_filter_strings(
     context: &RenderContext<'_>,
     key: &str,
     default: Option<&[String]>,
-) -> Option<Value> {
+) -> Result<Option<Value>> {
     parse_string_array_value(context, RuntimeValueNamespace::Filter, key, default)
 }
 
@@ -295,7 +309,7 @@ fn parse_arg_strings(
     context: &RenderContext<'_>,
     key: &str,
     default: Option<&[String]>,
-) -> Option<Value> {
+) -> Result<Option<Value>> {
     parse_string_array_value(
         context,
         RuntimeValueNamespace::FunctionArgument,
@@ -798,6 +812,48 @@ mod tests {
         .expect("numeric array entries should resolve");
 
         assert_eq!(value, Some(json!(["1", "2"])));
+    }
+
+    #[test]
+    fn resolve_value_source_rejects_a_malformed_json_array() {
+        // Text that opens a `[` was meant as an array, so the bare-value
+        // fallback must not quietly forward it as one literal element.
+        let filters = HashMap::from([("exclude".to_string(), r#"["a" "b"]"#.to_string())]);
+
+        let error = resolve_value_source(
+            &ValueSourceSpec::FilterStringArray {
+                key: "exclude".to_string(),
+                default: None,
+            },
+            &test_render_context(&filters, &HashMap::new(), &BTreeMap::new()),
+        )
+        .expect_err("a malformed array should fail");
+
+        assert!(
+            error.to_string().contains("is not a valid JSON array"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn resolve_value_source_rejects_non_scalar_array_entries() {
+        let filters = HashMap::from([("exclude".to_string(), r#"["a",{"k":1}]"#.to_string())]);
+
+        let error = resolve_value_source(
+            &ValueSourceSpec::FilterStringArray {
+                key: "exclude".to_string(),
+                default: None,
+            },
+            &test_render_context(&filters, &HashMap::new(), &BTreeMap::new()),
+        )
+        .expect_err("object entries should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("must be a JSON array of scalars"),
+            "{error}"
+        );
     }
 
     #[test]

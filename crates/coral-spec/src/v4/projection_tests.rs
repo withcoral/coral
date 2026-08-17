@@ -2487,9 +2487,12 @@ fn collection_inputs_lower_to_json_and_keep_their_encoding() {
     let catalog = collection_catalog();
     let items = projection(&catalog, "list_items");
 
+    // Utf8, not Json: `bind_function_arg` requires a Json argument's literal to
+    // parse as JSON before the value source runs, which would reject the bare
+    // single-value form that `parse_string_array_value` exists to accept.
     let exclude = input(items, "exclude");
     assert_eq!(exclude.sql_exposure, SqlInputExposure::Filter);
-    assert_eq!(exclude.data_type, ManifestDataType::Json);
+    assert_eq!(exclude.data_type, ManifestDataType::Utf8);
     assert_eq!(
         exclude.collection_encoding,
         Some(CollectionEncoding::Repeated)
@@ -2497,7 +2500,7 @@ fn collection_inputs_lower_to_json_and_keep_their_encoding() {
 
     let select = input(items, "select");
     assert_eq!(select.wire_name, "$select");
-    assert_eq!(select.data_type, ManifestDataType::Json);
+    assert_eq!(select.data_type, ManifestDataType::Utf8);
     assert_eq!(select.collection_encoding, Some(CollectionEncoding::Comma));
 
     let state = input(items, "state");
@@ -2527,6 +2530,28 @@ fn collection_inputs_document_the_json_array_convention() {
         project_items.guide.contains("JSON array"),
         "{:?}",
         project_items.guide
+    );
+}
+
+#[test]
+fn collection_guide_sentence_agrees_in_number() {
+    let catalog = collection_catalog();
+
+    // Two collection inputs.
+    assert!(
+        projection(&catalog, "list_items")
+            .guide
+            .contains("select and exclude take a JSON array"),
+        "{:?}",
+        projection(&catalog, "list_items").guide
+    );
+    // One collection input.
+    assert!(
+        projection(&catalog, "list_project_items")
+            .guide
+            .contains("exclude takes a JSON array"),
+        "{:?}",
+        projection(&catalog, "list_project_items").guide
     );
 }
 

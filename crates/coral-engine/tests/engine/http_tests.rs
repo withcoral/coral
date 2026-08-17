@@ -3905,7 +3905,7 @@ async fn array_function_arguments_expand_into_repeated_query_parameters() {
             "name": "list_users",
             "description": "HTTP users",
             "args": [
-                { "name": "exclude", "type": "Json", "bind": { "arg": "exclude" } }
+                { "name": "exclude", "type": "Utf8", "bind": { "arg": "exclude" } }
             ],
             "request": {
                 "method": "GET",
@@ -3987,4 +3987,59 @@ fn exclude_filter_column() -> Value {
         "virtual": true,
         "expr": { "kind": "from_filter", "key": "exclude" }
     })
+}
+
+#[tokio::test]
+async fn array_function_arguments_accept_a_bare_value_as_a_one_element_list() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .and(query_param("exclude", "repositories"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            json!({ "data": [json!({"id": 2, "name": "Grace", "email": "grace@example.com"})] }),
+        ))
+        .mount(&server)
+        .await;
+
+    // The argument is declared `Utf8` rather than `Json` precisely so this
+    // works: a `Json` argument's literal must parse as JSON inside
+    // `bind_function_arg`, long before the value source runs.
+    let manifest = json!({
+        "name": "http_bare_arg",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "http",
+        "base_url": server.uri(),
+        "functions": [{
+            "name": "list_users",
+            "description": "HTTP users",
+            "args": [
+                { "name": "exclude", "type": "Utf8", "bind": { "arg": "exclude" } }
+            ],
+            "request": {
+                "method": "GET",
+                "path": "/api/users",
+                "query": [
+                    { "name": "exclude", "from": "arg_string_array", "key": "exclude" }
+                ]
+            },
+            "response": { "rows_path": ["data"] },
+            "columns": [
+                { "name": "id", "type": "Int64" }
+            ]
+        }]
+    });
+    let source = build_source(manifest);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT id FROM http_bare_arg.list_users(exclude => 'repositories')",
+        )
+        .await
+        .expect("a bare argument value should be read as a one-element list"),
+    );
+
+    assert_eq!(rows, vec![json!({"id": 2})]);
 }

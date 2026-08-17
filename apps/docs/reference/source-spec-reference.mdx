@@ -1065,35 +1065,6 @@ Boolean filters used with `filter_bool` can be written as normal SQL boolean
 predicates, for example `WHERE include_archived IS FALSE` or
 `WHERE include_archived = false`.
 
-### Multi-valued request values
-
-`filter_string_array` and `arg_string_array` read a list. The SQL value is a JSON
-array literal, and a bare value is accepted as a one-element list:
-
-```sql
-SELECT * FROM github.list_org_migrations(org => 'withcoral', exclude => '["repositories"]');
-SELECT * FROM github.list_org_migrations(org => 'withcoral', exclude => 'repositories');
-```
-
-In a request body the list becomes a JSON array. In a query parameter it expands
-according to the parameter's `explode` setting, which defaults to `true`:
-
-```yaml
-query:
-  # explode: true (the default) sends ?exclude=a&exclude=b
-  - name: exclude
-    from: filter_string_array
-    key: exclude
-  # explode: false sends ?$select=a,b
-  - name: $select
-    explode: false
-    from: filter_string_array
-    key: select
-```
-
-An empty list sends no query parameter at all. `explode` has no effect on
-single-valued value sources.
-
 Use `filter_split` and `filter_split_int` when a provider requires structured
 request fields but users naturally have one compound identifier. For example,
 `SOURCE-496` can become a string team key and integer issue number:
@@ -1134,6 +1105,39 @@ request:
       separator: "-"
       part: 1
 ```
+
+### Multi-valued request values
+
+`filter_string_array` and `arg_string_array` read a list. The SQL value is a JSON
+array literal, and a bare value is accepted as a one-element list:
+
+```sql
+SELECT * FROM github.list_org_migrations(org => 'withcoral', exclude => '["repositories"]');
+SELECT * FROM github.list_org_migrations(org => 'withcoral', exclude => 'repositories');
+```
+
+In a request body the list becomes a JSON array. In a query parameter it expands
+according to the parameter's `explode` setting, which defaults to `true`:
+
+```yaml
+query:
+  # explode: true (the default) sends ?exclude=a&exclude=b
+  - name: exclude
+    from: filter_string_array
+    key: exclude
+  # explode: false sends ?$select=a,b
+  - name: $select
+    explode: false
+    from: filter_string_array
+    key: select
+```
+
+An empty list sends no query parameter at all. `explode` has no effect on
+single-valued value sources. Text that starts with `[` is always read as a JSON
+array, so a malformed one is an error rather than a single literal value.
+
+Declare the backing filter or argument as `Utf8`. A `Json` argument's value must
+parse as JSON before the value source runs, which rejects the bare form.
 
 ### HTTP response fields
 
