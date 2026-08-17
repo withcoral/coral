@@ -28,6 +28,19 @@ const SESSION_ISSUER: &str = "https://auth.example";
 const SESSION_RESOURCE: &str = "https://coral.example/mcp";
 const CORAL_UI_RESOURCE: &str = "https://coral-ui.example";
 const TEST_WORKSPACE_NAME: &str = "analytics";
+const MCP_SESSION_ID: &str = "mcp-session-id";
+
+/// The authenticated MCP surface every session fixture below serves.
+///
+/// The fixtures differ from one another by the `workspace` key alone — the bind
+/// and the `public_url` that decides the accepted audience are this constant, so
+/// nothing but the operator's selection can move between them.
+const AUTHENTICATED_MCP_HTTP: &str = r"
+[server.mcp_http]
+enabled = true
+bind = '127.0.0.1:0'
+public_url = 'https://CORAL.example/mcp'
+";
 
 struct TestMcpProvider;
 
@@ -176,6 +189,21 @@ async fn initialize_mcp(endpoint: &str, authorization: &str) -> reqwest::Respons
 /// challenge is what tells that refusal apart from a refused audience, which is
 /// answered `401` and carries one.
 async fn assert_mcp_authenticated(endpoint: &str, token: &str) {
+    let guidance = mcp_refusal_guidance(endpoint, token).await;
+    assert!(
+        guidance.contains("no workspace configured"),
+        "an accepted audience must be refused only its workspaceless session: {guidance}"
+    );
+}
+
+/// Reads the guidance an accepted audience's refused handshake carries.
+///
+/// Every property that separates this refusal from an authentication one is
+/// asserted here rather than at the call sites, which then differ only in the
+/// guidance they expect: the audience passed authentication, so the answer is
+/// `200` with no challenge, and no session was opened for a caller who was not
+/// admitted to one.
+async fn mcp_refusal_guidance(endpoint: &str, token: &str) -> String {
     let accepted = initialize_mcp(endpoint, &format!("Bearer {token}")).await;
     assert_eq!(
         accepted.status(),
@@ -183,18 +211,19 @@ async fn assert_mcp_authenticated(endpoint: &str, token: &str) {
         "an accepted audience must pass authentication and be answered its handshake"
     );
     assert!(accepted.headers().get(WWW_AUTHENTICATE).is_none());
+    assert!(
+        accepted.headers().get(MCP_SESSION_ID).is_none(),
+        "a refused handshake must leave no session behind"
+    );
     let refusal = accepted
         .json::<serde_json::Value>()
         .await
         .expect("JSON-RPC handshake answer");
-    let guidance = refusal
+    refusal
         .pointer("/error/message")
         .and_then(serde_json::Value::as_str)
-        .unwrap_or_else(|| panic!("a refused handshake carries guidance: {refusal}"));
-    assert!(
-        guidance.contains("no workspace configured"),
-        "an accepted audience must be refused only its workspaceless session: {guidance}"
-    );
+        .unwrap_or_else(|| panic!("a refused handshake carries guidance: {refusal}"))
+        .to_string()
 }
 
 async fn assert_unauthorized(base: &str, authorization: &str) {
@@ -325,15 +354,19 @@ fn signed_session_token(
 }
 
 fn write_session_config(temp: &TempDir, signing_key: &[u8]) {
+    write_session_config_with_mcp(temp, signing_key, AUTHENTICATED_MCP_HTTP);
+}
+
+/// Writes the same authenticated companion, scoped to one named workspace.
+///
+/// The written config differs from [`write_session_config`]'s by exactly the
+/// `workspace` key, so a difference in how the surface answers a handshake can
+/// only come from that name having reached it.
+fn write_session_config_with_workspace(temp: &TempDir, signing_key: &[u8], workspace: &str) {
     write_session_config_with_mcp(
         temp,
         signing_key,
-        r"
-[server.mcp_http]
-enabled = true
-bind = '127.0.0.1:0'
-public_url = 'https://CORAL.example/mcp'
-",
+        &format!("{AUTHENTICATED_MCP_HTTP}workspace = '{workspace}'\n"),
     );
 }
 
@@ -809,6 +842,75 @@ async fn session_authenticated_companion_gates_grpc_and_mcp() {
         .shutdown()
         .await
         .expect("shutdown OAuth server");
+}
+
+/// The operator's workspace selection reaches the authenticated MCP surface.
+///
+/// Composition is the only thing under test: this fixture's config differs from
+/// the workspaceless one above by the `workspace` key alone, so the refusal is
+/// the one place a difference can show — and it does. Naming none is answered
+/// "no workspace configured"; naming `analytics` is answered the not-found
+/// guidance *for that name*. A composition that dropped the selection on its way
+/// from `config.toml` to the running surface would answer both handshakes with
+/// the first sentence, which is why the assertion is on which sentence comes
+/// back rather than on there being one.
+///
+/// The refusal also says which client decided it. Admission lists memberships on
+/// the caller's own bearer-bound connection; the unauthenticated loopback client
+/// this surface also holds authenticates as the local principal, which an
+/// authenticated deployment does not admit, so a listing made with it could only
+/// come back as `503`. `/readyz` is answered over that same unauthenticated
+/// client here, so it is present and working — it just decided nothing about a
+/// workspace.
+///
+/// A caller who *does* hold the configured membership needs a provisioned
+/// directory row, which only a completed login writes, so `coral-mcp`'s
+/// admission tests own the admitted case against a directory they can populate.
+#[tokio::test]
+async fn session_authenticated_companion_scopes_mcp_to_the_configured_workspace() {
+    let temp = TempDir::new().expect("temp dir");
+    let signing_key =
+        EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
+            .expect("P-256 signing key");
+    write_session_config_with_workspace(&temp, signing_key.as_ref(), TEST_WORKSPACE_NAME);
+    let server = start(
+        ServerBuilder::configured_standalone_grpc()
+            .with_config_dir(temp.path())
+            .with_noop_feedback_uploads(),
+        McpOptions::default(),
+    )
+    .await
+    .expect("start authenticated composite server");
+    let mcp_addr = server.mcp_http_addr().expect("MCP HTTP endpoint");
+    let base = format!("http://{mcp_addr}");
+
+    let ready = reqwest::get(format!("{base}/readyz"))
+        .await
+        .expect("readiness response");
+    assert_eq!(
+        ready.status(),
+        reqwest::StatusCode::NO_CONTENT,
+        "the unauthenticated client this surface holds serves readiness"
+    );
+
+    let token = session_token(signing_key.as_ref(), SESSION_RESOURCE);
+    // The same token is accepted on both surfaces, so what MCP answers below is
+    // an admission answer about a workspace rather than one about the token.
+    assert_grpc_authenticated(&server, &token).await;
+
+    let guidance = mcp_refusal_guidance(&format!("{base}/mcp"), &token).await;
+    assert!(
+        guidance.contains(&format!("Workspace `{TEST_WORKSPACE_NAME}` was not found")),
+        "the configured name must reach the surface and be the one it answers about: {guidance}"
+    );
+    assert!(
+        !guidance.contains("no workspace configured"),
+        "a surface an operator named a workspace must not report having none: {guidance}"
+    );
+
+    server.shutdown().await.expect("shutdown composite server");
+    let mcp_rebound = TcpListener::bind(mcp_addr).expect("MCP port must be released");
+    drop(mcp_rebound);
 }
 
 /// MCP HTTP is a public surface, so it admits only its own audience: a token
