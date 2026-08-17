@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.13.0](https://github.com/withcoral/coral/compare/v0.12.0...v0.13.0) (2026-08-17)
+
+
+### ⚠ BREAKING CHANGES
+
+* **coral-ui:** rename Reef to Coral UI ([#2183](https://github.com/withcoral/coral/issues/2183))
+
+### Code Refactoring
+
+* **coral-ui:** rename Reef to Coral UI ([#2183](https://github.com/withcoral/coral/issues/2183)) ([554bc17](https://github.com/withcoral/coral/commit/554bc1758db915edb44b0bdbf84e7338e3eb2e74))
+
 ## [0.12.0](https://github.com/withcoral/coral/compare/v0.11.0...v0.12.0) (2026-08-14)
 
 
