@@ -1,3 +1,4 @@
+use async_trait::async_trait;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -23,15 +24,16 @@ use crate::workspaces::WorkspaceName;
 
 struct TestKeyProvider(Vec<EnvelopeEncryptionKey>);
 
+#[async_trait]
 impl EnvelopeKeyProvider for TestKeyProvider {
-    fn active_key(&self) -> Result<EnvelopeEncryptionKey, CredentialsError> {
+    async fn active_key(&self) -> Result<EnvelopeEncryptionKey, CredentialsError> {
         self.0
             .last()
             .cloned()
             .ok_or_else(|| CredentialsError::Unavailable("missing test key".to_string()))
     }
 
-    fn key(&self, key_id: &str) -> Result<EnvelopeEncryptionKey, CredentialsError> {
+    async fn key(&self, key_id: &str) -> Result<EnvelopeEncryptionKey, CredentialsError> {
         self.0
             .iter()
             .find(|key| key.key_id() == key_id)
@@ -45,15 +47,16 @@ struct ReadOnlyKeyProvider {
     active_key_calls: AtomicUsize,
 }
 
+#[async_trait]
 impl EnvelopeKeyProvider for ReadOnlyKeyProvider {
-    fn active_key(&self) -> Result<EnvelopeEncryptionKey, CredentialsError> {
+    async fn active_key(&self) -> Result<EnvelopeEncryptionKey, CredentialsError> {
         self.active_key_calls.fetch_add(1, Ordering::SeqCst);
         Err(CredentialsError::Crypto(
             "identity reads must not request an active key".to_string(),
         ))
     }
 
-    fn key(&self, key_id: &str) -> Result<EnvelopeEncryptionKey, CredentialsError> {
+    async fn key(&self, key_id: &str) -> Result<EnvelopeEncryptionKey, CredentialsError> {
         (key_id == self.key.key_id())
             .then(|| self.key.clone())
             .ok_or_else(|| CredentialsError::Unavailable("missing test key".to_string()))
@@ -464,7 +467,8 @@ async fn assert_workspace_delete_recreate_race(
         document.as_ref().expect("new-generation document"),
         "new-generation-token",
         provider,
-    );
+    )
+    .await;
 }
 
 #[expect(
@@ -910,7 +914,8 @@ pub(crate) async fn assert_user_global_fixed_token_create_contract(db: &Arc<Cora
         created_document,
         "alpha-token",
         old_provider.as_ref(),
-    );
+    )
+    .await;
 
     let new_key = EnvelopeEncryptionKey::from_static_bytes_for_test([62; 32]);
     let rotated_provider = Arc::new(TestKeyProvider(vec![old_key, new_key.clone()]));
@@ -942,7 +947,8 @@ pub(crate) async fn assert_user_global_fixed_token_create_contract(db: &Arc<Cora
         replaced_document,
         "beta-token",
         rotated_provider.as_ref(),
-    );
+    )
+    .await;
 
     let identity_name = IdentityName::parse(&identity).expect("identity name");
     set_identity_document_version(db, &owner, &identity_name, i64::MAX).await;
@@ -1004,7 +1010,8 @@ pub(crate) async fn assert_user_global_fixed_token_create_contract(db: &Arc<Cora
         conflict_document,
         winning_token,
         rotated_provider.as_ref(),
-    );
+    )
+    .await;
 
     let prepared = Arc::new(tokio::sync::Barrier::new(2));
     let resume = Arc::new(tokio::sync::Barrier::new(2));
@@ -1045,7 +1052,8 @@ pub(crate) async fn assert_user_global_fixed_token_create_contract(db: &Arc<Cora
         raced_pair.1.as_ref().expect("raced document"),
         "race-token",
         rotated_provider.as_ref(),
-    );
+    )
+    .await;
 
     let mut cleanup = db.begin().await.expect("begin identity cleanup");
     let conflict_identity_name = IdentityName::parse(&conflict_name).expect("conflict name");
@@ -1231,7 +1239,8 @@ pub(crate) async fn assert_workspace_fixed_token_create_contract(db: &Arc<CoralD
         fallback_created_document,
         "fallback-token",
         old_provider.as_ref(),
-    );
+    )
+    .await;
 
     let shadowed_identity = format!("shadowed_identity_{suffix}");
     let shadowed_created = manager
@@ -1264,7 +1273,8 @@ pub(crate) async fn assert_workspace_fixed_token_create_contract(db: &Arc<CoralD
         shadowed_pair.1.as_ref().expect("shadowed document"),
         "workspace-token",
         old_provider.as_ref(),
-    );
+    )
+    .await;
 
     put_spec(
         db,
@@ -1306,7 +1316,8 @@ pub(crate) async fn assert_workspace_fixed_token_create_contract(db: &Arc<CoralD
         fallback_replaced_document,
         "replacement-token",
         rotated_provider.as_ref(),
-    );
+    )
+    .await;
 
     let fallback_name = IdentityName::parse(&fallback_identity).expect("fallback identity name");
     set_identity_document_version(db, &owner, &fallback_name, i64::MAX).await;
@@ -1472,7 +1483,8 @@ pub(crate) async fn assert_workspace_fixed_token_race_contract(db: &Arc<CoralDb>
         shadow_document,
         "shadow-token",
         provider.as_ref(),
-    );
+    )
+    .await;
 
     let generation_prepared = Arc::new(tokio::sync::Barrier::new(2));
     let generation_resume = Arc::new(tokio::sync::Barrier::new(2));
@@ -1615,7 +1627,7 @@ pub(crate) async fn assert_persisted_fixed_token_material(
     let (identity, document) = load_pair(db, owner, identity_name).await;
     let identity = identity.expect("persisted identity");
     let document = document.expect("persisted identity document");
-    assert_material(&identity, &document, token, provider);
+    assert_material(&identity, &document, token, provider).await;
     identity
 }
 
@@ -1651,7 +1663,7 @@ fn assert_reference_key_with_port(
     assert_eq!(audience.port(), port);
 }
 
-fn assert_material(
+async fn assert_material(
     identity: &IdentityRecord,
     document: &IdentityDocumentRecord,
     token: &str,
@@ -1662,6 +1674,7 @@ fn assert_material(
             .expect("document binding");
     let kek = provider
         .key(&document.envelope.key_id)
+        .await
         .expect("stored envelope key");
     let values =
         decrypt_identity_document(&binding, &document.envelope, &kek).expect("decrypt token");

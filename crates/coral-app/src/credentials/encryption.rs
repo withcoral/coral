@@ -175,7 +175,160 @@ impl EnvelopeContext {
     }
 }
 
+<<<<<<< HEAD
 /// Resolves the envelope key from a private file scoped to this app-state directory.
+||||||| parent of 1b6c0a465 (refactor(app): make envelope key resolution async)
+/// Immutable configured encryption keys resolved during app bootstrap.
+#[derive(Debug, Clone)]
+pub(crate) struct ConfiguredEnvelopeKeyProvider {
+    active_key_id: Option<String>,
+    keys_by_id: BTreeMap<String, EnvelopeEncryptionKey>,
+}
+
+impl ConfiguredEnvelopeKeyProvider {
+    pub(crate) fn new(
+        active_key: EnvelopeEncryptionKey,
+        decryption_keys: impl IntoIterator<Item = EnvelopeEncryptionKey>,
+    ) -> Result<Self, CredentialsError> {
+        let active_key_id = active_key.key_id().to_string();
+        let mut keys_by_id = BTreeMap::from([(active_key_id.clone(), active_key)]);
+        for key in decryption_keys {
+            let key_id = key.key_id().to_string();
+            if keys_by_id.contains_key(&key_id) {
+                return Err(CredentialsError::Parse(format!(
+                    "duplicate credential encryption key id '{key_id}'"
+                )));
+            }
+            keys_by_id.insert(key_id, key);
+        }
+        Ok(Self {
+            active_key_id: Some(active_key_id),
+            keys_by_id,
+        })
+    }
+
+    pub(crate) fn unavailable() -> Self {
+        Self {
+            active_key_id: None,
+            keys_by_id: BTreeMap::new(),
+        }
+    }
+
+    fn single(active_key: EnvelopeEncryptionKey) -> Self {
+        let active_key_id = active_key.key_id().to_string();
+        Self {
+            active_key_id: Some(active_key_id.clone()),
+            keys_by_id: BTreeMap::from([(active_key_id, active_key)]),
+        }
+    }
+
+    fn key_if_present(&self, key_id: &str) -> Option<EnvelopeEncryptionKey> {
+        self.keys_by_id.get(key_id).cloned()
+    }
+}
+
+impl EnvelopeKeyProvider for ConfiguredEnvelopeKeyProvider {
+    fn active_key(&self) -> Result<EnvelopeEncryptionKey, CredentialsError> {
+        self.active_key_id
+            .as_deref()
+            .and_then(|key_id| self.key_if_present(key_id))
+            .ok_or_else(configured_key_required)
+    }
+
+    fn key(&self, key_id: &str) -> Result<EnvelopeEncryptionKey, CredentialsError> {
+        self.key_if_present(key_id).ok_or_else(|| {
+            CredentialsError::Unavailable(format!(
+                "credential encryption key '{key_id}' is unavailable"
+            ))
+        })
+    }
+}
+
+fn configured_key_required() -> CredentialsError {
+    CredentialsError::Unavailable(
+        "encrypted identity inputs require a configured credential encryption key".to_string(),
+    )
+}
+
+/// Resolves an explicitly supplied key or falls back to a key file scoped to
+/// this app-state config directory. Callers own config and environment resolution.
+=======
+/// Immutable configured encryption keys resolved during app bootstrap.
+#[derive(Debug, Clone)]
+pub(crate) struct ConfiguredEnvelopeKeyProvider {
+    active_key_id: Option<String>,
+    keys_by_id: BTreeMap<String, EnvelopeEncryptionKey>,
+}
+
+impl ConfiguredEnvelopeKeyProvider {
+    pub(crate) fn new(
+        active_key: EnvelopeEncryptionKey,
+        decryption_keys: impl IntoIterator<Item = EnvelopeEncryptionKey>,
+    ) -> Result<Self, CredentialsError> {
+        let active_key_id = active_key.key_id().to_string();
+        let mut keys_by_id = BTreeMap::from([(active_key_id.clone(), active_key)]);
+        for key in decryption_keys {
+            let key_id = key.key_id().to_string();
+            if keys_by_id.contains_key(&key_id) {
+                return Err(CredentialsError::Parse(format!(
+                    "duplicate credential encryption key id '{key_id}'"
+                )));
+            }
+            keys_by_id.insert(key_id, key);
+        }
+        Ok(Self {
+            active_key_id: Some(active_key_id),
+            keys_by_id,
+        })
+    }
+
+    pub(crate) fn unavailable() -> Self {
+        Self {
+            active_key_id: None,
+            keys_by_id: BTreeMap::new(),
+        }
+    }
+
+    fn single(active_key: EnvelopeEncryptionKey) -> Self {
+        let active_key_id = active_key.key_id().to_string();
+        Self {
+            active_key_id: Some(active_key_id.clone()),
+            keys_by_id: BTreeMap::from([(active_key_id, active_key)]),
+        }
+    }
+
+    fn key_if_present(&self, key_id: &str) -> Option<EnvelopeEncryptionKey> {
+        self.keys_by_id.get(key_id).cloned()
+    }
+}
+
+#[async_trait]
+impl EnvelopeKeyProvider for ConfiguredEnvelopeKeyProvider {
+    async fn active_key(&self) -> Result<EnvelopeEncryptionKey, CredentialsError> {
+        self.active_key_id
+            .as_deref()
+            .and_then(|key_id| self.key_if_present(key_id))
+            .ok_or_else(configured_key_required)
+    }
+
+    async fn key(&self, key_id: &str) -> Result<EnvelopeEncryptionKey, CredentialsError> {
+        self.key_if_present(key_id).ok_or_else(|| {
+            CredentialsError::Unavailable(format!(
+                "credential encryption key '{key_id}' is unavailable"
+            ))
+        })
+    }
+}
+
+fn configured_key_required() -> CredentialsError {
+    CredentialsError::Unavailable(
+        "encrypted identity inputs require a configured credential encryption key".to_string(),
+    )
+}
+
+/// Resolves an explicitly supplied key or falls back to a key file scoped to
+/// this app-state config directory. Callers own config and environment resolution.
+>>>>>>> 1b6c0a465 (refactor(app): make envelope key resolution async)
 #[derive(Debug, Clone)]
 pub(crate) struct LocalFileEnvelopeKeyProvider {
     path: PathBuf,
@@ -252,11 +405,50 @@ where
 #[async_trait]
 impl EnvelopeKeyProvider for LocalFileEnvelopeKeyProvider {
     async fn active_key(&self) -> Result<EnvelopeEncryptionKey, CredentialsError> {
+<<<<<<< HEAD
+||||||| parent of 1b6c0a465 (refactor(app): make envelope key resolution async)
+    fn active_key(&self) -> Result<EnvelopeEncryptionKey, CredentialsError> {
+        if let Some(keys) = &self.configured_keys {
+            return keys.active_key();
+        }
+        self.load_or_create_key()
+=======
+        if let Some(keys) = &self.configured_keys {
+            return keys.active_key().await;
+        }
+>>>>>>> 1b6c0a465 (refactor(app): make envelope key resolution async)
         let provider = self.clone();
         run_key_file_operation(move || provider.load_or_create_key()).await
     }
 
     async fn key(&self, key_id: &str) -> Result<EnvelopeEncryptionKey, CredentialsError> {
+<<<<<<< HEAD
+||||||| parent of 1b6c0a465 (refactor(app): make envelope key resolution async)
+    fn key(&self, key_id: &str) -> Result<EnvelopeEncryptionKey, CredentialsError> {
+        if let Some(key) = self
+            .configured_keys
+            .as_ref()
+            .and_then(|keys| keys.key_if_present(key_id))
+        {
+            return Ok(key);
+        }
+        if let Some(key) = self.load_key()?
+            && key.key_id == key_id
+        {
+            return Ok(key);
+        }
+        Err(CredentialsError::Unavailable(format!(
+            "credential encryption key '{key_id}' is unavailable"
+        )))
+=======
+        if let Some(key) = self
+            .configured_keys
+            .as_ref()
+            .and_then(|keys| keys.key_if_present(key_id))
+        {
+            return Ok(key);
+        }
+>>>>>>> 1b6c0a465 (refactor(app): make envelope key resolution async)
         let provider = self.clone();
         let key_id = key_id.to_string();
         run_key_file_operation(move || {
@@ -758,11 +950,108 @@ mod tests {
     use crate::state::AppStateLayout;
 
     #[tokio::test]
+<<<<<<< HEAD
     async fn missing_key_lookup_does_not_create_a_local_key_file() {
+||||||| parent of 1b6c0a465 (refactor(app): make envelope key resolution async)
+    #[test]
+    fn configured_provider_selects_active_and_resolves_decryption_keys() {
+        let active = EnvelopeEncryptionKey::from_static_bytes_for_test([7_u8; KEY_LEN]);
+        let previous = EnvelopeEncryptionKey::from_static_bytes_for_test([8_u8; KEY_LEN]);
+        let provider = ConfiguredEnvelopeKeyProvider::new(active.clone(), [previous.clone()])
+            .expect("configured key ring");
+
+        assert_eq!(provider.active_key().expect("active key"), active);
+        assert_eq!(
+            provider.key(previous.key_id()).expect("previous key"),
+            previous
+        );
+        assert!(matches!(
+            provider.key("missing-key"),
+            Err(CredentialsError::Unavailable(_))
+        ));
+    }
+
+    #[test]
+    fn configured_provider_rejects_duplicate_key_material() {
+        let active = EnvelopeEncryptionKey::from_static_bytes_for_test([7_u8; KEY_LEN]);
+
+        let error = ConfiguredEnvelopeKeyProvider::new(active.clone(), [active])
+            .expect_err("duplicate key id");
+
+        assert!(matches!(error, CredentialsError::Parse(_)));
+    }
+
+    #[test]
+    fn provided_key_does_not_create_a_local_key_file() {
+=======
+    async fn configured_provider_selects_active_and_resolves_decryption_keys() {
+        let active = EnvelopeEncryptionKey::from_static_bytes_for_test([7_u8; KEY_LEN]);
+        let previous = EnvelopeEncryptionKey::from_static_bytes_for_test([8_u8; KEY_LEN]);
+        let provider = ConfiguredEnvelopeKeyProvider::new(active.clone(), [previous.clone()])
+            .expect("configured key ring");
+
+        assert_eq!(provider.active_key().await.expect("active key"), active);
+        assert_eq!(
+            provider.key(previous.key_id()).await.expect("previous key"),
+            previous
+        );
+        assert!(matches!(
+            provider.key("missing-key").await,
+            Err(CredentialsError::Unavailable(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn configured_provider_rejects_duplicate_key_material() {
+        let active = EnvelopeEncryptionKey::from_static_bytes_for_test([7_u8; KEY_LEN]);
+
+        let error = ConfiguredEnvelopeKeyProvider::new(active.clone(), [active])
+            .expect_err("duplicate key id");
+
+        assert!(matches!(error, CredentialsError::Parse(_)));
+    }
+
+    #[tokio::test]
+    async fn provided_key_does_not_create_a_local_key_file() {
+>>>>>>> 1b6c0a465 (refactor(app): make envelope key resolution async)
         let temp = tempdir().expect("temp dir");
         let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
         let provider = LocalFileEnvelopeKeyProvider::new(&layout);
 
+<<<<<<< HEAD
+||||||| parent of 1b6c0a465 (refactor(app): make envelope key resolution async)
+        let first = provider.active_key().expect("provided key");
+        let second = provider.key(first.key_id()).expect("provided key by id");
+
+        assert_eq!(first, second);
+        assert!(!layout.envelope_encryption_key_file().exists());
+    }
+
+    #[test]
+    fn missing_key_lookup_does_not_create_a_local_key_file() {
+        let temp = tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        let provider = LocalFileEnvelopeKeyProvider::new(&layout, None);
+
+        let error = provider.key("missing-key").expect_err("missing key");
+=======
+        let first = provider.active_key().await.expect("provided key");
+        let second = provider
+            .key(first.key_id())
+            .await
+            .expect("provided key by id");
+
+        assert_eq!(first, second);
+        assert!(!layout.envelope_encryption_key_file().exists());
+    }
+
+    #[tokio::test]
+    async fn missing_key_lookup_does_not_create_a_local_key_file() {
+        let temp = tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        let provider = LocalFileEnvelopeKeyProvider::new(&layout, None);
+
+>>>>>>> 1b6c0a465 (refactor(app): make envelope key resolution async)
         let error = provider.key("missing-key").await.expect_err("missing key");
 
         assert!(error.to_string().contains("is unavailable"));
@@ -775,4 +1064,43 @@ mod tests {
                 .exists()
         );
     }
+<<<<<<< HEAD
+||||||| parent of 1b6c0a465 (refactor(app): make envelope key resolution async)
+
+    #[test]
+    fn provided_key_keeps_existing_file_key_available_for_rewrap() {
+        let temp = tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        let file_key = LocalFileEnvelopeKeyProvider::new(&layout, None)
+            .active_key()
+            .expect("file key");
+        let provided_key = EnvelopeEncryptionKey::from_static_bytes_for_test([9_u8; KEY_LEN]);
+        let provider = LocalFileEnvelopeKeyProvider::new(&layout, Some(provided_key.clone()));
+
+        assert_eq!(provider.active_key().expect("provided key"), provided_key);
+        assert_eq!(provider.key(file_key.key_id()).expect("file key"), file_key);
+    }
+=======
+
+    #[tokio::test]
+    async fn provided_key_keeps_existing_file_key_available_for_rewrap() {
+        let temp = tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        let file_key = LocalFileEnvelopeKeyProvider::new(&layout, None)
+            .active_key()
+            .await
+            .expect("file key");
+        let provided_key = EnvelopeEncryptionKey::from_static_bytes_for_test([9_u8; KEY_LEN]);
+        let provider = LocalFileEnvelopeKeyProvider::new(&layout, Some(provided_key.clone()));
+
+        assert_eq!(
+            provider.active_key().await.expect("provided key"),
+            provided_key
+        );
+        assert_eq!(
+            provider.key(file_key.key_id()).await.expect("file key"),
+            file_key
+        );
+    }
+>>>>>>> 1b6c0a465 (refactor(app): make envelope key resolution async)
 }

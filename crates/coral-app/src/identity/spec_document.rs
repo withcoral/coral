@@ -19,8 +19,8 @@ use zeroize::Zeroizing;
 
 use crate::credentials::CredentialsError;
 use crate::credentials::encryption::{
-    ENVELOPE_DOCUMENT_ALGORITHM, EnvelopeContext, EnvelopeEncryptionKey, EnvelopeKeyProvider,
-    open_envelope_document, rewrap_envelope_document, seal_envelope_document,
+    ENVELOPE_DOCUMENT_ALGORITHM, EnvelopeContext, EnvelopeEncryptionKey, open_envelope_document,
+    rewrap_envelope_document, seal_envelope_document,
 };
 use crate::encrypted_document::EncryptedEnvelopeDocument;
 use crate::state::db::IdentitySpecKey;
@@ -49,7 +49,7 @@ struct DecryptedIdentitySpecDocument {
 pub(crate) fn encrypt_identity_spec_document(
     key: &IdentitySpecKey,
     values: &BTreeMap<String, String>,
-    key_provider: &dyn EnvelopeKeyProvider,
+    active_kek: &EnvelopeEncryptionKey,
 ) -> Result<EncryptedEnvelopeDocument, CredentialsError> {
     let plaintext = PlaintextIdentitySpecDocument {
         version: IDENTITY_SPEC_DOCUMENT_VERSION,
@@ -59,7 +59,7 @@ pub(crate) fn encrypt_identity_spec_document(
         .map(Zeroizing::new)
         .map_err(|error| CredentialsError::Parse(error.to_string()))?;
     let context = identity_spec_document_context(IDENTITY_SPEC_DOCUMENT_BINDING_VERSION, key)?;
-    seal_envelope_document(&context, document_bytes, key_provider)
+    seal_envelope_document(&context, document_bytes, active_kek)
 }
 
 /// Decrypt identity-spec setup inputs for the exact durable spec key.
@@ -88,20 +88,21 @@ pub(crate) fn decrypt_identity_spec_document(
 pub(crate) fn seal_identity_spec_plaintext_for_test(
     key: &IdentitySpecKey,
     plaintext: Vec<u8>,
-    key_provider: &dyn EnvelopeKeyProvider,
+    active_kek: &EnvelopeEncryptionKey,
 ) -> Result<EncryptedEnvelopeDocument, CredentialsError> {
     let context = identity_spec_document_context(IDENTITY_SPEC_DOCUMENT_BINDING_VERSION, key)?;
-    seal_envelope_document(&context, Zeroizing::new(plaintext), key_provider)
+    seal_envelope_document(&context, Zeroizing::new(plaintext), active_kek)
 }
 
 /// Rewrap an identity-spec setup document after authenticating its exact durable key.
 pub(crate) fn rewrap_identity_spec_document(
     key: &IdentitySpecKey,
     document: &EncryptedEnvelopeDocument,
-    key_provider: &dyn EnvelopeKeyProvider,
+    old_kek: &EnvelopeEncryptionKey,
+    active_kek: &EnvelopeEncryptionKey,
 ) -> Result<Option<EncryptedEnvelopeDocument>, CredentialsError> {
     let context = identity_spec_document_context(document.binding_version, key)?;
-    rewrap_envelope_document(&context, document, key_provider)
+    rewrap_envelope_document(&context, document, old_kek, active_kek)
 }
 
 fn identity_spec_document_context(
@@ -143,36 +144,42 @@ mod tests {
     use crate::state::db::IdentitySpecKey;
     use crate::workspaces::WorkspaceName;
 
-    #[test]
-    fn setup_documents_round_trip_and_authenticate_exact_spec_keys() {
+    #[tokio::test]
+    async fn setup_documents_round_trip_and_authenticate_exact_spec_keys() {
         let provider = static_provider(43);
         let values = secret_values();
         let global = IdentitySpecKey::global("github_oauth").expect("global key");
-        let encrypted = encrypt_for_key(&global, &values, &provider);
+        let encrypted = encrypt_for_key(&global, &values, &provider).await;
 
         assert_eq!(encrypted.algorithm, IDENTITY_SPEC_DOCUMENT_ALGORITHM);
         assert_eq!(
             encrypted.binding_version,
             IDENTITY_SPEC_DOCUMENT_BINDING_VERSION
         );
-        assert_eq!(decrypt_for_key(&global, &encrypted, &provider), values);
+        assert_eq!(
+            decrypt_for_key(&global, &encrypted, &provider).await,
+            values
+        );
 
         let workspace = WorkspaceName::parse("acme").expect("workspace");
         let wrong_scope =
             IdentitySpecKey::workspace(workspace, "github_oauth").expect("workspace key");
         assert_open_failed(
             &decrypt_for_key_result(&wrong_scope, &encrypted, &provider)
+                .await
                 .expect_err("workspace key must not open global material"),
         );
         let wrong_name = IdentitySpecKey::global("gitlab_oauth").expect("global key");
         assert_open_failed(
             &decrypt_for_key_result(&wrong_name, &encrypted, &provider)
+                .await
                 .expect_err("other spec name must not open material"),
         );
 
         let mut unsupported = encrypted;
         unsupported.binding_version += 1;
         let error = decrypt_for_key_result(&global, &unsupported, &provider)
+            .await
             .expect_err("unknown binding version must fail");
         assert!(
             error
@@ -181,8 +188,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn credential_and_identity_spec_document_domains_are_separate() {
+    #[tokio::test]
+    async fn credential_and_identity_spec_document_domains_are_separate() {
         let provider = static_provider(47);
         let workspace = WorkspaceName::parse("acme").expect("workspace");
         let source = SourceName::parse("github_oauth").expect("source");
@@ -199,16 +206,18 @@ mod tests {
             "values": &values,
         }))
         .expect("serialize credential");
+        let credential_kek = provider.active_key().await.expect("active key");
         let credential = seal_envelope_document(
             &credential_context,
             Zeroizing::new(credential_plaintext),
-            &provider,
+            &credential_kek,
         )
         .expect("encrypt credential");
-        let spec = encrypt_for_key(&key, &values, &provider);
+        let spec = encrypt_for_key(&key, &values, &provider).await;
 
         assert_open_failed(
             &decrypt_for_key_result(&key, &credential, &provider)
+                .await
                 .expect_err("credential must not open as identity-spec material"),
         );
         assert_open_failed(
@@ -217,8 +226,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn setup_documents_reject_unknown_plaintext_versions() {
+    #[tokio::test]
+    async fn setup_documents_reject_unknown_plaintext_versions() {
         let provider = static_provider(53);
         let key = IdentitySpecKey::global("github_oauth").expect("key");
         let plaintext = serde_json::to_vec(&serde_json::json!({
@@ -228,10 +237,12 @@ mod tests {
         .expect("serialize plaintext");
         let context = identity_spec_document_context(IDENTITY_SPEC_DOCUMENT_BINDING_VERSION, &key)
             .expect("identity spec context");
-        let encrypted = seal_envelope_document(&context, Zeroizing::new(plaintext), &provider)
+        let seal_kek = provider.active_key().await.expect("active key");
+        let encrypted = seal_envelope_document(&context, Zeroizing::new(plaintext), &seal_kek)
             .expect("seal document");
 
         let error = decrypt_for_key_result(&key, &encrypted, &provider)
+            .await
             .expect_err("unknown plaintext version must fail");
         assert!(
             error
@@ -240,8 +251,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn setup_document_rewrap_preserves_payload_and_authenticates_current_key() {
+    #[tokio::test]
+    async fn setup_document_rewrap_preserves_payload_and_authenticates_current_key() {
         let old_key = EnvelopeEncryptionKey::from_static_bytes_for_test([59; 32]);
         let new_key = EnvelopeEncryptionKey::from_static_bytes_for_test([61; 32]);
         let old_provider = RotatingKeyProvider {
@@ -254,8 +265,13 @@ mod tests {
         };
         let workspace = WorkspaceName::parse("acme").expect("workspace");
         let key = IdentitySpecKey::workspace(workspace.clone(), "github_oauth").expect("key");
-        let encrypted = encrypt_for_key(&key, &secret_values(), &old_provider);
-        let rewrapped = rewrap_identity_spec_document(&key, &encrypted, &rotating_provider)
+        let encrypted = encrypt_for_key(&key, &secret_values(), &old_provider).await;
+        let stale_kek = rotating_provider
+            .key(&encrypted.key_id)
+            .await
+            .expect("stored key");
+        let rotated_kek = rotating_provider.active_key().await.expect("active key");
+        let rewrapped = rewrap_identity_spec_document(&key, &encrypted, &stale_kek, &rotated_kek)
             .expect("rewrap")
             .expect("stale key must rewrap");
 
@@ -265,17 +281,21 @@ mod tests {
         assert_ne!(rewrapped.wrapped_dek, encrypted.wrapped_dek);
         assert_ne!(rewrapped.wrapped_dek_nonce, encrypted.wrapped_dek_nonce);
         assert_eq!(
-            decrypt_for_key(&key, &rewrapped, &rotating_provider),
+            decrypt_for_key(&key, &rewrapped, &rotating_provider).await,
             secret_values()
         );
+        let current_kek = rotating_provider
+            .key(&rewrapped.key_id)
+            .await
+            .expect("stored key");
         assert!(
-            rewrap_identity_spec_document(&key, &rewrapped, &rotating_provider,)
+            rewrap_identity_spec_document(&key, &rewrapped, &current_kek, &rotated_kek)
                 .expect("current rewrap")
                 .is_none()
         );
         let wrong = IdentitySpecKey::workspace(workspace, "gitlab_oauth").expect("wrong key");
         assert_open_failed(
-            &rewrap_identity_spec_document(&wrong, &rewrapped, &rotating_provider)
+            &rewrap_identity_spec_document(&wrong, &rewrapped, &current_kek, &rotated_kek)
                 .expect_err("same-key rewrap must authenticate exact spec key"),
         );
     }
@@ -290,29 +310,32 @@ mod tests {
         BTreeMap::from([("TOKEN".to_string(), "secret".to_string())])
     }
 
-    fn encrypt_for_key(
+    async fn encrypt_for_key(
         key: &IdentitySpecKey,
         values: &BTreeMap<String, String>,
         provider: &dyn EnvelopeKeyProvider,
     ) -> EncryptedEnvelopeDocument {
-        encrypt_identity_spec_document(key, values, provider)
+        let active_kek = provider.active_key().await.expect("active key");
+        encrypt_identity_spec_document(key, values, &active_kek)
             .expect("encrypt identity-spec material")
     }
 
-    fn decrypt_for_key(
+    async fn decrypt_for_key(
         key: &IdentitySpecKey,
         document: &EncryptedEnvelopeDocument,
         provider: &dyn EnvelopeKeyProvider,
     ) -> BTreeMap<String, String> {
-        decrypt_for_key_result(key, document, provider).expect("decrypt identity-spec material")
+        decrypt_for_key_result(key, document, provider)
+            .await
+            .expect("decrypt identity-spec material")
     }
 
-    fn decrypt_for_key_result(
+    async fn decrypt_for_key_result(
         key: &IdentitySpecKey,
         document: &EncryptedEnvelopeDocument,
         provider: &dyn EnvelopeKeyProvider,
     ) -> Result<BTreeMap<String, String>, CredentialsError> {
-        let kek = provider.key(&document.key_id)?;
+        let kek = provider.key(&document.key_id).await?;
         decrypt_identity_spec_document(key, document, &kek)
     }
 

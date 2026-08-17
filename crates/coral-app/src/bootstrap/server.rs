@@ -915,6 +915,338 @@ mod tests {
         Principal, PrincipalProvider, PrincipalProviderError,
     };
 
+<<<<<<< HEAD
+||||||| parent of 1b6c0a465 (refactor(app): make envelope key resolution async)
+    fn encoded_key(byte: u8) -> String {
+        format!(
+            "v1:{}",
+            base64::engine::general_purpose::STANDARD.encode([byte; 32])
+        )
+    }
+
+    #[test]
+    fn configured_key_provider_resolves_rotation_keys_and_rejects_bad_configuration() {
+        let active_material = encoded_key(7);
+        let previous_material = encoded_key(8);
+        let values = BTreeMap::from([
+            ("ACTIVE", active_material.clone()),
+            ("DUPLICATE", active_material.clone()),
+            ("PREVIOUS", previous_material.clone()),
+            ("INVALID", "not-a-key".to_string()),
+        ]);
+        let config = CredentialStorageConfig {
+            encryption_key_env: Some("ACTIVE".to_string()),
+            decryption_key_envs: vec!["PREVIOUS".to_string()],
+            ..CredentialStorageConfig::default()
+        };
+        let provider =
+            configured_credential_key_provider_with(&config, |name| Ok(values.get(name).cloned()))
+                .expect("valid config")
+                .expect("configured provider");
+        let active = EnvelopeEncryptionKey::from_encoded_material(&active_material).expect("key");
+        let previous =
+            EnvelopeEncryptionKey::from_encoded_material(&previous_material).expect("key");
+        assert_eq!(provider.active_key().expect("active key"), active);
+        assert_eq!(
+            provider.key(previous.key_id()).expect("previous key"),
+            previous
+        );
+
+        for (config, expected) in [
+            (
+                CredentialStorageConfig {
+                    decryption_key_envs: vec!["PREVIOUS".to_string()],
+                    ..CredentialStorageConfig::default()
+                },
+                "requires",
+            ),
+            (
+                CredentialStorageConfig {
+                    encryption_key_env: Some("MISSING".to_string()),
+                    ..CredentialStorageConfig::default()
+                },
+                "is not set",
+            ),
+            (
+                CredentialStorageConfig {
+                    encryption_key_env: Some(" ACTIVE".to_string()),
+                    ..CredentialStorageConfig::default()
+                },
+                "without surrounding whitespace",
+            ),
+            (
+                CredentialStorageConfig {
+                    encryption_key_env: Some("BAD=NAME".to_string()),
+                    ..CredentialStorageConfig::default()
+                },
+                "without surrounding whitespace, '=' or NUL",
+            ),
+            (
+                CredentialStorageConfig {
+                    encryption_key_env: Some("BAD\0NAME".to_string()),
+                    ..CredentialStorageConfig::default()
+                },
+                "without surrounding whitespace, '=' or NUL",
+            ),
+            (
+                CredentialStorageConfig {
+                    encryption_key_env: Some("INVALID".to_string()),
+                    ..CredentialStorageConfig::default()
+                },
+                "contains invalid key material",
+            ),
+            (
+                CredentialStorageConfig {
+                    encryption_key_env: Some("ACTIVE".to_string()),
+                    decryption_key_envs: vec!["ACTIVE".to_string()],
+                    ..CredentialStorageConfig::default()
+                },
+                "configured more than once",
+            ),
+            (
+                CredentialStorageConfig {
+                    encryption_key_env: Some("ACTIVE".to_string()),
+                    decryption_key_envs: vec!["DUPLICATE".to_string()],
+                    ..CredentialStorageConfig::default()
+                },
+                "duplicate key material",
+            ),
+        ] {
+            let error = configured_credential_key_provider_with(&config, |name| {
+                Ok(values.get(name).cloned())
+            })
+            .expect_err("invalid config");
+            assert!(matches!(&error, AppError::FailedPrecondition(_)));
+            assert!(error.to_string().contains(expected), "{error}");
+        }
+    }
+
+    #[test]
+    fn postgres_key_selection_never_falls_back_to_a_local_file() {
+        let temp = TempDir::new().expect("tempdir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        let sqlite = ResolvedDatabaseConfig::Sqlite {
+            path: layout.database_file(),
+        };
+        let (sqlite_provider, missing_key) = identity_key_provider(&layout, &sqlite, None);
+        assert!(!missing_key);
+        let local_key = sqlite_provider.active_key().expect("local key");
+
+        let active = EnvelopeEncryptionKey::from_static_bytes_for_test([9; 32]);
+        let previous = EnvelopeEncryptionKey::from_static_bytes_for_test([8; 32]);
+        let configured =
+            ConfiguredEnvelopeKeyProvider::new(active.clone(), [previous.clone()]).expect("keys");
+        let (sqlite_provider, missing_key) =
+            identity_key_provider(&layout, &sqlite, Some(configured));
+        assert!(!missing_key);
+        assert_eq!(
+            sqlite_provider.active_key().expect("configured key"),
+            active
+        );
+        assert_eq!(
+            sqlite_provider
+                .key(previous.key_id())
+                .expect("previous key"),
+            previous
+        );
+        assert_eq!(
+            sqlite_provider.key(local_key.key_id()).expect("local key"),
+            local_key
+        );
+
+        let postgres = ResolvedDatabaseConfig::Postgres {
+            url: "postgres://example.invalid/coral".to_string(),
+        };
+        let (provider, missing_key) = identity_key_provider(&layout, &postgres, None);
+        assert!(missing_key);
+        assert!(matches!(
+            provider.active_key(),
+            Err(CredentialsError::Unavailable(_))
+        ));
+        assert!(matches!(
+            provider.key(local_key.key_id()),
+            Err(CredentialsError::Unavailable(_))
+        ));
+
+        let active = EnvelopeEncryptionKey::from_static_bytes_for_test([7; 32]);
+        let configured = ConfiguredEnvelopeKeyProvider::new(active.clone(), []).expect("keys");
+        let (provider, missing_key) = identity_key_provider(&layout, &postgres, Some(configured));
+        assert!(!missing_key);
+        assert_eq!(provider.active_key().expect("configured key"), active);
+        assert!(matches!(
+            provider.key(local_key.key_id()),
+            Err(CredentialsError::Unavailable(_))
+        ));
+    }
+
+=======
+    fn encoded_key(byte: u8) -> String {
+        format!(
+            "v1:{}",
+            base64::engine::general_purpose::STANDARD.encode([byte; 32])
+        )
+    }
+
+    #[tokio::test]
+    async fn configured_key_provider_resolves_rotation_keys_and_rejects_bad_configuration() {
+        let active_material = encoded_key(7);
+        let previous_material = encoded_key(8);
+        let values = BTreeMap::from([
+            ("ACTIVE", active_material.clone()),
+            ("DUPLICATE", active_material.clone()),
+            ("PREVIOUS", previous_material.clone()),
+            ("INVALID", "not-a-key".to_string()),
+        ]);
+        let config = CredentialStorageConfig {
+            encryption_key_env: Some("ACTIVE".to_string()),
+            decryption_key_envs: vec!["PREVIOUS".to_string()],
+            ..CredentialStorageConfig::default()
+        };
+        let provider =
+            configured_credential_key_provider_with(&config, |name| Ok(values.get(name).cloned()))
+                .expect("valid config")
+                .expect("configured provider");
+        let active = EnvelopeEncryptionKey::from_encoded_material(&active_material).expect("key");
+        let previous =
+            EnvelopeEncryptionKey::from_encoded_material(&previous_material).expect("key");
+        assert_eq!(provider.active_key().await.expect("active key"), active);
+        assert_eq!(
+            provider.key(previous.key_id()).await.expect("previous key"),
+            previous
+        );
+
+        for (config, expected) in [
+            (
+                CredentialStorageConfig {
+                    decryption_key_envs: vec!["PREVIOUS".to_string()],
+                    ..CredentialStorageConfig::default()
+                },
+                "requires",
+            ),
+            (
+                CredentialStorageConfig {
+                    encryption_key_env: Some("MISSING".to_string()),
+                    ..CredentialStorageConfig::default()
+                },
+                "is not set",
+            ),
+            (
+                CredentialStorageConfig {
+                    encryption_key_env: Some(" ACTIVE".to_string()),
+                    ..CredentialStorageConfig::default()
+                },
+                "without surrounding whitespace",
+            ),
+            (
+                CredentialStorageConfig {
+                    encryption_key_env: Some("BAD=NAME".to_string()),
+                    ..CredentialStorageConfig::default()
+                },
+                "without surrounding whitespace, '=' or NUL",
+            ),
+            (
+                CredentialStorageConfig {
+                    encryption_key_env: Some("BAD\0NAME".to_string()),
+                    ..CredentialStorageConfig::default()
+                },
+                "without surrounding whitespace, '=' or NUL",
+            ),
+            (
+                CredentialStorageConfig {
+                    encryption_key_env: Some("INVALID".to_string()),
+                    ..CredentialStorageConfig::default()
+                },
+                "contains invalid key material",
+            ),
+            (
+                CredentialStorageConfig {
+                    encryption_key_env: Some("ACTIVE".to_string()),
+                    decryption_key_envs: vec!["ACTIVE".to_string()],
+                    ..CredentialStorageConfig::default()
+                },
+                "configured more than once",
+            ),
+            (
+                CredentialStorageConfig {
+                    encryption_key_env: Some("ACTIVE".to_string()),
+                    decryption_key_envs: vec!["DUPLICATE".to_string()],
+                    ..CredentialStorageConfig::default()
+                },
+                "duplicate key material",
+            ),
+        ] {
+            let error = configured_credential_key_provider_with(&config, |name| {
+                Ok(values.get(name).cloned())
+            })
+            .expect_err("invalid config");
+            assert!(matches!(&error, AppError::FailedPrecondition(_)));
+            assert!(error.to_string().contains(expected), "{error}");
+        }
+    }
+
+    #[tokio::test]
+    async fn postgres_key_selection_never_falls_back_to_a_local_file() {
+        let temp = TempDir::new().expect("tempdir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        let sqlite = ResolvedDatabaseConfig::Sqlite {
+            path: layout.database_file(),
+        };
+        let (sqlite_provider, missing_key) = identity_key_provider(&layout, &sqlite, None);
+        assert!(!missing_key);
+        let local_key = sqlite_provider.active_key().await.expect("local key");
+
+        let active = EnvelopeEncryptionKey::from_static_bytes_for_test([9; 32]);
+        let previous = EnvelopeEncryptionKey::from_static_bytes_for_test([8; 32]);
+        let configured =
+            ConfiguredEnvelopeKeyProvider::new(active.clone(), [previous.clone()]).expect("keys");
+        let (sqlite_provider, missing_key) =
+            identity_key_provider(&layout, &sqlite, Some(configured));
+        assert!(!missing_key);
+        assert_eq!(
+            sqlite_provider.active_key().await.expect("configured key"),
+            active
+        );
+        assert_eq!(
+            sqlite_provider
+                .key(previous.key_id())
+                .await
+                .expect("previous key"),
+            previous
+        );
+        assert_eq!(
+            sqlite_provider
+                .key(local_key.key_id())
+                .await
+                .expect("local key"),
+            local_key
+        );
+
+        let postgres = ResolvedDatabaseConfig::Postgres {
+            url: "postgres://example.invalid/coral".to_string(),
+        };
+        let (provider, missing_key) = identity_key_provider(&layout, &postgres, None);
+        assert!(missing_key);
+        assert!(matches!(
+            provider.active_key().await,
+            Err(CredentialsError::Unavailable(_))
+        ));
+        assert!(matches!(
+            provider.key(local_key.key_id()).await,
+            Err(CredentialsError::Unavailable(_))
+        ));
+
+        let active = EnvelopeEncryptionKey::from_static_bytes_for_test([7; 32]);
+        let configured = ConfiguredEnvelopeKeyProvider::new(active.clone(), []).expect("keys");
+        let (provider, missing_key) = identity_key_provider(&layout, &postgres, Some(configured));
+        assert!(!missing_key);
+        assert_eq!(provider.active_key().await.expect("configured key"), active);
+        assert!(matches!(
+            provider.key(local_key.key_id()).await,
+            Err(CredentialsError::Unavailable(_))
+        ));
+    }
+
+>>>>>>> 1b6c0a465 (refactor(app): make envelope key resolution async)
     fn default_workspace() -> Workspace {
         workspace_to_proto(&WorkspaceName::default())
     }

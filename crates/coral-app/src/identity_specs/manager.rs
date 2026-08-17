@@ -7,7 +7,7 @@ use std::sync::Arc;
 use coral_spec::{IdentityManifest, parse_identity_manifest_yaml};
 
 use crate::bootstrap::AppError;
-use crate::credentials::encryption::EnvelopeKeyProvider;
+use crate::credentials::encryption::{EnvelopeEncryptionKey, EnvelopeKeyProvider};
 use crate::encrypted_document::EncryptedEnvelopeDocument;
 use crate::identity::spec_document::{
     decrypt_identity_spec_document, encrypt_identity_spec_document,
@@ -54,6 +54,31 @@ impl fmt::Debug for ResolvedIdentitySpec {
 struct IdentitySpecUseSnapshot {
     record: IdentitySpecRecord,
     document: Option<IdentitySpecDocumentRecord>,
+}
+
+/// One encrypted setup document paired with the stored key that opens it.
+///
+/// Bundled so a document can never travel without its key: the key is resolved in
+/// async context, where the provider's I/O belongs, and the pair then crosses into
+/// synchronous crypto together.
+pub(crate) type StoredSpecDocument = (IdentitySpecDocumentRecord, EnvelopeEncryptionKey);
+
+/// Resolve the stored key an encrypted document names, if there is a document.
+///
+/// Kept async and separate from the crypto so key-provider failures stay credential
+/// errors, distinct from anything the envelope layer later rejects as corrupt.
+pub(crate) async fn resolve_stored_spec_document(
+    key_provider: &dyn EnvelopeKeyProvider,
+    document: Option<IdentitySpecDocumentRecord>,
+) -> Result<Option<StoredSpecDocument>, AppError> {
+    let Some(document) = document else {
+        return Ok(None);
+    };
+    let stored_kek = key_provider
+        .key(&document.envelope.key_id)
+        .await
+        .map_err(AppError::Credentials)?;
+    Ok(Some((document, stored_kek)))
 }
 
 /// Database-backed identity-spec read and resolution behavior.
@@ -127,35 +152,47 @@ impl IdentitySpecManager {
                         if let Some(barrier) = barrier {
                             barrier.wait().await;
                         }
-                        run_blocking_identity_spec_operation(move || {
-                            let previous_identity_spec_id =
-                                snapshot.record.as_ref().map(|record| record.id.clone());
-                            let previous = snapshot.record.map(record_to_installed).transpose()?;
+                        let stored_document =
+                            resolve_stored_spec_document(key_provider.as_ref(), snapshot.document)
+                                .await?;
+                        let previous_identity_spec_id =
+                            snapshot.record.as_ref().map(|record| record.id.clone());
+                        let prepare_record = snapshot.record;
+                        let input_key = prepare_key.clone();
+                        let input_manifest = Arc::clone(&prepare_manifest);
+                        let prepared = run_blocking_identity_spec_operation(move || {
+                            let previous = prepare_record.map(record_to_installed).transpose()?;
                             let previous_values = match previous_identity_spec_id {
                                 Some(identity_spec_id) => decrypt_input_material(
-                                    &prepare_key,
+                                    &input_key,
                                     &identity_spec_id,
-                                    snapshot.document,
-                                    key_provider.as_ref(),
+                                    stored_document,
                                 )?,
                                 None => BTreeMap::new(),
                             };
-                            let prepared = prepare_identity_spec_input_material(
-                                &prepare_key,
-                                prepare_manifest.as_ref(),
+                            prepare_identity_spec_input_material(
+                                &input_key,
+                                input_manifest.as_ref(),
                                 previous.as_ref().map(|spec| &spec.manifest),
                                 &previous_values,
                                 prepare_inputs.as_slice(),
-                            )?;
-                            let document = prepare_document_write(
-                                &prepare_key,
-                                prepared.values(),
-                                key_provider.as_ref(),
-                            )?;
-                            let fingerprint = identity_spec_fingerprint(prepare_manifest.as_ref())?;
-                            Ok((document, fingerprint))
+                            )
                         })
-                        .await
+                        .await?;
+                        let document = if prepared.values().is_empty() {
+                            None
+                        } else {
+                            let active_kek = key_provider
+                                .active_key()
+                                .await
+                                .map_err(AppError::Credentials)?;
+                            run_blocking_identity_spec_operation(move || {
+                                prepare_document_write(&prepare_key, prepared.values(), &active_kek)
+                            })
+                            .await?
+                        };
+                        let fingerprint = identity_spec_fingerprint(prepare_manifest.as_ref())?;
+                        Ok((document, fingerprint))
                     },
                 )
                 .await;
@@ -316,12 +353,14 @@ impl IdentitySpecManager {
         &self,
         snapshot: IdentitySpecUseSnapshot,
     ) -> Result<ResolvedIdentitySpec, AppError> {
-        let key_provider = Arc::clone(&self.key_provider);
+        let IdentitySpecUseSnapshot { record, document } = snapshot;
+        // Resolve the stored key here, where awaiting the provider's I/O is free; the
+        // blocking hop below is then pure CPU.
+        let document = resolve_stored_spec_document(self.key_provider.as_ref(), document).await?;
         run_blocking_identity_spec_operation(move || {
-            let IdentitySpecUseSnapshot { record, document } = snapshot;
             let identity_spec_id = record.id.clone();
             let spec = record_to_installed(record)?;
-            resolve_installed_for_use(spec, &identity_spec_id, document, key_provider.as_ref())
+            resolve_installed_for_use(spec, &identity_spec_id, document)
         })
         .await
     }
@@ -388,10 +427,9 @@ fn convert_records(
 fn decrypt_input_material(
     key: &IdentitySpecKey,
     identity_spec_id: &IdentitySpecId,
-    document: Option<IdentitySpecDocumentRecord>,
-    key_provider: &dyn EnvelopeKeyProvider,
+    document: Option<StoredSpecDocument>,
 ) -> Result<BTreeMap<String, String>, AppError> {
-    let Some(document) = document else {
+    let Some((document, stored_kek)) = document else {
         return Ok(BTreeMap::new());
     };
     let IdentitySpecDocumentRecord {
@@ -406,12 +444,7 @@ fn decrypt_input_material(
         )
         .into());
     }
-    // Resolve the stored key first so an unavailable key provider stays a credential
-    // error; everything the envelope layer rejects afterward is stored-material fault.
-    let kek = key_provider
-        .key(&envelope.key_id)
-        .map_err(AppError::Credentials)?;
-    decrypt_identity_spec_document(key, &envelope, &kek).map_err(|_error| {
+    decrypt_identity_spec_document(key, &envelope, &stored_kek).map_err(|_error| {
         AppError::from(corrupt_record(
             key,
             "encrypted setup document failed authentication or decoding",
@@ -422,12 +455,12 @@ fn decrypt_input_material(
 fn prepare_document_write(
     key: &IdentitySpecKey,
     values: &BTreeMap<String, String>,
-    key_provider: &dyn EnvelopeKeyProvider,
+    active_kek: &EnvelopeEncryptionKey,
 ) -> Result<Option<EncryptedEnvelopeDocument>, AppError> {
     if values.is_empty() {
         return Ok(None);
     }
-    encrypt_identity_spec_document(key, values, key_provider)
+    encrypt_identity_spec_document(key, values, active_kek)
         .map(Some)
         .map_err(Into::into)
 }
@@ -458,10 +491,9 @@ pub(crate) fn record_to_installed(
 pub(crate) fn resolve_installed_for_use(
     spec: InstalledIdentitySpec,
     identity_spec_id: &IdentitySpecId,
-    document: Option<IdentitySpecDocumentRecord>,
-    key_provider: &dyn EnvelopeKeyProvider,
+    document: Option<StoredSpecDocument>,
 ) -> Result<ResolvedIdentitySpec, AppError> {
-    let material = decrypt_input_material(&spec.key, identity_spec_id, document, key_provider)?;
+    let material = decrypt_input_material(&spec.key, identity_spec_id, document)?;
     let inputs = resolve_identity_spec_inputs_for_use(&spec.key, &spec.manifest, &material)?;
     Ok(ResolvedIdentitySpec { spec, inputs })
 }
@@ -501,6 +533,7 @@ fn scope_label(scope: &IdentitySpecScope) -> String {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use async_trait::async_trait;
     use std::collections::BTreeMap;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -531,48 +564,48 @@ pub(crate) mod tests {
     struct TestKeyProvider {
         active_key: EnvelopeEncryptionKey,
         decryption_keys: Vec<EnvelopeEncryptionKey>,
-        blocking_thread_check: Option<ThreadId>,
+        runtime_thread: ThreadId,
     }
 
     impl TestKeyProvider {
         fn new(active_key: EnvelopeEncryptionKey) -> Self {
-            Self {
-                active_key,
-                decryption_keys: Vec::new(),
-                blocking_thread_check: None,
-            }
+            Self::with_decryption_keys(active_key, [])
         }
 
-        fn requiring_blocking_access(
+        fn with_decryption_keys(
             active_key: EnvelopeEncryptionKey,
             decryption_keys: impl IntoIterator<Item = EnvelopeEncryptionKey>,
         ) -> Self {
             Self {
                 active_key,
                 decryption_keys: decryption_keys.into_iter().collect(),
-                blocking_thread_check: Some(thread::current().id()),
+                runtime_thread: thread::current().id(),
             }
         }
 
-        fn require_blocking_thread(&self) {
-            if let Some(runtime_thread) = self.blocking_thread_check {
-                assert_ne!(
-                    thread::current().id(),
-                    runtime_thread,
-                    "identity spec key access ran on the async runtime"
-                );
-            }
+        /// Key resolution is awaited on the runtime by design.
+        ///
+        /// The provider owns whatever blocking it needs; hoisting the lookup back into
+        /// `spawn_blocking` is the shape the async trait exists to prevent, so seeing
+        /// this off the runtime is the failure worth catching.
+        fn require_runtime_thread(&self) {
+            assert_eq!(
+                thread::current().id(),
+                self.runtime_thread,
+                "identity spec key access ran off the async runtime"
+            );
         }
     }
 
+    #[async_trait]
     impl EnvelopeKeyProvider for TestKeyProvider {
-        fn active_key(&self) -> Result<EnvelopeEncryptionKey, CredentialsError> {
-            self.require_blocking_thread();
+        async fn active_key(&self) -> Result<EnvelopeEncryptionKey, CredentialsError> {
+            self.require_runtime_thread();
             Ok(self.active_key.clone())
         }
 
-        fn key(&self, key_id: &str) -> Result<EnvelopeEncryptionKey, CredentialsError> {
-            self.require_blocking_thread();
+        async fn key(&self, key_id: &str) -> Result<EnvelopeEncryptionKey, CredentialsError> {
+            self.require_runtime_thread();
             std::iter::once(&self.active_key)
                 .chain(&self.decryption_keys)
                 .find(|key| key.key_id() == key_id)
@@ -588,18 +621,25 @@ pub(crate) mod tests {
         runtime_thread: ThreadId,
     }
 
+    #[async_trait]
     impl EnvelopeKeyProvider for ReadKeyProvider {
-        fn active_key(&self) -> Result<EnvelopeEncryptionKey, CredentialsError> {
+        async fn active_key(&self) -> Result<EnvelopeEncryptionKey, CredentialsError> {
             self.active_key_calls.fetch_add(1, Ordering::SeqCst);
             Err(CredentialsError::Crypto("active key read".into()))
         }
 
-        fn key(&self, key_id: &str) -> Result<EnvelopeEncryptionKey, CredentialsError> {
+        async fn key(&self, key_id: &str) -> Result<EnvelopeEncryptionKey, CredentialsError> {
             if key_id != self.key.key_id() {
                 return Err(CredentialsError::Crypto("unexpected test key".into()));
             }
-            if thread::current().id() == self.runtime_thread {
-                return Err(CredentialsError::Crypto("key lookup ran on runtime".into()));
+            // Resolution is awaited on the runtime by design: the provider owns its own
+            // blocking, and only the pure-CPU crypto is deferred to a blocking thread.
+            // Seeing this off the runtime would mean a caller hoisted the lookup back
+            // into `spawn_blocking`, which is what the async trait exists to prevent.
+            if thread::current().id() != self.runtime_thread {
+                return Err(CredentialsError::Crypto(
+                    "key lookup ran off the runtime".into(),
+                ));
             }
             self.key_calls.fetch_add(1, Ordering::SeqCst);
             Ok(self.key.clone())
@@ -608,12 +648,13 @@ pub(crate) mod tests {
 
     struct UnavailableKeyProvider;
 
+    #[async_trait]
     impl EnvelopeKeyProvider for UnavailableKeyProvider {
-        fn active_key(&self) -> Result<EnvelopeEncryptionKey, CredentialsError> {
+        async fn active_key(&self) -> Result<EnvelopeEncryptionKey, CredentialsError> {
             Err(CredentialsError::Crypto("active key read".into()))
         }
 
-        fn key(&self, _key_id: &str) -> Result<EnvelopeEncryptionKey, CredentialsError> {
+        async fn key(&self, _key_id: &str) -> Result<EnvelopeEncryptionKey, CredentialsError> {
             Err(CredentialsError::Unavailable("unavailable".into()))
         }
     }
@@ -820,10 +861,7 @@ pub(crate) mod tests {
         tx.commit().await.unwrap();
 
         let old_key = EnvelopeEncryptionKey::from_static_bytes_for_test([51; 32]);
-        let old_provider = Arc::new(TestKeyProvider::requiring_blocking_access(
-            old_key.clone(),
-            [],
-        ));
+        let old_provider = Arc::new(TestKeyProvider::new(old_key.clone()));
         let manager = IdentitySpecManager::new(Arc::clone(db), old_provider);
         let (_, replaced) = mutate(
             &manager,
@@ -853,10 +891,7 @@ pub(crate) mod tests {
 
         let new_key = EnvelopeEncryptionKey::from_static_bytes_for_test([52; 32]);
         let new_key_id = new_key.key_id().to_string();
-        let rotating_provider = Arc::new(TestKeyProvider::requiring_blocking_access(
-            new_key,
-            [old_key],
-        ));
+        let rotating_provider = Arc::new(TestKeyProvider::with_decryption_keys(new_key, [old_key]));
         let manager = IdentitySpecManager::new(Arc::clone(db), rotating_provider.clone());
         assert!(
             mutate(
@@ -1556,6 +1591,51 @@ pub(crate) mod tests {
         ));
     }
 
+    /// Installing a spec that stores no setup-input document must not consult the key
+    /// provider, and installing one that does must still require it.
+    ///
+    /// Only an `#[ignore]`d Postgres test covered this, so it silently skipped wherever
+    /// `CORAL_TEST_POSTGRES_URL` was unset — including every default `cargo test` run.
+    /// Resolving the sealing key eagerly therefore broke Postgres deployments, which
+    /// have no node-local key, without turning a single local test red.
+    #[tokio::test]
+    async fn sealing_key_is_required_only_when_a_document_is_written() {
+        let temp = tempdir().unwrap();
+        let db = Arc::new(
+            CoralDb::open(ResolvedDatabaseConfig::Sqlite {
+                path: temp.path().join("coral.sqlite"),
+            })
+            .await
+            .unwrap(),
+        );
+        db.migrate().await.unwrap();
+        let manager = IdentitySpecManager::new(Arc::clone(&db), Arc::new(UnavailableKeyProvider));
+
+        let (installed, replaced) = manager
+            .add_or_replace_exact(
+                IdentitySpecScope::Global,
+                &manifest("alpha", "v1"),
+                Vec::new(),
+            )
+            .await
+            .expect("a spec with no setup inputs installs without an encryption key");
+        assert!(!replaced);
+        assert_eq!(installed.key.name(), "alpha");
+
+        let error = manager
+            .add_or_replace_exact(
+                IdentitySpecScope::Global,
+                &oauth_manifest("beta", "v1"),
+                vec![IdentitySpecInputValue::new("CLIENT_SECRET", "secret")],
+            )
+            .await
+            .expect_err("sealing a setup-input document still requires the active key");
+        assert!(
+            matches!(error, AppError::Credentials(_)),
+            "expected a credentials error, got {error:?}"
+        );
+    }
+
     struct EncryptedReadFixture {
         _temp: TempDir,
         db: Arc<CoralDb>,
@@ -1695,10 +1775,11 @@ pub(crate) mod tests {
                 }),
             ),
         ] {
+            let active_kek = writer.active_key().await.unwrap();
             let encrypted = seal_identity_spec_plaintext_for_test(
                 key,
                 serde_json::to_vec(&plaintext).unwrap(),
-                writer,
+                &active_kek,
             )
             .unwrap();
             seed_document(tx, key, encrypted).await;
@@ -1773,7 +1854,8 @@ pub(crate) mod tests {
         let yaml = oauth_manifest(key.name(), label);
         seed_spec(tx, key, yaml).await;
         let Some(values) = values else { return };
-        let encrypted = encrypt_identity_spec_document(key, values, key_provider).unwrap();
+        let active_kek = key_provider.active_key().await.unwrap();
+        let encrypted = encrypt_identity_spec_document(key, values, &active_kek).unwrap();
         seed_document(tx, key, encrypted).await;
     }
 
