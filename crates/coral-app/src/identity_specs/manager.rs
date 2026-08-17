@@ -7,7 +7,7 @@ use std::sync::Arc;
 use coral_spec::{IdentityManifest, parse_identity_manifest_yaml};
 
 use crate::bootstrap::AppError;
-use crate::credentials::encryption::CredentialKeyProvider;
+use crate::credentials::encryption::EnvelopeKeyProvider;
 use crate::encrypted_document::EncryptedEnvelopeDocument;
 use crate::identity::spec_document::{
     decrypt_identity_spec_document, encrypt_identity_spec_document,
@@ -60,7 +60,7 @@ struct IdentitySpecUseSnapshot {
 #[derive(Clone)]
 pub(crate) struct IdentitySpecManager {
     db: Arc<CoralDb>,
-    key_provider: Arc<dyn CredentialKeyProvider>,
+    key_provider: Arc<dyn EnvelopeKeyProvider>,
     #[cfg(test)]
     mutation_barrier: Option<Arc<tokio::sync::Barrier>>,
     #[cfg(test)]
@@ -68,7 +68,7 @@ pub(crate) struct IdentitySpecManager {
 }
 
 impl IdentitySpecManager {
-    pub(crate) fn new(db: Arc<CoralDb>, key_provider: Arc<dyn CredentialKeyProvider>) -> Self {
+    pub(crate) fn new(db: Arc<CoralDb>, key_provider: Arc<dyn EnvelopeKeyProvider>) -> Self {
         Self {
             db,
             key_provider,
@@ -389,7 +389,7 @@ fn decrypt_input_material(
     key: &IdentitySpecKey,
     identity_spec_id: &IdentitySpecId,
     document: Option<IdentitySpecDocumentRecord>,
-    key_provider: &dyn CredentialKeyProvider,
+    key_provider: &dyn EnvelopeKeyProvider,
 ) -> Result<BTreeMap<String, String>, AppError> {
     let Some(document) = document else {
         return Ok(BTreeMap::new());
@@ -422,7 +422,7 @@ fn decrypt_input_material(
 fn prepare_document_write(
     key: &IdentitySpecKey,
     values: &BTreeMap<String, String>,
-    key_provider: &dyn CredentialKeyProvider,
+    key_provider: &dyn EnvelopeKeyProvider,
 ) -> Result<Option<EncryptedEnvelopeDocument>, AppError> {
     if values.is_empty() {
         return Ok(None);
@@ -459,7 +459,7 @@ pub(crate) fn resolve_installed_for_use(
     spec: InstalledIdentitySpec,
     identity_spec_id: &IdentitySpecId,
     document: Option<IdentitySpecDocumentRecord>,
-    key_provider: &dyn CredentialKeyProvider,
+    key_provider: &dyn EnvelopeKeyProvider,
 ) -> Result<ResolvedIdentitySpec, AppError> {
     let material = decrypt_input_material(&spec.key, identity_spec_id, document, key_provider)?;
     let inputs = resolve_identity_spec_inputs_for_use(&spec.key, &spec.manifest, &material)?;
@@ -512,7 +512,7 @@ pub(crate) mod tests {
     use super::{IdentitySpecManager, identity_spec_fingerprint, record_to_installed, scope_label};
     use crate::bootstrap::AppError;
     use crate::credentials::CredentialsError;
-    use crate::credentials::encryption::{CredentialEncryptionKey, CredentialKeyProvider};
+    use crate::credentials::encryption::{EnvelopeEncryptionKey, EnvelopeKeyProvider};
     use crate::encrypted_document::EncryptedEnvelopeDocument;
     use crate::identities::manager::IdentityManager;
     use crate::identities::manager::tests::assert_persisted_fixed_token_material;
@@ -529,13 +529,13 @@ pub(crate) mod tests {
     use crate::workspaces::WorkspaceName;
 
     struct TestKeyProvider {
-        active_key: CredentialEncryptionKey,
-        decryption_keys: Vec<CredentialEncryptionKey>,
+        active_key: EnvelopeEncryptionKey,
+        decryption_keys: Vec<EnvelopeEncryptionKey>,
         blocking_thread_check: Option<ThreadId>,
     }
 
     impl TestKeyProvider {
-        fn new(active_key: CredentialEncryptionKey) -> Self {
+        fn new(active_key: EnvelopeEncryptionKey) -> Self {
             Self {
                 active_key,
                 decryption_keys: Vec::new(),
@@ -544,8 +544,8 @@ pub(crate) mod tests {
         }
 
         fn requiring_blocking_access(
-            active_key: CredentialEncryptionKey,
-            decryption_keys: impl IntoIterator<Item = CredentialEncryptionKey>,
+            active_key: EnvelopeEncryptionKey,
+            decryption_keys: impl IntoIterator<Item = EnvelopeEncryptionKey>,
         ) -> Self {
             Self {
                 active_key,
@@ -565,13 +565,13 @@ pub(crate) mod tests {
         }
     }
 
-    impl CredentialKeyProvider for TestKeyProvider {
-        fn active_key(&self) -> Result<CredentialEncryptionKey, CredentialsError> {
+    impl EnvelopeKeyProvider for TestKeyProvider {
+        fn active_key(&self) -> Result<EnvelopeEncryptionKey, CredentialsError> {
             self.require_blocking_thread();
             Ok(self.active_key.clone())
         }
 
-        fn key(&self, key_id: &str) -> Result<CredentialEncryptionKey, CredentialsError> {
+        fn key(&self, key_id: &str) -> Result<EnvelopeEncryptionKey, CredentialsError> {
             self.require_blocking_thread();
             std::iter::once(&self.active_key)
                 .chain(&self.decryption_keys)
@@ -582,19 +582,19 @@ pub(crate) mod tests {
     }
 
     struct ReadKeyProvider {
-        key: CredentialEncryptionKey,
+        key: EnvelopeEncryptionKey,
         key_calls: AtomicUsize,
         active_key_calls: AtomicUsize,
         runtime_thread: ThreadId,
     }
 
-    impl CredentialKeyProvider for ReadKeyProvider {
-        fn active_key(&self) -> Result<CredentialEncryptionKey, CredentialsError> {
+    impl EnvelopeKeyProvider for ReadKeyProvider {
+        fn active_key(&self) -> Result<EnvelopeEncryptionKey, CredentialsError> {
             self.active_key_calls.fetch_add(1, Ordering::SeqCst);
             Err(CredentialsError::Crypto("active key read".into()))
         }
 
-        fn key(&self, key_id: &str) -> Result<CredentialEncryptionKey, CredentialsError> {
+        fn key(&self, key_id: &str) -> Result<EnvelopeEncryptionKey, CredentialsError> {
             if key_id != self.key.key_id() {
                 return Err(CredentialsError::Crypto("unexpected test key".into()));
             }
@@ -608,20 +608,20 @@ pub(crate) mod tests {
 
     struct UnavailableKeyProvider;
 
-    impl CredentialKeyProvider for UnavailableKeyProvider {
-        fn active_key(&self) -> Result<CredentialEncryptionKey, CredentialsError> {
+    impl EnvelopeKeyProvider for UnavailableKeyProvider {
+        fn active_key(&self) -> Result<EnvelopeEncryptionKey, CredentialsError> {
             Err(CredentialsError::Crypto("active key read".into()))
         }
 
-        fn key(&self, _key_id: &str) -> Result<CredentialEncryptionKey, CredentialsError> {
+        fn key(&self, _key_id: &str) -> Result<EnvelopeEncryptionKey, CredentialsError> {
             Err(CredentialsError::Unavailable("unavailable".into()))
         }
     }
 
     pub(crate) async fn assert_identity_spec_lifecycle_race_contract(db: &Arc<CoralDb>) {
         let suffix = uuid::Uuid::new_v4().simple().to_string();
-        let key_provider: Arc<dyn CredentialKeyProvider> = Arc::new(TestKeyProvider::new(
-            CredentialEncryptionKey::from_static_bytes_for_test([53; 32]),
+        let key_provider: Arc<dyn EnvelopeKeyProvider> = Arc::new(TestKeyProvider::new(
+            EnvelopeEncryptionKey::from_static_bytes_for_test([53; 32]),
         ));
         assert_changed_replacement_create_race(db, Arc::clone(&key_provider), &suffix).await;
         assert_guarded_delete_create_race(db, key_provider, &suffix).await;
@@ -629,7 +629,7 @@ pub(crate) mod tests {
 
     async fn assert_changed_replacement_create_race(
         db: &Arc<CoralDb>,
-        key_provider: Arc<dyn CredentialKeyProvider>,
+        key_provider: Arc<dyn EnvelopeKeyProvider>,
         suffix: &str,
     ) {
         let name = format!("replace_race_{suffix}");
@@ -698,7 +698,7 @@ pub(crate) mod tests {
 
     async fn assert_guarded_delete_create_race(
         db: &Arc<CoralDb>,
-        key_provider: Arc<dyn CredentialKeyProvider>,
+        key_provider: Arc<dyn EnvelopeKeyProvider>,
         suffix: &str,
     ) {
         let name = format!("delete_race_{suffix}");
@@ -819,7 +819,7 @@ pub(crate) mod tests {
         tx.workspaces().ensure(workspace.as_str(), 1).await.unwrap();
         tx.commit().await.unwrap();
 
-        let old_key = CredentialEncryptionKey::from_static_bytes_for_test([51; 32]);
+        let old_key = EnvelopeEncryptionKey::from_static_bytes_for_test([51; 32]);
         let old_provider = Arc::new(TestKeyProvider::requiring_blocking_access(
             old_key.clone(),
             [],
@@ -851,7 +851,7 @@ pub(crate) mod tests {
         )
         .await;
 
-        let new_key = CredentialEncryptionKey::from_static_bytes_for_test([52; 32]);
+        let new_key = EnvelopeEncryptionKey::from_static_bytes_for_test([52; 32]);
         let new_key_id = new_key.key_id().to_string();
         let rotating_provider = Arc::new(TestKeyProvider::requiring_blocking_access(
             new_key,
@@ -1768,7 +1768,7 @@ pub(crate) mod tests {
         key: &IdentitySpecKey,
         label: &str,
         values: Option<&BTreeMap<String, String>>,
-        key_provider: &dyn CredentialKeyProvider,
+        key_provider: &dyn EnvelopeKeyProvider,
     ) {
         let yaml = oauth_manifest(key.name(), label);
         seed_spec(tx, key, yaml).await;
@@ -1817,11 +1817,11 @@ pub(crate) mod tests {
         );
     }
 
-    fn test_key() -> CredentialEncryptionKey {
-        CredentialEncryptionKey::from_static_bytes_for_test([43; 32])
+    fn test_key() -> EnvelopeEncryptionKey {
+        EnvelopeEncryptionKey::from_static_bytes_for_test([43; 32])
     }
 
-    fn read_key_provider(key: CredentialEncryptionKey) -> Arc<dyn CredentialKeyProvider> {
+    fn read_key_provider(key: EnvelopeEncryptionKey) -> Arc<dyn EnvelopeKeyProvider> {
         Arc::new(ReadKeyProvider {
             key,
             key_calls: AtomicUsize::new(0),

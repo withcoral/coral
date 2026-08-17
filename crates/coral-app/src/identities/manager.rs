@@ -13,7 +13,7 @@ use super::crypto::{
 };
 use super::model::{IdentityAudience, IdentityName, IdentityOwner, IdentitySpecReference};
 use crate::bootstrap::AppError;
-use crate::credentials::encryption::CredentialKeyProvider;
+use crate::credentials::encryption::EnvelopeKeyProvider;
 use crate::encrypted_document::EncryptedEnvelopeDocument;
 use crate::identity::Principal;
 use crate::identity_specs::identity_spec_fingerprint;
@@ -34,7 +34,7 @@ const MAX_MUTATION_ATTEMPTS: usize = 8;
 #[derive(Clone)]
 pub(crate) struct IdentityManager {
     db: Arc<CoralDb>,
-    key_provider: Arc<dyn CredentialKeyProvider>,
+    key_provider: Arc<dyn EnvelopeKeyProvider>,
     #[cfg(test)]
     before_write_gate: Option<OneShotGate>,
     #[cfg(test)]
@@ -118,7 +118,7 @@ struct IdentityUseSnapshot {
 }
 
 impl IdentityManager {
-    pub(crate) fn new(db: Arc<CoralDb>, key_provider: Arc<dyn CredentialKeyProvider>) -> Self {
+    pub(crate) fn new(db: Arc<CoralDb>, key_provider: Arc<dyn EnvelopeKeyProvider>) -> Self {
         Self {
             db,
             key_provider,
@@ -589,7 +589,7 @@ async fn load_identity_use_snapshot(
 fn prepare_identity_for_use(
     snapshot: IdentityUseSnapshot,
     name: &IdentityName,
-    key_provider: &dyn CredentialKeyProvider,
+    key_provider: &dyn EnvelopeKeyProvider,
 ) -> Result<ResolvedIdentityForUse, AppError> {
     let identity = snapshot.identity.ok_or_else(|| identity_not_found(name))?;
     let identity_document = snapshot
@@ -678,7 +678,7 @@ fn validate_identity_reference(
 fn decrypt_fixed_token_material(
     identity: &IdentityRecord,
     document: IdentityDocumentRecord,
-    key_provider: &dyn CredentialKeyProvider,
+    key_provider: &dyn EnvelopeKeyProvider,
 ) -> Result<BTreeMap<String, String>, AppError> {
     let envelope = document.envelope;
     // Resolve the stored key first so an unavailable key provider stays a credential

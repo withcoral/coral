@@ -157,7 +157,7 @@ impl AppStateLayout {
             .join(INSTALLED_FUNCTION_FILE_NAME)
     }
 
-    pub(crate) fn credential_encryption_key_file(&self) -> PathBuf {
+    pub(crate) fn envelope_encryption_key_file(&self) -> PathBuf {
         self.config_dir.join("credentials").join("encryption.key")
     }
 

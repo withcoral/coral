@@ -9,8 +9,8 @@ use zeroize::Zeroizing;
 use super::CredentialsError;
 use super::encryption::test_support::{RotatingKeyProvider, StaticKeyProvider};
 use super::encryption::{
-    CREDENTIAL_DOCUMENT_BINDING_VERSION, CredentialEncryptionKey, CredentialKeyProvider,
-    ENVELOPE_DOCUMENT_ALGORITHM, EnvelopeContext, LocalFileCredentialKeyProvider,
+    CREDENTIAL_DOCUMENT_BINDING_VERSION, ENVELOPE_DOCUMENT_ALGORITHM, EnvelopeContext,
+    EnvelopeEncryptionKey, EnvelopeKeyProvider, LocalFileEnvelopeKeyProvider,
     decrypt_credential_values, encrypt_credential_values, open_envelope_document,
     rewrap_credential_document, rewrap_envelope_document, seal_envelope_document,
 };
@@ -24,7 +24,7 @@ fn encrypt_decrypt_authenticates_context_and_redacts_key_debug() {
     let workspace = WorkspaceName::parse("acme").expect("workspace");
     let source = SourceName::parse("github").expect("source");
     let provider = StaticKeyProvider {
-        key: CredentialEncryptionKey::from_static_bytes_for_test([7; 32]),
+        key: EnvelopeEncryptionKey::from_static_bytes_for_test([7; 32]),
     };
     let values = BTreeMap::from([("token".to_string(), "s3cr3t".to_string())]);
 
@@ -54,7 +54,7 @@ fn encrypt_decrypt_authenticates_context_and_redacts_key_debug() {
     decrypt_values_with_provider(&workspace, &other_source, &document, &provider)
         .expect_err("wrong source should fail");
     let mismatch = StaticKeyProvider {
-        key: CredentialEncryptionKey::from_static_bytes_for_test([8; 32]),
+        key: EnvelopeEncryptionKey::from_static_bytes_for_test([8; 32]),
     };
     decrypt_values_with_provider(&workspace, &source, &document, &mismatch)
         .expect_err("wrong key should fail");
@@ -72,7 +72,7 @@ fn credential_document_aad_disambiguates_colon_bearing_identities() {
     let replay_workspace = WorkspaceName::parse("a").expect("workspace");
     let replay_source = SourceName::parse("b:c").expect("source");
     let provider = StaticKeyProvider {
-        key: CredentialEncryptionKey::from_static_bytes_for_test([10; 32]),
+        key: EnvelopeEncryptionKey::from_static_bytes_for_test([10; 32]),
     };
     let encrypted = encrypt_credential_values(
         &workspace,
@@ -94,7 +94,7 @@ fn credential_document_rejects_tampered_nonces() {
     let workspace = WorkspaceName::parse("default").expect("workspace");
     let source = SourceName::parse("github").expect("source");
     let provider = StaticKeyProvider {
-        key: CredentialEncryptionKey::from_static_bytes_for_test([11; 32]),
+        key: EnvelopeEncryptionKey::from_static_bytes_for_test([11; 32]),
     };
     let encrypted = encrypt_credential_values(
         &workspace,
@@ -128,8 +128,8 @@ fn credential_document_rejects_key_id_aad_mismatch_even_when_key_resolves() {
     let source = SourceName::parse("github").expect("source");
     let original_key_bytes = [12; 32];
     let mutated_key_bytes = [14; 32];
-    let original_key = CredentialEncryptionKey::from_static_bytes_for_test(original_key_bytes);
-    let mutated_key = CredentialEncryptionKey::from_static_bytes_for_test(mutated_key_bytes);
+    let original_key = EnvelopeEncryptionKey::from_static_bytes_for_test(original_key_bytes);
+    let mutated_key = EnvelopeEncryptionKey::from_static_bytes_for_test(mutated_key_bytes);
     let provider = RotatingKeyProvider {
         active: original_key.clone(),
         keys: vec![original_key, mutated_key.clone()],
@@ -182,7 +182,7 @@ fn credential_document_rejects_binding_version_mismatch() {
     let workspace = WorkspaceName::parse("default").expect("workspace");
     let source = SourceName::parse("github").expect("source");
     let provider = StaticKeyProvider {
-        key: CredentialEncryptionKey::from_static_bytes_for_test([15; 32]),
+        key: EnvelopeEncryptionKey::from_static_bytes_for_test([15; 32]),
     };
     let mut encrypted = encrypt_credential_values(
         &workspace,
@@ -210,7 +210,7 @@ fn decrypt_accepts_legacy_colon_delimited_dek_aad() {
     let source = SourceName::parse("github").expect("source");
     let key_bytes = [17; 32];
     let provider = StaticKeyProvider {
-        key: CredentialEncryptionKey::from_static_bytes_for_test(key_bytes),
+        key: EnvelopeEncryptionKey::from_static_bytes_for_test(key_bytes),
     };
     let values = BTreeMap::from([("TOKEN".to_string(), "secret".to_string())]);
     let mut encrypted = encrypt_credential_v1_for_test(&workspace, &source, &values, &provider);
@@ -243,7 +243,7 @@ fn decrypt_accepts_legacy_length_prefixed_dek_aad() {
     let source = SourceName::parse("github").expect("source");
     let key_bytes = [18; 32];
     let provider = StaticKeyProvider {
-        key: CredentialEncryptionKey::from_static_bytes_for_test(key_bytes),
+        key: EnvelopeEncryptionKey::from_static_bytes_for_test(key_bytes),
     };
     let values = BTreeMap::from([("TOKEN".to_string(), "secret".to_string())]);
     let mut encrypted = encrypt_credential_v1_for_test(&workspace, &source, &values, &provider);
@@ -276,8 +276,8 @@ fn credential_document_rewrap_changes_kek_without_reencrypting_payload() {
     let source = SourceName::parse("github").expect("source");
     let old_key_bytes = [19; 32];
     let new_key_bytes = [23; 32];
-    let old_key = CredentialEncryptionKey::from_static_bytes_for_test(old_key_bytes);
-    let new_key = CredentialEncryptionKey::from_static_bytes_for_test(new_key_bytes);
+    let old_key = EnvelopeEncryptionKey::from_static_bytes_for_test(old_key_bytes);
+    let new_key = EnvelopeEncryptionKey::from_static_bytes_for_test(new_key_bytes);
     let old_provider = RotatingKeyProvider {
         active: old_key.clone(),
         keys: vec![old_key.clone()],
@@ -327,7 +327,7 @@ fn credential_document_same_key_rewrap_authenticates_payload_context() {
     let other_workspace = WorkspaceName::parse("other").expect("workspace");
     let source = SourceName::parse("github").expect("source");
     let provider = StaticKeyProvider {
-        key: CredentialEncryptionKey::from_static_bytes_for_test([27; 32]),
+        key: EnvelopeEncryptionKey::from_static_bytes_for_test([27; 32]),
     };
     let encrypted = encrypt_credential_values(
         &workspace,
@@ -354,7 +354,7 @@ fn credential_v1_rewrap_migrates_to_v2_with_same_key() {
     let workspace = WorkspaceName::parse("default").expect("workspace");
     let source = SourceName::parse("github").expect("source");
     let provider = StaticKeyProvider {
-        key: CredentialEncryptionKey::from_static_bytes_for_test([28; 32]),
+        key: EnvelopeEncryptionKey::from_static_bytes_for_test([28; 32]),
     };
     let values = BTreeMap::from([("TOKEN".to_string(), "secret".to_string())]);
     let v1 = encrypt_credential_v1_for_test(&workspace, &source, &values, &provider);
@@ -381,8 +381,8 @@ fn credential_document_rewrap_migrates_legacy_payload_aad() {
     let workspace = WorkspaceName::parse("default").expect("workspace");
     let source = SourceName::parse("github").expect("source");
     let old_key_bytes = [29; 32];
-    let old_key = CredentialEncryptionKey::from_static_bytes_for_test(old_key_bytes);
-    let new_key = CredentialEncryptionKey::from_static_bytes_for_test([31; 32]);
+    let old_key = EnvelopeEncryptionKey::from_static_bytes_for_test(old_key_bytes);
+    let new_key = EnvelopeEncryptionKey::from_static_bytes_for_test([31; 32]);
     let old_provider = RotatingKeyProvider {
         active: old_key.clone(),
         keys: vec![old_key.clone()],
@@ -447,7 +447,7 @@ fn wrapped_dek_authenticates_full_envelope_context() {
 
     let old_key_bytes = [37; 32];
     let provider = StaticKeyProvider {
-        key: CredentialEncryptionKey::from_static_bytes_for_test(old_key_bytes),
+        key: EnvelopeEncryptionKey::from_static_bytes_for_test(old_key_bytes),
     };
     let context =
         EnvelopeContext::new("test-envelope", BINDING_VERSION, &["workspace", "document"])
@@ -491,8 +491,8 @@ fn wrapped_dek_authenticates_full_envelope_context() {
 fn shared_envelope_context_authenticates_open_and_rewrap() {
     const BINDING_VERSION: i64 = 7;
 
-    let old_key = CredentialEncryptionKey::from_static_bytes_for_test([37; 32]);
-    let new_key = CredentialEncryptionKey::from_static_bytes_for_test([41; 32]);
+    let old_key = EnvelopeEncryptionKey::from_static_bytes_for_test([37; 32]);
+    let new_key = EnvelopeEncryptionKey::from_static_bytes_for_test([41; 32]);
     let old_provider = RotatingKeyProvider {
         active: old_key.clone(),
         keys: vec![old_key.clone()],
@@ -596,7 +596,7 @@ fn local_file_key_provider_creates_and_reuses_private_key_file() {
 
     assert_eq!(first, second);
     assert!(
-        layout.credential_encryption_key_file().exists(),
+        layout.envelope_encryption_key_file().exists(),
         "provider should create durable key material outside the DB"
     );
 }
@@ -650,7 +650,7 @@ fn decrypt_rejects_unknown_key_id() {
     let workspace = WorkspaceName::parse("default").expect("workspace");
     let source = SourceName::parse("github").expect("source");
     let provider = StaticKeyProvider {
-        key: CredentialEncryptionKey::from_static_bytes_for_test([13; 32]),
+        key: EnvelopeEncryptionKey::from_static_bytes_for_test([13; 32]),
     };
     let mut encrypted = encrypt_credential_values(
         &workspace,
@@ -671,8 +671,8 @@ fn decrypt_rejects_unknown_key_id() {
 fn open_rejects_a_key_the_document_does_not_name() {
     let workspace = WorkspaceName::parse("default").expect("workspace");
     let source = SourceName::parse("github").expect("source");
-    let stored_key = CredentialEncryptionKey::from_static_bytes_for_test([43; 32]);
-    let other_key = CredentialEncryptionKey::from_static_bytes_for_test([47; 32]);
+    let stored_key = EnvelopeEncryptionKey::from_static_bytes_for_test([43; 32]);
+    let other_key = EnvelopeEncryptionKey::from_static_bytes_for_test([47; 32]);
     let provider = StaticKeyProvider {
         key: stored_key.clone(),
     };
@@ -705,7 +705,7 @@ fn decrypt_values_with_provider(
     workspace: &WorkspaceName,
     source: &SourceName,
     document: &EncryptedEnvelopeDocument,
-    key_provider: &dyn CredentialKeyProvider,
+    key_provider: &dyn EnvelopeKeyProvider,
 ) -> Result<BTreeMap<String, String>, CredentialsError> {
     let kek = key_provider.key(&document.key_id)?;
     decrypt_credential_values(workspace, source, document, &kek)
@@ -715,21 +715,21 @@ fn decrypt_values_with_provider(
 fn open_with_provider(
     context: &EnvelopeContext,
     document: &EncryptedEnvelopeDocument,
-    key_provider: &dyn CredentialKeyProvider,
+    key_provider: &dyn EnvelopeKeyProvider,
 ) -> Result<Zeroizing<Vec<u8>>, CredentialsError> {
     let kek = key_provider.key(&document.key_id)?;
     open_envelope_document(context, document, &kek)
 }
 
-fn local_file_key_provider(layout: &AppStateLayout) -> LocalFileCredentialKeyProvider {
-    LocalFileCredentialKeyProvider::new(layout, None)
+fn local_file_key_provider(layout: &AppStateLayout) -> LocalFileEnvelopeKeyProvider {
+    LocalFileEnvelopeKeyProvider::new(layout, None)
 }
 
 fn encrypt_credential_v1_for_test(
     workspace: &WorkspaceName,
     source: &SourceName,
     values: &BTreeMap<String, String>,
-    key_provider: &dyn CredentialKeyProvider,
+    key_provider: &dyn EnvelopeKeyProvider,
 ) -> super::encryption::EncryptedCredentialDocument {
     let context = EnvelopeContext::new(
         "coral-credential-document",

@@ -7,7 +7,7 @@ use coral_spec::parse_identity_manifest_yaml;
 use super::IdentityManager;
 use crate::bootstrap::AppError;
 use crate::credentials::CredentialsError;
-use crate::credentials::encryption::{CredentialEncryptionKey, CredentialKeyProvider};
+use crate::credentials::encryption::{EnvelopeEncryptionKey, EnvelopeKeyProvider};
 use crate::identities::crypto::{
     IDENTITY_DOCUMENT_BINDING_VERSION, IdentityDocumentBinding, decrypt_identity_document,
 };
@@ -21,17 +21,17 @@ use crate::state::db::{
 };
 use crate::workspaces::WorkspaceName;
 
-struct TestKeyProvider(Vec<CredentialEncryptionKey>);
+struct TestKeyProvider(Vec<EnvelopeEncryptionKey>);
 
-impl CredentialKeyProvider for TestKeyProvider {
-    fn active_key(&self) -> Result<CredentialEncryptionKey, CredentialsError> {
+impl EnvelopeKeyProvider for TestKeyProvider {
+    fn active_key(&self) -> Result<EnvelopeEncryptionKey, CredentialsError> {
         self.0
             .last()
             .cloned()
             .ok_or_else(|| CredentialsError::Unavailable("missing test key".to_string()))
     }
 
-    fn key(&self, key_id: &str) -> Result<CredentialEncryptionKey, CredentialsError> {
+    fn key(&self, key_id: &str) -> Result<EnvelopeEncryptionKey, CredentialsError> {
         self.0
             .iter()
             .find(|key| key.key_id() == key_id)
@@ -41,19 +41,19 @@ impl CredentialKeyProvider for TestKeyProvider {
 }
 
 struct ReadOnlyKeyProvider {
-    key: CredentialEncryptionKey,
+    key: EnvelopeEncryptionKey,
     active_key_calls: AtomicUsize,
 }
 
-impl CredentialKeyProvider for ReadOnlyKeyProvider {
-    fn active_key(&self) -> Result<CredentialEncryptionKey, CredentialsError> {
+impl EnvelopeKeyProvider for ReadOnlyKeyProvider {
+    fn active_key(&self) -> Result<EnvelopeEncryptionKey, CredentialsError> {
         self.active_key_calls.fetch_add(1, Ordering::SeqCst);
         Err(CredentialsError::Crypto(
             "identity reads must not request an active key".to_string(),
         ))
     }
 
-    fn key(&self, key_id: &str) -> Result<CredentialEncryptionKey, CredentialsError> {
+    fn key(&self, key_id: &str) -> Result<EnvelopeEncryptionKey, CredentialsError> {
         (key_id == self.key.key_id())
             .then(|| self.key.clone())
             .ok_or_else(|| CredentialsError::Unavailable("missing test key".to_string()))
@@ -82,7 +82,7 @@ pub(crate) async fn assert_identity_management_contract(db: &Arc<CoralDb>) {
     let alpha = format!("alpha_{suffix}");
     let zeta = format!("zeta_{suffix}");
     let provider = Arc::new(TestKeyProvider(vec![
-        CredentialEncryptionKey::from_static_bytes_for_test([70; 32]),
+        EnvelopeEncryptionKey::from_static_bytes_for_test([70; 32]),
     ]));
     let manager = IdentityManager::new(db.clone(), provider);
 
@@ -279,7 +279,7 @@ pub(crate) async fn assert_identity_management_race_contract(db: &Arc<CoralDb>) 
     let spec = format!("manage_race_spec_{suffix}");
     put_global_spec(db, &spec, &fixed_manifest(&spec, "manage_race")).await;
     let provider = Arc::new(TestKeyProvider(vec![
-        CredentialEncryptionKey::from_static_bytes_for_test([76; 32]),
+        EnvelopeEncryptionKey::from_static_bytes_for_test([76; 32]),
     ]));
     let manager = IdentityManager::new(db.clone(), provider.clone());
 
@@ -400,7 +400,7 @@ async fn assert_workspace_read_delete_race(
 async fn assert_workspace_delete_recreate_race(
     db: &Arc<CoralDb>,
     manager: &IdentityManager,
-    provider: &dyn CredentialKeyProvider,
+    provider: &dyn EnvelopeKeyProvider,
     workspace: &WorkspaceName,
     identity: &str,
     spec: &str,
@@ -473,7 +473,7 @@ async fn assert_workspace_delete_recreate_race(
 )]
 pub(crate) async fn assert_identity_use_contract(db: &Arc<CoralDb>) {
     let suffix = uuid::Uuid::new_v4().simple().to_string();
-    let key = CredentialEncryptionKey::from_static_bytes_for_test([79; 32]);
+    let key = EnvelopeEncryptionKey::from_static_bytes_for_test([79; 32]);
     let write_provider = Arc::new(TestKeyProvider(vec![key.clone()]));
     let read_provider = Arc::new(ReadOnlyKeyProvider {
         key,
@@ -709,7 +709,7 @@ pub(crate) async fn assert_identity_use_snapshot_race_contract(db: &Arc<CoralDb>
         .expect("enable SQLite WAL for identity-use races");
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     let provider = Arc::new(TestKeyProvider(vec![
-        CredentialEncryptionKey::from_static_bytes_for_test([80; 32]),
+        EnvelopeEncryptionKey::from_static_bytes_for_test([80; 32]),
     ]));
     let manager = IdentityManager::new(db.clone(), provider.clone());
     let principal =
@@ -886,7 +886,7 @@ pub(crate) async fn assert_user_global_fixed_token_create_contract(db: &Arc<Cora
         assert_eq!(load_pair(db, &owner, &identity_name).await, (None, None));
     }
 
-    let old_key = CredentialEncryptionKey::from_static_bytes_for_test([61; 32]);
+    let old_key = EnvelopeEncryptionKey::from_static_bytes_for_test([61; 32]);
     let old_provider = Arc::new(TestKeyProvider(vec![old_key.clone()]));
     let manager = IdentityManager::new(db.clone(), old_provider.clone());
     let identity = format!("primary_{suffix}");
@@ -912,7 +912,7 @@ pub(crate) async fn assert_user_global_fixed_token_create_contract(db: &Arc<Cora
         old_provider.as_ref(),
     );
 
-    let new_key = CredentialEncryptionKey::from_static_bytes_for_test([62; 32]);
+    let new_key = EnvelopeEncryptionKey::from_static_bytes_for_test([62; 32]);
     let rotated_provider = Arc::new(TestKeyProvider(vec![old_key, new_key.clone()]));
     let rotated = IdentityManager::new(db.clone(), rotated_provider.clone());
     let replaced = rotated
@@ -1134,7 +1134,7 @@ pub(crate) async fn assert_workspace_fixed_token_create_contract(db: &Arc<CoralD
         put_spec(db, key, &yaml).await;
     }
 
-    let old_key = CredentialEncryptionKey::from_static_bytes_for_test([73; 32]);
+    let old_key = EnvelopeEncryptionKey::from_static_bytes_for_test([73; 32]);
     let old_provider = Arc::new(TestKeyProvider(vec![old_key.clone()]));
     let manager = IdentityManager::new(db.clone(), old_provider.clone());
     let unavailable = IdentityManager::new(db.clone(), Arc::new(TestKeyProvider(Vec::new())));
@@ -1272,7 +1272,7 @@ pub(crate) async fn assert_workspace_fixed_token_create_contract(db: &Arc<CoralD
         &fixed_manifest(&fallback, "late_workspace"),
     )
     .await;
-    let new_key = CredentialEncryptionKey::from_static_bytes_for_test([74; 32]);
+    let new_key = EnvelopeEncryptionKey::from_static_bytes_for_test([74; 32]);
     let rotated_provider = Arc::new(TestKeyProvider(vec![old_key, new_key.clone()]));
     let rotated = IdentityManager::new(db.clone(), rotated_provider.clone());
     let fallback_replaced = rotated
@@ -1429,7 +1429,7 @@ pub(crate) async fn assert_workspace_fixed_token_race_contract(db: &Arc<CoralDb>
     .await;
 
     let provider = Arc::new(TestKeyProvider(vec![
-        CredentialEncryptionKey::from_static_bytes_for_test([75; 32]),
+        EnvelopeEncryptionKey::from_static_bytes_for_test([75; 32]),
     ]));
     let manager = IdentityManager::new(db.clone(), provider.clone());
 
@@ -1610,7 +1610,7 @@ pub(crate) async fn assert_persisted_fixed_token_material(
     owner: &IdentityOwner,
     identity_name: &str,
     token: &str,
-    provider: &dyn CredentialKeyProvider,
+    provider: &dyn EnvelopeKeyProvider,
 ) -> IdentityRecord {
     let (identity, document) = load_pair(db, owner, identity_name).await;
     let identity = identity.expect("persisted identity");
@@ -1655,7 +1655,7 @@ fn assert_material(
     identity: &IdentityRecord,
     document: &IdentityDocumentRecord,
     token: &str,
-    provider: &dyn CredentialKeyProvider,
+    provider: &dyn EnvelopeKeyProvider,
 ) {
     let binding =
         IdentityDocumentBinding::new(&document.owner, &document.name, &identity.spec_reference)

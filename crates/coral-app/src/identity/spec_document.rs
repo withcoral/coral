@@ -19,7 +19,7 @@ use zeroize::Zeroizing;
 
 use crate::credentials::CredentialsError;
 use crate::credentials::encryption::{
-    CredentialEncryptionKey, CredentialKeyProvider, ENVELOPE_DOCUMENT_ALGORITHM, EnvelopeContext,
+    ENVELOPE_DOCUMENT_ALGORITHM, EnvelopeContext, EnvelopeEncryptionKey, EnvelopeKeyProvider,
     open_envelope_document, rewrap_envelope_document, seal_envelope_document,
 };
 use crate::encrypted_document::EncryptedEnvelopeDocument;
@@ -49,7 +49,7 @@ struct DecryptedIdentitySpecDocument {
 pub(crate) fn encrypt_identity_spec_document(
     key: &IdentitySpecKey,
     values: &BTreeMap<String, String>,
-    key_provider: &dyn CredentialKeyProvider,
+    key_provider: &dyn EnvelopeKeyProvider,
 ) -> Result<EncryptedEnvelopeDocument, CredentialsError> {
     let plaintext = PlaintextIdentitySpecDocument {
         version: IDENTITY_SPEC_DOCUMENT_VERSION,
@@ -69,7 +69,7 @@ pub(crate) fn encrypt_identity_spec_document(
 pub(crate) fn decrypt_identity_spec_document(
     key: &IdentitySpecKey,
     document: &EncryptedEnvelopeDocument,
-    kek: &CredentialEncryptionKey,
+    kek: &EnvelopeEncryptionKey,
 ) -> Result<BTreeMap<String, String>, CredentialsError> {
     let context = identity_spec_document_context(document.binding_version, key)?;
     let plaintext = open_envelope_document(&context, document, kek)?;
@@ -88,7 +88,7 @@ pub(crate) fn decrypt_identity_spec_document(
 pub(crate) fn seal_identity_spec_plaintext_for_test(
     key: &IdentitySpecKey,
     plaintext: Vec<u8>,
-    key_provider: &dyn CredentialKeyProvider,
+    key_provider: &dyn EnvelopeKeyProvider,
 ) -> Result<EncryptedEnvelopeDocument, CredentialsError> {
     let context = identity_spec_document_context(IDENTITY_SPEC_DOCUMENT_BINDING_VERSION, key)?;
     seal_envelope_document(&context, Zeroizing::new(plaintext), key_provider)
@@ -98,7 +98,7 @@ pub(crate) fn seal_identity_spec_plaintext_for_test(
 pub(crate) fn rewrap_identity_spec_document(
     key: &IdentitySpecKey,
     document: &EncryptedEnvelopeDocument,
-    key_provider: &dyn CredentialKeyProvider,
+    key_provider: &dyn EnvelopeKeyProvider,
 ) -> Result<Option<EncryptedEnvelopeDocument>, CredentialsError> {
     let context = identity_spec_document_context(document.binding_version, key)?;
     rewrap_envelope_document(&context, document, key_provider)
@@ -135,7 +135,7 @@ mod tests {
     use crate::credentials::CredentialsError;
     use crate::credentials::encryption::test_support::{RotatingKeyProvider, StaticKeyProvider};
     use crate::credentials::encryption::{
-        CredentialEncryptionKey, CredentialKeyProvider, EnvelopeContext, decrypt_credential_values,
+        EnvelopeContext, EnvelopeEncryptionKey, EnvelopeKeyProvider, decrypt_credential_values,
         seal_envelope_document,
     };
     use crate::encrypted_document::EncryptedEnvelopeDocument;
@@ -242,8 +242,8 @@ mod tests {
 
     #[test]
     fn setup_document_rewrap_preserves_payload_and_authenticates_current_key() {
-        let old_key = CredentialEncryptionKey::from_static_bytes_for_test([59; 32]);
-        let new_key = CredentialEncryptionKey::from_static_bytes_for_test([61; 32]);
+        let old_key = EnvelopeEncryptionKey::from_static_bytes_for_test([59; 32]);
+        let new_key = EnvelopeEncryptionKey::from_static_bytes_for_test([61; 32]);
         let old_provider = RotatingKeyProvider {
             active: old_key.clone(),
             keys: vec![old_key.clone()],
@@ -282,7 +282,7 @@ mod tests {
 
     fn static_provider(byte: u8) -> StaticKeyProvider {
         StaticKeyProvider {
-            key: CredentialEncryptionKey::from_static_bytes_for_test([byte; 32]),
+            key: EnvelopeEncryptionKey::from_static_bytes_for_test([byte; 32]),
         }
     }
 
@@ -293,7 +293,7 @@ mod tests {
     fn encrypt_for_key(
         key: &IdentitySpecKey,
         values: &BTreeMap<String, String>,
-        provider: &dyn CredentialKeyProvider,
+        provider: &dyn EnvelopeKeyProvider,
     ) -> EncryptedEnvelopeDocument {
         encrypt_identity_spec_document(key, values, provider)
             .expect("encrypt identity-spec material")
@@ -302,7 +302,7 @@ mod tests {
     fn decrypt_for_key(
         key: &IdentitySpecKey,
         document: &EncryptedEnvelopeDocument,
-        provider: &dyn CredentialKeyProvider,
+        provider: &dyn EnvelopeKeyProvider,
     ) -> BTreeMap<String, String> {
         decrypt_for_key_result(key, document, provider).expect("decrypt identity-spec material")
     }
@@ -310,7 +310,7 @@ mod tests {
     fn decrypt_for_key_result(
         key: &IdentitySpecKey,
         document: &EncryptedEnvelopeDocument,
-        provider: &dyn CredentialKeyProvider,
+        provider: &dyn EnvelopeKeyProvider,
     ) -> Result<BTreeMap<String, String>, CredentialsError> {
         let kek = provider.key(&document.key_id)?;
         decrypt_identity_spec_document(key, document, &kek)
