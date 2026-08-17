@@ -34,6 +34,8 @@ use clap::{Parser, Subcommand};
 #[cfg(test)]
 use assert_cmd as _;
 
+#[cfg(feature = "admin")]
+mod admin;
 mod benchmarks;
 mod detect;
 mod docs;

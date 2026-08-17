@@ -13,6 +13,13 @@ path = "src/main.rs"
 [lints]
 workspace = true
 
+[features]
+# Repository-side workspace recovery. Off by default and never enabled by a
+# shipped Coral binary: possession of the state database is the tool's whole
+# authority, so it stays a break-glass repository utility. Every dependency it
+# needs is optional and reachable only through this feature.
+admin = ["dep:etcetera", "dep:sqlx", "dep:tokio", "dep:toml"]
+
 [dependencies]
 anyhow.workspace = true
 base64.workspace = true
@@ -31,6 +38,13 @@ jsonschema.workspace = true
 reqwest.workspace = true
 
 coral-spec.workspace = true
+
+# Admin-only. Enabled solely by the `admin` feature: the default `xtask` build
+# resolves none of these dependency edges.
+etcetera = { workspace = true, optional = true }
+sqlx = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+toml = { workspace = true, optional = true }
 
 [dev-dependencies]
 assert_cmd.workspace = true
