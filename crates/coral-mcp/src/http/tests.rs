@@ -8,12 +8,14 @@ use std::time::Duration;
 use axum::body::{Body, to_bytes};
 use axum::http::{HeaderValue, Method, Request, StatusCode, header};
 use axum::{Router, response::Response};
+use coral_api::v1::user_service_server::{UserService, UserServiceServer};
 use coral_api::v1::workspace_service_server::{WorkspaceService, WorkspaceServiceServer};
 use coral_api::v1::{
     AddWorkspaceMemberRequest, AddWorkspaceMemberResponse, CreateWorkspaceRequest,
     CreateWorkspaceResponse, DeleteWorkspaceRequest, DeleteWorkspaceResponse,
+    GetCurrentUserRequest, GetCurrentUserResponse, ListUsersRequest, ListUsersResponse,
     ListWorkspaceMembersRequest, ListWorkspaceMembersResponse, ListWorkspacesRequest,
-    ListWorkspacesResponse, RemoveWorkspaceMemberRequest, RemoveWorkspaceMemberResponse,
+    ListWorkspacesResponse, RemoveWorkspaceMemberRequest, RemoveWorkspaceMemberResponse, User,
     WorkspaceMembership, WorkspaceRole,
 };
 use coral_client::local::{ServerBuilder, connect_with_loopback_bearer};
@@ -52,6 +54,9 @@ use super::{
 
 const INITIALIZE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#;
 const PING: &str = r#"{"jsonrpc":"2.0","id":2,"method":"ping"}"#;
+/// The first exchange a caller would reach for after a handshake — and the
+/// first that is workspace-scoped, so the first that could only fail opaquely.
+const TOOLS_LIST: &str = r#"{"jsonrpc":"2.0","id":3,"method":"tools/list"}"#;
 
 #[rmcp::tool(description = "Return the workspace bound to this MCP session")]
 fn extension_workspace(
@@ -1218,20 +1223,29 @@ struct WorkspaceDirectory {
     calls: DirectoryCalls,
 }
 
+/// Logs one answered RPC and reports the credential it arrived on.
+fn record_call(
+    calls: &DirectoryCalls,
+    rpc: &'static str,
+    metadata: &MetadataMap,
+) -> Option<String> {
+    let authorization = metadata
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    calls
+        .lock()
+        .expect("record directory call")
+        .push(DirectoryCall {
+            rpc,
+            authorization: authorization.clone(),
+        });
+    authorization
+}
+
 impl WorkspaceDirectory {
     fn record(&self, rpc: &'static str, metadata: &MetadataMap) -> Option<String> {
-        let authorization = metadata
-            .get("authorization")
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_string);
-        self.calls
-            .lock()
-            .expect("record directory call")
-            .push(DirectoryCall {
-                rpc,
-                authorization: authorization.clone(),
-            });
-        authorization
+        record_call(&self.calls, rpc, metadata)
     }
 
     /// Records a question admission has no business asking, then refuses it.
@@ -1299,6 +1313,42 @@ impl WorkspaceService for WorkspaceDirectory {
     }
 }
 
+/// The identity half of the same directory, logging into the same record.
+///
+/// Admission has no identity question to ask: which workspaces a caller holds
+/// is answered by the caller's own connection, and the caller's name adds
+/// nothing to it. The half is served anyway — and `GetCurrentUser` is
+/// *answered* rather than refused — so that "identity was never asked" is an
+/// observation instead of an accident of wiring: an admission that asked would
+/// be answered and carry on exactly as before, and only the log would differ.
+struct IdentityDirectory {
+    calls: DirectoryCalls,
+}
+
+#[tonic::async_trait]
+impl UserService for IdentityDirectory {
+    async fn get_current_user(
+        &self,
+        request: GrpcRequest<GetCurrentUserRequest>,
+    ) -> Result<GrpcResponse<GetCurrentUserResponse>, Status> {
+        let authorization = record_call(&self.calls, "GetCurrentUser", request.metadata());
+        Ok(GrpcResponse::new(GetCurrentUserResponse {
+            user: Some(User {
+                user_id: authorization.unwrap_or_default(),
+                display_name: String::new(),
+            }),
+        }))
+    }
+
+    async fn list_users(
+        &self,
+        request: GrpcRequest<ListUsersRequest>,
+    ) -> Result<GrpcResponse<ListUsersResponse>, Status> {
+        record_call(&self.calls, "ListUsers", request.metadata());
+        Err(Status::unimplemented("ListUsers"))
+    }
+}
+
 /// One workspace directory served over loopback gRPC for the length of a test.
 struct RunningDirectory {
     endpoint: String,
@@ -1341,9 +1391,13 @@ async fn serve_directory(memberships: Vec<(&str, Vec<String>)>) -> RunningDirect
         "http://{}",
         listener.local_addr().expect("directory address")
     );
+    let identity = IdentityDirectory {
+        calls: Arc::clone(&calls),
+    };
     let task = tokio::spawn(async move {
         let _served = Server::builder()
             .add_service(WorkspaceServiceServer::new(directory))
+            .add_service(UserServiceServer::new(identity))
             .serve_with_incoming(TcpListenerStream::new(listener))
             .await;
     });
@@ -1360,6 +1414,39 @@ fn listing_by(token: &str) -> DirectoryCall {
         rpc: "ListWorkspaces",
         authorization: Some(format!("Bearer {token}")),
     }
+}
+
+/// The identity question admission has, and must have, no use for.
+fn identity_by(token: &str) -> DirectoryCall {
+    DirectoryCall {
+        rpc: "GetCurrentUser",
+        authorization: Some(format!("Bearer {token}")),
+    }
+}
+
+/// A runtime that admits against one directory and disowns one bearer.
+///
+/// The disowned bearer stands for a token the authorization server declines to
+/// vouch for. Keeping it in the same runtime as the admitted ones is what lets
+/// a test compare an authentication answer against an admission answer without
+/// changing anything else about the surface.
+fn admission_runtime(
+    endpoint: String,
+    options: McpOptions,
+    disowned: &'static str,
+) -> AuthenticatedMcpHttpRuntime {
+    AuthenticatedMcpHttpRuntime::new(
+        move |token: String| {
+            let vouched = token != disowned;
+            async move { if vouched { Ok(()) } else { Err(()) } }
+        },
+        move |token: String| {
+            let endpoint = endpoint.clone();
+            async move { bearer_client(&endpoint, &token).await }
+        },
+        options,
+        || async { Ok::<_, tonic::Code>(()) },
+    )
 }
 
 /// Connects one caller's own bearer-bound client, the way serving does.
@@ -1531,6 +1618,272 @@ async fn authenticated_admission_binds_only_an_exact_membership() {
     );
 
     state.sessions.close_all().await;
+}
+
+/// Three ways to be turned away stay three answers for whoever runs the server.
+///
+/// A caller the authorization server will not vouch for, a surface that names
+/// no workspace, and a configured name the caller does not hold are three
+/// different things to fix — a token, a config file, a membership — and an
+/// operator reading one response has to know which. Concealment is owed to the
+/// *caller* about which workspaces exist, and this is the boundary of that
+/// debt: it never obliged the surface to answer "no" the same way to questions
+/// that are not about a workspace at all.
+///
+/// The rejected bearer never reaches the directory, and the unconfigured
+/// surface never asks it anything even though the caller holds a workspace
+/// there — the configuration answer is settled before the membership question
+/// is worth asking, so neither refusal can be the other in disguise.
+#[tokio::test]
+async fn authenticated_admission_keeps_its_three_refusals_apart() {
+    let directory = serve_directory(vec![("member", vec![TEST_WORKSPACE.to_string()])]).await;
+    let (router, state) = authenticated_router(
+        authenticated_config(),
+        admission_runtime(
+            directory.endpoint.clone(),
+            workspace_named_options(),
+            "impostor",
+        ),
+    );
+
+    let unvouched = send(&router, auth_request("Bearer impostor", None, INITIALIZE)).await;
+    assert_eq!(unvouched.status(), StatusCode::UNAUTHORIZED);
+    assert!(
+        unvouched.headers().contains_key(header::WWW_AUTHENTICATE),
+        "an authentication answer sends the caller back to the authorization server"
+    );
+    assert_eq!(
+        directory.calls(),
+        Vec::new(),
+        "a bearer nobody vouches for is turned away before any membership question"
+    );
+
+    let unreachable = send(&router, auth_request("Bearer stranger", None, INITIALIZE)).await;
+    assert!(
+        !unreachable.headers().contains_key(header::WWW_AUTHENTICATE),
+        "an admission answer must not read as an authentication failure"
+    );
+    let unreachable = refusal_error(unreachable).await;
+
+    let (bare_router, bare_state) = authenticated_router(
+        authenticated_config(),
+        admission_runtime(
+            directory.endpoint.clone(),
+            McpOptions::default(),
+            "impostor",
+        ),
+    );
+    let unconfigured = send(
+        &bare_router,
+        auth_request("Bearer member", None, INITIALIZE),
+    )
+    .await;
+    assert!(
+        !unconfigured
+            .headers()
+            .contains_key(header::WWW_AUTHENTICATE),
+        "an admission answer must not read as an authentication failure"
+    );
+    let unconfigured = refusal_error(unconfigured).await;
+
+    assert!(
+        refusal_guidance(&unreachable)
+            .contains(&format!("Workspace `{TEST_WORKSPACE}` was not found")),
+        "guidance: {}",
+        refusal_guidance(&unreachable)
+    );
+    assert!(
+        refusal_guidance(&unconfigured).contains("no workspace configured"),
+        "guidance: {}",
+        refusal_guidance(&unconfigured)
+    );
+    assert_ne!(
+        refusal_guidance(&unreachable),
+        refusal_guidance(&unconfigured),
+        "an unnamed workspace and an unheld one are different things to fix"
+    );
+
+    assert_eq!(
+        directory.calls(),
+        vec![listing_by("stranger")],
+        "only the configured surface had a membership question to ask"
+    );
+    assert_eq!(state.sessions.len().await, 0);
+    assert_eq!(
+        state.sessions.available_permits(),
+        MAX_AUTHENTICATED_SESSIONS
+    );
+    assert_eq!(bare_state.sessions.len().await, 0);
+    assert_eq!(
+        bare_state.sessions.available_permits(),
+        MAX_AUTHENTICATED_SESSIONS
+    );
+}
+
+/// Admission asks one question, of the directory's membership half only.
+///
+/// The listing decides the session once and is not repeated per request, and
+/// the identity half is never consulted at all: who the caller is cannot
+/// broaden what they may reach, so asking would only invite deciding on it.
+/// Both claims are made against a log that demonstrably sees what it denies —
+/// a second admission lands a second listing in it, and the identity question
+/// this directory answers lands there too the moment anyone asks it.
+///
+/// The neighbour is the fallback's last hiding place: they hold exactly one
+/// workspace, which is precisely the shape a "resolve the caller's only
+/// workspace" rule was written for. They are refused the configured name and
+/// never offered their own.
+#[tokio::test]
+async fn authenticated_admission_asks_memberships_once_and_identity_never() {
+    let directory = serve_directory(vec![
+        ("member", vec![TEST_WORKSPACE.to_string()]),
+        ("neighbor", vec!["reporting".to_string()]),
+    ])
+    .await;
+    let (router, state) = authenticated_router(
+        authenticated_config(),
+        admission_runtime(
+            directory.endpoint.clone(),
+            workspace_named_options(),
+            "impostor",
+        ),
+    );
+
+    let admitted = send(&router, auth_request("Bearer member", None, INITIALIZE)).await;
+    assert_eq!(admitted.status(), StatusCode::OK);
+    let session = admitted.headers()[SESSION_ID_HEADER]
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(directory.calls(), vec![listing_by("member")]);
+
+    let mut ping = auth_request("Bearer member", Some(&session), PING);
+    ping.headers_mut()
+        .insert("mcp-protocol-version", "2025-03-26".parse().unwrap());
+    assert!(send(&router, ping).await.status().is_success());
+    assert_eq!(
+        directory.calls(),
+        vec![listing_by("member")],
+        "an admitted session re-asks nothing"
+    );
+
+    let neighbor =
+        refusal_error(send(&router, auth_request("Bearer neighbor", None, INITIALIZE)).await).await;
+    let guidance = refusal_guidance(&neighbor);
+    assert!(
+        guidance.contains(&format!("Workspace `{TEST_WORKSPACE}` was not found")),
+        "guidance: {guidance}"
+    );
+    assert!(
+        !guidance.contains("reporting"),
+        "the one workspace a caller does hold is never offered in place of the configured one: {guidance}"
+    );
+    assert_eq!(
+        state.sessions.len().await,
+        1,
+        "a sole membership is refused, not resolved into a session"
+    );
+
+    assert_eq!(
+        directory.calls(),
+        vec![listing_by("member"), listing_by("neighbor")],
+        "a second admission is a second listing, so counting one earlier meant something"
+    );
+    assert!(
+        directory
+            .calls()
+            .iter()
+            .all(|call| call.rpc != "GetCurrentUser"),
+        "admission has no identity question: {:?}",
+        directory.calls()
+    );
+
+    let asker = bearer_client(&directory.endpoint, "member")
+        .await
+        .expect("bearer client");
+    asker
+        .user_client()
+        .get_current_user(GrpcRequest::new(GetCurrentUserRequest {}))
+        .await
+        .expect("this directory answers identity");
+    assert_eq!(
+        directory.calls().last(),
+        Some(&identity_by("member")),
+        "the identity question is one this log records, so its absence above was observed"
+    );
+
+    state.sessions.close_all().await;
+}
+
+/// The refusal lands on the handshake, before any session exists to misuse.
+///
+/// `initialize` is the only exchange on this surface that is not
+/// workspace-scoped, so it is the only one that can carry a sentence an
+/// operator can act on. Admitting a memberless caller and letting `tools/list`
+/// fail instead would spend that one chance: the caller would be left holding a
+/// live session and a bare not-found, with nothing saying which workspace was
+/// meant or what to change.
+///
+/// So the handshake is answered with the guidance, and the two ways a caller
+/// might still try to reach a tool — asking without a session, and inventing
+/// one — are shown to lead nowhere near a workspace.
+#[tokio::test]
+async fn authenticated_admission_refuses_the_handshake_not_the_first_tool_call() {
+    let directory = serve_directory(vec![("orphan", Vec::new())]).await;
+    let (router, state) = authenticated_router(
+        authenticated_config(),
+        admission_runtime(
+            directory.endpoint.clone(),
+            workspace_named_options(),
+            "impostor",
+        ),
+    );
+
+    let refusal =
+        refusal_error(send(&router, auth_request("Bearer orphan", None, INITIALIZE)).await).await;
+    let guidance = refusal_guidance(&refusal);
+    assert!(
+        guidance.contains(&format!("Workspace `{TEST_WORKSPACE}` was not found")),
+        "guidance: {guidance}"
+    );
+    assert!(
+        guidance.contains("server.mcp_http.workspace"),
+        "the handshake is where a way out still fits: {guidance}"
+    );
+    assert_eq!(state.sessions.len().await, 0);
+    assert_eq!(
+        state.sessions.available_permits(),
+        MAX_AUTHENTICATED_SESSIONS
+    );
+
+    let sessionless = send(&router, auth_request("Bearer orphan", None, TOOLS_LIST)).await;
+    assert_eq!(
+        sessionless.status(),
+        StatusCode::BAD_REQUEST,
+        "only a handshake opens a session, so no tool call can skip the refusal"
+    );
+
+    let invented = send(
+        &router,
+        auth_request(
+            "Bearer orphan",
+            Some("00000000-0000-0000-0000-000000000000"),
+            TOOLS_LIST,
+        ),
+    )
+    .await;
+    assert_eq!(invented.status(), StatusCode::NOT_FOUND);
+    let body = to_bytes(invented.into_body(), usize::MAX).await.unwrap();
+    assert!(
+        body.is_empty(),
+        "a session that was never opened says nothing about any workspace: {body:?}"
+    );
+
+    assert_eq!(
+        directory.calls(),
+        vec![listing_by("orphan")],
+        "the handshake asked once and nothing after it asked again"
+    );
 }
 
 #[tokio::test]
