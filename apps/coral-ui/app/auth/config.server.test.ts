@@ -258,19 +258,18 @@ describe('Coral UI auth config', () => {
     },
   )
 
-  // Each of these is derived from `CORAL_UI_PUBLIC_URL` rather than read from
-  // the environment, so documenting one in `.env.example` would advertise a
-  // setting that silently does nothing. The contract is what the file says, so
-  // the file is what this asserts against.
-  it('keeps redundant auth settings out of the documented environment contract', () => {
+  // Each of these has an accessor that computes it from `CORAL_UI_PUBLIC_URL`
+  // — `authClientId`, `authRedirectUri`, `authResource`, `authCookieSecure` —
+  // so none is read from the environment, and documenting one in `.env.example`
+  // would advertise a setting that silently does nothing. The contract is what
+  // the file says, so the file is what this asserts against.
+  it('keeps derived auth settings out of the documented environment contract', () => {
     const example = readFileSync(new URL('../../.env.example', import.meta.url), 'utf8')
     for (const derivedName of [
       'CORAL_UI_AUTH_CLIENT_ID',
       'CORAL_UI_AUTH_REDIRECT_URI',
       'CORAL_UI_AUTH_RESOURCE',
-      'CORAL_UI_AUTH_SCOPE',
       'CORAL_UI_COOKIE_SECURE',
-      'CORAL_UI_MCP_URL',
     ]) {
       expect(example).not.toContain(derivedName)
     }
