@@ -57,22 +57,6 @@ pub(crate) async fn bootstrap(options: BootstrapOptions) -> Result<Bootstrap, Bo
     })
 }
 
-pub(crate) async fn start_desktop_server(
-    port: u16,
-    feature_overrides: FeatureOverrides,
-) -> Result<AppRunningServer, BootstrapError> {
-    configure_server_builder(
-        ServerBuilder::loopback_grpc_web(port),
-        BootstrapOptions {
-            feature_overrides,
-            ..BootstrapOptions::default()
-        },
-    )
-    .start()
-    .await
-    .map_err(Into::into)
-}
-
 pub(crate) async fn start_standalone_server(
     feature_overrides: FeatureOverrides,
 ) -> Result<crate::serve::RunningServer, BootstrapError> {

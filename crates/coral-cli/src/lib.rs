@@ -89,9 +89,6 @@ enum Command {
     McpStdio(McpStdioArgs),
     /// Start the long-running gRPC server
     Server,
-    /// Start Desktop's local gRPC-Web sidecar.
-    #[command(name = "desktop-server", hide = true)]
-    DesktopServer(DesktopServerArgs),
     /// Inspect and manage experimental runtime features
     Features(FeaturesArgs),
     /// Generate shell completion scripts
@@ -103,13 +100,6 @@ enum Command {
 enum RequiredRuntime {
     AppClient,
     None,
-}
-
-#[derive(Debug, Clone, Copy, Args)]
-struct DesktopServerArgs {
-    /// Port to bind on 127.0.0.1 for Desktop's local gRPC-Web server.
-    #[arg(long = "port", value_name = "PORT")]
-    port: u16,
 }
 
 #[derive(Debug, Args)]
@@ -527,10 +517,9 @@ impl Command {
             | Command::Function(_)
             | Command::Onboard
             | Command::McpStdio(_) => RequiredRuntime::AppClient,
-            Command::Features(_)
-            | Command::Completion(_)
-            | Command::Server
-            | Command::DesktopServer(_) => RequiredRuntime::None,
+            Command::Features(_) | Command::Completion(_) | Command::Server => {
+                RequiredRuntime::None
+            }
         }
     }
 
@@ -843,11 +832,6 @@ async fn run_no_runtime_command(
         Command::Server => Box::pin(run_server(feature_overrides.clone()))
             .await
             .map_err(Into::into),
-        Command::DesktopServer(args) => {
-            Box::pin(run_desktop_server(args, feature_overrides.clone()))
-                .await
-                .map_err(Into::into)
-        }
         Command::Sql(_)
         | Command::Search(_)
         | Command::SearchIndex(_)
@@ -953,10 +937,7 @@ async fn run_app_command(
             .await
             .map_err(anyhow::Error::from)?;
         }
-        Command::Completion(_)
-        | Command::Features(_)
-        | Command::Server
-        | Command::DesktopServer(_) => {
+        Command::Completion(_) | Command::Features(_) | Command::Server => {
             unreachable!("no-runtime commands are routed without an app client")
         }
     }
@@ -1817,18 +1798,6 @@ mod tests {
         let mcp = mcp_http_exposure_warning("http://0.0.0.0:14556/mcp", false);
         assert!(mcp.contains("does not authenticate clients"), "{mcp}");
         assert!(mcp.contains("127.0.0.1:PORT"), "{mcp}");
-    }
-
-    #[test]
-    fn desktop_server_uses_custom_port_without_required_runtime() {
-        let cli = Cli::try_parse_from(["coral", "desktop-server", "--port", "1459"])
-            .expect("desktop server args should parse");
-
-        assert_eq!(cli.command.required_runtime(), RequiredRuntime::None);
-        let super::Command::DesktopServer(args) = cli.command else {
-            panic!("expected desktop server command");
-        };
-        assert_eq!(args.port, 1459);
     }
 
     #[test]
