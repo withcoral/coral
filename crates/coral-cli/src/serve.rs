@@ -329,9 +329,7 @@ async fn start_mcp_http(
             bind_addr,
             public_url,
             authorization_server,
-            // The authenticated runtime does not carry the configured workspace
-            // yet; forwarding it into per-session admission is the next change.
-            workspace: _configured_workspace,
+            workspace,
         } => {
             let authenticator =
                 mcp_principal_provider.ok_or(McpStartError::MissingSessionProvider)?;
@@ -339,8 +337,23 @@ async fn start_mcp_http(
                 AuthenticatedMcpHttpConfig::new(bind_addr, public_url, authorization_server)?;
             let session_endpoint = grpc_endpoint_uri.clone();
             // One unauthenticated client, connected once and reused, drives every
-            // readiness probe; the gRPC health service answers without a bearer.
+            // readiness probe and nothing else. Deciding admission with it would
+            // list one deployment-wide set of workspaces for every caller, so the
+            // per-caller concealment admission exists to provide would be gone;
+            // the runtime's per-token client below is what admission reads.
             let readiness_client = AppClient::connect(&grpc_endpoint_uri).await?;
+            // The operator's selection scopes this surface the same way
+            // `auth_disabled_options` scopes the loopback one: it replaces
+            // whatever the caller carried, a written name is forwarded byte for
+            // byte, and naming none stays `None`. What the surfaces do with it
+            // differs downstream — here the MCP adapter admits a session only
+            // when the name is one of that caller's own memberships, so an
+            // unnamed surface refuses every session rather than resolving a
+            // workspace on somebody's behalf.
+            let options = McpOptions {
+                workspace: workspace.map(coral_client::workspace),
+                ..mcp_options
+            };
             let runtime = AuthenticatedMcpHttpRuntime::new(
                 move |token| {
                     let authenticator = Arc::clone(&authenticator);
@@ -361,7 +374,7 @@ async fn start_mcp_http(
                             .map_err(|_error| ())
                     }
                 },
-                mcp_options,
+                options,
                 move || {
                     let client = readiness_client.clone();
                     async move { probe_serving_health(&client).await }
@@ -396,6 +409,13 @@ fn auth_disabled_options(options: McpOptions, workspace: Option<String>) -> McpO
 /// server-side instead whether this instance can reach the database it serves
 /// out of, under its readiness service name so the aggregate liveness check
 /// stays a constant.
+///
+/// Twin of `ReadinessProbe::from_app` in `coral-mcp/src/http.rs`, which maps
+/// server readiness onto `/readyz` for the loopback surface. The mapping — ready,
+/// not-ready as `Unavailable`, the status code otherwise — is duplicated on
+/// purpose: only the surface-specific reasoning around it differs, and no shared
+/// helper reconstructs workspace access for a caller. Change one mapping and the
+/// other needs the same change, or the two `/readyz` surfaces drift apart.
 async fn probe_serving_health(client: &AppClient) -> Result<(), Code> {
     match client.check_engine_ready().await {
         Ok(true) => Ok(()),
