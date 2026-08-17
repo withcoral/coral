@@ -4,6 +4,7 @@ import { constants } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { app } from 'electron'
+import { ensureDesktopCoralConfig } from './coral-config'
 
 export interface CoralSidecar {
   url: string
@@ -105,8 +106,8 @@ function startupTimeoutMs(): number | null {
   return app.isPackaged ? PACKAGED_STARTUP_TIMEOUT_MS : null
 }
 
-function envWithLoopbackNoProxy(): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env, CORAL_DESKTOP: '1' }
+function envWithLoopbackNoProxy(configDir: string): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, CORAL_CONFIG_DIR: configDir, CORAL_DESKTOP: '1' }
   for (const key of ['NO_PROXY', 'no_proxy']) {
     const existing = env[key]
       ?.split(',')
@@ -131,12 +132,13 @@ export function killAllTrackedChildren(): void {
   }
 }
 
-export function startCoralSidecar(): Promise<CoralSidecar> {
+export async function startCoralSidecar(): Promise<CoralSidecar> {
+  const configDir = await ensureDesktopCoralConfig(app.getPath('userData'))
   const command = sidecarCommand()
   const child = spawn(command.command, command.args, {
     cwd: command.cwd,
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: envWithLoopbackNoProxy(),
+    env: envWithLoopbackNoProxy(configDir),
   })
   liveChildren.add(child)
   child.once('exit', () => liveChildren.delete(child))
