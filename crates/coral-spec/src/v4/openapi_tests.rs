@@ -4205,6 +4205,14 @@ fn importer_rejects_array_parameters_it_cannot_serialize() {
             "unsupported serialization style 'spaceDelimited'",
             Some("spaceDelimited"),
         ),
+        // A present-but-wrongly-typed `style` must not read as absent, which
+        // would silently reinterpret it as the default `form`.
+        (
+            "numeric_style",
+            "{type: array, items: {type: string}}",
+            "unsupported serialization style",
+            Some("123"),
+        ),
     ];
 
     for (name, schema, expected, style) in cases {
@@ -4319,4 +4327,37 @@ fn array_query_parameters_are_never_lookup_keys() {
         panic!("expected REST metadata");
     };
     assert_eq!(lookup_keys, &["repository".to_string()]);
+}
+
+#[test]
+fn importer_rejects_array_parameters_with_a_non_boolean_explode() {
+    // Defaulting a malformed `explode` would pick a wire encoding the
+    // descriptor never asked for.
+    let ir = import_parameter_surface(
+        r#"
+  /items:
+    get:
+      operationId: items/list
+      parameters:
+        - name: exclude
+          in: query
+          explode: "false"
+          schema: {type: array, items: {type: string}}
+      responses:
+        '200': {content: {application/json: {schema: {type: array, items: {type: object}}}}}
+"#,
+    );
+
+    let operation = ir.operations.first().expect("operation");
+    assert!(
+        !operation.inputs.iter().any(|input| input.name == "exclude"),
+        "a malformed explode should not be imported"
+    );
+    let diagnostics = operation_diagnostics(&ir);
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.contains("non-boolean explode")),
+        "{diagnostics:?}"
+    );
 }

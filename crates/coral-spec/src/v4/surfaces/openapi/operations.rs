@@ -317,16 +317,21 @@ impl OpenApiImporter<'_> {
         }
 
         // `style` and `explode` are siblings of `schema` on the parameter
-        // object, not properties of the schema itself.
-        if let Some(style) = parameter_obj.get("style").and_then(Value::as_str)
-            && style != "form"
-        {
-            return reject(
-                format!(
-                    "parameter '{name}' is an array with unsupported serialization style '{style}'"
-                ),
-                diagnostics,
-            );
+        // object, not properties of the schema itself. A present-but-wrongly
+        // typed one is rejected rather than read as absent: silently falling
+        // back to the default would reinterpret the author's stated intent.
+        match parameter_obj.get("style") {
+            None => {}
+            Some(Value::String(style)) if style == "form" => {}
+            Some(style) => {
+                let style = json_schema_default_to_string(style);
+                return reject(
+                    format!(
+                        "parameter '{name}' is an array with unsupported serialization style '{style}'"
+                    ),
+                    diagnostics,
+                );
+            }
         }
 
         let items = self.read_schema(resolved.get("items").unwrap_or(&Value::Null));
@@ -352,11 +357,21 @@ impl OpenApiImporter<'_> {
             );
         }
 
-        // OpenAPI defaults `explode` to true for the `form` style.
-        let explode = parameter_obj
-            .get("explode")
-            .and_then(Value::as_bool)
-            .unwrap_or(true);
+        // OpenAPI defaults `explode` to true for the `form` style. A
+        // present-but-non-boolean value is rejected for the same reason as
+        // `style`: defaulting it would pick a wire encoding the author did not
+        // ask for.
+        let explode = match parameter_obj.get("explode") {
+            None => true,
+            Some(Value::Bool(explode)) => *explode,
+            Some(explode) => {
+                let explode = json_schema_default_to_string(explode);
+                return reject(
+                    format!("parameter '{name}' is an array with non-boolean explode '{explode}'"),
+                    diagnostics,
+                );
+            }
+        };
         Some(if explode {
             CollectionEncoding::Repeated
         } else {

@@ -58,8 +58,13 @@ pub struct ProjectionInput {
     pub required: bool,
     pub data_type: ManifestDataType,
     /// Set when this input takes a list of values rather than one, and how
-    /// that list is encoded onto the wire. `data_type` is
-    /// [`ManifestDataType::Json`] whenever this is set.
+    /// that list is encoded onto the wire.
+    ///
+    /// `data_type` is [`ManifestDataType::Utf8`] whenever this is set, even
+    /// though the conventional value is JSON array text. `Json` would reject
+    /// the bare single-value form at plan time, because a `Json` argument's
+    /// literal must parse as JSON before the value source runs. The list shape
+    /// lives here, not in `data_type`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub collection_encoding: Option<CollectionEncoding>,
     pub default_value: Option<String>,

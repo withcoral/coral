@@ -53,11 +53,15 @@ pub struct IrOperationInput {
     /// Set when this input takes a list of values rather than one, and how
     /// that list is encoded onto the wire.
     ///
-    /// `data_type` is [`IrScalarType::Json`] whenever this is set, and the SQL
-    /// value is a JSON array literal. Keeping the list out of `data_type`
-    /// means every match on the scalar vocabulary — pagination inference,
-    /// operation-metadata policy — excludes lists by construction rather than
-    /// by remembering to guard.
+    /// `data_type` is [`IrScalarType::Json`] whenever this is set. Keeping the
+    /// list out of `data_type` means every match on the scalar vocabulary —
+    /// pagination inference, operation-metadata policy — excludes lists by
+    /// construction rather than by remembering to guard.
+    ///
+    /// This is the import-side type only. Projections deliberately do not
+    /// lower it through [`IrScalarType::lower`]: the SQL binding type is
+    /// `Utf8`, so a caller may pass either JSON array text or a bare single
+    /// value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub collection_encoding: Option<CollectionEncoding>,
     pub default_value: Option<String>,

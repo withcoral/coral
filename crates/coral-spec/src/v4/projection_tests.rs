@@ -2483,7 +2483,7 @@ fn input<'a>(projection: &'a Projection, name: &str) -> &'a ProjectionInput {
 }
 
 #[test]
-fn collection_inputs_lower_to_json_and_keep_their_encoding() {
+fn collection_inputs_bind_as_utf8_and_keep_their_encoding() {
     let catalog = collection_catalog();
     let items = projection(&catalog, "list_items");
 
