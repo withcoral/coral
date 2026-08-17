@@ -56,6 +56,7 @@ export interface TableFunctionDef {
 export type SchemaItemDef = TableDef | TableFunctionDef
 
 export interface SchemaGroup {
+  catalogName?: string
   items: SchemaItemDef[]
   name: string
 }
@@ -75,14 +76,20 @@ export async function fetchSchemaFromCoral(
   const catalogItems = await listCatalogItems(catalogClient, workspace, signal)
   if (catalogItems.length === 0) return { connectors: [] }
 
-  const schemaMap = new Map<string, SchemaItemDef[]>()
+  const schemaMap = new Map<string, SchemaGroup>()
   for (const item of catalogItems) {
     if (item.item.case === 'table') {
       const table = item.item.value
       if (!table.schemaName || !table.name) continue
 
-      const schemaItems = schemaMap.get(table.schemaName) ?? []
-      schemaItems.push({
+      const catalogName = optional(table.catalogName)
+      const key = `${catalogName ?? ''}\0${table.schemaName}`
+      const schema = schemaMap.get(key) ?? {
+        ...(catalogName ? { catalogName } : {}),
+        items: [],
+        name: table.schemaName,
+      }
+      schema.items.push({
         columns: [],
         columnsLoaded: false,
         description: optional(table.description),
@@ -90,7 +97,7 @@ export async function fetchSchemaFromCoral(
         name: table.name,
         requiredFilters: table.requiredFilters,
       })
-      schemaMap.set(table.schemaName, schemaItems)
+      schemaMap.set(key, schema)
       continue
     }
 
@@ -98,8 +105,14 @@ export async function fetchSchemaFromCoral(
       const tableFunction = item.item.value
       if (!tableFunction.schemaName || !tableFunction.name) continue
 
-      const schemaItems = schemaMap.get(tableFunction.schemaName) ?? []
-      schemaItems.push({
+      const catalogName = optional(tableFunction.catalogName)
+      const key = `${catalogName ?? ''}\0${tableFunction.schemaName}`
+      const schema = schemaMap.get(key) ?? {
+        ...(catalogName ? { catalogName } : {}),
+        items: [],
+        name: tableFunction.schemaName,
+      }
+      schema.items.push({
         arguments: tableFunction.arguments.map((argument) => ({
           name: argument.name,
           required: argument.required,
@@ -115,12 +128,12 @@ export async function fetchSchemaFromCoral(
           type: column.dataType || 'unknown',
         })),
       })
-      schemaMap.set(tableFunction.schemaName, schemaItems)
+      schemaMap.set(key, schema)
     }
   }
 
   return {
-    connectors: [...schemaMap.entries()].map(([name, items]) => ({ items, name })),
+    connectors: [...schemaMap.values()],
   }
 }
 
@@ -143,6 +156,7 @@ async function listCatalogItems(
 export async function fetchTableColumnsFromCoral(
   catalogClient: CatalogClient,
   workspace: Workspace,
+  catalogName: string | undefined,
   schemaName: string,
   tableName: string,
   signal?: AbortSignal,
@@ -150,6 +164,7 @@ export async function fetchTableColumnsFromCoral(
   const firstPage = await listColumnsPage(
     catalogClient,
     workspace,
+    catalogName,
     schemaName,
     tableName,
     0,
@@ -164,7 +179,16 @@ export async function fetchTableColumnsFromCoral(
     const remainingPages = await mapWithConcurrency(
       pageOffsets(nextOffset, pagination.totalCount, COLUMN_PAGE_LIMIT),
       COLUMN_PAGE_CONCURRENCY,
-      (offset) => listColumnsPage(catalogClient, workspace, schemaName, tableName, offset, signal),
+      (offset) =>
+        listColumnsPage(
+          catalogClient,
+          workspace,
+          catalogName,
+          schemaName,
+          tableName,
+          offset,
+          signal,
+        ),
     )
     return columns.concat(remainingPages.flatMap(columnsFromResponse))
   }
@@ -174,6 +198,7 @@ export async function fetchTableColumnsFromCoral(
     const page = await listColumnsPage(
       catalogClient,
       workspace,
+      catalogName,
       schemaName,
       tableName,
       offset,
@@ -189,6 +214,7 @@ export async function fetchTableColumnsFromCoral(
 async function listColumnsPage(
   catalogClient: CatalogClient,
   workspace: Workspace,
+  catalogName: string | undefined,
   schemaName: string,
   tableName: string,
   offset: number,
@@ -200,6 +226,7 @@ async function listColumnsPage(
         limit: COLUMN_PAGE_LIMIT,
         offset,
       },
+      catalogName,
       schemaName,
       tableName,
       workspace,
@@ -254,7 +281,8 @@ function pageOffsets(firstOffset: number, totalCount: number, limit: number): nu
   return offsets
 }
 
-function optional(value: string): string | undefined {
+function optional(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined
   const trimmed = value.trim()
   return trimmed ? trimmed : undefined
 }
