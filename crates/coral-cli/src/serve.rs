@@ -329,6 +329,9 @@ async fn start_mcp_http(
             bind_addr,
             public_url,
             authorization_server,
+            // The authenticated runtime does not carry the configured workspace
+            // yet; forwarding it into per-session admission is the next change.
+            workspace: _configured_workspace,
         } => {
             let authenticator =
                 mcp_principal_provider.ok_or(McpStartError::MissingSessionProvider)?;

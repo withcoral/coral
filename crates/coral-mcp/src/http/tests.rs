@@ -562,6 +562,7 @@ async fn readyz_reports_unready_when_the_engine_cannot_resolve_a_real_catalog() 
         options,
         ReadinessProbe::from_app(app),
         IpAddr::V4(Ipv4Addr::LOCALHOST),
+        &[],
     )
     .expect("router scoped to a workspace");
 
@@ -659,7 +660,7 @@ async fn auth_disabled_workspace_selection_reports_zero_and_several_distinctly()
         McpHttpConfig::new(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).expect("loopback config");
 
     let Err(McpHttpError::NoLocalWorkspace) =
-        start_auth_disabled(config, app.clone(), McpOptions::default()).await
+        start_auth_disabled(config.clone(), app.clone(), McpOptions::default()).await
     else {
         panic!("a local user with no workspace must be told to create one");
     };

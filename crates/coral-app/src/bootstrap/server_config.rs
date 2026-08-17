@@ -247,12 +247,6 @@ impl RawMcpHttpSettings {
                     .to_string(),
             ));
         }
-        if self.workspace.is_some() {
-            return Err(AppError::FailedPrecondition(
-                "server.mcp_http.workspace applies only to auth-disabled MCP HTTP; an authenticated session's workspace comes from its memberships"
-                    .to_string(),
-            ));
-        }
         let public_url =
             required_oauth_url("server.mcp_http.public_url", self.public_url.as_deref())?;
         let authorization_server = authorization_server.to_string();
@@ -261,6 +255,7 @@ impl RawMcpHttpSettings {
             bind_addr: self.bind,
             public_url,
             authorization_server,
+            workspace: self.workspace()?,
         }))
     }
 
@@ -340,6 +335,14 @@ pub enum McpHttpServeConfig {
         public_url: String,
         /// OAuth authorization server advertised to MCP clients.
         authorization_server: String,
+        /// Validated name of the shared workspace every session is bound to.
+        ///
+        /// `None` means the operator named none, which stays a valid server
+        /// configuration: whether a session may proceed is answered per session
+        /// against the caller's memberships, so refusing to start would deny an
+        /// instance that is otherwise serving its other surfaces. Only the name's
+        /// shape is checked here — existence is a request-time question.
+        workspace: Option<String>,
     },
 }
 
@@ -688,29 +691,67 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
         }
     }
 
-    /// An authenticated session's workspace comes from the caller's
-    /// memberships, so a configured name there would be silently ignored.
+    /// An authenticated surface serves the one workspace its configuration
+    /// names, so the name is carried through both modes by the same parser, and
+    /// naming none stays absent rather than becoming a substituted default.
     #[test]
-    fn auth_disabled_workspace_is_rejected_when_auth_is_configured() {
-        let temp = TempDir::new().expect("temp dir");
-        let layout = AppStateLayout::discover(Some(temp.path().join("config"))).expect("layout");
-        write_authenticated_config(
-            &layout,
-            "[server.mcp_http]\nenabled = true\nbind = '127.0.0.1:0'\npublic_url = 'https://mcp.example.test/'\nworkspace = 'analytics'\n",
-        );
+    fn authenticated_workspace_carries_an_explicit_name_and_nothing_otherwise() {
+        for (workspace_field, expected) in [
+            ("", None),
+            ("workspace = 'analytics'\n", Some("analytics")),
+            ("workspace = '  analytics  '\n", Some("analytics")),
+            // `default` carries no reserved status on this surface either.
+            ("workspace = 'default'\n", Some("default")),
+        ] {
+            let temp = TempDir::new().expect("temp dir");
+            let layout =
+                AppStateLayout::discover(Some(temp.path().join("config"))).expect("layout");
+            write_authenticated_config(
+                &layout,
+                &format!(
+                    "[server.mcp_http]\nenabled = true\nbind = '127.0.0.1:0'\npublic_url = 'https://mcp.example.test/'\n{workspace_field}"
+                ),
+            );
 
-        let error = LoadedServerConfig::load(&layout)
-            .expect("load")
-            .companion_settings()
-            .err()
-            .expect("a configured workspace must not be silently ignored");
+            let companions = LoadedServerConfig::load(&layout)
+                .expect("load")
+                .companion_settings()
+                .expect("a configured workspace is not a startup precondition");
+            let Some(McpHttpServeConfig::Authenticated { workspace, .. }) =
+                companions.mcp_http.as_ref()
+            else {
+                panic!("configured [auth] must produce an authenticated MCP surface");
+            };
+            assert_eq!(workspace.as_deref(), expected, "config: {workspace_field}");
+        }
+    }
 
-        assert!(
-            error
-                .to_string()
-                .contains("server.mcp_http.workspace applies only to auth-disabled MCP HTTP"),
-            "error: {error}"
-        );
+    /// A name nothing could ever match is the operator's mistake, so it fails at
+    /// startup in both modes — unlike a well-formed name for a workspace that
+    /// does not exist yet, which stays a per-session question.
+    #[test]
+    fn authenticated_workspace_rejects_an_unusable_name() {
+        for invalid in ["", "   ", "..", "team/analytics"] {
+            let temp = TempDir::new().expect("temp dir");
+            let layout =
+                AppStateLayout::discover(Some(temp.path().join("config"))).expect("layout");
+            write_authenticated_config(
+                &layout,
+                &format!(
+                    "[server.mcp_http]\nenabled = true\nbind = '127.0.0.1:0'\npublic_url = 'https://mcp.example.test/'\nworkspace = '{invalid}'\n"
+                ),
+            );
+
+            let error = LoadedServerConfig::load(&layout)
+                .expect("load")
+                .companion_settings()
+                .err()
+                .expect("an unusable workspace name must fail");
+            assert!(
+                error.to_string().contains("server.mcp_http.workspace"),
+                "error: {error}"
+            );
+        }
     }
 
     #[test]
@@ -891,6 +932,7 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
                 bind_addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
                 public_url: "https://mcp.example.test".to_string(),
                 authorization_server: "https://auth.example.test".to_string(),
+                workspace: None,
             })
         );
         // Resolution reports that session auth is configured; constructing the
