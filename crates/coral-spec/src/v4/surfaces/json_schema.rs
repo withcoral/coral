@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
@@ -12,11 +13,18 @@ pub(crate) enum RefError<'a> {
     NotFound(&'a str),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum JsonSchemaWalkError<'a> {
-    ExternalRef(&'a str),
-    RefCycle(&'a str),
-    RefNotFound(&'a str),
+/// Why a schema walk stopped.
+///
+/// Owns the reference it names rather than borrowing it from the schema it
+/// walked. The walk hands its visitor a schema that may have been normalized on
+/// the way out — an owned value with a shorter life than the document — and a
+/// borrowed reference would tie every error, and so every walk signature, to
+/// whichever of the two it came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum JsonSchemaWalkError {
+    ExternalRef(String),
+    RefCycle(String),
+    RefNotFound(String),
     DepthExceeded,
 }
 
@@ -46,53 +54,119 @@ pub(crate) fn resolve_local_ref<'a>(
     root.pointer(pointer).ok_or(RefError::NotFound(reference))
 }
 
-pub(crate) fn with_resolved_json_schema<'a, T>(
-    root: &'a Value,
-    schema: &'a Value,
+/// The document a walk resolves `$ref` against, and how to read what it finds.
+///
+/// The document itself is never rewritten, so a pointer resolves against what
+/// the provider published for as long as the import runs. That matters for a
+/// `$ref` that names a subschema — `#/components/schemas/Page/anyOf/0` is a
+/// legal pointer — which any rewrite of the tree above it would leave dangling.
+/// A surface that needs schemas in a spelling its readers understand supplies a
+/// normalizer instead, and the walk applies it to each schema on the way out.
+#[derive(Clone, Copy)]
+pub(crate) struct SchemaRoot<'a> {
+    document: &'a Value,
+    /// Returns the rewritten schema, or `None` when it has nothing to change —
+    /// so a document that needs no normalizing is walked without a single
+    /// clone.
+    normalize: Option<fn(&Value) -> Option<Value>>,
+}
+
+impl<'a> SchemaRoot<'a> {
+    /// Reads `document` exactly as it was published.
+    pub(crate) fn new(document: &'a Value) -> Self {
+        Self {
+            document,
+            normalize: None,
+        }
+    }
+
+    /// Reads `document` through `normalize`, applied to every schema the walk
+    /// resolves.
+    pub(crate) fn normalized_by(
+        document: &'a Value,
+        normalize: fn(&Value) -> Option<Value>,
+    ) -> Self {
+        Self {
+            document,
+            normalize: Some(normalize),
+        }
+    }
+
+    pub(crate) fn document(self) -> &'a Value {
+        self.document
+    }
+
+    /// The schema as its readers should see it, borrowed when nothing changed.
+    pub(crate) fn read(self, schema: &Value) -> Cow<'_, Value> {
+        self.normalize
+            .and_then(|normalize| normalize(schema))
+            .map_or(Cow::Borrowed(schema), Cow::Owned)
+    }
+}
+
+/// Resolves `schema` against `root` and hands the result to `visit`.
+///
+/// The visited schema is borrowed for the call alone rather than for the
+/// document's lifetime, because [`SchemaRoot`] may normalize it into a value
+/// that only lives as long as this frame.
+pub(crate) fn with_resolved_json_schema<T>(
+    root: SchemaRoot<'_>,
+    schema: &Value,
     resolving_refs: &mut BTreeSet<String>,
     depth: usize,
     max_depth: usize,
-    visit: impl FnOnce(&'a Value, &mut BTreeSet<String>, usize) -> Result<T, JsonSchemaWalkError<'a>>,
-) -> Result<T, JsonSchemaWalkError<'a>> {
+    visit: impl FnOnce(&Value, &mut BTreeSet<String>, usize) -> Result<T, JsonSchemaWalkError>,
+) -> Result<T, JsonSchemaWalkError> {
     if depth > max_depth {
         return Err(JsonSchemaWalkError::DepthExceeded);
     }
 
+    let schema = root.read(schema);
     let reference = schema.get("$ref").and_then(Value::as_str);
     let guarded_reference = match reference {
         Some(reference) if reference.starts_with("#/") => {
             if !resolving_refs.insert(reference.to_string()) {
-                return Err(JsonSchemaWalkError::RefCycle(reference));
+                return Err(JsonSchemaWalkError::RefCycle(reference.to_string()));
             }
-            Some(reference)
+            Some(reference.to_string())
         }
         _ => None,
     };
 
-    let resolved = resolve_local_ref(root, schema).map_err(json_schema_walk_error_from_ref);
     let next_depth = depth + 1;
-    let result = match resolved {
-        Ok(resolved) if resolved.get("$ref").is_some() => {
-            with_resolved_json_schema(root, resolved, resolving_refs, next_depth, max_depth, visit)
+    let result = match resolve_local_ref(root.document(), &schema) {
+        Ok(resolved) => {
+            let resolved = root.read(resolved);
+            if resolved.get("$ref").is_some() {
+                with_resolved_json_schema(
+                    root,
+                    &resolved,
+                    resolving_refs,
+                    next_depth,
+                    max_depth,
+                    visit,
+                )
+            } else {
+                visit(&resolved, resolving_refs, next_depth)
+            }
         }
-        Ok(resolved) => visit(resolved, resolving_refs, next_depth),
-        Err(error) => Err(error),
+        Err(error) => Err(json_schema_walk_error_from_ref(error)),
     };
 
     if let Some(reference) = guarded_reference {
-        resolving_refs.remove(reference);
+        resolving_refs.remove(&reference);
     }
 
     result
 }
 
-pub(crate) fn resolve_json_schema_ref_with_siblings<'a>(
-    root: &'a Value,
-    schema: &'a Value,
+pub(crate) fn resolve_json_schema_ref_with_siblings(
+    root: SchemaRoot<'_>,
+    schema: &Value,
     resolving_refs: &mut BTreeSet<String>,
     depth: usize,
     max_depth: usize,
-) -> Result<Value, JsonSchemaWalkError<'a>> {
+) -> Result<Value, JsonSchemaWalkError> {
     with_resolved_json_schema(
         root,
         schema,
@@ -124,13 +198,13 @@ fn is_ref_site_metadata_key(key: &str) -> bool {
     ANNOTATION_KEYS.contains(&key)
 }
 
-fn resolve_json_schema_refs_allow_cycles<'a>(
-    root: &'a Value,
-    schema: &'a Value,
+fn resolve_json_schema_refs_allow_cycles(
+    root: SchemaRoot<'_>,
+    schema: &Value,
     resolving_refs: &mut BTreeSet<String>,
     depth: usize,
     max_depth: usize,
-) -> Result<Value, JsonSchemaWalkError<'a>> {
+) -> Result<Value, JsonSchemaWalkError> {
     match with_resolved_json_schema(
         root,
         schema,
@@ -153,13 +227,13 @@ fn resolve_json_schema_refs_allow_cycles<'a>(
     }
 }
 
-fn resolve_json_schema_child_refs_allow_cycles<'a>(
-    root: &'a Value,
-    schema: &'a Value,
+fn resolve_json_schema_child_refs_allow_cycles(
+    root: SchemaRoot<'_>,
+    schema: &Value,
     resolving_refs: &mut BTreeSet<String>,
     depth: usize,
     max_depth: usize,
-) -> Result<Value, JsonSchemaWalkError<'a>> {
+) -> Result<Value, JsonSchemaWalkError> {
     let Some(object) = schema.as_object() else {
         return Ok(schema.clone());
     };
@@ -225,14 +299,23 @@ fn resolve_json_schema_child_refs_allow_cycles<'a>(
     Ok(Value::Object(resolved))
 }
 
-fn json_schema_walk_error_from_ref(error: RefError<'_>) -> JsonSchemaWalkError<'_> {
+fn json_schema_walk_error_from_ref(error: RefError<'_>) -> JsonSchemaWalkError {
     match error {
-        RefError::External(reference) => JsonSchemaWalkError::ExternalRef(reference),
-        RefError::NotFound(reference) => JsonSchemaWalkError::RefNotFound(reference),
+        RefError::External(reference) => JsonSchemaWalkError::ExternalRef(reference.to_string()),
+        RefError::NotFound(reference) => JsonSchemaWalkError::RefNotFound(reference.to_string()),
     }
 }
 
-pub(crate) fn direct_json_object_shape(schema: &Value) -> JsonObjectShape {
+/// The properties and required set a schema declares in its own right.
+///
+/// Takes the [`SchemaRoot`] because the properties it hands back are schemas,
+/// and a caller that compares two of them is comparing what the provider wrote.
+/// Two `allOf` branches may declare one property in different spellings of the
+/// same thing — `{type: [string, "null"]}` against
+/// `{anyOf: [{type: string}, {type: "null"}]}` — and
+/// `json_schema_property_schemas_conflict` would read that as a genuine
+/// disagreement and discard the whole composed type.
+pub(crate) fn direct_json_object_shape(root: SchemaRoot<'_>, schema: &Value) -> JsonObjectShape {
     let Some(schema) = schema.as_object() else {
         return JsonObjectShape::default();
     };
@@ -242,7 +325,7 @@ pub(crate) fn direct_json_object_shape(schema: &Value) -> JsonObjectShape {
         .map(|properties| {
             properties
                 .iter()
-                .map(|(name, property)| (name.clone(), property.clone()))
+                .map(|(name, property)| (name.clone(), root.read(property).into_owned()))
                 .collect()
         })
         .unwrap_or_default();
@@ -338,9 +421,9 @@ impl MergedObjectView {
 /// import has the opposite need and folds through
 /// [`merge_json_object_shape_annotation_insensitive`], which reports a genuine
 /// disagreement rather than resolving it by branch order.
-pub(crate) fn merged_all_of_object_view<'a>(
-    root: &'a Value,
-    schema: &'a Value,
+pub(crate) fn merged_all_of_object_view(
+    root: SchemaRoot<'_>,
+    schema: &Value,
     resolving_refs: &mut BTreeSet<String>,
     depth: usize,
     max_depth: usize,
@@ -382,7 +465,7 @@ pub(crate) fn merged_all_of_object_view<'a>(
 /// alternation anywhere is different — it makes the whole merge meaningless, so
 /// it is recorded and the caller discards the view.
 fn collect_all_of_branches(
-    root: &Value,
+    root: SchemaRoot<'_>,
     schema: &Value,
     resolving_refs: &mut BTreeSet<String>,
     depth: usize,
@@ -419,9 +502,12 @@ fn collect_all_of_branches(
             }
             if let Some(properties) = resolved.get("properties").and_then(Value::as_object) {
                 for (name, property) in properties {
+                    // Normalized on the way into the view for the same reason
+                    // as in `direct_json_object_shape`: these are schemas, and
+                    // every caller reads them as such.
                     view.properties
                         .entry(name.clone())
-                        .or_insert_with(|| property.clone());
+                        .or_insert_with(|| root.read(property).into_owned());
                 }
             }
             for branch in resolved
@@ -559,11 +645,11 @@ fn json_schema_property_schemas_conflict(
     Ok(left != right)
 }
 
-fn schema_validation_fingerprint<'a>(
+fn schema_validation_fingerprint(
     schema: &Value,
     depth: usize,
     max_depth: usize,
-) -> Result<Value, JsonSchemaWalkError<'a>> {
+) -> Result<Value, JsonSchemaWalkError> {
     if depth > max_depth {
         return Err(JsonSchemaWalkError::DepthExceeded);
     }
@@ -610,11 +696,11 @@ fn schema_validation_fingerprint<'a>(
     Ok(Value::Object(out))
 }
 
-fn schema_map_validation_fingerprint<'a>(
+fn schema_map_validation_fingerprint(
     schemas: &Value,
     depth: usize,
     max_depth: usize,
-) -> Result<Value, JsonSchemaWalkError<'a>> {
+) -> Result<Value, JsonSchemaWalkError> {
     if depth > max_depth {
         return Err(JsonSchemaWalkError::DepthExceeded);
     }
@@ -635,11 +721,11 @@ fn schema_map_validation_fingerprint<'a>(
     ))
 }
 
-fn schema_dependency_map_validation_fingerprint<'a>(
+fn schema_dependency_map_validation_fingerprint(
     dependencies: &Value,
     depth: usize,
     max_depth: usize,
-) -> Result<Value, JsonSchemaWalkError<'a>> {
+) -> Result<Value, JsonSchemaWalkError> {
     if depth > max_depth {
         return Err(JsonSchemaWalkError::DepthExceeded);
     }
@@ -660,11 +746,11 @@ fn schema_dependency_map_validation_fingerprint<'a>(
     ))
 }
 
-fn schema_or_schema_array_validation_fingerprint<'a>(
+fn schema_or_schema_array_validation_fingerprint(
     value: &Value,
     depth: usize,
     max_depth: usize,
-) -> Result<Value, JsonSchemaWalkError<'a>> {
+) -> Result<Value, JsonSchemaWalkError> {
     match value {
         Value::Array(_values) => schema_array_validation_fingerprint(value, depth, max_depth),
         Value::Object(_) | Value::Bool(_) => schema_validation_fingerprint(value, depth, max_depth),
@@ -672,11 +758,11 @@ fn schema_or_schema_array_validation_fingerprint<'a>(
     }
 }
 
-fn schema_array_validation_fingerprint<'a>(
+fn schema_array_validation_fingerprint(
     schemas: &Value,
     depth: usize,
     max_depth: usize,
-) -> Result<Value, JsonSchemaWalkError<'a>> {
+) -> Result<Value, JsonSchemaWalkError> {
     if depth > max_depth {
         return Err(JsonSchemaWalkError::DepthExceeded);
     }
@@ -817,7 +903,7 @@ mod tests {
         let mut resolving_refs = BTreeSet::new();
 
         let guard_was_active = with_resolved_json_schema(
-            &root,
+            SchemaRoot::new(&root),
             &schema,
             &mut resolving_refs,
             0,
@@ -849,9 +935,14 @@ mod tests {
         let mut resolving_refs = BTreeSet::new();
         let filter = root.pointer("/properties/filter").expect("filter schema");
 
-        let resolved =
-            resolve_json_schema_ref_with_siblings(&root, filter, &mut resolving_refs, 0, 8)
-                .expect("resolved");
+        let resolved = resolve_json_schema_ref_with_siblings(
+            SchemaRoot::new(&root),
+            filter,
+            &mut resolving_refs,
+            0,
+            8,
+        )
+        .expect("resolved");
 
         assert_eq!(
             resolved
@@ -864,25 +955,31 @@ mod tests {
 
     #[test]
     fn annotation_insensitive_object_shape_merge_keeps_metadata() {
-        let mut target = direct_json_object_shape(&json!({
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": ["string", "null"],
-                    "title": "Query"
+        let mut target = direct_json_object_shape(
+            SchemaRoot::new(&Value::Null),
+            &json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": ["string", "null"],
+                        "title": "Query"
+                    }
                 }
-            }
-        }));
-        let source = direct_json_object_shape(&json!({
-            "type": "object",
-            "required": ["query"],
-            "properties": {
-                "query": {
-                    "type": ["null", "string"],
-                    "description": "Search query"
+            }),
+        );
+        let source = direct_json_object_shape(
+            SchemaRoot::new(&Value::Null),
+            &json!({
+                "type": "object",
+                "required": ["query"],
+                "properties": {
+                    "query": {
+                        "type": ["null", "string"],
+                        "description": "Search query"
+                    }
                 }
-            }
-        }));
+            }),
+        );
 
         merge_json_object_shape_annotation_insensitive(&mut target, source, 0, 100).expect("merge");
 
@@ -897,68 +994,80 @@ mod tests {
 
     #[test]
     fn annotation_insensitive_object_shape_merge_ignores_nested_schema_annotations() {
-        let mut target = direct_json_object_shape(&json!({
-            "type": "object",
-            "properties": {
-                "filter": {
-                    "type": "object",
-                    "properties": {
-                        "status": {
-                            "type": "string",
-                            "description": "Public status"
+        let mut target = direct_json_object_shape(
+            SchemaRoot::new(&Value::Null),
+            &json!({
+                "type": "object",
+                "properties": {
+                    "filter": {
+                        "type": "object",
+                        "properties": {
+                            "status": {
+                                "type": "string",
+                                "description": "Public status"
+                            }
                         }
                     }
                 }
-            }
-        }));
-        let source = direct_json_object_shape(&json!({
-            "type": "object",
-            "properties": {
-                "filter": {
-                    "type": "object",
-                    "properties": {
-                        "status": {
-                            "type": "string",
-                            "description": "Internal workflow state"
+            }),
+        );
+        let source = direct_json_object_shape(
+            SchemaRoot::new(&Value::Null),
+            &json!({
+                "type": "object",
+                "properties": {
+                    "filter": {
+                        "type": "object",
+                        "properties": {
+                            "status": {
+                                "type": "string",
+                                "description": "Internal workflow state"
+                            }
                         }
                     }
                 }
-            }
-        }));
+            }),
+        );
 
         merge_json_object_shape_annotation_insensitive(&mut target, source, 0, 100).expect("merge");
     }
 
     #[test]
     fn annotation_insensitive_object_shape_merge_keeps_const_values_opaque() {
-        let mut target = direct_json_object_shape(&json!({
-            "type": "object",
-            "properties": {
-                "filter": {
-                    "type": "object",
-                    "properties": {
-                        "status": {
-                            "const": {
-                                "description": "open"
+        let mut target = direct_json_object_shape(
+            SchemaRoot::new(&Value::Null),
+            &json!({
+                "type": "object",
+                "properties": {
+                    "filter": {
+                        "type": "object",
+                        "properties": {
+                            "status": {
+                                "const": {
+                                    "description": "open"
+                                }
                             }
                         }
                     }
                 }
-            }
-        }));
-        let source = direct_json_object_shape(&json!({
-            "type": "object",
-            "properties": {
-                "filter": {
-                    "type": "object",
-                    "properties": {
-                        "status": {
-                            "const": {}
+            }),
+        );
+        let source = direct_json_object_shape(
+            SchemaRoot::new(&Value::Null),
+            &json!({
+                "type": "object",
+                "properties": {
+                    "filter": {
+                        "type": "object",
+                        "properties": {
+                            "status": {
+                                "const": {}
+                            }
                         }
                     }
                 }
-            }
-        }));
+            }),
+        );
 
         assert_eq!(
             merge_json_object_shape_annotation_insensitive(&mut target, source, 0, 100),
@@ -970,36 +1079,42 @@ mod tests {
 
     #[test]
     fn annotation_insensitive_object_shape_merge_keeps_enum_values_opaque() {
-        let mut target = direct_json_object_shape(&json!({
-            "type": "object",
-            "properties": {
-                "filter": {
-                    "type": "object",
-                    "properties": {
-                        "status": {
-                            "enum": [
-                                {"description": "open"}
-                            ]
+        let mut target = direct_json_object_shape(
+            SchemaRoot::new(&Value::Null),
+            &json!({
+                "type": "object",
+                "properties": {
+                    "filter": {
+                        "type": "object",
+                        "properties": {
+                            "status": {
+                                "enum": [
+                                    {"description": "open"}
+                                ]
+                            }
                         }
                     }
                 }
-            }
-        }));
-        let source = direct_json_object_shape(&json!({
-            "type": "object",
-            "properties": {
-                "filter": {
-                    "type": "object",
-                    "properties": {
-                        "status": {
-                            "enum": [
-                                {}
-                            ]
+            }),
+        );
+        let source = direct_json_object_shape(
+            SchemaRoot::new(&Value::Null),
+            &json!({
+                "type": "object",
+                "properties": {
+                    "filter": {
+                        "type": "object",
+                        "properties": {
+                            "status": {
+                                "enum": [
+                                    {}
+                                ]
+                            }
                         }
                     }
                 }
-            }
-        }));
+            }),
+        );
 
         assert_eq!(
             merge_json_object_shape_annotation_insensitive(&mut target, source, 0, 100),
@@ -1011,26 +1126,32 @@ mod tests {
 
     #[test]
     fn annotation_insensitive_object_shape_merge_keeps_unknown_keyword_values_opaque() {
-        let mut target = direct_json_object_shape(&json!({
-            "type": "object",
-            "properties": {
-                "filter": {
-                    "type": "object",
-                    "x-coral-metadata": {
-                        "description": "left"
+        let mut target = direct_json_object_shape(
+            SchemaRoot::new(&Value::Null),
+            &json!({
+                "type": "object",
+                "properties": {
+                    "filter": {
+                        "type": "object",
+                        "x-coral-metadata": {
+                            "description": "left"
+                        }
                     }
                 }
-            }
-        }));
-        let source = direct_json_object_shape(&json!({
-            "type": "object",
-            "properties": {
-                "filter": {
-                    "type": "object",
-                    "x-coral-metadata": {}
+            }),
+        );
+        let source = direct_json_object_shape(
+            SchemaRoot::new(&Value::Null),
+            &json!({
+                "type": "object",
+                "properties": {
+                    "filter": {
+                        "type": "object",
+                        "x-coral-metadata": {}
+                    }
                 }
-            }
-        }));
+            }),
+        );
 
         assert_eq!(
             merge_json_object_shape_annotation_insensitive(&mut target, source, 0, 100),
@@ -1042,74 +1163,86 @@ mod tests {
 
     #[test]
     fn annotation_insensitive_object_shape_merge_recurses_into_schema_dependencies() {
-        let mut target = direct_json_object_shape(&json!({
-            "type": "object",
-            "properties": {
-                "filter": {
-                    "type": "object",
-                    "dependencies": {
-                        "status": {
-                            "type": "object",
-                            "properties": {
-                                "reason": {
-                                    "type": "string",
-                                    "description": "Public reason"
+        let mut target = direct_json_object_shape(
+            SchemaRoot::new(&Value::Null),
+            &json!({
+                "type": "object",
+                "properties": {
+                    "filter": {
+                        "type": "object",
+                        "dependencies": {
+                            "status": {
+                                "type": "object",
+                                "properties": {
+                                    "reason": {
+                                        "type": "string",
+                                        "description": "Public reason"
+                                    }
                                 }
-                            }
-                        },
-                        "owner": ["team"]
+                            },
+                            "owner": ["team"]
+                        }
                     }
                 }
-            }
-        }));
-        let source = direct_json_object_shape(&json!({
-            "type": "object",
-            "properties": {
-                "filter": {
-                    "type": "object",
-                    "dependencies": {
-                        "status": {
-                            "type": "object",
-                            "properties": {
-                                "reason": {
-                                    "type": "string",
-                                    "description": "Internal reason"
+            }),
+        );
+        let source = direct_json_object_shape(
+            SchemaRoot::new(&Value::Null),
+            &json!({
+                "type": "object",
+                "properties": {
+                    "filter": {
+                        "type": "object",
+                        "dependencies": {
+                            "status": {
+                                "type": "object",
+                                "properties": {
+                                    "reason": {
+                                        "type": "string",
+                                        "description": "Internal reason"
+                                    }
                                 }
-                            }
-                        },
-                        "owner": ["team"]
+                            },
+                            "owner": ["team"]
+                        }
                     }
                 }
-            }
-        }));
+            }),
+        );
 
         merge_json_object_shape_annotation_insensitive(&mut target, source, 0, 100).expect("merge");
     }
 
     #[test]
     fn annotation_insensitive_object_shape_merge_reports_depth_exceeded() {
-        let mut target = direct_json_object_shape(&json!({
-            "type": "object",
-            "properties": {
-                "filter": {
-                    "type": "object",
-                    "properties": {
-                        "value": {"type": "string"}
+        let mut target = direct_json_object_shape(
+            SchemaRoot::new(&Value::Null),
+            &json!({
+                "type": "object",
+                "properties": {
+                    "filter": {
+                        "type": "object",
+                        "properties": {
+                            "value": {"type": "string"}
+                        }
                     }
                 }
-            }
-        }));
-        let source = direct_json_object_shape(&json!({
-            "type": "object",
-            "properties": {
-                "filter": {
-                    "type": "object",
-                    "properties": {
-                        "value": {"type": "string"}
+            }),
+        );
+        let source = direct_json_object_shape(
+            SchemaRoot::new(&Value::Null),
+            &json!({
+                "type": "object",
+                "properties": {
+                    "filter": {
+                        "type": "object",
+                        "properties": {
+                            "value": {"type": "string"}
+                        }
                     }
                 }
-            }
-        }));
+            }),
+        );
 
         assert_eq!(
             merge_json_object_shape_annotation_insensitive(&mut target, source, 0, 1),

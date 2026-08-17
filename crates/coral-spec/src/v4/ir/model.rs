@@ -72,7 +72,6 @@ pub enum OutputCardinality {
 pub struct IrType {
     pub id: String,
     pub shape: IrTypeShape,
-    pub nullable: bool,
     pub description: String,
 }
 
@@ -92,7 +91,6 @@ pub struct IrField {
     pub name: String,
     pub type_ref: String,
     pub required: bool,
-    pub nullable: bool,
     pub description: String,
 }
 
@@ -211,13 +209,11 @@ mod tests {
                 IrType {
                     id: "issue".to_string(),
                     shape: IrTypeShape::Object { fields: Vec::new() },
-                    nullable: false,
                     description: String::new(),
                 },
                 IrType {
                     id: "issue_id".to_string(),
                     shape: IrTypeShape::Scalar(IrScalarType::String),
-                    nullable: false,
                     description: String::new(),
                 },
             ],
@@ -271,7 +267,6 @@ mod tests {
             types: vec![IrType {
                 id: "item".to_string(),
                 shape: IrTypeShape::Object { fields: Vec::new() },
-                nullable: false,
                 description: String::new(),
             }],
             diagnostics: Vec::new(),
@@ -314,7 +309,6 @@ types:
   - id: issue
     shape: !Object
       fields: []
-    nullable: false
     description: ""
 diagnostics: []
 "#

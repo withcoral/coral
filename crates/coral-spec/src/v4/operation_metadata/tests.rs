@@ -455,7 +455,6 @@ fn plan_rejects_dangling_nested_type_reference() {
         shape: crate::v4::IrTypeShape::List {
             item_type_ref: "missing_item_type".to_string(),
         },
-        nullable: false,
         description: String::new(),
     });
 

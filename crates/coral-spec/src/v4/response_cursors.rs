@@ -28,7 +28,7 @@ use std::collections::BTreeSet;
 use serde_json::Value;
 
 use crate::v4::surfaces::json_schema::{
-    JsonSchemaWalkError, json_schema_type_contains, merged_all_of_object_view,
+    JsonSchemaWalkError, SchemaRoot, json_schema_type_contains, merged_all_of_object_view,
     with_resolved_json_schema,
 };
 
@@ -40,7 +40,7 @@ const MAX_DEPTH: usize = 8;
 /// Names are matched after collapsing case and separators, so `nextCursor`,
 /// `next_cursor`, and `next-cursor` all match the token `nextcursor`.
 pub(in crate::v4) fn find_response_cursor_path(
-    root: &Value,
+    root: SchemaRoot<'_>,
     schema: &Value,
     name_tokens: &[&str],
     string_type: StringTypeRequirement,
@@ -78,14 +78,14 @@ pub(in crate::v4) enum StringTypeRequirement {
 
 /// Prefers a cursor on the level being walked before descending, so a nested
 /// `meta.next_cursor` never wins over one the envelope declares itself.
-fn cursor_path<'a>(
-    root: &'a Value,
-    schema: &'a Value,
+fn cursor_path(
+    root: SchemaRoot<'_>,
+    schema: &Value,
     name_tokens: &[&str],
     string_type: StringTypeRequirement,
     resolving_refs: &mut BTreeSet<String>,
     depth: usize,
-) -> Result<Option<Vec<String>>, JsonSchemaWalkError<'a>> {
+) -> Result<Option<Vec<String>>, JsonSchemaWalkError> {
     with_resolved_json_schema(
         root,
         schema,
@@ -157,7 +157,7 @@ fn cursor_path<'a>(
 /// property is kept; under [`StringTypeRequirement::Declared`] it is precisely
 /// the absent declaration the caller insists on, so it is rejected.
 fn property_holds_string(
-    root: &Value,
+    root: SchemaRoot<'_>,
     schema: &Value,
     string_type: StringTypeRequirement,
     resolving_refs: &mut BTreeSet<String>,
@@ -217,7 +217,7 @@ fn declares_only_string(schema: &Value) -> bool {
 /// Descent is the opposite case: a property that cannot be resolved into an
 /// object is not one to search.
 fn property_is_object(
-    root: &Value,
+    root: SchemaRoot<'_>,
     schema: &Value,
     resolving_refs: &mut BTreeSet<String>,
     depth: usize,
@@ -259,6 +259,8 @@ fn normalized_name(name: &str) -> String {
 mod tests {
     use serde_json::{Value, json};
 
+    use crate::v4::surfaces::json_schema::SchemaRoot;
+
     use super::{StringTypeRequirement, find_response_cursor_path};
 
     const TOKENS: &[&str] = &["nextcursor", "nextpagetoken", "nexttoken", "endcursor"];
@@ -266,12 +268,22 @@ mod tests {
     /// The cursor-detection standard: a name match is enough unless the schema
     /// declares a type that rules it out.
     fn find_untyped(root: &Value, schema: &Value, tokens: &[&str]) -> Option<Vec<String>> {
-        find_response_cursor_path(root, schema, tokens, StringTypeRequirement::Untyped)
+        find_response_cursor_path(
+            SchemaRoot::new(root),
+            schema,
+            tokens,
+            StringTypeRequirement::Untyped,
+        )
     }
 
     /// The body-next-URL standard: the schema has to say `string`.
     fn find_declared(root: &Value, schema: &Value, tokens: &[&str]) -> Option<Vec<String>> {
-        find_response_cursor_path(root, schema, tokens, StringTypeRequirement::Declared)
+        find_response_cursor_path(
+            SchemaRoot::new(root),
+            schema,
+            tokens,
+            StringTypeRequirement::Declared,
+        )
     }
 
     #[test]

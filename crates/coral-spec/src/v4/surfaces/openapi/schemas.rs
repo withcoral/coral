@@ -57,7 +57,11 @@ impl OpenApiImporter<'_> {
         operation_id: &str,
         diagnostics: &mut Vec<Diagnostic>,
     ) -> Option<String> {
-        let resolved = self.resolve_ref(schema, operation_id, diagnostics)?;
+        // The type is named after the ref it arrived through, and a nullable
+        // `$ref` union only carries one once it is unwrapped — so the referring
+        // schema is read the same way the referent is.
+        let schema = self.read_schema(schema);
+        let resolved = self.resolve_ref(&schema, operation_id, diagnostics)?;
         let type_id = schema.get("$ref").and_then(Value::as_str).map_or_else(
             || normalize_identifier(suggested_id, "type"),
             type_id_from_ref,
@@ -70,16 +74,11 @@ impl OpenApiImporter<'_> {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
-        let nullable = resolved
-            .get("nullable")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
         self.types.insert(
             type_id.clone(),
             IrType {
                 id: type_id.clone(),
                 shape: IrTypeShape::Json,
-                nullable,
                 description: description.clone(),
             },
         );
@@ -209,7 +208,6 @@ impl OpenApiImporter<'_> {
             IrType {
                 id: type_id.clone(),
                 shape,
-                nullable,
                 description,
             },
         );
@@ -271,7 +269,7 @@ impl OpenApiImporter<'_> {
         diagnostics: &mut Vec<Diagnostic>,
     ) -> Result<(), AllOfMergeError> {
         let walked = with_resolved_json_schema(
-            self.document,
+            self.schema_root(),
             schema,
             resolving_refs,
             depth,
@@ -292,9 +290,10 @@ impl OpenApiImporter<'_> {
         );
         match walked {
             Ok(merge_result) => merge_result,
-            // Converted rather than propagated: the walk error borrows from the
-            // schema it walked, and the top-level caller passes a local.
-            Err(error) => Err(Self::all_of_walk_error(error, operation_id, diagnostics)),
+            // Converted rather than propagated: the walk reports why a branch
+            // could not be read, and the merge answers in its own error type,
+            // which distinguishes a property conflict from an unresolvable ref.
+            Err(error) => Err(Self::all_of_walk_error(&error, operation_id, diagnostics)),
         }
     }
 
@@ -311,7 +310,7 @@ impl OpenApiImporter<'_> {
     ) -> Result<(), AllOfMergeError> {
         merge_json_object_shape_annotation_insensitive(
             merged,
-            direct_json_object_shape(resolved),
+            direct_json_object_shape(self.schema_root(), resolved),
             0,
             MAX_PROPERTY_COMPARISON_DEPTH,
         )
@@ -334,18 +333,18 @@ impl OpenApiImporter<'_> {
         Ok(())
     }
 
-    /// Records the diagnostic a failed branch walk deserves and reduces it to a
-    /// lifetime-free error.
+    /// Records the diagnostic a failed branch walk deserves and reduces it to
+    /// the merge's own error.
     fn all_of_walk_error(
-        error: JsonSchemaWalkError<'_>,
+        error: &JsonSchemaWalkError,
         operation_id: &str,
         diagnostics: &mut Vec<Diagnostic>,
     ) -> AllOfMergeError {
         let ref_error = match error {
-            JsonSchemaWalkError::ExternalRef(reference) => RefError::External(reference),
-            JsonSchemaWalkError::RefNotFound(reference) => RefError::NotFound(reference),
+            JsonSchemaWalkError::ExternalRef(reference) => RefError::External(reference.as_str()),
+            JsonSchemaWalkError::RefNotFound(reference) => RefError::NotFound(reference.as_str()),
             JsonSchemaWalkError::RefCycle(reference) => {
-                return AllOfMergeError::RefCycle(reference.to_string());
+                return AllOfMergeError::RefCycle(reference.clone());
             }
             JsonSchemaWalkError::DepthExceeded => return AllOfMergeError::CompositionTooDeep,
         };
@@ -366,9 +365,10 @@ impl OpenApiImporter<'_> {
     ) -> Vec<IrField> {
         properties
             .map(|(name, schema)| {
+                let schema = self.read_schema(schema);
                 let type_ref = self
                     .import_schema(
-                        schema,
+                        &schema,
                         &format!("{parent_id}_{name}"),
                         operation_id,
                         diagnostics,
@@ -378,8 +378,7 @@ impl OpenApiImporter<'_> {
                     name: name.clone(),
                     type_ref,
                     required: required.contains(name),
-                    nullable: true,
-                    description: self.field_description(schema),
+                    description: self.field_description(&schema),
                 }
             })
             .collect()
@@ -410,6 +409,92 @@ fn enum_value(value: &Value) -> String {
         .map_or_else(|| value.to_string(), ToString::to_string)
 }
 
+/// The containers every schema in a document sits under, which therefore
+/// distinguish nothing between two schemas in the same document.
+const DOCUMENT_CONTAINERS: &[&str] = &["components", "schemas", "definitions", "$defs"];
+
+/// Names an interned type after the `$ref` that reached it.
+///
+/// The last segment is the name for the pointer this mostly sees:
+/// `#/components/schemas/Page` is the `Page` type, and every reference site
+/// interning that one name is the point of naming types this way.
+///
+/// A pointer *into* a subschema ends in an index instead —
+/// `#/components/schemas/Page/anyOf/0` — and that tip is not a name, it is a
+/// position that every such pointer in the document shares. Taking it alone
+/// collides `Page/anyOf/0` with `Other/anyOf/0` on `type_0`, and because
+/// answering from the cache is how a repeated `$ref` is meant to resolve, the
+/// second import silently adopts the first one's shape. 3.1 makes that ordinary
+/// rather than exotic: `anyOf/0` is the index nearly every nullable-union
+/// pointer lands on.
+///
+/// So an index tip is named after the path that reached it, minus the leading
+/// containers every schema shares. Keeping the whole path is what makes the id
+/// unique — stopping at the nearest named segment would still collide two
+/// schemas that spell the same property nullable.
 fn type_id_from_ref(reference: &str) -> String {
-    normalize_identifier(reference.rsplit('/').next().unwrap_or(reference), "type")
+    let segments = reference
+        .split('/')
+        .filter(|segment| !segment.is_empty() && *segment != "#")
+        .collect::<Vec<_>>();
+    let Some(last) = segments.last() else {
+        return normalize_identifier(reference, "type");
+    };
+    if !is_pointer_index(last) {
+        return normalize_identifier(last, "type");
+    }
+    let named = segments
+        .iter()
+        .copied()
+        .skip_while(|segment| DOCUMENT_CONTAINERS.contains(segment))
+        .collect::<Vec<_>>();
+    // A pointer of nothing but containers has no name to take, so it keeps the
+    // whole path rather than reducing to the empty string.
+    let path = if named.is_empty() { &segments } else { &named };
+    normalize_identifier(&path.join("_"), "type")
+}
+
+fn is_pointer_index(segment: &str) -> bool {
+    !segment.is_empty() && segment.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::type_id_from_ref;
+
+    #[test]
+    fn names_a_type_after_the_component_the_ref_points_at() {
+        assert_eq!(type_id_from_ref("#/components/schemas/Page"), "page");
+        assert_eq!(type_id_from_ref("#/definitions/Foo"), "foo");
+        assert_eq!(type_id_from_ref("Page"), "page");
+    }
+
+    #[test]
+    fn keeps_subschema_pointers_that_share_an_index_apart() {
+        assert_eq!(
+            type_id_from_ref("#/components/schemas/Page/anyOf/0"),
+            "page_anyof_0"
+        );
+        assert_eq!(
+            type_id_from_ref("#/components/schemas/Other/anyOf/0"),
+            "other_anyof_0"
+        );
+        // Stopping at the nearest named segment would leave both of these
+        // `meta_anyof_0`: the property name is only unique under its own
+        // schema.
+        assert_eq!(
+            type_id_from_ref("#/components/schemas/Page/properties/meta/anyOf/0"),
+            "page_properties_meta_anyof_0"
+        );
+        assert_eq!(
+            type_id_from_ref("#/components/schemas/Other/properties/meta/anyOf/0"),
+            "other_properties_meta_anyof_0"
+        );
+    }
+
+    #[test]
+    fn falls_back_to_the_prefix_when_a_pointer_names_nothing() {
+        assert_eq!(type_id_from_ref("#/0"), "type_0");
+        assert_eq!(type_id_from_ref("#/components/schemas"), "schemas");
+    }
 }

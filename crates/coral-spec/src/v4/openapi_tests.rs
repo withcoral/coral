@@ -1482,6 +1482,71 @@ paths:
 }
 
 #[test]
+fn importer_reads_a_null_parameter_default_as_no_default() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: defaults
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = &v4.surface;
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r#"
+openapi: 3.1.0
+paths:
+  /items:
+    get:
+      operationId: items/list
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            anyOf: [{type: integer}, {type: "null"}]
+            default: null
+        - name: cursor
+          in: query
+          schema: {type: string, default: null}
+        - name: per_page
+          in: query
+          schema:
+            anyOf: [{type: integer}, {type: "null"}]
+            default: 30
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: {type: string}
+"#
+        .as_bytes(),
+    )
+    .expect("defaults import");
+    let operation = ir.operations.first().expect("operation");
+    let defaults = operation
+        .inputs
+        .iter()
+        .map(|input| (input.name.as_str(), input.default_value.as_deref()))
+        .collect::<BTreeMap<_, _>>();
+    // What Pydantic emits for `param: int | None = None`. Stringifying it would
+    // send `?limit=null`, which an integer parameter rejects.
+    assert_eq!(defaults.get("limit"), Some(&None));
+    assert_eq!(defaults.get("cursor"), Some(&None));
+    assert_eq!(defaults.get("per_page"), Some(&Some("30")));
+}
+
+#[test]
 #[expect(
     clippy::too_many_lines,
     reason = "The OpenAPI fixture keeps common pagination aliases together."
@@ -3230,5 +3295,774 @@ components:
         names,
         ["@odata.type", "driveType", "id", "name", "webUrl"],
         "the inherited columns must survive two levels of composition"
+    );
+}
+
+#[test]
+fn extracts_openapi_document_metadata_from_3_1_documents() {
+    let metadata = openapi_document_metadata(
+        r"
+openapi: 3.1.0
+info:
+  title: Demo
+  description: Query demo data.
+servers:
+  - url: https://api.example.com/v1
+paths: {}
+"
+        .as_bytes(),
+    )
+    .expect("metadata");
+    assert_eq!(metadata.description.as_deref(), Some("Query demo data."));
+    assert_eq!(
+        metadata.server_url.as_deref(),
+        Some("https://api.example.com/v1")
+    );
+}
+
+#[test]
+fn importer_rejects_unsupported_openapi_versions() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: unsupported_version
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+
+    for version in ["2.0", "3.2.0", "4.0.0"] {
+        let document = format!("openapi: '{version}'\npaths: {{}}\n");
+        let error = import_openapi_surface(v4, &v4.surface, document.as_bytes())
+            .expect_err("unsupported version");
+        assert!(
+            error.to_string().contains("unsupported version"),
+            "{version}: {error}"
+        );
+        // Both entry points share one gate, so metadata extraction refuses the
+        // same documents the importer does.
+        let error =
+            openapi_document_metadata(document.as_bytes()).expect_err("unsupported version");
+        assert!(
+            error.to_string().contains("unsupported version"),
+            "{version}: {error}"
+        );
+    }
+}
+
+/// The two spellings 3.1 uses for a nullable value, in the shapes real
+/// providers publish them: `OpenAI` wraps the declared schema in `anyOf`, Discord
+/// in `oneOf`, and Discord also declares `null` inside the `type` array.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "One 3.1 fixture keeps the nullable spellings side by side."
+)]
+fn importer_reads_3_1_nullable_spellings_as_the_shape_they_wrap() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: openapi_3_1
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.1.0
+paths:
+  /items:
+    get:
+      operationId: items/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/Item'}
+components:
+  schemas:
+    Item:
+      type: object
+      properties:
+        id: {type: string}
+        note:
+          description: Free-form note, if the caller set one.
+          anyOf:
+            - {type: string}
+            - {type: 'null'}
+        owner:
+          oneOf:
+            - {$ref: '#/components/schemas/User'}
+            - {type: 'null'}
+        tags:
+          type: [array, 'null']
+          items: {type: string}
+    User:
+      type: object
+      properties:
+        login: {type: string}
+"
+        .as_bytes(),
+    )
+    .expect("3.1 import");
+
+    let operation = ir.operations.first().expect("operation");
+    assert_eq!(operation.output.cardinality, OutputCardinality::List);
+    let row_type = ir
+        .types
+        .iter()
+        .find(|ty| ty.id == operation.output.type_ref)
+        .expect("row type");
+    let IrTypeShape::Object { fields } = &row_type.shape else {
+        panic!("the row should import as an object: {row_type:?}");
+    };
+    let field = |name: &str| {
+        fields
+            .iter()
+            .find(|field| field.name == name)
+            .unwrap_or_else(|| panic!("field {name} in {fields:?}"))
+    };
+    let shape = |type_ref: &str| {
+        &ir.types
+            .iter()
+            .find(|ty| ty.id == type_ref)
+            .unwrap_or_else(|| panic!("type {type_ref}"))
+            .shape
+    };
+
+    // The `anyOf` variant carries the type; the sibling carries the docs.
+    let note = field("note");
+    assert!(matches!(
+        shape(&note.type_ref),
+        IrTypeShape::Scalar(IrScalarType::String)
+    ));
+    assert_eq!(note.description, "Free-form note, if the caller set one.");
+
+    // Unwrapping keeps the `$ref`, so the referenced type keeps its name and
+    // its fields instead of importing as anonymous JSON.
+    let owner = field("owner");
+    assert_eq!(owner.type_ref, "user");
+    let IrTypeShape::Object {
+        fields: owner_fields,
+    } = shape(&owner.type_ref)
+    else {
+        panic!("the referenced user should import as an object");
+    };
+    assert_eq!(
+        owner_fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        ["login"]
+    );
+
+    let IrTypeShape::List { item_type_ref } = shape(&field("tags").type_ref) else {
+        panic!("a nullable array should import as a list");
+    };
+    assert!(matches!(
+        shape(item_type_ref),
+        IrTypeShape::Scalar(IrScalarType::String)
+    ));
+
+    assert!(ir.diagnostics.is_empty(), "{:?}", ir.diagnostics);
+}
+
+/// A nullable collection at the response root is still a collection. Read as an
+/// object — which is where an unhandled `type` array lands — it would import as
+/// a single row.
+#[test]
+fn importer_reads_a_nullable_array_response_root_as_a_list() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: nullable_root
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.1.0
+paths:
+  /items:
+    get:
+      operationId: items/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: [array, 'null']
+                items:
+                  type: object
+                  properties:
+                    id: {type: string}
+"
+        .as_bytes(),
+    )
+    .expect("nullable root import");
+
+    let operation = ir.operations.first().expect("operation");
+    assert_eq!(operation.output.cardinality, OutputCardinality::List);
+}
+
+/// The same collection, spelled the way YAML invites: an unquoted `null` is a
+/// plain scalar, so it reaches the importer as a null rather than as the string
+/// every other test quotes. A `[T]` array names one type and only 3.1 can write
+/// one, so it collapses too — read as an object, either would import as a
+/// single row.
+#[test]
+fn importer_reads_unquoted_and_single_member_type_arrays_as_lists() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: nullable_root
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.1.0
+paths:
+  /items:
+    get:
+      operationId: items/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: [array, null]
+                items:
+                  type: object
+                  properties:
+                    id: {type: [string, null]}
+  /records:
+    get:
+      operationId: records/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: [array]
+                items:
+                  type: [object]
+                  properties:
+                    id: {type: string}
+"
+        .as_bytes(),
+    )
+    .expect("nullable root import");
+
+    for operation in &ir.operations {
+        assert_eq!(
+            operation.output.cardinality,
+            OutputCardinality::List,
+            "{}",
+            operation.id
+        );
+    }
+    assert!(ir.diagnostics.is_empty(), "{:?}", ir.diagnostics);
+}
+
+/// Row-path inference refuses alternation, so an envelope whose rows sit behind
+/// a union has no path and the relation collapses to one JSON row. Unwrapping
+/// runs before inference, so the path is there to find.
+#[test]
+fn importer_infers_a_row_path_through_a_nullable_union_envelope() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: nullable_envelope
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.1.0
+paths:
+  /items:
+    get:
+      operationId: items/list
+      parameters:
+        - {name: cursor, in: query, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    oneOf:
+                      - type: array
+                        items: {$ref: '#/components/schemas/Item'}
+                      - {type: 'null'}
+                  next_cursor:
+                    anyOf:
+                      - {type: string}
+                      - {type: 'null'}
+components:
+  schemas:
+    Item:
+      type: object
+      properties:
+        id: {type: string}
+"
+        .as_bytes(),
+    )
+    .expect("nullable envelope import");
+
+    assert_eq!(imported_row_path(&ir, "items_list"), ["data"]);
+    // The cursor is declared the way OpenAI declares one. Found only if the
+    // union was unwrapped before cursor detection ran.
+    assert_eq!(
+        imported_rest_pagination(&ir, "items_list").mode,
+        PaginationMode::CursorQuery
+    );
+}
+
+/// Only a union that reduces to one declared shape is unwrapped. A genuine
+/// choice between shapes stays opaque, as it did before.
+#[test]
+fn importer_keeps_multi_variant_unions_opaque() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: multi_variant_union
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.1.0
+paths:
+  /items:
+    get:
+      operationId: items/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    value:
+                      anyOf:
+                        - {type: string}
+                        - {type: integer}
+                        - {type: 'null'}
+"
+        .as_bytes(),
+    )
+    .expect("multi variant union import");
+
+    let operation = ir.operations.first().expect("operation");
+    let row_type = ir
+        .types
+        .iter()
+        .find(|ty| ty.id == operation.output.type_ref)
+        .expect("row type");
+    let IrTypeShape::Object { fields } = &row_type.shape else {
+        panic!("the row should import as an object: {row_type:?}");
+    };
+    let value = fields
+        .iter()
+        .find(|field| field.name == "value")
+        .expect("value field");
+    let value = ir
+        .types
+        .iter()
+        .find(|ty| ty.id == value.type_ref)
+        .expect("value type");
+    assert!(
+        matches!(value.shape, IrTypeShape::Json),
+        "a genuine choice of shapes stays opaque: {value:?}"
+    );
+}
+
+/// The pass is unconditional, so the 3.0 sources have to come through it
+/// unchanged. Both rewrites need a literal `null` type, which 3.0 does not
+/// have.
+#[test]
+fn importer_leaves_3_0_alternation_schemas_unchanged() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: alternation_3_0
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.0.3
+paths:
+  /items:
+    get:
+      operationId: items/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: {type: string, nullable: true}
+                    either:
+                      anyOf:
+                        - {$ref: '#/components/schemas/A'}
+                        - {$ref: '#/components/schemas/B'}
+                    sole:
+                      anyOf:
+                        - {$ref: '#/components/schemas/A'}
+components:
+  schemas:
+    A: {type: object, properties: {a: {type: string}}}
+    B: {type: object, properties: {b: {type: string}}}
+"
+        .as_bytes(),
+    )
+    .expect("3.0 alternation import");
+
+    let operation = ir.operations.first().expect("operation");
+    let row_type = ir
+        .types
+        .iter()
+        .find(|ty| ty.id == operation.output.type_ref)
+        .expect("row type");
+    let IrTypeShape::Object { fields } = &row_type.shape else {
+        panic!("the row should import as an object: {row_type:?}");
+    };
+    let imported = |name: &str| {
+        let type_ref = fields
+            .iter()
+            .find(|field| field.name == name)
+            .unwrap_or_else(|| panic!("field {name}"))
+            .type_ref
+            .as_str();
+        ir.types
+            .iter()
+            .find(|ty| ty.id == type_ref)
+            .unwrap_or_else(|| panic!("type {type_ref}"))
+    };
+
+    assert!(matches!(imported("either").shape, IrTypeShape::Json));
+    // GitHub's 3.0 document spells a nullable ref as a single-variant `anyOf`.
+    // Unwrapping those would change output that is correct today.
+    assert!(matches!(imported("sole").shape, IrTypeShape::Json));
+    let id = imported("id");
+    assert!(matches!(
+        id.shape,
+        IrTypeShape::Scalar(IrScalarType::String)
+    ));
+}
+
+/// A `$ref` may name a subschema, and `#/components/schemas/Page/anyOf/0`
+/// resolves through `root.pointer` like any other pointer. Normalizing the
+/// document in place would delete the `anyOf` this one ends in, so the
+/// reference would stop resolving and the response would import as one opaque
+/// JSON column — a table losing its columns because of a rewrite aimed at a
+/// different schema. Reading normalizes instead, and leaves the tree alone.
+#[test]
+fn importer_resolves_a_ref_that_points_into_a_nullable_union() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: pointer_ref
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.1.0
+components:
+  schemas:
+    Page:
+      anyOf:
+        - type: object
+          properties:
+            items:
+              type: array
+              items: {type: string}
+            next_cursor: {type: [string, 'null']}
+        - type: 'null'
+paths:
+  /pages:
+    get:
+      operationId: pages/get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Page/anyOf/0'
+"
+        .as_bytes(),
+    )
+    .expect("import");
+
+    let operation = ir.operations.first().expect("operation");
+    assert_eq!(operation.output.cardinality, OutputCardinality::Singleton);
+    let row_type = ir
+        .types
+        .iter()
+        .find(|ty| ty.id == operation.output.type_ref)
+        .expect("row type");
+    let IrTypeShape::Object { fields } = &row_type.shape else {
+        panic!("the response should import as an object: {row_type:?}");
+    };
+    assert_eq!(
+        fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        ["items", "next_cursor"]
+    );
+    assert!(
+        operation.diagnostics.is_empty(),
+        "{:?}",
+        operation.diagnostics
+    );
+}
+
+/// A pointer into a subschema ends in an index rather than a name, and every
+/// nullable union in a document offers the same one. Naming the interned type
+/// after that tip alone gives two unrelated schemas the same id, and the second
+/// import answers from the cache with the first one's shape — silently, since
+/// reusing a type that is already interned is the normal path.
+#[test]
+fn importer_keeps_two_subschema_pointers_with_the_same_index_apart() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: pointer_ref
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.1.0
+components:
+  schemas:
+    Page:
+      anyOf:
+        - type: object
+          properties:
+            page_field: {type: string}
+        - type: 'null'
+    Other:
+      anyOf:
+        - type: object
+          properties:
+            other_field: {type: string}
+        - type: 'null'
+paths:
+  /things:
+    get:
+      operationId: things/get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  page:
+                    $ref: '#/components/schemas/Page/anyOf/0'
+                  other:
+                    $ref: '#/components/schemas/Other/anyOf/0'
+"
+        .as_bytes(),
+    )
+    .expect("import");
+
+    let operation = ir.operations.first().expect("operation");
+    let row_type = ir
+        .types
+        .iter()
+        .find(|ty| ty.id == operation.output.type_ref)
+        .expect("row type");
+    let IrTypeShape::Object { fields } = &row_type.shape else {
+        panic!("the response should import as an object: {row_type:?}");
+    };
+    let field_types = fields
+        .iter()
+        .map(|field| (field.name.as_str(), field.type_ref.as_str()))
+        .collect::<BTreeMap<_, _>>();
+    let page_type = field_types.get("page").expect("page field");
+    let other_type = field_types.get("other").expect("other field");
+    assert_ne!(
+        page_type, other_type,
+        "two subschema pointers should not intern as one type"
+    );
+
+    // The shapes are what the collision destroyed: `other` inherited `Page`'s
+    // fields, so `other_field` disappeared from the catalog entirely.
+    let fields_of = |type_ref: &str| {
+        let ty = ir
+            .types
+            .iter()
+            .find(|ty| ty.id == type_ref)
+            .unwrap_or_else(|| panic!("type {type_ref}"));
+        let IrTypeShape::Object { fields } = &ty.shape else {
+            panic!("expected an object: {ty:?}");
+        };
+        fields
+            .iter()
+            .map(|field| field.name.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(fields_of(page_type), ["page_field"]);
+    assert_eq!(fields_of(other_type), ["other_field"]);
+    assert!(
+        operation.diagnostics.is_empty(),
+        "{:?}",
+        operation.diagnostics
+    );
+}
+
+/// Two `allOf` branches may spell one property's nullability differently — a
+/// `type` array in the base, a union in the subtype — and the fold compares
+/// property schemas on validation semantics to decide whether the branches
+/// disagree. Comparing what the provider wrote rather than what the importer
+/// reads makes those two spellings look like a genuine conflict, which
+/// discards every field of the composed type, not just the one in dispute.
+#[test]
+fn importer_folds_all_of_branches_that_spell_nullability_differently() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: mixed_spellings
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let ir = import_openapi_surface(
+        v4,
+        &v4.surface,
+        r"
+openapi: 3.1.0
+components:
+  schemas:
+    Base:
+      type: object
+      properties:
+        id: {type: [string, 'null']}
+    Extra:
+      type: object
+      properties:
+        id:
+          anyOf:
+            - {type: string}
+            - {type: 'null'}
+        name: {type: string}
+    Composed:
+      allOf:
+        - $ref: '#/components/schemas/Base'
+        - $ref: '#/components/schemas/Extra'
+paths:
+  /things:
+    get:
+      operationId: things/get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Composed'
+"
+        .as_bytes(),
+    )
+    .expect("import");
+
+    let operation = ir.operations.first().expect("operation");
+    assert!(
+        operation.diagnostics.is_empty(),
+        "{:?}",
+        operation.diagnostics
+    );
+    let row_type = ir
+        .types
+        .iter()
+        .find(|ty| ty.id == operation.output.type_ref)
+        .expect("row type");
+    let IrTypeShape::Object { fields } = &row_type.shape else {
+        panic!("the composed type should import as an object: {row_type:?}");
+    };
+    assert_eq!(
+        fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        ["id", "name"]
     );
 }

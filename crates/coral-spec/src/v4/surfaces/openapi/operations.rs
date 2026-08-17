@@ -13,8 +13,8 @@ use crate::v4::lookup_keys::infer_rest_lookup_keys;
 use crate::v4::naming::normalize_identifier;
 use crate::v4::response_cursors::{StringTypeRequirement, find_response_cursor_path};
 use crate::v4::surfaces::json_schema::{
-    json_schema_default_to_string, json_schema_scalar_type_or_string, json_schema_type_contains,
-    json_schema_type_display,
+    SchemaRoot, json_schema_default_to_string, json_schema_scalar_type_or_string,
+    json_schema_type_contains, json_schema_type_display,
 };
 use crate::v4::wrapped_lists::{WrappedListInferenceContext, infer_wrapped_list_row_path};
 use crate::{
@@ -50,7 +50,8 @@ impl OpenApiImporter<'_> {
         let request_body = self.import_request_body(op_obj, &operation_id, &mut diagnostics);
         let (output, response, entity_name, pagination_context) =
             self.import_response(path, op_obj, &operation_id, &mut diagnostics);
-        let contract = detect_pagination_contract(self.document, &parameters, &pagination_context);
+        let contract =
+            detect_pagination_contract(self.schema_root(), &parameters, &pagination_context);
         let row_path = self.infer_row_path(
             raw_operation_id.unwrap_or(&operation_id),
             contract.as_ref().is_some_and(signals_page_envelope),
@@ -128,7 +129,7 @@ impl OpenApiImporter<'_> {
         let row_path = infer_wrapped_list_row_path(WrappedListInferenceContext {
             operation_name,
             paginated_operation,
-            schema_root: self.document,
+            schema_root: self.schema_root(),
             response_schema: &pagination_context.schema,
         });
         if row_path.is_empty() {
@@ -207,15 +208,25 @@ impl OpenApiImporter<'_> {
                     .get("in")
                     .and_then(Value::as_str)
                     .and_then(parse_parameter_location)?;
-                let schema = parameter_obj.get("schema").unwrap_or(&Value::Null);
+                let schema = self.read_schema(parameter_obj.get("schema").unwrap_or(&Value::Null));
                 let scalar =
-                    self.import_parameter_scalar(schema, &name, operation_id, diagnostics)?;
+                    self.import_parameter_scalar(&schema, &name, operation_id, diagnostics)?;
                 Some(IrOperationInput {
                     name,
                     location,
                     required: parameter_is_required(parameter_obj, location),
                     data_type: scalar,
-                    default_value: schema.get("default").map(json_schema_default_to_string),
+                    // A null default declares that the parameter has none, so
+                    // it is dropped rather than stringified. `default: null`
+                    // beside a nullable union is what Pydantic emits for
+                    // `param: int | None = None`, and it survives the unwrap
+                    // as an annotation; stringifying it would bind the filter
+                    // to the literal `null` and send it on every unfiltered
+                    // query.
+                    default_value: schema
+                        .get("default")
+                        .filter(|default| !default.is_null())
+                        .map(json_schema_default_to_string),
                     description: parameter_obj
                         .get("description")
                         .and_then(Value::as_str)
@@ -356,13 +367,13 @@ fn parameter_is_required(parameter_obj: &Map<String, Value>, location: IrInputLo
 /// the question wrapped-list inference needs — is this operation paginated? —
 /// without the two inferences having to predict each other.
 fn detect_pagination_contract(
-    document: &Value,
+    root: SchemaRoot<'_>,
     inputs: &[IrOperationInput],
     context: &OpenApiResponsePaginationContext,
 ) -> Option<PaginationSpec> {
-    detect_link_header_pagination(inputs, context)
-        .or_else(|| detect_next_url_body_pagination(document, inputs, context))
-        .or_else(|| detect_cursor_query_pagination(document, inputs, context))
+    detect_link_header_pagination(root, inputs, context)
+        .or_else(|| detect_next_url_body_pagination(root, inputs, context))
+        .or_else(|| detect_cursor_query_pagination(root, inputs, context))
         .or_else(|| detect_offset_pagination(inputs))
         .or_else(|| detect_page_pagination(inputs))
 }
@@ -404,11 +415,12 @@ fn signals_page_envelope(contract: &PaginationSpec) -> bool {
 }
 
 fn detect_link_header_pagination(
+    root: SchemaRoot<'_>,
     inputs: &[IrOperationInput],
     context: &OpenApiResponsePaginationContext,
 ) -> Option<PaginationSpec> {
     let has_link_header = response_header(context, &["link"]).is_some();
-    let next_url_header = response_next_url_header(context);
+    let next_url_header = response_next_url_header(root, context);
     if !has_link_header && next_url_header.is_none() {
         return None;
     }
@@ -442,7 +454,7 @@ fn detect_link_header_pagination(
 /// no diagnostic, where offset pagination would have fetched everything.
 /// Requiring the descriptor to declare `string` is the second signal.
 fn detect_next_url_body_pagination(
-    document: &Value,
+    root: SchemaRoot<'_>,
     inputs: &[IrOperationInput],
     context: &OpenApiResponsePaginationContext,
 ) -> Option<PaginationSpec> {
@@ -467,7 +479,7 @@ fn detect_next_url_body_pagination(
     ];
 
     let next_url_path = find_response_cursor_path(
-        document,
+        root,
         &context.schema,
         RESPONSE_NEXT_URL_BODY_TOKENS,
         StringTypeRequirement::Declared,
@@ -481,7 +493,7 @@ fn detect_next_url_body_pagination(
 }
 
 fn detect_cursor_query_pagination(
-    document: &Value,
+    root: SchemaRoot<'_>,
     inputs: &[IrOperationInput],
     context: &OpenApiResponsePaginationContext,
 ) -> Option<PaginationSpec> {
@@ -532,13 +544,13 @@ fn detect_cursor_query_pagination(
     // detector has already found a cursor query parameter to corroborate the
     // name, and descriptors routinely leave envelope metadata untyped.
     let response_cursor_path = find_response_cursor_path(
-        document,
+        root,
         &context.schema,
         RESPONSE_CURSOR_TOKENS,
         StringTypeRequirement::Untyped,
     )
     .unwrap_or_default();
-    let response_cursor_header = response_cursor_header(context);
+    let response_cursor_header = response_cursor_header(root, context);
     if response_cursor_path.is_empty() && response_cursor_header.is_none() {
         return None;
     }
@@ -662,7 +674,10 @@ fn response_header<'a>(
         .map(|(_, header)| header)
 }
 
-fn response_cursor_header(context: &OpenApiResponsePaginationContext) -> Option<String> {
+fn response_cursor_header(
+    root: SchemaRoot<'_>,
+    context: &OpenApiResponsePaginationContext,
+) -> Option<String> {
     const RESPONSE_CURSOR_HEADER_TOKENS: &[&str] = &[
         "continuationtoken",
         "nextcursor",
@@ -681,12 +696,15 @@ fn response_cursor_header(context: &OpenApiResponsePaginationContext) -> Option<
         .iter()
         .find(|(name, header)| {
             RESPONSE_CURSOR_HEADER_TOKENS.contains(&name_token(name).as_str())
-                && response_header_allows_string(header)
+                && response_header_allows_string(root, header)
         })
         .map(|(name, _)| name.clone())
 }
 
-fn response_next_url_header(context: &OpenApiResponsePaginationContext) -> Option<String> {
+fn response_next_url_header(
+    root: SchemaRoot<'_>,
+    context: &OpenApiResponsePaginationContext,
+) -> Option<String> {
     const RESPONSE_NEXT_URL_HEADER_TOKENS: &[&str] = &[
         "next",
         "nextpage",
@@ -703,14 +721,15 @@ fn response_next_url_header(context: &OpenApiResponsePaginationContext) -> Optio
         .iter()
         .find(|(name, header)| {
             RESPONSE_NEXT_URL_HEADER_TOKENS.contains(&name_token(name).as_str())
-                && response_header_allows_string(header)
+                && response_header_allows_string(root, header)
         })
         .map(|(name, _)| name.clone())
 }
 
-fn response_header_allows_string(header: &Value) -> bool {
+fn response_header_allows_string(root: SchemaRoot<'_>, header: &Value) -> bool {
     header.get("schema").is_none_or(|schema| {
-        json_schema_type_contains(schema, "string") || schema.get("type").is_none()
+        let schema = root.read(schema);
+        json_schema_type_contains(&schema, "string") || schema.get("type").is_none()
     })
 }
 

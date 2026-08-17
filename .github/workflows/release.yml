@@ -612,6 +612,10 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       contents: read
+    # The release is already published and promoted by this point, so an
+    # undelivered changelog post must never redden the run. Failures surface as
+    # warning annotations instead, and the job can be re-run on its own.
+    continue-on-error: true
     steps:
       - name: Post promoted release to Discord
         env:
@@ -620,11 +624,22 @@ jobs:
           TAG_NAME: ${{ needs.validate-release-ref.outputs.tag-name }}
         run: |
           set -euo pipefail
-          release="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG_NAME}")"
+          skip() {
+            echo "::warning title=Discord release notes not posted::$1"
+            exit 0
+          }
+          if [ -z "$DISCORD_WEBHOOK" ]; then
+            skip "DISCORD_CHANGELOG_WEBHOOK is not configured"
+          fi
+          release="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG_NAME}")" ||
+            skip "could not read the ${TAG_NAME} release"
           name="$(printf '%s' "$release" | jq -r '.name // ""')"
           url="$(printf '%s' "$release" | jq -r .html_url)"
           body="$(printf '%s' "$release" | jq -r '.body // ""')"
           title="🪸 ${name:-$TAG_NAME}"
-          jq -n --arg title "${title:0:253}" --arg desc "${body:0:3500}" --arg url "$url" \
-            '{embeds:[{title:$title,description:$desc,url:$url,color:16744272,footer:{text:"Fresh from the reef"}}]}' |
-            curl -sf -H "Content-Type: application/json" -d @- "$DISCORD_WEBHOOK"
+          payload="$(jq -n --arg title "${title:0:253}" --arg desc "${body:0:3500}" --arg url "$url" \
+            '{embeds:[{title:$title,description:$desc,url:$url,color:16744272,footer:{text:"Fresh from the reef"}}]}')" ||
+            skip "could not build the Discord payload for ${TAG_NAME}"
+          printf '%s' "$payload" |
+            curl -sf --max-time 30 -H "Content-Type: application/json" -d @- "$DISCORD_WEBHOOK" ||
+            skip "the Discord webhook rejected the post for ${TAG_NAME}"
