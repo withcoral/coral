@@ -18,7 +18,7 @@ workspace = true
 # shipped Coral binary: possession of the state database is the tool's whole
 # authority, so it stays a break-glass repository utility. Every dependency it
 # needs is optional and reachable only through this feature.
-admin = ["dep:etcetera", "dep:sqlx", "dep:tokio", "dep:toml"]
+admin = ["dep:chrono", "dep:etcetera", "dep:sqlx", "dep:tokio", "dep:toml"]
 
 [dependencies]
 anyhow.workspace = true
@@ -41,6 +41,7 @@ coral-spec.workspace = true
 
 # Admin-only. Enabled solely by the `admin` feature: the default `xtask` build
 # resolves none of these dependency edges.
+chrono = { workspace = true, optional = true }
 etcetera = { workspace = true, optional = true }
 sqlx = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
