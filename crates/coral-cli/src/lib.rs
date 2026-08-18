@@ -710,7 +710,6 @@ async fn run_server(
     Ok(())
 }
 
-
 async fn wait_for_shutdown_signal_or_server_exit(
     server_exit: impl Future<Output = ()>,
     shutdown_signal: impl Future<Output = Result<(), std::io::Error>>,
