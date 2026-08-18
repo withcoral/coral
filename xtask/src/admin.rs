@@ -95,6 +95,50 @@ const WRITE_CONTENTION_HINT: &str = "the state database is held by another proce
      the running server; nothing was written, so retry, or stop the server for the moment the \
      repair takes";
 
+/// Whether the driver is reporting that another process holds the lock.
+///
+/// `SQLite` reports contention as `SQLITE_BUSY` (5) or `SQLITE_LOCKED` (6),
+/// either of which may arrive with an extended code in its high bits; Postgres
+/// reports it as `lock_not_available` or as the `query_canceled` that
+/// `lock_timeout` raises. Anything else — a read-only mount, a full disk, a
+/// failing volume — is a different problem with different advice.
+fn is_write_contention(error: &sqlx::Error) -> bool {
+    let Some(code) = error
+        .as_database_error()
+        .and_then(sqlx::error::DatabaseError::code)
+    else {
+        return false;
+    };
+    if matches!(code.as_ref(), "55P03" | "57014") {
+        return true;
+    }
+    code.parse::<i32>()
+        .is_ok_and(|code| matches!(code & 0xFF, 5 | 6))
+}
+
+/// Adds [`WRITE_CONTENTION_HINT`], but only when the failure really is contention.
+///
+/// The operator reading this is mid-incident. Telling them to stop the server
+/// and retry is the right instruction for a held lock and actively harmful for
+/// a permissions or disk fault: they would take the deployment down and hit the
+/// identical failure. So the hint follows the driver's verdict rather than the
+/// call site's guess.
+trait WriteContentionContext<T> {
+    fn hint_write_contention(self) -> Result<T>;
+}
+
+impl<T> WriteContentionContext<T> for std::result::Result<T, sqlx::Error> {
+    fn hint_write_contention(self) -> Result<T> {
+        self.map_err(|error| {
+            if is_write_contention(&error) {
+                anyhow::Error::new(error).context(WRITE_CONTENTION_HINT)
+            } else {
+                anyhow::Error::new(error)
+            }
+        })
+    }
+}
+
 /// Whether recovery may appoint this directory row as a workspace owner.
 ///
 /// The built-in local principal is refused by `user_id` *and* by `issuer`: a
@@ -784,7 +828,7 @@ where
     let mut transaction = pool
         .begin_with(begin)
         .await
-        .context(WRITE_CONTENTION_HINT)
+        .hint_write_contention()
         .context("open the appointment transaction")?;
 
     let workspace: Option<(String,)> = sqlx::query_as(statement(WORKSPACE_BY_ID_SQL, dialect))
@@ -831,7 +875,7 @@ where
                 .bind(user_id)
                 .execute(&mut *transaction)
                 .await
-                .context(WRITE_CONTENTION_HINT)
+                .hint_write_contention()
                 .context("promote the existing membership")?;
             Appointment::Promoted { from: role }
         }
@@ -843,7 +887,7 @@ where
                 .bind(now_unix_nanos)
                 .execute(&mut *transaction)
                 .await
-                .context(WRITE_CONTENTION_HINT)
+                .hint_write_contention()
                 .context("add the owner membership")?;
             Appointment::Added
         }
@@ -852,7 +896,7 @@ where
     transaction
         .commit()
         .await
-        .context(WRITE_CONTENTION_HINT)
+        .hint_write_contention()
         .context("commit the appointment")?;
     Ok(appointment)
 }
@@ -881,7 +925,7 @@ where
     let mut transaction = pool
         .begin_with(begin)
         .await
-        .context(WRITE_CONTENTION_HINT)
+        .hint_write_contention()
         .context("open the rebind transaction")?;
 
     let bound: Vec<(String,)> = sqlx::query_as(statement(USERS_BY_ISSUER_SQL, dialect))
@@ -916,13 +960,13 @@ where
         .bind(LOCAL_PRINCIPAL_ID)
         .fetch_all(&mut *transaction)
         .await
-        .context(WRITE_CONTENTION_HINT)
+        .hint_write_contention()
         .context("rebind the users of the retiring issuer")?;
 
     transaction
         .commit()
         .await
-        .context(WRITE_CONTENTION_HINT)
+        .hint_write_contention()
         .context("commit the rebind")?;
     Ok(Rebind::Rebound(rebound.len()))
 }
@@ -1934,11 +1978,20 @@ mod tests {
 
     // -- Postgres recovery contracts -----------------------------------------
     //
+    // NOT YET REACHED BY ANY GATE. `make postgres-tests` runs two legs, both
+    // `-p coral-app`; it has no xtask invocation, and `--features admin` appears
+    // nowhere in the Makefile or in validate.yml, so nothing below runs in CI
+    // today. The `postgres-database-tests` job's path filter omits `xtask/**`
+    // as well, so editing this file does not even trigger it. Wiring both is
+    // t58's job; until it lands, these five are verified only by hand:
+    //   CORAL_TEST_POSTGRES_URL=... cargo test -p xtask --features admin \
+    //     --bin xtask postgres_contract -- --ignored
+    //
     // Every name below carries the literal `contract_on_postgres`, which is
-    // what `make postgres-tests` filters on, and the literal `postgres_contract`,
-    // which is what the recipe's xtask invocation filters on. A Postgres test
-    // named anything else compiles, exists, and is never executed by the
-    // repository gate; this repository has already shipped one that way.
+    // what `make postgres-tests` filters on, and the literal `postgres_contract`
+    // for the xtask leg t58 adds. A Postgres test named anything else compiles,
+    // exists, and is never executed by the repository gate; this repository has
+    // already shipped one that way.
     //
     // They address the gate's database directly rather than through a config
     // file, because resolution reads process environment and no test may mutate
