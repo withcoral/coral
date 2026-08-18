@@ -61,52 +61,10 @@ jobs:
           echo "commit-sha=${tag_commit}" >> "$GITHUB_OUTPUT"
           echo "tag-name=${TAG_NAME}" >> "$GITHUB_OUTPUT"
 
-  build-ui:
-    needs: validate-release-ref
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    env:
-      TAG_NAME: ${{ needs.validate-release-ref.outputs.tag-name }}
-    outputs:
-      has-ui: ${{ steps.detect-ui.outputs.has-ui }}
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          ref: ${{ needs.validate-release-ref.outputs.commit-sha }}
-          persist-credentials: false
-      - name: Detect UI package
-        id: detect-ui
-        run: |
-          if [ -f apps/ui/package.json ]; then
-            echo "has-ui=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "has-ui=false" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Set up Node
-        if: steps.detect-ui.outputs.has-ui == 'true'
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
-        with:
-          node-version-file: apps/ui/.node-version
-          package-manager-cache: false
-      - name: Install UI dependencies
-        if: steps.detect-ui.outputs.has-ui == 'true'
-        run: npm ci --prefix apps/ui
-      - name: Build UI
-        if: steps.detect-ui.outputs.has-ui == 'true'
-        run: npm run build --prefix apps/ui
-      - name: Verify UI entrypoint
-        if: steps.detect-ui.outputs.has-ui == 'true'
-        run: test -s apps/ui/dist/index.html
-      - name: Upload UI artifact
-        if: steps.detect-ui.outputs.has-ui == 'true'
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: ui-dist
-          path: apps/ui/dist
 
   build:
     needs:
       - validate-release-ref
-      - build-ui
     strategy:
       matrix:
         include:
@@ -132,41 +90,23 @@ jobs:
         run: rustup show
       - name: Ensure target is installed
         run: rustup target add ${{ matrix.target }}
-      - name: Download UI artifact
-        if: needs.build-ui.outputs.has-ui == 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: ui-dist
-          path: apps/ui/dist
       # No Rust cache here — release builds must compile from a clean state
       # to guard against cache poisoning attacks.
       - name: Build Unix
         if: runner.os != 'Windows'
         shell: bash
         env:
-          HAS_UI: ${{ needs.build-ui.outputs.has-ui }}
           TARGET: ${{ matrix.target }}
         run: |
-          feature_args=()
-          if [ "$HAS_UI" = "true" ]; then
-            feature_args=(--features embedded-ui)
-          fi
-
-          cargo build --locked --release --target "$TARGET" "${feature_args[@]}"
+          cargo build --locked --release --target "$TARGET"
 
       - name: Build Windows
         if: runner.os == 'Windows'
         shell: pwsh
         env:
-          HAS_UI: ${{ needs.build-ui.outputs.has-ui }}
           TARGET: ${{ matrix.target }}
         run: |
-          $featureArgs = @()
-          if ($env:HAS_UI -eq "true") {
-            $featureArgs += @("--features", "embedded-ui")
-          }
-
-          cargo build --locked --release --target $env:TARGET @featureArgs
+          cargo build --locked --release --target $env:TARGET
 
       - name: Smoke Windows release binary
         if: runner.os == 'Windows'

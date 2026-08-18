@@ -1,4 +1,4 @@
-.PHONY: install ui-build docker-build coral-ui-docker-build coral-ui-docker-smoke coral-ui-docker-test coral-docker-stub-build coral-docker-smoke coral-docker-stub-test rust-checks perf-check
+.PHONY: install docker-build coral-ui-docker-build coral-ui-docker-smoke coral-ui-docker-test coral-docker-stub-build coral-docker-smoke coral-docker-stub-test rust-checks perf-check
 .PHONY: postgres-start postgres-url postgres-stop postgres-clean postgres-tests
 .PHONY: license-check lint-proto lint-sources fix-sources
 .PHONY: docs-generate docs-check schema-generate schema-check
@@ -33,13 +33,8 @@ case "$(DOCKER_NO_CACHE)" in \
 esac;
 endef
 
-install: ui-build
+install:
 	cargo install --path crates/coral-cli --locked
-
-ui-build:
-	npm ci --prefix apps/ui
-	npm run build --prefix apps/ui
-	test -s apps/ui/dist/index.html
 
 # ----------------------------------------------------------------------------
 # Local Coral image build

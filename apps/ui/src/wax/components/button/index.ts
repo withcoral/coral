@@ -1,5 +1,0 @@
-export { Container } from './container'
-export { Icon } from './icon'
-export { IconButton } from './icon-button'
-export { Text } from './text'
-export { TextButton } from './text-button'

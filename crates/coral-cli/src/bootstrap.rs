@@ -57,23 +57,6 @@ pub(crate) async fn bootstrap(options: BootstrapOptions) -> Result<Bootstrap, Bo
     })
 }
 
-#[cfg(feature = "embedded-ui")]
-pub(crate) async fn start_ui_server(
-    port: u16,
-    feature_overrides: FeatureOverrides,
-) -> Result<AppRunningServer, BootstrapError> {
-    let server = configure_server_builder(
-        ServerBuilder::embedded_ui_loopback(port, crate::embedded_ui_assets()),
-        BootstrapOptions {
-            feature_overrides,
-            ..BootstrapOptions::default()
-        },
-    )
-    .start()
-    .await?;
-    Ok(server)
-}
-
 pub(crate) async fn start_standalone_server(
     feature_overrides: FeatureOverrides,
 ) -> Result<crate::serve::RunningServer, BootstrapError> {

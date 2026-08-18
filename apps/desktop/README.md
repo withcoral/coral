@@ -6,7 +6,7 @@ The main process bundles the Coral CLI and runs it as a supervised local
 sidecar:
 
 ```shell
-coral ui --no-open --port 0
+coral server
 ```
 
 The sidecar owns the local gRPC-Web/API runtime. In packaged builds the main
@@ -56,7 +56,7 @@ In development, the sidecar is started through Cargo so the app uses the local
 Rust code (run from the repo root):
 
 ```shell
-cargo run --locked -p coral-cli -- ui --no-open --port 0
+cargo run --locked -p coral-cli -- server
 ```
 
 ## Build

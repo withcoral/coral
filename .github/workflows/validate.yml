@@ -36,8 +36,6 @@ jobs:
       postgres_database_tests: ${{ steps.filter.outputs.postgres_database_tests }}
       release_workflow: ${{ steps.filter.outputs.release_workflow }}
       install-script: ${{ steps.filter.outputs.install-script }}
-      ui-build: ${{ steps.filter.outputs.ui-build }}
-      ui-tests: ${{ steps.filter.outputs.ui-tests }}
       coral-image: ${{ steps.filter.outputs.coral-image }}
       coral-ui-checks: ${{ steps.filter.outputs.coral-ui-checks }}
       coral-ui-image: ${{ steps.filter.outputs.coral-ui-image }}
@@ -91,14 +89,6 @@ jobs:
             install-script:
               - '.github/workflows/validate.yml'
               - 'scripts/install.sh'
-            ui-build:
-              - '.github/workflows/validate.yml'
-              - 'crates/coral-api/proto/**'
-              - 'apps/ui/**'
-            ui-tests:
-              - '.github/workflows/validate.yml'
-              - 'crates/coral-api/proto/**'
-              - 'apps/ui/**'
             # Kept out of the coral-ui-image block below: docker/coral-ui-publish.test.mjs
             # reads that block by slicing to the next filter key.
             coral-image:
@@ -368,96 +358,6 @@ jobs:
           CORAL_INSTALL_DIR="$install_dir" sh < scripts/install.sh
           "$install_dir/coral" --version
 
-  ui-build:
-    name: UI build
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    needs: changes
-    if: ${{ needs.changes.outputs.ui-build == 'true' || needs.changes.outputs.rust_checks == 'true' }}
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-
-      - name: Set up Node
-        if: ${{ github.event_name == 'pull_request' }}
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
-        with:
-          node-version-file: apps/ui/.node-version
-          package-manager-cache: false
-
-      - name: Set up Node with trusted npm cache
-        if: ${{ github.event_name != 'pull_request' }}
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
-        with:
-          node-version-file: apps/ui/.node-version
-          cache: npm
-          cache-dependency-path: apps/ui/package-lock.json
-
-      - name: Install UI dependencies
-        run: npm ci --prefix apps/ui
-
-      - name: Lint and format check
-        run: npm run check --prefix apps/ui
-
-      - name: Build UI
-        run: npm run build --prefix apps/ui
-
-      - name: Verify UI entrypoint
-        run: test -s apps/ui/dist/index.html
-
-      - name: Verify production build excludes test mocks
-        run: |
-          if grep -R -E 'mockServiceWorker|setupWorker|@msw/playwright|mockScenario|PW_UI_SCREENCAST' apps/ui/dist; then
-            echo 'Production UI build contains test/mock-only code' >&2
-            exit 1
-          fi
-
-  ui-tests:
-    name: UI tests
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    needs: changes
-    if: ${{ needs.changes.outputs.ui-tests == 'true' }}
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-
-      - name: Set up Node
-        if: ${{ github.event_name == 'pull_request' }}
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
-        with:
-          node-version-file: apps/ui/.node-version
-          package-manager-cache: false
-
-      - name: Set up Node with trusted npm cache
-        if: ${{ github.event_name != 'pull_request' }}
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
-        with:
-          node-version-file: apps/ui/.node-version
-          cache: npm
-          cache-dependency-path: apps/ui/package-lock.json
-
-      - name: Install UI dependencies
-        run: npm ci --prefix apps/ui
-
-      - name: Type-check UI tests
-        run: npm run test:ui:type-check --prefix apps/ui
-
-      - name: Install Chromium for Playwright
-        run: npm exec --prefix apps/ui -- playwright install --with-deps chromium
-
-      - name: Run UI tests
-        run: npm run test:ui --prefix apps/ui
-
-      - name: Upload UI test artifacts
-        if: ${{ failure() }}
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: ui-test-results
-          path: |
-            apps/ui/test-results/**
-            apps/ui/playwright-report/**
-          if-no-files-found: ignore
 
   coral-ui-checks:
     name: Coral UI checks
@@ -697,7 +597,7 @@ jobs:
       - name: Set up Node for Mintlify validation
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version-file: apps/ui/.node-version
+          node-version-file: apps/coral-ui/.node-version
           package-manager-cache: false
 
       - name: Validate Mintlify docs
@@ -805,8 +705,6 @@ jobs:
         rust-checks,
         windows-rust-smoke,
         install-script,
-        ui-build,
-        ui-tests,
         coral-ui-checks,
         coral-ui-image,
         coral-image,
@@ -830,8 +728,6 @@ jobs:
           RUST_CHECKS_RESULT: ${{ needs.rust-checks.result }}
           WINDOWS_RUST_SMOKE_RESULT: ${{ needs.windows-rust-smoke.result }}
           INSTALL_SCRIPT_RESULT: ${{ needs.install-script.result }}
-          UI_BUILD_RESULT: ${{ needs.ui-build.result }}
-          UI_TESTS_RESULT: ${{ needs.ui-tests.result }}
           CORAL_UI_CHECKS_RESULT: ${{ needs.coral-ui-checks.result }}
           CORAL_UI_IMAGE_RESULT: ${{ needs.coral-ui-image.result }}
           CORAL_IMAGE_RESULT: ${{ needs.coral-image.result }}
@@ -850,8 +746,6 @@ jobs:
             "rust-checks:$RUST_CHECKS_RESULT"
             "windows-rust-smoke:$WINDOWS_RUST_SMOKE_RESULT"
             "install-script:$INSTALL_SCRIPT_RESULT"
-            "ui-build:$UI_BUILD_RESULT"
-            "ui-tests:$UI_TESTS_RESULT"
             "coral-ui-checks:$CORAL_UI_CHECKS_RESULT"
             "coral-ui-image:$CORAL_UI_IMAGE_RESULT"
             "coral-image:$CORAL_IMAGE_RESULT"

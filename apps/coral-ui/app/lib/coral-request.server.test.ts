@@ -1,12 +1,10 @@
 import type { Interceptor } from '@connectrpc/connect'
 import type { GrpcTransportOptions } from '@connectrpc/connect-node'
-import type { GrpcWebTransportOptions } from '@connectrpc/connect-web'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const transportMocks = vi.hoisted(() => ({
   createClient: vi.fn((_service, transport) => transport),
   createGrpcTransport: vi.fn((options) => options),
-  createGrpcWebTransport: vi.fn((options) => options),
   Http2SessionManager: vi.fn(function (this: { authority: string }, authority: string) {
     this.authority = authority
   }),
@@ -19,9 +17,6 @@ vi.mock('@connectrpc/connect', async (importOriginal) => ({
 vi.mock('@connectrpc/connect-node', () => ({
   createGrpcTransport: transportMocks.createGrpcTransport,
   Http2SessionManager: transportMocks.Http2SessionManager,
-}))
-vi.mock('@connectrpc/connect-web', () => ({
-  createGrpcWebTransport: transportMocks.createGrpcWebTransport,
 }))
 
 import {
@@ -52,7 +47,6 @@ describe('request-scoped Coral transport authentication', () => {
     vi.stubEnv('CORAL_ENDPOINT', 'https://coral.example.test')
     transportMocks.createClient.mockClear()
     transportMocks.createGrpcTransport.mockClear()
-    transportMocks.createGrpcWebTransport.mockClear()
     transportMocks.Http2SessionManager.mockClear()
   })
 
@@ -74,7 +68,6 @@ describe('request-scoped Coral transport authentication', () => {
       expect(await authorizationHeader(interceptor)).toBe('Bearer coral-access-token')
     }
     expect(transportMocks.createGrpcTransport).toHaveBeenCalledTimes(clientFactories.length)
-    expect(transportMocks.createGrpcWebTransport).not.toHaveBeenCalled()
   })
 
   it('requires CORAL_ENDPOINT under auth instead of trusting request or forwarded hosts', () => {
@@ -88,33 +81,32 @@ describe('request-scoped Coral transport authentication', () => {
       'CORAL_ENDPOINT must be set when Coral authentication is enabled',
     )
     expect(transportMocks.createGrpcTransport).not.toHaveBeenCalled()
-    expect(transportMocks.createGrpcWebTransport).not.toHaveBeenCalled()
   })
 
-  it('keeps local and desktop calls on the existing unauthenticated gRPC-Web transport', () => {
+  it('uses native gRPC for unauthenticated local and Desktop calls', () => {
     // Pinned rather than inherited: this case passes on an empty environment by
     // luck, and would flip on any machine that exports CORAL_UI_AUTH_MODE=required.
     vi.stubEnv('CORAL_UI_AUTH_MODE', 'disabled')
     vi.stubEnv('CORAL_ENDPOINT', 'http://127.0.0.1:50051')
 
     for (const clientFactory of clientFactories) {
-      const transport = clientFactory(request, null) as unknown as GrpcWebTransportOptions
+      const transport = clientFactory(request, null) as unknown as GrpcTransportOptions
 
-      expect(transport).toEqual({ baseUrl: 'http://127.0.0.1:50051' })
+      expect(transport.baseUrl).toBe('http://127.0.0.1:50051')
+      expect(transport.interceptors).toBeUndefined()
     }
-    expect(transportMocks.createGrpcWebTransport).toHaveBeenCalledTimes(clientFactories.length)
-    expect(transportMocks.createGrpcTransport).not.toHaveBeenCalled()
+    expect(transportMocks.createGrpcTransport).toHaveBeenCalledTimes(clientFactories.length)
   })
 
-  it('uses gRPC-Web for unauthenticated health checks in local and Desktop mode', () => {
+  it('uses native gRPC for unauthenticated health checks in local and Desktop mode', () => {
     vi.stubEnv('CORAL_UI_AUTH_MODE', 'disabled')
     vi.stubEnv('CORAL_ENDPOINT', 'http://127.0.0.1:50051')
 
-    const transport = healthClientForRequest(request) as unknown as GrpcWebTransportOptions
+    const transport = healthClientForRequest(request) as unknown as GrpcTransportOptions
 
-    expect(transport).toEqual({ baseUrl: 'http://127.0.0.1:50051' })
-    expect(transportMocks.createGrpcWebTransport).toHaveBeenCalledOnce()
-    expect(transportMocks.createGrpcTransport).not.toHaveBeenCalled()
+    expect(transport.baseUrl).toBe('http://127.0.0.1:50051')
+    expect(transport.interceptors).toBeUndefined()
+    expect(transportMocks.createGrpcTransport).toHaveBeenCalledOnce()
   })
 
   it('reuses one native HTTP/2 session for hosted health checks without a bearer token', () => {
@@ -132,7 +124,6 @@ describe('request-scoped Coral transport authentication', () => {
     expect(first.sessionManager).toBe(second.sessionManager)
     expect(transportMocks.Http2SessionManager).toHaveBeenCalledOnce()
     expect(transportMocks.createGrpcTransport).toHaveBeenCalledTimes(2)
-    expect(transportMocks.createGrpcWebTransport).not.toHaveBeenCalled()
   })
 
   it.each([
@@ -150,7 +141,6 @@ describe('request-scoped Coral transport authentication', () => {
 
     expect(transport.baseUrl).toBe(endpoint)
     expect(transportMocks.createGrpcTransport).toHaveBeenCalledOnce()
-    expect(transportMocks.createGrpcWebTransport).not.toHaveBeenCalled()
   })
 
   it('allows opted-in h2c with native bearer transport and warns once per origin', () => {
@@ -167,7 +157,6 @@ describe('request-scoped Coral transport authentication', () => {
     }
 
     expect(transportMocks.createGrpcTransport).toHaveBeenCalledTimes(clientFactories.length)
-    expect(transportMocks.createGrpcWebTransport).not.toHaveBeenCalled()
     expect(warn).toHaveBeenCalledOnce()
     expect(warn).toHaveBeenCalledWith(
       expect.stringContaining('bearer tokens over cleartext HTTP to http://coral.internal:50051'),
@@ -190,7 +179,6 @@ describe('request-scoped Coral transport authentication', () => {
         'Coral authentication is required but this request carried no access token',
       )
     }
-    expect(transportMocks.createGrpcWebTransport).not.toHaveBeenCalled()
     expect(transportMocks.createGrpcTransport).not.toHaveBeenCalled()
   })
 
@@ -208,7 +196,6 @@ describe('request-scoped Coral transport authentication', () => {
         'CORAL_ENDPOINT must use HTTPS or explicit-loopback HTTP when Coral authentication is enabled',
       )
       expect(transportMocks.createGrpcTransport).not.toHaveBeenCalled()
-      expect(transportMocks.createGrpcWebTransport).not.toHaveBeenCalled()
     },
   )
 })

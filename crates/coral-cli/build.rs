@@ -33,11 +33,6 @@ fn main() {
     {
         println!("cargo:rerun-if-changed={packed_refs_path}");
     }
-
-    if std::env::var_os("CARGO_FEATURE_EMBEDDED_UI").is_some() {
-        println!("cargo:rerun-if-changed=../../apps/ui/dist");
-        println!("cargo:rerun-if-changed=../../apps/ui/dist/index.html");
-    }
 }
 
 fn git_sha() -> String {
