@@ -79,6 +79,32 @@ impl HttpClientMetadataResolver {
             fetcher,
         })
     }
+
+    /// Rejects a trusted client ID no request through this resolver could name.
+    ///
+    /// Config validation holds `trusted_clients` entries to canonical URL
+    /// spellings, but whether an entry can ever equal an accepted client ID
+    /// also depends on the served topology — the issuer's scheme and the
+    /// loopback IDs derived from registered resources — which only exists once
+    /// this resolver does. Running the entry through the same parse a request
+    /// goes through is what keeps the two answers from drifting: an entry that
+    /// fails here would otherwise pass startup and then never match, and its
+    /// runtime symptom — the approval page still appearing — points nowhere
+    /// near the config that caused it.
+    pub(super) fn check_trusted_client_id(&self, client_id: &str) -> Result<(), String> {
+        let metadata_url = EndpointUrl::<ClientMetadata>::parse(
+            client_id,
+            &self.issuer,
+            &self.allowed_loopback_client_ids,
+        )
+        .map_err(|error| error.to_string())?;
+        // Mirrors `resolve`: an accepted client ID is the canonical
+        // serialization, character for character.
+        if metadata_url.as_url().as_str() != client_id {
+            return Err("client ID must be the canonical form of the URL it names".to_string());
+        }
+        Ok(())
+    }
 }
 
 fn derive_allowed_loopback_client_ids(

@@ -311,6 +311,12 @@ impl AuthorizationServerSettings {
             .any(|trusted| trusted == client_id)
     }
 
+    /// Returns the trusted client IDs for the topology check at server
+    /// construction, which is where the full client-ID policy can first run.
+    pub(super) fn trusted_clients(&self) -> &[String] {
+        &self.trusted_clients
+    }
+
     fn validate(&mut self) -> Result<(), AuthServerError> {
         self.issuer = required("auth.authorization_server.issuer", &self.issuer)?;
         self.issuer = validate_issuer("auth.authorization_server.issuer", &self.issuer, true)?;
@@ -329,6 +335,13 @@ impl AuthorizationServerSettings {
 /// rewrite therefore cannot match any request this server accepts; failing at
 /// startup names the misspelling, where the runtime symptom — the approval
 /// page still appearing — points nowhere near it.
+///
+/// This owns only the spelling half of that guarantee. Whether a canonical
+/// entry names a client the request-time policy can accept also depends on
+/// the served topology — the issuer's scheme and the loopback IDs derived
+/// from registered resources — and the resource set only exists at server
+/// construction, so the resolver re-checks every entry under the real policy
+/// there.
 fn validate_trusted_client(configured: &str) -> Result<String, AuthServerError> {
     let entry_error = |message: String| {
         config_error(format!(

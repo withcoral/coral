@@ -269,13 +269,25 @@ impl AuthorizationServerHttpState {
         state_store: Arc<InMemoryStateStore>,
         authorization_resources: Arc<BTreeSet<String>>,
     ) -> Result<Self, AuthServerError> {
-        let client_metadata_resolver = Arc::new(
-            HttpClientMetadataResolver::new(
-                settings.authorization_server().issuer(),
-                &authorization_resources,
-            )
-            .map_err(|error| AuthServerError::ClientMetadataResolver(error.to_string()))?,
-        );
+        let client_metadata_resolver = HttpClientMetadataResolver::new(
+            settings.authorization_server().issuer(),
+            &authorization_resources,
+        )
+        .map_err(|error| AuthServerError::ClientMetadataResolver(error.to_string()))?;
+        // Config validation already held these entries to canonical spellings;
+        // only the constructed resolver knows the topology that decides
+        // whether each one can ever equal an accepted client ID.
+        for client_id in settings.authorization_server().trusted_clients() {
+            client_metadata_resolver
+                .check_trusted_client_id(client_id)
+                .map_err(|error| {
+                    AuthServerError::Config(format!(
+                        "invalid auth configuration: auth.authorization_server.trusted_clients \
+                         entry `{client_id}` cannot match a client ID this server accepts: {error}"
+                    ))
+                })?;
+        }
+        let client_metadata_resolver = Arc::new(client_metadata_resolver);
         Ok(Self {
             settings,
             session_tokens,
@@ -463,6 +475,57 @@ mod tests {
             prepared.authorization_resources,
             ["https://coral-ui.example.test".to_string()].into()
         );
+    }
+
+    /// `from_toml` holds `trusted_clients` to canonical spellings, but whether
+    /// an entry can ever equal an accepted client ID also depends on the
+    /// issuer's scheme and the loopback IDs derived from registered resources.
+    /// Every entry here passes config validation, so the topology check at
+    /// construction is the only thing standing between it and a server that
+    /// silently never skips the approval page.
+    #[tokio::test]
+    async fn trusted_clients_no_request_could_name_fail_startup() {
+        for (trusted_client, expected) in [
+            (
+                "https://client.example.test/",
+                "must include a non-root path",
+            ),
+            ("https://127.0.0.1/oauth/client.json", "host must be public"),
+            (
+                "http://127.0.0.1:9080/.well-known/oauth-client",
+                "authorized explicit-loopback HTTP endpoint",
+            ),
+        ] {
+            let dir = config(&format!(
+                "{AUTHORIZATION_SERVER}trusted_clients = ['{trusted_client}']\n{PROVIDER}"
+            ));
+            let Err(error) = server(&dir).start().await else {
+                panic!("started with dead trusted client `{trusted_client}`");
+            };
+            let error = error.to_string();
+            assert!(error.contains(trusted_client), "{error}");
+            assert!(error.contains(expected), "{error}");
+        }
+    }
+
+    /// A canonical public HTTPS entry passes with no registered resources at
+    /// all; the loopback entry rejected above is accepted once a registered
+    /// resource derives it — the topology decides, not the spelling.
+    #[tokio::test]
+    async fn trusted_clients_the_topology_can_name_start_and_serve() {
+        for (auth_fields, trusted_client) in [
+            ("", "https://client.example.test/oauth/client.json"),
+            (
+                "allowed_audiences = ['http://127.0.0.1:9080/']\n",
+                "http://127.0.0.1:9080/.well-known/oauth-client",
+            ),
+        ] {
+            let dir = config(&format!(
+                "{auth_fields}{AUTHORIZATION_SERVER}trusted_clients = ['{trusted_client}']\n{PROVIDER}"
+            ));
+            let server = server(&dir).start().await.expect("start");
+            server.shutdown().await.expect("shutdown");
+        }
     }
 
     #[tokio::test]
