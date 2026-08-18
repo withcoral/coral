@@ -45,10 +45,8 @@ existing `config.toml` on the volume is never rewritten, so later changes to
 ## Local deployment
 
 The local stack runs without authentication: the Coral server has no `[auth]`
-configured and Coral UI runs with `CORAL_UI_AUTH_MODE=disabled`. In that
-setup, Coral UI uses a gRPC-Web transport that `coral server` does not speak,
-so Envoy sits between the two translating it to native gRPC. Everything is
-published only on loopback.
+configured and Coral UI runs with `CORAL_UI_AUTH_MODE=disabled`, talking gRPC
+to Coral over the Compose network. Everything is published only on loopback.
 
 <Warning>
   `CORAL_UI_AUTH_MODE=disabled` serves the console with no login: anyone who can reach the port can read every source and submit new source credentials. Keep the published port bound to `127.0.0.1` and do not port-forward it beyond your machine.
@@ -77,72 +75,20 @@ services:
     volumes:
       - coral-data:/var/lib/coral
 
-  envoy:
-    image: envoyproxy/envoy:v1.33-latest
-    restart: unless-stopped
-    volumes:
-      - ./envoy.yaml:/etc/envoy/envoy.yaml:ro
-    depends_on:
-      coral:
-        condition: service_healthy
-
   coral-ui:
     image: ghcr.io/withcoral/coral-ui:latest
     restart: unless-stopped
     environment:
-      CORAL_ENDPOINT: http://envoy:8080
+      CORAL_ENDPOINT: http://coral:14555
       CORAL_UI_AUTH_MODE: disabled
     ports:
       - "127.0.0.1:3000:3000"
     depends_on:
-      - envoy
+      coral:
+        condition: service_healthy
 
 volumes:
   coral-data:
-```
-
-And `envoy.yaml` next to it:
-
-```yaml
-static_resources:
-  listeners:
-    - address:
-        socket_address: { address: 0.0.0.0, port_value: 8080 }
-      filter_chains:
-        - filters:
-            - name: envoy.filters.network.http_connection_manager
-              typed_config:
-                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
-                stat_prefix: coral_grpc_web
-                route_config:
-                  virtual_hosts:
-                    - name: coral
-                      domains: ["*"]
-                      routes:
-                        - match: { prefix: "/" }
-                          route: { cluster: coral, timeout: 0s }
-                http_filters:
-                  - name: envoy.filters.http.grpc_web
-                    typed_config:
-                      "@type": type.googleapis.com/envoy.extensions.filters.http.grpc_web.v3.GrpcWeb
-                  - name: envoy.filters.http.router
-                    typed_config:
-                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
-  clusters:
-    - name: coral
-      type: STRICT_DNS
-      typed_extension_protocol_options:
-        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
-          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
-          explicit_http_config:
-            http2_protocol_options: {}
-      load_assignment:
-        cluster_name: coral
-        endpoints:
-          - lb_endpoints:
-              - endpoint:
-                  address:
-                    socket_address: { address: coral, port_value: 14555 }
 ```
 
 Start the stack:
@@ -455,7 +401,7 @@ also be provided when configured.
 
 | Variable                                 | Required                | Description                                                                                          |
 | ---------------------------------------- | ----------------------- | ---------------------------------------------------------------------------------------------------- |
-| `CORAL_ENDPOINT`                         | always                  | URL of the Coral server's gRPC listener (or of the gRPC-Web proxy in `disabled` mode).               |
+| `CORAL_ENDPOINT`                         | always                  | URL of the Coral server's gRPC listener.                                                             |
 | `CORAL_UI_AUTH_MODE`                     | always                  | `required` or `disabled`.                                                                            |
 | `CORAL_UI_SESSION_SECRET`                | `required` mode         | Session cookie encryption secret, at least 32 characters.                                            |
 | `CORAL_UI_AUTH_ISSUER`                   | `required` mode         | Coral's OAuth issuer URL — the `[auth.authorization_server].issuer` value.                           |
