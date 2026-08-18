@@ -31,7 +31,7 @@ cleartext, all configured in `config.toml` (see
 - **Native gRPC** (`[server].bind_addr`, port `14555` in the image's default
   config) — the data plane Coral UI talks to.
 - **MCP Streamable HTTP** (`[server.mcp_http]`, opt-in) — serves `/mcp` for MCP
-  clients, plus `/livez` and `/readyz`.
+  clients, plus health-check endpoints.
 - **OAuth authorization server** (`[auth].http_bind_addr`, only with `[auth]`)
   — serves login, token, and discovery endpoints.
 
