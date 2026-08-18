@@ -11,7 +11,7 @@ use coral_api::v1::{
 use tonic::{Request, Response, Status};
 
 use crate::bootstrap::{AppError, app_status};
-use crate::identity::LOCAL_PRINCIPAL_ID;
+use crate::identity::PrincipalId;
 use crate::state::db::WorkspaceMemberRecord;
 use crate::transport::{
     grpc_span, instrument_grpc, request_context, workspace_name_from_proto, workspace_to_proto,
@@ -57,7 +57,7 @@ impl WorkspaceServiceApi for WorkspaceService {
         instrument_grpc(span, async move {
             authorizer.admit(&principal).map_err(app_status)?;
             let caller = principal.id().as_str();
-            let memberships = if caller == LOCAL_PRINCIPAL_ID {
+            let memberships = if principal.is_local() {
                 // Being admitted at all means this deployment treats the local
                 // principal as owner of everything, and it holds no membership
                 // rows the listing could be read from.
@@ -97,7 +97,7 @@ impl WorkspaceServiceApi for WorkspaceService {
                 .authorize_creation(&principal)
                 .map_err(app_status)?;
             let creator = principal.id().as_str();
-            let workspace = if creator == LOCAL_PRINCIPAL_ID {
+            let workspace = if principal.is_local() {
                 // Being admitted at all means this deployment treats the local
                 // principal as owner of everything, and it has no directory row
                 // an ownership grant could reference: the `coral:local` user is
@@ -206,8 +206,12 @@ impl WorkspaceServiceApi for WorkspaceService {
                 .await
                 .map_err(app_status)?;
             let role = member_role_from_proto(request.role)?;
+            // The named person is parsed rather than passed through: a
+            // membership row references the directory, and `coral:local` is the
+            // one principal no directory row may carry.
+            let user_id = PrincipalId::parse(&request.user_id).map_err(app_status)?;
             let member = workspaces
-                .add_workspace_member(&workspace_name, &request.user_id, role)
+                .add_workspace_member(&workspace_name, user_id.as_str(), role)
                 .await
                 .map_err(app_status)?;
             Ok(Response::new(AddWorkspaceMemberResponse {
@@ -476,6 +480,33 @@ mod tests {
                 "both answers must carry the ordinary workspace-miss reason"
             );
         }
+
+        // Authorization answers before the rest of the body is read, so an
+        // outsider is told the workspace is absent even when their request is
+        // the kind that would otherwise be rejected as malformed. Hoisting
+        // either body check above the authorization would turn these into
+        // `InvalidArgument` and `NotFound`-for-the-user instead.
+        assert_eq!(
+            deployment
+                .add(&outsider, "private", &owner, WorkspaceRole::Unspecified)
+                .await
+                .expect_err("an outsider reaches nothing")
+                .code(),
+            Code::NotFound,
+        );
+        assert_eq!(
+            deployment
+                .add(
+                    &outsider,
+                    "private",
+                    "never-logged-in",
+                    WorkspaceRole::Member
+                )
+                .await
+                .expect_err("an outsider reaches nothing")
+                .code(),
+            Code::NotFound,
+        );
     }
 
     #[tokio::test]
@@ -553,6 +584,56 @@ mod tests {
                 .code(),
             Code::NotFound,
         );
+    }
+
+    /// `coral:local` is the built-in principal, never a directory row, so it
+    /// must be refused at the edge rather than reaching the membership write.
+    /// A shared deployment that granted it `Owner` would count it toward the
+    /// owner floor and let the real owner leave, stranding the workspace under
+    /// a principal it refuses to admit.
+    #[tokio::test]
+    async fn the_local_principal_cannot_be_named_as_a_member() {
+        let deployment = shared_deployment().await;
+        let owner = federated(&deployment.seed_user("owner").await);
+        deployment.create(&owner, "team").await.expect("create");
+
+        assert_eq!(
+            deployment
+                .add(&owner, "team", LOCAL_PRINCIPAL_ID, WorkspaceRole::Member)
+                .await
+                .expect_err("the built-in local principal is not a directory entry")
+                .code(),
+            Code::InvalidArgument,
+        );
+        assert_eq!(deployment.role_of("team", LOCAL_PRINCIPAL_ID).await, None);
+    }
+
+    /// `role` is an open proto enum read straight off the wire, so a number no
+    /// version of the enum ever defined must be refused rather than decoded
+    /// into whichever role happens to sort first.
+    #[tokio::test]
+    async fn a_role_number_outside_the_enum_is_refused() {
+        let deployment = shared_deployment().await;
+        let owner_id = deployment.seed_user("owner").await;
+        let owner = federated(&owner_id);
+        let ada = deployment.seed_user("ada").await;
+        deployment.create(&owner, "team").await.expect("create");
+
+        let status = deployment
+            .service
+            .add_workspace_member(request(
+                AddWorkspaceMemberRequest {
+                    workspace: Some(workspace_to_proto(&workspace("team"))),
+                    user_id: ada.clone(),
+                    role: 99,
+                },
+                owner.clone(),
+            ))
+            .await
+            .expect_err("an unrecognized role number is not a role");
+
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert_eq!(deployment.role_of("team", &ada).await, None);
     }
 
     /// The owner floor is the same rule whether the last owner is revoked or

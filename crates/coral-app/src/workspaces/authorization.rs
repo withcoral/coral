@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use crate::bootstrap::AppError;
-use crate::identity::{LOCAL_PRINCIPAL_ID, Principal, PrincipalKind};
+use crate::identity::{Principal, PrincipalKind};
 use crate::state::db::{CoralDb, DbRepos};
 use crate::workspaces::{MemberRole, WorkspaceName};
 
@@ -226,19 +226,36 @@ impl WorkspaceAuthorizer {
 
     /// Decides whether `principal` may read the deployment's user directory.
     ///
-    /// Directory authority is workspace ownership, not principal kind: the
-    /// directory exists so an owner can name somebody as a member, and a
-    /// caller who owns nothing has nobody to name. The denial is plain rather
-    /// than concealing, because the directory is deployment-wide — refusing it
-    /// hides no particular person's existence.
+    /// The directory exists so an owner can name somebody as a member, so both
+    /// halves of the control-plane rule apply to it: an agent credential is
+    /// refused as it is everywhere else in the control plane, and a person who
+    /// owns no workspace has nobody to name. Reading the roster of one's own
+    /// workspace already requires `Manage`, so handing an agent the
+    /// deployment-wide directory would return the same identities by another
+    /// door.
+    ///
+    /// The ownership half is a low bar rather than a confidentiality boundary:
+    /// any signed-in person may create a workspace, and creating one makes
+    /// them its owner. On a shared deployment the directory is therefore
+    /// effectively bounded by the login, not by workspace ownership.
+    ///
+    /// The denial is plain rather than concealing, because the directory is
+    /// deployment-wide — refusing it hides no particular person's existence.
     ///
     /// # Errors
     ///
-    /// Returns [`AppError::PermissionDenied`] for a caller this deployment
-    /// admits but who owns no workspace.
+    /// Returns [`AppError::PermissionDenied`] for an agent credential, for a
+    /// caller this deployment admits but who owns no workspace, and for the
+    /// local principal on a deployment that does not admit it.
     pub(crate) async fn authorize_directory(&self, principal: &Principal) -> Result<(), AppError> {
         if let Some(decision) = self.decide_for_local_principal(principal) {
             return decision;
+        }
+
+        if principal.kind() == PrincipalKind::Agent {
+            return Err(AppError::PermissionDenied(
+                "agent credentials cannot read the user directory".to_string(),
+            ));
         }
 
         let mut session = self.db.as_ref();
@@ -260,7 +277,7 @@ impl WorkspaceAuthorizer {
     /// Settles the built-in local principal, or reports `None` for a caller
     /// whose authority comes from membership state instead.
     fn decide_for_local_principal(&self, principal: &Principal) -> Option<Result<(), AppError>> {
-        (principal.id().as_str() == LOCAL_PRINCIPAL_ID).then(|| match self.local_principal {
+        principal.is_local().then(|| match self.local_principal {
             LocalPrincipalPolicy::ImplicitOwner => Ok(()),
             LocalPrincipalPolicy::NoLocalPrincipal => Err(AppError::PermissionDenied(
                 "the local principal is not available on this deployment".to_string(),
@@ -367,6 +384,36 @@ mod tests {
             ),
             "the deployment decision still comes first"
         );
+    }
+
+    /// The directory returns the same identities the roster does, and the
+    /// roster is `Manage`. An agent refused its own workspace's roster must
+    /// therefore be refused the deployment-wide directory too, or the
+    /// restriction is only a matter of which RPC it asks.
+    #[tokio::test]
+    async fn an_agent_is_refused_the_directory_its_owner_may_read() {
+        let (_temp, db) = migrated_database().await;
+        let workspace = workspace("team-directory");
+        let owner_id = seed_user(&db, "owner").await;
+        create_workspace(&db, &workspace).await;
+        grant(&db, &workspace, &owner_id, MemberRole::Owner).await;
+        let authorizer = WorkspaceAuthorizer::new(db);
+
+        assert!(
+            matches!(
+                authorizer
+                    .authorize_directory(
+                        &Principal::parse(&owner_id, PrincipalKind::Agent).expect("agent")
+                    )
+                    .await,
+                Err(AppError::PermissionDenied(_))
+            ),
+            "an agent credential must not reach the directory through its owner's workspace"
+        );
+        authorizer
+            .authorize_directory(&Principal::parse(&owner_id, PrincipalKind::User).expect("owner"))
+            .await
+            .expect("the person behind that credential still reads the directory");
     }
 
     #[tokio::test]

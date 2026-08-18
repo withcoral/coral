@@ -100,6 +100,18 @@ impl Principal {
         }
     }
 
+    /// Reports whether this is the built-in local principal.
+    ///
+    /// [`PrincipalId::parse`] refuses `coral:local`, so this is the one way the
+    /// identity arises and the one question worth asking about it. Every site
+    /// that branches on the built-in principal asks it here, which is also what
+    /// makes those sites findable when the local-ownership migration removes
+    /// the need for the branch.
+    #[must_use]
+    pub fn is_local(&self) -> bool {
+        self.id.as_str() == LOCAL_PRINCIPAL_ID
+    }
+
     /// Returns the stable principal identity.
     #[must_use]
     pub const fn id(&self) -> &PrincipalId {
