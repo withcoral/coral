@@ -44,11 +44,11 @@ existing `config.toml` on the volume is never rewritten, so later changes to
 
 ## Local deployment
 
-The local stack runs Coral, Coral UI with authentication disabled
-(`CORAL_UI_AUTH_MODE=disabled`), and Envoy in between: with authentication
-disabled, Coral UI uses a gRPC-Web transport that `coral server` does not
-speak, so Envoy translates it to native gRPC. Everything is published only on
-loopback.
+The local stack runs without authentication: the Coral server has no `[auth]`
+configured and Coral UI runs with `CORAL_UI_AUTH_MODE=disabled`. In that
+setup, Coral UI uses a gRPC-Web transport that `coral server` does not speak,
+so Envoy sits between the two translating it to native gRPC. Everything is
+published only on loopback.
 
 <Warning>
   `CORAL_UI_AUTH_MODE=disabled` serves the console with no login: anyone who can reach the port can read every source and submit new source credentials. Keep the published port bound to `127.0.0.1` and do not port-forward it beyond your machine.
