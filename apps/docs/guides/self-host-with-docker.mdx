@@ -35,16 +35,6 @@ cleartext, all configured in `config.toml` (see
 - **OAuth authorization server** (`[auth].http_bind_addr`, only with `[auth]`)
   — serves login, token, and discovery endpoints.
 
-Coral UI runs in one of two modes, set by `CORAL_UI_AUTH_MODE`:
-
-- `required` — users log in through Coral's OAuth flow, and Coral UI calls the
-  Coral server over native gRPC with each user's bearer token. This is the mode
-  for anything reachable by others.
-- `disabled` — no login at all, and Coral UI switches to its gRPC-Web
-  transport, which the standalone `coral server` does not speak. A
-  gRPC-Web-translating proxy (Envoy below) must sit between Coral UI and Coral,
-  or every page fails to load data.
-
 The first boot of the Coral container seeds `config.toml` from the
 `CORAL_SEED_CONFIG` environment variable if set, otherwise with a starter
 config that binds gRPC to `0.0.0.0:14555`. The seed applies **once**: an
@@ -54,8 +44,11 @@ existing `config.toml` on the volume is never rewritten, so later changes to
 
 ## Local deployment
 
-The local stack runs Coral, Envoy translating gRPC-Web to gRPC, and Coral UI
-with authentication disabled, published only on loopback.
+The local stack runs Coral, Coral UI with authentication disabled
+(`CORAL_UI_AUTH_MODE=disabled`), and Envoy in between: with authentication
+disabled, Coral UI uses a gRPC-Web transport that `coral server` does not
+speak, so Envoy translates it to native gRPC. Everything is published only on
+loopback.
 
 <Warning>
   `CORAL_UI_AUTH_MODE=disabled` serves the console with no login: anyone who can reach the port can read every source and submit new source credentials. Keep the published port bound to `127.0.0.1` and do not port-forward it beyond your machine.
