@@ -194,7 +194,8 @@ function ConnectClients({ mcpClients, workspaces }: ConnectClientsProps) {
         Connecting a client lets it query your sources over MCP.
       </Typography.Body>
 
-      {/* Bounded so a long client list scrolls instead of pushing step 2 out of the panel. */}
+      {/* Bounded so a long client list scrolls inside the card instead of pushing step 2
+          out of the panel. */}
       <McpClientsList {...mcpClients} maxHeight={260} workspaces={workspaces} />
 
       <Typography.Body variant="tertiary">

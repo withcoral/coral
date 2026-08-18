@@ -19,6 +19,7 @@ import { featureClientForRequest } from '@/lib/coral-request.server'
 import { errorMessage } from '@/lib/utils'
 import { Banner, Typography } from '@/wax/components'
 
+import { SettingsPage } from '@/views/settings/settings-page'
 import * as styles from '@/views/settings/settings.css'
 
 // Coral cannot restart itself, and how you restart it depends on what is running
@@ -85,15 +86,17 @@ export default function RuntimeFeaturesRoute({ loaderData }: Route.ComponentProp
   const { features, loadError, restartPending } = loaderData
 
   return (
-    <section className={styles.section}>
-      <header className={styles.sectionHeader}>
-        <Typography.HeadingLarge as="h1">Features</Typography.HeadingLarge>
-        <Typography.Body variant="secondary">
-          Turn experimental Coral capabilities on or off for this machine. Changes are saved right
-          away and apply the next time Coral starts.
-        </Typography.Body>
-      </header>
-
+    <SettingsPage
+      header={
+        <div className={styles.headerText}>
+          <Typography.HeadingLarge as="h1">Features</Typography.HeadingLarge>
+          <Typography.Body variant="secondary">
+            Turn experimental Coral capabilities on or off for this machine. Changes are saved right
+            away and apply the next time Coral starts.
+          </Typography.Body>
+        </div>
+      }
+    >
       <RuntimeFeaturesList
         error={loadError ?? undefined}
         features={features}
@@ -103,7 +106,7 @@ export default function RuntimeFeaturesRoute({ loaderData }: Route.ComponentProp
       {/* Below the list, so appearing after a toggle grows into empty page space
           instead of pushing the switch the reader just used. */}
       {restartPending && <Banner>{RESTART_MESSAGE}</Banner>}
-    </section>
+    </SettingsPage>
   )
 }
 

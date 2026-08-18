@@ -1,5 +1,6 @@
 import { Button, Menu, Table, Typography } from '@/wax/components'
 
+import { filterMcpClients } from './filter-mcp-clients'
 import * as styles from './mcp-clients-list.css'
 
 const NOT_CONFIGURED = 'not-configured'
@@ -15,10 +16,14 @@ export interface McpClientsListProps {
   readonly clients: ReadonlyArray<McpClientListItem>
   readonly error?: string
   readonly loading?: boolean
-  /** Scrolls the rows under the sticky header once they exceed this height. */
+  /**
+   * Scrolls the rows under the sticky header once they exceed this height, in pixels.
+   * Leave it unset to let the surrounding page scroll instead.
+   */
   readonly maxHeight?: number
   readonly onWorkspaceChange: (clientId: string, workspaceName?: string) => void
   readonly pendingClientIds?: ReadonlyArray<string>
+  readonly search?: string
   readonly workspaces: ReadonlyArray<{ name: string }>
 }
 
@@ -41,8 +46,10 @@ export function McpClientsList({
   maxHeight,
   onWorkspaceChange,
   pendingClientIds = [],
+  search = '',
   workspaces,
 }: McpClientsListProps) {
+  const visibleClients = filterMcpClients(clients, search)
   const status = loading ? (
     <Typography.BodySmall role="status" variant="tertiary">
       Loading MCP clients…
@@ -55,6 +62,8 @@ export function McpClientsList({
     <Typography.BodySmall variant="tertiary">
       No supported MCP clients available.
     </Typography.BodySmall>
+  ) : visibleClients.length === 0 ? (
+    <Typography.BodySmall variant="tertiary">No results for "{search}"</Typography.BodySmall>
   ) : null
 
   return (
@@ -74,7 +83,7 @@ export function McpClientsList({
             </Table.Cell>
           </Table.Row>
         ) : (
-          clients.map((client) => {
+          visibleClients.map((client) => {
             const pending = pendingClientIds.includes(client.id)
             const access =
               client.configuredWorkspace === undefined

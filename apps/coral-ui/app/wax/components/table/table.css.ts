@@ -140,7 +140,17 @@ export const bodyScrollArea = style({
   },
 })
 
-export const body = style(rowGroup)
+export const body = style({
+  ...rowGroup,
+  selectors: {
+    // Only a capped body holds a scroll of its own. Everywhere else the port is
+    // there but empty, and containing its overscroll would keep the wheel from
+    // reaching whatever scrolls outside the table.
+    [`:not(${scrollRows}) > ${bodyScrollArea} > &`]: {
+      overscrollBehavior: 'auto',
+    },
+  },
+})
 
 export const row = style({
   ...rowGroup,

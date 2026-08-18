@@ -2,6 +2,7 @@ import { useState } from 'react'
 
 import { Button, Menu, Table, Typography } from '@/wax/components'
 
+import { filterMcpClients } from './filter-mcp-clients'
 import * as styles from './mcp-clients-list.css'
 
 interface McpClientInstallListItemBase {
@@ -29,13 +30,24 @@ function installColumns(hasWorkspaceSelection: boolean): Table.Column[] {
 
 export function McpClientInstallList({
   clients,
+  search = '',
   workspaces = [],
 }: {
   readonly clients: readonly McpClientInstallListItem[]
+  readonly search?: string
   readonly workspaces?: ReadonlyArray<{ name: string }>
 }) {
   const [selectedWorkspaces, setSelectedWorkspaces] = useState<Readonly<Record<string, string>>>({})
+  // Derived from the full list, so a search that matches nothing does not drop
+  // the Workspace column out of the header.
   const hasWorkspaceSelection = clients.length > 0
+  const visibleClients = filterMcpClients(clients, search)
+  const status =
+    visibleClients.length > 0
+      ? null
+      : clients.length === 0
+        ? 'No supported MCP clients available.'
+        : `No results for "${search}"`
 
   return (
     <Table.Container
@@ -46,7 +58,14 @@ export function McpClientInstallList({
     >
       <Table.Head />
       <Table.Body>
-        {clients.map((client) => {
+        {status ? (
+          <Table.Row>
+            <Table.Cell align="center" className={styles.statusCell} fullWidth>
+              <Typography.BodySmall variant="tertiary">{status}</Typography.BodySmall>
+            </Table.Cell>
+          </Table.Row>
+        ) : null}
+        {visibleClients.map((client) => {
           const workspace = selectedWorkspaces[client.id]
           const canSelectWorkspace =
             'workspaceInstallCommand' in client && client.workspaceInstallCommand
