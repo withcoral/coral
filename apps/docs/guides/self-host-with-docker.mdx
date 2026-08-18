@@ -63,6 +63,17 @@ services:
   coral:
     image: ghcr.io/withcoral/coral:latest
     restart: unless-stopped
+    environment:
+      CORAL_SEED_CONFIG: |
+        [server]
+        bind_addr = "0.0.0.0:14555"
+
+        [server.mcp_http]
+        enabled = true
+        bind = "0.0.0.0:14556"
+        allow_unauthenticated_non_loopback = true
+    ports:
+      - "127.0.0.1:14556:14556"
     volumes:
       - coral-data:/var/lib/coral
 
@@ -146,11 +157,22 @@ The console is at `http://localhost:3000`. Verify readiness with:
 curl -fsS http://localhost:3000/readyz
 ```
 
-MCP Streamable HTTP is not available in this topology: without `[auth]`, the
-MCP listener only accepts loopback bind addresses, which are unreachable from
-outside the container. Use the remote deployment below for MCP access, or
-[`coral mcp-stdio`](/guides/use-coral-over-mcp) through `docker exec` as shown
-in [Administration](#administering-a-deployed-instance).
+MCP Streamable HTTP is published on loopback too — the seed config opts the
+unauthenticated listener into a non-loopback bind with
+`allow_unauthenticated_non_loopback` (see
+[Configuration](/reference/configuration#server)). Point any MCP client that
+supports the transport at:
+
+```text
+http://localhost:14556/mcp
+```
+
+The listener performs no authentication — reachability is the entire access
+control — which is why the compose file publishes it to `127.0.0.1` only, and
+why Coral prints an exposure warning at startup. It accepts requests addressed
+to `localhost`, `127.0.0.1`, `::1`, or the bind IP; to reach it from a sibling
+container by service name instead, add the name to
+`[server.mcp_http].allowed_hosts`.
 
 ## Remote deployment with TLS
 
@@ -241,6 +263,7 @@ services:
 
         [auth.authorization_server]
         issuer = "https://auth.coral.example.com"
+        trusted_clients = ["https://coral.example.com/.well-known/oauth-client"]
 
         [auth.provider]
         issuer = "https://your-idp.example.com"
@@ -317,9 +340,12 @@ reach a ready Coral server. The second returns `401 Unauthorized` with a
 MCP client's entry point into the login flow, so a `401` here means MCP is
 wired correctly.
 
-Open `https://coral.example.com` in a browser. You are redirected to Coral's
-approval page ("Approve access?"), then to your identity provider's login,
-and back to the console signed in.
+Open `https://coral.example.com` in a browser. You are redirected to your
+identity provider's login and land back in the console signed in. The
+`trusted_clients` entry in the seed config is the console's own client ID, so
+console sign-ins skip Coral's approval page; drop that line to have every
+sign-in pause on the approval page instead (see
+[Configuration](/reference/configuration#authentication)).
 
 ### Connect an MCP client
 
@@ -330,8 +356,9 @@ https://mcp.coral.example.com/mcp
 ```
 
 The client discovers Coral's authorization server from the protected-resource
-metadata, runs the same browser login you saw above, and connects. No token
-needs to be copied by hand.
+metadata and walks the browser login, pausing on Coral's approval page —
+unlike the console, MCP clients are not listed in `trusted_clients` — before
+your identity provider's sign-in. No token needs to be copied by hand.
 
 ## Administering a deployed instance
 

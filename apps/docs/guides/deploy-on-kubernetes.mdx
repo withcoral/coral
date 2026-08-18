@@ -91,6 +91,7 @@ data:
 
     [auth.authorization_server]
     issuer = "https://auth.coral.example.com"
+    trusted_clients = ["https://coral.example.com/.well-known/oauth-client"]
 
     [auth.provider]
     issuer = "https://your-idp.example.com"
@@ -352,8 +353,9 @@ Then verify the public surfaces exactly as in the
 [Compose guide](/guides/self-host-with-docker#start-and-verify):
 `https://coral.example.com/readyz` returns ready, `https://mcp.coral.example.com/mcp`
 returns `401` with a `WWW-Authenticate` challenge, and opening
-`https://coral.example.com` walks through Coral's approval page and your
-identity provider's login.
+`https://coral.example.com` signs you in through your identity provider —
+without Coral's approval page, since the console's client ID is listed in
+`trusted_clients`.
 
 ## Operations
 
