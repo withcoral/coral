@@ -211,7 +211,7 @@ pub enum ServerMode {
         /// Address to bind.
         bind: SocketAddr,
     },
-    /// Loopback gRPC-Web server that also serves embedded UI assets.
+    /// Loopback gRPC-Web server that also serves static assets.
     StaticAssets {
         /// Port to bind on `127.0.0.1`.
         port: u16,
@@ -266,7 +266,7 @@ impl ServerBuilder {
     }
 
     #[must_use]
-    /// Creates a builder for loopback gRPC-Web with embedded UI assets.
+    /// Creates a builder for loopback gRPC-Web with static assets.
     ///
     /// Requests with native `application/grpc` content-types are rejected with
     /// HTTP 415. Requests for paths under registered gRPC services route to
@@ -1956,7 +1956,7 @@ backend = "unsupported"
             .with_config_dir(temp.path().join("coral-config"))
             .start()
             .await
-            .expect("start embedded UI server");
+            .expect("start static asset server");
         let endpoint = running.endpoint_uri();
         let path = format!("{endpoint}/coral.v1.SourceService/ListSources");
         let client = reqwest::Client::new();
@@ -2003,7 +2003,7 @@ backend = "unsupported"
             .with_config_dir(temp.path().join("coral-config"))
             .start()
             .await
-            .expect("start embedded UI server");
+            .expect("start static asset server");
         let endpoint = running.endpoint_uri();
         let path = format!("{endpoint}/coral.v1.SourceService/ImportSource");
         let client = reqwest::Client::new();
@@ -2100,7 +2100,7 @@ tables:
             .with_principal_provider(Arc::new(RejectingPrincipalProvider))
             .start()
             .await
-            .expect("start embedded UI server");
+            .expect("start static asset server");
         let endpoint = running.endpoint_uri().to_string();
         let client = reqwest::Client::new();
 

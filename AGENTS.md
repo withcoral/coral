@@ -17,8 +17,7 @@
 - `crates/coral-telemetry`: cross-crate telemetry helpers that are independent
   of app bootstrap, query runtime, and adapter surfaces.
 - `apps/coral-ui`: React Router/Wax frontend shell, npm package `coral-ui`. It is
-  validated independently from `apps/ui` and is not built by Rust crate build
-  scripts.
+  validated independently and is not built by Rust crate build scripts.
 - `apps/desktop`: Electron shell around Coral UI and the local Coral sidecar.
 - `apps/docs`: Mintlify documentation site.
 - `plugins/coral`: Agent plugin packaging. `plugins/coral/skills` is the
@@ -78,11 +77,9 @@
   checkout and change detection so concurrency cancellation stops intermediate
   branch states before expensive jobs fan out.
 - `make rust-checks` is the Rust-only local gate and should keep using
-  `--all-features`; the embedded UI feature is a normal CLI build surface.
-- The built UI artifact is produced by repo/CI orchestration (`make ui-build`
-  or the `UI build` workflow job), not by `crates/coral-cli/build.rs`. Local
-  Rust builds may compile without `apps/ui/dist`, because UI development normally
-  serves assets from Vite while the CLI provides the loopback API server.
+  `--all-features`.
+- Coral UI is built by its own repository and CI orchestration; the CLI does
+  not embed browser assets.
 - Use `make docker-build` to compile the current checkout in a native Linux
   BuildKit stage and package that binary as `coral:local`. Set
   `DOCKER_IMAGE=coral:test` to change the local tag or `DOCKER_NO_CACHE=1` to
