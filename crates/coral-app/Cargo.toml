@@ -48,7 +48,6 @@ toml_edit.workspace = true
 tonic.workspace = true
 tonic-health.workspace = true
 tonic-types.workspace = true
-tonic-web.workspace = true
 tower.workspace = true
 tracing.workspace = true
 tracing-opentelemetry.workspace = true
