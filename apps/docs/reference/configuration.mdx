@@ -128,8 +128,8 @@ allowed_hosts = ["coral"]
 ```
 
 Both keys are rejected when `[auth]` is configured: remote binds then need
-no opt-in, and accepted hosts derive from `public_url` plus the loopback
-names.
+no opt-in, and accepted hosts derive from `public_url`, the bind IP, plus the
+loopback names.
 
 ## Runtime features
 
