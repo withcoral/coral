@@ -49,7 +49,7 @@ configured and Coral UI runs with `CORAL_UI_AUTH_MODE=disabled`, talking gRPC
 to Coral over the Compose network. Everything is published only on loopback.
 
 <Warning>
-  `CORAL_UI_AUTH_MODE=disabled` serves the console with no login: anyone who can reach the port can read every source and submit new source credentials. Keep the published port bound to `127.0.0.1` and do not port-forward it beyond your machine.
+  `CORAL_UI_AUTH_MODE=disabled` serves Coral UI with no login: anyone who can reach the port can read every source and submit new source credentials. Keep the published port bound to `127.0.0.1` and do not port-forward it beyond your machine.
 </Warning>
 
 You need Docker Engine with the Compose plugin.
@@ -97,7 +97,7 @@ Start the stack:
 docker compose up -d
 ```
 
-The console is at `http://localhost:3000`. Verify readiness with:
+Coral UI is at `http://localhost:3000`. Verify readiness with:
 
 ```shellscript
 curl -fsS http://localhost:3000/readyz
@@ -132,7 +132,7 @@ The example uses one domain per surface:
 
 | Hostname                    | Serves                          | Proxied to        |
 | --------------------------- | ------------------------------- | ----------------- |
-| `coral.example.com`         | Coral UI console                | `coral-ui:3000`   |
+| `coral.example.com`         | Coral UI                        | `coral-ui:3000`   |
 | `auth.coral.example.com`    | Coral's OAuth authorization server | `coral:8081`   |
 | `mcp.coral.example.com`     | MCP Streamable HTTP             | `coral:14556`     |
 
@@ -287,10 +287,10 @@ MCP client's entry point into the login flow, so a `401` here means MCP is
 wired correctly.
 
 Open `https://coral.example.com` in a browser. You are redirected to your
-identity provider's login and land back in the console signed in. The
-`trusted_clients` entry in the seed config is the console's own client ID, so
-console sign-ins skip Coral's approval page; drop that line to have every
-sign-in pause on the approval page instead (see
+identity provider's login and land back in Coral UI signed in. The
+`trusted_clients` entry in the seed config is Coral UI's own client ID, so its
+sign-ins skip Coral's approval page; drop that line to have every sign-in
+pause on the approval page instead (see
 [Configuration](/reference/configuration#authentication)).
 
 ### Connect an MCP client
@@ -303,12 +303,12 @@ https://mcp.coral.example.com/mcp
 
 The client discovers Coral's authorization server from the protected-resource
 metadata and walks the browser login, pausing on Coral's approval page —
-unlike the console, MCP clients are not listed in `trusted_clients` — before
+unlike Coral UI, MCP clients are not listed in `trusted_clients` — before
 your identity provider's sign-in. No token needs to be copied by hand.
 
 ## Administering a deployed instance
 
-Most administration happens in the console: installing, editing, importing,
+Most administration happens in the Coral UI: installing, editing, importing,
 and removing sources, creating workspaces, browsing the schema and traces, and
 toggling runtime features.
 
@@ -383,7 +383,7 @@ docker compose pull && docker compose up -d
 ### `coral` container
 
 The server reads its networking, auth, and telemetry configuration from
-`config.toml`, not environment variables — see
+`config.toml`, not environment variables. See
 [Configuration](/reference/configuration). The container-level variables:
 
 | Variable                    | Default                 | Description                                                                                      |
@@ -405,7 +405,7 @@ also be provided when configured.
 | `CORAL_UI_AUTH_MODE`                     | always                  | `required` or `disabled`.                                                                            |
 | `CORAL_UI_SESSION_SECRET`                | `required` mode         | Session cookie encryption secret, at least 32 characters.                                            |
 | `CORAL_UI_AUTH_ISSUER`                   | `required` mode         | Coral's OAuth issuer URL — the `[auth.authorization_server].issuer` value.                           |
-| `CORAL_UI_PUBLIC_URL`                    | `required` mode         | The console's externally reachable origin, scheme and host only. HTTPS unless explicit loopback.     |
+| `CORAL_UI_PUBLIC_URL`                    | `required` mode         | Coral UI's externally reachable origin, scheme and host only. HTTPS unless explicit loopback.        |
 | `CORAL_UI_ALLOW_INSECURE_CORAL_ENDPOINT` | no                      | Set to `1` to allow cleartext gRPC to a non-loopback `CORAL_ENDPOINT` on a trusted private network.  |
 | `CORAL_UI_SESSION_COOKIE_NAME`           | no                      | Session cookie name, default `coral_ui_session`.                                                     |
 | `CORAL_UI_SESSION_MAX_AGE_SECONDS`       | no                      | Session cookie lifetime cap, default `3600`.                                                         |

@@ -89,7 +89,7 @@ bind_addr = "127.0.0.1:14555"
 </Warning>
 
 Coral terminates no TLS on any listener. For any deployment that leaves
-loopback, run a TLS-terminating reverse proxy in front of Coral — see
+loopback, run a TLS-terminating reverse proxy in front of Coral. See
 [Self-host Coral with Docker](/guides/self-host-with-docker) and
 [Deploy Coral on Kubernetes](/guides/deploy-on-kubernetes).
 
@@ -106,7 +106,7 @@ bind = "127.0.0.1:14556"
 | ------------------------------------ | ---------------- | ------------- | ---------------------------------------------------------------------------------------------------- |
 | `enabled`                            | boolean          | `false`       | Starts the MCP Streamable HTTP listener alongside the gRPC server.                                    |
 | `bind`                               | string           | `127.0.0.1:0` | Listener address as a literal IP and port. Loopback-only without `[auth]` unless opted in below.      |
-| `public_url`                         | string           | unset         | Externally reachable identifier for the MCP endpoint. Required with `[auth]`, forbidden without it.   |
+| `public_url`                         | string           | unset         | Externally reachable identifier for the MCP endpoint. Required when the listener is enabled with `[auth]`; forbidden without `[auth]`. |
 | `allow_unauthenticated_non_loopback` | boolean          | `false`       | Opt-in that lets the unauthenticated listener bind non-loopback addresses. Rejected with `[auth]`.    |
 | `allowed_hosts`                      | array of strings | `[]`          | Extra `Host` header names the unauthenticated listener accepts. Rejected with `[auth]`.               |
 
@@ -146,8 +146,9 @@ list the extra names explicitly:
 allowed_hosts = ["coral"]
 ```
 
-With `[auth]`, `bind` may be any address and `public_url` is required; its
-value is the OAuth resource identifier and token audience for the endpoint, so
+With `[auth]`, `bind` may be any address and an enabled listener must set
+`public_url`; its value is the OAuth resource identifier and token audience
+for the endpoint, so
 keep its path consistent with the served endpoint, for example
 `https://mcp.example.com/mcp`. Both opt-in keys are rejected when `[auth]` is
 configured: remote binds then need no opt-in, and accepted hosts derive from
@@ -261,8 +262,6 @@ management of its own.
 <Note>
   Every authenticated user has the same full access to the instance and all of its sources — there are no per-user roles. Restrict who can log in through the upstream provider and `required_claims`.
 </Note>
-||||||| 7867397a4
-The unauthenticated MCP listener is restricted to loopback addresses.
 
 ## Runtime features
 

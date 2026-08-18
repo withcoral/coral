@@ -17,7 +17,7 @@ Kubernetes deployment is remote by definition, so this guide does not use
 instead.
 
 The example uses the same three hostnames as the Compose guide:
-`coral.example.com` (console), `auth.coral.example.com` (OAuth issuer), and
+`coral.example.com` (Coral UI), `auth.coral.example.com` (OAuth issuer), and
 `mcp.coral.example.com` (MCP).
 
 ## Prerequisites
@@ -354,14 +354,14 @@ Then verify the public surfaces exactly as in the
 `https://coral.example.com/readyz` returns ready, `https://mcp.coral.example.com/mcp`
 returns `401` with a `WWW-Authenticate` challenge, and opening
 `https://coral.example.com` signs you in through your identity provider —
-without Coral's approval page, since the console's client ID is listed in
+without Coral's approval page, since Coral UI's client ID is listed in
 `trusted_clients`.
 
 ## Operations
 
 ### Administration
 
-Day-to-day administration happens in the console. For the rest, run the CLI
+Day-to-day administration happens in the Coral UI. For the rest, run the CLI
 inside the pod — it shares the server's state safely:
 
 ```shellscript
