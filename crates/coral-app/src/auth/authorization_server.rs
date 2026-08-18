@@ -55,6 +55,10 @@ impl CoralAuthorizationServer {
     /// path. Config parsing and the `config.toml` filesystem read remain the
     /// caller's responsibility.
     ///
+    /// The server returned here has no database attached and so fails every
+    /// login closed. `ServerBuilder::with_session_auth` is the path that
+    /// attaches the migrated app database to it.
+    ///
     /// # Errors
     ///
     /// Returns an error when the provider secret cannot be resolved from its
