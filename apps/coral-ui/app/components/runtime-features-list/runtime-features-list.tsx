@@ -53,11 +53,7 @@ export function RuntimeFeaturesList({ error, features, renderRow }: RuntimeFeatu
       <Table.Head />
       <Table.Body>
         {status ? (
-          <Table.Row>
-            <Table.Cell align="center" className={styles.statusCell} fullWidth wrap>
-              {status}
-            </Table.Cell>
-          </Table.Row>
+          <Table.Status>{status}</Table.Status>
         ) : (
           features.map((feature) => <Fragment key={feature.key}>{renderRow(feature)}</Fragment>)
         )}

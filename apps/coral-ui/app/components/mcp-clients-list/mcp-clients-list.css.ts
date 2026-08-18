@@ -4,12 +4,6 @@ import { breakpoints } from '@/styles/theme.css'
 
 const MOBILE_QUERY = `screen and (max-width: ${breakpoints.mobile})`
 
-export const statusCell = style({
-  paddingBlock: '24px',
-  paddingInline: '12px',
-  textAlign: 'center',
-})
-
 // Only the widths that change with the viewport live here; the columns
 // themselves are described where the table is rendered.
 export const WORKSPACE_WIDTH_PROPERTY = '--mcp-workspace-width'

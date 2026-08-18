@@ -10,6 +10,7 @@ import { Container } from './container'
 import { Head } from './head'
 import { Heading } from './heading'
 import { Row } from './row'
+import { Status } from './status'
 
 const meta: Meta<typeof Container> = {
   component: Container,
@@ -123,11 +124,7 @@ export const Wrapping: Story = {
           </Cell>
           <Cell mono>on</Cell>
         </Row>
-        <Row>
-          <Cell align="center" fullWidth>
-            A full-width cell spans every column, for a status or empty-state row.
-          </Cell>
-        </Row>
+        <Status>A status row stands in for the rows, and takes no hover.</Status>
       </Body>
     </Container>
   ),

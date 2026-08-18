@@ -59,11 +59,9 @@ export function McpClientInstallList({
       <Table.Head />
       <Table.Body>
         {status ? (
-          <Table.Row>
-            <Table.Cell align="center" className={styles.statusCell} fullWidth>
-              <Typography.BodySmall variant="tertiary">{status}</Typography.BodySmall>
-            </Table.Cell>
-          </Table.Row>
+          <Table.Status>
+            <Typography.BodySmall variant="tertiary">{status}</Typography.BodySmall>
+          </Table.Status>
         ) : null}
         {visibleClients.map((client) => {
           const workspace = selectedWorkspaces[client.id]

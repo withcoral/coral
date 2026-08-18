@@ -237,6 +237,23 @@ export const cellText = recipe({
   },
 })
 
+// A status row stands in for the rows a table has none of, so there is nothing
+// under the pointer to take hold of. Holding the hover colour at nothing leaves
+// the hover rule on `row` with no exception to make.
+export const statusRow = style({
+  vars: {
+    [tableVars.rowHoverBackground.ref]: 'transparent',
+  },
+})
+
+// The `align` prop on the cell centres the text: it reaches the nested text
+// element through the alignment custom property, where `text-align` here would
+// lose to that element's own rule.
+export const statusCell = style({
+  paddingBlock: '24px',
+  paddingInline: '12px',
+})
+
 export const heading = style({
   alignItems: 'center',
   display: 'flex',

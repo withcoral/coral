@@ -77,11 +77,7 @@ export function McpClientsList({
       <Table.Head />
       <Table.Body>
         {status ? (
-          <Table.Row>
-            <Table.Cell align="center" className={styles.statusCell} fullWidth wrap>
-              {status}
-            </Table.Cell>
-          </Table.Row>
+          <Table.Status>{status}</Table.Status>
         ) : (
           visibleClients.map((client) => {
             const pending = pendingClientIds.includes(client.id)
