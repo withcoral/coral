@@ -8,7 +8,7 @@ Coral publishes two container images to GitHub Container Registry:
 | Image                          | Contents                                                        | Default port |
 | ------------------------------ | --------------------------------------------------------------- | ------------ |
 | `ghcr.io/withcoral/coral`      | The Coral server (`coral server`): native gRPC data plane, plus opt-in MCP Streamable HTTP and OAuth listeners | `14555` (gRPC) |
-| `ghcr.io/withcoral/coral-ui`   | The Coral UI web console, a Node server that talks to the Coral server | `3000` |
+| `ghcr.io/withcoral/coral-ui`   | The Coral UI web console, a web server that talks to the Coral server | `3000` |
 
 Every release pushes an immutable version tag (for example `0.13.0`), and the
 `latest` and `major.minor` tags of both images move together, so matching tags
