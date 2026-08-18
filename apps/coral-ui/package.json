@@ -24,7 +24,6 @@
     "@bufbuild/protobuf": "^2.12.1",
     "@connectrpc/connect": "^2.1.2",
     "@connectrpc/connect-node": "^2.1.2",
-    "@connectrpc/connect-web": "^2.1.2",
     "@internationalized/date": "^3.12.2",
     "@react-router/node": "8.3.0",
     "@vanilla-extract/recipes": "^0.5.7",

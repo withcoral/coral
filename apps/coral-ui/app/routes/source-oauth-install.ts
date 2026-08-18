@@ -29,7 +29,7 @@ import { workspaceFromParams } from '@/lib/workspace-routing'
 // Resource route: normal source CRUD stays in React Router loaders/actions, but
 // interactive OAuth/device-code installs need browser-visible server-streaming
 // progress. The browser fetches this same-origin endpoint; it never imports or
-// calls Coral's gRPC-Web client directly.
+// calls Coral's gRPC client directly.
 export async function action({ context, params, request }: Route.ActionArgs): Promise<Response> {
   const formData = await request.formData()
   let name: string

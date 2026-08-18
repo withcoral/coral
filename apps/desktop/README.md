@@ -9,7 +9,7 @@ sidecar:
 coral server
 ```
 
-The sidecar owns the local gRPC-Web/API runtime. In packaged builds the main
+The sidecar owns the local gRPC/API runtime. In packaged builds the main
 process serves Coral UI through React Router's server build over a custom
 `coral-app://` scheme (no local network socket), serves static client assets from
 the same scheme, points the window at it, and handles the native shell concerns:

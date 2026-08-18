@@ -44,12 +44,9 @@ case "$CORAL_UI_AUTH_MODE" in
   disabled)
     echo 'coral-ui-entrypoint: WARNING: CORAL_UI_AUTH_MODE=disabled serves the Coral console with no' >&2
     echo 'coral-ui-entrypoint: login at all — anyone who can reach this port can read every source' >&2
-    echo 'coral-ui-entrypoint: and POST new source credentials. It ALSO selects Coral UI’s gRPC-Web' >&2
-    echo 'coral-ui-entrypoint: transport, while standalone `coral server` serves native gRPC.' >&2
-    echo 'coral-ui-entrypoint: Without a gRPC-Web-capable proxy in front of Coral,' >&2
-    echo 'coral-ui-entrypoint: every page this container serves will fail to load data.' >&2
-    echo 'coral-ui-entrypoint: Set CORAL_UI_AUTH_MODE=required unless you know you have both' >&2
-    echo 'coral-ui-entrypoint: a trusted network and such a proxy.' >&2
+    echo 'coral-ui-entrypoint: and POST new source credentials.' >&2
+    echo 'coral-ui-entrypoint: Set CORAL_UI_AUTH_MODE=required unless this port is reachable only' >&2
+    echo 'coral-ui-entrypoint: from a trusted network.' >&2
     ;;
   *)
     fatal 'CORAL_UI_AUTH_MODE must be required or disabled.' \
