@@ -79,6 +79,17 @@ pub(super) async fn oauth_authorize_get(
         code_challenge,
         resource,
     };
+    // A trusted client proceeds as if the user had already pressed Continue.
+    // The check sits after every validation above, so trust changes only the
+    // confirmation step — never what counts as a valid request — and the
+    // metadata document still had to resolve and name this redirect URI.
+    if state
+        .settings
+        .authorization_server()
+        .is_trusted_client(client_id)
+    {
+        return provider_sign_in(&state, approval, &trusted).await;
+    }
     let Ok(ticket) = confirmation::new_ticket() else {
         return trusted.error("server_error", "authorization failed");
     };
@@ -136,6 +147,21 @@ pub(super) async fn oauth_authorize_post(
     if decision == ApprovalDecision::Cancel {
         return trusted.error("access_denied", "authorization was denied");
     }
+    provider_sign_in(&state, approval, &trusted).await
+}
+
+/// Sends an approved authorization on to the upstream provider.
+///
+/// This is the step a Continue submission continues into and a trusted client
+/// skips to directly. The session is stored before the redirect is returned,
+/// so the callback can never arrive ahead of the state it needs, and the store
+/// hands it out once, so the callback that consumes it is the only one that
+/// can.
+async fn provider_sign_in(
+    state: &AuthorizationServerHttpState,
+    approval: OAuthAuthorizationApprovalRecord,
+    trusted: &TrustedRedirect,
+) -> Response {
     let request = match state
         .provider_client
         .authorization_request(state.settings.provider())
@@ -334,11 +360,24 @@ mod tests {
     }
 
     fn settings(issuer: &str) -> ResolvedAuthSettings {
+        settings_with_trusted_clients(issuer, &[])
+    }
+
+    fn settings_with_trusted_clients(
+        issuer: &str,
+        trusted_clients: &[&str],
+    ) -> ResolvedAuthSettings {
+        let trusted_clients = trusted_clients
+            .iter()
+            .map(|client_id| format!("'{client_id}'"))
+            .collect::<Vec<_>>()
+            .join(", ");
         let settings = AuthSettings::from_toml(&format!(
             "[auth]
              [auth.session]
              [auth.authorization_server]
              issuer = '{AUTH_ISSUER}'
+             trusted_clients = [{trusted_clients}]
              [auth.provider]
              issuer = '{issuer}'
              client_id = 'provider-client'
@@ -400,6 +439,14 @@ mod tests {
         store: Arc<InMemoryStateStore>,
         resolver: Arc<dyn ClientMetadataResolver>,
     ) -> AuthorizationServerHttpState {
+        state_with_settings(settings(issuer), store, resolver)
+    }
+
+    fn state_with_settings(
+        settings: ResolvedAuthSettings,
+        store: Arc<InMemoryStateStore>,
+        resolver: Arc<dyn ClientMetadataResolver>,
+    ) -> AuthorizationServerHttpState {
         let session_tokens = SessionTokenIssuer::new(
             Some(AUTH_ISSUER),
             test_signing_key(),
@@ -407,7 +454,7 @@ mod tests {
         )
         .expect("session");
         AuthorizationServerHttpState::with_client_metadata_resolver(
-            Arc::new(settings(issuer)),
+            Arc::new(settings),
             session_tokens,
             store,
             Arc::new(BTreeSet::from([RESOURCE.into()])),
@@ -1406,6 +1453,122 @@ mod tests {
                 .expect("store")
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn trusted_client_skips_the_approval_page_and_stores_a_single_use_session() {
+        let provider = MockServer::start().await;
+        mount_discovery(&provider, 200).await;
+        let store = Arc::new(InMemoryStateStore::new());
+        let (resolver, calls) = fake_resolver(Ok(registration(&[REDIRECT_URI])));
+        let auth_state = state_with_settings(
+            settings_with_trusted_clients(&provider.uri(), &[CLIENT_ID]),
+            store.clone(),
+            resolver,
+        );
+        let response = request(auth_state, &pairs()).await;
+        assert_eq!(response.status(), StatusCode::FOUND);
+        assert_security(&response);
+        assert!(
+            response.headers().get(header::SET_COOKIE).is_none(),
+            "a skipped approval page must not set an approval cookie"
+        );
+        let provider_url = location(&response).expect("provider redirect");
+        assert!(
+            provider_url.starts_with(&provider.uri()),
+            "redirected to {provider_url}"
+        );
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        let query = Url::parse(provider_url)
+            .expect("URL")
+            .query_pairs()
+            .into_owned()
+            .collect::<BTreeMap<_, _>>();
+        let oidc_state = query.get("state").expect("OIDC state");
+        let session = store
+            .take_authorization_session(oidc_state)
+            .await
+            .expect("store")
+            .expect("stored before redirect");
+        assert_eq!(session.client_id, CLIENT_ID);
+        assert_eq!(session.redirect_uri, REDIRECT_URI);
+        assert_eq!(session.client_state.as_deref(), Some(CLIENT_STATE));
+        assert_eq!(session.code_challenge, CHALLENGE);
+        assert_eq!(session.resource, RESOURCE);
+        assert!(
+            store
+                .take_authorization_session(oidc_state)
+                .await
+                .expect("store")
+                .is_none()
+        );
+    }
+
+    /// Trust skips only the approval page. Every validation the page sits
+    /// behind still runs, so a trusted client's malformed request fails exactly
+    /// like anyone else's rather than being waved through to the provider.
+    #[tokio::test]
+    async fn trusted_client_requests_are_validated_like_any_other() {
+        let store = Arc::new(InMemoryStateStore::new());
+        let trusted_state = |resolver| {
+            state_with_settings(
+                settings_with_trusted_clients("https://provider.invalid", &[CLIENT_ID]),
+                store.clone(),
+                resolver,
+            )
+        };
+
+        let (resolver, _calls) = fake_resolver(Ok(registration(&[REDIRECT_URI])));
+        let mut missing_challenge = pairs();
+        replace(&mut missing_challenge, "code_challenge", None);
+        let response = request(trusted_state(resolver), &missing_challenge).await;
+        assert_eq!(response.status(), StatusCode::FOUND);
+        let error_location = location(&response).expect("client error redirect");
+        assert!(
+            error_location.starts_with("https://client.example.test/callback"),
+            "redirected to {error_location}"
+        );
+        assert!(error_location.contains("error=invalid_request"));
+
+        let (resolver, _calls) = fake_resolver(Ok(registration(&[
+            "https://client.example.test/other-callback",
+        ])));
+        let response = request(trusted_state(resolver), &pairs()).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(location(&response).is_none());
+    }
+
+    #[tokio::test]
+    async fn only_the_listed_client_skips_the_approval_page() {
+        let (resolver, _calls) = fake_resolver(Ok(registration(&[REDIRECT_URI])));
+        let auth_state = state_with_settings(
+            settings_with_trusted_clients(
+                "https://provider.invalid",
+                &["https://other.example.test/oauth/client.json"],
+            ),
+            Arc::new(InMemoryStateStore::new()),
+            resolver,
+        );
+        let response = request(auth_state, &pairs()).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response_body(response).await.contains("Approve access?"));
+    }
+
+    #[tokio::test]
+    async fn trusted_client_provider_failures_are_generic_trusted_errors() {
+        let provider = MockServer::start().await;
+        mount_discovery(&provider, 500).await;
+        let (resolver, _calls) = fake_resolver(Ok(registration(&[REDIRECT_URI])));
+        let auth_state = state_with_settings(
+            settings_with_trusted_clients(&provider.uri(), &[CLIENT_ID]),
+            Arc::new(InMemoryStateStore::new()),
+            resolver,
+        );
+        let response = request(auth_state, &pairs()).await;
+        let error_location = location(&response).expect("error redirect");
+        assert!(error_location.starts_with("https://client.example.test/callback"));
+        assert!(error_location.contains("error=server_error"));
+        assert!(!error_location.contains(PROVIDER_SECRET));
     }
 
     #[tokio::test]

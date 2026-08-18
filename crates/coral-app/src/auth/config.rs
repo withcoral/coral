@@ -278,6 +278,20 @@ impl SessionTokenSettings {
 #[serde(deny_unknown_fields)]
 pub(crate) struct AuthorizationServerSettings {
     pub(super) issuer: String,
+    /// Client IDs whose authorization requests skip the approval page.
+    ///
+    /// A listed client's sign-in redirects straight to the upstream provider
+    /// once it passes every other check — client metadata resolution, redirect
+    /// registration, PKCE, and resource validation are unchanged. What an
+    /// entry removes is the one step where a person sees who is asking before
+    /// anything else happens, so it is an operator statement that this exact
+    /// client needs no per-login confirmation. That statement should only be
+    /// made for a client whose registered redirect URIs nothing else can
+    /// serve: a loopback redirect is claimable by any local process, and the
+    /// approval page is the only thing that would have shown the user which
+    /// port the authorization code is about to be handed to.
+    #[serde(default)]
+    trusted_clients: Vec<String>,
 }
 
 impl AuthorizationServerSettings {
@@ -285,11 +299,60 @@ impl AuthorizationServerSettings {
         &self.issuer
     }
 
+    /// Reports whether `client_id` may skip the approval page.
+    ///
+    /// The comparison is exact string equality: a request's client ID is only
+    /// accepted when it is the canonical serialization of the URL it names, and
+    /// validation holds the configured entries to the same spelling, so one
+    /// string is the whole identity on both sides.
+    pub(super) fn is_trusted_client(&self, client_id: &str) -> bool {
+        self.trusted_clients
+            .iter()
+            .any(|trusted| trusted == client_id)
+    }
+
     fn validate(&mut self) -> Result<(), AuthServerError> {
         self.issuer = required("auth.authorization_server.issuer", &self.issuer)?;
         self.issuer = validate_issuer("auth.authorization_server.issuer", &self.issuer, true)?;
+        for client_id in &mut self.trusted_clients {
+            *client_id = validate_trusted_client(client_id)?;
+        }
         Ok(())
     }
+}
+
+/// Rejects a trusted-client entry that could never match a request.
+///
+/// The metadata resolver only accepts a client ID that is the canonical
+/// serialization of the URL it names, and the trusted match is exact string
+/// equality against that canonical string. An entry the URL parser would
+/// rewrite therefore cannot match any request this server accepts; failing at
+/// startup names the misspelling, where the runtime symptom — the approval
+/// page still appearing — points nowhere near it.
+fn validate_trusted_client(configured: &str) -> Result<String, AuthServerError> {
+    let entry_error = |message: String| {
+        config_error(format!(
+            "auth.authorization_server.trusted_clients {message}"
+        ))
+    };
+    let value = configured.trim();
+    if value.is_empty() {
+        return Err(entry_error("entries must not be empty".to_string()));
+    }
+    let url = Url::parse(value)
+        .map_err(|error| entry_error(format!("entry `{value}` is not a valid URL: {error}")))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(entry_error(format!(
+            "entry `{value}` must use HTTP or HTTPS"
+        )));
+    }
+    if url.as_str() != value {
+        return Err(entry_error(format!(
+            "entries must be canonical client IDs; `{value}` canonicalizes to `{}`",
+            url.as_str()
+        )));
+    }
+    Ok(value.to_string())
 }
 
 const DEFAULT_PROVIDER_SCOPES: &[&str] = &["openid", "email", "profile"];
@@ -908,6 +971,74 @@ mod tests {
         let debug = format!("{provider:?}");
         assert!(debug.contains("<redacted>"));
         assert!(!debug.contains("inline-secret"));
+    }
+
+    #[test]
+    fn trusted_clients_match_exactly_and_default_to_none() {
+        let settings = resolved(&valid(""));
+        assert!(
+            !settings
+                .authorization_server()
+                .is_trusted_client("https://client.example.test/oauth/client.json")
+        );
+
+        let raw = valid("").replace(
+            "issuer = 'http://localhost:9080/'",
+            "issuer = 'http://localhost:9080/'\ntrusted_clients = [' https://client.example.test/oauth/client.json ', 'http://127.0.0.1:1457/.well-known/oauth-client']",
+        );
+        let settings = resolved(&raw);
+        let authorization_server = settings.authorization_server();
+        assert!(
+            authorization_server.is_trusted_client("https://client.example.test/oauth/client.json")
+        );
+        assert!(
+            authorization_server
+                .is_trusted_client("http://127.0.0.1:1457/.well-known/oauth-client")
+        );
+        assert!(
+            !authorization_server.is_trusted_client("https://client.example.test/oauth/other.json")
+        );
+    }
+
+    /// A request's client ID is accepted only in its canonical spelling, so an
+    /// entry the parser would rewrite can never match one — it has to fail at
+    /// startup, where the error names the entry, rather than show the approval
+    /// page forever.
+    #[test]
+    fn rejects_trusted_clients_that_could_never_match_a_request() {
+        let with_trusted = |entry: &str| {
+            valid("").replace(
+                "issuer = 'http://localhost:9080/'",
+                &format!("issuer = 'http://localhost:9080/'\ntrusted_clients = [{entry}]"),
+            )
+        };
+        reject_all(vec![
+            (
+                with_trusted("''"),
+                "trusted_clients entries must not be empty",
+            ),
+            (with_trusted("'not a url'"), "is not a valid URL"),
+            (
+                with_trusted("'https://Client.example.test/oauth/client.json'"),
+                "canonicalizes to `https://client.example.test/oauth/client.json`",
+            ),
+            (
+                with_trusted("'https://client.example.test:443/oauth/client.json'"),
+                "canonicalizes to",
+            ),
+            (
+                with_trusted(r"'https://client.example.test/oauth\client.json'"),
+                "canonicalizes to",
+            ),
+            (
+                with_trusted("'https://client.example.test'"),
+                "canonicalizes to `https://client.example.test/`",
+            ),
+            (
+                with_trusted("'file:///oauth/client.json'"),
+                "must use HTTP or HTTPS",
+            ),
+        ]);
     }
 
     #[test]
