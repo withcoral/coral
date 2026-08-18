@@ -18,7 +18,7 @@ impl MemberRole {
     /// Encodes the role for the `workspace_members.role` column.
     ///
     /// These literals are pinned by the `workspace_members_role_valid` check
-    /// constraint in `0006_workspace_access_control.sql`; changing one is a
+    /// constraint in `0007_workspace_access_control.sql`; changing one is a
     /// migration, not an edit here.
     pub(crate) const fn as_storage_str(self) -> &'static str {
         match self {
