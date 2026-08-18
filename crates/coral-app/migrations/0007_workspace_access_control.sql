@@ -42,3 +42,15 @@ CREATE INDEX idx_workspace_members_user_workspaces
 
 CREATE INDEX idx_workspace_members_workspace_role
     ON workspace_members (workspace_id, role);
+
+-- Concealing ownerless workspaces selects every owner-bearing workspace by
+-- role alone, which the (workspace_id, role) index above cannot serve because
+-- it leads with the workspace.
+CREATE INDEX idx_workspace_members_role_workspaces
+    ON workspace_members (role, workspace_id);
+
+-- Every login re-runs the pre-v1 creator reattribution, whose predicate is on
+-- tasks.created_by_principal_id alone; 0003 indexed only the retention scan, so
+-- without this each login would full-scan tasks inside its write transaction.
+CREATE INDEX idx_tasks_pre_v1_creator
+    ON tasks (created_by_principal_id);
