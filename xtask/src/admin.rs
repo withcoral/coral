@@ -2064,20 +2064,19 @@ mod tests {
 
     // -- Postgres recovery contracts -----------------------------------------
     //
-    // NOT YET REACHED BY ANY GATE. `make postgres-tests` runs two legs, both
-    // `-p coral-app`; it has no xtask invocation, and `--features admin` appears
-    // nowhere in the Makefile or in validate.yml, so nothing below runs in CI
-    // today. The `postgres-database-tests` job's path filter omits `xtask/**`
-    // as well, so editing this file does not even trigger it. Wiring both is
-    // t58's job; until it lands, these five are verified only by hand:
-    //   CORAL_TEST_POSTGRES_URL=... cargo test -p xtask --features admin \
-    //     --bin xtask postgres_contract -- --ignored
+    // These run in CI. `make postgres-tests` carries a third leg beside its two
+    // `-p coral-app` ones:
+    //   CORAL_TEST_POSTGRES_URL=... cargo test --locked -p xtask \
+    //     --features admin --bin xtask postgres_contract -- --ignored
+    // and the `postgres-database-tests` job, which invokes that target against
+    // its Postgres service, now lists `xtask/**` among the paths that trigger
+    // it, so editing this file schedules the job that runs these contracts.
     //
-    // Every name below carries the literal `contract_on_postgres`, which is
-    // what `make postgres-tests` filters on, and the literal `postgres_contract`
-    // for the xtask leg t58 adds. A Postgres test named anything else compiles,
-    // exists, and is never executed by the repository gate; this repository has
-    // already shipped one that way.
+    // Every name below carries the literal `postgres_contract`, which is what
+    // the xtask leg filters on, and the literal `contract_on_postgres` used by
+    // the coral-app leg. A Postgres test named anything else compiles, exists,
+    // and is never executed by the repository gate; this repository has already
+    // shipped one that way.
     //
     // They address the gate's database directly rather than through a config
     // file, because resolution reads process environment and no test may mutate

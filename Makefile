@@ -140,10 +140,16 @@ coral-docker-smoke:
 coral-docker-stub-test: coral-docker-stub-build
 	CORAL_IMAGE="$(CORAL_DOCKER_IMAGE)" docker/coral-smoke.sh
 
+# The `--all-features` legs below turn on xtask's off-by-default `admin`
+# feature, which compiles out every `#[cfg(not(feature = "admin"))]` test --
+# including the one pinning that a shipped build offers no recovery surface.
+# The trailing default-feature xtask leg is the only gate that observes that
+# direction, so it is not redundant with the workspace run above it.
 rust-checks:
 	cargo fmt --all -- --check
 	cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 	cargo nextest run --workspace --all-targets --all-features --locked --no-fail-fast
+	cargo nextest run -p xtask --locked
 	RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --locked
 
 perf-check:
@@ -153,7 +159,9 @@ perf-check:
 # ----------------------------------------------------------------------------
 # Local Postgres-backed tests
 # ----------------------------------------------------------------------------
-# Runs all ignored Postgres coverage through postgres-tests. When
+# Runs all ignored Postgres coverage through postgres-tests: the coral-app
+# database contracts and the xtask recovery contracts, which need
+# `--features admin` because the recovery module compiles only under it. When
 # CORAL_TEST_POSTGRES_URL is set, the target uses that database. Otherwise it
 # starts a Docker Postgres matching CI's major version and creates a fresh
 # database inside the reusable container. Docker chooses an available localhost
@@ -251,6 +259,10 @@ postgres-tests: $(POSTGRES_TESTS_PREREQS)
 	  -- --ignored; \
 	CORAL_TEST_POSTGRES_URL="$$url" cargo test --locked -p coral-app \
 	  --test postgres_database_tests \
+	  -- --ignored; \
+	CORAL_TEST_POSTGRES_URL="$$url" cargo test --locked -p xtask \
+	  --features admin --bin xtask \
+	  postgres_contract \
 	  -- --ignored
 
 # ----------------------------------------------------------------------------
