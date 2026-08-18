@@ -2072,11 +2072,15 @@ mod tests {
     // its Postgres service, now lists `xtask/**` among the paths that trigger
     // it, so editing this file schedules the job that runs these contracts.
     //
-    // Every name below carries the literal `postgres_contract`, which is what
-    // the xtask leg filters on, and the literal `contract_on_postgres` used by
-    // the coral-app leg. A Postgres test named anything else compiles, exists,
-    // and is never executed by the repository gate; this repository has already
-    // shipped one that way.
+    // Every name below MUST carry the literal `postgres_contract`: that is the
+    // filter the xtask leg selects on, and it is the only selector that reaches
+    // these tests. The `contract_on_postgres` half of each name is a naming
+    // convention shared with the coral-app suite, NOT a second selector — the
+    // coral-app leg is `-p coral-app` and can never select a test in this
+    // binary. So a sixth contract named `..._contract_on_postgres_...` without
+    // the `postgres_contract` prefix would compile, exist, and be silently
+    // filtered out of the only leg that runs it; this repository has already
+    // shipped a Postgres test that way once.
     //
     // They address the gate's database directly rather than through a config
     // file, because resolution reads process environment and no test may mutate
