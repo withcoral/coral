@@ -36,9 +36,21 @@ function requireNotarizationCredentials(env: NodeJS.ProcessEnv): void {
   }
 }
 
-export function createConfig(env: NodeJS.ProcessEnv = process.env): Configuration {
+export function createConfig(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): Configuration {
   const releaseBuild = env.CORAL_DESKTOP_RELEASE === '1'
-  if (releaseBuild) requireNotarizationCredentials(env)
+  if (releaseBuild) {
+    // Release mode is the Apple signing and notarization path, and macOS is the
+    // only platform with an update feed. Reject it on any other host so the
+    // build fails on the flag rather than on a credential preflight it could
+    // never satisfy.
+    if (platform !== 'darwin') {
+      throw new Error('CORAL_DESKTOP_RELEASE=1 is macOS-only; it drives Apple signing and notarization')
+    }
+    requireNotarizationCredentials(env)
+  }
 
   return {
     appId: 'com.withcoral.desktop',
@@ -96,6 +108,42 @@ export function createConfig(env: NodeJS.ProcessEnv = process.env): Configuratio
       identity: releaseBuild ? undefined : null,
       notarize: releaseBuild,
       target: ['dmg', 'zip'],
+    },
+    linux: {
+      category: 'Development',
+      // `coral` is the CLI's name. Claiming it for the Electron executable would
+      // put a /usr/bin/coral symlink to the desktop app in the deb payload and
+      // shadow the CLI the user installed.
+      executableName: 'coral-desktop',
+      // The directory, not icon.png. electron-builder returns a lone .png
+      // source verbatim (iconConverter.js `set: source is already a .png`), so
+      // naming the file installs a single 1024x1024 icon — a size hicolor's
+      // index.theme does not declare, leaving launchers with no icon at all.
+      // A directory routes icon.png through the generator and yields a real set.
+      icon: 'resources/icons',
+      // Debian requires a contact address for the Maintainer field, and fpm
+      // refuses to build without one — `author` carries no email.
+      maintainer: 'Coral Eng Team <eng@withcoral.com>',
+      // Linux has no updater (see desktopUpdatesSupported in src/main/auto-update.ts).
+      // `null` keeps electron-builder from writing a latest-linux.yml feed nobody
+      // serves and from embedding app-update.yml in the package.
+      publish: null,
+      synopsis: 'Coral desktop app',
+      // Electron sets the window's WM_CLASS from `desktopName` in package.json,
+      // and electron-builder writes StartupWMClass from the same value. Without
+      // it the two disagree — WM_CLASS is `withcoral-desktop`, derived from the
+      // package name, while StartupWMClass would be `Coral` — and no desktop
+      // environment can link a running window to the installed launcher.
+      syncDesktopName: true,
+      target: [
+        { target: 'AppImage', arch: ['x64'] },
+        { target: 'deb', arch: ['x64'] },
+      ],
+    },
+    deb: {
+      // Without this the package name falls back to the product name, `coral`,
+      // which would collide with a future CLI package.
+      packageName: 'coral-desktop',
     },
   }
 }

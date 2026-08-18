@@ -42,10 +42,13 @@ test('non-release packages are explicitly unsigned', () => {
 })
 
 test('release packages enable strict signing and notarization', () => {
-  const config = createConfig({
-    CORAL_DESKTOP_RELEASE: '1',
-    ...apiKeyCredentials,
-  })
+  const config = createConfig(
+    {
+      CORAL_DESKTOP_RELEASE: '1',
+      ...apiKeyCredentials,
+    },
+    'darwin',
+  )
 
   assert.equal(config.forceCodeSigning, true)
   assert.equal(config.mac?.identity, undefined)
@@ -60,17 +63,20 @@ test('release packages reject every missing or blank notarization input', () => 
     const missing = { ...apiKeyCredentials }
     delete missing[name]
     assert.throws(
-      () => createConfig({ CORAL_DESKTOP_RELEASE: '1', ...missing }),
+      () => createConfig({ CORAL_DESKTOP_RELEASE: '1', ...missing }, 'darwin'),
       new RegExp(`missing ${name}`),
     )
 
     assert.throws(
       () =>
-        createConfig({
-          CORAL_DESKTOP_RELEASE: '1',
-          ...apiKeyCredentials,
-          [name]: ' \t ',
-        }),
+        createConfig(
+          {
+            CORAL_DESKTOP_RELEASE: '1',
+            ...apiKeyCredentials,
+            [name]: ' \t ',
+          },
+          'darwin',
+        ),
       new RegExp(`missing ${name}`),
     )
   }
@@ -84,12 +90,62 @@ test('release packages require a readable, non-empty API key file', async () => 
   for (const invalidPath of [missingPath, emptyPath, tempDir]) {
     assert.throws(
       () =>
-        createConfig({
-          CORAL_DESKTOP_RELEASE: '1',
-          ...apiKeyCredentials,
-          APPLE_API_KEY: invalidPath,
-        }),
+        createConfig(
+          {
+            CORAL_DESKTOP_RELEASE: '1',
+            ...apiKeyCredentials,
+            APPLE_API_KEY: invalidPath,
+          },
+          'darwin',
+        ),
       /APPLE_API_KEY must point to a readable, non-empty regular file/,
     )
   }
+})
+
+test('release mode is rejected off macOS before any credential preflight', () => {
+  for (const platform of ['linux', 'win32']) {
+    assert.throws(
+      () => createConfig({ CORAL_DESKTOP_RELEASE: '1', ...apiKeyCredentials }, platform),
+      /CORAL_DESKTOP_RELEASE=1 is macOS-only/,
+    )
+  }
+})
+
+test('non-release packaging config is identical on every host platform', () => {
+  const linuxHost = createConfig({}, 'linux')
+
+  assert.deepEqual(linuxHost, createConfig({}, 'darwin'))
+  assert.deepEqual(linuxHost, createConfig({}, 'win32'))
+})
+
+test('linux packages target AppImage and deb without an update feed', () => {
+  const { linux, deb } = createConfig({}, 'linux')
+
+  assert.deepEqual(linux?.target, [
+    { target: 'AppImage', arch: ['x64'] },
+    { target: 'deb', arch: ['x64'] },
+  ])
+  // Linux has no updater, so electron-builder must not emit latest-linux.yml
+  // or embed app-update.yml.
+  assert.equal(linux?.publish, null)
+  // Neither the executable nor the deb may claim the `coral` name; the deb
+  // symlinks its executable into /usr/bin and would shadow the CLI.
+  assert.equal(linux?.executableName, 'coral-desktop')
+  assert.equal(deb?.packageName, 'coral-desktop')
+  // fpm refuses to build a deb without a maintainer contact.
+  assert.match(linux?.maintainer ?? '', /^.+ <.+@.+>$/)
+  // A directory, so electron-builder generates a multi-size hicolor set;
+  // naming a single .png would install only the 1024x1024 source.
+  assert.equal(linux?.icon, 'resources/icons')
+})
+
+test('deb metadata inputs that live in package.json are present', () => {
+  const packageJson = JSON.parse(
+    readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
+  )
+
+  // fpm requires a project URL and reads the license from package metadata.
+  assert.match(packageJson.homepage, /^https:\/\//)
+  assert.equal(packageJson.license, 'Apache-2.0')
 })

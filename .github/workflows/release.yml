@@ -332,9 +332,86 @@ jobs:
             apps/desktop/dist/coral-desktop-*.blockmap
             apps/desktop/dist/latest-mac.yml
 
+  # Far simpler than the macOS leg: no universal binary, no signing, no
+  # notarization, and no updater, so no xtask and no credentials.
+  build-desktop-linux:
+    needs:
+      - validate-release-ref
+      - build
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    env:
+      TAG_NAME: ${{ needs.validate-release-ref.outputs.tag-name }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.validate-release-ref.outputs.commit-sha }}
+          persist-credentials: false
+
+      # A manual tag on a commit whose desktop version was never bumped would
+      # otherwise ship an AppImage labelled with the wrong version. The macOS
+      # leg gets this from xtask; see ensure_version_matches_tag in
+      # xtask/src/release.rs.
+      - name: Verify desktop version matches the release tag
+        run: |
+          set -euo pipefail
+          version="$(jq -r .version apps/desktop/package.json)"
+          if [ "v${version}" != "$TAG_NAME" ]; then
+            echo "desktop version v${version} does not match release tag ${TAG_NAME}" >&2
+            exit 1
+          fi
+
+      - name: Download Linux CLI artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: coral-x86_64-unknown-linux-gnu
+          path: ${{ runner.temp }}/cli
+
+      # The `build` job already compiled this target; reuse it rather than
+      # rebuilding Rust here.
+      - name: Unpack the prebuilt Coral CLI
+        run: |
+          set -euo pipefail
+          tar xzf "$RUNNER_TEMP/cli/coral-x86_64-unknown-linux-gnu.tar.gz" -C "$RUNNER_TEMP/cli"
+          "$RUNNER_TEMP/cli/coral" --version
+
+      - name: Set up Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: apps/desktop/.node-version
+          package-manager-cache: false
+
+      - name: Install desktop dependencies
+        run: npm ci --prefix apps/desktop
+
+      # fpm shells out to `ar` (binutils) to assemble the .deb and to `xz` for
+      # its control tarball. Both ship in the runner image; installing them
+      # explicitly keeps the dependency visible instead of implicit.
+      - name: Install deb packaging tools
+        run: sudo apt-get install -y --no-install-recommends binutils xz-utils
+
+      # No CORAL_DESKTOP_RELEASE: release mode is the Apple signing path, and
+      # Linux ships without an updater.
+      - name: Package desktop app
+        env:
+          CORAL_DESKTOP_CLI_PATH: ${{ runner.temp }}/cli/coral
+        run: npm run package:linux --prefix apps/desktop
+
+      - name: Verify desktop package artifacts
+        run: node apps/desktop/scripts/verify-dist.mjs apps/desktop/dist linux
+
+      - name: Upload desktop artifact
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: coral-desktop-linux
+          if-no-files-found: error
+          path: |
+            apps/desktop/dist/coral-desktop-*.AppImage
+            apps/desktop/dist/coral-desktop-*.deb
+
   checksums:
     needs:
       - build
+      - build-desktop-linux
       - build-desktop-macos
       - sign-notarize-macos
     runs-on: blacksmith-4vcpu-ubuntu-2404
@@ -352,7 +429,14 @@ jobs:
           cd artifacts
           # Only the globs decide "did any archive arrive?"; latest-mac.yml is a
           # literal that would always survive nullglob and mask an empty set.
-          archives=(coral-*.tar.gz coral-*.zip coral-*.dmg coral-*.blockmap)
+          archives=(
+            coral-*.tar.gz
+            coral-*.zip
+            coral-*.dmg
+            coral-*.blockmap
+            coral-desktop-*.AppImage
+            coral-desktop-*.deb
+          )
           if [ "${#archives[@]}" -eq 0 ]; then
             echo "No Coral release archives found" >&2
             exit 1
@@ -409,6 +493,8 @@ jobs:
             artifacts/coral-*.zip
             artifacts/coral-*.dmg
             artifacts/coral-*.blockmap
+            artifacts/coral-desktop-*.AppImage
+            artifacts/coral-desktop-*.deb
           )
           if [ "${#archives[@]}" -eq 0 ]; then
             echo "No Coral release archives found" >&2

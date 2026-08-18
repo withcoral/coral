@@ -181,11 +181,12 @@ pub(crate) fn desktop_macos_package(args: &DesktopMacosPackageArgs) -> Result<bo
             .arg(&app_bundle),
         "validating desktop notarization staple",
     )?;
-    // Same artifact assertions as the Validate workflow's package job.
+    // Same artifact assertions as the Desktop package workflow's mac leg.
     run_command(
         Command::new("node")
             .arg("apps/desktop/scripts/verify-dist.mjs")
-            .arg(dist_dir),
+            .arg(dist_dir)
+            .arg("mac"),
         "verifying desktop dist artifacts",
     )?;
 

@@ -27,13 +27,14 @@ uses `CORAL_ENDPOINT` to reach the supervised sidecar.
 - Coral UI documents rendered in-process from the staged React Router server build,
   with static assets served over the custom `coral-app://` scheme and a strict
   Content-Security-Policy
-- light and dark app icons (macOS; Windows icon assets are staged for a future
-  Windows target)
+- light and dark app icons (macOS and Linux; Windows icon assets are staged for a
+  future Windows target)
 - Coral MCP configuration from Desktop Settings for supported stdio-capable
   clients, including before they are installed
 - macOS DMG and ZIP packaging via `electron-builder`, with a signed and
   notarized release mode
-- GitHub Releases update metadata for packaged desktop auto-updates
+- Linux AppImage and deb packaging (x64), unsigned
+- GitHub Releases update metadata for packaged desktop auto-updates on macOS only
 - macOS system theme support
 
 ## Development
@@ -80,10 +81,18 @@ Use `npm run package:dmg --prefix apps/desktop` for the macOS drag-and-drop DMG.
 Use `npm run package:mac --prefix apps/desktop` to build the release-shaped
 universal macOS DMG and ZIP with updater metadata.
 
+Use `npm run package:linux --prefix apps/desktop` for the x64 Linux AppImage and
+deb. The deb needs `ar` (binutils) and `xz` on PATH — `fpm` shells out to both.
+Linux packages are unsigned and carry no update feed: `desktopUpdatesSupported()`
+(`src/main/auto-update.ts`) is macOS-only, so the Linux config sets `publish: null`
+and electron-builder writes no `latest-linux.yml`. Linux users download a new
+release manually.
+
 `CORAL_DESKTOP_RELEASE=1` selects release mode. It requires a complete App Store
 Connect API key credential set, forces Developer ID signing, enables the hardened
-runtime with minimal Electron entitlements, and notarizes the app. Without that
-flag, packaging is deterministically unsigned.
+runtime with minimal Electron entitlements, and notarizes the app. Because it is
+the Apple path, it fails on any platform other than macOS. Without that flag,
+packaging is deterministically unsigned.
 
 > Run the `--prefix apps/desktop` commands from the repo root. If you are already in
 > `apps/desktop/`, drop the flag (e.g. `npm run package:dir`).

@@ -4,6 +4,9 @@
   "version": "0.13.0",
   "description": "Coral desktop app",
   "author": "With Coral",
+  "license": "Apache-2.0",
+  "homepage": "https://withcoral.com",
+  "desktopName": "coral-desktop.desktop",
   "type": "module",
   "main": "./out/main/index.js",
   "scripts": {
@@ -23,6 +26,8 @@
     "package:dir": "electron-builder --dir --config electron-builder.config.ts",
     "prepackage:dmg": "npm run build",
     "package:dmg": "electron-builder --mac dmg --publish never --config electron-builder.config.ts",
+    "prepackage:linux": "npm run build",
+    "package:linux": "electron-builder --linux --publish never --config electron-builder.config.ts",
     "prepackage:mac": "CORAL_DESKTOP_UNIVERSAL=1 npm run build",
     "package:mac": "npm run package:mac:prepared",
     "package:mac:prepared": "electron-builder --mac --universal --publish never --config electron-builder.config.ts",

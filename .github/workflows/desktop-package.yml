@@ -1,4 +1,4 @@
-name: Desktop macOS package
+name: Desktop package
 
 on:
   workflow_call:
@@ -7,8 +7,10 @@ on:
 permissions:
   contents: read
 
+# Workflow-level, so it bounds the whole run: the matrix legs share one slot and
+# never cancel each other.
 concurrency:
-  group: desktop-package-macos-${{ github.event_name }}-${{ github.ref }}
+  group: desktop-package-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -17,8 +19,16 @@ env:
 
 jobs:
   package:
-    name: Build unsigned package
-    runs-on: blacksmith-6vcpu-macos-26
+    name: Build unsigned ${{ matrix.platform }} package
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: mac
+            os: blacksmith-6vcpu-macos-26
+          - platform: linux
+            os: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -30,7 +40,7 @@ jobs:
       - name: Cache Rust artifacts
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
-          shared-key: coral-desktop-macos-universal
+          shared-key: coral-desktop-${{ matrix.platform }}
           cache-on-failure: true
           save-if: ${{ github.event_name == 'workflow_dispatch' }}
 
@@ -53,25 +63,33 @@ jobs:
         run: npm ci --prefix apps/desktop
 
       - name: Validate macOS entitlements
+        if: ${{ matrix.platform == 'mac' }}
         run: |
           plutil -lint \
             apps/desktop/resources/entitlements.mac.plist \
             apps/desktop/resources/entitlements.mac.inherit.plist
 
+      # fpm shells out to `ar` (binutils) to assemble the .deb and to `xz` for
+      # its control tarball. Both ship in the runner image; installing them
+      # explicitly keeps the dependency visible instead of implicit.
+      - name: Install deb packaging tools
+        if: ${{ matrix.platform == 'linux' }}
+        run: sudo apt-get install -y --no-install-recommends binutils xz-utils
+
       - name: Package desktop app
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
-        run: npm run package:mac --prefix apps/desktop
+        run: npm run package:${{ matrix.platform }} --prefix apps/desktop
 
       - name: Verify desktop package artifacts
-        run: node apps/desktop/scripts/verify-dist.mjs apps/desktop/dist
+        run: node apps/desktop/scripts/verify-dist.mjs apps/desktop/dist ${{ matrix.platform }}
 
       # PR and manual builds are available for inspection for one week.
-      - name: Upload desktop package artifact
-        if: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}
+      - name: Upload macOS package artifact
+        if: ${{ matrix.platform == 'mac' && (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') }}
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: coral-desktop-macos-unsigned
+          name: coral-desktop-mac-unsigned
           if-no-files-found: error
           retention-days: 7
           path: |
@@ -79,3 +97,14 @@ jobs:
             apps/desktop/dist/coral-desktop-*.zip
             apps/desktop/dist/coral-desktop-*.blockmap
             apps/desktop/dist/latest-mac.yml
+
+      - name: Upload Linux package artifact
+        if: ${{ matrix.platform == 'linux' && (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: coral-desktop-linux-unsigned
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            apps/desktop/dist/coral-desktop-*.AppImage
+            apps/desktop/dist/coral-desktop-*.deb

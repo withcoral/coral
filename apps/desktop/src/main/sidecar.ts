@@ -81,7 +81,11 @@ function packagedSidecarCommand(): { command: string; args: string[]; cwd: strin
   return {
     command: bundledCoralPath(),
     args: ['server'],
-    cwd: process.resourcesPath,
+    // The binary is addressed absolutely and its state directory arrives as
+    // CORAL_CONFIG_DIR, so cwd only decides where stray relative work lands.
+    // `resourcesPath` is a read-only squashfs mount inside an AppImage;
+    // userData is writable on every platform.
+    cwd: app.getPath('userData'),
   }
 }
 
