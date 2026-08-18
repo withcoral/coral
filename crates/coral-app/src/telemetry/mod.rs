@@ -60,7 +60,6 @@ pub(crate) fn app_error_type(error: &AppError) -> &'static str {
         AppError::Unauthenticated(_) => "UNAUTHENTICATED",
         AppError::PermissionDenied(_) => "PERMISSION_DENIED",
         AppError::UserNotFound(_) => "USER_NOT_FOUND",
-        AppError::IssuerMismatch => "ISSUER_MISMATCH",
         AppError::LastWorkspaceOwner(_) => "LAST_WORKSPACE_OWNER",
         AppError::SourceNotFound(_) => "SOURCE_NOT_FOUND",
         AppError::FunctionNotFound(_) => "FUNCTION_NOT_FOUND",

@@ -30,12 +30,6 @@ pub enum AppError {
     /// A requested user was not found in the local directory.
     #[error("user '{0}' not found")]
     UserNotFound(String),
-    /// A login subject is already bound to a different verified issuer.
-    ///
-    /// The message names neither issuer: which providers a deployment trusts,
-    /// and which one owns a given subject, are not the caller's to learn.
-    #[error("identity provider issuer does not match the stored user")]
-    IssuerMismatch,
     /// Removing or demoting this member would leave a workspace with no owner.
     #[error("workspace '{0}' must retain at least one owner")]
     LastWorkspaceOwner(String),
@@ -336,7 +330,6 @@ fn app_code(error: &AppError) -> Code {
         }
         AppError::InvalidInput(_) => Code::InvalidArgument,
         AppError::FailedPrecondition(_)
-        | AppError::IssuerMismatch
         | AppError::LastWorkspaceOwner(_)
         | AppError::MissingSourceInputs { .. }
         | AppError::UnsupportedV4IdentityRequirements { .. }
@@ -407,7 +400,6 @@ mod tests {
                 AppError::UserNotFound("11111111-2222-3333-4444-555555555555".to_string()),
                 Code::NotFound,
             ),
-            (AppError::IssuerMismatch, Code::FailedPrecondition),
             (
                 AppError::LastWorkspaceOwner("work".to_string()),
                 Code::FailedPrecondition,
@@ -463,7 +455,6 @@ mod tests {
                 "PERMISSION_DENIED",
             ),
             (AppError::UserNotFound(String::new()), "USER_NOT_FOUND"),
-            (AppError::IssuerMismatch, "ISSUER_MISMATCH"),
             (
                 AppError::LastWorkspaceOwner(String::new()),
                 "LAST_WORKSPACE_OWNER",
