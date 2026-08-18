@@ -306,11 +306,12 @@ mod tests {
                 .expect("earlier login"),
         );
         // Shares the stored row's creation time, so only the user-id tiebreak
-        // makes the listing order deterministic.
+        // makes the listing order deterministic: with distinct times the
+        // expectation below would hold whether or not `list` sorts by user id.
         let tied = expect_upserted(
             session
                 .users()
-                .upsert_login(issuer, &format!("{subject}_tied"), None, 200)
+                .upsert_login(issuer, &format!("{subject}_tied"), None, 100)
                 .await
                 .expect("tied login"),
         );

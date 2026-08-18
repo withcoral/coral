@@ -514,7 +514,15 @@ mod tests {
             held.expect("the holding add"),
             granted(member, MemberRole::Member)
         );
-        assert_contended(contended, &unchanged(member, MemberRole::Member));
+        // Convergence is a stronger contract than the owner floor's: there the
+        // contender may legitimately lose the lock race, here it must see the
+        // row the holder committed and report it unchanged.
+        match contended {
+            Ok(outcome) => assert_eq!(outcome, unchanged(member, MemberRole::Member)),
+            Err(error) => panic!(
+                "identical concurrent adds must both succeed on one row, but the contender failed: {error}"
+            ),
+        }
         assert_eq!(
             member_count(db, workspace).await,
             3,
