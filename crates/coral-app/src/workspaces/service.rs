@@ -12,12 +12,13 @@ use tonic::{Request, Response, Status};
 
 use crate::bootstrap::{AppError, app_status};
 use crate::identity::PrincipalId;
-use crate::state::db::WorkspaceMemberRecord;
 use crate::transport::{
     grpc_span, instrument_grpc, request_context, workspace_name_from_proto, workspace_to_proto,
 };
 use crate::workspaces::authorization::{WorkspaceAction, WorkspaceAuthorizer};
-use crate::workspaces::{MemberRole, WorkspaceManager, WorkspaceRecord};
+use crate::workspaces::{
+    MemberRole, WorkspaceManager, WorkspaceMember as WorkspaceMemberView, WorkspaceRecord,
+};
 
 #[derive(Clone)]
 pub(crate) struct WorkspaceService {
@@ -257,7 +258,7 @@ fn membership_to_proto(workspace: &WorkspaceRecord, role: MemberRole) -> Workspa
     }
 }
 
-fn member_to_proto(member: WorkspaceMemberRecord) -> WorkspaceMember {
+fn member_to_proto(member: WorkspaceMemberView) -> WorkspaceMember {
     WorkspaceMember {
         user_id: member.user_id,
         role: member_role_to_proto(member.role).into(),

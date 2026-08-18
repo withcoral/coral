@@ -14,19 +14,9 @@ use crate::state::db::{
 use crate::storage::fs::DirectoryBackup;
 use crate::workspaces::{
     DeletedWorkspace, MemberRole, WorkspaceLifecycleLock, WorkspaceLifecycleRevision,
-    WorkspaceName, WorkspacePaths, WorkspacePoolRegistry, WorkspaceRecord,
+    WorkspaceMember, WorkspaceMembership, WorkspaceName, WorkspacePaths, WorkspacePoolRegistry,
+    WorkspaceRecord,
 };
-
-/// One workspace as one caller reaches it.
-///
-/// The role is caller-relative, so it belongs beside the workspace rather than
-/// on [`WorkspaceRecord`]: the same workspace is an owned one for its creator
-/// and a member's one for everybody they invite.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct WorkspaceMembership {
-    pub(crate) workspace: WorkspaceRecord,
-    pub(crate) role: MemberRole,
-}
 
 /// App-owned workspace lifecycle behavior.
 #[derive(Clone)]
@@ -397,14 +387,14 @@ impl WorkspaceManager {
     pub(crate) async fn list_workspace_members(
         &self,
         workspace_name: &WorkspaceName,
-    ) -> Result<Vec<WorkspaceMemberRecord>, AppError> {
+    ) -> Result<Vec<WorkspaceMember>, AppError> {
         let mut session = self.db.as_ref();
         Ok(session
             .workspace_members()
             .members_of_workspace(workspace_name.as_str())
             .await?
             .into_iter()
-            .map(|(user_id, role, display_name)| WorkspaceMemberRecord {
+            .map(|(user_id, role, display_name)| WorkspaceMember {
                 user_id,
                 display_name,
                 role,
@@ -421,7 +411,7 @@ impl WorkspaceManager {
         workspace_name: &WorkspaceName,
         user_id: &str,
         role: MemberRole,
-    ) -> Result<WorkspaceMemberRecord, AppError> {
+    ) -> Result<WorkspaceMember, AppError> {
         let added = self
             .db
             .workspace_state()
@@ -435,7 +425,7 @@ impl WorkspaceManager {
         match added {
             AddMemberOutcome::Added(member)
             | AddMemberOutcome::ExistingSameRole(member)
-            | AddMemberOutcome::RoleUpdated(member) => Ok(member),
+            | AddMemberOutcome::RoleUpdated(member) => Ok(workspace_member(member)),
             AddMemberOutcome::LastOwnerProtected => {
                 Err(AppError::LastWorkspaceOwner(workspace_name.to_string()))
             }
@@ -477,6 +467,18 @@ impl WorkspaceManager {
 ///
 /// A stored id that no longer parses is corrupt state rather than caller input,
 /// so it surfaces as a database error instead of an invalid argument.
+/// Projects one persisted membership row onto the domain model.
+///
+/// The row shape stays inside `state::db`; managers and services above it deal
+/// in [`WorkspaceMember`], exactly as the directory does with `users::model`.
+fn workspace_member(record: WorkspaceMemberRecord) -> WorkspaceMember {
+    WorkspaceMember {
+        user_id: record.user_id,
+        display_name: record.display_name,
+        role: record.role,
+    }
+}
+
 fn workspace_record(workspace_id: &str) -> Result<WorkspaceRecord, AppError> {
     WorkspaceName::parse(workspace_id)
         .map(|name| WorkspaceRecord { name })
@@ -492,7 +494,7 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use super::{WorkspaceManager, WorkspaceMembership};
+    use super::WorkspaceManager;
     use crate::bootstrap::AppError;
     use crate::credentials::{CredentialManager, CredentialSetId, CredentialStore};
     use crate::sources::SourceName;
@@ -500,10 +502,12 @@ mod tests {
     use crate::sources::model::{InstalledSource, SourceOrigin};
     use crate::state::db::{
         CoralDb, DatabaseConfig, DbRepos, LoginIdentity, LoginProvisioning, ResolvedDatabaseConfig,
-        WorkspaceMemberRecord,
     };
     use crate::state::{AppStateLayout, ConfigStore};
-    use crate::workspaces::{MemberRole, WorkspaceName, WorkspacePoolRegistry, WorkspaceRecord};
+    use crate::workspaces::{
+        MemberRole, WorkspaceMember, WorkspaceMembership, WorkspaceName, WorkspacePoolRegistry,
+        WorkspaceRecord,
+    };
 
     fn test_layout(temp: &TempDir) -> AppStateLayout {
         AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout")
@@ -590,9 +594,9 @@ mod tests {
         WorkspaceName::parse(name).expect("workspace name")
     }
 
-    /// The roster row `seed_user` produces for one person in one role.
-    fn member_record(user_id: &str, role: MemberRole) -> WorkspaceMemberRecord {
-        WorkspaceMemberRecord {
+    /// The roster entry `seed_user` produces for one person in one role.
+    fn member_record(user_id: &str, role: MemberRole) -> WorkspaceMember {
+        WorkspaceMember {
             user_id: user_id.to_string(),
             display_name: Some("Seeded User".to_string()),
             role,

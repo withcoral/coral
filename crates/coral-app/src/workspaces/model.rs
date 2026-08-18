@@ -7,12 +7,35 @@ use async_lock::{RwLockReadGuard, RwLockWriteGuard};
 use tokio::task;
 
 use crate::sources::model::InstalledSource;
-use crate::workspaces::WorkspaceName;
+use crate::workspaces::{MemberRole, WorkspaceName};
 
 /// App-owned workspace metadata record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WorkspaceRecord {
     pub(crate) name: WorkspaceName,
+}
+
+/// One workspace as one caller reaches it.
+///
+/// The role is caller-relative, so it belongs beside the workspace rather than
+/// on [`WorkspaceRecord`]: the same workspace is an owned one for its creator
+/// and a member's one for everybody they invite.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WorkspaceMembership {
+    pub(crate) workspace: WorkspaceRecord,
+    pub(crate) role: MemberRole,
+}
+
+/// One person's place in one workspace, as the roster reports it.
+///
+/// The transport-free counterpart of the membership row: the display name is
+/// the directory's, joined in for the roster, and nothing upstream of the
+/// login — issuer or subject — reaches this far.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WorkspaceMember {
+    pub(crate) user_id: String,
+    pub(crate) display_name: Option<String>,
+    pub(crate) role: MemberRole,
 }
 
 /// Workspace metadata and scoped source state captured at the config deletion

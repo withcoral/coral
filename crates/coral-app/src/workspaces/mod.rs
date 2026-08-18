@@ -11,7 +11,7 @@ pub(crate) use manager::WorkspaceManager;
 pub(crate) use member::MemberRole;
 pub(crate) use model::{
     DeletedWorkspace, WorkspaceLifecycleLock, WorkspaceLifecycleReadLease,
-    WorkspaceLifecycleRevision, WorkspaceRecord,
+    WorkspaceLifecycleRevision, WorkspaceMember, WorkspaceMembership, WorkspaceRecord,
 };
 pub use name::DEFAULT_WORKSPACE_ID;
 pub(crate) use name::WorkspaceName;
