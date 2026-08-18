@@ -155,16 +155,78 @@ fn now_unix_nanos() -> Result<i64> {
         .context("the system clock is outside the range this state database can store")
 }
 
+// -- command surface ---------------------------------------------------------
+
+/// `xtask workspace-admin` - repository-side recovery for a locked-out deployment.
+///
+/// The state directory is never a flag. Recovery reads configuration by the
+/// server's own rules, so an operator points the tool at a deployment with
+/// `CORAL_CONFIG_DIR` exactly as they would point the server at it, and a
+/// mistyped path fails the same way for both.
+#[derive(Debug, clap::Args)]
+pub(crate) struct Args {
+    #[command(subcommand)]
+    command: RecoveryCommand,
+}
+
+/// The four repairs recovery performs, in the order an operator needs them:
+/// find the unreachable workspace, find the person to hand it to, hand it over,
+/// and - after a provider rename - reattach the accounts that already exist.
+#[derive(Debug, clap::Subcommand)]
+enum RecoveryCommand {
+    /// List every workspace with the ownership that decides its reachability.
+    ListWorkspaces,
+    /// List every user, accounts this tool can appoint first.
+    ListUsers {
+        /// Also print each user's provider subject, which is withheld by
+        /// default: the listing exists to find a user id, not to publish
+        /// everyone's upstream identity.
+        #[arg(long)]
+        show_subjects: bool,
+    },
+    /// Appoint an existing user as an owner of one workspace.
+    SetOwner {
+        /// Workspace to appoint an owner of, as `list-workspaces` names it.
+        #[arg(long, value_name = "NAME")]
+        workspace: String,
+        /// Internal user id to appoint, as `list-users` reports it. This is
+        /// never a provider subject or an email address.
+        #[arg(long, value_name = "USER-ID")]
+        user: String,
+    },
+    /// Rebind every user of one issuer to another after a provider rename.
+    RebindIssuer {
+        /// Issuer being retired.
+        #[arg(long, value_name = "ISSUER")]
+        from: String,
+        /// Issuer those users move to.
+        #[arg(long, value_name = "ISSUER")]
+        to: String,
+    },
+}
+
+/// Runs one recovery command and prints its report.
+///
+/// Every report is already a complete, newline-terminated rendering, so this
+/// writes it verbatim. Failures propagate as errors for `main` to print, which
+/// keeps a failed repair off stdout entirely: a recovery report an operator
+/// pipes or pastes should never be half a repair.
+pub(crate) fn run(args: &Args) -> Result<bool> {
+    // Configuration resolution is left to the environment, so no command here
+    // passes an override. Tests supply one directly to the functions below.
+    let report = match &args.command {
+        RecoveryCommand::ListWorkspaces => list_workspaces(None)?,
+        RecoveryCommand::ListUsers { show_subjects } => list_users(None, *show_subjects)?,
+        RecoveryCommand::SetOwner { workspace, user } => set_owner(None, workspace, user)?,
+        RecoveryCommand::RebindIssuer { from, to } => rebind_issuer(None, from, to)?,
+    };
+    print!("{report}");
+    Ok(true)
+}
+
 /// Lists every workspace in the state database with its ownership reachability.
 ///
 /// Opens the database read-only, so it runs against a live deployment.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the `workspace-admin` subcommand that dispatches here lands in a follow-up change"
-    )
-)]
 pub(crate) fn list_workspaces(config_dir_override: Option<PathBuf>) -> Result<String> {
     list_workspaces_on(&resolve_database(config_dir_override)?)
 }
@@ -181,13 +243,6 @@ pub(crate) fn list_workspaces(config_dir_override: Option<PathBuf>) -> Result<St
 ///
 /// Provider subjects are withheld unless `show_subjects` is set: the listing
 /// exists to find a user id, not to publish everyone's upstream identity.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the `workspace-admin` subcommand that dispatches here lands in a follow-up change"
-    )
-)]
 pub(crate) fn list_users(
     config_dir_override: Option<PathBuf>,
     show_subjects: bool,
@@ -201,13 +256,6 @@ pub(crate) fn list_users(
 /// removed, demoted, or restamped, and re-running it once the user is already
 /// an owner writes nothing at all. Membership is authorized per request, so the
 /// appointment takes effect on that person's next call without a restart.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the `workspace-admin` subcommand that dispatches here lands in a follow-up change"
-    )
-)]
 pub(crate) fn set_owner(
     config_dir_override: Option<PathBuf>,
     workspace_id: &str,
@@ -226,13 +274,6 @@ pub(crate) fn set_owner(
 /// `user_id` each membership points at is a primary key this never rewrites, so
 /// no membership is orphaned and no second directory row is minted for the
 /// person who already has one.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the `workspace-admin` subcommand that dispatches here lands in a follow-up change"
-    )
-)]
 pub(crate) fn rebind_issuer(
     config_dir_override: Option<PathBuf>,
     from: &str,
@@ -2682,5 +2723,151 @@ mod tests {
             .split_whitespace()
             .collect::<Vec<_>>()
             .join("  ")
+    }
+
+    /// End-to-end coverage of the `workspace-admin` subcommand, driven through
+    /// the built binary against a real state database.
+    ///
+    /// These run the process rather than calling the operations directly,
+    /// because the properties under test are properties of what an operator
+    /// sees: which stream a report reaches, and what a report never contains.
+    mod workspace_admin_cli {
+        use std::process::Output;
+
+        use super::{ADA, Migrations, SUBJECT_NEEDLE, TempDir, seed, state_dir};
+
+        /// A seeded deployment plus the binary pointed at it.
+        struct Deployment {
+            /// Held so the state directory outlives every invocation.
+            _temp: TempDir,
+            /// The value `CORAL_CONFIG_DIR` carries into each child process.
+            config_dir: std::path::PathBuf,
+        }
+
+        impl Deployment {
+            /// Seeds one workspace of every reachability class and their users.
+            fn new() -> Self {
+                let (temp, config_dir) = state_dir(Migrations::Current);
+                seed(&config_dir);
+                Self {
+                    _temp: temp,
+                    config_dir,
+                }
+            }
+
+            /// Runs `xtask workspace-admin <arguments>` against this deployment.
+            ///
+            /// The state directory is passed as the child's environment rather
+            /// than set on this process, because sibling tests run in parallel
+            /// and share it.
+            fn recover(&self, arguments: &[&str]) -> Output {
+                assert_cmd::Command::cargo_bin("xtask")
+                    .expect("the xtask binary is built for its tests")
+                    .env("CORAL_CONFIG_DIR", &self.config_dir)
+                    .arg("workspace-admin")
+                    .args(arguments)
+                    .output()
+                    .expect("run a recovery command")
+            }
+        }
+
+        /// Everything one invocation wrote, on either stream.
+        fn written(output: &Output) -> String {
+            format!(
+                "{}{}",
+                String::from_utf8(output.stdout.clone()).expect("stdout is UTF-8"),
+                String::from_utf8(output.stderr.clone()).expect("stderr is UTF-8")
+            )
+        }
+
+        /// The dispatch is real: the subcommand reaches the operation and its
+        /// report reaches stdout, where an operator can pipe it.
+        #[test]
+        fn listing_workspaces_reports_reachability_on_stdout() {
+            let deployment = Deployment::new();
+            let listed = deployment.recover(&["list-workspaces"]);
+            assert!(
+                listed.status.success(),
+                "listing must succeed:\n{}",
+                written(&listed)
+            );
+            let rendered = String::from_utf8(listed.stdout).expect("stdout is UTF-8");
+            assert!(
+                rendered.contains("abandoned"),
+                "the listing must name the unreachable workspace:\n{rendered}"
+            );
+        }
+
+        /// Subjects are withheld by default and printed only when asked for.
+        /// Both directions are asserted from the same fixture, so the negative
+        /// half cannot pass because the subject was never in the database.
+        #[test]
+        fn listing_users_withholds_subjects_until_they_are_requested() {
+            let deployment = Deployment::new();
+
+            let withheld = deployment.recover(&["list-users"]);
+            assert!(withheld.status.success(), "listing must succeed");
+            let hidden = written(&withheld);
+            assert!(
+                !hidden.contains(SUBJECT_NEEDLE),
+                "the default listing printed a provider subject:\n{hidden}"
+            );
+
+            let requested = deployment.recover(&["list-users", "--show-subjects"]);
+            assert!(requested.status.success(), "listing must succeed");
+            let revealed = written(&requested);
+            assert!(
+                revealed.contains(SUBJECT_NEEDLE),
+                "`--show-subjects` printed no provider subject:\n{revealed}"
+            );
+        }
+
+        /// A failing repair is the classic leak: the command looked a subject's
+        /// owner up and then explained itself. Every failure path that names an
+        /// identity must name the internal user id instead.
+        #[test]
+        fn a_failing_repair_stays_actionable_without_naming_a_subject() {
+            let deployment = Deployment::new();
+
+            for arguments in [
+                vec![
+                    "set-owner",
+                    "--workspace",
+                    "no-such-workspace",
+                    "--user",
+                    ADA,
+                ],
+                vec![
+                    "set-owner",
+                    "--workspace",
+                    "abandoned",
+                    "--user",
+                    "no-such-user",
+                ],
+                vec![
+                    "rebind-issuer",
+                    "--from",
+                    "https://no-such-issuer.test",
+                    "--to",
+                    "https://neither-issuer.test",
+                ],
+            ] {
+                let failed = deployment.recover(&arguments);
+                assert!(
+                    !failed.status.success(),
+                    "`{arguments:?}` must fail:\n{}",
+                    written(&failed)
+                );
+                let reported = written(&failed);
+                assert!(
+                    !reported.contains(SUBJECT_NEEDLE),
+                    "`{arguments:?}` leaked a provider subject:\n{reported}"
+                );
+                assert!(
+                    reported.contains("list-workspaces") || reported.contains("list-users"),
+                    "`{arguments:?}` failed without pointing at the listing that resolves it:\n{reported}"
+                );
+            }
+        }
     }
 }
