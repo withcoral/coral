@@ -12,7 +12,7 @@ import {
   HEADING_HEIGHT_PX,
   justifyProperty,
   MAX_ALIGNED_COLUMNS,
-  MAX_HEIGHT_PROPERTY,
+  ROWS_MAX_HEIGHT_PROPERTY,
 } from './constants'
 
 // The fallback keeps a cell rendered outside a Container styled as the default
@@ -135,7 +135,7 @@ export const bodyScrollArea = style({
   ...rowGroup,
   selectors: {
     [`${scrollRows} > &`]: {
-      maxHeight: `calc(var(${MAX_HEIGHT_PROPERTY}) - ${tableVars.headingHeight.value})`,
+      maxHeight: `var(${ROWS_MAX_HEIGHT_PROPERTY})`,
     },
   },
 })

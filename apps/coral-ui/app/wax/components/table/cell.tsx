@@ -32,7 +32,7 @@ export function Cell({
   const columns = useColumns()
   return (
     <div
-      aria-colspan={fullWidth ? columns.length : undefined}
+      aria-colspan={fullWidth && columns.length > 0 ? columns.length : undefined}
       className={classNames(styles.cell({ fullWidth, wrap }), className)}
       ref={ref}
       role="cell"
