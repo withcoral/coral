@@ -85,13 +85,6 @@ pub(crate) struct ServerConfig {
     config_dir: Option<PathBuf>,
     mode: ServerModeSelection,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
-    /// Explicit provider every request's principal is resolved through.
-    ///
-    /// When absent, startup derives a provider from session authentication or
-    /// falls back to [`LocalPrincipalProvider`], so nothing downstream of the
-    /// builder has to handle a server that might have no way to name its
-    /// caller.
-    principal_provider: Option<Arc<dyn PrincipalProvider>>,
     feedback_publisher: Arc<dyn FeedbackPublisher>,
     feature_overrides: FeatureOverrides,
     enable_stderr_logs: bool,
@@ -114,7 +107,6 @@ impl ServerConfig {
             config_dir: None,
             mode: ServerModeSelection::Explicit(ServerMode::EphemeralGrpc),
             engine_extensions_providers: Vec::new(),
-            principal_provider: None,
             feedback_publisher: Arc::new(HostedFeedbackPublisher::new()),
             feature_overrides: FeatureOverrides::default(),
             enable_stderr_logs: false,
@@ -286,27 +278,6 @@ impl ServerBuilder {
     }
 
     #[must_use]
-    /// Sets the server-side principal provider.
-    ///
-    /// The default provider returns the local principal for every
-    /// request. Product runtimes can authenticate inbound metadata and select
-    /// any canonical principal by installing their own provider.
-    ///
-    /// Without this call a standalone listener serves the local principal to
-    /// every caller its address is reachable from.
-    ///
-    /// This cannot be combined with [`ServerBuilder::with_session_auth`], which
-    /// derives its own provider; startup rejects that ambiguous authentication
-    /// policy rather than letting one silently win.
-    pub fn with_principal_provider(
-        mut self,
-        principal_provider: Arc<dyn PrincipalProvider>,
-    ) -> Self {
-        self.config.principal_provider = Some(principal_provider);
-        self
-    }
-
-    #[must_use]
     /// Configures session authentication for this server.
     ///
     /// Startup derives the private gRPC policy from every configured public
@@ -315,9 +286,8 @@ impl ServerBuilder {
     /// Taking that server from the returned [`RunningServer`] and running its
     /// transport stays the caller's job.
     ///
-    /// This cannot be combined with
-    /// [`ServerBuilder::with_principal_provider`]; startup rejects that
-    /// ambiguous authentication policy.
+    /// Without this call a standalone listener serves the built-in local
+    /// principal to every caller its address is reachable from.
     pub fn with_session_auth(mut self, session_auth: SessionAuthSettings) -> Self {
         self.session_auth = Some(Box::new(session_auth));
         self
@@ -365,36 +335,22 @@ impl ServerBuilder {
     /// Selects the one provider every request's principal is resolved through,
     /// together with the local-principal policy that follows from it.
     ///
-    /// Session authentication and an explicit provider are two identity systems
-    /// for the same requests, so asking for both is a configuration error
-    /// rather than a precedence question.
-    ///
     /// The policy is not a separate choice: `coral:local` is precisely the
     /// principal the default provider hands to every caller, so a deployment
     /// admits it exactly when nothing else authenticates them. Deriving both
     /// from the same match is what keeps a server that authenticates its
     /// callers from also honoring the built-in principal, and keeps a
     /// no-login install in full control of its own host.
-    fn resolve_authentication(
-        &self,
-    ) -> Result<(Arc<dyn PrincipalProvider>, LocalPrincipalPolicy), AppError> {
-        match (&self.session_auth, &self.config.principal_provider) {
-            (Some(_), Some(_)) => Err(AppError::FailedPrecondition(
-                "session authentication cannot be combined with an explicit principal provider"
-                    .to_string(),
-            )),
-            (Some(session_auth), None) => Ok((
+    fn resolve_authentication(&self) -> (Arc<dyn PrincipalProvider>, LocalPrincipalPolicy) {
+        match &self.session_auth {
+            Some(session_auth) => (
                 session_auth.principal_provider(session_auth.public_audiences().to_vec()),
                 LocalPrincipalPolicy::NoLocalPrincipal,
-            )),
-            (None, Some(principal_provider)) => Ok((
-                Arc::clone(principal_provider),
-                LocalPrincipalPolicy::NoLocalPrincipal,
-            )),
-            (None, None) => Ok((
+            ),
+            None => (
                 Arc::new(LocalPrincipalProvider),
                 LocalPrincipalPolicy::ImplicitOwner,
-            )),
+            ),
         }
     }
 
@@ -413,7 +369,7 @@ impl ServerBuilder {
         reason = "the composition root constructs every app manager in one place, so it grows by one line per service the server gains"
     )]
     pub async fn start(self) -> Result<RunningServer, AppError> {
-        let (principal_provider, local_principal) = self.resolve_authentication()?;
+        let (principal_provider, local_principal) = self.resolve_authentication();
         let session_auth = self.session_auth;
         let env = AppEnvironment::discover();
         let layout = env.app_state_layout(self.config.config_dir.clone())?;
@@ -1013,7 +969,7 @@ mod tests {
     use crate::workspaces::{WorkspaceManager, WorkspaceName};
     use crate::{
         AwsEngineExtensionsProvider, LocalPrincipalProvider, NoopEngineExtensionsProvider,
-        Principal, PrincipalKind, PrincipalProvider, PrincipalProviderError,
+        PrincipalKind,
     };
 
     fn default_workspace() -> Workspace {
@@ -1059,21 +1015,6 @@ enabled = false
             .lock()
             .expect("search observation mutex")
             .is_some()
-    }
-
-    #[derive(Debug)]
-    struct RejectingPrincipalProvider;
-
-    #[tonic::async_trait]
-    impl PrincipalProvider for RejectingPrincipalProvider {
-        async fn principal_for_metadata(
-            &self,
-            _metadata: &tonic::metadata::MetadataMap,
-        ) -> Result<Principal, PrincipalProviderError> {
-            Err(PrincipalProviderError::unauthenticated(
-                "rejected principal",
-            ))
-        }
     }
 
     async fn test_db(layout: &AppStateLayout, config_store: &ConfigStore) -> Arc<CoralDb> {
@@ -1403,8 +1344,7 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
             .access_token;
         let (private_api, _) = builder
             .with_session_auth(session_auth)
-            .resolve_authentication()
-            .expect("private gRPC provider");
+            .resolve_authentication();
 
         let mut metadata = tonic::metadata::MetadataMap::new();
         metadata.insert(
@@ -1430,12 +1370,7 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
         let config_dir = temp.path().join("coral-config");
         configure_serve_session_auth(&config_dir);
         let (with_session_auth, session_auth) = serve_session_auth(&config_dir);
-        let policy = |builder: ServerBuilder| {
-            builder
-                .resolve_authentication()
-                .expect("resolved authentication")
-                .1
-        };
+        let policy = |builder: ServerBuilder| builder.resolve_authentication().1;
 
         assert_eq!(
             policy(ServerBuilder::new()),
@@ -1444,45 +1379,9 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
         );
         assert_eq!(
             policy(with_session_auth.with_session_auth(session_auth)),
-            LocalPrincipalPolicy::NoLocalPrincipal
-        );
-        assert_eq!(
-            policy(
-                ServerBuilder::new().with_principal_provider(Arc::new(RejectingPrincipalProvider))
-            ),
             LocalPrincipalPolicy::NoLocalPrincipal,
-            "any provider of its own is an identity system the local principal bypasses"
+            "session authentication is an identity system the local principal bypasses"
         );
-    }
-
-    #[tokio::test]
-    async fn session_auth_rejects_an_explicit_principal_provider_in_either_order() {
-        let temp = TempDir::new().expect("temp dir");
-        let config_dir = temp.path().join("coral-config");
-        configure_serve_session_auth(&config_dir);
-        let (first, first_session_auth) = serve_session_auth(&config_dir);
-        let (second, second_session_auth) = serve_session_auth(&config_dir);
-        let builders = [
-            first
-                .with_principal_provider(Arc::new(RejectingPrincipalProvider))
-                .with_session_auth(first_session_auth),
-            second
-                .with_session_auth(second_session_auth)
-                .with_principal_provider(Arc::new(RejectingPrincipalProvider)),
-        ];
-
-        for builder in builders {
-            let Err(error) = builder.start().await else {
-                panic!("conflicting authentication policies must fail startup");
-            };
-            let AppError::FailedPrecondition(message) = error else {
-                panic!("expected failed precondition, got {error}");
-            };
-            assert_eq!(
-                message,
-                "session authentication cannot be combined with an explicit principal provider"
-            );
-        }
     }
 
     #[tokio::test]
@@ -1983,12 +1882,17 @@ backend = "unsupported"
             .add_engine_extensions_provider(Arc::new(NoopEngineExtensionsProvider));
     }
 
+    /// The provider startup derives is what the ephemeral gRPC listener is
+    /// actually wrapped in, so an authenticated server must refuse a call that
+    /// carries no credential rather than falling back to the local principal.
     #[tokio::test]
-    async fn server_builder_applies_injected_provider_to_ephemeral_grpc() {
+    async fn server_builder_applies_the_resolved_provider_to_ephemeral_grpc() {
         let temp = TempDir::new().expect("temp dir");
-        let server = ServerBuilder::new()
-            .with_config_dir(temp.path().join("coral-config"))
-            .with_principal_provider(Arc::new(RejectingPrincipalProvider))
+        let config_dir = temp.path().join("coral-config");
+        configure_serve_session_auth(&config_dir);
+        let (builder, session_auth) = serve_session_auth(&config_dir);
+        let server = builder
+            .with_session_auth(session_auth)
             .start()
             .await
             .expect("start server");

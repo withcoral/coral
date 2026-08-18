@@ -1,40 +1,22 @@
-use std::sync::Arc;
-
-use coral_app::{Principal, PrincipalProvider, PrincipalProviderError};
-use coral_client::local::ServerBuilder;
 use tempfile::TempDir;
 use tonic::Code;
 use tonic_health::pb::HealthCheckRequest;
 use tonic_health::pb::health_check_response::ServingStatus;
 use tonic_health::pb::health_client::HealthClient;
 
-#[derive(Debug)]
-struct UnavailablePrincipalProvider;
-
-#[tonic::async_trait]
-impl PrincipalProvider for UnavailablePrincipalProvider {
-    async fn principal_for_metadata(
-        &self,
-        _metadata: &tonic::metadata::MetadataMap,
-    ) -> Result<Principal, PrincipalProviderError> {
-        Err(PrincipalProviderError::unavailable(
-            "principal provider unavailable",
-        ))
-    }
-}
+use crate::session_auth::{SessionAuthFixture, session_authenticated_server};
 
 /// The health service is the only unauthenticated RPC, so it carries the signals
 /// probes reach without a credential: the empty name answers process liveness
 /// from a constant, and the readiness service answers from the engine. Neither
-/// may depend on principal selection, which the deliberately unavailable provider
-/// here pins.
+/// may depend on principal selection, which this pins by asking an
+/// authenticating server with no credential at all: every other RPC on it is
+/// refused before it runs, and these four still answer.
 #[tokio::test]
 async fn grpc_health_reports_liveness_and_readiness_without_a_principal() {
     let temp = TempDir::new().expect("temp dir");
-    let server = ServerBuilder::new()
-        .with_config_dir(temp.path())
-        .with_principal_provider(Arc::new(UnavailablePrincipalProvider))
-        .start()
+    let fixture = SessionAuthFixture::write(&temp.path().join("coral-config"));
+    let server = session_authenticated_server(&fixture)
         .await
         .expect("start server");
     let channel = tonic::transport::Channel::from_shared(server.endpoint_uri().to_string())

@@ -25,6 +25,8 @@ mod resilience_tests;
 mod search_tests;
 #[path = "grpc/server_lifecycle_tests.rs"]
 mod server_lifecycle_tests;
+#[path = "grpc/session_auth.rs"]
+mod session_auth;
 #[path = "grpc/source_lifecycle_tests.rs"]
 mod source_lifecycle_tests;
 #[path = "grpc/workspace_lifecycle_tests.rs"]

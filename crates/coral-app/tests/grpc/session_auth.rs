@@ -1,0 +1,111 @@
+//! Session-authentication fixture shared by the gRPC integration tests.
+//!
+//! These tests authenticate through the production path rather than an injected
+//! provider: the server verifies tokens the real issuer minted, so an issuer
+//! that drifts from its verifier fails a test here instead of passing against a
+//! stub that agrees with neither.
+
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use coral_app::AppError;
+use coral_client::local::{RunningServer, ServerBuilder};
+use ring::rand::SystemRandom;
+use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair};
+
+const ISSUER: &str = "https://auth.example.test";
+const AUDIENCE: &str = "https://mcp.example.test";
+const CLIENT_ID: &str = "https://client.example/client.json";
+const ACCESS_TOKEN_TTL: Duration = Duration::from_mins(5);
+
+/// A config directory an authenticated server resolves completely, plus the key
+/// its tokens are signed with.
+pub(crate) struct SessionAuthFixture {
+    config_dir: PathBuf,
+    signing_key: Vec<u8>,
+}
+
+impl SessionAuthFixture {
+    /// Writes the signing key and the config an authenticated server needs.
+    pub(crate) fn write(config_dir: &Path) -> Self {
+        fs::create_dir_all(config_dir).expect("create config dir");
+        let signing_key =
+            EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
+                .expect("generate a session signing key");
+        fs::write(config_dir.join("session.key"), signing_key.as_ref())
+            .expect("write the session signing key");
+        // The MCP HTTP surface is what gives the deployment a public audience;
+        // the private gRPC API admits every audience that fronts it, so tokens
+        // minted for this one reach the services under test.
+        fs::write(
+            config_dir.join("config.toml"),
+            format!(
+                "[credentials]
+storage = \"file\"
+
+[server.mcp_http]
+enabled = true
+bind = '127.0.0.1:0'
+public_url = '{AUDIENCE}'
+
+[auth.authorization_server]
+issuer = '{ISSUER}'
+
+[auth.session]
+signing_key_file = 'session.key'
+
+[auth.provider]
+issuer = 'https://accounts.example.test'
+client_id = 'upstream-client'
+client_secret = 'test-secret'
+redirect_uri = '{ISSUER}/auth/oidc/callback'
+"
+            ),
+        )
+        .expect("write the session auth config");
+
+        Self {
+            config_dir: config_dir.to_path_buf(),
+            signing_key: signing_key.as_ref().to_vec(),
+        }
+    }
+
+    pub(crate) fn config_dir(&self) -> &Path {
+        &self.config_dir
+    }
+
+    /// Mints the access token a completed login would have handed `user_id`.
+    ///
+    /// The login flow itself is upstream of these transport tests, so this
+    /// mints through the real issuer rather than replaying the OAuth round
+    /// trip: the token's wire format stays the server's own.
+    pub(crate) fn access_token(&self, user_id: &str) -> String {
+        coral_app::test_session_tokens::issue_access_token(
+            ISSUER,
+            &self.signing_key,
+            ACCESS_TOKEN_TTL,
+            user_id,
+            CLIENT_ID,
+            AUDIENCE,
+        )
+        .expect("issue a session access token")
+    }
+}
+
+/// Starts a server that authenticates every gRPC caller with session tokens.
+///
+/// # Errors
+///
+/// Returns [`AppError`] when the configuration cannot be resolved or the server
+/// cannot be started.
+pub(crate) async fn session_authenticated_server(
+    fixture: &SessionAuthFixture,
+) -> Result<RunningServer, AppError> {
+    let builder = ServerBuilder::new().with_config_dir(fixture.config_dir());
+    let session_auth = builder
+        .serve_settings()?
+        .take_session_auth()
+        .expect("the fixture configures session authentication");
+    builder.with_session_auth(session_auth).start().await
+}

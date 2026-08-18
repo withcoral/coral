@@ -72,6 +72,9 @@ windows-native-keyring-store.workspace = true
 zbus-secret-service-keyring-store.workspace = true
 
 [dev-dependencies]
+# Self dev-dependency: enables the test-only token minting feature for this
+# crate's own integration tests without turning it on for production builds.
+coral-app = { path = ".", features = ["test-session-tokens"] }
 coral-client.workspace = true
 prost.workspace = true
 opentelemetry-proto.workspace = true

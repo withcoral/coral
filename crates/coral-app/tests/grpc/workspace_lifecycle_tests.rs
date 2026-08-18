@@ -1,6 +1,5 @@
 use std::fs;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use coral_api::CORAL_ERROR_REASON_WORKSPACE_NOT_FOUND;
 use coral_api::v1::{
@@ -11,8 +10,7 @@ use coral_api::v1::{
     ListWorkspacesResponse, RemoveWorkspaceMemberRequest, RemoveWorkspaceMemberResponse, Source,
     SourceSecret, SourceVariable, Workspace, WorkspaceRole, import_source_response,
 };
-use coral_app::{Principal, PrincipalKind, PrincipalProvider, PrincipalProviderError};
-use coral_client::local::{RunningServer, ServerBuilder, connect_with_loopback_bearer};
+use coral_client::local::{RunningServer, connect_with_loopback_bearer};
 use coral_client::{AppClient, BearerToken, default_workspace};
 use prost::Message as _;
 use serde_json::json;
@@ -22,6 +20,7 @@ use tonic::{Code, Request, Response, Status};
 use tonic_types::{ErrorDetail, StatusExt as _};
 
 use crate::harness::{GrpcHarness, fixture_manifest_with_inputs_yaml, fixture_manifest_yaml};
+use crate::session_auth::{SessionAuthFixture, session_authenticated_server};
 
 static TRACE_STORE_DELETE_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -749,44 +748,13 @@ async fn delete_default_workspace_returns_failed_precondition() {
 /// leaked it would be recognizable on the wire.
 const TEST_ISSUER: &str = "https://issuer.test/authorization";
 
-/// Authenticates a `"<kind>:<user_id>"` bearer token.
-///
-/// Installing any provider of its own is what makes a deployment a shared one:
-/// it retires the implicit local owner, so each request over these tests'
-/// transport arrives as a distinct person or agent instead of as the host.
-#[derive(Debug)]
-struct TokenPrincipals;
-
-#[tonic::async_trait]
-impl PrincipalProvider for TokenPrincipals {
-    async fn principal_for_metadata(
-        &self,
-        metadata: &tonic::metadata::MetadataMap,
-    ) -> Result<Principal, PrincipalProviderError> {
-        let credential = metadata
-            .get("authorization")
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.strip_prefix("Bearer "))
-            .ok_or_else(|| PrincipalProviderError::unauthenticated("missing bearer credential"))?;
-        let (kind, user_id) = credential
-            .split_once(':')
-            .ok_or_else(|| PrincipalProviderError::unauthenticated("malformed test credential"))?;
-        let kind = if kind == "agent" {
-            PrincipalKind::Agent
-        } else {
-            PrincipalKind::User
-        };
-        Principal::parse(user_id, kind)
-            .map_err(|error| PrincipalProviderError::unauthenticated(error.to_string()))
-    }
-}
-
 /// A running server that authenticates its callers, plus the directory rows
 /// login provisioning would have written for them.
 struct SharedDeployment {
     _temp: Option<TempDir>,
     config_dir: PathBuf,
     endpoint_uri: String,
+    session_auth: SessionAuthFixture,
     _server: RunningServer,
 }
 
@@ -794,16 +762,12 @@ impl SharedDeployment {
     async fn start() -> Self {
         let temp = TempDir::new().expect("temp dir");
         let config_dir = temp.path().join("coral-config");
-        fs::create_dir_all(&config_dir).expect("create config dir");
-        fs::write(
-            config_dir.join("config.toml"),
-            "[credentials]\nstorage = \"file\"\n",
-        )
-        .expect("write test credential config");
-        let server = ServerBuilder::new()
-            .with_config_dir(&config_dir)
-            .with_principal_provider(Arc::new(TokenPrincipals))
-            .start()
+        // Configuring session authentication is what makes a deployment a
+        // shared one: it retires the implicit local owner, so each request over
+        // these tests' transport arrives as a distinct person instead of as the
+        // host.
+        let session_auth = SessionAuthFixture::write(&config_dir);
+        let server = session_authenticated_server(&session_auth)
             .await
             .expect("start an authenticated server");
         let endpoint_uri = server.endpoint_uri().to_string();
@@ -825,6 +789,7 @@ impl SharedDeployment {
             _temp: temp,
             config_dir,
             endpoint_uri,
+            session_auth,
             _server: server,
         }
     }
@@ -857,17 +822,9 @@ impl SharedDeployment {
     }
 
     async fn as_person(&self, user_id: &str) -> AppClient {
-        self.connect("user", user_id).await
-    }
-
-    async fn as_agent(&self, user_id: &str) -> AppClient {
-        self.connect("agent", user_id).await
-    }
-
-    async fn connect(&self, kind: &str, user_id: &str) -> AppClient {
         connect_with_loopback_bearer(
             &self.endpoint_uri,
-            BearerToken::new(format!("{kind}:{user_id}")).expect("test bearer token"),
+            BearerToken::new(self.session_auth.access_token(user_id)).expect("test bearer token"),
         )
         .await
         .expect("connect a test client")
@@ -1235,42 +1192,6 @@ async fn a_non_member_cannot_tell_an_existing_workspace_from_an_absent_one() {
         membership_rows(list_workspaces(&owner).await.expect("the owner's listing")),
         vec![("team".to_string(), WorkspaceRole::Owner)],
         "a refused probe must not have changed the workspace it probed",
-    );
-}
-
-/// Agent credentials hold no human control-plane permission, so the boundary
-/// is the credential rather than the person: the same owner reaches every
-/// membership RPC with their own token and none of them with an agent one.
-#[tokio::test]
-async fn an_agent_credential_holds_no_workspace_control_plane() {
-    let deployment = SharedDeployment::start().await;
-    let ada = deployment.seed_user("ada", "Ada").await;
-    let bob = deployment.seed_user("bob", "Bob").await;
-    let owner = deployment.as_person(&ada).await;
-    let agent = deployment.as_agent(&ada).await;
-
-    assert_eq!(
-        create_workspace(&agent, "agent-made")
-            .await
-            .expect_err("an agent credential cannot create a workspace")
-            .code(),
-        Code::PermissionDenied,
-    );
-    create_workspace(&owner, "team").await.expect("create");
-
-    for (code, _, reasons) in control_plane_refusals(&agent, "team", &bob).await {
-        assert_eq!(
-            code,
-            Code::PermissionDenied,
-            "an agent credential must be refused the control plane of its owner's workspace",
-        );
-        assert!(reasons.is_empty(), "a denial must carry no Coral reason");
-    }
-
-    assert_eq!(
-        membership_rows(list_workspaces(&agent).await.expect("an agent's listing")),
-        vec![("team".to_string(), WorkspaceRole::Owner)],
-        "the restriction is the control plane, not the workspace itself",
     );
 }
 

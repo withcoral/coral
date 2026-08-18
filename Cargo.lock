@@ -1359,6 +1359,7 @@ dependencies = [
  "base64",
  "chrono",
  "coral-api",
+ "coral-app",
  "coral-auth-aws",
  "coral-client",
  "coral-engine",
