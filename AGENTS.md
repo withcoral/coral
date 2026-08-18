@@ -71,6 +71,8 @@
   change warrants one. Validation artifacts stay unsigned and must not be
   reused for a release; Desktop release publishing must rebuild from a clean
   checkout with signing and notarization.
+- Run Cargo build timing diagnostics locally when needed. Do not maintain a
+  scheduled GitHub Actions workflow only to collect timing and cache reports.
 - The `Validate` workflow intentionally skips draft pull request runs, starts
   again on `ready_for_review`, and still triggers on `converted_to_draft` so the
   replacement skipped run cancels any in-progress validation for the PR branch.
