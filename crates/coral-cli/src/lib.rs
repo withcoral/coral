@@ -1063,12 +1063,18 @@ async fn run_workspace(app: &AppClient, args: WorkspaceArgs) -> Result<(), CliEr
             if memberships.is_empty() {
                 println!("No workspaces available.");
             } else {
-                let rows = memberships.into_iter().map(|membership| {
-                    [
-                        membership.workspace.unwrap_or_default().name,
-                        workspace_role_label(membership.role).to_string(),
-                    ]
-                });
+                let rows = memberships
+                    .into_iter()
+                    .map(|membership| {
+                        let workspace = membership.workspace.ok_or_else(|| {
+                            anyhow::anyhow!("list workspaces response missing workspace")
+                        })?;
+                        Ok::<_, CliError>([
+                            workspace.name,
+                            workspace_role_label(membership.role).to_string(),
+                        ])
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
                 print_text_table(["Workspace", "Role"], rows);
             }
         }
