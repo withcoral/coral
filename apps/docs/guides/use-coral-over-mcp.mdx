@@ -6,7 +6,7 @@ description: "Set up MCP for Claude Code, Cursor, and other agents."
 Coral ships with a built-in MCP server that lets agents discover where data lives across your connected sources, then query it through a read-only SQL interface.
 
 <Note>
-Before setting up a client, make sure you have [connected at least one source](/getting-started/quickstart).
+Before setting up a client, create a workspace with `coral workspace create <name>` — a fresh install has none — and [connect at least one source](/getting-started/quickstart) in it.
 
 </Note>
 
@@ -249,7 +249,27 @@ If an answer needs data from multiple connected sources, ask the agent to combin
 
 ## Workspaces
 
-`coral mcp-stdio` serves one workspace, which you name with `--workspace <name>` in the server args of your MCP config. With no name it falls back to a workspace called `default`, which exists only if you created it. For JSON-style clients, naming the workspace looks like:
+Coral has no default workspace and creates none for you. Create one before
+connecting a client:
+
+```shellscript
+coral workspace create analytics
+```
+
+`analytics`, `work`, `default` — they are all ordinary names. Naming a workspace
+`default` gives it no special standing and does not make it the one Coral
+reaches for when a client names none.
+
+### Local stdio servers
+
+`coral mcp-stdio` picks its workspace in this order: the `--workspace NAME`
+argument, then `CORAL_WORKSPACE` in the environment the client launched it with,
+then your only workspace if you have exactly one.
+
+**You need to configure a workspace as soon as you have more than one.** With
+two or more and nothing selected, the server refuses to start rather than
+guessing, and your client reports it as a connection failure. Add
+`--workspace <name>` to the server args:
 
 ```json
 {
@@ -262,8 +282,37 @@ If an answer needs data from multiple connected sources, ask the agent to combin
 }
 ```
 
+Pinning the workspace explicitly is worth doing even while you have one — it
+keeps the client working on the day you create a second.
+
+### Loopback MCP over HTTP
+
+`coral server` can also expose MCP Streamable HTTP on loopback for clients that
+speak HTTP rather than stdio. That listener takes no command-line flag; name its
+workspace in `config.toml`:
+
+```toml
+[server.mcp_http]
+enabled = true
+bind = "127.0.0.1:14556"
+workspace = "analytics"
+```
+
+Point the client at `http://127.0.0.1:14556/mcp`.
+
+<Warning>
+  The `workspace` key is optional, and leaving it out is what makes this listener
+  fragile. Coral resolves the workspace once when the server starts, and with no
+  key it starts only if the install has exactly one workspace — so an install
+  serving happily today refuses to start after you create a second workspace,
+  and takes the gRPC surface down with it. See
+  [MCP HTTP workspace](/reference/configuration#mcp-http-workspace).
+</Warning>
+
 ## Troubleshooting
 
 - **`coral` not found:** Make sure `coral` is on your `PATH`, or use the full path from `which coral` on macOS or Linux or `(Get-Command coral).Source` in PowerShell.
-- **No tables visible:** Run `coral source list` in your terminal to confirm you have sources installed. If empty, add one with `coral source add`. See the [CLI reference](/reference/cli-reference#coral-source).
+- **The server exits immediately after your client launches it:** Run `coral workspace list`. With no workspaces, create one with `coral workspace create <name>`. With several and no `--workspace` in the client's args, Coral refuses to choose — add the flag naming the one you want.
+- **The server used to start and now does not:** Check whether you created another workspace since it last worked. A stdio server needs `--workspace` from that point on, and a loopback `[server.mcp_http]` listener needs a `workspace` key.
+- **No tables visible:** Confirm the client is pointed at the workspace your sources are in, then run `coral source list --workspace <name>` in your terminal. If empty, add one with `coral source add`. See the [CLI reference](/reference/cli-reference#coral-source).
 - **The agent ignores Coral:** Ask it to use Coral by name. For stronger routing, install the Coral agent skills from [Installation](/getting-started/installation#skills).

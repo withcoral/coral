@@ -45,16 +45,16 @@ export CORAL_DATABASE_URL="postgres://coral:secret@db.example.com:5432/coral?ssl
 
 ## Workspaces
 
-Workspace metadata is stored under `[workspaces]`. Coral provisions no workspace
-of its own — create and remove them yourself with `coral workspace create` and
-`coral workspace remove`. `default` is an ordinary name like any other; nothing
-creates it for you and nothing protects it.
+Which workspaces exist is recorded in Coral's database, not in `config.toml`.
+There is no automatically created workspace: a fresh install has none until you
+run `coral workspace create NAME`, and Coral never falls back to a name of its
+own. `default` is an ordinary name you may create, remove, and select like any
+other.
+
+What `config.toml` holds is the per-workspace installation state for the things
+you install into a workspace — sources and functions:
 
 ```toml
-[workspaces.analytics]
-
-[workspaces.work]
-
 [workspaces.work.sources.github]
 version = "1.0.0"
 variables = {}
@@ -62,12 +62,14 @@ secrets = ["GITHUB_TOKEN"]
 origin = "bundled"
 ```
 
-An empty workspace is represented by an explicit `[workspaces.<name>]` table.
-Installed sources for that workspace live under
-`[workspaces.<name>.sources.<source>]`.
+Coral writes these tables when you run commands such as `coral source add`.
+Creating an empty workspace writes no `[workspaces.<name>]` scaffolding, so a
+workspace with nothing installed in it appears in `coral workspace list` without
+appearing in `config.toml`.
 
-There is no separate active-workspace key in `config.toml`; use
-`CORAL_WORKSPACE` for a shell default or `--workspace <NAME>` for one command.
+There is no active-workspace key in `config.toml`; use `CORAL_WORKSPACE` for a
+shell default or `--workspace <NAME>` for one command, as described in
+[Global workspace selection](/reference/cli-reference#global-workspace-selection).
 Source specs imported from files and source credential material remain scoped
 to the source installation in a workspace. Reusable global source specs and
 reusable credential references are not config objects today.
@@ -101,6 +103,7 @@ MCP Streamable HTTP is disabled by default. Enable its companion listener under
 [server.mcp_http]
 enabled = true
 bind = "127.0.0.1:14556"
+workspace = "analytics"
 ```
 
 | Key                                  | Type             | Default       | Description                                                                                          |
@@ -271,6 +274,46 @@ management of its own.
 <Note>
   Every authenticated user has the same full access to the instance and all of its sources — there are no per-user roles. Restrict who can log in through the upstream provider and `required_claims`.
 </Note>
+
+### MCP HTTP workspace
+
+`server.mcp_http.workspace` names the single workspace this MCP listener serves.
+It is optional, and Coral substitutes nothing for it: leaving it out means the
+listener has to work out a workspace by itself, which is where it can start
+refusing to run.
+
+At startup Coral only checks the name's shape — it must be non-empty after
+trimming, must not be `.` or `..`, and must not contain `/` or `\`. A name that
+fails those rules aborts startup with an error naming
+`server.mcp_http.workspace`. A well-formed name for a workspace that does not
+exist yet is accepted, so you can configure the listener before you create the
+workspace.
+
+<Warning>
+  **Without `[auth]`, an unnamed workspace is resolved once at startup — before
+  the listener binds — and creating a workspace can break your next restart.**
+
+  With no `workspace` key, the loopback listener starts only if the install has
+  exactly one workspace. So a server that has been running fine with one
+  workspace refuses to start after you add a second:
+
+  ```text
+  several workspaces are available (analytics, work). Name the one the local MCP server serves in `server.mcp_http.workspace`.
+  ```
+
+  An install with no workspace refuses the same way, naming
+  `coral workspace create NAME` instead. Both errors take the whole server with
+  them: MCP HTTP starts as part of one composite server, so a failure there
+  shuts the gRPC listener down again and `coral server` exits. Setting
+  `workspace` explicitly is what makes the choice stable against later workspace
+  changes.
+</Warning>
+
+With `[auth]` configured the key is accepted and validated identically, but it
+is applied per session instead of at startup: the listener starts either way,
+and a session is admitted only when the configured name is one the caller can
+reach. A listener that names no workspace starts, then refuses every session
+with guidance to name one.
 
 ## Runtime features
 
