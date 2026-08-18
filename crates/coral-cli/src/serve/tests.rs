@@ -713,7 +713,7 @@ async fn session_auth_composes_an_mcp_only_audience_for_mcp() {
         .await
         .expect("token minted for the MCP surface");
     mcp_authenticator
-        .principal_for_bearer(&session_token(signing_key.as_ref(), REEF_RESOURCE))
+        .principal_for_bearer(&session_token(signing_key.as_ref(), CORAL_UI_RESOURCE))
         .await
         .expect_err("MCP must refuse a token minted for a sibling surface");
 
