@@ -1,13 +1,18 @@
 import { useOutletContext, useParams } from 'react-router'
 
 import type { SchemaResponse } from '@/lib/schema-explorer'
-import { Table } from '@/wax/components/table'
+import { Table } from '@/wax/components'
 import { Tooltip } from '@/wax/components/tooltip'
 import { Typography } from '@/wax/components/typography'
 
 import * as styles from './schema-explorer.css'
 import { findSchemaTableFunction, tableFunctionTreeArguments } from './schema'
 import { SchemaColumnsTable } from './schema-table'
+
+const ARGUMENT_COLUMNS: Table.Column[] = [
+  { label: 'name', width: 'content' },
+  { label: 'allowed values', width: 'fill' },
+]
 
 export function SchemaTableFunctionView() {
   const schema = useOutletContext<SchemaResponse>()
@@ -47,39 +52,32 @@ export function SchemaTableFunctionView() {
             This table function accepts no arguments.
           </Typography.BodySmall>
         ) : (
-          <Table.Wrapper style="compact">
-            <Table.Root>
-              <Table.Head>
-                <Table.Row>
-                  <Table.HeaderCell>name</Table.HeaderCell>
-                  <Table.HeaderCell>allowed values</Table.HeaderCell>
+          <Table.Container columns={ARGUMENT_COLUMNS} density="compact">
+            <Table.Head />
+            <Table.Body>
+              {tableFunction.arguments.map((argument) => (
+                <Table.Row key={argument.name}>
+                  <Table.Cell mono>
+                    {argument.name}
+                    {argument.required ? (
+                      <Tooltip content="Required argument" side="top">
+                        <span
+                          aria-label="Required argument"
+                          className={styles.requiredStar}
+                          tabIndex={0}
+                        >
+                          *
+                        </span>
+                      </Tooltip>
+                    ) : null}
+                  </Table.Cell>
+                  <Table.Cell mono>
+                    {argument.values.length > 0 ? argument.values.join(', ') : '-'}
+                  </Table.Cell>
                 </Table.Row>
-              </Table.Head>
-              <Table.Body>
-                {tableFunction.arguments.map((argument) => (
-                  <Table.Row key={argument.name}>
-                    <Table.Cell mono>
-                      {argument.name}
-                      {argument.required ? (
-                        <Tooltip content="Required argument" side="top">
-                          <span
-                            aria-label="Required argument"
-                            className={styles.requiredStar}
-                            tabIndex={0}
-                          >
-                            *
-                          </span>
-                        </Tooltip>
-                      ) : null}
-                    </Table.Cell>
-                    <Table.Cell mono>
-                      {argument.values.length > 0 ? argument.values.join(', ') : '-'}
-                    </Table.Cell>
-                  </Table.Row>
-                ))}
-              </Table.Body>
-            </Table.Root>
-          </Table.Wrapper>
+              ))}
+            </Table.Body>
+          </Table.Container>
         )}
       </div>
 

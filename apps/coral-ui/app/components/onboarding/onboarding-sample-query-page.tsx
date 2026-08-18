@@ -219,30 +219,26 @@ function MissingSourceFallback() {
   )
 }
 
+const RESULT_COLUMNS: Table.Column[] = [
+  { label: 'Source', width: 'fill' },
+  { align: 'right', label: 'Tables', width: 'content' },
+]
+
 function CatalogQueryResults({ rows }: { rows: OnboardingSampleQueryRow[] }) {
   return (
     <QueryDetailResults>
       {rows.length > 0 ? (
-        <Table.Wrapper className={styles.resultTable} style="compact">
-          <Table.Root>
-            <Table.Head>
-              <Table.Row>
-                <Table.HeaderCell>Source</Table.HeaderCell>
-                <Table.HeaderCell align="right">Tables</Table.HeaderCell>
+        <Table.Container columns={RESULT_COLUMNS} density="compact">
+          <Table.Head />
+          <Table.Body>
+            {rows.map((row) => (
+              <Table.Row key={row.source}>
+                <Table.Cell mono>{row.source}</Table.Cell>
+                <Table.Cell mono>{row.tables.toString()}</Table.Cell>
               </Table.Row>
-            </Table.Head>
-            <Table.Body>
-              {rows.map((row) => (
-                <Table.Row key={row.source}>
-                  <Table.Cell mono>{row.source}</Table.Cell>
-                  <Table.Cell align="right" mono>
-                    {row.tables.toString()}
-                  </Table.Cell>
-                </Table.Row>
-              ))}
-            </Table.Body>
-          </Table.Root>
-        </Table.Wrapper>
+            ))}
+          </Table.Body>
+        </Table.Container>
       ) : null}
     </QueryDetailResults>
   )

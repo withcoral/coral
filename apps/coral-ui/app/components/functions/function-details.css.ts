@@ -1,7 +1,6 @@
 import { style } from '@vanilla-extract/css'
 
 import { breakpoints } from '@/styles/theme.css'
-import { theme } from '@/wax/theme/theme.css'
 
 export const root = style({
   display: 'flex',
@@ -78,20 +77,8 @@ export const shapeSection = style({
   minWidth: 0,
 })
 
-export const shapeTable = style({
-  border: `1px solid ${theme.stroke.secondary}`,
-  borderRadius: 8,
-  overflow: 'hidden',
-})
-
-export const shapeTableRoot = style({
-  tableLayout: 'fixed',
-})
-
 export const shapeEmpty = style({
   alignItems: 'center',
-  border: `1px solid ${theme.stroke.secondary}`,
-  borderRadius: 8,
   display: 'flex',
   minHeight: 32,
   paddingBlock: 6,

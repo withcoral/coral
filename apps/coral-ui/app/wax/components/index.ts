@@ -14,5 +14,5 @@ export * as Radio from './radio'
 export * as ScrollArea from './scroll-area'
 export * as Tabs from './tabs'
 export { Card }
-export { Table } from './table'
+export * as Table from './table'
 export { Typography, TypographyVariant } from './typography'

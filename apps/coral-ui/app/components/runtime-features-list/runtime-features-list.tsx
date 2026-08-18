@@ -30,6 +30,13 @@ export interface RuntimeFeaturesListProps {
   readonly renderRow: (feature: RuntimeFeatureListItem) => ReactNode
 }
 
+// The switch column shows no label: the switch already reads as on or off, so all
+// that is left is the name a reader hears.
+const FEATURE_COLUMNS: Table.Column[] = [
+  { label: 'Feature', width: 'fill' },
+  { align: 'right', ariaLabel: 'Enabled', width: 96 },
+]
+
 export function RuntimeFeaturesList({ error, features, renderRow }: RuntimeFeaturesListProps) {
   const status = error ? (
     <Typography.BodySmall role="alert" variant="error">
@@ -42,35 +49,20 @@ export function RuntimeFeaturesList({ error, features, renderRow }: RuntimeFeatu
   ) : null
 
   return (
-    <div className={styles.tableContainer}>
-      <Table.Wrapper>
-        <Table.Root className={styles.table}>
-          <Table.Head>
-            <Table.Row>
-              <Table.HeaderCell>Feature</Table.HeaderCell>
-              {/* The switch column shows no label: the switch already reads as on
-                  or off. The name stays for screen readers. */}
-              <Table.HeaderCell
-                align="right"
-                ariaLabel="Enabled"
-                className={styles.enabledColumn}
-              />
-            </Table.Row>
-          </Table.Head>
-          <Table.Body>
-            {status ? (
-              <Table.Row>
-                <td className={styles.statusCell} colSpan={2}>
-                  {status}
-                </td>
-              </Table.Row>
-            ) : (
-              features.map((feature) => <Fragment key={feature.key}>{renderRow(feature)}</Fragment>)
-            )}
-          </Table.Body>
-        </Table.Root>
-      </Table.Wrapper>
-    </div>
+    <Table.Container columns={FEATURE_COLUMNS} layout="fixed" variant="card">
+      <Table.Head />
+      <Table.Body>
+        {status ? (
+          <Table.Row>
+            <Table.Cell align="center" className={styles.statusCell} fullWidth>
+              {status}
+            </Table.Cell>
+          </Table.Row>
+        ) : (
+          features.map((feature) => <Fragment key={feature.key}>{renderRow(feature)}</Fragment>)
+        )}
+      </Table.Body>
+    </Table.Container>
   )
 }
 
@@ -82,7 +74,7 @@ export function RuntimeFeatureRow({
 }: RuntimeFeatureRowProps) {
   return (
     <Table.Row>
-      <Table.Cell className={styles.featureCell}>
+      <Table.Cell wrap>
         <div className={styles.feature}>
           <Typography.BodyStrong variant="primary">{feature.label}</Typography.BodyStrong>
           <Typography.BodySmall variant="secondary">{feature.description}</Typography.BodySmall>
@@ -95,7 +87,7 @@ export function RuntimeFeatureRow({
           )}
         </div>
       </Table.Cell>
-      <Table.Cell align="right" className={styles.enabledColumn}>
+      <Table.Cell className={styles.enabledCell}>
         <Inputs.Switch
           aria-label={feature.label}
           checked={feature.enabled}

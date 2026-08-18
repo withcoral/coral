@@ -1,6 +1,6 @@
 import { CodeBlock } from '@/components/code-block'
 import { Container as ScrollArea } from '@/wax/components/scroll-area'
-import { Table } from '@/wax/components/table'
+import { Table } from '@/wax/components'
 import { Typography } from '@/wax/components/typography'
 
 import * as styles from './function-details.css'
@@ -93,6 +93,11 @@ export function FunctionDetails({
   )
 }
 
+const SHAPE_COLUMNS: Table.Column[] = [
+  { label: 'name', width: 'fill' },
+  { align: 'right', label: 'type', width: 'fill' },
+]
+
 function FunctionShape({
   emptyMessage,
   items,
@@ -106,33 +111,22 @@ function FunctionShape({
     <section className={styles.shapeSection}>
       <Typography.BodySmallStrong as="h2">{title}</Typography.BodySmallStrong>
       {items.length > 0 ? (
-        <Table.Wrapper className={styles.shapeTable} style="compact">
-          <Table.Root className={styles.shapeTableRoot}>
-            <Table.Head>
-              <Table.Row>
-                <Table.HeaderCell>name</Table.HeaderCell>
-                <Table.HeaderCell align="right">type</Table.HeaderCell>
+        <Table.Container columns={SHAPE_COLUMNS} density="compact">
+          <Table.Head />
+          <Table.Body>
+            {items.map((item) => (
+              <Table.Row key={item.name}>
+                <Table.Cell mono title={item.name}>
+                  {item.name}
+                </Table.Cell>
+                <Table.Cell mono title={`${item.dataType}${item.nullable ? '?' : ''}`}>
+                  {item.dataType}
+                  {item.nullable ? '?' : ''}
+                </Table.Cell>
               </Table.Row>
-            </Table.Head>
-            <Table.Body>
-              {items.map((item) => (
-                <Table.Row key={item.name}>
-                  <Table.Cell mono title={item.name}>
-                    {item.name}
-                  </Table.Cell>
-                  <Table.Cell
-                    align="right"
-                    mono
-                    title={`${item.dataType}${item.nullable ? '?' : ''}`}
-                  >
-                    {item.dataType}
-                    {item.nullable ? '?' : ''}
-                  </Table.Cell>
-                </Table.Row>
-              ))}
-            </Table.Body>
-          </Table.Root>
-        </Table.Wrapper>
+            ))}
+          </Table.Body>
+        </Table.Container>
       ) : (
         <div className={styles.shapeEmpty}>
           <Typography.BodySmall variant="tertiary">{emptyMessage}</Typography.BodySmall>

@@ -27,6 +27,13 @@ export type McpClientsConnectionState = Pick<
   'clients' | 'error' | 'loading' | 'onWorkspaceChange' | 'pendingClientIds'
 >
 
+// The workspace column narrows on mobile, so its width comes from a property the
+// stylesheet sets rather than from a number here.
+const CLIENT_COLUMNS: Table.Column[] = [
+  { label: 'MCP client', width: 'fill' },
+  { label: 'Workspace', width: `var(${styles.WORKSPACE_WIDTH_PROPERTY})` },
+]
+
 export function McpClientsList({
   clients,
   error,
@@ -50,88 +57,79 @@ export function McpClientsList({
     </Typography.BodySmall>
   ) : null
 
-  // Inline, so it always beats the container's own `overflow: hidden` rather than
-  // depending on which stylesheet the bundler emits last.
-  const bounds = maxHeight === undefined ? undefined : { maxHeight, overflowY: 'auto' as const }
-
   return (
-    <div className={styles.tableContainer} style={bounds}>
-      <Table.Wrapper>
-        <Table.Root className={styles.table}>
-          <Table.Head>
-            <Table.Row>
-              <Table.HeaderCell>MCP client</Table.HeaderCell>
-              <Table.HeaderCell className={styles.workspaceColumn}>Workspace</Table.HeaderCell>
-            </Table.Row>
-          </Table.Head>
-          <Table.Body>
-            {status ? (
-              <Table.Row>
-                <td className={styles.statusCell} colSpan={2}>
-                  {status}
-                </td>
-              </Table.Row>
-            ) : (
-              clients.map((client) => {
-                const pending = pendingClientIds.includes(client.id)
-                const access =
-                  client.configuredWorkspace === undefined
-                    ? NOT_CONFIGURED
-                    : workspaceAccessValue(client.configuredWorkspace)
-                const accessLabel =
-                  client.configuredWorkspace === undefined
-                    ? 'Not configured'
-                    : client.configuredWorkspace
+    <Table.Container
+      className={styles.responsiveWidths}
+      columns={CLIENT_COLUMNS}
+      layout="fixed"
+      maxHeight={maxHeight}
+      variant="card"
+    >
+      <Table.Head />
+      <Table.Body>
+        {status ? (
+          <Table.Row>
+            <Table.Cell align="center" className={styles.statusCell} fullWidth>
+              {status}
+            </Table.Cell>
+          </Table.Row>
+        ) : (
+          clients.map((client) => {
+            const pending = pendingClientIds.includes(client.id)
+            const access =
+              client.configuredWorkspace === undefined
+                ? NOT_CONFIGURED
+                : workspaceAccessValue(client.configuredWorkspace)
+            const accessLabel =
+              client.configuredWorkspace === undefined
+                ? 'Not configured'
+                : client.configuredWorkspace
 
-                return (
-                  <Table.Row key={client.id}>
-                    <Table.Cell>
-                      <Typography.BodyStrong variant="primary">{client.name}</Typography.BodyStrong>
-                    </Table.Cell>
-                    <Table.Cell>
-                      <Menu.Container>
-                        <Menu.Trigger
-                          className={styles.workspaceTrigger}
-                          render={
-                            <Button.Container disabled={pending} fullWidth variant="secondary" />
-                          }
-                        >
-                          <Button.Text>{accessLabel}</Button.Text>
-                          <Button.Icon name="ChevronDown" />
-                        </Menu.Trigger>
-                        <Menu.Content align="end" className={styles.workspaceMenu}>
-                          <Menu.RadioGroup
-                            onValueChange={(value) => {
-                              onWorkspaceChange(
-                                client.id,
-                                value === NOT_CONFIGURED
-                                  ? undefined
-                                  : value.slice(WORKSPACE_ACCESS_PREFIX.length),
-                              )
-                            }}
-                            value={access}
+            return (
+              <Table.Row key={client.id}>
+                <Table.Cell>
+                  <Typography.BodyStrong variant="primary">{client.name}</Typography.BodyStrong>
+                </Table.Cell>
+                <Table.Cell>
+                  <Menu.Container>
+                    <Menu.Trigger
+                      className={styles.workspaceTrigger}
+                      render={<Button.Container disabled={pending} fullWidth variant="secondary" />}
+                    >
+                      <Button.Text>{accessLabel}</Button.Text>
+                      <Button.Icon name="ChevronDown" />
+                    </Menu.Trigger>
+                    <Menu.Content align="end" className={styles.workspaceMenu}>
+                      <Menu.RadioGroup
+                        onValueChange={(value) => {
+                          onWorkspaceChange(
+                            client.id,
+                            value === NOT_CONFIGURED
+                              ? undefined
+                              : value.slice(WORKSPACE_ACCESS_PREFIX.length),
+                          )
+                        }}
+                        value={access}
+                      >
+                        <Menu.RadioItem value={NOT_CONFIGURED}>Not configured</Menu.RadioItem>
+                        {workspaces.map((workspace) => (
+                          <Menu.RadioItem
+                            key={workspace.name}
+                            value={workspaceAccessValue(workspace.name)}
                           >
-                            <Menu.RadioItem value={NOT_CONFIGURED}>Not configured</Menu.RadioItem>
-                            {workspaces.map((workspace) => (
-                              <Menu.RadioItem
-                                key={workspace.name}
-                                value={workspaceAccessValue(workspace.name)}
-                              >
-                                {workspace.name}
-                              </Menu.RadioItem>
-                            ))}
-                          </Menu.RadioGroup>
-                        </Menu.Content>
-                      </Menu.Container>
-                    </Table.Cell>
-                  </Table.Row>
-                )
-              })
-            )}
-          </Table.Body>
-        </Table.Root>
-      </Table.Wrapper>
-    </div>
+                            {workspace.name}
+                          </Menu.RadioItem>
+                        ))}
+                      </Menu.RadioGroup>
+                    </Menu.Content>
+                  </Menu.Container>
+                </Table.Cell>
+              </Table.Row>
+            )
+          })
+        )}
+      </Table.Body>
+    </Table.Container>
   )
 }
 

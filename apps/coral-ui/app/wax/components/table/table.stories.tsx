@@ -2,10 +2,17 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 
 import { theme } from '@/wax/theme/theme.css'
 
-import { Table } from './table'
+import { Body } from './body'
+import { Cell } from './cell'
+import type { Column } from './columns'
+import type { TableDensity } from './constants'
+import { Container } from './container'
+import { Head } from './head'
+import { Heading } from './heading'
+import { Row } from './row'
 
-const meta: Meta<typeof Table.Root> = {
-  component: Table.Root,
+const meta: Meta<typeof Container> = {
+  component: Container,
   decorators: [
     (Story) => (
       <div style={{ backgroundColor: theme.surface.mainContent, padding: 24 }}>
@@ -17,44 +24,126 @@ const meta: Meta<typeof Table.Root> = {
 }
 
 export default meta
-type Story = StoryObj<typeof Table.Root>
+type Story = StoryObj<typeof Container>
 
-function ExampleTable({ tableStyle }: { tableStyle: 'compact' | 'default' }) {
+const PEOPLE_COLUMNS: Column[] = [
+  { label: 'Name', width: 'fill' },
+  { label: 'Role', width: 'fill' },
+  { align: 'right', label: 'Requests', width: 'content' },
+]
+
+function ExampleTable({ density }: { density: TableDensity }) {
   return (
-    <Table.Wrapper style={tableStyle}>
-      <Table.Root>
-        <Table.Head>
-          <Table.Row>
-            <Table.HeaderCell>Name</Table.HeaderCell>
-            <Table.HeaderCell>Role</Table.HeaderCell>
-            <Table.HeaderCell align="right">Requests</Table.HeaderCell>
-          </Table.Row>
-        </Table.Head>
-        <Table.Body>
-          <Table.Row>
-            <Table.Cell>Ada Lovelace</Table.Cell>
-            <Table.Cell>Admin</Table.Cell>
-            <Table.Cell align="right" mono>
-              24
-            </Table.Cell>
-          </Table.Row>
-          <Table.Row>
-            <Table.Cell>Grace Hopper</Table.Cell>
-            <Table.Cell>User</Table.Cell>
-            <Table.Cell align="right" mono>
-              12
-            </Table.Cell>
-          </Table.Row>
-        </Table.Body>
-      </Table.Root>
-    </Table.Wrapper>
+    <Container columns={PEOPLE_COLUMNS} density={density}>
+      <Head />
+      <Body>
+        <Row>
+          <Cell>Ada Lovelace</Cell>
+          <Cell>Admin</Cell>
+          <Cell mono>24</Cell>
+        </Row>
+        <Row>
+          <Cell>Grace Hopper</Cell>
+          <Cell>User</Cell>
+          <Cell mono>12</Cell>
+        </Row>
+      </Body>
+    </Container>
   )
 }
 
 export const Compact: Story = {
-  render: () => <ExampleTable tableStyle="compact" />,
+  render: () => <ExampleTable density="compact" />,
 }
 
 export const Default: Story = {
-  render: () => <ExampleTable tableStyle="default" />,
+  render: () => <ExampleTable density="default" />,
+}
+
+// Both sticky-heading arrangements. The heading sticks to the nearest box that
+// scrolls, so which box that is decides which prop the caller reaches for.
+const SCROLL_COLUMNS: Column[] = [
+  { label: 'Name', width: 'fill' },
+  { align: 'right', label: 'Requests', width: 'content' },
+]
+
+function ManyRows() {
+  return (
+    <Body>
+      {Array.from({ length: 24 }, (_, index) => (
+        <Row key={index}>
+          <Cell mono>row_{index}</Cell>
+          <Cell mono>{index * 7}</Cell>
+        </Row>
+      ))}
+    </Body>
+  )
+}
+
+export const StickyHeadingInsideTable: Story = {
+  render: () => (
+    <Container
+      columns={SCROLL_COLUMNS}
+      density="compact"
+      layout="fixed"
+      maxHeight={180}
+      variant="card"
+    >
+      <Head />
+      <ManyRows />
+    </Container>
+  ),
+}
+
+export const StickyHeadingOnAncestorScroll: Story = {
+  render: () => (
+    <div style={{ maxHeight: 180, overflow: 'auto' }}>
+      <Container columns={SCROLL_COLUMNS} density="compact" layout="fixed" variant="card">
+        <Head />
+        <ManyRows />
+      </Container>
+    </div>
+  ),
+}
+
+const FEATURE_COLUMNS: Column[] = [
+  { label: 'Feature', width: 'fill' },
+  { align: 'right', ariaLabel: 'Enabled', width: 96 },
+]
+
+export const Wrapping: Story = {
+  render: () => (
+    <Container columns={FEATURE_COLUMNS} layout="fixed">
+      <Head />
+      <Body>
+        <Row>
+          <Cell wrap>
+            Long-form prose in a cell wraps onto as many lines as it needs, and the row grows with
+            it.
+          </Cell>
+          <Cell mono>on</Cell>
+        </Row>
+        <Row>
+          <Cell align="center" fullWidth>
+            A full-width cell spans every column, for a status or empty-state row.
+          </Cell>
+        </Row>
+      </Body>
+    </Container>
+  ),
+}
+
+// A caller renders its own heading row when a label cannot express it.
+export const CustomHeadings: Story = {
+  render: () => (
+    <Container columns={SCROLL_COLUMNS} density="compact">
+      <Head>
+        <Row>
+          <Heading>Name (custom)</Heading>
+          <Heading>Requests</Heading>
+        </Row>
+      </Head>
+      <ManyRows />
+    </Container>
+  ),
 }

@@ -5,10 +5,16 @@ import { breakpoints } from '@/styles/theme.css'
 const MOBILE_QUERY = `screen and (max-width: ${breakpoints.mobile})`
 
 export const page = style({
-  display: 'flex',
-  flexDirection: 'column',
   height: '100%',
   overflow: 'auto',
+})
+
+// The padding sits inside the scroll port rather than on it. A sticky heading
+// takes `top: 0` from the port's padding edge, so padding on the port itself pins
+// the heading that far down the pane and lets rows scroll through the gap.
+export const pageContent = style({
+  display: 'flex',
+  flexDirection: 'column',
   paddingBlock: '32px',
   paddingInline: '24px',
   '@media': {

@@ -3,7 +3,7 @@ import { useOutletContext, useParams, useRouteError } from 'react-router'
 import { ErrorBanner } from '@/components/error-banner'
 import type { ColumnDef, SchemaResponse, TableDef } from '@/lib/schema-explorer'
 import { Pill } from '@/wax/components/pill'
-import { Table } from '@/wax/components/table'
+import { Table } from '@/wax/components'
 import { Tooltip } from '@/wax/components/tooltip'
 import { Typography } from '@/wax/components/typography'
 
@@ -96,6 +96,13 @@ export function SchemaTableView({ columns }: { columns: ColumnDef[] }) {
   )
 }
 
+const SCHEMA_COLUMNS: Table.Column[] = [
+  { label: 'name', width: 'content' },
+  { label: 'type', width: 'content' },
+  { label: 'nullable', width: 'content' },
+  { label: 'description', width: 'content' },
+]
+
 export function SchemaColumnsTable({
   columns,
   emptyMessage,
@@ -112,39 +119,30 @@ export function SchemaColumnsTable({
   }
 
   return (
-    <Table.Wrapper style="compact">
-      <Table.Root>
-        <Table.Head>
-          <Table.Row>
-            <Table.HeaderCell>name</Table.HeaderCell>
-            <Table.HeaderCell>type</Table.HeaderCell>
-            <Table.HeaderCell>nullable</Table.HeaderCell>
-            <Table.HeaderCell>description</Table.HeaderCell>
+    <Table.Container columns={SCHEMA_COLUMNS} density="compact">
+      <Table.Head />
+      <Table.Body>
+        {columns.map((column) => (
+          <Table.Row className={column.virtual ? styles.virtualRow : undefined} key={column.name}>
+            <Table.Cell mono>
+              {column.name}
+              {column.filterable ? (
+                <Tooltip
+                  content="Required filter: queries for this table must include a filter on this field."
+                  side="top"
+                >
+                  <span aria-label="Required filter" className={styles.requiredStar} tabIndex={0}>
+                    *
+                  </span>
+                </Tooltip>
+              ) : null}
+            </Table.Cell>
+            <Table.Cell mono>{column.type}</Table.Cell>
+            <Table.Cell mono>{column.nullable ? 'yes' : 'no'}</Table.Cell>
+            <Table.Cell>{column.description ?? '-'}</Table.Cell>
           </Table.Row>
-        </Table.Head>
-        <Table.Body>
-          {columns.map((column) => (
-            <Table.Row className={column.virtual ? styles.virtualRow : undefined} key={column.name}>
-              <Table.Cell mono>
-                {column.name}
-                {column.filterable ? (
-                  <Tooltip
-                    content="Required filter: queries for this table must include a filter on this field."
-                    side="top"
-                  >
-                    <span aria-label="Required filter" className={styles.requiredStar} tabIndex={0}>
-                      *
-                    </span>
-                  </Tooltip>
-                ) : null}
-              </Table.Cell>
-              <Table.Cell mono>{column.type}</Table.Cell>
-              <Table.Cell mono>{column.nullable ? 'yes' : 'no'}</Table.Cell>
-              <Table.Cell>{column.description ?? '-'}</Table.Cell>
-            </Table.Row>
-          ))}
-        </Table.Body>
-      </Table.Root>
-    </Table.Wrapper>
+        ))}
+      </Table.Body>
+    </Table.Container>
   )
 }
