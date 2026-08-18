@@ -1,8 +1,12 @@
 //! Streamable HTTP transport for Coral's MCP surface.
 //!
-//! [`start_auth_disabled`] is intentionally limited to loopback. It shares an
-//! unauthenticated local [`coral_client::AppClient`] across sessions and is not
-//! a safe construction path for a long-running, non-loopback server.
+//! [`start_auth_disabled`] is limited to loopback by default. It shares an
+//! unauthenticated local [`coral_client::AppClient`] across sessions, so
+//! network reachability is its entire access control. The only way off
+//! loopback without authentication is
+//! [`McpHttpConfig::allow_unauthenticated_non_loopback`], the constructor
+//! that configuration deliberately routes operator consent through; any
+//! other non-loopback serving must use the authenticated construction path.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -326,10 +330,11 @@ impl SessionManager for AuthenticatedSessionManager {
     }
 }
 
-/// Configuration for the auth-disabled loopback MCP HTTP server.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Configuration for the auth-disabled MCP HTTP server.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct McpHttpConfig {
     bind_addr: SocketAddr,
+    extra_allowed_hosts: Vec<String>,
 }
 
 impl McpHttpConfig {
@@ -342,12 +347,56 @@ impl McpHttpConfig {
         if !is_loopback(bind_addr.ip()) {
             return Err(McpHttpError::NonLoopbackBind(bind_addr));
         }
-        Ok(Self { bind_addr })
+        Ok(Self {
+            bind_addr,
+            extra_allowed_hosts: Vec::new(),
+        })
+    }
+
+    /// Creates server configuration that may bind off loopback.
+    ///
+    /// Skipping the loopback check is this constructor's entire purpose, and
+    /// what its name exists to make callers say: every session still shares
+    /// one unauthenticated client, so whoever can reach the listener holds
+    /// the local user's full authority. Call this only to honor an explicit,
+    /// fail-closed operator opt-in (`allow_unauthenticated_non_loopback` in
+    /// the server configuration) — never as a convenience.
+    #[must_use]
+    pub fn allow_unauthenticated_non_loopback(bind_addr: SocketAddr) -> Self {
+        Self {
+            bind_addr,
+            extra_allowed_hosts: Vec::new(),
+        }
+    }
+
+    /// Accepts additional Host header values beside the loopback defaults.
+    ///
+    /// The Host allowlist is the DNS-rebinding defense, so entries must name
+    /// only hosts the operator expects legitimate clients to use — e.g. a
+    /// Docker Compose service name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`McpHttpError::InvalidAuthConfig`] when an entry is not a
+    /// valid header value.
+    pub fn with_allowed_hosts(
+        mut self,
+        hosts: impl IntoIterator<Item = String>,
+    ) -> Result<Self, McpHttpError> {
+        let hosts: Vec<String> = hosts.into_iter().collect();
+        if hosts
+            .iter()
+            .any(|host| HeaderValue::from_str(host).is_err())
+        {
+            return Err(McpHttpError::InvalidAuthConfig("invalid allowed Host"));
+        }
+        self.extra_allowed_hosts = hosts;
+        Ok(self)
     }
 
     /// Returns the configured bind address.
     #[must_use]
-    pub fn bind_addr(self) -> SocketAddr {
+    pub fn bind_addr(&self) -> SocketAddr {
         self.bind_addr
     }
 }
@@ -470,11 +519,12 @@ fn is_loopback(ip: IpAddr) -> bool {
 /// MCP HTTP startup or shutdown failure.
 #[derive(Debug, thiserror::Error)]
 pub enum McpHttpError {
-    /// Auth-disabled serving is restricted to the local machine.
+    /// Auth-disabled serving is restricted to the local machine unless the
+    /// operator consented via [`McpHttpConfig::allow_unauthenticated_non_loopback`].
     #[error("auth-disabled MCP HTTP bind must be loopback, got {0}")]
     NonLoopbackBind(SocketAddr),
-    /// Authenticated serving configuration is invalid.
-    #[error("invalid authenticated MCP HTTP configuration: {0}")]
+    /// MCP HTTP serving configuration is invalid.
+    #[error("invalid MCP HTTP configuration: {0}")]
     InvalidAuthConfig(&'static str),
     /// The TCP listener could not bind.
     #[error("failed to bind MCP HTTP server to {address}")]
@@ -566,11 +616,13 @@ fn join_server(
         .map_err(McpHttpError::Server)
 }
 
-/// Starts the loopback-only, authentication-disabled MCP HTTP server.
+/// Starts the authentication-disabled MCP HTTP server.
 ///
 /// The supplied unauthenticated client is shared across independent MCP
-/// sessions. Auth-required serving must use a distinct construction path that
-/// creates a bearer-bound client after validating each incoming session.
+/// sessions, so the listener is loopback-only unless the config was built
+/// with [`McpHttpConfig::allow_unauthenticated_non_loopback`]. Auth-required
+/// serving must use a distinct construction path that creates a bearer-bound
+/// client after validating each incoming session.
 ///
 /// # Errors
 ///
@@ -588,7 +640,13 @@ pub async fn start_auth_disabled(
         })?;
     let local_addr = listener.local_addr().map_err(McpHttpError::Server)?;
     let readiness = ReadinessProbe::from_app(app.clone());
-    let (router, state) = auth_disabled_router(app, options, readiness, local_addr.ip());
+    let (router, state) = auth_disabled_router(
+        app,
+        options,
+        readiness,
+        local_addr.ip(),
+        &config.extra_allowed_hosts,
+    );
     Ok(spawn_http_server(
         listener,
         local_addr,
@@ -677,10 +735,22 @@ fn auth_disabled_router(
     options: McpOptions,
     readiness: ReadinessProbe,
     advertised_ip: IpAddr,
+    extra_allowed_hosts: &[String],
 ) -> (Router, Arc<HttpState>) {
     let factory = CoralMcpServerFactory::new(app, options);
-    let config =
-        StreamableHttpServerConfig::default().with_allowed_hosts([advertised_ip.to_string()]);
+    // These are the same loopback names the authenticated listener accepts, so
+    // a client dialing `localhost` is not rejected for the bind being
+    // `127.0.0.1`. The allowlist stays exact beyond that baseline: it is the
+    // DNS-rebinding defense for originless requests, so only operator-listed
+    // hosts join it.
+    let mut allowed_hosts = vec![
+        "localhost".to_string(),
+        "127.0.0.1".to_string(),
+        "::1".to_string(),
+        advertised_ip.to_string(),
+    ];
+    allowed_hosts.extend(extra_allowed_hosts.iter().cloned());
+    let config = StreamableHttpServerConfig::default().with_allowed_hosts(allowed_hosts);
     let sessions = Arc::new(LocalSessionManager::default());
     let server = Arc::new(ServerState {
         sessions: SessionOwner::Local(sessions.clone()),

@@ -398,6 +398,7 @@ async fn auth_disabled_companion_serves_and_shuts_down() {
     .expect("start composite server");
     let grpc_addr = grpc_addr(&server);
     assert!(!server.grpc_authentication_enabled());
+    assert!(!server.mcp_http_authentication_enabled());
     let mcp_addr = server.mcp_http_addr().expect("MCP HTTP endpoint");
     assert!(server.oauth_addr().is_none());
     assert_catalog_tool(format!("http://{mcp_addr}/mcp"), None).await;
@@ -405,6 +406,57 @@ async fn auth_disabled_companion_serves_and_shuts_down() {
     let grpc_rebound = TcpListener::bind(grpc_addr).expect("gRPC port must be released");
     let mcp_rebound = TcpListener::bind(mcp_addr).expect("MCP port must be released");
     drop((grpc_rebound, mcp_rebound));
+}
+
+/// Configuration resolution already rejects an unconsented non-loopback bind,
+/// so no config file can reach this arm with one. This hand-built settings
+/// value pins the second fail-closed layer's wiring anyway: without consent,
+/// serve must route through the constructor that enforces loopback.
+#[tokio::test]
+async fn unconsented_non_loopback_settings_fail_closed_in_serve() {
+    let settings = McpHttpServeConfig::AuthDisabled {
+        bind_addr: SocketAddr::from((Ipv4Addr::new(192, 0, 2, 1), 0)),
+        expose_non_loopback: false,
+        allowed_hosts: Vec::new(),
+    };
+    let result = start_mcp_http(
+        Some(settings),
+        None,
+        SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
+        McpOptions::default(),
+    )
+    .await;
+    match result {
+        Err(McpStartError::Http(McpHttpError::NonLoopbackBind(_))) => {}
+        Err(other) => panic!("expected the loopback rejection, got: {other}"),
+        Ok(_) => panic!("an unconsented non-loopback bind must not start"),
+    }
+}
+
+#[tokio::test]
+async fn opted_in_auth_disabled_companion_serves_off_loopback() {
+    let temp = TempDir::new().expect("temp dir");
+    write_config(
+        &temp,
+        "[trace_history]\nenabled = false\n\n[server.mcp_http]\nenabled = true\n\
+         bind = '0.0.0.0:0'\nallow_unauthenticated_non_loopback = true\n",
+    );
+    let server = start(
+        ServerBuilder::configured_standalone_grpc()
+            .with_config_dir(temp.path())
+            .with_noop_feedback_uploads(),
+        McpOptions::default(),
+    )
+    .await
+    .expect("start composite server with the exposure opt-in");
+    assert!(!server.mcp_http_authentication_enabled());
+    let mcp_addr = server.mcp_http_addr().expect("MCP HTTP endpoint");
+    assert!(mcp_addr.ip().is_unspecified(), "bind must leave loopback");
+    // Dial through loopback: the point here is that the listener started and
+    // serves; reachability from other interfaces is the operator's affair.
+    let dial = SocketAddr::from((Ipv4Addr::LOCALHOST, mcp_addr.port()));
+    assert_catalog_tool(format!("http://{dial}/mcp"), None).await;
+    server.shutdown().await.expect("shutdown composite server");
 }
 
 #[tokio::test]
@@ -560,6 +612,7 @@ async fn session_authenticated_companion_gates_grpc_and_mcp() {
         oauth,
         mcp_http,
         grpc_authentication_enabled: _,
+        mcp_http_authentication_enabled: _,
     } = server;
     grpc.shutdown().await.expect("shutdown gRPC server");
     let unready = reqwest::get(format!("{base}/readyz"))

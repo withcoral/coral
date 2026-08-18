@@ -123,6 +123,7 @@ pub(crate) struct RunningServer {
     oauth: Option<RunningCoralAuthorizationServer>,
     mcp_http: Option<RunningMcpHttpServer>,
     grpc_authentication_enabled: bool,
+    mcp_http_authentication_enabled: bool,
 }
 
 impl RunningServer {
@@ -136,6 +137,10 @@ impl RunningServer {
 
     pub(crate) fn grpc_authentication_enabled(&self) -> bool {
         self.grpc_authentication_enabled
+    }
+
+    pub(crate) fn mcp_http_authentication_enabled(&self) -> bool {
+        self.mcp_http_authentication_enabled
     }
 
     #[cfg(test)]
@@ -155,6 +160,7 @@ impl RunningServer {
             oauth,
             mcp_http,
             grpc_authentication_enabled: _,
+            mcp_http_authentication_enabled: _,
         } = self;
         shutdown_components(grpc, oauth, mcp_http)
             .await
@@ -177,6 +183,8 @@ pub(crate) async fn start(
     let mcp_config = settings.mcp_http().cloned();
     let session_auth = settings.take_session_auth();
     let grpc_authentication_enabled = session_auth.is_some();
+    let mcp_http_authentication_enabled =
+        matches!(mcp_config, Some(McpHttpServeConfig::Authenticated { .. }));
     let (builder, mcp_principal_provider) =
         compose_session_policies(builder, session_auth.as_ref(), mcp_config.as_ref());
     // Built after the providers, which only borrow the settings; this consumes them.
@@ -219,6 +227,7 @@ pub(crate) async fn start(
         oauth,
         mcp_http,
         grpc_authentication_enabled,
+        mcp_http_authentication_enabled,
     })
 }
 
@@ -287,8 +296,20 @@ async fn start_mcp_http(
     };
     let grpc_endpoint_uri = loopback_grpc_endpoint_uri(grpc_addr)?;
     let server = match settings {
-        McpHttpServeConfig::AuthDisabled { bind_addr } => {
-            let config = McpHttpConfig::new(bind_addr)?;
+        McpHttpServeConfig::AuthDisabled {
+            bind_addr,
+            expose_non_loopback,
+            allowed_hosts,
+        } => {
+            // Configuration resolution only sets `expose_non_loopback` for a
+            // non-loopback bind the operator opted into, so a loopback bind
+            // keeps flowing through the constructor that enforces it.
+            let config = if expose_non_loopback {
+                McpHttpConfig::allow_unauthenticated_non_loopback(bind_addr)
+            } else {
+                McpHttpConfig::new(bind_addr)?
+            };
+            let config = config.with_allowed_hosts(allowed_hosts)?;
             let app = AppClient::connect(&grpc_endpoint_uri).await?;
             start_auth_disabled(config, app, mcp_options).await?
         }

@@ -202,6 +202,81 @@ fn auth_disabled_config_accepts_only_real_loopback_binds() {
     }
 }
 
+#[test]
+fn exposure_consent_constructor_accepts_non_loopback_binds() {
+    for ip in ["0.0.0.0", "192.0.2.1", "::"] {
+        let address = SocketAddr::new(ip.parse().expect("IP"), 8080);
+        let config = McpHttpConfig::allow_unauthenticated_non_loopback(address);
+        assert_eq!(config.bind_addr(), address);
+    }
+}
+
+#[test]
+fn allowed_hosts_must_be_valid_header_values() {
+    let config = McpHttpConfig::new(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8080))
+        .expect("loopback");
+    assert!(matches!(
+        config.with_allowed_hosts(["bad\nhost".to_string()]),
+        Err(McpHttpError::InvalidAuthConfig(_))
+    ));
+}
+
+#[tokio::test]
+async fn auth_disabled_router_accepts_loopback_names_and_configured_hosts() {
+    let (_temp, app_server, app) = local_app().await;
+    let (router, state) = auth_disabled_router(
+        app.clone(),
+        McpOptions::default(),
+        ReadinessProbe::from_app(app),
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        &["coral".to_string()],
+    );
+
+    // The baseline loopback names and the operator-listed host all initialize;
+    // anything else keeps hitting the DNS-rebinding 403.
+    for host in [
+        "localhost:14556",
+        "127.0.0.1:14556",
+        "[::1]:14556",
+        "coral:14556",
+    ] {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/mcp")
+                    .header(header::HOST, host)
+                    .header(header::ACCEPT, "application/json, text/event-stream")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(INITIALIZE))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK, "Host {host}");
+    }
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/mcp")
+                .header(header::HOST, "coral.example")
+                .header(header::ACCEPT, "application/json, text/event-stream")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(INITIALIZE))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    state.server.config.cancellation_token.cancel();
+    state.server.sessions.close_all().await;
+    app_server.shutdown().await.expect("shutdown app server");
+}
+
 #[tokio::test]
 async fn raw_routes_enforce_health_and_host_contracts() {
     let (_temp, app_server, app) = local_app().await;
@@ -211,6 +286,7 @@ async fn raw_routes_enforce_health_and_host_contracts() {
         McpOptions::default(),
         ReadinessProbe::from_app(app),
         advertised_ip,
+        &[],
     );
 
     for path in ["/livez", "/readyz"] {
@@ -289,6 +365,7 @@ async fn mcp_rejects_uninitialized_and_oversized_requests_without_leaking_sessio
         McpOptions::default(),
         ReadinessProbe::from_app(app),
         IpAddr::V4(Ipv4Addr::LOCALHOST),
+        &[],
     );
 
     for body in [

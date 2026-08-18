@@ -94,7 +94,42 @@ enabled = true
 bind = "127.0.0.1:14556"
 ```
 
-The unauthenticated MCP listener is restricted to loopback addresses.
+The unauthenticated MCP listener is restricted to loopback addresses by
+default. To serve it on other interfaces — necessary inside a Docker
+container, where a loopback bind is unreachable through published ports —
+opt in explicitly:
+
+```toml
+[server.mcp_http]
+enabled = true
+bind = "0.0.0.0:14556"
+allow_unauthenticated_non_loopback = true
+```
+
+<Warning>
+  The opted-in listener performs no authentication: anything that can reach the
+  port can read every configured source with the local user's full authority.
+  Keep it reachable only from trusted machines. In Docker, publish the port to
+  loopback only (`-p 127.0.0.1:14556:14556` — a bare `-p 14556:14556` exposes
+  it on every host interface), or keep it unpublished on an internal network.
+  For anything beyond a single trusted machine, configure Coral's
+  authenticated serving mode (the `[auth]` section) instead.
+</Warning>
+
+The listener accepts requests whose `Host` header names `localhost`,
+`127.0.0.1`, `::1`, or the bind IP; other values are rejected to block
+DNS-rebinding attacks. When clients reach the listener under another name —
+for example a Docker Compose service name or the machine's LAN address —
+list the extra names explicitly:
+
+```toml
+[server.mcp_http]
+allowed_hosts = ["coral"]
+```
+
+Both keys are rejected when `[auth]` is configured: remote binds then need
+no opt-in, and accepted hosts derive from `public_url` plus the loopback
+names.
 
 ## Runtime features
 
