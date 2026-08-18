@@ -3,8 +3,8 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 
 use coral_app::{
-    AcceptedAudience, AuthServerError, BearerAuthenticator, CoralAuthorizationServer,
-    McpHttpServeConfig, PrincipalKind, RunningCoralAuthorizationServer, SessionAuthSettings,
+    AuthServerError, BearerAuthenticator, CoralAuthorizationServer, McpHttpServeConfig,
+    RunningCoralAuthorizationServer, SessionAuthSettings,
 };
 use coral_client::{
     AppClient, BearerToken, ClientError,
@@ -252,10 +252,6 @@ pub(crate) async fn start(
 /// alongside the authorization server app startup builds from them. MCP HTTP is
 /// a public surface and admits only its own audience, which is what stops a
 /// token minted for a sibling surface being replayed at it.
-///
-/// MCP is also the surface no person reaches directly, so its audience is named
-/// as an agent one here rather than passed as a bare string: the identity in the
-/// token is the person's, but the actor presenting it is their client.
 fn compose_session_policies(
     builder: ServerBuilder,
     session_auth: Option<SessionAuthSettings>,
@@ -266,10 +262,8 @@ fn compose_session_policies(
     };
     let mcp_authenticator = match mcp_config {
         Some(McpHttpServeConfig::Authenticated { public_url, .. }) => {
-            Some(session_auth.principal_provider([AcceptedAudience::new(
-                public_url.clone(),
-                PrincipalKind::Agent,
-            )]) as Arc<dyn BearerAuthenticator>)
+            Some(session_auth.principal_provider([public_url.clone()])
+                as Arc<dyn BearerAuthenticator>)
         }
         _ => None,
     };

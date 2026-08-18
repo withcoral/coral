@@ -13,71 +13,35 @@ use crate::identity::{
 const AUTHORIZATION_METADATA: &str = "authorization";
 const UNAUTHENTICATED_MESSAGE: &str = "authentication required";
 
-/// One accepted audience and the actor kind its tokens authenticate.
-///
-/// The kind belongs to the surface, not to the person: the same human signs in
-/// once and their MCP client and their browser receive tokens for different
-/// audiences. A token minted for an agent-only surface therefore authenticates
-/// a [`PrincipalKind::Agent`] even though the `user_id` in it is that person's.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AcceptedAudience {
-    resource: String,
-    principal_kind: PrincipalKind,
-}
-
-impl AcceptedAudience {
-    /// Names `resource` as a surface whose tokens authenticate `principal_kind`.
-    #[must_use]
-    pub fn new(resource: impl Into<String>, principal_kind: PrincipalKind) -> Self {
-        Self {
-            resource: resource.into(),
-            principal_kind,
-        }
-    }
-
-    pub(crate) fn resource(&self) -> &str {
-        &self.resource
-    }
-}
-
-/// A bare resource identifier names a human-facing surface. An agent-only
-/// surface — MCP — has to be tagged with [`AcceptedAudience::new`], because
-/// nothing about the identifier itself says which kind reaches it.
-///
-/// This conversion keeps the common case short for the surfaces a person
-/// reaches directly. It is deliberately not the only way an instance names its
-/// audiences: `SessionAuthSettings::principal_provider` in
-/// `bootstrap::server_config` accepts anything convertible into one, and the
-/// audience derived from an authenticated `server.mcp_http` is tagged
-/// [`PrincipalKind::Agent`] there rather than being passed as a bare string.
-impl From<String> for AcceptedAudience {
-    fn from(resource: String) -> Self {
-        Self::new(resource, PrincipalKind::User)
-    }
-}
-
 /// Authenticates session tokens minted for an allowlist of accepted audiences.
 ///
 /// Whether the allowlist holds one entry or several depends on the surface, and
 /// the two cases are genuinely different policies. A public surface accepts only
 /// tokens minted for itself. The private gRPC API has no resource identity of its
 /// own — it is reached through the public surfaces that front it — so it accepts
-/// the audience of every one of them, and classifies each caller by the audience
-/// the presented token was actually minted for.
+/// the audience of every one of them.
+///
+/// The audience a token was minted for says which surface the request arrived
+/// through, and nothing more: one surface can carry either kind of actor, so it
+/// cannot settle what kind the caller is. Every session token this provider
+/// admits carries a person's `user_id` in `sub`, so that is the kind it
+/// authenticates. An agent is its own principal with its own identifier, and the
+/// provider that authenticates one supplies [`PrincipalKind::Agent`] from that
+/// identity rather than from the surface it arrived on.
 #[derive(Clone)]
 pub struct SessionPrincipalProvider {
     verifier: SessionTokenVerifier,
-    accepted_audiences: Arc<[AcceptedAudience]>,
+    accepted_audiences: Arc<[String]>,
 }
 
 impl SessionPrincipalProvider {
     pub(crate) fn new(
         verifier: SessionTokenVerifier,
-        accepted_audiences: impl IntoIterator<Item = impl Into<AcceptedAudience>>,
+        accepted_audiences: impl IntoIterator<Item = String>,
     ) -> Self {
         Self {
             verifier,
-            accepted_audiences: accepted_audiences.into_iter().map(Into::into).collect(),
+            accepted_audiences: accepted_audiences.into_iter().collect(),
         }
     }
 
@@ -88,25 +52,16 @@ impl SessionPrincipalProvider {
         let accepted = self
             .accepted_audiences
             .iter()
-            .map(|audience| audience.resource.as_str())
+            .map(String::as_str)
             .collect::<Vec<_>>();
         let session = self
             .verifier
             .validate_access_token(token, &accepted)
             .map_err(|_error| unauthenticated())?;
-        // The verifier already matched the audience against this same list, so
-        // the lookup is a classification rather than a second admission check.
-        // It still fails closed: an unclassifiable caller gets no principal.
-        let kind = self
-            .accepted_audiences
-            .iter()
-            .find(|audience| audience.resource == session.audience)
-            .ok_or_else(unauthenticated)?
-            .principal_kind;
         // The token's subject is Coral's internal `user_id`, so the request
         // principal is that id verbatim — no upstream issuer, subject, or
         // display name enters it, and nothing is derived from one.
-        Principal::parse(&session.user_id, kind).map_err(|_error| unauthenticated())
+        Principal::parse(&session.user_id, PrincipalKind::User).map_err(|_error| unauthenticated())
     }
 }
 
@@ -159,7 +114,7 @@ mod tests {
 
     use tonic::metadata::{MetadataMap, MetadataValue};
 
-    use super::{AcceptedAudience, SessionPrincipalProvider};
+    use super::SessionPrincipalProvider;
     use crate::auth::session::{SessionTokenIssuer, test_signing_key};
     use crate::identity::{BearerAuthenticator as _, PrincipalKind, PrincipalProvider as _};
 
@@ -209,25 +164,20 @@ mod tests {
         assert_eq!(principal.kind(), PrincipalKind::User);
     }
 
-    /// The audience the token was minted for decides the actor kind, so the
-    /// private API — which admits both — classifies each caller by their own
-    /// token even though one person is behind both of them.
+    /// The audience only says which surface a request arrived through, and one
+    /// surface can carry either kind of actor, so it settles nothing about the
+    /// caller. One person reaching the private API through two surfaces is the
+    /// same principal, with the same kind, on both.
     #[tokio::test]
-    async fn the_mcp_audience_authenticates_an_agent_and_human_surfaces_a_user() {
+    async fn the_surface_a_token_was_minted_for_does_not_change_the_actor_kind() {
         let signing_key = test_signing_key();
         let config = session(&signing_key);
         let private_api = SessionPrincipalProvider::new(
             config.verifier(),
-            [
-                AcceptedAudience::new(MCP_AUDIENCE, PrincipalKind::Agent),
-                AcceptedAudience::from(BFF_AUDIENCE.to_string()),
-            ],
+            [MCP_AUDIENCE.to_string(), BFF_AUDIENCE.to_string()],
         );
 
-        for (audience, expected) in [
-            (MCP_AUDIENCE, PrincipalKind::Agent),
-            (BFF_AUDIENCE, PrincipalKind::User),
-        ] {
+        for audience in [MCP_AUDIENCE, BFF_AUDIENCE] {
             let token = config
                 .issue_access_token(USER_ID, CLIENT_ID, audience)
                 .expect("session token")
@@ -239,8 +189,8 @@ mod tests {
             assert_eq!(principal.id().as_str(), USER_ID);
             assert_eq!(
                 principal.kind(),
-                expected,
-                "{audience} must authenticate a {expected:?}"
+                PrincipalKind::User,
+                "{audience} carries a person's user_id, so it authenticates a user"
             );
         }
     }

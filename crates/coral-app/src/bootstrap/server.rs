@@ -1381,10 +1381,12 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
         grpc.shutdown().await.expect("shutdown gRPC server");
     }
 
-    /// The MCP surface is agent-only, so the private API must classify a token
-    /// minted for it as an agent rather than as the person behind it.
+    /// The private API is reached through every public surface in front of it,
+    /// so a token minted for any of them authenticates. Which surface it came
+    /// through says nothing about the caller: the identity in the token is a
+    /// person's, so that is who authenticates.
     #[tokio::test]
-    async fn session_auth_admits_the_mcp_audience_as_an_agent() {
+    async fn session_auth_admits_a_token_minted_for_any_fronting_surface() {
         let temp = TempDir::new().expect("temp dir");
         let config_dir = temp.path().join("coral-config");
         configure_serve_session_auth(&config_dir);
@@ -1415,7 +1417,7 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
             .await
             .expect("token minted for the MCP surface");
         assert_eq!(principal.id().as_str(), user_id);
-        assert_eq!(principal.kind(), PrincipalKind::Agent);
+        assert_eq!(principal.kind(), PrincipalKind::User);
     }
 
     /// The built-in `coral:local` principal is what the default provider hands

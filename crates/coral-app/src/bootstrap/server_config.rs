@@ -12,9 +12,8 @@ use super::env::AppEnvironment;
 use super::{AppError, is_loopback_ip};
 use crate::auth::session::SessionTokenIssuer;
 use crate::auth::{AuthSettings, CoralAuthorizationServer, ResolvedAuthSettings};
-use crate::identity::PrincipalKind;
 use crate::oauth_resource::CanonicalOauthUrl;
-use crate::request_auth::{AcceptedAudience, SessionPrincipalProvider};
+use crate::request_auth::SessionPrincipalProvider;
 use crate::state::AppStateLayout;
 
 #[derive(Debug, Default, Deserialize)]
@@ -358,14 +357,13 @@ impl ServeSettings {
 pub struct SessionAuthSettings {
     pub(super) settings: ResolvedAuthSettings,
     pub(super) session_tokens: SessionTokenIssuer,
-    pub(super) public_audiences: Vec<AcceptedAudience>,
+    pub(super) public_audiences: Vec<String>,
 }
 
 impl SessionAuthSettings {
-    /// The instance's public surfaces, canonicalized, each carrying the actor
-    /// kind its tokens authenticate.
+    /// The instance's public surfaces, canonicalized.
     #[must_use]
-    pub fn public_audiences(&self) -> &[AcceptedAudience] {
+    pub fn public_audiences(&self) -> &[String] {
         &self.public_audiences
     }
 
@@ -373,12 +371,11 @@ impl SessionAuthSettings {
     ///
     /// The caller chooses the allowlist because it depends on the surface: a
     /// public surface admits only its own audience, while the private gRPC API
-    /// admits every audience that fronts it. Each entry carries the actor kind
-    /// its surface authenticates; a bare `String` names a human-facing one.
+    /// admits every audience that fronts it.
     #[must_use]
     pub fn principal_provider(
         &self,
-        audiences: impl IntoIterator<Item = impl Into<AcceptedAudience>>,
+        audiences: impl IntoIterator<Item = String>,
     ) -> Arc<SessionPrincipalProvider> {
         Arc::new(SessionPrincipalProvider::new(
             self.session_tokens.verifier(),
@@ -404,7 +401,7 @@ impl SessionAuthSettings {
                 .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
         for audience in &self.public_audiences {
             server = server
-                .with_authorization_resource(audience.resource())
+                .with_authorization_resource(audience)
                 .map_err(AppError::FailedPrecondition)?;
         }
         Ok(server)
@@ -422,34 +419,26 @@ impl SessionAuthSettings {
 /// identifier returned here. At least one is therefore required: with none, no
 /// token can be minted for anything and every login would fail at authorization.
 ///
-/// Each identifier also carries the actor kind its surface authenticates, which
-/// is knowable only here: MCP HTTP is the agent-only surface, while every
-/// explicitly allowed audience fronts a person. The private gRPC API classifies
-/// a caller by the audience their token was minted for, so a token that reached
-/// Coral through MCP stays an agent there too.
+/// An identifier names a surface, not an actor: either kind of caller can arrive
+/// through any of them, so nothing here says what kind a caller is. Actor kind
+/// comes from the authenticated principal instead.
 fn public_surface_audiences(
     mcp_http: Option<&McpHttpServeConfig>,
     allowed_audiences: &[String],
-) -> Result<Vec<AcceptedAudience>, AppError> {
+) -> Result<Vec<String>, AppError> {
     let mut audiences = match mcp_http {
-        Some(McpHttpServeConfig::Authenticated { public_url, .. }) => vec![AcceptedAudience::new(
-            public_url.clone(),
-            PrincipalKind::Agent,
-        )],
+        Some(McpHttpServeConfig::Authenticated { public_url, .. }) => vec![public_url.clone()],
         _ => Vec::new(),
     };
     for (index, configured) in allowed_audiences.iter().enumerate() {
         let label = format!("auth.allowed_audiences[{index}]");
         let audience = required_oauth_url(&label, Some(configured))?;
-        if audiences
-            .iter()
-            .any(|existing| existing.resource() == audience)
-        {
+        if audiences.iter().any(|existing| existing == &audience) {
             return Err(AppError::FailedPrecondition(format!(
                 "{label} duplicates another configured public surface audience"
             )));
         }
-        audiences.push(AcceptedAudience::from(audience));
+        audiences.push(audience);
     }
     if audiences.is_empty() {
         return Err(AppError::FailedPrecondition(
@@ -487,9 +476,8 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use super::{AcceptedAudience, LoadedServerConfig, McpHttpServeConfig, ServerSettings};
+    use super::{LoadedServerConfig, McpHttpServeConfig, ServerSettings};
     use crate::auth::session::test_signing_key;
-    use crate::identity::PrincipalKind;
     use crate::state::AppStateLayout;
 
     fn write_authenticated_config(layout: &AppStateLayout, mcp_http: &str) {
@@ -787,13 +775,13 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
         // providers and the authorization server from it is the composition
         // root's job, covered in `bootstrap::server`.
         let session_auth = companions.session_auth.expect("session auth");
-        // MCP fronts agents and the configured Reef audience fronts people, so
-        // the private API classifies each caller by the surface they came in on.
+        // Both surfaces front the private API, so both audiences are admitted;
+        // neither says anything about what kind of actor arrives through it.
         assert_eq!(
             session_auth.public_audiences,
             [
-                AcceptedAudience::new("https://mcp.example.test", PrincipalKind::Agent),
-                AcceptedAudience::new("https://coral-ui.example.test", PrincipalKind::User),
+                "https://mcp.example.test".to_string(),
+                "https://coral-ui.example.test".to_string(),
             ]
         );
     }
@@ -816,10 +804,7 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
         let session_auth = companions.session_auth.expect("session auth");
         assert_eq!(
             session_auth.public_audiences,
-            [AcceptedAudience::new(
-                "https://coral-ui.example.test",
-                PrincipalKind::User
-            )]
+            ["https://coral-ui.example.test".to_string()]
         );
 
         let authorization_server = session_auth

@@ -678,17 +678,16 @@ async fn session_authenticated_companion_gates_grpc_and_mcp() {
         .expect("shutdown OAuth server");
 }
 
-/// MCP is the one public surface no person reaches directly, so a token minted
-/// for it authenticates an agent even though the identity inside it is that
-/// person's.
+/// MCP HTTP is a public surface, so it admits only its own audience: a token
+/// minted for a sibling surface must not be replayable at it.
 ///
 /// This asserts on the authenticator the running MCP surface is handed, composed
 /// from an on-disk config by the same function `start` calls, and starts the
-/// server that composition configured. Building an `AcceptedAudience` here
-/// instead would only restate the mechanism: the regression this guards is
-/// `coral serve` passing MCP a bare audience string, which names it human-facing.
+/// server that composition configured. The regression it guards is `coral serve`
+/// handing MCP the private API's full audience allowlist, which would let a
+/// token minted for the BFF be presented here.
 #[tokio::test]
-async fn session_auth_composes_an_agent_audience_for_mcp() {
+async fn session_auth_composes_an_mcp_only_audience_for_mcp() {
     let temp = TempDir::new().expect("temp dir");
     let signing_key =
         EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
@@ -709,11 +708,10 @@ async fn session_auth_composes_an_agent_audience_for_mcp() {
         "app startup owns the authorization server this composition runs"
     );
 
-    let principal = mcp_authenticator
+    mcp_authenticator
         .principal_for_bearer(&session_token(signing_key.as_ref(), SESSION_RESOURCE))
         .await
         .expect("token minted for the MCP surface");
-    assert_eq!(principal.kind(), PrincipalKind::Agent);
     mcp_authenticator
         .principal_for_bearer(&session_token(signing_key.as_ref(), REEF_RESOURCE))
         .await

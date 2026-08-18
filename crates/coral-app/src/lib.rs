@@ -87,6 +87,6 @@ pub use oauth_resource::{CanonicalOauthUrl, OauthUrlError};
 pub use query::extensions::{
     AwsEngineExtensionsProvider, EngineExtensionsProvider, NoopEngineExtensionsProvider,
 };
-pub use request_auth::{AcceptedAudience, SessionPrincipalProvider};
+pub use request_auth::SessionPrincipalProvider;
 pub use telemetry::{RunContext, RunErrorTelemetry, run_with_context, shutdown_tracing};
 pub use workspaces::DEFAULT_WORKSPACE_ID;
