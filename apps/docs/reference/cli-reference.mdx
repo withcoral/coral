@@ -496,10 +496,11 @@ coral server
 
 The bind address comes from `[server].bind_addr`. Without a `[server]` section,
 Coral uses an ephemeral port on `127.0.0.1`. See
-[Configuration](/reference/configuration#server).
+[Configuration](/reference/configuration#server). To run the server as a
+container, see [Self-host Coral with Docker](/guides/self-host-with-docker).
 
 <Warning>
-  The native gRPC server does not authenticate clients. A non-loopback bind exposes Coral and its configured sources to any client that can reach the port. Protect access with a trusted network boundary or authenticating proxy.
+  Without `[auth]`, the native gRPC server does not authenticate clients: a non-loopback bind exposes Coral and its configured sources to any client that can reach the port. Protect access with a trusted network boundary or authenticating proxy. With `[auth]` configured, gRPC requests require a bearer access token — see [Authentication](/reference/configuration#authentication).
 </Warning>
 
 ## `coral mcp-stdio`

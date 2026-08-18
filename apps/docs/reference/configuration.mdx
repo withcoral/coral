@@ -81,9 +81,17 @@ The long-running `coral server` command reads its native gRPC bind address from
 bind_addr = "127.0.0.1:14555"
 ```
 
+`bind_addr` must be a literal IP address and port, not a hostname. Without a
+`[server]` section, Coral binds an ephemeral port on `127.0.0.1`.
+
 <Warning>
-  The native gRPC server does not authenticate clients. A non-loopback bind exposes Coral and its configured sources to any client that can reach the port. Protect access with a trusted network boundary or authenticating proxy.
+  Without `[auth]`, the native gRPC server does not authenticate clients: a non-loopback bind exposes Coral and its configured sources to any client that can reach the port. Protect access with a trusted network boundary or authenticating proxy. With `[auth]` configured, gRPC requests require a bearer access token; only the gRPC health service stays unauthenticated so orchestrator probes keep working.
 </Warning>
+
+Coral terminates no TLS on any listener. For any deployment that leaves
+loopback, run a TLS-terminating reverse proxy in front of Coral — see
+[Self-host Coral with Docker](/guides/self-host-with-docker) and
+[Deploy Coral on Kubernetes](/guides/deploy-on-kubernetes).
 
 MCP Streamable HTTP is disabled by default. Enable its companion listener under
 `[server.mcp_http]`:
@@ -94,7 +102,117 @@ enabled = true
 bind = "127.0.0.1:14556"
 ```
 
-The unauthenticated MCP listener is restricted to loopback addresses.
+| Key          | Type    | Default       | Description                                                                                          |
+| ------------ | ------- | ------------- | ---------------------------------------------------------------------------------------------------- |
+| `enabled`    | boolean | `false`       | Starts the MCP Streamable HTTP listener alongside the gRPC server.                                    |
+| `bind`       | string  | `127.0.0.1:0` | Listener address as a literal IP and port. Loopback-only unless `[auth]` is configured.               |
+| `public_url` | string  | unset         | Externally reachable identifier for the MCP endpoint. Required with `[auth]`, forbidden without it.   |
+
+The MCP endpoint is always served at the `/mcp` path on this listener, next to
+`GET /livez` and `GET /readyz` health routes. Without `[auth]`, the listener is
+restricted to loopback addresses and `public_url` must stay unset. With
+`[auth]`, `bind` may be any address and `public_url` is required; its value is
+the OAuth resource identifier and token audience for the endpoint, so keep its
+path consistent with the served endpoint, for example
+`https://mcp.example.com/mcp`.
+
+## Authentication
+
+Authentication is off by default: without an `[auth]` section, `coral server`
+runs in single-user local mode and does not authenticate callers. Adding
+`[auth]` turns the server into an OAuth 2.1 authorization server that
+delegates login to one upstream OIDC identity provider and mints its own
+bearer access tokens for Coral UI and MCP clients.
+
+```toml
+[auth]
+http_bind_addr = "0.0.0.0:8081"
+allowed_audiences = ["https://coral.example.com"]
+
+[auth.session]
+signing_key_env = "CORAL_SESSION_SIGNING_KEY"
+
+[auth.authorization_server]
+issuer = "https://auth.coral.example.com"
+
+[auth.provider]
+issuer = "https://your-idp.example.com"
+client_id = "coral"
+client_secret_env = "CORAL_OIDC_CLIENT_SECRET"
+redirect_uri = "https://auth.coral.example.com/auth/oidc/callback"
+```
+
+Configuring `[auth]` requires at least one public surface: an enabled
+`[server.mcp_http]` with `public_url`, a non-empty `allowed_audiences`, or
+both. Startup fails otherwise.
+
+<Warning>
+  Coral's authorization server, gRPC listener, and MCP listener all serve cleartext. Bearer tokens cross the wire unprotected unless a TLS-terminating reverse proxy fronts every non-loopback listener. The configured `issuer`, `public_url`, and audience URLs must match the external TLS hostnames exactly.
+</Warning>
+
+### `[auth]`
+
+| Key                 | Type             | Default       | Description                                                                                                  |
+| ------------------- | ---------------- | ------------- | ------------------------------------------------------------------------------------------------------------ |
+| `http_bind_addr`    | string           | `127.0.0.1:0` | Bind address for the authorization server's HTTP listener. May bind non-loopback for proxied deployments.     |
+| `allowed_audiences` | array of strings | `[]`          | Resource identifiers tokens may be minted for in addition to `[server.mcp_http].public_url`, such as a deployed Coral UI origin. |
+
+### `[auth.session]`
+
+The `[auth.session]` table must be present whenever `[auth]` is configured — a
+bare `[auth.session]` header is enough to accept every default.
+
+| Key                        | Type    | Default                     | Description                                                                                       |
+| -------------------------- | ------- | --------------------------- | ------------------------------------------------------------------------------------------------- |
+| `signing_key_env`          | string  | `CORAL_SESSION_SIGNING_KEY` | Environment variable holding the token signing key as base64-encoded PKCS#8 P-256 DER.            |
+| `signing_key_file`         | string  | unset                       | Path to the signing key as raw PKCS#8 P-256 DER bytes, resolved from the directory containing `config.toml`. Mutually exclusive with `signing_key_env`. |
+| `access_token_ttl_seconds` | integer | `2592000` (30 days)         | Lifetime of minted access tokens. Maximum one year. Clients log in again after expiry.            |
+
+Generate a signing key with:
+
+```shellscript
+openssl ecparam -genkey -name prime256v1 -noout \
+  | openssl pkcs8 -topk8 -nocrypt -outform DER \
+  | base64 | tr -d '\n'
+```
+
+Export the output as `CORAL_SESSION_SIGNING_KEY` (or store the DER bytes in a
+file referenced by `signing_key_file`). PEM keys are not accepted.
+
+### `[auth.authorization_server]`
+
+| Key      | Type   | Default  | Description                                                                                             |
+| -------- | ------ | -------- | ------------------------------------------------------------------------------------------------------- |
+| `issuer` | string | required | Coral's own OAuth issuer URL. HTTPS (or explicit-loopback HTTP), mounted at the origin root, no path.    |
+
+The authorization server serves `GET /.well-known/oauth-authorization-server`,
+`GET`/`POST /oauth/authorize`, `POST /oauth/token`, and
+`GET /auth/oidc/callback` on the `http_bind_addr` listener. The reverse proxy
+must forward the issuer origin to it at the root.
+
+### `[auth.provider]`
+
+The single upstream OIDC provider Coral delegates login to. Who can sign in is
+decided entirely by this provider and `required_claims`; Coral has no user
+management of its own.
+
+| Key                           | Type    | Default                          | Description                                                                                       |
+| ----------------------------- | ------- | -------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `issuer`                      | string  | required                         | Upstream OIDC issuer URL, matched byte-for-byte against its discovery document.                    |
+| `client_id`                   | string  | required                         | Client ID registered with the upstream provider.                                                   |
+| `client_secret`               | string  | —                                | Client secret value. Exactly one of `client_secret` or `client_secret_env` must be set.            |
+| `client_secret_env`           | string  | —                                | Environment variable holding the client secret.                                                    |
+| `redirect_uri`                | string  | required                         | Must be exactly `{authorization_server.issuer}/auth/oidc/callback`.                                |
+| `scopes`                      | array   | `["openid", "email", "profile"]` | Scopes requested from the provider. Must include `openid`.                                         |
+| `principal_claim`             | string  | `sub`                            | ID-token claim used to derive the stable Coral principal ID.                                       |
+| `display_name_claim`          | string  | `email`                          | ID-token claim shown as the signed-in user's display name.                                         |
+| `required_claims`             | table   | `{}`                             | Claim values the ID token must carry, e.g. `required_claims = { hd = "example.com" }`.             |
+| `auth_params`                 | table   | `{}`                             | Extra authorize-request parameters. Reserved OAuth parameters are rejected.                        |
+| `discovery_cache_ttl_seconds` | integer | `300`                            | How long provider discovery metadata is cached. Maximum one hour.                                  |
+
+<Note>
+  Every authenticated user has the same full access to the instance and all of its sources — there are no per-user roles. Restrict who can log in through the upstream provider and `required_claims`.
+</Note>
 
 ## Runtime features
 
