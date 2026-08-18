@@ -596,6 +596,7 @@ fn validate_value_source(
         ValueSourceSpec::Arg { key, .. }
         | ValueSourceSpec::ArgInt { key, .. }
         | ValueSourceSpec::ArgBool { key, .. }
+        | ValueSourceSpec::ArgStringArray { key, .. }
         | ValueSourceSpec::ArgSplit { key, .. }
         | ValueSourceSpec::ArgSplitInt { key, .. } => {
             return Err(ManifestError::validation(format!(
@@ -710,6 +711,7 @@ fn validate_arg_value_source(
         ValueSourceSpec::Arg { key, .. }
         | ValueSourceSpec::ArgInt { key, .. }
         | ValueSourceSpec::ArgBool { key, .. }
+        | ValueSourceSpec::ArgStringArray { key, .. }
         | ValueSourceSpec::ArgSplit { key, .. }
         | ValueSourceSpec::ArgSplitInt { key, .. }
             if !request_arg_names.contains(key.as_str()) =>
@@ -1159,6 +1161,7 @@ mod tests {
             request: RequestSpec {
                 path: ParsedTemplate::parse("/search").expect("request path"),
                 query: vec![QueryParamSpec {
+                    explode: true,
                     name: "q".to_string(),
                     value,
                 }],
@@ -1399,6 +1402,7 @@ mod tests {
     fn validate_http_table_rejects_unknown_filter_in_default_request_bindings() {
         let request = RequestSpec {
             query: vec![QueryParamSpec {
+                explode: true,
                 name: "user_id".to_string(),
                 value: ValueSourceSpec::Filter {
                     key: "missing".to_string(),
@@ -1424,6 +1428,7 @@ mod tests {
             when_filters: vec!["id".to_string()],
             request: RequestSpec {
                 query: vec![QueryParamSpec {
+                    explode: true,
                     name: "cursor".to_string(),
                     value: ValueSourceSpec::Filter {
                         key: "missing".to_string(),
@@ -1448,6 +1453,7 @@ mod tests {
     fn validate_http_table_rejects_unknown_filter_split_bindings() {
         let request = RequestSpec {
             query: vec![QueryParamSpec {
+                explode: true,
                 name: "team_key".to_string(),
                 value: ValueSourceSpec::FilterSplit {
                     key: "missing".to_string(),
@@ -1472,6 +1478,7 @@ mod tests {
     fn validate_http_table_rejects_unknown_filter_split_int_bindings() {
         let request = RequestSpec {
             query: vec![QueryParamSpec {
+                explode: true,
                 name: "issue_number".to_string(),
                 value: ValueSourceSpec::FilterSplitInt {
                     key: "missing".to_string(),
@@ -1522,6 +1529,7 @@ mod tests {
         for value in cases {
             let request = RequestSpec {
                 query: vec![QueryParamSpec {
+                    explode: true,
                     name: "value".to_string(),
                     value,
                 }],
@@ -1559,6 +1567,7 @@ mod tests {
     fn validate_http_table_rejects_function_arg_one_of_value_sources() {
         let request = RequestSpec {
             query: vec![QueryParamSpec {
+                explode: true,
                 name: "value".to_string(),
                 value: ValueSourceSpec::OneOf {
                     values: vec![
@@ -1589,6 +1598,7 @@ mod tests {
     fn validate_http_table_rejects_unknown_filter_one_of_value_sources() {
         let request = RequestSpec {
             query: vec![QueryParamSpec {
+                explode: true,
                 name: "value".to_string(),
                 value: ValueSourceSpec::OneOf {
                     values: vec![

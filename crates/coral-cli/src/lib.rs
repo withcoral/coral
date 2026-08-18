@@ -214,7 +214,7 @@ struct SearchClearArgs {
     /// Search data scope to clear
     #[arg(long, value_enum)]
     scope: SearchClearScope,
-    /// Installed source owner whose runtime schemas and surfaces should be cleared
+    /// Installed source whose local search state is cleared
     #[arg(long, value_name = "SOURCE")]
     source: Option<String>,
     /// Set when an explicit global `--workspace NAME` selector is present.
@@ -764,7 +764,10 @@ async fn run_server(
     if let Some(address) = server.mcp_http_addr() {
         let mcp_endpoint = format!("http://{address}/mcp");
         if server_requires_security_warning(address) {
-            eprintln!("{}", mcp_http_exposure_warning(&mcp_endpoint));
+            eprintln!(
+                "{}",
+                mcp_http_exposure_warning(&mcp_endpoint, server.mcp_http_authentication_enabled())
+            );
         }
         println!("Coral MCP HTTP server listening on {mcp_endpoint}");
     }
@@ -802,20 +805,21 @@ fn server_endpoint_address(endpoint: &str) -> Option<SocketAddr> {
 /// Reports whether the operator should be told the listener at `address` is exposed.
 ///
 /// Binding off loopback is the operator's decision: nothing gates the gRPC
-/// listener, and configuration lets MCP HTTP bind remotely once `[auth]` is set.
-/// So this line on stderr is the only notice they get — which is why it fires
-/// whether or not authentication is configured. Coral terminates no TLS: without
+/// listener, and configuration lets MCP HTTP bind remotely once `[auth]` is set
+/// or the operator opts in with `allow_unauthenticated_non_loopback`. So this
+/// line on stderr is the only notice they get — which is why it fires whether
+/// or not authentication is configured. Coral terminates no TLS: without
 /// `[auth]` anyone reachable gets in, and with it the bearer tokens cross the wire
-/// in cleartext. Both served surfaces run this check because both carry those
-/// tokens; [`grpc_exposure_warning`] and [`mcp_http_exposure_warning`] word each
+/// in cleartext. Both served surfaces run this check because both can end up
+/// exposed; [`grpc_exposure_warning`] and [`mcp_http_exposure_warning`] word each
 /// listener's case.
 ///
 /// Loopback is judged by coral-app's [`is_loopback_ip`] rather than by a rule
 /// restated here, IPv4-mapped IPv6 included. That is the same helper the
-/// auth-disabled `server.mcp_http.bind` guard rejects a remote bind with — an
-/// authenticated listener may bind remotely, which is precisely the case this
-/// warning exists to report — so a bind bootstrap accepts as local is never
-/// reported as exposed, and the notice cannot drift out of step with the
+/// auth-disabled `server.mcp_http.bind` guard rejects an unconsented remote
+/// bind with — the remote binds that survive resolution are precisely the ones
+/// this warning exists to report — so a bind bootstrap accepts as local is
+/// never reported as exposed, and the notice cannot drift out of step with the
 /// rejection.
 fn server_requires_security_warning(address: SocketAddr) -> bool {
     !is_loopback_ip(address.ip())
@@ -836,15 +840,28 @@ fn grpc_exposure_warning(endpoint: &str, authentication_enabled: bool) -> String
 
 /// The exposure warning for a non-loopback MCP HTTP listener.
 ///
-/// This one has no unauthenticated case to word: configuration rejects a
-/// non-loopback `server.mcp_http.bind` unless `[auth]` is configured, so a
-/// listener that reaches this warning is one clients hand bearer tokens to.
-fn mcp_http_exposure_warning(endpoint: &str) -> String {
-    format!(
-        "Warning: the MCP HTTP server at {endpoint} is not bound to loopback and it serves \
-         cleartext HTTP, so the bearer tokens clients send can be read off the wire. Terminate \
-         TLS in front of Coral and keep untrusted clients off the listener."
-    )
+/// The unauthenticated case exists only through the explicit
+/// `server.mcp_http.allow_unauthenticated_non_loopback` opt-in, so the warning
+/// restates what the operator signed up for rather than asking them to stop:
+/// with no credential check on the listener, reachability is the whole access
+/// control, and narrowing reachability (a loopback-only Docker port publish,
+/// a trusted network boundary) is the only thing left to get right.
+fn mcp_http_exposure_warning(endpoint: &str, authentication_enabled: bool) -> String {
+    if authentication_enabled {
+        format!(
+            "Warning: the MCP HTTP server at {endpoint} is not bound to loopback and it serves \
+             cleartext HTTP, so the bearer tokens clients send can be read off the wire. Terminate \
+             TLS in front of Coral and keep untrusted clients off the listener."
+        )
+    } else {
+        format!(
+            "Warning: the MCP HTTP server at {endpoint} is not bound to loopback and does not \
+             authenticate clients, so anything that can reach it can access Coral and its \
+             configured sources with the local user's full authority. Keep the listener \
+             reachable only from trusted machines — in Docker, publish the port to loopback \
+             only (-p 127.0.0.1:PORT:PORT) — or configure [auth] instead."
+        )
+    }
 }
 
 #[cfg(unix)]
@@ -1854,12 +1871,15 @@ mod tests {
         );
         let authenticated = grpc_exposure_warning("http://0.0.0.0:14555", true);
         assert!(authenticated.contains("bearer tokens"), "{authenticated}");
-        // A remote MCP bind is always the authenticated variant, so its warning
-        // has one case: cleartext HTTP carrying those tokens.
-        let mcp = mcp_http_exposure_warning("http://0.0.0.0:14556/mcp");
+        let mcp = mcp_http_exposure_warning("http://0.0.0.0:14556/mcp", true);
         assert!(mcp.contains("MCP HTTP server"), "{mcp}");
         assert!(mcp.contains("cleartext"), "{mcp}");
         assert!(mcp.contains("bearer tokens"), "{mcp}");
+        // The opted-in unauthenticated bind warns about open access, not tokens
+        // no client sends.
+        let mcp = mcp_http_exposure_warning("http://0.0.0.0:14556/mcp", false);
+        assert!(mcp.contains("does not authenticate clients"), "{mcp}");
+        assert!(mcp.contains("127.0.0.1:PORT"), "{mcp}");
     }
 
     #[cfg(feature = "embedded-ui")]

@@ -79,6 +79,77 @@ impl HttpClientMetadataResolver {
             fetcher,
         })
     }
+
+    /// Rejects a trusted client ID no request through this resolver could name.
+    ///
+    /// Config validation holds `trusted_clients` entries to canonical URL
+    /// spellings, but whether an entry can ever equal an accepted client ID
+    /// also depends on the served topology — the issuer's scheme and the
+    /// loopback IDs derived from registered resources — which only exists once
+    /// this resolver does. An entry that fails here would otherwise pass
+    /// startup and then never match, and its runtime symptom — the approval
+    /// page still appearing — points nowhere near the config that caused it.
+    ///
+    /// The rejection is rendered because an operator reading a startup failure
+    /// is the one caller entitled to know which rule the entry broke.
+    pub(super) fn check_trusted_client_id(&self, client_id: &str) -> Result<(), String> {
+        self.accepted_metadata_url(client_id)
+            .map(|_metadata_url| ())
+            .map_err(|rejection| rejection.to_string())
+    }
+
+    /// Resolves `client_id` to the URL this server would fetch its metadata
+    /// from, rejecting an ID it does not accept.
+    ///
+    /// This is the single definition of an acceptable client ID. The request
+    /// path and the `trusted_clients` startup check both go through it, so the
+    /// URL policy and the canonical-identity rule cannot come to disagree
+    /// about which IDs this server honors — the divergence that otherwise lets
+    /// a configured trusted client pass startup and then silently never match.
+    fn accepted_metadata_url(
+        &self,
+        client_id: &str,
+    ) -> Result<EndpointUrl<ClientMetadata>, ClientIdRejection> {
+        let metadata_url = EndpointUrl::<ClientMetadata>::parse(
+            client_id,
+            &self.issuer,
+            &self.allowed_loopback_client_ids,
+        )
+        .map_err(ClientIdRejection::Policy)?;
+        // A client ID must already be the URL Coral fetches, character for
+        // character. Parsing normalizes — it strips tab, CR, and LF from
+        // anywhere in the input, trims surrounding spaces, lowercases the host,
+        // and drops a default port — so without this check one document is
+        // reachable under unboundedly many client IDs that all fetch it. The ID
+        // is the client's identity: it is echoed back by the document, recorded
+        // on an approval, and compared at the token endpoint, so it has to be a
+        // single canonical string rather than a family of equivalent ones.
+        if metadata_url.as_url().as_str() != client_id {
+            return Err(ClientIdRejection::NotCanonical);
+        }
+        Ok(metadata_url)
+    }
+}
+
+/// Why a client ID is not one this server accepts.
+///
+/// # Trust
+///
+/// Only the startup check for `trusted_clients` renders this. [`resolve`]
+/// maps every variant onto the opaque [`ClientMetadataError::InvalidClientId`]
+/// deliberately: the party that supplied the ID learns that it was rejected
+/// and nothing about which rule rejected it. Letting this detail out of
+/// `resolve` to improve its errors would hand a caller a description of the
+/// policy its input just failed, so these variants exist for an operator
+/// reading a startup error and for no one else.
+///
+/// [`resolve`]: HttpClientMetadataResolver::resolve
+#[derive(Debug, Error)]
+enum ClientIdRejection {
+    #[error("{0}")]
+    Policy(OutboundUrlPolicyError),
+    #[error("client ID must be the canonical form of the URL it names")]
+    NotCanonical,
 }
 
 fn derive_allowed_loopback_client_ids(
@@ -109,23 +180,11 @@ impl ClientMetadataResolver for HttpClientMetadataResolver {
         &self,
         client_id: &str,
     ) -> Result<OAuthClientRegistration, ClientMetadataError> {
-        let metadata_url = EndpointUrl::<ClientMetadata>::parse(
-            client_id,
-            &self.issuer,
-            &self.allowed_loopback_client_ids,
-        )
-        .map_err(|_error| ClientMetadataError::InvalidClientId)?;
-        // A client ID must already be the URL Coral fetches, character for
-        // character. Parsing normalizes — it strips tab, CR, and LF from
-        // anywhere in the input, trims surrounding spaces, lowercases the host,
-        // and drops a default port — so without this check one document is
-        // reachable under unboundedly many client IDs that all fetch it. The ID
-        // is the client's identity: it is echoed back by the document, recorded
-        // on an approval, and compared at the token endpoint, so it has to be a
-        // single canonical string rather than a family of equivalent ones.
-        if metadata_url.as_url().as_str() != client_id {
-            return Err(ClientMetadataError::InvalidClientId);
-        }
+        // Every rejection collapses into one opaque error, by design: see
+        // `ClientIdRejection`.
+        let metadata_url = self
+            .accepted_metadata_url(client_id)
+            .map_err(|_rejection| ClientMetadataError::InvalidClientId)?;
         let response = self.fetcher.fetch(&metadata_url).await?;
         registration_from_response(client_id, response).await
     }

@@ -4,8 +4,8 @@ use serde_json::Value;
 
 use crate::v4::ir::{IrExecutionAttachment, IrInputLocation, IrOperation};
 use crate::{
-    ColumnSpec, ExprSpec, FilterMode, FilterSpec, FunctionArgBinding, ParsedTemplate, RequestSpec,
-    Result, TableFunctionArgSpec,
+    CollectionEncoding, ColumnSpec, ExprSpec, FilterMode, FilterSpec, FunctionArgBinding,
+    ParsedTemplate, RequestSpec, Result, TableFunctionArgSpec,
 };
 
 use super::model::{Projection, SqlInputExposure};
@@ -95,7 +95,10 @@ pub fn projection_column_specs(projection: &Projection) -> Vec<ColumnSpec> {
                 expr: Some(ExprSpec::FromFilter {
                     key: input.name.clone(),
                 }),
-                do_not_index: false,
+                // A list-valued filter's virtual column only ever echoes the
+                // JSON array the caller passed in. Indexing those observed
+                // values offers nothing to search and dilutes the index.
+                do_not_index: input.collection_encoding.is_some(),
             }),
     );
     columns
@@ -131,25 +134,36 @@ pub fn request_spec_for_projection(
         .iter()
         .filter(|input| input.source_location == IrInputLocation::Query)
         .filter_map(|input| {
-            let value = match input.sql_exposure {
-                SqlInputExposure::Filter => crate::ValueSourceSpec::Filter {
+            let value = match (input.sql_exposure, input.collection_encoding) {
+                (SqlInputExposure::Filter, None) => crate::ValueSourceSpec::Filter {
                     key: input.name.clone(),
                     default: input
                         .default_value
                         .as_ref()
                         .map(|value| Value::String(value.clone())),
                 },
-                SqlInputExposure::FunctionArg => crate::ValueSourceSpec::Arg {
+                (SqlInputExposure::FunctionArg, None) => crate::ValueSourceSpec::Arg {
                     key: input.name.clone(),
                     default: input
                         .default_value
                         .as_ref()
                         .map(|value| Value::String(value.clone())),
                 },
-                SqlInputExposure::Internal => return None,
+                (SqlInputExposure::Filter, Some(_)) => crate::ValueSourceSpec::FilterStringArray {
+                    key: input.name.clone(),
+                    default: collection_default(input.default_value.as_deref()),
+                },
+                (SqlInputExposure::FunctionArg, Some(_)) => {
+                    crate::ValueSourceSpec::ArgStringArray {
+                        key: input.name.clone(),
+                        default: collection_default(input.default_value.as_deref()),
+                    }
+                }
+                (SqlInputExposure::Internal, _) => return None,
             };
             Some(crate::QueryParamSpec {
                 name: input.wire_name.clone(),
+                explode: !matches!(input.collection_encoding, Some(CollectionEncoding::Comma)),
                 value,
             })
         })
@@ -161,6 +175,24 @@ pub fn request_spec_for_projection(
         body: crate::BodySpec::default(),
         headers: Vec::new(),
     })
+}
+
+/// Reads a list-valued input's schema default, which the importer stringified
+/// as JSON array text.
+///
+/// A default that is not a JSON array of scalars is dropped rather than
+/// coerced: sending a malformed default on every unfiltered query is worse than
+/// sending none.
+fn collection_default(default_value: Option<&str>) -> Option<Vec<String>> {
+    let parsed = serde_json::from_str::<Vec<Value>>(default_value?).ok()?;
+    parsed
+        .iter()
+        .map(|item| match item {
+            Value::String(item) => Some(item.clone()),
+            Value::Null | Value::Array(_) | Value::Object(_) => None,
+            item => Some(item.to_string()),
+        })
+        .collect()
 }
 
 fn path_template_token(namespace: &str, key: &str, default: Option<&str>) -> String {

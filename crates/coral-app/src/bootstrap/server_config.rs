@@ -182,6 +182,8 @@ struct RawMcpHttpSettings {
     enabled: bool,
     bind: SocketAddr,
     public_url: Option<String>,
+    allow_unauthenticated_non_loopback: bool,
+    allowed_hosts: Vec<String>,
 }
 
 impl Default for RawMcpHttpSettings {
@@ -190,6 +192,8 @@ impl Default for RawMcpHttpSettings {
             enabled: false,
             bind: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
             public_url: None,
+            allow_unauthenticated_non_loopback: false,
+            allowed_hosts: Vec::new(),
         }
     }
 }
@@ -204,9 +208,13 @@ impl RawMcpHttpSettings {
         }
 
         let Some(authorization_server) = authorization_server else {
-            if !is_loopback_ip(self.bind.ip()) {
+            let expose_non_loopback = !is_loopback_ip(self.bind.ip());
+            if expose_non_loopback && !self.allow_unauthenticated_non_loopback {
                 return Err(AppError::FailedPrecondition(
-                    "auth-disabled server.mcp_http.bind must be loopback".to_string(),
+                    "auth-disabled server.mcp_http.bind must be loopback; set \
+                     server.mcp_http.allow_unauthenticated_non_loopback = true to expose \
+                     the unauthenticated listener deliberately"
+                        .to_string(),
                 ));
             }
             if self.public_url.is_some() {
@@ -216,9 +224,25 @@ impl RawMcpHttpSettings {
             }
             return Ok(Some(McpHttpServeConfig::AuthDisabled {
                 bind_addr: self.bind,
+                expose_non_loopback,
+                allowed_hosts: validated_mcp_allowed_hosts(&self.allowed_hosts)?,
             }));
         };
 
+        if self.allow_unauthenticated_non_loopback {
+            return Err(AppError::FailedPrecondition(
+                "server.mcp_http.allow_unauthenticated_non_loopback has no effect with [auth] \
+                 configured; remove it"
+                    .to_string(),
+            ));
+        }
+        if !self.allowed_hosts.is_empty() {
+            return Err(AppError::FailedPrecondition(
+                "server.mcp_http.allowed_hosts is only supported without [auth]; the \
+                 authenticated listener derives its accepted hosts from public_url"
+                    .to_string(),
+            ));
+        }
         let public_url =
             required_oauth_url("server.mcp_http.public_url", self.public_url.as_deref())?;
         let authorization_server = authorization_server.to_string();
@@ -231,13 +255,45 @@ impl RawMcpHttpSettings {
     }
 }
 
+/// Validates operator-supplied MCP HTTP Host allowlist entries.
+///
+/// Entries are Host header values (`host` or `host:port`), so a scheme, path,
+/// userinfo, or embedded whitespace means the operator pasted a URL — reject it
+/// with the field name rather than letting the listener 403 the requests the
+/// entry was meant to admit.
+fn validated_mcp_allowed_hosts(hosts: &[String]) -> Result<Vec<String>, AppError> {
+    for host in hosts {
+        let valid = !host.is_empty()
+            && !host.contains(|character: char| {
+                character.is_whitespace() || matches!(character, '/' | '@')
+            });
+        if !valid {
+            return Err(AppError::FailedPrecondition(format!(
+                "server.mcp_http.allowed_hosts entry {host:?} is not a bare host or host:port"
+            )));
+        }
+    }
+    Ok(hosts.to_vec())
+}
+
 /// Resolved MCP HTTP configuration prepared independently from gRPC startup.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum McpHttpServeConfig {
-    /// Loopback-only MCP HTTP backed by an unauthenticated local client.
+    /// MCP HTTP backed by an unauthenticated local client.
+    ///
+    /// Loopback-only unless the operator opted into deliberate exposure with
+    /// `server.mcp_http.allow_unauthenticated_non_loopback`.
     AuthDisabled {
         /// Address for the MCP HTTP listener.
         bind_addr: SocketAddr,
+        /// Operator consent to serve unauthenticated off loopback.
+        ///
+        /// Set only when `bind_addr` is non-loopback and the config opted in;
+        /// a loopback bind never carries consent it does not need.
+        expose_non_loopback: bool,
+        /// Extra Host header values accepted beside the loopback defaults,
+        /// e.g. a Docker Compose service name.
+        allowed_hosts: Vec<String>,
     },
     /// Session-authenticated MCP HTTP backed by per-session clients.
     Authenticated {
@@ -255,7 +311,9 @@ impl McpHttpServeConfig {
     #[must_use]
     pub fn bind_addr(&self) -> SocketAddr {
         match self {
-            Self::AuthDisabled { bind_addr } | Self::Authenticated { bind_addr, .. } => *bind_addr,
+            Self::AuthDisabled { bind_addr, .. } | Self::Authenticated { bind_addr, .. } => {
+                *bind_addr
+            }
         }
     }
 
@@ -513,12 +571,17 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
         )
         .expect("config file");
 
-        let Some(McpHttpServeConfig::AuthDisabled { bind_addr }) =
-            McpHttpServeConfig::load(&layout).expect("MCP HTTP config")
+        let Some(McpHttpServeConfig::AuthDisabled {
+            bind_addr,
+            expose_non_loopback,
+            allowed_hosts,
+        }) = McpHttpServeConfig::load(&layout).expect("MCP HTTP config")
         else {
             panic!("loopback MCP must be explicitly auth-disabled");
         };
         assert_eq!(bind_addr, SocketAddr::from((Ipv6Addr::LOCALHOST, 14556)));
+        assert!(!expose_non_loopback);
+        assert!(allowed_hosts.is_empty());
     }
 
     #[test]
@@ -536,6 +599,131 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
             McpHttpServeConfig::load(&layout).expect_err("public auth-disabled bind must fail");
 
         assert!(error.to_string().contains("must be loopback"));
+        // The rejection is also where the operator learns the deliberate way out.
+        assert!(
+            error
+                .to_string()
+                .contains("allow_unauthenticated_non_loopback")
+        );
+    }
+
+    #[test]
+    fn opted_in_auth_disabled_mcp_http_accepts_a_public_bind() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("config"))).expect("layout");
+        layout.ensure().expect("config dir");
+        fs::write(
+            layout.config_file(),
+            "[server.mcp_http]\nenabled = true\nbind = '0.0.0.0:14556'\n\
+             allow_unauthenticated_non_loopback = true\nallowed_hosts = ['coral']\n",
+        )
+        .expect("config file");
+
+        let Some(McpHttpServeConfig::AuthDisabled {
+            bind_addr,
+            expose_non_loopback,
+            allowed_hosts,
+        }) = McpHttpServeConfig::load(&layout).expect("MCP HTTP config")
+        else {
+            panic!("opted-in non-loopback MCP must stay auth-disabled");
+        };
+        assert_eq!(bind_addr, SocketAddr::from((Ipv4Addr::UNSPECIFIED, 14556)));
+        assert!(expose_non_loopback);
+        assert_eq!(allowed_hosts, vec!["coral".to_string()]);
+    }
+
+    #[test]
+    fn opt_in_on_a_loopback_bind_carries_no_exposure() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("config"))).expect("layout");
+        layout.ensure().expect("config dir");
+        fs::write(
+            layout.config_file(),
+            "[server.mcp_http]\nenabled = true\nbind = '127.0.0.1:14556'\n\
+             allow_unauthenticated_non_loopback = true\n",
+        )
+        .expect("config file");
+
+        let Some(McpHttpServeConfig::AuthDisabled {
+            expose_non_loopback,
+            ..
+        }) = McpHttpServeConfig::load(&layout).expect("MCP HTTP config")
+        else {
+            panic!("loopback MCP must resolve auth-disabled");
+        };
+        assert!(
+            !expose_non_loopback,
+            "a loopback bind must not carry consent it does not need"
+        );
+    }
+
+    #[test]
+    fn opted_in_auth_disabled_mcp_http_still_rejects_public_url() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("config"))).expect("layout");
+        layout.ensure().expect("config dir");
+        fs::write(
+            layout.config_file(),
+            "[server.mcp_http]\nenabled = true\nbind = '0.0.0.0:14556'\n\
+             allow_unauthenticated_non_loopback = true\n\
+             public_url = 'https://coral.example/mcp'\n",
+        )
+        .expect("config file");
+
+        let error = McpHttpServeConfig::load(&layout)
+            .expect_err("exposure consent must not unlock OAuth metadata");
+        assert!(error.to_string().contains("OAuth metadata"));
+    }
+
+    #[test]
+    fn mcp_http_exposure_opt_in_conflicts_with_auth() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("config"))).expect("layout");
+        write_authenticated_config(
+            &layout,
+            "[server.mcp_http]\nenabled = true\nbind = '0.0.0.0:14556'\n\
+             public_url = 'https://coral.example/mcp'\n\
+             allow_unauthenticated_non_loopback = true\n",
+        );
+
+        let error = McpHttpServeConfig::load(&layout)
+            .expect_err("a stale unauthenticated opt-in must not survive enabling [auth]");
+        assert!(
+            error
+                .to_string()
+                .contains("allow_unauthenticated_non_loopback has no effect")
+        );
+    }
+
+    #[test]
+    fn mcp_http_allowed_hosts_conflict_with_auth() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("config"))).expect("layout");
+        write_authenticated_config(
+            &layout,
+            "[server.mcp_http]\nenabled = true\nbind = '0.0.0.0:14556'\n\
+             public_url = 'https://coral.example/mcp'\nallowed_hosts = ['coral']\n",
+        );
+
+        let error = McpHttpServeConfig::load(&layout)
+            .expect_err("authenticated hosts derive from public_url");
+        assert!(error.to_string().contains("allowed_hosts"));
+    }
+
+    #[test]
+    fn mcp_http_allowed_hosts_reject_pasted_urls() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("config"))).expect("layout");
+        layout.ensure().expect("config dir");
+        fs::write(
+            layout.config_file(),
+            "[server.mcp_http]\nenabled = true\nallowed_hosts = ['http://coral:14556']\n",
+        )
+        .expect("config file");
+
+        let error =
+            McpHttpServeConfig::load(&layout).expect_err("a URL is not a Host header value");
+        assert!(error.to_string().contains("not a bare host"));
     }
 
     #[test]

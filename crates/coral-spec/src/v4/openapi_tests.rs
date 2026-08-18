@@ -3,7 +3,7 @@ use std::fmt::Write as _;
 
 use super::*;
 use crate::{
-    ManifestDataType, PaginationMode, PaginationSpec, SourceTableFunctionKind,
+    CollectionEncoding, ManifestDataType, PaginationMode, PaginationSpec, SourceTableFunctionKind,
     parse_source_manifest_yaml,
 };
 
@@ -2972,14 +2972,12 @@ components:
 /// The fixture above declares only `$top` and `$skip`, which is not what a real
 /// Graph collection looks like: they also declare a boolean `$count`.
 ///
-/// `find_numeric_query_input` picks the first candidate-named input and only
-/// then filters by type, so `$count` is chosen and rejected and `$top` is never
-/// reached — page-size detection finds nothing. Pinning it here so the
-/// follow-up that fixes the ordering has an assertion to flip; pagination
-/// itself is unaffected, since the next link carries the paging state and Coral
-/// just accepts Graph's server-side default page size.
+/// `$count` is a boolean that shares a candidate name with the page size, and
+/// it sorts ahead of the integer `$top`. `find_numeric_query_input` filters by
+/// type as it searches rather than after choosing, so the boolean is skipped
+/// and `$top` is still found.
 #[test]
-fn importer_misses_the_page_size_a_boolean_count_parameter_masks() {
+fn importer_finds_the_page_size_a_boolean_count_parameter_shares_a_name_with() {
     let manifest = parse_source_manifest_yaml(
         r"
 name: graph
@@ -3040,16 +3038,17 @@ components:
     )
     .expect("import");
 
-    // The collection still reads as a paginated row table — only the page size
-    // is lost.
+    // The collection reads as a paginated row table with its page size intact.
     assert_eq!(imported_row_path(&ir, "me_listchats"), ["value"]);
     let pagination = imported_rest_pagination(&ir, "me_listchats");
     assert_eq!(pagination.mode, PaginationMode::NextUrlBody);
     assert_eq!(pagination.next_url_path, ["@odata.nextLink"]);
-    assert!(
-        pagination.page_size.is_none(),
-        "boolean $count sorts ahead of $top and masks it; flip this when \
-         find_numeric_query_input filters by type before choosing"
+    assert_eq!(
+        pagination
+            .page_size
+            .as_ref()
+            .and_then(|page_size| page_size.query_param.as_deref()),
+        Some("$top")
     );
 }
 
@@ -4064,5 +4063,301 @@ paths:
             .map(|field| field.name.as_str())
             .collect::<Vec<_>>(),
         ["id", "name"]
+    );
+}
+
+fn import_parameter_surface(paths: &str) -> ImportedSurface {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: params
+dsl_version: 4
+surface:
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = &v4.surface;
+    import_openapi_surface(
+        v4,
+        surface,
+        format!("openapi: 3.0.3\npaths:\n{paths}").as_bytes(),
+    )
+    .expect("surface imports")
+}
+
+fn imported_input<'a>(ir: &'a ImportedSurface, name: &str) -> &'a IrOperationInput {
+    ir.operations
+        .first()
+        .expect("operation")
+        .inputs
+        .iter()
+        .find(|input| input.name == name)
+        .unwrap_or_else(|| panic!("input '{name}' was not imported"))
+}
+
+fn operation_diagnostics(ir: &ImportedSurface) -> Vec<String> {
+    ir.operations
+        .first()
+        .expect("operation")
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.message.clone())
+        .collect()
+}
+
+#[test]
+fn importer_reads_array_query_parameters_as_json_collections() {
+    let ir = import_parameter_surface(
+        r"
+  /items:
+    get:
+      operationId: items/list
+      parameters:
+        - name: exclude
+          in: query
+          schema: {type: array, items: {type: string}}
+        - name: $select
+          in: query
+          style: form
+          explode: false
+          schema: {uniqueItems: true, type: array, items: {type: string}}
+        - name: creator_id
+          in: query
+          schema: {type: array, items: {type: integer}}
+      responses:
+        '200': {content: {application/json: {schema: {type: array, items: {type: object}}}}}
+",
+    );
+
+    // An absent `explode` takes OpenAPI's `form`-style default of true.
+    let exclude = imported_input(&ir, "exclude");
+    assert_eq!(exclude.data_type, IrScalarType::Json);
+    assert_eq!(
+        exclude.collection_encoding,
+        Some(CollectionEncoding::Repeated)
+    );
+
+    let select = imported_input(&ir, "$select");
+    assert_eq!(select.data_type, IrScalarType::Json);
+    assert_eq!(select.collection_encoding, Some(CollectionEncoding::Comma));
+
+    // The item type only gates acceptance; every list lowers to `Json`.
+    let creator_id = imported_input(&ir, "creator_id");
+    assert_eq!(creator_id.data_type, IrScalarType::Json);
+    assert_eq!(
+        creator_id.collection_encoding,
+        Some(CollectionEncoding::Repeated)
+    );
+
+    assert!(
+        operation_diagnostics(&ir).is_empty(),
+        "{:?}",
+        operation_diagnostics(&ir)
+    );
+}
+
+#[test]
+fn importer_leaves_scalar_parameters_without_a_collection_encoding() {
+    let ir = import_parameter_surface(
+        r"
+  /items:
+    get:
+      operationId: items/list
+      parameters:
+        - {name: state, in: query, schema: {type: string}}
+      responses:
+        '200': {content: {application/json: {schema: {type: array, items: {type: object}}}}}
+",
+    );
+
+    let state = imported_input(&ir, "state");
+    assert_eq!(state.data_type, IrScalarType::String);
+    assert_eq!(state.collection_encoding, None);
+}
+
+#[test]
+fn importer_rejects_array_parameters_it_cannot_serialize() {
+    let cases = [
+        (
+            "objects",
+            "{type: array, items: {type: object}}",
+            "unsupported array item type 'object'",
+            None,
+        ),
+        (
+            "nested",
+            "{type: array, items: {type: array, items: {type: string}}}",
+            "unsupported array item type 'array'",
+            None,
+        ),
+        (
+            "itemless",
+            "{type: array}",
+            "array without a declared item type",
+            None,
+        ),
+        (
+            "spaced",
+            "{type: array, items: {type: string}}",
+            "unsupported serialization style 'spaceDelimited'",
+            Some("spaceDelimited"),
+        ),
+        // A present-but-wrongly-typed `style` must not read as absent, which
+        // would silently reinterpret it as the default `form`.
+        (
+            "numeric_style",
+            "{type: array, items: {type: string}}",
+            "unsupported serialization style",
+            Some("123"),
+        ),
+    ];
+
+    for (name, schema, expected, style) in cases {
+        let style = style.map_or_else(String::new, |style| format!("          style: {style}\n"));
+        let ir = import_parameter_surface(&format!(
+            r"
+  /items:
+    get:
+      operationId: items/list
+      parameters:
+        - name: {name}
+          in: query
+{style}          schema: {schema}
+      responses:
+        '200': {{content: {{application/json: {{schema: {{type: array, items: {{type: object}}}}}}}}}}
+"
+        ));
+
+        let operation = ir.operations.first().expect("operation");
+        assert!(
+            !operation.inputs.iter().any(|input| input.name == name),
+            "'{name}' should not be imported"
+        );
+        let diagnostics = operation_diagnostics(&ir);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.contains(expected)),
+            "'{name}' expected a diagnostic containing '{expected}', got {diagnostics:?}"
+        );
+    }
+}
+
+#[test]
+fn importer_rejects_array_parameters_outside_the_query() {
+    let ir = import_parameter_surface(
+        r"
+  /items/{ids}:
+    get:
+      operationId: items/list
+      parameters:
+        - name: ids
+          in: path
+          required: true
+          schema: {type: array, items: {type: string}}
+      responses:
+        '200': {content: {application/json: {schema: {type: array, items: {type: object}}}}}
+",
+    );
+
+    let diagnostics = operation_diagnostics(&ir);
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.contains("is an array in Path position")),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn array_query_parameters_never_shadow_numeric_pagination_parameters() {
+    // `limit` matches a page-size candidate token by name but is list-valued,
+    // so detection must keep looking and settle on `per_page`.
+    let ir = import_parameter_surface(
+        r"
+  /items:
+    get:
+      operationId: items/list
+      parameters:
+        - {name: limit, in: query, schema: {type: array, items: {type: string}}}
+        - {name: per_page, in: query, schema: {type: integer, default: 30}}
+        - {name: page, in: query, schema: {type: integer, default: 1}}
+      responses:
+        '200': {content: {application/json: {schema: {type: array, items: {type: object}}}}}
+",
+    );
+
+    let pagination = imported_rest_pagination(&ir, "items_list");
+    assert_eq!(pagination.mode, PaginationMode::Page);
+    assert_eq!(
+        pagination
+            .page_size
+            .as_ref()
+            .and_then(|page_size| page_size.query_param.as_deref()),
+        Some("per_page")
+    );
+}
+
+#[test]
+fn array_query_parameters_are_never_lookup_keys() {
+    // `owner` is outside the presentation lexicon, so only its list-valued
+    // shape keeps it from anchoring a dependent join.
+    let ir = import_parameter_surface(
+        r"
+  /tokens:
+    get:
+      operationId: tokens/list
+      parameters:
+        - {name: owner, in: query, schema: {type: array, items: {type: string}}}
+        - {name: repository, in: query, schema: {type: string}}
+      responses:
+        '200': {content: {application/json: {schema: {type: array, items: {type: object}}}}}
+",
+    );
+
+    let OperationMetadata::Rest { lookup_keys, .. } = ir
+        .operation_metadata
+        .operations
+        .get("tokens_list")
+        .expect("operation metadata")
+    else {
+        panic!("expected REST metadata");
+    };
+    assert_eq!(lookup_keys, &["repository".to_string()]);
+}
+
+#[test]
+fn importer_rejects_array_parameters_with_a_non_boolean_explode() {
+    // Defaulting a malformed `explode` would pick a wire encoding the
+    // descriptor never asked for.
+    let ir = import_parameter_surface(
+        r#"
+  /items:
+    get:
+      operationId: items/list
+      parameters:
+        - name: exclude
+          in: query
+          explode: "false"
+          schema: {type: array, items: {type: string}}
+      responses:
+        '200': {content: {application/json: {schema: {type: array, items: {type: object}}}}}
+"#,
+    );
+
+    let operation = ir.operations.first().expect("operation");
+    assert!(
+        !operation.inputs.iter().any(|input| input.name == "exclude"),
+        "a malformed explode should not be imported"
+    );
+    let diagnostics = operation_diagnostics(&ir);
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.contains("non-boolean explode")),
+        "{diagnostics:?}"
     );
 }

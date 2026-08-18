@@ -102,19 +102,56 @@ enabled = true
 bind = "127.0.0.1:14556"
 ```
 
-| Key          | Type    | Default       | Description                                                                                          |
-| ------------ | ------- | ------------- | ---------------------------------------------------------------------------------------------------- |
-| `enabled`    | boolean | `false`       | Starts the MCP Streamable HTTP listener alongside the gRPC server.                                    |
-| `bind`       | string  | `127.0.0.1:0` | Listener address as a literal IP and port. Loopback-only unless `[auth]` is configured.               |
-| `public_url` | string  | unset         | Externally reachable identifier for the MCP endpoint. Required with `[auth]`, forbidden without it.   |
+| Key                                  | Type             | Default       | Description                                                                                          |
+| ------------------------------------ | ---------------- | ------------- | ---------------------------------------------------------------------------------------------------- |
+| `enabled`                            | boolean          | `false`       | Starts the MCP Streamable HTTP listener alongside the gRPC server.                                    |
+| `bind`                               | string           | `127.0.0.1:0` | Listener address as a literal IP and port. Loopback-only without `[auth]` unless opted in below.      |
+| `public_url`                         | string           | unset         | Externally reachable identifier for the MCP endpoint. Required with `[auth]`, forbidden without it.   |
+| `allow_unauthenticated_non_loopback` | boolean          | `false`       | Opt-in that lets the unauthenticated listener bind non-loopback addresses. Rejected with `[auth]`.    |
+| `allowed_hosts`                      | array of strings | `[]`          | Extra `Host` header names the unauthenticated listener accepts. Rejected with `[auth]`.               |
 
 The MCP endpoint is always served at the `/mcp` path on this listener, next to
-`GET /livez` and `GET /readyz` health routes. Without `[auth]`, the listener is
-restricted to loopback addresses and `public_url` must stay unset. With
-`[auth]`, `bind` may be any address and `public_url` is required; its value is
-the OAuth resource identifier and token audience for the endpoint, so keep its
-path consistent with the served endpoint, for example
-`https://mcp.example.com/mcp`.
+`GET /livez` and `GET /readyz` health routes.
+
+Without `[auth]`, the listener is unauthenticated, `public_url` must stay
+unset, and the listener is restricted to loopback addresses by default. To
+serve it on other interfaces — necessary inside a Docker container, where a
+loopback bind is unreachable through published ports — opt in explicitly:
+
+```toml
+[server.mcp_http]
+enabled = true
+bind = "0.0.0.0:14556"
+allow_unauthenticated_non_loopback = true
+```
+
+<Warning>
+  The opted-in listener performs no authentication: anything that can reach the
+  port can read every configured source with the local user's full authority.
+  Keep it reachable only from trusted machines. In Docker, publish the port to
+  loopback only (`-p 127.0.0.1:14556:14556` — a bare `-p 14556:14556` exposes
+  it on every host interface), or keep it unpublished on an internal network.
+  For anything beyond a single trusted machine, configure Coral's
+  authenticated serving mode (the `[auth]` section) instead.
+</Warning>
+
+The listener accepts requests whose `Host` header names `localhost`,
+`127.0.0.1`, `::1`, or the bind IP; other values are rejected to block
+DNS-rebinding attacks. When clients reach the listener under another name —
+for example a Docker Compose service name or the machine's LAN address —
+list the extra names explicitly:
+
+```toml
+[server.mcp_http]
+allowed_hosts = ["coral"]
+```
+
+With `[auth]`, `bind` may be any address and `public_url` is required; its
+value is the OAuth resource identifier and token audience for the endpoint, so
+keep its path consistent with the served endpoint, for example
+`https://mcp.example.com/mcp`. Both opt-in keys are rejected when `[auth]` is
+configured: remote binds then need no opt-in, and accepted hosts derive from
+`public_url`, the bind IP, plus the loopback names.
 
 ## Authentication
 
@@ -181,9 +218,20 @@ file referenced by `signing_key_file`). PEM keys are not accepted.
 
 ### `[auth.authorization_server]`
 
-| Key      | Type   | Default  | Description                                                                                             |
-| -------- | ------ | -------- | ------------------------------------------------------------------------------------------------------- |
-| `issuer` | string | required | Coral's own OAuth issuer URL. HTTPS (or explicit-loopback HTTP), mounted at the origin root, no path.    |
+| Key               | Type             | Default  | Description                                                                                             |
+| ----------------- | ---------------- | -------- | ------------------------------------------------------------------------------------------------------- |
+| `issuer`          | string           | required | Coral's own OAuth issuer URL. HTTPS (or explicit-loopback HTTP), mounted at the origin root, no path.    |
+| `trusted_clients` | array of strings | `[]`     | Client-ID URLs whose sign-ins skip Coral's approval page. Entries are validated at startup and matched exactly against the request's client ID. |
+
+Every sign-in normally pauses on Coral's approval page before redirecting to
+the identity provider. List a first-party client you operate yourself — for
+example a deployed Coral UI's `<public URL>/.well-known/oauth-client` — in
+`trusted_clients` to send its sign-ins straight to the provider. Trust removes
+only the approval step; client metadata resolution, redirect-URI registration,
+PKCE, and resource validation are unchanged. Avoid listing clients with
+loopback redirect URIs: any local process can claim a loopback port, and the
+approval page is the only step that shows which port receives the
+authorization code.
 
 The authorization server serves `GET /.well-known/oauth-authorization-server`,
 `GET`/`POST /oauth/authorize`, `POST /oauth/token`, and
@@ -213,6 +261,8 @@ management of its own.
 <Note>
   Every authenticated user has the same full access to the instance and all of its sources — there are no per-user roles. Restrict who can log in through the upstream provider and `required_claims`.
 </Note>
+||||||| 7867397a4
+The unauthenticated MCP listener is restricted to loopback addresses.
 
 ## Runtime features
 

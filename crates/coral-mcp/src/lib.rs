@@ -9,7 +9,8 @@
 //!   existing [`coral_client::AppClient`], typically bootstrapped by
 //!   `coral-cli`.
 //! - [`http::start_auth_disabled`] serves the same MCP surface over
-//!   loopback-only Streamable HTTP.
+//!   Streamable HTTP, loopback-only unless configuration routed operator
+//!   consent through [`http::McpHttpConfig::allow_unauthenticated_non_loopback`].
 //!
 //! The exposed MCP surface is intentionally small:
 //!

@@ -66,6 +66,10 @@ impl McpImporter<'_> {
                     location: IrInputLocation::ToolArg,
                     required: shape.required.contains(name.as_str()),
                     data_type,
+                    // MCP tool arguments are sent as JSON, so a list-valued
+                    // argument needs no wire encoding: `Json` already carries
+                    // the array through to the tool call intact.
+                    collection_encoding: None,
                     default_value: property.get("default").map(json_schema_default_to_string),
                     description: schema_description(property),
                 }

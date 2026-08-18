@@ -214,7 +214,7 @@ mod tests {
     use tokio::time::timeout;
     use tracing::Instrument as _;
 
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::BTreeSet;
 
     use coral_engine::{CatalogInfo, TableInfo};
 
@@ -664,7 +664,6 @@ mod tests {
                 table_functions: Vec::new(),
             },
             failed_source_names: BTreeSet::new(),
-            runtime_schema_owners: BTreeMap::new(),
         }
     }
 

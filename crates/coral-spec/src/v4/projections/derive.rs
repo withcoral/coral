@@ -122,9 +122,10 @@ fn generate_projection(
                 source_location: input.location,
                 wire_name: input.name.clone(),
                 required: projection_input_required(input),
-                data_type: input.data_type.lower(),
+                data_type: projection_input_data_type(input),
+                collection_encoding: input.collection_encoding,
                 default_value: input.default_value.clone(),
-                description: input.description.clone(),
+                description: projection_input_description(input),
                 lookup_key: rest_filter_is_lookup_key(plan, operation, input, exposure),
             }
         })
@@ -233,6 +234,44 @@ fn generated_projection_name(operation: &IrOperation, is_search: bool) -> String
         normalize_identifier(&operation.id, "projection")
     } else {
         name
+    }
+}
+
+/// The SQL type a caller binds this input as.
+///
+/// List-valued inputs are `Utf8`, not `Json`, even though their conventional
+/// value is JSON array text. `Json` would be a worse description of the same
+/// bytes and a strictly worse contract: `bind_function_arg` requires a `Json`
+/// argument's literal to parse as JSON *before* the value source ever runs, so
+/// `sort => 'created'` would fail at plan time with "expected Json: expected
+/// value at line 1 column 1". `Utf8` accepts both the array form and a bare
+/// single value, uniformly for filters and arguments. `ManifestDataType::Json`
+/// advertises a column worth reading with `json_get`; these are values a caller
+/// writes.
+fn projection_input_data_type(input: &IrOperationInput) -> ManifestDataType {
+    if input.collection_encoding.is_some() {
+        ManifestDataType::Utf8
+    } else {
+        input.data_type.lower()
+    }
+}
+
+/// The description SQL callers see, with the JSON-array convention spelled out
+/// for list-valued inputs.
+///
+/// This reaches filter inputs through `coral.filters` and the virtual column in
+/// `coral.columns`. Function arguments carry no description at all, so the
+/// projection guide states the convention for them.
+fn projection_input_description(input: &IrOperationInput) -> String {
+    if input.collection_encoding.is_none() {
+        return input.description.clone();
+    }
+    let description = input.description.trim_end();
+    let hint = "Takes a JSON array of values, for example '[\"a\",\"b\"]'.";
+    if description.is_empty() {
+        hint.to_string()
+    } else {
+        format!("{description}\n\n{hint}")
     }
 }
 

@@ -3,12 +3,12 @@
     reason = "DSL v4 contracts are field-heavy artifact models documented in the PRD."
 )]
 
-pub const V4_ARTIFACT_SCHEMA_VERSION: u32 = 7;
+pub const V4_ARTIFACT_SCHEMA_VERSION: u32 = 8;
 pub const SURFACE_IMPORTER_VERSION: &str = "surface-import-v4";
-pub const OPENAPI_IMPORTER_VERSION: &str = "openapi-v11";
+pub const OPENAPI_IMPORTER_VERSION: &str = "openapi-v12";
 pub const MCP_IMPORTER_VERSION: &str = "mcp-tools-v5";
 pub const OPERATION_METADATA_GENERATOR_VERSION: &str = "operation-metadata-v4";
-pub const PROJECTION_GENERATOR_VERSION: &str = "derive-read-v13";
+pub const PROJECTION_GENERATOR_VERSION: &str = "derive-read-v14";
 
 mod artifacts;
 mod diagnostics;

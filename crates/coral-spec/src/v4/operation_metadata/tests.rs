@@ -90,6 +90,7 @@ fn plan_rejects_rest_operation_with_tool_arg_input() {
             location: IrInputLocation::ToolArg,
             required: false,
             data_type: IrScalarType::String,
+            collection_encoding: None,
             default_value: None,
             description: String::new(),
         });
@@ -144,6 +145,7 @@ fn plan_rejects_mcp_offset_pagination_starting_past_first_page() {
             location: IrInputLocation::ToolArg,
             required: false,
             data_type: IrScalarType::Integer,
+            collection_encoding: None,
             default_value: None,
             description: String::new(),
         });

@@ -1,7 +1,5 @@
 //! Catalog search snapshot built from app-owned engine catalog views.
 
-use std::collections::BTreeMap;
-
 use coral_engine::{
     CatalogInfo, ColumnInfo, TableFunctionArgumentInfo, TableFunctionInfo,
     TableFunctionResultColumnInfo, TableInfo,
@@ -14,7 +12,13 @@ use crate::search::catalog::sqlite_index::{
 };
 use crate::search::result::{FieldRole, SearchSurfaceKind};
 
-const CATALOG_SEARCH_SNAPSHOT_VERSION: &str = "catalog-search-snapshot-v4";
+// Bumped when the ownership projection was removed: every stored fingerprint
+// must mismatch the recomputed one, so each workspace refreshes exactly once
+// before its catalog documents are trusted again. `-v4` already shipped on main
+// for grouped catalog surfaces (#2041), so this removal needs its own value --
+// reusing `-v4` would leave already-refreshed workspaces matching, and the
+// refresh this migration depends on would silently never run.
+const CATALOG_SEARCH_SNAPSHOT_VERSION: &str = "catalog-search-snapshot-v5";
 
 #[derive(Debug, Clone)]
 pub(crate) struct CatalogSearchSnapshot {
@@ -23,40 +27,18 @@ pub(crate) struct CatalogSearchSnapshot {
 }
 
 impl CatalogSearchSnapshot {
-    #[cfg(test)]
     pub(crate) fn from_catalog(catalog: &CatalogInfo) -> Self {
-        Self::from_catalog_with_runtime_schema_owners(catalog, &BTreeMap::new())
-    }
-
-    pub(crate) fn from_catalog_with_runtime_schema_owners(
-        catalog: &CatalogInfo,
-        runtime_schema_owners: &BTreeMap<String, String>,
-    ) -> Self {
-        let runtime_schema_owners =
-            normalized_runtime_schema_owners(catalog, runtime_schema_owners);
         let mut documents = catalog_documents(catalog);
-        for document in &mut documents {
-            document.owner_source_name = runtime_schema_owners
-                .get(&document.source_name)
-                .cloned()
-                .unwrap_or_else(|| document.source_name.clone());
-        }
         documents.sort_by(|left, right| left.doc_id.cmp(&right.doc_id));
-        let fingerprint = catalog_snapshot_fingerprint(catalog, &runtime_schema_owners);
+        let fingerprint = catalog_snapshot_fingerprint(catalog);
         Self {
             documents,
             fingerprint,
         }
     }
 
-    pub(crate) fn fingerprint_catalog_with_runtime_schema_owners(
-        catalog: &CatalogInfo,
-        runtime_schema_owners: &BTreeMap<String, String>,
-    ) -> String {
-        catalog_snapshot_fingerprint(
-            catalog,
-            &normalized_runtime_schema_owners(catalog, runtime_schema_owners),
-        )
+    pub(crate) fn fingerprint_catalog(catalog: &CatalogInfo) -> String {
+        catalog_snapshot_fingerprint(catalog)
     }
 
     pub(crate) fn index_snapshot(&self) -> CatalogIndexSnapshot {
@@ -75,7 +57,6 @@ impl CatalogSearchSnapshot {
 pub(crate) struct CatalogDocument {
     pub(crate) doc_id: String,
     pub(crate) doc_kind: CatalogDocumentKind,
-    pub(crate) owner_source_name: String,
     pub(crate) source_name: String,
     pub(crate) catalog_name: Option<String>,
     pub(crate) surface_kind: Option<SearchSurfaceKind>,
@@ -100,7 +81,6 @@ impl CatalogDocument {
         CatalogIndexDocument {
             doc_id: self.doc_id.clone(),
             doc_kind: catalog_document_kind_to_index(self.doc_kind),
-            owner_source_name: self.owner_source_name.clone(),
             source_name: self.source_name.clone(),
             catalog_name: self.catalog_name.clone(),
             surface_kind: surface_kind_as_str(self.surface_kind).to_string(),
@@ -170,29 +150,6 @@ fn catalog_documents(catalog: &CatalogInfo) -> Vec<CatalogDocument> {
     documents
 }
 
-fn normalized_runtime_schema_owners(
-    catalog: &CatalogInfo,
-    runtime_schema_owners: &BTreeMap<String, String>,
-) -> BTreeMap<String, String> {
-    let mut normalized = runtime_schema_owners.clone();
-    for source_name in catalog
-        .tables
-        .iter()
-        .map(|table| table.schema_name.as_str())
-        .chain(
-            catalog
-                .table_functions
-                .iter()
-                .map(|function| function.schema_name.as_str()),
-        )
-    {
-        normalized
-            .entry(source_name.to_string())
-            .or_insert_with(|| source_name.to_string());
-    }
-    normalized
-}
-
 fn table_documents(table: &TableInfo, documents: &mut Vec<CatalogDocument>) {
     let qualified_name = qualified_name(
         table.catalog_name.as_deref(),
@@ -202,7 +159,6 @@ fn table_documents(table: &TableInfo, documents: &mut Vec<CatalogDocument>) {
     documents.push(CatalogDocument {
         doc_id: format!("catalog:table:{qualified_name}"),
         doc_kind: CatalogDocumentKind::CatalogTable,
-        owner_source_name: table.schema_name.clone(),
         source_name: table.schema_name.clone(),
         catalog_name: table.catalog_name.clone(),
         surface_kind: Some(SearchSurfaceKind::Table),
@@ -243,7 +199,6 @@ fn table_column_document(
     documents.push(CatalogDocument {
         doc_id: format!("column:table:{surface_qualified_name}:{}", column.name),
         doc_kind: CatalogDocumentKind::ColumnHint,
-        owner_source_name: table.schema_name.clone(),
         source_name: table.schema_name.clone(),
         catalog_name: table.catalog_name.clone(),
         surface_kind: Some(SearchSurfaceKind::Table),
@@ -276,7 +231,6 @@ fn table_required_filter_document(
     documents.push(CatalogDocument {
         doc_id: format!("filter:table:{surface_qualified_name}:{filter}"),
         doc_kind: CatalogDocumentKind::ColumnHint,
-        owner_source_name: table.schema_name.clone(),
         source_name: table.schema_name.clone(),
         catalog_name: table.catalog_name.clone(),
         surface_kind: Some(SearchSurfaceKind::Table),
@@ -317,7 +271,6 @@ fn table_function_documents(function: &TableFunctionInfo, documents: &mut Vec<Ca
     documents.push(CatalogDocument {
         doc_id: format!("catalog:function:{qualified_name}"),
         doc_kind: CatalogDocumentKind::CatalogTableFunction,
-        owner_source_name: function.schema_name.clone(),
         source_name: function.schema_name.clone(),
         catalog_name: None,
         surface_kind: Some(SearchSurfaceKind::TableFunction),
@@ -362,7 +315,6 @@ fn table_function_argument_document(
             argument.name
         ),
         doc_kind: CatalogDocumentKind::ColumnHint,
-        owner_source_name: function.schema_name.clone(),
         source_name: function.schema_name.clone(),
         catalog_name: None,
         surface_kind: Some(SearchSurfaceKind::TableFunction),
@@ -395,7 +347,6 @@ fn table_function_result_column_document(
             column.name
         ),
         doc_kind: CatalogDocumentKind::ColumnHint,
-        owner_source_name: function.schema_name.clone(),
         source_name: function.schema_name.clone(),
         catalog_name: None,
         surface_kind: Some(SearchSurfaceKind::TableFunction),
@@ -434,18 +385,9 @@ fn join_search_text<const N: usize>(parts: [&str; N]) -> String {
         .join(" ")
 }
 
-fn catalog_snapshot_fingerprint(
-    catalog: &CatalogInfo,
-    runtime_schema_owners: &BTreeMap<String, String>,
-) -> String {
+fn catalog_snapshot_fingerprint(catalog: &CatalogInfo) -> String {
     let mut hasher = Sha256::new();
     update_hash(&mut hasher, CATALOG_SEARCH_SNAPSHOT_VERSION);
-
-    for (runtime_schema_name, owner_source_name) in runtime_schema_owners {
-        update_hash(&mut hasher, "runtime_schema_owner");
-        update_hash(&mut hasher, runtime_schema_name);
-        update_hash(&mut hasher, owner_source_name);
-    }
 
     let mut tables = catalog.tables.iter().collect::<Vec<_>>();
     tables.sort_by(|left, right| {
@@ -552,7 +494,6 @@ fn update_hash(hasher: &mut Sha256, value: &str) {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
 
     use coral_engine::{CatalogInfo, TableInfo};
 
@@ -590,34 +531,6 @@ mod tests {
                 .documents
                 .iter()
                 .all(|document| document.catalog_name.as_deref() == Some("primary"))
-        );
-    }
-
-    #[test]
-    fn snapshot_fingerprint_and_documents_include_installed_source_ownership() {
-        let catalog = catalog_with_table("messages");
-        let first = CatalogSearchSnapshot::from_catalog_with_runtime_schema_owners(
-            &catalog,
-            &BTreeMap::from([("fixture".to_string(), "owner_a".to_string())]),
-        );
-        let second = CatalogSearchSnapshot::from_catalog_with_runtime_schema_owners(
-            &catalog,
-            &BTreeMap::from([("fixture".to_string(), "owner_b".to_string())]),
-        );
-
-        assert_ne!(first.fingerprint, second.fingerprint);
-        assert!(
-            first
-                .documents
-                .iter()
-                .all(|document| document.owner_source_name == "owner_a")
-        );
-        assert!(
-            first
-                .index_snapshot()
-                .documents
-                .iter()
-                .all(|document| document.owner_source_name == "owner_a")
         );
     }
 

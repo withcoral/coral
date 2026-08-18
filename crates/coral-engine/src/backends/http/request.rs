@@ -20,8 +20,24 @@ pub(super) fn build_query_pairs(
 
     for param in &request.query {
         let value = resolve_value_source(&param.value, render_context)?;
-        if let Some(value) = value {
-            params.push((param.name.clone(), value_to_string(&value)));
+        match value {
+            // A list value expands per OpenAPI's `form` style: one pair per
+            // item when exploded, otherwise one comma-joined pair. An empty
+            // list contributes nothing rather than an empty parameter, which
+            // providers read as an explicit empty selection.
+            Some(Value::Array(items)) => {
+                if items.is_empty() {
+                    continue;
+                }
+                let items = items.iter().map(value_to_string);
+                if param.explode {
+                    params.extend(items.map(|item| (param.name.clone(), item)));
+                } else {
+                    params.push((param.name.clone(), items.collect::<Vec<_>>().join(",")));
+                }
+            }
+            Some(value) => params.push((param.name.clone(), value_to_string(&value))),
+            None => {}
         }
     }
 
@@ -120,11 +136,142 @@ mod tests {
 
     use serde_json::json;
 
-    use super::{RequestBody, build_request_body, set_path_value};
+    use super::{RequestBody, build_query_pairs, build_request_body, set_path_value};
     use crate::backends::shared::template::RenderContext;
     use coral_spec::{
-        BodyFieldSpec, BodySpec, HttpMethod, ParsedTemplate, RequestSpec, ValueSourceSpec,
+        BodyFieldSpec, BodySpec, HttpMethod, ParsedTemplate, QueryParamSpec, RequestSpec,
+        ValueSourceSpec,
     };
+
+    fn query_request(params: Vec<QueryParamSpec>) -> RequestSpec {
+        RequestSpec {
+            method: HttpMethod::GET,
+            path: ParsedTemplate::parse("/items").expect("template"),
+            query: params,
+            body: BodySpec::default(),
+            headers: vec![],
+        }
+    }
+
+    fn query_pairs(params: Vec<QueryParamSpec>, filters: &[(&str, &str)]) -> Vec<(String, String)> {
+        let request = query_request(params);
+        let filters = filters
+            .iter()
+            .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+            .collect::<HashMap<_, _>>();
+        let args = HashMap::new();
+        let state = HashMap::new();
+        let resolved_inputs = BTreeMap::new();
+        let context = RenderContext::new(&filters, &args, &state, &resolved_inputs);
+
+        build_query_pairs(&request, &context).expect("query pairs should render")
+    }
+
+    fn string_array_param(name: &str, key: &str, explode: bool) -> QueryParamSpec {
+        QueryParamSpec {
+            name: name.to_string(),
+            explode,
+            value: ValueSourceSpec::FilterStringArray {
+                key: key.to_string(),
+                default: None,
+            },
+        }
+    }
+
+    #[test]
+    fn build_query_pairs_repeats_the_name_for_an_exploded_array() {
+        let pairs = query_pairs(
+            vec![string_array_param("exclude", "exclude", true)],
+            &[("exclude", r#"["repositories","tags"]"#)],
+        );
+
+        assert_eq!(
+            pairs,
+            vec![
+                ("exclude".to_string(), "repositories".to_string()),
+                ("exclude".to_string(), "tags".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn build_query_pairs_joins_an_unexploded_array_with_commas() {
+        let pairs = query_pairs(
+            vec![string_array_param("$select", "select", false)],
+            &[("select", r#"["id","displayName"]"#)],
+        );
+
+        assert_eq!(
+            pairs,
+            vec![("$select".to_string(), "id,displayName".to_string())]
+        );
+    }
+
+    #[test]
+    fn build_query_pairs_omits_an_empty_array() {
+        // An empty parameter is an explicit empty selection to most providers,
+        // which is not what "the caller filtered on nothing" means.
+        let pairs = query_pairs(
+            vec![string_array_param("exclude", "exclude", true)],
+            &[("exclude", "[]")],
+        );
+
+        assert!(pairs.is_empty(), "{pairs:?}");
+    }
+
+    #[test]
+    fn build_query_pairs_renders_non_string_array_items() {
+        let pairs = query_pairs(
+            vec![string_array_param("creator_id", "creator_id", true)],
+            &[("creator_id", "[1,2]")],
+        );
+
+        assert_eq!(
+            pairs,
+            vec![
+                ("creator_id".to_string(), "1".to_string()),
+                ("creator_id".to_string(), "2".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn build_query_pairs_accepts_a_bare_value_as_a_one_element_array() {
+        // `WHERE exclude = 'repositories'` is what a caller reaches for first.
+        let pairs = query_pairs(
+            vec![string_array_param("exclude", "exclude", true)],
+            &[("exclude", "repositories")],
+        );
+
+        assert_eq!(
+            pairs,
+            vec![("exclude".to_string(), "repositories".to_string())]
+        );
+    }
+
+    #[test]
+    fn build_query_pairs_ignores_explode_for_scalar_values() {
+        let pairs = query_pairs(
+            vec![QueryParamSpec {
+                name: "state".to_string(),
+                explode: false,
+                value: ValueSourceSpec::Filter {
+                    key: "state".to_string(),
+                    default: None,
+                },
+            }],
+            &[("state", "open")],
+        );
+
+        assert_eq!(pairs, vec![("state".to_string(), "open".to_string())]);
+    }
+
+    #[test]
+    fn build_query_pairs_omits_unbound_parameters() {
+        let pairs = query_pairs(vec![string_array_param("exclude", "exclude", true)], &[]);
+
+        assert!(pairs.is_empty(), "{pairs:?}");
+    }
 
     #[test]
     fn build_request_body_omits_json_body_when_no_fields_resolve() {

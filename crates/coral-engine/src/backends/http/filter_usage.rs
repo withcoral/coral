@@ -95,6 +95,7 @@ fn collect_value_source_filters(source: &ValueSourceSpec, filters: &mut HashSet<
         | ValueSourceSpec::Arg { .. }
         | ValueSourceSpec::ArgInt { .. }
         | ValueSourceSpec::ArgBool { .. }
+        | ValueSourceSpec::ArgStringArray { .. }
         | ValueSourceSpec::ArgSplit { .. }
         | ValueSourceSpec::ArgSplitInt { .. }
         | ValueSourceSpec::Input { .. }
@@ -120,6 +121,7 @@ mod tests {
             path: ParsedTemplate::parse("/repos/{{filter.owner}}/{{filter.repo}}")
                 .expect("path template"),
             query: vec![QueryParamSpec {
+                explode: true,
                 name: "state".to_string(),
                 value: ValueSourceSpec::Filter {
                     key: "state".to_string(),

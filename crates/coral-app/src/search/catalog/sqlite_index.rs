@@ -1,7 +1,5 @@
 //! `SQLite` catalog metadata projection and retrieval primitives.
 
-use std::collections::BTreeMap;
-
 use rusqlite::{
     Connection, OptionalExtension as _, Transaction, TransactionBehavior, params, types::Type,
 };
@@ -206,7 +204,6 @@ pub(crate) struct CatalogIndexSnapshot {
 pub(crate) struct CatalogIndexDocument {
     pub(crate) doc_id: String,
     pub(crate) doc_kind: CatalogIndexDocumentKind,
-    pub(crate) owner_source_name: String,
     pub(crate) source_name: String,
     pub(crate) catalog_name: Option<String>,
     pub(crate) surface_kind: String,
@@ -283,7 +280,6 @@ fn replace_catalog_documents(
     snapshot: &CatalogIndexSnapshot,
 ) -> Result<(), SqliteSearchError> {
     delete_catalog_projection_rows(transaction, workspace_name)?;
-    insert_catalog_source_owners(transaction, workspace_name, snapshot)?;
     insert_catalog_snapshot_documents(transaction, workspace_name, snapshot)?;
     set_catalog_fingerprint(transaction, workspace_name, &snapshot.fingerprint)?;
     Ok(())
@@ -301,49 +297,6 @@ fn delete_catalog_projection_rows(
         "DELETE FROM catalog_documents WHERE workspace = ?1",
         params![workspace_name.as_str()],
     )?;
-    transaction.execute(
-        "DELETE FROM catalog_source_owners WHERE workspace = ?1",
-        params![workspace_name.as_str()],
-    )?;
-    Ok(())
-}
-
-fn insert_catalog_source_owners(
-    transaction: &Transaction<'_>,
-    workspace_name: &WorkspaceName,
-    snapshot: &CatalogIndexSnapshot,
-) -> Result<(), SqliteSearchError> {
-    let mut insert = transaction.prepare(
-        "
-        INSERT INTO catalog_source_owners (
-            workspace,
-            source_name,
-            owner_source_name,
-            snapshot_fingerprint,
-            updated_at
-        )
-        VALUES (?1, ?2, ?3, ?4, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-        ON CONFLICT(workspace, source_name) DO UPDATE SET
-            owner_source_name = excluded.owner_source_name,
-            snapshot_fingerprint = excluded.snapshot_fingerprint,
-            updated_at = excluded.updated_at
-        ",
-    )?;
-    let mut source_owners = BTreeMap::new();
-    for document in &snapshot.documents {
-        source_owners.insert(
-            document.source_name.as_str(),
-            document.owner_source_name.as_str(),
-        );
-    }
-    for (source_name, owner_source_name) in source_owners {
-        insert.execute(params![
-            workspace_name.as_str(),
-            source_name,
-            owner_source_name,
-            &snapshot.fingerprint,
-        ])?;
-    }
     Ok(())
 }
 
@@ -441,10 +394,6 @@ pub(crate) fn clear_catalog_workspace_documents_in_transaction(
         "DELETE FROM catalog_documents WHERE workspace = ?1",
         params![workspace_name.as_str()],
     )?;
-    transaction.execute(
-        "DELETE FROM catalog_source_owners WHERE workspace = ?1",
-        params![workspace_name.as_str()],
-    )?;
     clear_catalog_fingerprint(transaction, workspace_name)?;
     Ok(CatalogClearResult {
         deleted_document_count: u32::try_from(deleted_document_count).unwrap_or(u32::MAX),
@@ -466,42 +415,28 @@ fn clear_catalog_source_documents(
 pub(crate) fn clear_catalog_source_documents_in_transaction(
     transaction: &Transaction<'_>,
     workspace_name: &WorkspaceName,
-    owner_source_name: &str,
+    source_name: &str,
 ) -> Result<CatalogClearResult, SqliteSearchError> {
+    // `doc_id` is not workspace-qualified, so the FTS delete keeps its own
+    // workspace guard even though the subquery already carries one.
     transaction.execute(
         "
         DELETE FROM catalog_documents_fts
         WHERE workspace = ?1
           AND doc_id IN (
-              SELECT documents.doc_id
-              FROM catalog_documents AS documents
-              INNER JOIN catalog_source_owners AS owners
-                  ON owners.workspace = documents.workspace
-                 AND owners.source_name = documents.source_name
-              WHERE documents.workspace = ?1
-                AND owners.owner_source_name = ?2
+              SELECT doc_id
+              FROM catalog_documents
+              WHERE workspace = ?1 AND source_name = ?2
           )
         ",
-        params![workspace_name.as_str(), owner_source_name],
+        params![workspace_name.as_str(), source_name],
     )?;
     let deleted_document_count = transaction.execute(
         "
         DELETE FROM catalog_documents
-        WHERE workspace = ?1
-          AND source_name IN (
-              SELECT source_name
-              FROM catalog_source_owners
-              WHERE workspace = ?1 AND owner_source_name = ?2
-          )
+        WHERE workspace = ?1 AND source_name = ?2
         ",
-        params![workspace_name.as_str(), owner_source_name],
-    )?;
-    transaction.execute(
-        "
-        DELETE FROM catalog_source_owners
-        WHERE workspace = ?1 AND owner_source_name = ?2
-        ",
-        params![workspace_name.as_str(), owner_source_name],
+        params![workspace_name.as_str(), source_name],
     )?;
     clear_catalog_fingerprint(transaction, workspace_name)?;
     Ok(CatalogClearResult {
@@ -534,32 +469,18 @@ fn catalog_fingerprint(
     let Some(fingerprint) = fingerprint else {
         return Ok(None);
     };
-    let ownership_is_incomplete: bool = connection.query_row(
+    let projection_is_stale: bool = connection.query_row(
         "
-        SELECT
-            EXISTS (
-                SELECT 1
-                FROM catalog_documents AS documents
-                LEFT JOIN catalog_source_owners AS owners
-                    ON owners.workspace = documents.workspace
-                   AND owners.source_name = documents.source_name
-                WHERE documents.workspace = ?1
-                  AND (
-                      owners.source_name IS NULL
-                      OR documents.snapshot_fingerprint <> ?2
-                      OR owners.snapshot_fingerprint <> ?2
-                  )
-            )
-            OR EXISTS (
-                SELECT 1
-                FROM catalog_source_owners
-                WHERE workspace = ?1 AND snapshot_fingerprint <> ?2
-            )
+        SELECT EXISTS (
+            SELECT 1
+            FROM catalog_documents
+            WHERE workspace = ?1 AND snapshot_fingerprint <> ?2
+        )
         ",
         params![workspace_name.as_str(), &fingerprint],
         |row| row.get(0),
     )?;
-    if ownership_is_incomplete {
+    if projection_is_stale {
         Ok(None)
     } else {
         Ok(Some(fingerprint))

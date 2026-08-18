@@ -133,7 +133,6 @@ fn refresh_to_empty_snapshot_clears_projection_and_persists_fingerprint() {
     assert_eq!(refresh.document_count, 0);
     assert_eq!(store.catalog_document_count().expect("document count"), 0);
     assert_eq!(catalog_fts_document_count(&store), 0);
-    assert_eq!(catalog_source_owner_count(&store), 0);
     assert_eq!(
         persisted_catalog_fingerprint(&store),
         empty_snapshot.fingerprint
@@ -151,7 +150,7 @@ fn refresh_to_empty_snapshot_clears_projection_and_persists_fingerprint() {
 }
 
 #[test]
-fn duplicate_document_refresh_rolls_back_documents_fts_owners_and_fingerprint() {
+fn duplicate_document_refresh_rolls_back_documents_fts_and_fingerprint() {
     let temp = tempdir().expect("tempdir");
     let store = catalog_store(&temp);
     let original_snapshot = catalog_index_snapshot();
@@ -229,11 +228,6 @@ fn clear_workspace_removes_workspace_documents_and_invalidates_fingerprint() {
         "clear should remove workspace FTS rows"
     );
     assert_eq!(
-        catalog_source_owner_count(&store),
-        0,
-        "clear should remove persisted source ownership"
-    );
-    assert_eq!(
         schema_version(&store),
         crate::search::sqlite_store::SEARCH_SQLITE_SCHEMA_VERSION.to_string(),
         "clear should leave schema metadata intact"
@@ -290,95 +284,119 @@ fn clear_source_removes_only_source_documents_and_invalidates_fingerprint() {
 }
 
 #[test]
-fn clear_installed_source_uses_persisted_component_ownership_after_restart() {
+fn clear_source_leaves_the_other_provider_interface_stranded_nowhere() {
     let temp = tempdir().expect("tempdir");
     let store = catalog_store(&temp);
     let snapshot = CatalogIndexSnapshot {
-        fingerprint: "multi-component-catalog-v1".to_string(),
+        fingerprint: "independent-sources-v1".to_string(),
         documents: vec![
-            owned_document(
-                "github_v4",
-                DocumentInput {
-                    doc_id: "catalog:table:github_v4_rest.issues",
-                    doc_kind: CatalogIndexDocumentKind::CatalogTable,
-                    source_name: "github_v4_rest",
-                    surface_kind: "table",
-                    surface_name: "issues",
-                    field_name: "",
-                    field_role: "",
-                    qualified_name: "github_v4_rest.issues",
-                    title: "issues",
-                    description: "GitHub issues",
-                    searchable_text: "github rest issues",
-                },
-            ),
-            owned_document(
-                "github_v4",
-                DocumentInput {
-                    doc_id: "catalog:function:github_v4_mcp.search_issues",
-                    doc_kind: CatalogIndexDocumentKind::CatalogTableFunction,
-                    source_name: "github_v4_mcp",
-                    surface_kind: "table_function",
-                    surface_name: "search_issues",
-                    field_name: "",
-                    field_role: "",
-                    qualified_name: "github_v4_mcp.search_issues",
-                    title: "search_issues",
-                    description: "Search GitHub issues",
-                    searchable_text: "github mcp search issues",
-                },
-            ),
-            owned_document(
-                "slack_v4",
-                DocumentInput {
-                    doc_id: "catalog:table:slack_v4_rest.messages",
-                    doc_kind: CatalogIndexDocumentKind::CatalogTable,
-                    source_name: "slack_v4_rest",
-                    surface_kind: "table",
-                    surface_name: "messages",
-                    field_name: "",
-                    field_role: "",
-                    qualified_name: "slack_v4_rest.messages",
-                    title: "messages",
-                    description: "Slack messages",
-                    searchable_text: "slack rest messages",
-                },
-            ),
+            document(DocumentInput {
+                doc_id: "catalog:table:github_v4.issues",
+                doc_kind: CatalogIndexDocumentKind::CatalogTable,
+                source_name: "github_v4",
+                surface_kind: "table",
+                surface_name: "issues",
+                field_name: "",
+                field_role: "",
+                qualified_name: "github_v4.issues",
+                title: "issues",
+                description: "GitHub issues",
+                searchable_text: "github rest issues",
+            }),
+            document(DocumentInput {
+                doc_id: "catalog:function:github_mcp_v4.search_issues",
+                doc_kind: CatalogIndexDocumentKind::CatalogTableFunction,
+                source_name: "github_mcp_v4",
+                surface_kind: "table_function",
+                surface_name: "search_issues",
+                field_name: "",
+                field_role: "",
+                qualified_name: "github_mcp_v4.search_issues",
+                title: "search_issues",
+                description: "Search GitHub issues",
+                searchable_text: "github mcp search issues",
+            }),
         ],
     };
     store
         .refresh_catalog_projection(&snapshot)
         .expect("refresh catalog");
-    drop(store);
 
-    let reopened = catalog_store(&temp);
-    let result = reopened
+    let result = store
         .clear_catalog_source("github_v4")
-        .expect("clear installed source");
+        .expect("clear one installed source");
 
-    assert_eq!(result.deleted_document_count, 2);
+    // The REST and MCP interfaces are independent sources: no ownership
+    // indirection can strand one when the other is cleared.
+    assert_eq!(result.deleted_document_count, 1);
+    assert_eq!(store.catalog_document_count().expect("document count"), 1);
+    assert_eq!(catalog_fts_document_count(&store), 1);
+    let hits = store
+        .search_catalog(
+            &["search_issues".to_string()],
+            10,
+            CatalogDocumentClass::Entries,
+        )
+        .expect("search remaining source");
     assert_eq!(
-        reopened.catalog_document_count().expect("document count"),
-        1
+        hits.hits.first().expect("remaining hit").source_name,
+        "github_mcp_v4"
     );
-    assert_eq!(catalog_fts_document_count(&reopened), 1);
-    let connection = reopened.connect_for_test().expect("connect");
-    let github_owner_count: i64 = connection
+}
+
+#[test]
+fn clear_source_keeps_its_workspace_guard_on_the_fts_delete() {
+    // `doc_id` is not workspace-qualified. Production runs one sidecar per
+    // workspace, so this guards test layouts and defence in depth, not a live
+    // corruption path -- but the schema is workspace-keyed, so it stays.
+    let temp = tempdir().expect("tempdir");
+    let path = temp.path().join("search.sqlite3");
+    let other_workspace = WorkspaceName::parse("other").expect("workspace");
+    let shared_documents = vec![document(DocumentInput {
+        doc_id: "catalog:table:github_v4.issues",
+        doc_kind: CatalogIndexDocumentKind::CatalogTable,
+        source_name: "github_v4",
+        surface_kind: "table",
+        surface_name: "issues",
+        field_name: "",
+        field_role: "",
+        qualified_name: "github_v4.issues",
+        title: "issues",
+        description: "GitHub issues",
+        searchable_text: "github rest issues",
+    })];
+    for workspace_name in [WorkspaceName::default(), other_workspace.clone()] {
+        SqliteSearchStore::open(&path, workspace_name)
+            .expect("store")
+            .refresh_catalog_projection(&CatalogIndexSnapshot {
+                fingerprint: "shared-doc-id-v1".to_string(),
+                documents: shared_documents.clone(),
+            })
+            .expect("refresh catalog");
+    }
+
+    SqliteSearchStore::open(&path, WorkspaceName::default())
+        .expect("store")
+        .clear_catalog_source("github_v4")
+        .expect("clear source in one workspace");
+
+    let other_store = SqliteSearchStore::open(&path, other_workspace).expect("other store");
+    assert_eq!(
+        other_store
+            .catalog_document_count()
+            .expect("document count"),
+        1,
+        "clearing one workspace must not delete another workspace's rows"
+    );
+    let connection = other_store.connect_for_test().expect("connect");
+    let other_fts_rows: i64 = connection
         .query_row(
-            "SELECT COUNT(*) FROM catalog_source_owners WHERE workspace = 'default' AND owner_source_name = 'github_v4'",
+            "SELECT COUNT(*) FROM catalog_documents_fts WHERE workspace = 'other'",
             [],
             |row| row.get(0),
         )
-        .expect("GitHub owner count");
-    let slack_owner_count: i64 = connection
-        .query_row(
-            "SELECT COUNT(*) FROM catalog_source_owners WHERE workspace = 'default' AND owner_source_name = 'slack_v4'",
-            [],
-            |row| row.get(0),
-        )
-        .expect("Slack owner count");
-    assert_eq!(github_owner_count, 0);
-    assert_eq!(slack_owner_count, 1);
+        .expect("other workspace FTS rows");
+    assert_eq!(other_fts_rows, 1);
 }
 
 #[test]
@@ -527,40 +545,6 @@ fn refresh_rechecks_fingerprint_after_writer_lock() {
 }
 
 #[test]
-fn missing_catalog_ownership_invalidates_and_repairs_the_projection() {
-    let temp = tempdir().expect("tempdir");
-    let store = catalog_store(&temp);
-    let snapshot = catalog_index_snapshot();
-    store
-        .refresh_catalog_projection(&snapshot)
-        .expect("refresh catalog");
-    let connection = store.connect_for_test().expect("connect");
-    connection
-        .execute(
-            "DELETE FROM catalog_source_owners WHERE workspace = 'default' AND source_name = 'github'",
-            [],
-        )
-        .expect("corrupt source ownership");
-    drop(connection);
-
-    assert!(
-        !store
-            .catalog_projection_is_current(&snapshot.fingerprint)
-            .expect("projection current check")
-    );
-    let refresh = store
-        .refresh_catalog_projection(&snapshot)
-        .expect("repair catalog projection");
-
-    assert!(refresh.refreshed);
-    assert!(
-        store
-            .catalog_projection_is_current(&snapshot.fingerprint)
-            .expect("repaired projection current")
-    );
-}
-
-#[test]
 fn search_terms_are_normalized_before_retrieval() {
     let temp = tempdir().expect("tempdir");
     let store = catalog_store(&temp);
@@ -685,24 +669,10 @@ fn catalog_fts_document_count(store: &SqliteSearchStore) -> u32 {
     u32::try_from(count).expect("FTS count should fit")
 }
 
-fn catalog_source_owner_count(store: &SqliteSearchStore) -> u32 {
-    let connection = store.connect_for_test().expect("connect");
-    let workspace_name = WorkspaceName::default();
-    let count: i64 = connection
-        .query_row(
-            "SELECT count(*) FROM catalog_source_owners WHERE workspace = ?1",
-            [workspace_name.as_str()],
-            |row| row.get(0),
-        )
-        .expect("source owner count");
-    u32::try_from(count).expect("source owner count should fit")
-}
-
 #[derive(Debug, PartialEq, Eq)]
 struct CatalogProjectionStorageState {
     documents: Vec<(String, String, String)>,
     fts_documents: Vec<(String, String, String, String, String)>,
-    source_owners: Vec<(String, String, String)>,
     fingerprint: String,
 }
 
@@ -749,23 +719,6 @@ fn catalog_projection_storage_state(store: &SqliteSearchStore) -> CatalogProject
             .collect::<Result<Vec<_>, _>>()
             .expect("read catalog FTS state")
     };
-    let source_owners = {
-        let mut statement = connection
-            .prepare(
-                "SELECT source_name, owner_source_name, snapshot_fingerprint
-                 FROM catalog_source_owners
-                 WHERE workspace = ?1
-                 ORDER BY source_name",
-            )
-            .expect("prepare catalog ownership state");
-        statement
-            .query_map([workspace_name.as_str()], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-            })
-            .expect("query catalog ownership state")
-            .collect::<Result<Vec<_>, _>>()
-            .expect("read catalog ownership state")
-    };
     let fingerprint = connection
         .query_row(
             "SELECT value FROM search_meta WHERE key = ?1",
@@ -780,7 +733,6 @@ fn catalog_projection_storage_state(store: &SqliteSearchStore) -> CatalogProject
     CatalogProjectionStorageState {
         documents,
         fts_documents,
-        source_owners,
         fingerprint,
     }
 }
@@ -940,14 +892,9 @@ struct DocumentInput<'a> {
 }
 
 fn document(input: DocumentInput<'_>) -> CatalogIndexDocument {
-    owned_document(input.source_name, input)
-}
-
-fn owned_document(owner_source_name: &str, input: DocumentInput<'_>) -> CatalogIndexDocument {
     CatalogIndexDocument {
         doc_id: input.doc_id.to_string(),
         doc_kind: input.doc_kind,
-        owner_source_name: owner_source_name.to_string(),
         source_name: input.source_name.to_string(),
         surface_kind: input.surface_kind.to_string(),
         surface_name: input.surface_name.to_string(),
