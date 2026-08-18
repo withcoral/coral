@@ -113,10 +113,21 @@ configuration:
 ```toml
 [server.mcp_http]
 enabled = true
-bind = "0.0.0.0:14556"
+# Coral terminates no TLS on this listener. Bind it where only your TLS
+# terminator can reach it -- not 0.0.0.0 -- and put HTTPS in front.
+bind = "10.0.0.5:14556"
 public_url = "https://mcp.example.com/"
 workspace = "analytics"
 ```
+
+<Warning>
+Coral serves cleartext HTTP on this listener and terminates no TLS. Without an
+HTTPS proxy in front, every bearer token a client sends can be read off the
+wire, and a `0.0.0.0` bind exposes that cleartext port on every interface even
+when a proxy also fronts the service. Bind to an address only your TLS
+terminator can reach. The server prints this same warning at startup when the
+bind is not loopback.
+</Warning>
 
 `workspace` is required for this surface to serve anybody, and `public_url` is
 required whenever login is enabled. The name is the operator's selection for the
