@@ -171,6 +171,15 @@ pub enum AppError {
 
 impl From<DbError> for AppError {
     fn from(error: DbError) -> Self {
+        // A writer that lost a lock or serialization race did nothing wrong, so
+        // it is classified before the driver-error catch-all below: the caller
+        // is told to try again rather than handed an internal fault carrying a
+        // raw driver string.
+        if error.is_serialization_conflict() {
+            return Self::Unavailable(
+                "the request lost a write race and can be retried".to_string(),
+            );
+        }
         match error {
             DbError::Config(detail) => {
                 Self::FailedPrecondition(format!("database configuration is invalid: {detail}"))
@@ -413,6 +422,72 @@ mod tests {
                 expected,
                 "unexpected code for {rendered}"
             );
+        }
+    }
+
+    /// Two membership mutations on one workspace contend for the same parent
+    /// row, so one of them loses the race and its driver error reaches this
+    /// boundary. Mapped through the `Sqlx` catch-all it would read as an
+    /// internal defect and carry the raw driver string; the caller needs to be
+    /// told the request can simply be tried again.
+    #[test]
+    fn a_lost_write_race_answers_retryable_rather_than_internal() {
+        let lost_race = AppError::from(DbError::Sqlx(sqlx::Error::Database(Box::new(
+            StubDatabaseError("5"),
+        ))));
+        assert!(
+            matches!(lost_race, AppError::Unavailable(_)),
+            "unexpected error for a lost write race: {lost_race}"
+        );
+        assert_eq!(app_status(lost_race).code(), Code::Unavailable);
+
+        // Every other driver failure keeps its existing classification.
+        let fault = AppError::from(DbError::Sqlx(sqlx::Error::Database(Box::new(
+            StubDatabaseError("23505"),
+        ))));
+        assert!(
+            matches!(fault, AppError::Database(_)),
+            "unexpected error for a driver fault: {fault}"
+        );
+        assert_eq!(app_status(fault).code(), Code::Internal);
+    }
+
+    /// A driver error carrying one chosen code, so the classification can be
+    /// driven without provoking a real race.
+    #[derive(Debug)]
+    struct StubDatabaseError(&'static str);
+
+    impl std::fmt::Display for StubDatabaseError {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("stub driver error")
+        }
+    }
+
+    impl std::error::Error for StubDatabaseError {}
+
+    impl sqlx::error::DatabaseError for StubDatabaseError {
+        fn message(&self) -> &'static str {
+            "stub driver error"
+        }
+
+        fn code(&self) -> Option<std::borrow::Cow<'_, str>> {
+            Some(std::borrow::Cow::Borrowed(self.0))
+        }
+
+        fn as_error(&self) -> &(dyn std::error::Error + Send + Sync + 'static) {
+            self
+        }
+
+        fn as_error_mut(&mut self) -> &mut (dyn std::error::Error + Send + Sync + 'static) {
+            self
+        }
+
+        fn into_error(self: Box<Self>) -> Box<dyn std::error::Error + Send + Sync + 'static> {
+            self
+        }
+
+        fn kind(&self) -> sqlx::error::ErrorKind {
+            sqlx::error::ErrorKind::Other
         }
     }
 

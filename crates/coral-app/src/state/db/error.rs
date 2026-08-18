@@ -41,13 +41,6 @@ impl DbError {
     /// reported as a refusal, and a hard failure for one that cannot. Callers
     /// that contend for the same rows use it to keep a lost race from reading
     /// as a defect.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the concurrency contracts classify lost races before the RPCs that surface them"
-        )
-    )]
     pub(crate) fn is_serialization_conflict(&self) -> bool {
         match self {
             Self::Sqlx(sqlx::Error::Database(error)) => {
