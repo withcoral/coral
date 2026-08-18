@@ -88,7 +88,7 @@ bind_addr = "127.0.0.1:14555"
 `[server]` section, Coral binds an ephemeral port on `127.0.0.1`.
 
 <Warning>
-  Without `[auth]`, the native gRPC server does not authenticate clients: a non-loopback bind exposes Coral and its configured sources to any client that can reach the port. Protect access with a trusted network boundary or authenticating proxy. With `[auth]` configured, gRPC requests require a bearer access token; only the gRPC health service stays unauthenticated so orchestrator probes keep working.
+  Without `[auth]` configured, the native gRPC server does not authenticate clients: a non-loopback bind exposes Coral and its configured sources to any client that can reach the port. With `[auth]` configured, gRPC requests require a bearer access token — only the gRPC health service stays unauthenticated, so orchestrator probes keep working — but the listener still serves cleartext h2c, so those tokens can be read off the wire. Either way, protect a non-loopback bind with a trusted network boundary and terminate TLS in front of Coral.
 </Warning>
 
 Coral terminates no TLS on any listener. For any deployment that leaves
