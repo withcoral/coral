@@ -69,5 +69,9 @@ export const Empty: Story = {
 }
 
 export const Error: Story = {
-  args: { error: 'Unable to read runtime features.', features: [] },
+  args: {
+    error:
+      'Unable to read runtime features because the configuration file could not be opened. Check that the file exists and that Coral has permission to read it.',
+    features: [],
+  },
 }

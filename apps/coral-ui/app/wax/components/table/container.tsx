@@ -5,6 +5,7 @@ import type { Column } from './columns'
 import { columnStyle } from './columns'
 import { ColumnsProvider } from './columns-context'
 import type { TableDensity, TableVariant } from './constants'
+import { MAX_HEIGHT_PROPERTY } from './constants'
 import * as styles from './table.css'
 
 interface ContainerBaseProps {
@@ -31,7 +32,7 @@ interface ContainerAutoLayoutProps extends ContainerBaseProps {
 interface ContainerFixedLayoutProps extends ContainerBaseProps {
   /** Shares the width between the columns, so the table owns no scroll port. */
   layout: 'fixed'
-  /** Caps the height and scrolls the rows under the pinned heading. */
+  /** Caps the table height and scrolls only the rows beneath the heading. */
   maxHeight?: CSSProperties['maxHeight']
 }
 
@@ -48,12 +49,20 @@ export function Container({
   ref,
   variant = 'plain',
 }: ContainerProps) {
-  // Inline, so the scroll port beats the `layout` variant's own overflow.
-  const bounds = maxHeight === undefined ? undefined : { maxHeight, overflowY: 'auto' as const }
+  const bounds =
+    maxHeight === undefined
+      ? undefined
+      : ({
+          [MAX_HEIGHT_PROPERTY]: typeof maxHeight === 'number' ? `${maxHeight}px` : maxHeight,
+        } as CSSProperties)
   return (
     <div
       aria-label={ariaLabel}
-      className={classNames(styles.container({ density, layout, variant }), className)}
+      className={classNames(
+        styles.container({ density, layout, variant }),
+        maxHeight !== undefined && styles.scrollRows,
+        className,
+      )}
       ref={ref}
       role="table"
       style={{ ...columnStyle(columns, layout), ...bounds }}

@@ -43,5 +43,9 @@ export const Bounded: Story = {
 }
 
 export const Error: Story = {
-  args: { clients: [], error: 'Unable to read MCP client configurations.' },
+  args: {
+    clients: [],
+    error:
+      'Unable to read MCP client configurations because the configuration directory could not be opened. Check that the directory exists and that Coral has permission to read it.',
+  },
 }

@@ -69,7 +69,7 @@ export function McpClientsList({
       <Table.Body>
         {status ? (
           <Table.Row>
-            <Table.Cell align="center" className={styles.statusCell} fullWidth>
+            <Table.Cell align="center" className={styles.statusCell} fullWidth wrap>
               {status}
             </Table.Cell>
           </Table.Row>

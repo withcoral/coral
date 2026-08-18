@@ -60,8 +60,8 @@ export const Default: Story = {
   render: () => <ExampleTable density="default" />,
 }
 
-// Both sticky-heading arrangements. The heading sticks to the nearest box that
-// scrolls, so which box that is decides which prop the caller reaches for.
+// Both constrained-height arrangements. `maxHeight` keeps the table heading
+// outside its row scrollport; an ancestor scroll keeps the heading sticky.
 const SCROLL_COLUMNS: Column[] = [
   { label: 'Name', width: 'fill' },
   { align: 'right', label: 'Requests', width: 'content' },
@@ -80,7 +80,7 @@ function ManyRows() {
   )
 }
 
-export const StickyHeadingInsideTable: Story = {
+export const ScrollingRowsInsideTable: Story = {
   render: () => (
     <Container
       columns={SCROLL_COLUMNS}

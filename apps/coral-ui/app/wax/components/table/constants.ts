@@ -16,6 +16,10 @@ export const HEADING_HEIGHT_PX = {
 // `columns` descriptors.
 export const COLUMNS_PROPERTY = '--wax-table-columns'
 
+// The table's outer height cap. When present, the body subtracts the heading
+// height and owns the vertical scroll port by itself.
+export const MAX_HEIGHT_PROPERTY = '--wax-table-max-height'
+
 // A column's alignment reaches its cells by position: the container names the
 // value once, and the rules in table.css.ts hand it to whichever cell sits in
 // that column. Cells past this many columns fall back to left alignment.
