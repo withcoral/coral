@@ -42,6 +42,13 @@ where
     /// A workspace with no owner grants nothing, so it is concealed here
     /// exactly as it is from authorization: a stale member of an ownerless
     /// workspace must not see it in their own listing either.
+    ///
+    /// The ordering is applied in Rust rather than in SQL because a workspace
+    /// id is a name its creator chose: ordering it in the database would order
+    /// it under the backend's collation, and `SQLite`'s binary comparison and
+    /// Postgres's locale-aware default disagree on names that differ only by
+    /// case or punctuation. One listing must not depend on which backend a
+    /// deployment happens to run.
     pub(crate) async fn workspaces_for_user_id(
         &mut self,
         user_id: &str,
@@ -53,12 +60,14 @@ where
             .and_where(
                 Expr::col(WorkspaceMembers::WorkspaceId).in_subquery(owner_bearing_workspaces()),
             )
-            .order_by(WorkspaceMembers::WorkspaceId, Order::Asc)
             .to_owned();
         let rows: Vec<(String, String)> = self.session.fetch_all(statement).await?;
-        rows.into_iter()
+        let mut memberships = rows
+            .into_iter()
             .map(|(workspace_id, role)| Ok((workspace_id, decode_role(&role)?)))
-            .collect()
+            .collect::<Result<Vec<_>, DbError>>()?;
+        memberships.sort_by(|left, right| left.0.cmp(&right.0));
+        Ok(memberships)
     }
 
     /// Lists one workspace's roster, ordered by user id.
@@ -199,6 +208,8 @@ mod tests {
     /// Every id carries the run's suffix so a shared contract touches only its
     /// own rows: `make postgres-tests` runs every `contract_on_postgres` test
     /// concurrently against one database.
+    const OWNER_DISPLAY_NAME: &str = "Ada Owner";
+
     struct Fixture {
         owned: String,
         ownerless: String,
@@ -303,6 +314,25 @@ mod tests {
         );
         assert_eq!(memberships_of(db, &fixture.stranger).await, vec![]);
 
+        // The roster is the one query that joins through `users`, so it is
+        // also the one that decodes a display name — present for the owner,
+        // absent for the member — on whichever backend is running.
+        let mut expected_roster = vec![
+            (
+                fixture.owner.clone(),
+                MemberRole::Owner,
+                Some(OWNER_DISPLAY_NAME.to_string()),
+            ),
+            (fixture.member.clone(), MemberRole::Member, None),
+        ];
+        expected_roster.sort_by(|left, right| left.0.cmp(&right.0));
+        assert_eq!(roster_of(db, &fixture.owned).await, expected_roster);
+        assert_eq!(
+            roster_of(db, &fixture.ownerless).await,
+            vec![(fixture.member.clone(), MemberRole::Member, None)],
+            "the roster is deliberately unfiltered by owner count"
+        );
+
         assert_promotion_moves_one_row(db, &fixture).await;
         assert_revocation_is_idempotent(db, &fixture).await;
     }
@@ -382,14 +412,24 @@ mod tests {
     }
 
     /// Creates two workspaces and three directory users for one test run.
+    ///
+    /// The two workspace names are deliberately ordered one way by byte value
+    /// and the other way by a locale-aware collation: `SQLite` sorts the
+    /// capital `B` before the lowercase `a`, while Postgres's default
+    /// collation sorts `alpha` before `beta`. A listing ordered in SQL would
+    /// therefore disagree between the two backends, and the expectations below
+    /// pin one order for both.
+    ///
+    /// The owner carries a display name and the member deliberately carries
+    /// none, so the roster join decodes both the present and the absent case.
     async fn seed(db: &CoralDb) -> Fixture {
         let suffix = uuid::Uuid::new_v4().simple().to_string();
         let fixture = Fixture {
-            owned: format!("workspace_owned_{suffix}"),
-            ownerless: format!("workspace_ownerless_{suffix}"),
-            owner: seed_user(db, &format!("owner_{suffix}")).await,
-            member: seed_user(db, &format!("member_{suffix}")).await,
-            stranger: seed_user(db, &format!("stranger_{suffix}")).await,
+            owned: format!("Beta_owned_{suffix}"),
+            ownerless: format!("alpha_ownerless_{suffix}"),
+            owner: seed_user(db, &format!("owner_{suffix}"), Some(OWNER_DISPLAY_NAME)).await,
+            member: seed_user(db, &format!("member_{suffix}"), None).await,
+            stranger: seed_user(db, &format!("stranger_{suffix}"), Some("Stranger")).await,
         };
 
         let mut tx = db.begin().await.expect("begin seed");
@@ -403,11 +443,11 @@ mod tests {
         fixture
     }
 
-    async fn seed_user(db: &CoralDb, subject: &str) -> String {
+    async fn seed_user(db: &CoralDb, subject: &str, display_name: Option<&str>) -> String {
         let mut session = db;
         match session
             .users()
-            .upsert_login("https://issuer.test/members", subject, None, 1)
+            .upsert_login("https://issuer.test/members", subject, display_name, 1)
             .await
             .expect("provision user")
         {
@@ -452,6 +492,18 @@ mod tests {
             .workspaces_for_user_id(user_id)
             .await
             .expect("list memberships")
+    }
+
+    async fn roster_of(
+        db: &CoralDb,
+        workspace_id: &str,
+    ) -> Vec<(String, MemberRole, Option<String>)> {
+        let mut session = db;
+        session
+            .workspace_members()
+            .members_of_workspace(workspace_id)
+            .await
+            .expect("list workspace members")
     }
 
     async fn owner_count(db: &CoralDb, workspace_id: &str) -> i64 {
