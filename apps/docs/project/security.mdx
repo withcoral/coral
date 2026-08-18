@@ -24,6 +24,10 @@ This release is intended for single-user local use:
 - CLI and MCP queries run through the same local runtime. The internal gRPC
   server binds to loopback, and the MCP server uses stdio transport.
 
+Coral can also be run as a server that several people sign in to. That is a
+different trust boundary, described under
+[Shared deployments](#shared-deployments) below.
+
 Coral reduces data exposure by keeping execution local and by exposing a narrow
 MCP surface: `sql`, `add_function`, `search`, `list_catalog`, `describe`,
 `list_columns`, optional `feedback`, `coral://guide`, and `coral://tables`.
@@ -56,6 +60,50 @@ trust boundary:
 - MCP clients can query installed sources, but they do not receive raw stored
   secret values through the discovery tables or resources.
 
+## Shared deployments
+
+When Coral runs with login enabled, the machine belongs to an operator rather
+than to each user, and what a signed-in person may reach is decided by workspace
+membership instead of by control of the host account. The properties that
+matter for a threat model:
+
+- **Signing in grants no access by itself.** A verified login refreshes a row in
+  the user directory. It creates no workspace and joins none, and no membership
+  is derived from upstream group claims, email domains, or roles.
+- **Access is per workspace, at two levels.** Members read a workspace's
+  contents: SQL, catalog, search, and the table functions already installed.
+  Owners additionally configure sources, read traces, change the function set,
+  run search maintenance, manage membership, and delete the workspace.
+- **Source configuration is owner-only, reads included**, because source
+  responses carry configuration and credential metadata. There is no redacted
+  member-visible source view.
+- **Tokens minted for the MCP surface authenticate an agent**, and agent
+  credentials are refused every owner-level operation regardless of the role the
+  person behind them holds. An owner's MCP client can query the workspace; it
+  cannot install a function, configure a source, read traces, or change
+  membership.
+- **A workspace the caller may not reach is reported as absent, not forbidden**,
+  so the workspace namespace does not become an oracle for names. A workspace
+  with no owner is concealed the same way, from its remaining members included.
+- **There is no superuser.** The built-in local principal is refused outright
+  where login is enabled, so host-global settings such as runtime feature flags
+  are exposed to nobody there.
+- **Revocation binds at different points on different surfaces.** On the gRPC
+  API, membership is authorized per request, so a change lands on that caller's
+  next request. An authenticated MCP session is admitted once, at its handshake:
+  a caller whose membership was removed cannot open a new session, but the
+  session they already hold is not terminated, and its one-hour timeout is an
+  idle timer rather than a maximum lifetime. What that session can still do is
+  bounded by the gRPC surface behind it, which refuses its workspace-scoped
+  calls. Restart the MCP listener to end sessions already open.
+- **Recovering a workspace with no reachable owner requires possession of the
+  state database.** The repository recovery tool authenticates nobody: treat
+  filesystem access to the state directory, or the Postgres connection URL, as
+  equivalent to ownership of every workspace on that deployment.
+
+[Shared server access control](/guides/shared-server-access-control) covers all
+of this in operational detail, including recovery.
+
 ## Secret storage configuration
 
 Coral reads the credential storage preference from `config.toml`:
@@ -86,7 +134,7 @@ config, project files, or SSH configuration. Coral adds access to the sources
 you configure; it does not make an otherwise untrusted local agent safe.
 
 - A connected MCP client can ask Coral to query any source you have installed.
-- A connected MCP client can install or replace persistent function artifacts in the selected workspace through `add_function`.
+- A connected MCP client can install or replace persistent function artifacts in the selected workspace through `add_function`. On a deployment with login enabled this call is refused instead: MCP tokens authenticate an agent, and agents cannot change the function set.
 - A source token can access whatever the upstream provider allows for that
   token, so prefer read-only and least-privilege credentials.
 - A custom source spec can direct Coral to make HTTP requests or read local file

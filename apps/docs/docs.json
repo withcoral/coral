@@ -82,7 +82,8 @@
           "guides/write-a-custom-source",
           "guides/observe-with-opentelemetry",
           "guides/self-host-with-docker",
-          "guides/deploy-on-kubernetes"
+          "guides/deploy-on-kubernetes",
+          "guides/shared-server-access-control"
         ]
       },
       {
