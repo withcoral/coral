@@ -1920,6 +1920,51 @@ mod tests {
     /// contract chosen here is a bounded, actionable refusal that writes
     /// nothing - never an indefinite wait, and never a partial repair - and the
     /// same command has to succeed the moment the lock is released.
+    /// A repair that fails for a reason other than contention must say so.
+    ///
+    /// The contention hint tells the operator to stop the server and retry.
+    /// That is right for a held lock and wrong for a read-only database: the
+    /// retry fails identically and the deployment goes down for nothing. This
+    /// pins the direction that silence is easy to ship -- the hint being
+    /// ABSENT -- because the contention tests above only prove it can appear.
+    #[test]
+    fn mutation_sqlite_set_owner_blames_contention_only_when_it_is_contention() {
+        let (_temp, config_dir) = state_dir(Migrations::Current);
+        seed(&config_dir);
+        let database = config_dir.join("coral.db");
+        let before = contents(&database);
+
+        let mut permissions = fs::metadata(&database)
+            .expect("read the state database permissions")
+            .permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&database, permissions).expect("make the state database read-only");
+
+        let refused = set_owner(Some(config_dir.clone()), "abandoned", ADA)
+            .expect_err("a read-only state database must refuse the repair");
+        let report = format!("{refused:#}");
+
+        let mut permissions = fs::metadata(&database)
+            .expect("read the state database permissions")
+            .permissions();
+        #[expect(
+            clippy::permissions_set_readonly_false,
+            reason = "the fixture is a scratch file the test itself just made read-only"
+        )]
+        permissions.set_readonly(false);
+        fs::set_permissions(&database, permissions).expect("restore the state database");
+
+        assert!(
+            !report.contains("held by another process"),
+            "a read-only database was blamed on the running server: {report}"
+        );
+        assert_eq!(
+            contents(&database),
+            before,
+            "a refused repair wrote to the state database"
+        );
+    }
+
     #[test]
     fn mutation_sqlite_set_owner_refuses_a_held_write_lock_and_succeeds_once_it_clears() {
         let (_temp, config_dir) = state_dir(Migrations::Current);
