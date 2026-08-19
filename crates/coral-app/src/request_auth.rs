@@ -22,10 +22,15 @@ const UNAUTHENTICATED_MESSAGE: &str = "authentication required";
 /// The audience a token was minted for says which surface the request arrived
 /// through, and nothing more: one surface can carry either kind of actor, so it
 /// cannot settle what kind the caller is. The token says so itself instead. Its
-/// subject names who is calling and its actor-kind claim names what they are,
-/// both fixed by the issuer at the moment it knew them — an agent is its own
-/// principal with its own identifier, and it arrives here already declared as
-/// one rather than being recognised by the surface it came through.
+/// subject names who is calling and its actor-kind claim names what they came
+/// as, both fixed by the issuer at the moment it knew them.
+///
+/// The two answer different questions, so they are read separately. An agent
+/// acting for someone carries that person's id and is admitted as an agent, and
+/// the pair is what the token was signed over: an agent cannot present itself
+/// as the person, because minting that token needs the issuer's key. What the
+/// caller may then reach follows the id, narrowed by the kind — the same person
+/// is weaker through a delegated credential than through their own.
 #[derive(Clone)]
 pub struct SessionPrincipalProvider {
     verifier: SessionTokenVerifier,
