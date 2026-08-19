@@ -35,6 +35,7 @@ use coral_api::v1::{
     GetTraceRequest, ListFeaturesRequest, ListTracesRequest, SetFeatureRequest, TraceView,
     WorkspaceRole,
 };
+use coral_app::PrincipalKind;
 use coral_client::local::ServerBuilder;
 use serde_json::json;
 use tempfile::TempDir;
@@ -165,13 +166,17 @@ impl Caller {
 }
 
 async fn person(deployment: &SharedDeployment, user_id: &str) -> Caller {
-    Caller::connect(deployment.endpoint_uri(), Some(format!("user:{user_id}"))).await
+    let credential = deployment.credential(user_id, PrincipalKind::User);
+    Caller::connect(deployment.endpoint_uri(), Some(credential)).await
 }
 
-/// The session an MCP-audience token authenticates: the same person's id,
-/// admitted as an agent rather than as themselves.
+/// The same person's id, admitted as an agent rather than as themselves.
+///
+/// Only the token's actor-kind claim separates this caller from [`person`], so
+/// a refusal one meets and the other does not is a refusal of the actor kind.
 async fn agent(deployment: &SharedDeployment, user_id: &str) -> Caller {
-    Caller::connect(deployment.endpoint_uri(), Some(format!("agent:{user_id}"))).await
+    let credential = deployment.credential(user_id, PrincipalKind::Agent);
+    Caller::connect(deployment.endpoint_uri(), Some(credential)).await
 }
 
 /// The code a refusal answers with. A caller who may not ask must not be

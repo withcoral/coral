@@ -377,6 +377,12 @@ impl SharedDeployment {
         self.trace_store_dir.as_deref()
     }
 
+    /// The bearer credential an actor of `principal_kind` presents for
+    /// `user_id`, for tests that dial a service `AppClient` does not carry.
+    pub(crate) fn credential(&self, user_id: &str, principal_kind: PrincipalKind) -> String {
+        self.session_auth.access_token_for(user_id, principal_kind)
+    }
+
     async fn connect(&self, user_id: &str, principal_kind: PrincipalKind) -> AppClient {
         connect_with_loopback_bearer(
             self.endpoint_uri(),

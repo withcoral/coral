@@ -33,6 +33,13 @@ use coral_api::v1::{
 use coral_client::AppClient;
 use tonic::{Code, Request, Status};
 
+#[path = "grpc/session_auth.rs"]
+#[expect(
+    dead_code,
+    reason = "The session-auth fixture serves several integration binaries; this one uses the parts the shared harness needs."
+)]
+mod session_auth;
+
 #[path = "grpc/harness.rs"]
 #[expect(
     dead_code,

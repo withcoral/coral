@@ -104,6 +104,19 @@ pub(crate) const AUTHORIZATION_MATRIX: &[RpcRule] = &[
     rule("coral.v1.FunctionService", "ListFunctions", Read),
     rule("coral.v1.FunctionService", "AddFunction", Manage),
     rule("coral.v1.FunctionService", "DeleteFunction", Manage),
+    // Onboarding records what a person has been shown, so it belongs to a
+    // person: an agent holding someone's credential has no onboarding of its
+    // own, and the service refuses one rather than answering for the human.
+    rule(
+        "coral.v1.GuiOnboardingService",
+        "GetGuiOnboardingState",
+        AnyHuman,
+    ),
+    rule(
+        "coral.v1.GuiOnboardingService",
+        "CompleteGuiOnboarding",
+        AnyHuman,
+    ),
     rule("coral.v1.QueryService", "ExecuteSql", Read),
     rule("coral.v1.QueryService", "ExplainSql", Read),
     // Searching reads the workspace; rebuilding, draining, and clearing the
