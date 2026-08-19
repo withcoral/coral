@@ -10,6 +10,8 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
 
+use crate::identity::PrincipalKind;
+
 use super::AuthorizationServerHttpState;
 use super::query::{MAX_PARAMETER_NAME_BYTES, MAX_PARAMETER_VALUE_BYTES, MAX_PARAMETERS};
 use super::response::security_headers;
@@ -86,10 +88,15 @@ pub(super) async fn oauth_token(
             return token_error(TokenError::ServerError);
         }
     };
+    // This endpoint completes an interactive login, which only a person can
+    // perform: the code being redeemed was issued to a browser that carried
+    // someone through their identity provider. An agent obtains its own
+    // credential elsewhere, and whatever mints one declares it there.
     let issued = match state.session_tokens.issue_access_token(
         &authorization.user_id,
         &authorization.client_id,
         &authorization.resource,
+        PrincipalKind::User,
     ) {
         Ok(issued) => issued,
         Err(error) => {

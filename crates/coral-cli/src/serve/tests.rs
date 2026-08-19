@@ -204,6 +204,7 @@ fn session_token(signing_key: &[u8], audience: &str) -> String {
         "alice",
         "https://client.example/client.json",
         audience,
+        coral_app::PrincipalKind::User,
     )
     .expect("session token")
 }

@@ -1339,6 +1339,7 @@ redirect_uri = 'https://auth.example.test/auth/oidc/callback'
                 user_id,
                 "https://client.example/client.json",
                 "https://mcp.example.test",
+                PrincipalKind::User,
             )
             .expect("session token")
             .access_token;

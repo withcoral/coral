@@ -6,9 +6,7 @@ use std::sync::Arc;
 use tonic::metadata::MetadataMap;
 
 use crate::auth::session::SessionTokenVerifier;
-use crate::identity::{
-    BearerAuthenticator, Principal, PrincipalKind, PrincipalProvider, PrincipalProviderError,
-};
+use crate::identity::{BearerAuthenticator, Principal, PrincipalProvider, PrincipalProviderError};
 
 const AUTHORIZATION_METADATA: &str = "authorization";
 const UNAUTHENTICATED_MESSAGE: &str = "authentication required";
@@ -23,11 +21,11 @@ const UNAUTHENTICATED_MESSAGE: &str = "authentication required";
 ///
 /// The audience a token was minted for says which surface the request arrived
 /// through, and nothing more: one surface can carry either kind of actor, so it
-/// cannot settle what kind the caller is. Every session token this provider
-/// admits carries a person's `user_id` in `sub`, so that is the kind it
-/// authenticates. An agent is its own principal with its own identifier, and the
-/// provider that authenticates one supplies [`PrincipalKind::Agent`] from that
-/// identity rather than from the surface it arrived on.
+/// cannot settle what kind the caller is. The token says so itself instead. Its
+/// subject names who is calling and its actor-kind claim names what they are,
+/// both fixed by the issuer at the moment it knew them — an agent is its own
+/// principal with its own identifier, and it arrives here already declared as
+/// one rather than being recognised by the surface it came through.
 #[derive(Clone)]
 pub struct SessionPrincipalProvider {
     verifier: SessionTokenVerifier,
@@ -60,8 +58,12 @@ impl SessionPrincipalProvider {
             .map_err(|_error| unauthenticated())?;
         // The token's subject is Coral's internal `user_id`, so the request
         // principal is that id verbatim — no upstream issuer, subject, or
-        // display name enters it, and nothing is derived from one.
-        Principal::parse(&session.user_id, PrincipalKind::User).map_err(|_error| unauthenticated())
+        // display name enters it, and nothing is derived from one. The kind
+        // comes from the token's own claim for the same reason: the issuer
+        // knew what it minted the token for, and no property of the request
+        // reconstructs that afterwards.
+        Principal::parse(&session.user_id, session.principal_kind)
+            .map_err(|_error| unauthenticated())
     }
 }
 
@@ -142,7 +144,7 @@ mod tests {
         let signing_key = test_signing_key();
         let config = session(&signing_key);
         let token = config
-            .issue_access_token(USER_ID, CLIENT_ID, BFF_AUDIENCE)
+            .issue_access_token(USER_ID, CLIENT_ID, BFF_AUDIENCE, PrincipalKind::User)
             .expect("session token")
             .access_token;
         let provider = SessionPrincipalProvider::new(config.verifier(), [BFF_AUDIENCE.to_string()]);
@@ -179,7 +181,7 @@ mod tests {
 
         for audience in [MCP_AUDIENCE, BFF_AUDIENCE] {
             let token = config
-                .issue_access_token(USER_ID, CLIENT_ID, audience)
+                .issue_access_token(USER_ID, CLIENT_ID, audience, PrincipalKind::User)
                 .expect("session token")
                 .access_token;
             let principal = private_api
@@ -195,17 +197,49 @@ mod tests {
         }
     }
 
+    /// The kind is the issuer's statement about who it minted for, so the
+    /// provider reports it rather than deciding it. Two tokens differing only in
+    /// that claim authenticate the same id as different kinds of actor.
+    #[tokio::test]
+    async fn the_actor_kind_comes_from_the_token_that_declared_it() {
+        let signing_key = test_signing_key();
+        let config = session(&signing_key);
+        let provider = SessionPrincipalProvider::new(config.verifier(), [MCP_AUDIENCE.to_string()]);
+
+        for kind in [PrincipalKind::User, PrincipalKind::Agent] {
+            let token = config
+                .issue_access_token(USER_ID, CLIENT_ID, MCP_AUDIENCE, kind)
+                .expect("session token")
+                .access_token;
+            let principal = provider
+                .principal_for_metadata(&bearer_metadata(&token))
+                .await
+                .expect("principal");
+            assert_eq!(principal.kind(), kind);
+            assert_eq!(
+                principal.id().as_str(),
+                USER_ID,
+                "the kind must not disturb the subject"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn malformed_or_invalid_credentials_fail_generically() {
         let signing_key = test_signing_key();
         let config = session(&signing_key);
         let wrong_signing_key = test_signing_key();
         let wrong_key = session(&wrong_signing_key)
-            .issue_access_token(USER_ID, CLIENT_ID, MCP_AUDIENCE)
+            .issue_access_token(USER_ID, CLIENT_ID, MCP_AUDIENCE, PrincipalKind::User)
             .expect("wrong-key token")
             .access_token;
         let wrong_audience = config
-            .issue_access_token(USER_ID, CLIENT_ID, "https://other.example/mcp")
+            .issue_access_token(
+                USER_ID,
+                CLIENT_ID,
+                "https://other.example/mcp",
+                PrincipalKind::User,
+            )
             .expect("wrong-audience token")
             .access_token;
         let provider = SessionPrincipalProvider::new(config.verifier(), [MCP_AUDIENCE.to_string()]);
@@ -250,7 +284,7 @@ mod tests {
 
         for audience in [MCP_AUDIENCE, BFF_AUDIENCE] {
             let token = config
-                .issue_access_token(USER_ID, CLIENT_ID, audience)
+                .issue_access_token(USER_ID, CLIENT_ID, audience, PrincipalKind::User)
                 .expect("token")
                 .access_token;
             private_api
@@ -260,7 +294,12 @@ mod tests {
         }
 
         let unapproved = config
-            .issue_access_token(USER_ID, CLIENT_ID, "https://unapproved.example")
+            .issue_access_token(
+                USER_ID,
+                CLIENT_ID,
+                "https://unapproved.example",
+                PrincipalKind::User,
+            )
             .expect("token")
             .access_token;
         private_api
@@ -278,7 +317,7 @@ mod tests {
         let provider = SessionPrincipalProvider::new(config.verifier(), [MCP_AUDIENCE.to_string()]);
 
         let accepted = config
-            .issue_access_token(USER_ID, CLIENT_ID, MCP_AUDIENCE)
+            .issue_access_token(USER_ID, CLIENT_ID, MCP_AUDIENCE, PrincipalKind::User)
             .expect("token")
             .access_token;
         provider
@@ -288,7 +327,7 @@ mod tests {
 
         for audience in [BFF_AUDIENCE, "https://unapproved.example"] {
             let token = config
-                .issue_access_token(USER_ID, CLIENT_ID, audience)
+                .issue_access_token(USER_ID, CLIENT_ID, audience, PrincipalKind::User)
                 .expect("token")
                 .access_token;
             provider

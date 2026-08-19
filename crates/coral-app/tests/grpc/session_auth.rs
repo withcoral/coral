@@ -9,7 +9,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use coral_app::AppError;
+use coral_app::{AppError, PrincipalKind};
 use coral_client::local::{RunningServer, ServerBuilder};
 use ring::rand::SystemRandom;
 use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair};
@@ -88,6 +88,7 @@ redirect_uri = '{ISSUER}/auth/oidc/callback'
             user_id,
             CLIENT_ID,
             AUDIENCE,
+            PrincipalKind::User,
         )
         .expect("issue a session access token")
     }

@@ -11,6 +11,7 @@
 use std::time::Duration;
 
 use crate::auth::session::SessionTokenIssuer;
+use crate::identity::PrincipalKind;
 
 /// Mints an access token accepted by a server configured with `signing_key`.
 ///
@@ -19,6 +20,10 @@ use crate::auth::session::SessionTokenIssuer;
 /// PKCS#8 DER P-256 key the server verifies with. `user_id` is Coral's internal
 /// user id — the same thing a provisioned login puts in the token's `sub` — so
 /// it must be a canonical principal id, not an upstream OIDC subject.
+///
+/// `principal_kind` is what the server will authenticate the caller as. The
+/// login endpoint mints only [`PrincipalKind::User`]; a test that needs an agent
+/// asks for one here, because no property of a request makes a caller into one.
 ///
 /// # Errors
 ///
@@ -30,10 +35,11 @@ pub fn issue_access_token(
     user_id: &str,
     client_id: &str,
     audience: &str,
+    principal_kind: PrincipalKind,
 ) -> Result<String, String> {
     Ok(
         SessionTokenIssuer::new(Some(issuer), signing_key, access_token_ttl)?
-            .issue_access_token(user_id, client_id, audience)?
+            .issue_access_token(user_id, client_id, audience, principal_kind)?
             .access_token,
     )
 }
