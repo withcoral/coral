@@ -57,27 +57,13 @@ impl WorkspaceServiceApi for WorkspaceService {
         let principal = request_context(&request)?.principal().clone();
         instrument_grpc(span, async move {
             authorizer.admit(&principal).map_err(app_status)?;
-            let caller = principal.id().as_str();
-            let memberships = if principal.is_local() {
-                // Being admitted at all means this deployment treats the local
-                // principal as owner of everything, and it holds no membership
-                // rows the listing could be read from.
-                workspaces
-                    .list_workspaces()
-                    .await
-                    .map_err(app_status)?
-                    .into_iter()
-                    .map(|workspace| membership_to_proto(&workspace, MemberRole::Owner))
-                    .collect()
-            } else {
-                workspaces
-                    .list_memberships_for_user(caller)
-                    .await
-                    .map_err(app_status)?
-                    .into_iter()
-                    .map(|membership| membership_to_proto(&membership.workspace, membership.role))
-                    .collect()
-            };
+            let memberships = workspaces
+                .list_memberships_for_principal(&principal)
+                .await
+                .map_err(app_status)?
+                .into_iter()
+                .map(|membership| membership_to_proto(&membership.workspace, membership.role))
+                .collect();
             Ok(Response::new(ListWorkspacesResponse { memberships }))
         })
         .await

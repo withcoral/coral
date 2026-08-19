@@ -5,6 +5,7 @@ use tracing::warn;
 
 use crate::bootstrap::AppError;
 use crate::credentials::{CredentialManager, CredentialSetId};
+use crate::identity::Principal;
 use crate::sources::materialization::SourceDiagnosticReporter;
 use crate::state::ConfigStore;
 use crate::state::db::{
@@ -319,6 +320,34 @@ impl WorkspaceManager {
     /// one person may reach, while [`Self::list_workspaces`] stays the
     /// host-wide inventory that only the local principal and host-scoped work
     /// may read.
+    /// Lists what `principal` holds, which is not always what the membership
+    /// rows say.
+    ///
+    /// A deployment that admits the local principal treats it as owner of
+    /// everything, and it holds no membership rows a listing could be read
+    /// from for the workspaces it never created. Which of the two readings
+    /// applies is a property of the principal and the deployment, so it is
+    /// settled here rather than at the transport, where it would be one more
+    /// thing every caller of this had to remember.
+    pub(crate) async fn list_memberships_for_principal(
+        &self,
+        principal: &Principal,
+    ) -> Result<Vec<WorkspaceMembership>, AppError> {
+        if principal.is_local() {
+            return Ok(self
+                .list_workspaces()
+                .await?
+                .into_iter()
+                .map(|workspace| WorkspaceMembership {
+                    workspace,
+                    role: MemberRole::Owner,
+                })
+                .collect());
+        }
+        self.list_memberships_for_user(principal.id().as_str())
+            .await
+    }
+
     pub(crate) async fn list_memberships_for_user(
         &self,
         user_id: &str,
