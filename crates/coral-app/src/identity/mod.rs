@@ -210,16 +210,14 @@ impl std::error::Error for PrincipalProviderError {}
 ///
 /// The OSS provider always returns [`Principal::local`]. Product runtimes can
 /// install a provider that authenticates inbound metadata and returns the
-/// corresponding stable principal identity and actor kind.
+/// corresponding stable principal identity and actor kind. A provider must
+/// classify a given [`PrincipalId`] consistently across requests.
 ///
-/// The identity is a property of whoever is calling; the kind is a property of
-/// the credential they called with. One [`PrincipalId`] therefore arrives under
-/// either kind — a person acts as themselves, and an agent acting for that
-/// person carries the same id and says so — and a provider is required to be
-/// consistent about the identity rather than about the kind. Authorization is
-/// built on that split: what an identity may reach comes from its memberships,
-/// and the kind only narrows it, so a delegated credential is weaker than the
-/// person who issued it rather than being a different person.
+/// An agent is a principal in its own right, not a mode a person is in: it
+/// carries its own identifier, so a person and an agent acting for them are two
+/// principals and never one id under two kinds. The actor-kind claim states
+/// which of the two a token was minted for; it does not turn one into the
+/// other.
 #[tonic::async_trait]
 pub trait PrincipalProvider: Send + Sync + std::fmt::Debug {
     /// Returns the principal for one inbound gRPC request.
