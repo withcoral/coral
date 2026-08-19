@@ -309,9 +309,12 @@ fn allowed_hosts_must_be_valid_header_values() {
 #[tokio::test]
 async fn auth_disabled_router_accepts_loopback_names_and_configured_hosts() {
     let (_temp, app_server, app) = local_app().await;
+    // Host acceptance is what this asserts, but the router now resolves a
+    // workspace before it exists, so the fixture gives it one to resolve.
+    let options = workspace_scoped_options(&app).await;
     let (router, state) = auth_disabled_router(
         app.clone(),
-        McpOptions::default(),
+        options,
         ReadinessProbe::from_app(app),
         IpAddr::V4(Ipv4Addr::LOCALHOST),
         &["coral".to_string()],

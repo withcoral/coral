@@ -636,17 +636,17 @@ async fn opted_in_auth_disabled_companion_serves_off_loopback() {
     let temp = TempDir::new().expect("temp dir");
     write_config(
         &temp,
-        "[trace_history]\nenabled = false\n\n[server.mcp_http]\nenabled = true\n\
-         bind = '0.0.0.0:0'\nallow_unauthenticated_non_loopback = true\n",
+        &format!(
+            "[trace_history]\nenabled = false\n\n[server.mcp_http]\nenabled = true\n\
+             bind = '0.0.0.0:0'\nallow_unauthenticated_non_loopback = true\n\
+             workspace = '{TEST_WORKSPACE_NAME}'\n"
+        ),
     );
     let server = start(
         ServerBuilder::configured_standalone_grpc()
             .with_config_dir(temp.path())
             .with_noop_feedback_uploads(),
-        McpOptions {
-            workspace: Some(test_workspace()),
-            ..McpOptions::default()
-        },
+        McpOptions::default(),
         None,
     )
     .await
