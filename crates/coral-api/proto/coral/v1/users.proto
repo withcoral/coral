@@ -23,12 +23,6 @@ message GetCurrentUserRequest {}
 message GetCurrentUserResponse {
   // Directory entry for the caller.
   User user = 1;
-  // Workspace routing does not belong on an identity RPC: this response says
-  // who the caller is, never where they should be sent. The number and the name
-  // are held off-limits deliberately, so no future field can quietly
-  // reintroduce routing here.
-  reserved 2;
-  reserved "default_workspace";
 }
 
 // Lists the deployment's directory.
