@@ -170,12 +170,14 @@ async fn person(deployment: &SharedDeployment, user_id: &str) -> Caller {
     Caller::connect(deployment.endpoint_uri(), Some(credential)).await
 }
 
-/// The same person's id, admitted as an agent rather than as themselves.
+/// An agent, which is a principal in its own right.
 ///
-/// Only the token's actor-kind claim separates this caller from [`person`], so
-/// a refusal one meets and the other does not is a refusal of the actor kind.
-async fn agent(deployment: &SharedDeployment, user_id: &str) -> Caller {
-    let credential = deployment.credential(user_id, PrincipalKind::Agent);
+/// It carries `agent_id` rather than any person's, because the two are drawn
+/// from one namespace and never coincide — so it holds no membership until one
+/// is granted to that identifier, and acting for a person is not something this
+/// model expresses.
+async fn agent(deployment: &SharedDeployment, agent_id: &str) -> Caller {
+    let credential = deployment.credential(agent_id, PrincipalKind::Agent);
     Caller::connect(deployment.endpoint_uri(), Some(credential)).await
 }
 
@@ -370,8 +372,8 @@ async fn neither_a_member_nor_any_agent_credential_inspects_traces() {
         &[("tf-deny-trace", Some("tf-deny"))],
     );
     let member = person(&deployment, &bob).await;
-    let member_agent = agent(&deployment, &bob).await;
-    let owner_agent = agent(&deployment, &ada).await;
+    let member_agent = agent(&deployment, "agent-tf-deny-one").await;
+    let owner_agent = agent(&deployment, "agent-tf-deny-two").await;
 
     for (who, caller) in [
         ("a member", &member),
@@ -473,7 +475,7 @@ async fn no_shared_credential_configures_this_hosts_runtime_features() {
         .await
         .expect("the creator makes their own workspace");
     let owner = person(&deployment, &ada).await;
-    let owners_agent = agent(&deployment, &ada).await;
+    let owners_agent = agent(&deployment, "agent-tf-features").await;
 
     for (who, caller) in [("an owner", &owner), ("their agent", &owners_agent)] {
         assert_eq!(

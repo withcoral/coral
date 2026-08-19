@@ -384,10 +384,13 @@ async fn a_member_is_refused_every_source_rpc() {
             "a member reads and changes no source configuration: {rpc} {message}",
         );
     }
-    // The agent session behind the same person is bounded by that person, so it
-    // gains nothing the member did not have.
-    for (rpc, code, message, _) in
-        source_refusals(&deployment.as_agent(&bob).await, "source-member").await
+    // An agent holds no membership of its own, so it is stopped before the
+    // member's ceiling is even reached.
+    for (rpc, code, message, _) in source_refusals(
+        &deployment.as_agent("agent-source-member").await,
+        "source-member",
+    )
+    .await
     {
         assert_eq!(
             code,

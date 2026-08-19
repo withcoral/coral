@@ -258,6 +258,46 @@ async fn refusals(
 }
 
 /// Asserts `client` reads both families and changes neither.
+/// Both families closed to one caller, for the two different reasons that close
+/// them: the reads are concealed because the caller holds no membership, and the
+/// mutations are refused outright by the credential's kind.
+async fn reaches_neither_family(client: &AppClient, name: &str, who: &str) {
+    assert_eq!(
+        list_functions(client, name)
+            .await
+            .expect_err("a caller with no membership lists no functions")
+            .code(),
+        Code::NotFound,
+        "{who} listed the workspace's functions",
+    );
+    assert_eq!(
+        execute_sql_rows(client, name, ECHO_CALL)
+            .await
+            .expect_err("a caller with no membership calls no function")
+            .code(),
+        Code::NotFound,
+        "{who} called the installed function",
+    );
+    assert_eq!(
+        search(client, name, "echo one value")
+            .await
+            .expect_err("a caller with no membership searches nothing")
+            .code(),
+        Code::NotFound,
+        "{who} searched the workspace",
+    );
+
+    for (rpc, result) in every_mutation(client, name).await {
+        assert_eq!(
+            result
+                .expect_err("an agent credential changes nothing")
+                .code(),
+            Code::PermissionDenied,
+            "{who} changed the workspace through {rpc}",
+        );
+    }
+}
+
 async fn reads_both_and_changes_neither(client: &AppClient, name: &str, who: &str) {
     assert_eq!(
         list_functions(client, name)
@@ -385,16 +425,18 @@ async fn a_member_reads_functions_and_search_but_changes_neither() {
     );
 }
 
-/// The data plane carries the person's workspace access and the control plane
-/// does not, so an agent credential is on both sides of the same line.
+/// An agent credential reaches neither family, and the two refusals are worth
+/// separating.
 ///
-/// The owner's own agent is the half that matters: their role would make every
-/// mutation theirs to perform, and the credential is refused anyway — a
-/// prompt-injected agent cannot publish SQL every member then runs, nor clear
-/// the index every member searches. The member's agent proves the other half,
-/// that the reads were not shut off along with the writes.
+/// The mutations are the half that matters: they are refused by the credential's
+/// kind before any membership is consulted, so a prompt-injected agent cannot
+/// publish SQL every member then runs nor clear the index every member searches
+/// — and that holds whatever workspace it aims at, including one whose owner it
+/// was made for. The reads are refused for the ordinary reason instead: an agent
+/// is its own principal, and this model gives it no way to hold the memberships
+/// of the person it acts for.
 #[tokio::test]
-async fn an_agent_credential_reads_both_families_and_changes_neither() {
+async fn an_agent_credential_reaches_neither_family() {
     let deployment = SharedDeployment::start().await;
     let ada = deployment.seed_user("fs-agent-ada", "Ada").await;
     let bob = deployment.seed_user("fs-agent-bob", "Bob").await;
@@ -409,16 +451,16 @@ async fn an_agent_credential_reads_both_families_and_changes_neither() {
         .await
         .expect("the owner grants membership");
 
-    reads_both_and_changes_neither(
-        &deployment.as_agent(&bob).await,
+    reaches_neither_family(
+        &deployment.as_agent("agent-fs-one").await,
         "fs-agent",
-        "a member's agent",
+        "an agent credential",
     )
     .await;
-    reads_both_and_changes_neither(
-        &deployment.as_agent(&ada).await,
+    reaches_neither_family(
+        &deployment.as_agent("agent-fs-two").await,
         "fs-agent",
-        "the owner's own agent",
+        "a second agent credential",
     )
     .await;
 

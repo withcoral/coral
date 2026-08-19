@@ -517,32 +517,34 @@ async fn concurrent_owner_changes_cannot_strand_the_workspace() {
 }
 
 /// An agent credential carries the person behind it and none of their control
-/// plane. The same user id owns this workspace through their own session, so
-/// the refusals below are about the credential's kind rather than about who is
-/// behind it — and the person's own calls afterwards say so.
-///
-/// The denial is uniform across workspaces because the rule refuses an agent
-/// every workspace alike: it is settled before any membership is read, so it
-/// reveals nothing about which workspaces exist.
+/// plane. The manage refusal is settled by the credential's kind before any
+/// membership is read, which is what makes it uniform across workspaces and
+/// therefore silent about which ones exist. The read refusal is the ordinary
+/// one: an agent is its own principal and holds no membership here.
 #[tokio::test]
-async fn an_agent_credential_is_refused_the_control_plane_of_its_own_persons_workspace() {
+async fn an_agent_credential_is_refused_every_workspace_control_plane() {
     let deployment = SharedDeployment::start().await;
     let ada = deployment.seed_user("member-agent-ada", "Ada").await;
     let person = deployment.as_person(&ada).await;
-    let agent = deployment.as_agent(&ada).await;
+    let agent = deployment.as_agent("agent-member-agent").await;
     create_workspace(&person, "member-agent")
         .await
         .expect("the creator makes their own workspace");
-    execute_sql(&agent, "member-agent", "select 1")
-        .await
-        .expect("the agent session reads what the person behind it may read");
+    assert_eq!(
+        execute_sql(&agent, "member-agent", "select 1")
+            .await
+            .expect_err("an agent holds no membership in this workspace")
+            .code(),
+        Code::NotFound,
+        "a workspace an agent does not belong to must stay concealed from it",
+    );
 
     let refusals = control_plane_refusals(&agent, "member-agent").await;
     for (rpc, code, message, _) in &refusals {
         assert_eq!(
             *code,
             Code::PermissionDenied,
-            "an agent credential manages no workspace, not even its own person's: {rpc} {message}",
+            "an agent credential manages no workspace at all: {rpc} {message}",
         );
     }
     assert_eq!(

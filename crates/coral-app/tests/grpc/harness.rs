@@ -354,15 +354,15 @@ impl SharedDeployment {
         self.connect(user_id, PrincipalKind::User).await
     }
 
-    /// Connects the same person's id, admitted as an agent rather than as
-    /// themselves.
+    /// Connects an agent, which is a principal in its own right.
     ///
-    /// Only the token's actor-kind claim separates this from [`Self::as_person`]
-    /// — same id, same audience, same issuer — so a refusal one of them meets
-    /// and the other does not is a refusal of the actor kind and of nothing
-    /// else.
-    pub(crate) async fn as_agent(&self, user_id: &str) -> AppClient {
-        self.connect(user_id, PrincipalKind::Agent).await
+    /// It carries `agent_id` rather than any person's id, because the two are
+    /// drawn from one namespace and never coincide. An agent therefore holds
+    /// only the memberships granted to `agent_id` itself, which is none until
+    /// something grants them: acting for a person is not something the identity
+    /// or the actor kind can express.
+    pub(crate) async fn as_agent(&self, agent_id: &str) -> AppClient {
+        self.connect(agent_id, PrincipalKind::Agent).await
     }
 
     /// The address to dial for a service `AppClient` does not carry, such as

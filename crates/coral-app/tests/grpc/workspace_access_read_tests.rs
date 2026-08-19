@@ -169,7 +169,7 @@ async fn workspace_access_read_harness_seats_two_people_around_one_workspace() {
     let ada = deployment.seed_user("read-ada", "Ada").await;
     let bob = deployment.seed_user("read-bob", "Bob").await;
     let owner = deployment.as_person(&ada).await;
-    let owner_agent = deployment.as_agent(&ada).await;
+    let agent = deployment.as_agent("agent-read-harness").await;
     let outsider = deployment.as_person(&bob).await;
     let created = create_workspace(&owner, "read-harness")
         .await
@@ -191,9 +191,15 @@ async fn workspace_access_read_harness_seats_two_people_around_one_workspace() {
         "a refused read must leave behind no task, no recorded query, and no attributed span",
     );
 
-    execute_sql(&owner_agent, "read-harness", "select 1")
-        .await
-        .expect("an agent session reads what the person behind it may read");
+    // An agent is its own principal, so it holds no membership here and the
+    // workspace is concealed from it exactly as it is from any other outsider.
+    assert_eq!(
+        execute_sql(&agent, "read-harness", "select 1")
+            .await
+            .expect_err("an agent holds no membership of its own")
+            .code(),
+        Code::NotFound,
+    );
     add_member(&owner, "read-harness", &bob, WorkspaceRole::Member)
         .await
         .expect("the owner grants membership");
@@ -374,9 +380,13 @@ async fn membership_opens_every_read_surface_and_revocation_closes_it() {
         .await
         .expect("the owner grants membership");
     expect_full_read_access(&member, "read-grant").await;
-    // The agent session behind the same person inherits the grant, so an MCP
-    // client is bounded by who is behind it rather than by its own audience.
-    expect_full_read_access(&deployment.as_agent(&bob).await, "read-grant").await;
+    // Granting the person nothing for the agent: the two are separate
+    // principals, so a membership written for one is not readable by the other.
+    for (surface, code, _, _) in
+        read_refusals(&deployment.as_agent("agent-read-grant").await, "read-grant").await
+    {
+        assert_eq!(code, Code::NotFound, "an agent reached {surface}");
+    }
 
     remove_member(&owner, "read-grant", &bob)
         .await
