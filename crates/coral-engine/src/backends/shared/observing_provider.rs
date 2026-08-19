@@ -22,14 +22,6 @@
 //!   scan from every rule that downcasts to `DataSourceExec`, costing filter
 //!   pushdown, limit pushdown, and file-group repartitioning.
 
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "wired by the file backend in the next PR of this stack"
-    )
-)]
-
 use std::any::Any;
 use std::borrow::Cow;
 use std::fmt;
