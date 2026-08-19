@@ -549,7 +549,10 @@ async fn opted_in_auth_disabled_companion_serves_off_loopback() {
         ServerBuilder::configured_standalone_grpc()
             .with_config_dir(temp.path())
             .with_noop_feedback_uploads(),
-        McpOptions::default(),
+        McpOptions {
+            workspace: Some(test_workspace()),
+            ..McpOptions::default()
+        },
         None,
     )
     .await
@@ -560,6 +563,9 @@ async fn opted_in_auth_disabled_companion_serves_off_loopback() {
     // Dial through loopback: the point here is that the listener started and
     // serves; reachability from other interfaces is the operator's affair.
     let dial = SocketAddr::from((Ipv4Addr::LOCALHOST, mcp_addr.port()));
+    // The tools this asserts are workspace-scoped, and nothing provisions a
+    // workspace any more, so the fixture creates the one it scopes MCP to.
+    create_test_workspace(server.endpoint_uri()).await;
     assert_catalog_tool(format!("http://{dial}/mcp")).await;
     server.shutdown().await.expect("shutdown composite server");
 }
