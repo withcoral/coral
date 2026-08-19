@@ -13,9 +13,18 @@ export async function listWorkspacesForRequest(
   // Coral now answers with the caller's memberships. Reef reads only the
   // workspace each one points at; surfacing the role it carries is a separate
   // change to Reef's own contract.
-  return response.memberships
-    .map((membership) => membership.workspace)
-    .filter((workspace) => workspace !== undefined)
+  //
+  // A membership without a workspace is a Coral that broke its own contract, so
+  // it is reported rather than skipped. Dropping it would shorten the list —
+  // and an emptied list reads downstream as "you belong to no workspace", which
+  // sends the caller to a 404 about configuration for what is really a
+  // malformed response.
+  return response.memberships.map((membership) => {
+    if (!membership.workspace) {
+      throw new Error('Coral returned a workspace membership without a workspace')
+    }
+    return membership.workspace
+  })
 }
 
 export const DEFAULT_WORKSPACE_ID = 'default'
