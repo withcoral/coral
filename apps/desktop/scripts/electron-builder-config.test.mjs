@@ -151,6 +151,28 @@ test('linux packages target AppImage and deb, and publish an AppImage-only feed'
   assert.equal(linux?.icon, 'resources/icons')
 })
 
+test('windows packages target a single NSIS installer with no updater', () => {
+  const { win, nsis } = createConfig({}, 'win32')
+
+  assert.deepEqual(win?.target, [{ target: 'nsis', arch: ['x64'] }])
+  // No updater on Windows, so electron-builder must write neither a latest.yml
+  // feed nor the app-update.yml the package would otherwise embed. The blockmap
+  // is gated separately: NsisTarget keys it off differentialPackage, not off
+  // publish, so `publish: null` alone still leaves one in dist.
+  assert.equal(win?.publish, null)
+  assert.equal(nsis?.differentialPackage, false)
+  // An assisted, per-user install: %LOCALAPPDATA% is writable without UAC,
+  // while a per-machine resourcesPath under Program Files is not.
+  assert.equal(nsis?.oneClick, false)
+  assert.equal(nsis?.perMachine, false)
+  assert.equal(nsis?.allowToChangeInstallationDirectory, true)
+  // The .ico file, not the icons directory: the directory form exists for the
+  // lone-.png trap on linux, and electron-builder uses a >=256-entry .ico as is.
+  assert.equal(win?.icon, 'resources/icons/icon.ico')
+  // Only the deb needs a renamed executable, because it symlinks into /usr/bin.
+  assert.equal(win?.executableName, undefined)
+})
+
 test('deb metadata inputs that live in package.json are present', () => {
   const packageJson = JSON.parse(
     readFileSync(new URL('../package.json', import.meta.url), 'utf8'),

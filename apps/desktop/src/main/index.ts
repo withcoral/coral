@@ -122,7 +122,8 @@ function createMainWindow(): BrowserWindow {
     minHeight: 520,
     title: 'Coral',
     icon: currentWindowIconPath(),
-    autoHideMenuBar: process.platform !== 'darwin',
+    // A hidden bar means the only route to About and Quit is the Alt key.
+    autoHideMenuBar: false,
     webPreferences: {
       preload: preloadPath,
       contextIsolation: true,
@@ -305,28 +306,54 @@ function installAboutPanel() {
   })
 }
 
-function installMenu() {
-  const template: Electron.MenuItemConstructorOptions[] = [
+// `role: 'about'` would label itself from app.name, the package name in dev.
+const ABOUT_ITEM: Electron.MenuItemConstructorOptions = {
+  label: 'About Coral',
+  click: () => app.showAboutPanel(),
+}
+
+function updateItems(): Electron.MenuItemConstructorOptions[] {
+  if (!desktopUpdatesSupported()) return []
+  return [
+    {
+      label: 'Check for Updates...',
+      click: () => {
+        void checkForDesktopUpdates({ interactive: true })
+      },
+    },
+  ]
+}
+
+// macOS puts About, updates, and Quit in an application menu named after the
+// app. Windows and Linux have no such menu: a top-level "Coral" entry next to
+// Edit and View is where nobody looks for either item, so those platforms get
+// the File/Help pair they do expect.
+function leadingMenus(): Electron.MenuItemConstructorOptions[] {
+  if (process.platform !== 'darwin') return [{ label: 'File', submenu: [{ role: 'quit' }] }]
+  const updates = updateItems()
+  return [
     {
       label: 'Coral',
       submenu: [
-        // `role: 'about'` would label itself from app.name, the package name in dev.
-        { label: 'About Coral', click: () => app.showAboutPanel() },
+        ABOUT_ITEM,
         { type: 'separator' },
-        ...(desktopUpdatesSupported()
-          ? ([
-              {
-                label: 'Check for Updates...',
-                click: () => {
-                  void checkForDesktopUpdates({ interactive: true })
-                },
-              },
-              { type: 'separator' },
-            ] satisfies Electron.MenuItemConstructorOptions[])
+        ...(updates.length > 0
+          ? ([...updates, { type: 'separator' }] satisfies Electron.MenuItemConstructorOptions[])
           : []),
         { role: 'quit' },
       ],
     },
+  ]
+}
+
+function trailingMenus(): Electron.MenuItemConstructorOptions[] {
+  if (process.platform === 'darwin') return []
+  return [{ label: 'Help', submenu: [...updateItems(), ABOUT_ITEM] }]
+}
+
+function installMenu() {
+  const template: Electron.MenuItemConstructorOptions[] = [
+    ...leadingMenus(),
     {
       label: 'Edit',
       submenu: [
@@ -356,11 +383,17 @@ function installMenu() {
         { role: 'zoomOut' },
       ],
     },
+    ...trailingMenus(),
   ]
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }
 
 function startApplication(): void {
+  // Windows keys toasts, taskbar grouping, and jump lists off this id, and
+  // silently drops a notification from a process that never set one. Must run
+  // before the app is ready. It is inert on macOS and Linux.
+  app.setAppUserModelId('com.withcoral.desktop')
+
   const gotLock = app.requestSingleInstanceLock()
   if (!gotLock) {
     app.quit()

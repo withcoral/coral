@@ -48,9 +48,13 @@ export async function externalCoralPath(): Promise<string> {
     releaseCoralPath(),
   ]
 
+  // libuv maps X_OK to F_OK on Windows, so the executable bit is unverifiable
+  // there and the check degrades to "does the file exist". Ask for what the
+  // platform can actually answer, so the failure message below stays true.
+  const mode = process.platform === 'win32' ? constants.F_OK : constants.X_OK
   for (const candidate of candidates) {
     try {
-      await access(candidate, constants.X_OK)
+      await access(candidate, mode)
       return candidate
     } catch {
       // Try the next candidate.

@@ -420,11 +420,84 @@ jobs:
             apps/desktop/dist/coral-desktop-*.deb
             apps/desktop/dist/latest-linux.yml
 
+  # An unsigned preview: SmartScreen warns on install. No signing, no
+  # notarization, and no updater, so no xtask and no credentials — and unlike
+  # the Linux leg, no update feed either (see win.publish in
+  # apps/desktop/electron-builder.config.ts).
+  build-desktop-windows:
+    needs:
+      - validate-release-ref
+      - build
+    runs-on: blacksmith-4vcpu-windows-2025
+    env:
+      TAG_NAME: ${{ needs.validate-release-ref.outputs.tag-name }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.validate-release-ref.outputs.commit-sha }}
+          persist-credentials: false
+
+      # Nothing downstream carries the version — the installer filename holds
+      # only the arch — so a manual tag on a commit whose desktop version was
+      # never bumped would ship an About panel and an Add/Remove Programs entry
+      # that disagree with the release. The macOS leg gets this from xtask; see
+      # ensure_version_matches_tag in xtask/src/release.rs.
+      - name: Verify desktop version matches the release tag
+        shell: pwsh
+        run: |
+          $version = (Get-Content apps/desktop/package.json | ConvertFrom-Json).version
+          if ("v$version" -ne $env:TAG_NAME) {
+            Write-Error "desktop version v$version does not match release tag $env:TAG_NAME"
+            exit 1
+          }
+
+      - name: Download Windows CLI artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: coral-x86_64-pc-windows-msvc
+          path: ${{ runner.temp }}/cli
+
+      # The `build` job already compiled this target; reuse it rather than
+      # rebuilding Rust here.
+      - name: Unpack the prebuilt Coral CLI
+        shell: pwsh
+        run: |
+          $cli = "$env:RUNNER_TEMP\cli"
+          Expand-Archive -Path "$cli\coral-x86_64-pc-windows-msvc.zip" -DestinationPath $cli -Force
+          & "$cli\coral.exe" --version
+
+      - name: Set up Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: apps/desktop/.node-version
+          package-manager-cache: false
+
+      - name: Install desktop dependencies
+        run: npm ci --prefix apps/desktop
+
+      # No CORAL_DESKTOP_RELEASE: it bakes in the updater, and Windows has none.
+      # createConfig() rejects the flag on a win32 host for that reason.
+      - name: Package desktop app
+        env:
+          CORAL_DESKTOP_CLI_PATH: ${{ runner.temp }}/cli/coral.exe
+        run: npm run package:win --prefix apps/desktop
+
+      - name: Verify desktop package artifacts
+        run: node apps/desktop/scripts/verify-dist.mjs apps/desktop/dist win
+
+      - name: Upload desktop artifact
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: coral-desktop-windows
+          if-no-files-found: error
+          path: apps/desktop/dist/coral-desktop-*.exe
+
   checksums:
     needs:
       - build
       - build-desktop-linux
       - build-desktop-macos
+      - build-desktop-windows
       - sign-notarize-macos
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
@@ -448,6 +521,7 @@ jobs:
             coral-*.blockmap
             coral-desktop-*.AppImage
             coral-desktop-*.deb
+            coral-desktop-*.exe
           )
           if [ "${#archives[@]}" -eq 0 ]; then
             echo "No Coral release archives found" >&2
@@ -508,6 +582,7 @@ jobs:
             artifacts/coral-*.blockmap
             artifacts/coral-desktop-*.AppImage
             artifacts/coral-desktop-*.deb
+            artifacts/coral-desktop-*.exe
           )
           if [ "${#archives[@]}" -eq 0 ]; then
             echo "No Coral release archives found" >&2
