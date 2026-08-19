@@ -22,6 +22,11 @@ use datafusion::datasource::TableProvider;
 use datafusion::error::Result;
 use datafusion::prelude::SessionContext;
 
+use crate::SourceObservationSurfaceKind;
+use crate::backends::shared::observing_provider::observed_table_provider;
+use crate::backends::shared::source_observation::{
+    SourceObservationConfig, SourceObservationPublishers, source_observation_publishers,
+};
 use crate::backends::{
     BackendCompileRequest, BackendRegistration, BackendRegistrationContext,
     BackendSchemaRegistration, CompiledBackendSource, RegisteredSource, RegisteredTable,
@@ -35,12 +40,13 @@ use coral_spec::backends::file::{FileFormat, FileSourceManifest, FileTableSpec};
 use self::json::JsonFileTableProvider;
 use self::provider::FileTableProvider;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct FileCompiledSource {
     manifest: FileSourceManifest,
     home_dir: Option<PathBuf>,
     source_secrets: BTreeMap<String, String>,
     source_variables: BTreeMap<String, String>,
+    source_observation_publishers: SourceObservationPublishers,
 }
 
 pub(crate) fn compile_source(
@@ -48,12 +54,14 @@ pub(crate) fn compile_source(
     home_dir: Option<PathBuf>,
     source_secrets: BTreeMap<String, String>,
     source_variables: BTreeMap<String, String>,
+    source_observation_publishers: SourceObservationPublishers,
 ) -> Box<dyn CompiledBackendSource> {
     Box::new(FileCompiledSource {
         manifest,
         home_dir,
         source_secrets,
         source_variables,
+        source_observation_publishers,
     })
 }
 
@@ -66,6 +74,7 @@ pub(crate) fn compile_manifest(
         request.runtime_context.home_dir.clone(),
         request.source_secrets.clone(),
         request.source_variables.clone(),
+        source_observation_publishers(request.source_observation_publishers),
     )
 }
 
@@ -132,9 +141,19 @@ impl CompiledBackendSource for FileCompiledSource {
                 }
             };
             let schema = provider.schema();
-            let table_name = table.name().to_string();
             let metadata = registered_table(table, &schema);
-            tables.insert(table_name, provider);
+            tables.insert(
+                table.name().to_string(),
+                observed_table_provider(
+                    provider,
+                    &self.manifest.common.name,
+                    table.name(),
+                    SourceObservationConfig::new(
+                        SourceObservationSurfaceKind::Table,
+                        Arc::clone(&self.source_observation_publishers),
+                    ),
+                ),
+            );
             table_infos.push(metadata);
         }
 

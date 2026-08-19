@@ -4,19 +4,23 @@ use super::partitions::{
     PartitionColumns, partition_filter_constraints, partition_values_for_path,
 };
 use super::provider::FileTableProvider;
-use crate::backends::compile_source_manifest;
+use crate::backends::shared::source_observation::test_support::{
+    RecordedSourceObservation, RecordingSourceObservationPublisher,
+};
+use crate::backends::{BackendCompileRequest, compile_source_manifest, compile_validated_manifest};
 use crate::runtime::catalog;
 use crate::runtime::registry::{CompiledQuerySource, register_sources_blocking};
-use crate::{QueryRuntimeContext, QuerySource};
+use crate::{QueryRuntimeContext, QuerySource, SourceObservationPublisher};
 use coral_spec::backends::file::{
     FilePartitionDataType, FileTableSpec, PartitionColumnSpec, PartitionPathSpec,
 };
 use coral_spec::{ValidatedSourceManifest, parse_source_manifest_value};
 use datafusion::arrow::array::{
-    DictionaryArray, Float64Array, Int64Array, StringArray, UInt16Array,
+    Array as _, DictionaryArray, Float64Array, Int64Array, StringArray, UInt16Array,
 };
 use datafusion::arrow::datatypes::{DataType, Field, Schema, UInt16Type};
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::arrow::util::display::{ArrayFormatter, FormatOptions};
 use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::common::ScalarValue;
 use datafusion::datasource::listing::ListingTableUrl;
@@ -26,7 +30,7 @@ use object_store::ObjectMeta;
 use object_store::path::Path as ObjectPath;
 use parquet::arrow::ArrowWriter;
 use serde_json::json;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::sync::Arc;
 use tempfile::tempdir;
@@ -912,6 +916,312 @@ async fn partition_column_in_file_schema_is_stripped_and_data_is_queryable() {
         rendered.contains("abc-123"),
         "_part_id value from hive directory should be visible"
     );
+}
+
+/// Compiles sources the way the engine does when observed-value capture is on.
+///
+/// `compile_sources` above is the capture-off path: it leaves the publisher
+/// list empty, so nothing wraps the file providers.
+fn compile_sources_with_observation_publishers(
+    manifests: Vec<ValidatedSourceManifest>,
+    publishers: &[Arc<dyn SourceObservationPublisher>],
+) -> Vec<CompiledQuerySource> {
+    let runtime_context = QueryRuntimeContext::default();
+    let request_authenticators = HashMap::new();
+    let request_identity_http_authenticators = HashMap::new();
+    manifests
+        .into_iter()
+        .map(|manifest| {
+            let source = QuerySource::new(manifest.clone(), BTreeMap::new(), BTreeMap::new());
+            let compiled = compile_validated_manifest(
+                &manifest,
+                &BackendCompileRequest {
+                    source: &source,
+                    runtime_context: &runtime_context,
+                    database_pool_registry: Arc::new(crate::DatabasePoolRegistry::new()),
+                    source_secrets: BTreeMap::new(),
+                    source_variables: BTreeMap::new(),
+                    request_authenticators: &request_authenticators,
+                    source_input_resolver: None,
+                    source_observation_publishers: publishers,
+                    request_identity_http_authenticators: &request_identity_http_authenticators,
+                },
+            )
+            .expect("manifest should compile");
+            CompiledQuerySource { source, compiled }
+        })
+        .collect()
+}
+
+/// Registers `manifest` with observed-value capture on, runs `sql`, and
+/// returns the rendered rows next to what the scan published.
+async fn observed_query(
+    manifest: ValidatedSourceManifest,
+    sql: &str,
+) -> (String, Vec<RecordedSourceObservation>) {
+    let ctx = SessionContext::new();
+    let publisher = Arc::new(RecordingSourceObservationPublisher::default());
+    register_sources_blocking(
+        &ctx,
+        compile_sources_with_observation_publishers(
+            vec![manifest],
+            &[Arc::clone(&publisher) as Arc<dyn SourceObservationPublisher>],
+        ),
+    )
+    .expect("observed file source should register");
+
+    let batches = ctx
+        .sql(sql)
+        .await
+        .expect("query should plan")
+        .collect()
+        .await
+        .expect("query should execute");
+    let rendered = pretty_format_batches(&batches)
+        .expect("batches should render")
+        .to_string();
+    (rendered, publisher.observations())
+}
+
+fn observed_rows(observations: &[RecordedSourceObservation]) -> usize {
+    observations
+        .iter()
+        .map(|observation| observation.row_count)
+        .sum()
+}
+
+fn observed_values(observations: &[RecordedSourceObservation], column: &str) -> Vec<String> {
+    observations
+        .iter()
+        .flat_map(|observation| {
+            let batch = &observation.batch;
+            let index = batch.schema().index_of(column).expect("observed column");
+            let values = batch.column(index);
+            let formatter = ArrayFormatter::try_new(values.as_ref(), &FormatOptions::default())
+                .expect("observed column should render");
+            (0..values.len())
+                .map(|row| formatter.value(row).to_string())
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn parquet_scan_publishes_observations_for_the_projected_columns() {
+    let fixture_dir = tempdir().expect("tempdir should be created");
+    write_metrics_fixture(fixture_dir.path());
+    let location = file_url_from_directory_path(fixture_dir.path());
+
+    let (rendered, observations) = observed_query(
+        parquet_manifest(&location),
+        "SELECT metric FROM otel.metrics ORDER BY metric",
+    )
+    .await;
+
+    assert!(rendered.contains("cpu.usage"));
+    assert!(!observations.is_empty(), "the parquet scan should publish");
+    for observation in &observations {
+        assert_eq!(observation.source_name, "otel");
+        assert_eq!(observation.surface_name, "metrics");
+        assert_eq!(observation.column_names, vec!["metric".to_string()]);
+    }
+    let mut observed = observed_values(&observations, "metric");
+    observed.sort();
+    assert_eq!(observed, vec!["cpu.usage", "memory.usage"]);
+}
+
+#[tokio::test]
+async fn csv_scan_publishes_observations() {
+    let fixture_dir = tempdir().expect("tempdir should be created");
+    fs::write(
+        fixture_dir.path().join("events.csv"),
+        "id|kind\n1|user\n2|assistant\n",
+    )
+    .expect("csv fixture should be written");
+    let location = file_url_from_directory_path(fixture_dir.path());
+    let manifest = file_manifest_with_columns(
+        "csv_demo",
+        "csv",
+        &location,
+        "**/*.csv",
+        &[
+            json!({ "name": "id", "type": "Int64" }),
+            json!({ "name": "kind", "type": "Utf8" }),
+        ],
+        Some(json!({ "has_header": true, "delimiter": "|" })),
+    );
+
+    let (_, observations) = observed_query(manifest, "SELECT kind FROM csv_demo.events").await;
+
+    assert_eq!(observed_rows(&observations), 2);
+    let mut observed = observed_values(&observations, "kind");
+    observed.sort();
+    assert_eq!(observed, vec!["assistant", "user"]);
+}
+
+#[tokio::test]
+async fn custom_json_provider_scan_publishes_observations() {
+    let fixture_dir = tempdir().expect("tempdir should be created");
+    let partition_dir = fixture_dir.path().join("day=2026-03-10");
+    fs::create_dir_all(&partition_dir).expect("partition dir should exist");
+    fs::write(
+        partition_dir.join("events.jsonl"),
+        "{\"id\":1,\"kind\":\"user\"}\n{\"id\":2,\"kind\":\"assistant\"}\n",
+    )
+    .expect("jsonl fixture should be written");
+    let location = file_url_from_directory_path(fixture_dir.path());
+
+    let (_, observations) = observed_query(
+        partitioned_jsonl_manifest(&location),
+        "SELECT kind FROM jsonl_partitioned.events",
+    )
+    .await;
+
+    assert_eq!(observed_rows(&observations), 2);
+    let mut observed = observed_values(&observations, "kind");
+    observed.sort();
+    assert_eq!(observed, vec!["assistant", "user"]);
+}
+
+#[tokio::test]
+async fn partition_pruned_scan_publishes_only_the_surviving_files() {
+    let fixture_dir = tempdir().expect("tempdir should be created");
+    write_metrics_fixture_for_day(
+        fixture_dir.path(),
+        "2026-03-10",
+        &[("cpu.usage", 0.42)],
+        "metrics.parquet",
+    );
+    write_metrics_fixture_for_day(
+        fixture_dir.path(),
+        "2026-03-11",
+        &[("disk.usage", 7.5)],
+        "metrics.parquet",
+    );
+    let location = file_url_from_directory_path(fixture_dir.path());
+
+    let (rendered, observations) = observed_query(
+        parquet_manifest(&location),
+        "SELECT metric FROM otel.metrics WHERE date = '2026-03-10'",
+    )
+    .await;
+
+    assert!(rendered.contains("cpu.usage"));
+    assert!(!rendered.contains("disk.usage"));
+    assert_eq!(
+        observed_values(&observations, "metric"),
+        vec!["cpu.usage"],
+        "the pruned partition's file must not be observed"
+    );
+}
+
+#[tokio::test]
+async fn a_predicate_over_the_table_selects_what_is_observed() {
+    let fixture_dir = tempdir().expect("tempdir should be created");
+    write_metrics_fixture(fixture_dir.path());
+    let location = file_url_from_directory_path(fixture_dir.path());
+    let sql = "SELECT metric, value FROM otel.metrics WHERE metric = 'cpu.usage'";
+
+    let (observed_rendered, observations) = observed_query(parquet_manifest(&location), sql).await;
+
+    assert_eq!(
+        observed_values(&observations, "metric"),
+        vec!["cpu.usage"],
+        "only the rows the predicate selects should be observed"
+    );
+
+    let ctx = SessionContext::new();
+    register_sources_blocking(&ctx, compile_sources(vec![parquet_manifest(&location)]))
+        .expect("file source should register");
+    let batches = ctx
+        .sql(sql)
+        .await
+        .expect("query should plan")
+        .collect()
+        .await
+        .expect("query should execute");
+    let plain_rendered = pretty_format_batches(&batches)
+        .expect("batches should render")
+        .to_string();
+    assert_eq!(
+        observed_rendered, plain_rendered,
+        "observation must not change what the query returns"
+    );
+}
+
+#[tokio::test]
+async fn without_observation_publishers_file_providers_are_registered_unwrapped() {
+    let fixture_dir = tempdir().expect("tempdir should be created");
+    write_metrics_fixture(fixture_dir.path());
+    let location = file_url_from_directory_path(fixture_dir.path());
+
+    let plain_ctx = SessionContext::new();
+    register_sources_blocking(
+        &plain_ctx,
+        compile_sources(vec![parquet_manifest(&location)]),
+    )
+    .expect("file source should register");
+    let observed_ctx = SessionContext::new();
+    register_sources_blocking(
+        &observed_ctx,
+        compile_sources_with_observation_publishers(
+            vec![parquet_manifest(&location)],
+            &[Arc::new(RecordingSourceObservationPublisher::default())],
+        ),
+    )
+    .expect("observed file source should register");
+
+    assert!(
+        registered_metrics_provider(&plain_ctx)
+            .await
+            .downcast_ref::<FileTableProvider>()
+            .is_some(),
+        "capture off must register the file provider itself, not a wrapper"
+    );
+    assert!(
+        registered_metrics_provider(&observed_ctx)
+            .await
+            .downcast_ref::<FileTableProvider>()
+            .is_none(),
+        "capture on must register the observing wrapper"
+    );
+}
+
+async fn registered_metrics_provider(
+    ctx: &SessionContext,
+) -> Arc<dyn datafusion::catalog::TableProvider> {
+    ctx.catalog("datafusion")
+        .expect("catalog should exist")
+        .schema("otel")
+        .expect("schema should exist")
+        .table("metrics")
+        .await
+        .expect("table lookup should succeed")
+        .expect("table should exist")
+}
+
+fn partitioned_jsonl_manifest(location: &str) -> ValidatedSourceManifest {
+    parse_source_manifest_value(json!({
+        "dsl_version": 3,
+        "name": "jsonl_partitioned",
+        "version": "0.1.0",
+        "backend": "file",
+        "tables": [{
+            "name": "events",
+            "description": "events",
+            "format": "jsonl",
+            "source": {
+                "location": location,
+                "glob": "**/*.jsonl",
+                "partitions": [{ "name": "day", "type": "Utf8" }],
+            },
+            "columns": [
+                { "name": "id", "type": "Int64" },
+                { "name": "kind", "type": "Utf8" },
+            ],
+        }]
+    }))
+    .expect("partitioned jsonl manifest should parse")
 }
 
 fn parquet_table_spec(location: &str) -> FileTableSpec {

@@ -9,6 +9,8 @@
 mod catalog_discovery_tests;
 #[path = "grpc/feature_service_tests.rs"]
 mod feature_service_tests;
+#[path = "grpc/file_source_observed_values_tests.rs"]
+mod file_source_observed_values_tests;
 #[path = "grpc/function_lifecycle_tests.rs"]
 mod function_lifecycle_tests;
 #[path = "grpc/gui_onboarding_tests.rs"]

@@ -46,6 +46,27 @@ impl GrpcHarness {
         Self::start_with_parts(temp_dir, config_dir, feature_overrides).await
     }
 
+    /// Restarts the server on the same config dir with observed-value search
+    /// flipped.
+    ///
+    /// A feature override only reaches `active` on the next server start, so
+    /// tests that need capture on for one phase and off for the next have to
+    /// restart rather than toggle in place.
+    pub(crate) async fn restart_with_observed_values_search(self, enabled: bool) -> Self {
+        let Self {
+            temp_dir,
+            config_dir,
+            app,
+            _server: server,
+            ..
+        } = self;
+        drop(app);
+        server.shutdown().await.expect("shutdown server");
+        let mut feature_overrides = FeatureOverrides::default();
+        feature_overrides.set(Feature::ObservedValuesSearch, enabled);
+        Self::start_with_parts(temp_dir, config_dir, feature_overrides).await
+    }
+
     pub(crate) async fn start_with_config_dir(config_dir: PathBuf) -> Self {
         let temp_dir = TempDir::new().expect("temp dir");
         Self::start_with_parts(temp_dir, config_dir, FeatureOverrides::default()).await
