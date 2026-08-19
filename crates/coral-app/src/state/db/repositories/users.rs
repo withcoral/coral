@@ -1,4 +1,4 @@
-use sea_query::{Expr, ExprTrait, OnConflict, Order, Query, SelectStatement};
+use sea_query::{Alias, Expr, ExprTrait, OnConflict, Order, Query, SelectStatement};
 use uuid::Uuid;
 
 use crate::state::db::DbError;
@@ -66,7 +66,18 @@ where
             .on_conflict(
                 OnConflict::column(Users::Subject)
                     .update_columns([Users::DisplayName, Users::LastLoginAtUnixNanos])
-                    .action_and_where(Expr::col((Users::Table, Users::Issuer)).eq(issuer))
+                    .action_and_where(
+                        Expr::col((Users::Table, Users::Issuer)).eq(issuer).and(
+                            // Two logins for one subject can be in flight at
+                            // once, and the second to reach the database is not
+                            // necessarily the later one. Without this the older
+                            // of the pair would win by arriving last, moving
+                            // `last_login_at_unix_nanos` backwards and restoring
+                            // whatever display name it carried.
+                            Expr::col((Alias::new("excluded"), Users::LastLoginAtUnixNanos))
+                                .gt(Expr::col((Users::Table, Users::LastLoginAtUnixNanos))),
+                        ),
+                    )
                     .to_owned(),
             )
             .to_owned();
@@ -175,6 +186,8 @@ mod tests {
 
         let first = assert_first_login_mints_user(db, &issuer, &subject).await;
         let refreshed = assert_same_issuer_login_refreshes(db, &issuer, &subject, &first).await;
+        assert_an_older_login_does_not_overwrite_a_newer_row(db, &issuer, &subject, &refreshed)
+            .await;
         assert_issuer_mismatch_preserves_row(db, &suffix, &subject, &refreshed).await;
         assert_list_orders_by_creation(db, &issuer, &subject, &refreshed).await;
     }
@@ -255,6 +268,38 @@ mod tests {
             None
         );
         refreshed
+    }
+
+    /// Two logins for one subject can be in flight at once, and the database
+    /// sees them in whatever order they arrive. The later login is the one the
+    /// row should end up holding, so an older one arriving second leaves it
+    /// alone rather than moving `last_login_at_unix_nanos` backwards.
+    async fn assert_an_older_login_does_not_overwrite_a_newer_row(
+        db: &CoralDb,
+        issuer: &str,
+        subject: &str,
+        newest: &UserRecord,
+    ) {
+        let mut session = db;
+        let stale = expect_upserted(
+            session
+                .users()
+                .upsert_login(issuer, subject, Some("Stale Name"), 100)
+                .await
+                .expect("an out-of-order login still resolves to the row"),
+        );
+        assert_eq!(
+            &stale, newest,
+            "a login older than the stored one must change nothing about it",
+        );
+        assert_eq!(
+            session
+                .users()
+                .get_by_user_id(&newest.user_id)
+                .await
+                .expect("look up user"),
+            Some(newest.clone()),
+        );
     }
 
     async fn assert_issuer_mismatch_preserves_row(

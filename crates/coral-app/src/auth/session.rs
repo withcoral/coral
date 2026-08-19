@@ -276,12 +276,19 @@ impl SessionTokenVerifier {
 
     fn validate_claims(&self, claims: &SessionTokenClaims) -> Result<(), SessionTokenError> {
         let invalid = |message: &str| format!("invalid Coral access token: {message}");
-        if claims.sub.trim().is_empty()
-            || claims.client_id.trim().is_empty()
+        if claims.client_id.trim().is_empty()
             || claims.client_id.trim() != claims.client_id
             || claims.jti.trim().is_empty()
             || claims.jti.trim() != claims.jti
         {
+            return Err(invalid("subject, client_id, and jti must be valid"));
+        }
+        // Issuance refuses a subject that is not a canonical principal id, so
+        // verification refuses one too. A token is only ever as good as what it
+        // authenticates into, and admitting a subject the request principal
+        // cannot be built from would hand the services an id no other part of
+        // the deployment could have produced.
+        if PrincipalId::parse(&claims.sub).is_err() {
             return Err(invalid("subject, client_id, and jti must be valid"));
         }
         let now = unix_timestamp()?;
@@ -671,6 +678,11 @@ mod tests {
             changed(original.clone(), |c| c.iss = "other".into()),
             changed(original.clone(), |c| c.aud = "other".into()),
             changed(original.clone(), |c| c.sub = " ".into()),
+            // Issuance refuses these two, so verification must refuse them as
+            // well: a signed token is not a reason to admit a subject no
+            // request principal could be built from.
+            changed(original.clone(), |c| c.sub = LOCAL_PRINCIPAL_ID.into()),
+            changed(original.clone(), |c| c.sub = "user\u{7f}id".into()),
             changed(original.clone(), |c| c.client_id = " ".into()),
             changed(original.clone(), |c| c.jti = " ".into()),
         ];
