@@ -332,8 +332,10 @@ jobs:
             apps/desktop/dist/coral-desktop-*.blockmap
             apps/desktop/dist/latest-mac.yml
 
-  # Far simpler than the macOS leg: no universal binary, no signing, no
-  # notarization, and no updater, so no xtask and no credentials.
+  # Far simpler than the macOS leg: no universal binary, no signing, and no
+  # notarization, so no xtask and no credentials. It does publish an update
+  # feed: the AppImage updates itself (see desktopUpdatesSupported in
+  # apps/desktop/src/main/auto-update.ts).
   build-desktop-linux:
     needs:
       - validate-release-ref
@@ -347,10 +349,10 @@ jobs:
           ref: ${{ needs.validate-release-ref.outputs.commit-sha }}
           persist-credentials: false
 
-      # A manual tag on a commit whose desktop version was never bumped would
-      # otherwise ship an AppImage labelled with the wrong version. The macOS
-      # leg gets this from xtask; see ensure_version_matches_tag in
-      # xtask/src/release.rs.
+      # The updater compares the app's embedded version against release tags, so
+      # a manual tag on a commit whose desktop version was never bumped would
+      # publish latest-linux.yml with a stale version. The macOS leg gets this
+      # from xtask; see ensure_version_matches_tag in xtask/src/release.rs.
       - name: Verify desktop version matches the release tag
         run: |
           set -euo pipefail
@@ -389,12 +391,23 @@ jobs:
       - name: Install deb packaging tools
         run: sudo apt-get install -y --no-install-recommends binutils xz-utils
 
-      # No CORAL_DESKTOP_RELEASE: release mode is the Apple signing path, and
-      # Linux ships without an updater.
-      - name: Package desktop app
+      # CORAL_DESKTOP_RELEASE bakes the updater into the main process. On Linux
+      # it drives nothing else: signing and notarization are the macOS path.
+      - name: Build desktop inputs
         env:
           CORAL_DESKTOP_CLI_PATH: ${{ runner.temp }}/cli/coral
-        run: npm run package:linux --prefix apps/desktop
+          CORAL_DESKTOP_RELEASE: "1"
+        run: npm run build --prefix apps/desktop
+
+      - name: Verify release updater bundle
+        run: npm run verify:release-build --prefix apps/desktop
+
+      # The prepared variant, so packaging keeps the bundle just verified
+      # instead of rebuilding it.
+      - name: Package desktop app
+        env:
+          CORAL_DESKTOP_RELEASE: "1"
+        run: npm run package:linux:prepared --prefix apps/desktop
 
       - name: Verify desktop package artifacts
         run: node apps/desktop/scripts/verify-dist.mjs apps/desktop/dist linux
@@ -407,6 +420,7 @@ jobs:
           path: |
             apps/desktop/dist/coral-desktop-*.AppImage
             apps/desktop/dist/coral-desktop-*.deb
+            apps/desktop/dist/latest-linux.yml
 
   checksums:
     needs:
@@ -427,8 +441,8 @@ jobs:
           set -euo pipefail
           shopt -s nullglob
           cd artifacts
-          # Only the globs decide "did any archive arrive?"; latest-mac.yml is a
-          # literal that would always survive nullglob and mask an empty set.
+          # Only the globs decide "did any archive arrive?"; the update feeds are
+          # literals that would always survive nullglob and mask an empty set.
           archives=(
             coral-*.tar.gz
             coral-*.zip
@@ -442,7 +456,8 @@ jobs:
             exit 1
           fi
           test -s latest-mac.yml
-          sha256sum "${archives[@]}" latest-mac.yml > checksums.sha256
+          test -s latest-linux.yml
+          sha256sum "${archives[@]}" latest-mac.yml latest-linux.yml > checksums.sha256
           test -s checksums.sha256
       - name: Upload checksums
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
@@ -485,7 +500,7 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          # Count only the globbed archives; the literals (latest-mac.yml,
+          # Count only the globbed archives; the literals (the update feeds,
           # checksums.sha256) would always survive nullglob and defeat the
           # emptiness guard.
           archives=(
@@ -501,10 +516,12 @@ jobs:
             exit 1
           fi
           test -s artifacts/latest-mac.yml
+          test -s artifacts/latest-linux.yml
           test -s artifacts/checksums.sha256
           gh release upload "$TAG_NAME" \
             "${archives[@]}" \
             artifacts/latest-mac.yml \
+            artifacts/latest-linux.yml \
             artifacts/checksums.sha256 \
             --repo "$GITHUB_REPOSITORY" \
             --clobber

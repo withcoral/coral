@@ -3,8 +3,13 @@ import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import type { AppUpdater } from 'electron-updater'
 
+import { releaseTarget } from '../shared/release-targets'
 import type { DesktopUpdateState, DesktopUpdateStateListener } from '../shared/types'
-import { createDesktopUpdater, type DesktopUpdater } from './auto-update-core'
+import {
+  createDesktopUpdater,
+  UNSUPPORTED_UPDATE_DETAIL,
+  type DesktopUpdater,
+} from './auto-update-core'
 import {
   clearUpdateIntent,
   discardUpdateIntent,
@@ -23,12 +28,40 @@ declare const __CORAL_DESKTOP_RELEASE__: boolean
 const isReleaseBuild =
   typeof __CORAL_DESKTOP_RELEASE__ !== 'undefined' && __CORAL_DESKTOP_RELEASE__
 
-// Updates only work in a signed macOS release build: only those publish an
-// update feed (latest-mac.yml), and Squirrel.Mac refuses to install an update
-// into an unsigned app. Unsigned QA/local builds and Windows/Linux packages
-// therefore get no polling and no menu item.
+// The path electron-updater's AppImageUpdater operates on: it downloads against
+// this file, unlinks it, and moves the new image over it (doInstall). It reads
+// the value straight from the environment and refuses to run when it is unset
+// or relative, so this gate matches the updater's own precondition rather than
+// trying to detect an AppImage independently. An extracted AppDir does not set
+// it — the AppRun template assigns a fallback without exporting it.
+function runningAppImagePath(): string | null {
+  const path = process.env.APPIMAGE?.trim()
+  return path ? path : null
+}
+
+// Updates need a release build of a package that can replace itself in place.
+// The platform half of that is the shared release-target table; the rest is
+// local: an unsigned QA or local build never polls, and on Linux only the
+// AppImage can swap itself, because dpkg owns the files of an installed deb.
+// Anything excluded here gets no polling and no menu item.
 export function desktopUpdatesSupported(): boolean {
-  return isReleaseBuild && app.isPackaged && process.platform === 'darwin'
+  if (!isReleaseBuild || !app.isPackaged) return false
+  if (!releaseTarget(process.platform)) return false
+  return process.platform !== 'linux' || runningAppImagePath() !== null
+}
+
+// Runs once the updater has moved the new image over the old path and is about
+// to quit. Electron starts the replacement only after this process exits, so
+// the new instance finds the single-instance lock free. See desktopUpdater()
+// for why the updater itself starts nothing.
+function scheduleAppImageRelaunch(): void {
+  if (process.platform !== 'linux') return
+  const appImagePath = runningAppImagePath()
+  if (!appImagePath) return
+
+  // Empty args, not Electron's default `process.argv.slice(1)`: that carries
+  // the flags AppRun added for this launch, and AppRun adds them again.
+  app.relaunch({ execPath: appImagePath, args: [] })
 }
 
 let updater: DesktopUpdater | null = null
@@ -42,6 +75,14 @@ function updateIntentPath(): string {
 function desktopUpdater(): DesktopUpdater {
   if (!updater) {
     const { autoUpdater } = require('electron-updater') as { autoUpdater: AppUpdater }
+    // Linux only, and the platform check is load-bearing: the two updaters read
+    // this flag for different things. AppImageUpdater starts the new image from
+    // inside its install step, while this process still holds the
+    // single-instance lock — false there, and scheduleAppImageRelaunch() starts
+    // it after the exit instead. MacUpdater reads the same flag to choose
+    // between the Squirrel hand-off and a plain app.quit(); false there would
+    // skip the hand-off and leave the staged update uninstalled.
+    if (process.platform === 'linux') autoUpdater.autoRunAppAfterInstall = false
     updater = createDesktopUpdater({
       updater: autoUpdater,
       appVersion: () => app.getVersion(),
@@ -100,7 +141,12 @@ export function installAutoUpdater({
   if (!desktopUpdatesSupported()) return
 
   installFailureHandler = onInstallFailure
-  nativeAutoUpdater.once('before-quit-for-update', allowUpdateQuit)
+  // electron-updater emits this on the native updater only after the install
+  // step succeeds, so a failed install schedules no relaunch.
+  nativeAutoUpdater.once('before-quit-for-update', () => {
+    scheduleAppImageRelaunch()
+    allowUpdateQuit()
+  })
   console.info(RELEASE_UPDATER_BUNDLE_MARKER)
   desktopUpdater().install()
 }
@@ -140,7 +186,7 @@ export async function checkForDesktopUpdates({
       await dialog.showMessageBox({
         type: 'info',
         message: 'Update checks are unavailable for this build',
-        detail: 'Coral can check for desktop updates only from a packaged macOS release build.',
+        detail: UNSUPPORTED_UPDATE_DETAIL,
       })
     }
     return

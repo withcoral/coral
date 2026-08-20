@@ -34,7 +34,8 @@ uses `CORAL_ENDPOINT` to reach the supervised sidecar.
 - macOS DMG and ZIP packaging via `electron-builder`, with a signed and
   notarized release mode
 - Linux AppImage and deb packaging (x64), unsigned
-- GitHub Releases update metadata for packaged desktop auto-updates on macOS only
+- GitHub Releases update metadata for packaged desktop auto-updates on macOS and
+  on the Linux AppImage
 - macOS system theme support
 
 ## Development
@@ -83,16 +84,23 @@ universal macOS DMG and ZIP with updater metadata.
 
 Use `npm run package:linux --prefix apps/desktop` for the x64 Linux AppImage and
 deb. The deb needs `ar` (binutils) and `xz` on PATH — `fpm` shells out to both.
-Linux packages are unsigned and carry no update feed: `desktopUpdatesSupported()`
-(`src/main/auto-update.ts`) is macOS-only, so the Linux config sets `publish: null`
-and electron-builder writes no `latest-linux.yml`. Linux users download a new
-release manually.
+Linux packages are unsigned. The build writes `latest-linux.yml` for the AppImage,
+which replaces its own image file on update; the deb belongs to dpkg, so
+`desktopUpdatesSupported()` (`src/main/auto-update.ts`) returns false there and
+deb users install a new release themselves.
 
-`CORAL_DESKTOP_RELEASE=1` selects release mode. It requires a complete App Store
-Connect API key credential set, forces Developer ID signing, enables the hardened
-runtime with minimal Electron entitlements, and notarizes the app. Because it is
-the Apple path, it fails on any platform other than macOS. Without that flag,
-packaging is deterministically unsigned.
+`CORAL_DESKTOP_RELEASE=1` selects release mode: it bakes the updater into the main
+process, so only builds made with it check for updates. On macOS it also requires a
+complete App Store Connect API key credential set, forces Developer ID signing,
+enables the hardened runtime with minimal Electron entitlements, and notarizes the
+app — Squirrel.Mac refuses to update an unsigned app. The AppImage needs no
+signature, so a Linux release build takes no credentials. Windows rejects the flag.
+Without it, packaging is deterministically unsigned and the updater is inert.
+
+`src/shared/release-targets.ts` holds the one list of platforms a release build
+ships to, and whether each signs with Apple. The packaging config and the running
+app both read it, so they cannot disagree about who updates; putting Windows on
+par starts by adding it there.
 
 > Run the `--prefix apps/desktop` commands from the repo root. If you are already in
 > `apps/desktop/`, drop the flag (e.g. `npm run package:dir`).

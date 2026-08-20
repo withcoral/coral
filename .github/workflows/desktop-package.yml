@@ -108,3 +108,4 @@ jobs:
           path: |
             apps/desktop/dist/coral-desktop-*.AppImage
             apps/desktop/dist/coral-desktop-*.deb
+            apps/desktop/dist/latest-linux.yml

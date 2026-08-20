@@ -2,14 +2,18 @@
 // Verifies a release-shaped desktop dist directory. Shared by the Desktop
 // package workflow and the release workflow so the two checks cannot drift.
 //
-// The artifact shape is per platform, and only macOS publishes an update feed
-// (see desktopUpdatesSupported in src/main/auto-update.ts):
+// The artifact shape is per platform, and each platform publishes the update
+// feed its updater reads (see desktopUpdatesSupported in
+// src/main/auto-update.ts):
 //
 //   mac    exactly one DMG and one ZIP, a blockmap next to the ZIP
 //          (electron-updater fetches <file>.blockmap for differential
 //          updates), and a non-empty latest-mac.yml whose every referenced
 //          file is present.
-//   linux  at least one AppImage and one deb, and no update feed.
+//   linux  exactly one AppImage and one deb, and a non-empty latest-linux.yml
+//          that references the AppImage. The deb has no updater, and the
+//          AppImage carries its blockmap inside the image, so no separate
+//          blockmap file exists here.
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 
@@ -33,6 +37,30 @@ function artifacts(extension) {
   return entries.filter((f) => f.startsWith('coral-desktop-') && f.endsWith(extension))
 }
 
+// Returns the files the feed lists, after checking that the dist holds each of
+// them and that `required` is among them. An asset the feed names but the
+// release lacks would 404 for every updater in the wild.
+function verifyFeed(feedName, required) {
+  const metadataPath = join(distDir, feedName)
+  if (!existsSync(metadataPath)) fail(`missing ${feedName}`)
+  const metadata = readFileSync(metadataPath, 'utf8')
+  if (!metadata.trim()) fail(`${feedName} is empty`)
+
+  // A feed lists its update assets as `url:` entries plus a legacy top-level
+  // `path:`.
+  const referenced = [
+    ...new Set(
+      [...metadata.matchAll(/^\s*(?:-\s*)?(?:url|path):\s*(\S+)\s*$/gm)].map((match) => match[1]),
+    ),
+  ]
+  if (referenced.length === 0) fail(`${feedName} references no update assets`)
+  if (!referenced.includes(required)) fail(`${feedName} does not reference ${required}`)
+  for (const file of referenced) {
+    if (!entries.includes(file)) fail(`${feedName} references a missing file: ${file}`)
+  }
+  return referenced
+}
+
 function verifyMac() {
   const dmgs = artifacts('.dmg')
   const zips = artifacts('.zip')
@@ -42,24 +70,7 @@ function verifyMac() {
     )
   }
 
-  const metadataPath = join(distDir, 'latest-mac.yml')
-  if (!existsSync(metadataPath)) fail('missing latest-mac.yml')
-  const metadata = readFileSync(metadataPath, 'utf8')
-  if (!metadata.trim()) fail('latest-mac.yml is empty')
-
-  // latest-mac.yml lists its update assets as `url:` entries plus a legacy
-  // top-level `path:`; a file the metadata references but the dist lacks would
-  // 404 for every updater in the wild.
-  const referenced = [
-    ...new Set(
-      [...metadata.matchAll(/^\s*(?:-\s*)?(?:url|path):\s*(\S+)\s*$/gm)].map((match) => match[1]),
-    ),
-  ]
-  if (referenced.length === 0) fail('latest-mac.yml references no update assets')
-  if (!referenced.includes(zips[0])) fail(`latest-mac.yml does not reference ${zips[0]}`)
-  for (const file of referenced) {
-    if (!entries.includes(file)) fail(`latest-mac.yml references a missing file: ${file}`)
-  }
+  const referenced = verifyFeed('latest-mac.yml', zips[0])
 
   const zipBlockmap = `${zips[0]}.blockmap`
   if (!entries.includes(zipBlockmap)) {
@@ -72,18 +83,15 @@ function verifyMac() {
 function verifyLinux() {
   const appImages = artifacts('.AppImage')
   const debs = artifacts('.deb')
-  if (appImages.length === 0 || debs.length === 0) {
+  if (appImages.length !== 1 || debs.length !== 1) {
     fail(
-      `expected at least one desktop AppImage and one desktop deb, got AppImages: [${appImages}] debs: [${debs}]`,
+      `expected exactly one desktop AppImage and one desktop deb, got AppImages: [${appImages}] debs: [${debs}]`,
     )
   }
-  // Linux has no updater, so a feed here would be published and then served to
-  // nobody. Treat one as a packaging mistake.
-  const feeds = entries.filter((f) => /^latest(-\w+)?\.yml$/.test(f))
-  if (feeds.length > 0) {
-    fail(`linux ships no updater, but the build produced update metadata: ${feeds.join(', ')}`)
-  }
-  return [...appImages, ...debs].join(', ')
+
+  const referenced = verifyFeed('latest-linux.yml', appImages[0])
+
+  return `${appImages[0]}, ${debs[0]}, latest-linux.yml references ${referenced.join(', ')}`
 }
 
 const summary = { mac: verifyMac, linux: verifyLinux }[platform]()

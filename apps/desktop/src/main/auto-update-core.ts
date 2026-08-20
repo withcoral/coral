@@ -5,6 +5,11 @@
 
 import type { DesktopUpdateState, DesktopUpdateStateListener } from '../shared/types'
 
+// Shown wherever a build cannot update itself; see desktopUpdatesSupported in
+// auto-update.ts for the packages that can.
+export const UNSUPPORTED_UPDATE_DETAIL =
+  'Coral checks for updates from the released macOS app and the Linux AppImage only.'
+
 export const STARTUP_UPDATE_CHECK_DELAY_MS = 5000
 // Long-running desktop sessions would otherwise only see new releases after a
 // restart; re-check periodically so a release ships to open apps too. The
@@ -176,7 +181,7 @@ export function createDesktopUpdater(deps: DesktopUpdaterDeps): DesktopUpdater {
     if (!result) {
       await deps.showInfoDialog(
         'Update checks are unavailable for this build',
-        'Coral can check for desktop updates only from a packaged macOS release build.',
+        UNSUPPORTED_UPDATE_DETAIL,
       )
       return false
     }

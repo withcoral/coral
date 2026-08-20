@@ -112,6 +112,15 @@ afterEach(() => {
 })
 
 describe('install', () => {
+  it('leaves every automatic step to the caller', async () => {
+    const updater = createFakeUpdater()
+    createDesktopUpdater(createDeps(updater)).install()
+
+    // No download without a click, and no install on an ordinary quit.
+    expect(updater.autoDownload).toBe(false)
+    expect(updater.autoInstallOnAppQuit).toBe(false)
+  })
+
   it('checks shortly after startup and again every interval', async () => {
     const updater = createFakeUpdater()
     createDesktopUpdater(createDeps(updater)).install()

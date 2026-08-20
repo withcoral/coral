@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import test, { after } from 'node:test'
 
 import { createConfig } from '../electron-builder.config.ts'
+import { RELEASE_PLATFORMS, releaseTarget } from '../src/shared/release-targets.ts'
 
 const tempDir = mkdtempSync(join(tmpdir(), 'coral-desktop-signing-config-'))
 const apiKeyPath = join(tempDir, 'AuthKey_TEST.p8')
@@ -103,12 +104,26 @@ test('release packages require a readable, non-empty API key file', async () => 
   }
 })
 
-test('release mode is rejected off macOS before any credential preflight', () => {
-  for (const platform of ['linux', 'win32']) {
-    assert.throws(
-      () => createConfig({ CORAL_DESKTOP_RELEASE: '1', ...apiKeyCredentials }, platform),
-      /CORAL_DESKTOP_RELEASE=1 is macOS-only/,
-    )
+test('release mode is rejected off a release platform before any preflight', () => {
+  assert.equal(releaseTarget('win32'), null)
+  assert.throws(
+    () => createConfig({ CORAL_DESKTOP_RELEASE: '1', ...apiKeyCredentials }, 'win32'),
+    /CORAL_DESKTOP_RELEASE=1 supports darwin, linux hosts only, not win32/,
+  )
+})
+
+test('every release platform demands Apple credentials only if it signs', () => {
+  for (const platform of RELEASE_PLATFORMS) {
+    const signs = releaseTarget(platform).appleSigning
+    // A platform that signs nothing must package without credentials in the
+    // environment; one that signs must refuse to package without them.
+    const build = () => createConfig({ CORAL_DESKTOP_RELEASE: '1' }, platform)
+    if (signs) {
+      assert.throws(build, /App Store Connect API key credential set/)
+    } else {
+      assert.equal(build().forceCodeSigning, false)
+      assert.equal(build().mac?.notarize, false)
+    }
   }
 })
 
@@ -119,16 +134,18 @@ test('non-release packaging config is identical on every host platform', () => {
   assert.deepEqual(linuxHost, createConfig({}, 'win32'))
 })
 
-test('linux packages target AppImage and deb without an update feed', () => {
-  const { linux, deb } = createConfig({}, 'linux')
+test('linux packages target AppImage and deb, and publish an update feed', () => {
+  const { linux, deb, publish } = createConfig({}, 'linux')
 
   assert.deepEqual(linux?.target, [
     { target: 'AppImage', arch: ['x64'] },
     { target: 'deb', arch: ['x64'] },
   ])
-  // Linux has no updater, so electron-builder must not emit latest-linux.yml
-  // or embed app-update.yml.
-  assert.equal(linux?.publish, null)
+  // The AppImage updater reads latest-linux.yml and the app-update.yml the
+  // package embeds, so linux must inherit the GitHub publish config rather
+  // than override it.
+  assert.equal(linux?.publish, undefined)
+  assert.equal(publish?.[0]?.provider, 'github')
   // Neither the executable nor the deb may claim the `coral` name; the deb
   // symlinks its executable into /usr/bin and would shadow the CLI.
   assert.equal(linux?.executableName, 'coral-desktop')

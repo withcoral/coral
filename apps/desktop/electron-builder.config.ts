@@ -2,6 +2,8 @@ import { accessSync, constants, statSync } from 'node:fs'
 
 import type { Configuration } from 'electron-builder'
 
+import { RELEASE_PLATFORMS, releaseTarget } from './src/shared/release-targets.ts'
+
 const API_KEY_NOTARIZATION_ENV = [
   'APPLE_API_KEY',
   'APPLE_API_KEY_ID',
@@ -40,23 +42,25 @@ export function createConfig(
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
 ): Configuration {
+  // Release mode means the build ships an active updater; src/shared/release-targets.ts
+  // lists where that is possible and what it costs. Reject the flag on a host
+  // that ships no release build, so the build fails on the flag rather than on
+  // a preflight it could never satisfy.
   const releaseBuild = env.CORAL_DESKTOP_RELEASE === '1'
-  if (releaseBuild) {
-    // Release mode is the Apple signing and notarization path, and macOS is the
-    // only platform with an update feed. Reject it on any other host so the
-    // build fails on the flag rather than on a credential preflight it could
-    // never satisfy.
-    if (platform !== 'darwin') {
-      throw new Error('CORAL_DESKTOP_RELEASE=1 is macOS-only; it drives Apple signing and notarization')
-    }
-    requireNotarizationCredentials(env)
+  const target = releaseTarget(platform)
+  if (releaseBuild && !target) {
+    throw new Error(
+      `CORAL_DESKTOP_RELEASE=1 supports ${RELEASE_PLATFORMS.join(', ')} hosts only, not ${platform}`,
+    )
   }
+  const appleRelease = releaseBuild && target?.appleSigning === true
+  if (appleRelease) requireNotarizationCredentials(env)
 
   return {
     appId: 'com.withcoral.desktop',
     productName: 'Coral',
     artifactName: 'coral-desktop-${os}-${arch}.${ext}',
-    forceCodeSigning: releaseBuild,
+    forceCodeSigning: appleRelease,
     publish: [
       {
         provider: 'github',
@@ -98,15 +102,15 @@ export function createConfig(
     ],
     mac: {
       category: 'public.app-category.developer-tools',
-      entitlements: releaseBuild ? 'resources/entitlements.mac.plist' : null,
-      entitlementsInherit: releaseBuild ? 'resources/entitlements.mac.inherit.plist' : null,
-      hardenedRuntime: releaseBuild,
+      entitlements: appleRelease ? 'resources/entitlements.mac.plist' : null,
+      entitlementsInherit: appleRelease ? 'resources/entitlements.mac.inherit.plist' : null,
+      hardenedRuntime: appleRelease,
       icon: 'resources/icons/icon.icns',
       // identity null makes non-release builds deterministically unsigned;
       // otherwise electron-builder auto-discovers a Developer ID certificate
       // from the developer's keychain and signs local packages.
-      identity: releaseBuild ? undefined : null,
-      notarize: releaseBuild,
+      identity: appleRelease ? undefined : null,
+      notarize: appleRelease,
       target: ['dmg', 'zip'],
     },
     linux: {
@@ -124,10 +128,6 @@ export function createConfig(
       // Debian requires a contact address for the Maintainer field, and fpm
       // refuses to build without one — `author` carries no email.
       maintainer: 'Coral Eng Team <eng@withcoral.com>',
-      // Linux has no updater (see desktopUpdatesSupported in src/main/auto-update.ts).
-      // `null` keeps electron-builder from writing a latest-linux.yml feed nobody
-      // serves and from embedding app-update.yml in the package.
-      publish: null,
       synopsis: 'Coral desktop app',
       // Electron sets the window's WM_CLASS from `desktopName` in package.json,
       // and electron-builder writes StartupWMClass from the same value. Without
